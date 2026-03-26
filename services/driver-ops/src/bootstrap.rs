@@ -1,10 +1,11 @@
 use std::sync::Arc;
 use sqlx::postgres::PgPoolOptions;
 use anyhow::Context;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use crate::config::Config;
 use crate::application::services::{DriverService, TaskService, LocationService};
 use crate::infrastructure::db::{PgDriverRepository, PgTaskRepository, PgLocationRepository};
+use crate::infrastructure::messaging::start_task_consumer;
 use crate::api::http::{router, AppState, LocationBroadcast};
 use logisticos_auth::jwt::JwtService;
 use logisticos_events::producer::KafkaProducer;
@@ -34,6 +35,25 @@ pub async fn run() -> anyhow::Result<()> {
         KafkaProducer::new(&cfg.kafka.brokers)
             .context("Failed to connect Kafka")?
     );
+
+    // Shutdown watch channel — broadcast to all background consumers.
+    let (shutdown_tx, _) = watch::channel(false);
+
+    // Spawn TASK_ASSIGNED consumer — creates driver_ops.tasks rows on dispatch.
+    let pool_for_tasks    = pool.clone();
+    let brokers_for_tasks = cfg.kafka.brokers.clone();
+    let group_for_tasks   = cfg.kafka.group_id.clone();
+    let shutdown_rx_tasks = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        if let Err(e) = start_task_consumer(
+            &brokers_for_tasks,
+            &group_for_tasks,
+            pool_for_tasks,
+            shutdown_rx_tasks,
+        ).await {
+            tracing::error!("Task consumer crashed: {e}");
+        }
+    });
 
     let jwt_secret = std::env::var("AUTH__JWT_SECRET")
         .context("AUTH__JWT_SECRET not set")?;
@@ -83,6 +103,11 @@ pub async fn run() -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("driver-ops server error")?;
+
+    // Signal background consumers to stop.
+    if shutdown_tx.send(true).is_err() {
+        tracing::warn!("Task consumer already stopped before shutdown signal");
+    }
 
     Ok(())
 }
