@@ -23,9 +23,8 @@ pub async fn invite_user(
 ) -> Result<Json<serde_json::Value>, AppError> {
     require_permission!(claims, logisticos_auth::rbac::permissions::USERS_INVITE);
     let tenant_id = logisticos_types::TenantId::from_uuid(claims.tenant_id);
-    let user = state.tenant_service.invite_user(&tenant_id, cmd).await?;
-    // user's temporary password is discarded here — engagement service sends the welcome email
-    Ok(Json(serde_json::json!({ "data": { "user_id": user.id, "email": user.email } })))
+    let (user, temp_password) = state.tenant_service.invite_user(&tenant_id, cmd).await?;
+    Ok(Json(serde_json::json!({ "data": { "user_id": user.id, "email": user.email, "temp_password": temp_password } })))
 }
 
 pub async fn get_user(

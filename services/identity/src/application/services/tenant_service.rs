@@ -81,7 +81,7 @@ impl TenantService {
         Arc::clone(&self.user_repo)
     }
 
-    pub async fn invite_user(&self, tenant_id: &logisticos_types::TenantId, cmd: InviteUserCommand) -> AppResult<User> {
+    pub async fn invite_user(&self, tenant_id: &logisticos_types::TenantId, cmd: InviteUserCommand) -> AppResult<(User, String)> {
         // Verify tenant is active before allowing user creation
         let tenant = self.tenant_repo.find_by_id(tenant_id).await.map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound { resource: "Tenant", id: tenant_id.inner().to_string() })?;
@@ -128,35 +128,16 @@ impl TenantService {
             .map_err(AppError::Internal)?;
         tracing::info!(user_id = %user.id, roles = ?user.roles, "User created, USER_CREATED event emitted");
 
-        Ok(user)
+        Ok((user, temp_password))
     }
 }
 
-/// Generate a cryptographically secure 16-char temporary password.
-/// Format: 4 groups of 4 hex chars separated by hyphens (e.g. "a3f1-9e2c-7b4d-1234")
+/// Generate a cryptographically secure 16-character alphanumeric temporary password.
 fn generate_temp_password() -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    use std::time::SystemTime;
-
-    // Use system time + thread ID entropy for a non-csprng fallback in bootstrapping.
-    // In production, swap for `rand::thread_rng().gen::<[u8; 16]>()` with the rand crate.
-    let seed = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-
-    let mut h = DefaultHasher::new();
-    seed.hash(&mut h);
-    std::thread::current().id().hash(&mut h);
-    let v1 = h.finish();
-    v1.hash(&mut h);
-    let v2 = h.finish();
-
-    format!("{:04x}-{:04x}-{:04x}-{:04x}",
-        (v1 >> 48) & 0xFFFF,
-        (v1 >> 32) & 0xFFFF,
-        (v2 >> 48) & 0xFFFF,
-        (v2 >> 32) & 0xFFFF,
-    )
+    use rand::Rng;
+    rand::thread_rng()
+        .sample_iter(&rand::distributions::Alphanumeric)
+        .take(16)
+        .map(char::from)
+        .collect()
 }
