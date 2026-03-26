@@ -2,6 +2,7 @@ pub mod routes;
 pub mod assignments;
 pub mod health;
 pub mod queue;
+pub mod dispatch_ops;
 
 use axum::{Router, routing::{get, post, put}};
 use std::sync::Arc;
@@ -40,5 +41,7 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         // Dispatch queue and driver roster
         .route("/queue",   get(queue::list_queue))
         .route("/drivers", get(queue::list_drivers))
+        // Quick dispatch — one-shot assign driver to shipment in queue
+        .route("/queue/:shipment_id/dispatch", post(dispatch_ops::quick_dispatch))
         .layer(auth_layer)
 }

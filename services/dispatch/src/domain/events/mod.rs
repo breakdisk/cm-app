@@ -13,6 +13,7 @@ pub struct RouteCreated {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriverAssigned {
     pub assignment_id: Uuid,
+    pub shipment_id:   Uuid,
     pub route_id: Uuid,
     pub driver_id: Uuid,
     pub tenant_id: Uuid,

@@ -39,6 +39,12 @@ pub struct RouteView {
     pub created_at: String,
 }
 
+#[derive(Debug)]
+pub struct QuickDispatchCommand {
+    pub shipment_id:         uuid::Uuid,
+    pub preferred_driver_id: Option<uuid::Uuid>,
+}
+
 #[derive(Debug, Deserialize, Validate)]
 pub struct AddStopCommand {
     pub route_id: Uuid,
