@@ -75,35 +75,53 @@ async fn handle(pool: &PgPool, topic: &str, payload: &[u8]) -> anyhow::Result<()
         topics::DRIVER_ASSIGNED => {
             let envelope: Event<DriverAssignedEvt> = serde_json::from_slice(payload)?;
             let evt = envelope.data;
-            sqlx::query(
+            let result = sqlx::query(
                 "UPDATE order_intake.shipments SET status = 'pickup_assigned', updated_at = NOW()
                  WHERE id = $1 AND status NOT IN ('delivered','cancelled','returned')",
             )
             .bind(evt.shipment_id)
             .execute(pool)
             .await?;
+            if result.rows_affected() == 0 {
+                tracing::warn!(
+                    shipment_id = %evt.shipment_id,
+                    "DRIVER_ASSIGNED: no shipment updated (unknown id or already in terminal status)"
+                );
+            }
         }
         topics::DELIVERY_COMPLETED => {
             let envelope: Event<DeliveryCompletedEvt> = serde_json::from_slice(payload)?;
             let evt = envelope.data;
-            sqlx::query(
+            let result = sqlx::query(
                 "UPDATE order_intake.shipments SET status = 'delivered', updated_at = NOW()
                  WHERE id = $1",
             )
             .bind(evt.shipment_id)
             .execute(pool)
             .await?;
+            if result.rows_affected() == 0 {
+                tracing::warn!(
+                    shipment_id = %evt.shipment_id,
+                    "DELIVERY_COMPLETED: no shipment updated (unknown id)"
+                );
+            }
         }
         topics::DELIVERY_FAILED => {
             let envelope: Event<DeliveryFailedEvt> = serde_json::from_slice(payload)?;
             let evt = envelope.data;
-            sqlx::query(
+            let result = sqlx::query(
                 "UPDATE order_intake.shipments SET status = 'failed', updated_at = NOW()
                  WHERE id = $1 AND status NOT IN ('delivered','cancelled')",
             )
             .bind(evt.shipment_id)
             .execute(pool)
             .await?;
+            if result.rows_affected() == 0 {
+                tracing::warn!(
+                    shipment_id = %evt.shipment_id,
+                    "DELIVERY_FAILED: no shipment updated (unknown id or already in terminal status)"
+                );
+            }
         }
         _ => {}
     }
