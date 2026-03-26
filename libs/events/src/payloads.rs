@@ -114,7 +114,7 @@ pub struct TaskAssigned {
     pub route_id:             Uuid,
     pub driver_id:            Uuid,
     pub tenant_id:            Uuid,
-    pub sequence:             u32,
+    pub sequence:             i32,
     // Destination (denormalized from dispatch_queue for offline driver app)
     pub address_line1:        String,
     pub address_city:         String,

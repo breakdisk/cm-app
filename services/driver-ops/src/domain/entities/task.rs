@@ -11,7 +11,7 @@ pub struct DriverTask {
     pub route_id: uuid::Uuid,
     pub shipment_id: uuid::Uuid,
     pub task_type: TaskType,
-    pub sequence: u32,
+    pub sequence: i32,
     pub status: TaskStatus,
     pub address: logisticos_types::Address,
     pub customer_name: String,

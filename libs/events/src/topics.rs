@@ -43,7 +43,17 @@ mod tests {
 
     #[test]
     fn all_topics_are_lowercase_dot_separated() {
-        let topics: &[&str] = &[USER_CREATED, TASK_ASSIGNED];
+        let topics: &[&str] = &[
+            TENANT_CREATED, USER_CREATED, USER_INVITED,
+            SHIPMENT_CREATED, SHIPMENT_CONFIRMED, SHIPMENT_CANCELLED,
+            ROUTE_CREATED, DRIVER_ASSIGNED, ROUTE_OPTIMIZED,
+            PICKUP_COMPLETED, DELIVERY_ATTEMPTED, DELIVERY_COMPLETED, DELIVERY_FAILED,
+            LOCATION_UPDATED, DRIVER_LOCATION_UPDATED,
+            POD_CAPTURED,
+            INVOICE_GENERATED, PAYMENT_RECEIVED, COD_COLLECTED,
+            NOTIFICATION_QUEUED, CAMPAIGN_TRIGGERED, CUSTOMER_SEGMENT_UPDATED,
+            TASK_ASSIGNED,
+        ];
         for t in topics {
             assert!(t.chars().all(|c: char| c.is_ascii_lowercase() || c == '.' || c == '_'),
                 "Topic '{}' has invalid chars", t);
