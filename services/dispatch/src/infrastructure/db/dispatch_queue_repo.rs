@@ -101,7 +101,7 @@ impl PgDispatchQueueRepository {
         .await?;
 
         if result.rows_affected() == 0 {
-            tracing::warn!(shipment_id = %shipment_id, "mark_dispatched: no row found for shipment_id");
+            anyhow::bail!("mark_dispatched: no dispatch_queue row found for shipment_id {}", shipment_id);
         }
         Ok(())
     }

@@ -85,6 +85,7 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::clone(&kafka),
         Arc::clone(&compliance_cache),
         Arc::clone(&queue_repo),
+        Arc::clone(&drivers_repo),
     ));
 
     // Spawn shipment consumer — populates dispatch_queue from SHIPMENT_CREATED events

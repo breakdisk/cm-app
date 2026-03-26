@@ -25,7 +25,7 @@ pub async fn quick_dispatch(
     Ok(Json(serde_json::json!({
         "data": {
             "assignment_id": assignment.id,
-            "driver_id": assignment.driver_id,
+            "driver_id": assignment.driver_id.inner(),
             "status": "pending"
         }
     })))

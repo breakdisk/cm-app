@@ -4,7 +4,7 @@ use logisticos_types::{Coordinates, DriverId, RouteId, TenantId, VehicleId};
 use logisticos_events::{producer::KafkaProducer, topics, envelope::Event};
 use tokio::sync::Mutex;
 use uuid::Uuid;
-use crate::infrastructure::db::{ComplianceCache, PgDispatchQueueRepository};
+use crate::infrastructure::db::{ComplianceCache, PgDispatchQueueRepository, PgDriverProfilesRepository};
 
 use crate::{
     application::commands::{
@@ -26,6 +26,7 @@ pub struct DriverAssignmentService {
     kafka: Arc<KafkaProducer>,
     compliance_cache: Arc<Mutex<ComplianceCache>>,
     queue_repo: Arc<PgDispatchQueueRepository>,
+    driver_profiles: Arc<PgDriverProfilesRepository>,
 }
 
 impl DriverAssignmentService {
@@ -36,8 +37,9 @@ impl DriverAssignmentService {
         kafka: Arc<KafkaProducer>,
         compliance_cache: Arc<Mutex<ComplianceCache>>,
         queue_repo: Arc<PgDispatchQueueRepository>,
+        driver_profiles: Arc<PgDriverProfilesRepository>,
     ) -> Self {
-        Self { route_repo, assignment_repo, driver_avail_repo, kafka, compliance_cache, queue_repo }
+        Self { route_repo, assignment_repo, driver_avail_repo, kafka, compliance_cache, queue_repo, driver_profiles }
     }
 
     /// Create a new route for a driver. The route starts as Planned and gets stops added.
@@ -364,6 +366,16 @@ impl DriverAssignmentService {
             return Err(AppError::BusinessRule(format!(
                 "Driver {driver_id} is not compliance-cleared for assignment"
             )));
+        }
+
+        // 4a. Guard: driver must not already have an active assignment
+        let existing = self.assignment_repo
+            .find_active_by_driver(&driver_id).await
+            .map_err(AppError::Internal)?;
+        if existing.is_some() {
+            return Err(AppError::BusinessRule(
+                "Selected driver already has an active assignment".into()
+            ));
         }
 
         // 4. Create a minimal single-stop route (vehicle_id = nil, stop added by driver-ops)
