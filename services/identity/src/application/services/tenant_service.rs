@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use logisticos_auth::password::hash_password;
 use logisticos_errors::{AppError, AppResult};
-use logisticos_events::{producer::KafkaProducer, topics, payloads::TenantCreated, envelope::Event};
+use logisticos_events::{producer::KafkaProducer, topics, payloads::{TenantCreated, UserCreated}, envelope::Event};
 use crate::{
     application::commands::{CreateTenantCommand, InviteUserCommand},
     domain::{
@@ -111,7 +111,22 @@ impl TenantService {
         );
 
         self.user_repo.save(&user).await.map_err(AppError::Internal)?;
-        tracing::info!(user_id = %user.id, email = %user.email, "User invited");
+
+        // Emit USER_CREATED so downstream services (e.g. dispatch) can populate caches.
+        let event = Event::new(
+            "identity",
+            "user.created",
+            tenant_id.inner(),
+            UserCreated {
+                user_id:   user.id.inner(),
+                tenant_id: tenant_id.inner(),
+                email:     user.email.clone(),
+                roles:     user.roles.clone(),
+            },
+        );
+        self.kafka.publish_event(topics::USER_CREATED, &event).await
+            .map_err(AppError::Internal)?;
+        tracing::info!(user_id = %user.id, roles = ?user.roles, "User created, USER_CREATED event emitted");
 
         Ok(user)
     }
