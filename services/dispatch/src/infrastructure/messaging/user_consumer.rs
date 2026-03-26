@@ -57,9 +57,11 @@ async fn handle_user_created(
     }
 
     let row = DriverProfileRow {
-        id:        d.user_id,
-        tenant_id: d.tenant_id,
-        email:     d.email,
+        id:         d.user_id,
+        tenant_id:  d.tenant_id,
+        email:      d.email,
+        first_name: String::new(),  // UserCreated doesn't carry name fields
+        last_name:  String::new(),
     };
     repo.upsert(&row).await?;
     tracing::info!(user_id = %d.user_id, "Driver profile cached in dispatch");
