@@ -44,15 +44,15 @@ pub fn init(cfg: TracingConfig<'_>) -> anyhow::Result<()> {
             .with_trace_config(sdktrace::Config::default().with_resource(resource))
             .install_batch(runtime::Tokio)?;
 
-        let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
-
         if cfg.env == "development" {
+            let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
             tracing_subscriber::registry()
                 .with(filter)
                 .with(fmt::layer().pretty())
                 .with(otel_layer)
                 .init();
         } else {
+            let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
             tracing_subscriber::registry()
                 .with(filter)
                 .with(fmt::layer().json())
