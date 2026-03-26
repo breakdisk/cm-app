@@ -9,6 +9,8 @@ pub struct Shipment {
     pub tenant_id: TenantId,
     pub merchant_id: MerchantId,
     pub customer_id: CustomerId,
+    pub customer_name: String,
+    pub customer_phone: String,
     pub tracking_number: String,
     pub status: ShipmentStatus,
     pub service_type: ServiceType,
@@ -67,5 +69,76 @@ impl Shipment {
             0
         };
         Money::new(base + surcharge, Currency::PHP)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use logisticos_types::{Address, Currency};
+
+    fn make_address() -> Address {
+        Address {
+            line1:        "123 Test St".to_string(),
+            line2:        None,
+            barangay:     None,
+            city:         "Manila".to_string(),
+            province:     "Metro Manila".to_string(),
+            postal_code:  "1000".to_string(),
+            country_code: "PH".to_string(),
+            coordinates:  None,
+        }
+    }
+
+    #[test]
+    fn shipment_has_customer_fields() {
+        let s = Shipment {
+            id:                   logisticos_types::ShipmentId::new(),
+            tenant_id:            logisticos_types::TenantId::from_uuid(uuid::Uuid::new_v4()),
+            merchant_id:          logisticos_types::MerchantId::from_uuid(uuid::Uuid::new_v4()),
+            customer_id:          logisticos_types::CustomerId::new(),
+            customer_name:        "Test Customer".to_string(),
+            customer_phone:       "+63912345678".to_string(),
+            tracking_number:      "LS-TEST".to_string(),
+            status:               logisticos_types::ShipmentStatus::Pending,
+            service_type:         crate::domain::value_objects::ServiceType::Standard,
+            origin:               make_address(),
+            destination:          make_address(),
+            weight:               crate::domain::value_objects::ShipmentWeight::from_grams(1000),
+            dimensions:           None,
+            declared_value:       None,
+            cod_amount:           None,
+            special_instructions: None,
+            created_at:           chrono::Utc::now(),
+            updated_at:           chrono::Utc::now(),
+        };
+        assert_eq!(s.customer_name,  "Test Customer");
+        assert_eq!(s.customer_phone, "+63912345678");
+    }
+
+    #[test]
+    fn compute_base_fee_standard_no_surcharge() {
+        let s = Shipment {
+            id:                   logisticos_types::ShipmentId::new(),
+            tenant_id:            logisticos_types::TenantId::from_uuid(uuid::Uuid::new_v4()),
+            merchant_id:          logisticos_types::MerchantId::from_uuid(uuid::Uuid::new_v4()),
+            customer_id:          logisticos_types::CustomerId::new(),
+            customer_name:        "Alice".to_string(),
+            customer_phone:       "+63900000001".to_string(),
+            tracking_number:      "LS-FEE".to_string(),
+            status:               logisticos_types::ShipmentStatus::Pending,
+            service_type:         crate::domain::value_objects::ServiceType::Standard,
+            origin:               make_address(),
+            destination:          make_address(),
+            weight:               crate::domain::value_objects::ShipmentWeight::from_grams(500),
+            dimensions:           None,
+            declared_value:       None,
+            cod_amount:           None,
+            special_instructions: None,
+            created_at:           chrono::Utc::now(),
+            updated_at:           chrono::Utc::now(),
+        };
+        let fee = s.compute_base_fee();
+        assert_eq!(fee, logisticos_types::Money::new(8500, Currency::PHP));
     }
 }

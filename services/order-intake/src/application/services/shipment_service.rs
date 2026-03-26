@@ -124,6 +124,8 @@ impl ShipmentService {
             tenant_id: TenantId::from_uuid(cmd.tenant_id),
             merchant_id: MerchantId::from_uuid(cmd.merchant_id),
             customer_id: CustomerId::new(),
+            customer_name: cmd.customer_name.clone(),
+            customer_phone: cmd.customer_phone.clone(),
             tracking_number: TrackingNumber::generate(),
             status: ShipmentStatus::Pending,
             service_type,

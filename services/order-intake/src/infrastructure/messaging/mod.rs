@@ -1,3 +1,5 @@
+pub mod status_consumer;
+
 use std::pin::Pin;
 use std::future::Future;
 

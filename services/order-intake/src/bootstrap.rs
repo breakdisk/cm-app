@@ -12,13 +12,18 @@ use crate::{
     infrastructure::{
         db::PgShipmentRepository,
         external::PassthroughNormalizer,
-        messaging::KafkaEventPublisher,
+        messaging::{KafkaEventPublisher, status_consumer::start_status_consumer},
     },
 };
 
 pub async fn run() -> anyhow::Result<()> {
     let cfg = Config::load()?;
-    logisticos_tracing::init(&cfg.app.env, "order-intake")?;
+    logisticos_tracing::init(logisticos_tracing::TracingConfig {
+        service_name:  "order-intake",
+        env:           &cfg.app.env,
+        otlp_endpoint: None,
+        log_level:     None,
+    })?;
 
     // Database
     let pool = PgPoolOptions::new()
@@ -32,6 +37,22 @@ pub async fn run() -> anyhow::Result<()> {
     let repo       = Arc::new(PgShipmentRepository { pool: pool.clone() });
     let publisher  = Arc::new(KafkaEventPublisher::new(&cfg.kafka.brokers)?);
     let normalizer = Arc::new(PassthroughNormalizer);
+
+    // Spawn Kafka status consumer in background
+    let pool_for_consumer   = pool.clone();
+    let brokers_for_consumer = cfg.kafka.brokers.clone();
+    let group_for_consumer   = cfg.kafka.group_id.clone();
+    tokio::spawn(async move {
+        if let Err(e) = start_status_consumer(
+            &brokers_for_consumer,
+            &group_for_consumer,
+            pool_for_consumer,
+        )
+        .await
+        {
+            tracing::error!("Status consumer error: {e}");
+        }
+    });
 
     // Application services
     let svc   = Arc::new(ShipmentService::new(repo.clone(), publisher, normalizer));

@@ -1,9 +1,8 @@
 use std::pin::Pin;
 use std::future::Future;
 
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use uuid::Uuid;
-use serde_json;
 
 use logisticos_types::{
     Address, Coordinates, Currency, CustomerId, MerchantId, Money, ShipmentId, ShipmentStatus, TenantId,
@@ -27,6 +26,8 @@ struct ShipmentRow {
     tenant_id:            Uuid,
     merchant_id:          Uuid,
     customer_id:          Uuid,
+    customer_name:        String,
+    customer_phone:       String,
     tracking_number:      String,
     status:               String,
     service_type:         String,
@@ -116,6 +117,8 @@ impl ShipmentRow {
             tenant_id:            TenantId::from_uuid(self.tenant_id),
             merchant_id:          MerchantId::from_uuid(self.merchant_id),
             customer_id:          CustomerId::from_uuid(self.customer_id),
+            customer_name:        self.customer_name,
+            customer_phone:       self.customer_phone,
             tracking_number:      self.tracking_number,
             status,
             service_type,
@@ -154,6 +157,49 @@ fn status_str(s: &ShipmentStatus) -> &'static str {
     }
 }
 
+/// Maps a dynamic `PgRow` into the typed `ShipmentRow` struct.
+/// Used in place of `sqlx::query_as!` so no DATABASE_URL is needed at compile time.
+fn row_to_shipment_row(r: &sqlx::postgres::PgRow) -> ShipmentRow {
+    ShipmentRow {
+        id:                   r.get("id"),
+        tenant_id:            r.get("tenant_id"),
+        merchant_id:          r.get("merchant_id"),
+        customer_id:          r.get("customer_id"),
+        customer_name:        r.get("customer_name"),
+        customer_phone:       r.get("customer_phone"),
+        tracking_number:      r.get("tracking_number"),
+        status:               r.get("status"),
+        service_type:         r.get("service_type"),
+        origin_line1:         r.get("origin_line1"),
+        origin_line2:         r.get("origin_line2"),
+        origin_barangay:      r.get("origin_barangay"),
+        origin_city:          r.get("origin_city"),
+        origin_province:      r.get("origin_province"),
+        origin_postal_code:   r.get("origin_postal_code"),
+        origin_country_code:  r.get("origin_country_code"),
+        origin_lat:           r.get("origin_lat"),
+        origin_lng:           r.get("origin_lng"),
+        dest_line1:           r.get("dest_line1"),
+        dest_line2:           r.get("dest_line2"),
+        dest_barangay:        r.get("dest_barangay"),
+        dest_city:            r.get("dest_city"),
+        dest_province:        r.get("dest_province"),
+        dest_postal_code:     r.get("dest_postal_code"),
+        dest_country_code:    r.get("dest_country_code"),
+        dest_lat:             r.get("dest_lat"),
+        dest_lng:             r.get("dest_lng"),
+        weight_grams:         r.get("weight_grams"),
+        length_cm:            r.get("length_cm"),
+        width_cm:             r.get("width_cm"),
+        height_cm:            r.get("height_cm"),
+        declared_value_cents: r.get("declared_value_cents"),
+        cod_amount_cents:     r.get("cod_amount_cents"),
+        special_instructions: r.get("special_instructions"),
+        created_at:           r.get("created_at"),
+        updated_at:           r.get("updated_at"),
+    }
+}
+
 impl ShipmentRepository for PgShipmentRepository {
     fn list<'a>(
         &'a self,
@@ -161,23 +207,23 @@ impl ShipmentRepository for PgShipmentRepository {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<(Vec<Shipment>, i64)>> + Send + 'a>> {
         Box::pin(async move {
             // Count query
-            let total: i64 = sqlx::query_scalar!(
+            let total: i64 = sqlx::query_scalar(
                 r#"SELECT COUNT(*) FROM order_intake.shipments
                    WHERE tenant_id = $1
                      AND ($2::uuid IS NULL OR merchant_id = $2)
                      AND ($3::text IS NULL OR status = $3)"#,
-                filter.tenant_id,
-                filter.merchant_id,
-                filter.status.as_deref(),
             )
+            .bind(filter.tenant_id)
+            .bind(filter.merchant_id)
+            .bind(filter.status.as_deref())
             .fetch_one(&self.pool)
-            .await?
-            .unwrap_or(0);
+            .await?;
 
-            // Data query
-            let rows = sqlx::query_as!(
-                ShipmentRow,
-                r#"SELECT id, tenant_id, merchant_id, customer_id, tracking_number, status, service_type,
+            // Data query — manual row mapping because no macro
+            let rows = sqlx::query(
+                r#"SELECT id, tenant_id, merchant_id, customer_id,
+                          customer_name, customer_phone,
+                          tracking_number, status, service_type,
                           origin_line1, origin_line2, origin_barangay, origin_city, origin_province,
                           origin_postal_code, origin_country_code, origin_lat, origin_lng,
                           dest_line1, dest_line2, dest_barangay, dest_city, dest_province,
@@ -191,16 +237,21 @@ impl ShipmentRepository for PgShipmentRepository {
                      AND ($3::text IS NULL OR status = $3)
                    ORDER BY created_at DESC
                    LIMIT $4 OFFSET $5"#,
-                filter.tenant_id,
-                filter.merchant_id,
-                filter.status.as_deref(),
-                filter.limit,
-                filter.offset,
             )
+            .bind(filter.tenant_id)
+            .bind(filter.merchant_id)
+            .bind(filter.status.as_deref())
+            .bind(filter.limit)
+            .bind(filter.offset)
             .fetch_all(&self.pool)
             .await?;
 
-            Ok((rows.into_iter().map(|r| r.into_shipment()).collect(), total))
+            let shipments: Vec<Shipment> = rows
+                .into_iter()
+                .map(|r| row_to_shipment_row(&r).into_shipment())
+                .collect();
+
+            Ok((shipments, total))
         })
     }
 
@@ -209,25 +260,24 @@ impl ShipmentRepository for PgShipmentRepository {
         id: &'a ShipmentId,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Shipment>>> + Send + 'a>> {
         Box::pin(async move {
-            let row = sqlx::query_as!(
-                ShipmentRow,
-                r#"
-                SELECT id, tenant_id, merchant_id, customer_id, tracking_number, status, service_type,
-                       origin_line1, origin_line2, origin_barangay, origin_city, origin_province,
-                       origin_postal_code, origin_country_code, origin_lat, origin_lng,
-                       dest_line1, dest_line2, dest_barangay, dest_city, dest_province,
-                       dest_postal_code, dest_country_code, dest_lat, dest_lng,
-                       weight_grams, length_cm, width_cm, height_cm,
-                       declared_value_cents, cod_amount_cents, special_instructions,
-                       created_at, updated_at
-                FROM order_intake.shipments
-                WHERE id = $1
-                "#,
-                id.inner()
+            let row = sqlx::query(
+                r#"SELECT id, tenant_id, merchant_id, customer_id,
+                          customer_name, customer_phone,
+                          tracking_number, status, service_type,
+                          origin_line1, origin_line2, origin_barangay, origin_city, origin_province,
+                          origin_postal_code, origin_country_code, origin_lat, origin_lng,
+                          dest_line1, dest_line2, dest_barangay, dest_city, dest_province,
+                          dest_postal_code, dest_country_code, dest_lat, dest_lng,
+                          weight_grams, length_cm, width_cm, height_cm,
+                          declared_value_cents, cod_amount_cents, special_instructions,
+                          created_at, updated_at
+                   FROM order_intake.shipments
+                   WHERE id = $1"#,
             )
+            .bind(id.inner())
             .fetch_optional(&self.pool)
             .await?;
-            Ok(row.map(|r| r.into_shipment()))
+            Ok(row.map(|r| row_to_shipment_row(&r).into_shipment()))
         })
     }
 
@@ -239,10 +289,11 @@ impl ShipmentRepository for PgShipmentRepository {
             let status = status_str(&s.status);
             let service_type = s.service_type.as_str();
 
-            sqlx::query!(
-                r#"
-                INSERT INTO order_intake.shipments (
-                    id, tenant_id, merchant_id, customer_id, tracking_number, status, service_type,
+            sqlx::query(
+                r#"INSERT INTO order_intake.shipments (
+                    id, tenant_id, merchant_id, customer_id,
+                    customer_name, customer_phone,
+                    tracking_number, status, service_type,
                     origin_line1, origin_line2, origin_barangay, origin_city, origin_province,
                     origin_postal_code, origin_country_code, origin_lat, origin_lng,
                     dest_line1, dest_line2, dest_barangay, dest_city, dest_province,
@@ -251,58 +302,62 @@ impl ShipmentRepository for PgShipmentRepository {
                     declared_value_cents, cod_amount_cents, special_instructions,
                     created_at, updated_at
                 ) VALUES (
-                    $1,$2,$3,$4,$5,$6,$7,
-                    $8,$9,$10,$11,$12,$13,$14,$15,$16,
-                    $17,$18,$19,$20,$21,$22,$23,$24,$25,
-                    $26,$27,$28,$29,$30,$31,$32,$33,$34
+                    $1,$2,$3,$4,$5,$6,
+                    $7,$8,$9,
+                    $10,$11,$12,$13,$14,$15,$16,$17,$18,
+                    $19,$20,$21,$22,$23,$24,$25,$26,$27,
+                    $28,$29,$30,$31,$32,$33,$34,$35,$36
                 )
                 ON CONFLICT (id) DO UPDATE SET
                     status               = EXCLUDED.status,
+                    customer_name        = EXCLUDED.customer_name,
+                    customer_phone       = EXCLUDED.customer_phone,
                     origin_lat           = EXCLUDED.origin_lat,
                     origin_lng           = EXCLUDED.origin_lng,
                     dest_lat             = EXCLUDED.dest_lat,
                     dest_lng             = EXCLUDED.dest_lng,
                     special_instructions = EXCLUDED.special_instructions,
-                    updated_at           = EXCLUDED.updated_at
-                "#,
-                s.id.inner(),
-                s.tenant_id.inner(),
-                s.merchant_id.inner(),
-                s.customer_id.inner(),
-                s.tracking_number,
-                status,
-                service_type,
-                // origin
-                s.origin.line1,
-                s.origin.line2.as_deref(),
-                s.origin.barangay.as_deref(),
-                s.origin.city,
-                s.origin.province,
-                s.origin.postal_code,
-                s.origin.country_code,
-                s.origin.coordinates.map(|c| c.lat),
-                s.origin.coordinates.map(|c| c.lng),
-                // destination
-                s.destination.line1,
-                s.destination.line2.as_deref(),
-                s.destination.barangay.as_deref(),
-                s.destination.city,
-                s.destination.province,
-                s.destination.postal_code,
-                s.destination.country_code,
-                s.destination.coordinates.map(|c| c.lat),
-                s.destination.coordinates.map(|c| c.lng),
-                // parcel
-                s.weight.grams as i32,
-                s.dimensions.map(|d| d.length_cm as i32),
-                s.dimensions.map(|d| d.width_cm as i32),
-                s.dimensions.map(|d| d.height_cm as i32),
-                s.declared_value.map(|m| m.amount),
-                s.cod_amount.map(|m| m.amount),
-                s.special_instructions.as_deref(),
-                s.created_at,
-                s.updated_at,
+                    updated_at           = EXCLUDED.updated_at"#,
             )
+            .bind(s.id.inner())
+            .bind(s.tenant_id.inner())
+            .bind(s.merchant_id.inner())
+            .bind(s.customer_id.inner())
+            .bind(&s.customer_name)
+            .bind(&s.customer_phone)
+            .bind(&s.tracking_number)
+            .bind(status)
+            .bind(service_type)
+            // origin
+            .bind(&s.origin.line1)
+            .bind(s.origin.line2.as_deref())
+            .bind(s.origin.barangay.as_deref())
+            .bind(&s.origin.city)
+            .bind(&s.origin.province)
+            .bind(&s.origin.postal_code)
+            .bind(&s.origin.country_code)
+            .bind(s.origin.coordinates.map(|c| c.lat))
+            .bind(s.origin.coordinates.map(|c| c.lng))
+            // destination
+            .bind(&s.destination.line1)
+            .bind(s.destination.line2.as_deref())
+            .bind(s.destination.barangay.as_deref())
+            .bind(&s.destination.city)
+            .bind(&s.destination.province)
+            .bind(&s.destination.postal_code)
+            .bind(&s.destination.country_code)
+            .bind(s.destination.coordinates.map(|c| c.lat))
+            .bind(s.destination.coordinates.map(|c| c.lng))
+            // parcel
+            .bind(s.weight.grams as i32)
+            .bind(s.dimensions.map(|d| d.length_cm as i32))
+            .bind(s.dimensions.map(|d| d.width_cm as i32))
+            .bind(s.dimensions.map(|d| d.height_cm as i32))
+            .bind(s.declared_value.map(|m| m.amount))
+            .bind(s.cod_amount.map(|m| m.amount))
+            .bind(s.special_instructions.as_deref())
+            .bind(s.created_at)
+            .bind(s.updated_at)
             .execute(&self.pool)
             .await?;
             Ok(())
