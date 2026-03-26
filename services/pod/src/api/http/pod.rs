@@ -94,11 +94,8 @@ pub async fn get_pod(
     Path(pod_id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // Load through repository directly for read-only access
-    // In a full CQRS setup this would go through a query model
-    use crate::domain::repositories::PodRepository;
-    // For now return a stub — the service doesn't expose a raw get
-    Ok(Json(serde_json::json!({ "data": { "pod_id": pod_id } })))
+    let pod = state.pod_service.get_by_id(pod_id).await?;
+    Ok(Json(serde_json::json!({ "data": pod })))
 }
 
 pub async fn generate_otp(

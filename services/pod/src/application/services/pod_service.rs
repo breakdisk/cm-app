@@ -274,6 +274,11 @@ impl PodService {
         Ok(otp_id)
     }
 
+    /// Retrieve a POD record by ID (for admin/ops views).
+    pub async fn get_by_id(&self, pod_id: Uuid) -> AppResult<ProofOfDelivery> {
+        self.load_pod(pod_id).await
+    }
+
     async fn load_pod(&self, pod_id: Uuid) -> AppResult<ProofOfDelivery> {
         self.pod_repo.find_by_id(pod_id).await.map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound { resource: "POD", id: pod_id.to_string() })
