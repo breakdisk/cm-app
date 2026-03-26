@@ -6,9 +6,10 @@ use crate::config::Config;
 use crate::application::services::DriverAssignmentService;
 use crate::infrastructure::db::{
     PgRouteRepository, PgDriverAssignmentRepository, PgDriverAvailabilityRepository,
-    ComplianceCache,
+    ComplianceCache, PgDispatchQueueRepository, PgDriverProfilesRepository,
 };
 use crate::infrastructure::messaging::compliance_consumer::start_compliance_consumer;
+use crate::infrastructure::messaging::{start_shipment_consumer, start_user_consumer};
 use crate::api::http::{router, AppState};
 use logisticos_auth::jwt::JwtService;
 use logisticos_events::producer::KafkaProducer;
@@ -73,6 +74,8 @@ pub async fn run() -> anyhow::Result<()> {
     let route_repo       = Arc::new(PgRouteRepository::new(pool.clone()));
     let assignment_repo  = Arc::new(PgDriverAssignmentRepository::new(pool.clone()));
     let driver_avail     = Arc::new(PgDriverAvailabilityRepository::new(pool.clone()));
+    let queue_repo       = Arc::new(PgDispatchQueueRepository::new(pool.clone()));
+    let drivers_repo     = Arc::new(PgDriverProfilesRepository::new(pool.clone()));
 
     // Application service
     let dispatch_service = Arc::new(DriverAssignmentService::new(
@@ -83,7 +86,32 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::clone(&compliance_cache),
     ));
 
-    let state = Arc::new(AppState { dispatch_service, jwt: Arc::clone(&jwt) });
+    // Spawn shipment consumer — populates dispatch_queue from SHIPMENT_CREATED events
+    let pool_for_shipment = pool.clone();
+    let brokers_shipment  = cfg.kafka.brokers.clone();
+    let group_shipment    = cfg.kafka.group_id.clone();
+    tokio::spawn(async move {
+        if let Err(e) = start_shipment_consumer(&brokers_shipment, &group_shipment, pool_for_shipment).await {
+            tracing::error!("Shipment consumer crashed: {e}");
+        }
+    });
+
+    // Spawn user consumer — caches driver profiles from USER_CREATED events
+    let pool_for_users = pool.clone();
+    let brokers_users  = cfg.kafka.brokers.clone();
+    let group_users    = cfg.kafka.group_id.clone();
+    tokio::spawn(async move {
+        if let Err(e) = start_user_consumer(&brokers_users, &group_users, pool_for_users).await {
+            tracing::error!("User consumer crashed: {e}");
+        }
+    });
+
+    let state = Arc::new(AppState {
+        dispatch_service,
+        jwt:          Arc::clone(&jwt),
+        queue_repo,
+        drivers_repo,
+    });
     let app = router(state);
 
     let addr = format!("{}:{}", cfg.app.host, cfg.app.port);

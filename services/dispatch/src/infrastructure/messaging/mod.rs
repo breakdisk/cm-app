@@ -5,3 +5,8 @@
 pub use logisticos_events::consumer::KafkaConsumer;
 
 pub mod compliance_consumer;
+pub mod shipment_consumer;
+pub mod user_consumer;
+
+pub use shipment_consumer::start_shipment_consumer;
+pub use user_consumer::start_user_consumer;
