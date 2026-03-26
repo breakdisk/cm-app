@@ -8,6 +8,7 @@ use rdkafka::{
 };
 use sqlx::PgPool;
 use std::sync::Arc;
+use tokio::sync::watch;
 use uuid::Uuid;
 
 use crate::infrastructure::db::dispatch_queue_repo::{DispatchQueueRow, PgDispatchQueueRepository};
@@ -16,6 +17,7 @@ pub async fn start_shipment_consumer(
     brokers: &str,
     group_id: &str,
     pool: PgPool,
+    mut shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let consumer: StreamConsumer = ClientConfig::new()
         .set("bootstrap.servers", brokers)
@@ -28,21 +30,33 @@ pub async fn start_shipment_consumer(
     let repo = Arc::new(PgDispatchQueueRepository::new(pool));
 
     loop {
-        match consumer.recv().await {
-            Ok(msg) => {
-                if let Some(payload) = msg.payload() {
-                    if let Err(e) = handle_shipment_created(payload, &repo).await {
-                        tracing::warn!(err = %e, "shipment consumer: handler error (skipping)");
+        tokio::select! {
+            _ = shutdown.changed() => {
+                if *shutdown.borrow_and_update() {
+                    tracing::info!("Shipment consumer shutting down");
+                    break;
+                }
+            }
+            result = consumer.recv() => {
+                match result {
+                    Ok(msg) => {
+                        if let Some(payload) = msg.payload() {
+                            if let Err(e) = handle_shipment_created(payload, &repo).await {
+                                tracing::warn!(err = %e, "shipment consumer: handler error (skipping)");
+                            }
+                        }
+                        consumer.commit_message(&msg, CommitMode::Async).ok();
+                    }
+                    Err(e) => {
+                        tracing::error!(err = %e, "shipment consumer: recv error");
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     }
                 }
-                consumer.commit_message(&msg, CommitMode::Async).ok();
-            }
-            Err(e) => {
-                tracing::error!(err = %e, "shipment consumer: recv error");
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
         }
     }
+
+    Ok(())
 }
 
 async fn handle_shipment_created(
@@ -62,12 +76,12 @@ async fn handle_shipment_created(
         customer_phone:       d.customer_phone,
         dest_address_line1:   d.destination_address,
         dest_city:            d.destination_city,
-        dest_province:        String::new(),
-        dest_postal_code:     String::new(),
+        dest_province:        String::new(),    // TODO: ShipmentCreated payload doesn't carry province yet — add to payload in Task 2 follow-up
+        dest_postal_code:     String::new(),    // TODO: Same — postal_code not in ShipmentCreated payload
         dest_lat:             d.destination_lat,
         dest_lng:             d.destination_lng,
         cod_amount_cents:     d.cod_amount_cents,
-        special_instructions: None,
+        special_instructions: None,             // TODO: ShipmentCreated payload doesn't carry special_instructions yet — add to payload in Task 2 follow-up
         service_type:         d.service_type,
         status:               "pending".to_string(),
     };

@@ -87,21 +87,23 @@ pub async fn run() -> anyhow::Result<()> {
     ));
 
     // Spawn shipment consumer — populates dispatch_queue from SHIPMENT_CREATED events
-    let pool_for_shipment = pool.clone();
-    let brokers_shipment  = cfg.kafka.brokers.clone();
-    let group_shipment    = cfg.kafka.group_id.clone();
+    let pool_for_shipment    = pool.clone();
+    let brokers_shipment     = cfg.kafka.brokers.clone();
+    let group_shipment       = cfg.kafka.group_id.clone();
+    let shutdown_rx_shipment = shutdown_tx.subscribe();
     tokio::spawn(async move {
-        if let Err(e) = start_shipment_consumer(&brokers_shipment, &group_shipment, pool_for_shipment).await {
+        if let Err(e) = start_shipment_consumer(&brokers_shipment, &group_shipment, pool_for_shipment, shutdown_rx_shipment).await {
             tracing::error!("Shipment consumer crashed: {e}");
         }
     });
 
     // Spawn user consumer — caches driver profiles from USER_CREATED events
-    let pool_for_users = pool.clone();
-    let brokers_users  = cfg.kafka.brokers.clone();
-    let group_users    = cfg.kafka.group_id.clone();
+    let pool_for_users    = pool.clone();
+    let brokers_users     = cfg.kafka.brokers.clone();
+    let group_users       = cfg.kafka.group_id.clone();
+    let shutdown_rx_users = shutdown_tx.subscribe();
     tokio::spawn(async move {
-        if let Err(e) = start_user_consumer(&brokers_users, &group_users, pool_for_users).await {
+        if let Err(e) = start_user_consumer(&brokers_users, &group_users, pool_for_users, shutdown_rx_users).await {
             tracing::error!("User consumer crashed: {e}");
         }
     });

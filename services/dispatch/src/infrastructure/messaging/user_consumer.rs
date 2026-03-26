@@ -8,6 +8,7 @@ use rdkafka::{
 };
 use sqlx::PgPool;
 use std::sync::Arc;
+use tokio::sync::watch;
 
 use crate::infrastructure::db::driver_profiles_repo::{DriverProfileRow, PgDriverProfilesRepository};
 
@@ -15,6 +16,7 @@ pub async fn start_user_consumer(
     brokers: &str,
     group_id: &str,
     pool: PgPool,
+    mut shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let consumer: StreamConsumer = ClientConfig::new()
         .set("bootstrap.servers", brokers)
@@ -27,21 +29,33 @@ pub async fn start_user_consumer(
     let repo = Arc::new(PgDriverProfilesRepository::new(pool));
 
     loop {
-        match consumer.recv().await {
-            Ok(msg) => {
-                if let Some(payload) = msg.payload() {
-                    if let Err(e) = handle_user_created(payload, &repo).await {
-                        tracing::warn!(err = %e, "user consumer: handler error (skipping)");
+        tokio::select! {
+            _ = shutdown.changed() => {
+                if *shutdown.borrow_and_update() {
+                    tracing::info!("User consumer shutting down");
+                    break;
+                }
+            }
+            result = consumer.recv() => {
+                match result {
+                    Ok(msg) => {
+                        if let Some(payload) = msg.payload() {
+                            if let Err(e) = handle_user_created(payload, &repo).await {
+                                tracing::warn!(err = %e, "user consumer: handler error (skipping)");
+                            }
+                        }
+                        consumer.commit_message(&msg, CommitMode::Async).ok();
+                    }
+                    Err(e) => {
+                        tracing::error!(err = %e, "user consumer: recv error");
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     }
                 }
-                consumer.commit_message(&msg, CommitMode::Async).ok();
-            }
-            Err(e) => {
-                tracing::error!(err = %e, "user consumer: recv error");
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
         }
     }
+
+    Ok(())
 }
 
 async fn handle_user_created(

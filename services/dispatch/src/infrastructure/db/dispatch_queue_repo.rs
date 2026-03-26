@@ -90,7 +90,7 @@ impl PgDispatchQueueRepository {
         Ok(rows)
     }
 
-    pub async fn mark_dispatched(&self, shipment_id: Uuid) -> anyhow::Result<u64> {
+    pub async fn mark_dispatched(&self, shipment_id: Uuid) -> anyhow::Result<()> {
         let result = sqlx::query(
             "UPDATE dispatch.dispatch_queue
              SET status = 'dispatched', dispatched_at = NOW()
@@ -99,6 +99,10 @@ impl PgDispatchQueueRepository {
         .bind(shipment_id)
         .execute(&self.pool)
         .await?;
-        Ok(result.rows_affected())
+
+        if result.rows_affected() == 0 {
+            tracing::warn!(shipment_id = %shipment_id, "mark_dispatched: no row found for shipment_id");
+        }
+        Ok(())
     }
 }
