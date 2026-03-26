@@ -11,15 +11,21 @@ pub struct TenantCreated {
     pub subscription_tier: String,
 }
 
+// Enriched ShipmentCreated — add customer details for dispatch_queue
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShipmentCreated {
-    pub shipment_id: Uuid,
-    pub merchant_id: Uuid,
-    pub customer_id: Uuid,
-    pub origin_address: String,
-    pub destination_address: String,
-    pub service_type: String,
-    pub cod_amount: Option<i64>,
+    pub shipment_id:          Uuid,
+    pub merchant_id:          Uuid,
+    pub customer_id:          Uuid,
+    pub customer_name:        String,
+    pub customer_phone:       String,
+    pub origin_address:       String,
+    pub destination_address:  String,
+    pub destination_city:     String,
+    pub destination_lat:      Option<f64>,
+    pub destination_lng:      Option<f64>,
+    pub service_type:         String,
+    pub cod_amount_cents:     Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,4 +93,38 @@ pub struct InvoiceGenerated {
     pub due_date: String,
     pub period_from: String,
     pub period_to: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserCreated {
+    pub user_id:   Uuid,
+    pub tenant_id: Uuid,
+    pub email:     String,
+    pub roles:     Vec<String>,
+}
+
+/// Emitted by dispatch when a shipment is assigned to a driver.
+/// Contains all data driver-ops needs to create a DriverTask row
+/// without querying other services.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskAssigned {
+    pub task_id:              Uuid,   // Pre-generated UUID for the task
+    pub assignment_id:        Uuid,
+    pub shipment_id:          Uuid,
+    pub route_id:             Uuid,
+    pub driver_id:            Uuid,
+    pub tenant_id:            Uuid,
+    pub sequence:             u32,
+    // Destination (denormalized from dispatch_queue for offline driver app)
+    pub address_line1:        String,
+    pub address_city:         String,
+    pub address_province:     String,
+    pub address_postal_code:  String,
+    pub address_lat:          Option<f64>,
+    pub address_lng:          Option<f64>,
+    // Customer (denormalized for driver app display)
+    pub customer_name:        String,
+    pub customer_phone:       String,
+    pub cod_amount_cents:     Option<i64>,
+    pub special_instructions: Option<String>,
 }

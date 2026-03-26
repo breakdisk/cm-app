@@ -1,6 +1,10 @@
 // Identity
 pub const TENANT_CREATED:            &str = "logisticos.identity.tenant.created";
 pub const USER_INVITED:              &str = "logisticos.identity.user.invited";
+pub const USER_CREATED:              &str = "logisticos.identity.user.created";
+
+// Task
+pub const TASK_ASSIGNED:             &str = "logisticos.task.assigned";
 
 // Order / Shipment
 pub const SHIPMENT_CREATED:          &str = "logisticos.order.shipment.created";
@@ -32,3 +36,18 @@ pub const COD_COLLECTED:             &str = "logisticos.payments.cod.collected";
 pub const NOTIFICATION_QUEUED:       &str = "logisticos.engagement.notification.queued";
 pub const CAMPAIGN_TRIGGERED:        &str = "logisticos.marketing.campaign.triggered";
 pub const CUSTOMER_SEGMENT_UPDATED:  &str = "logisticos.cdp.segment.updated";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_topics_are_lowercase_dot_separated() {
+        let topics: &[&str] = &[USER_CREATED, TASK_ASSIGNED];
+        for t in topics {
+            assert!(t.chars().all(|c: char| c.is_ascii_lowercase() || c == '.' || c == '_'),
+                "Topic '{}' has invalid chars", t);
+            assert!(t.starts_with("logisticos."), "Topic '{}' must start with logisticos.", t);
+        }
+    }
+}
