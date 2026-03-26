@@ -1,0 +1,322 @@
+openapi: "3.1.0"
+info:
+  title: LogisticOS Analytics & BI API
+  version: "1.0.0"
+  description: |
+    Query interface for delivery KPIs, daily time-series metrics, and driver
+    performance analytics. Backed by ClickHouse for fast OLAP queries.
+
+    All endpoints require `analytics:view` permission.
+  contact:
+    name: LogisticOS Engineering
+    email: engineering@logisticos.io
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.logisticos.io/v1
+    description: Production
+  - url: https://staging-api.logisticos.io/v1
+    description: Staging
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: KPIs
+    description: High-level delivery performance metrics
+  - name: Timeseries
+    description: Daily volume and performance time-series
+  - name: Drivers
+    description: Per-driver performance analytics
+
+paths:
+  /analytics/kpis:
+    get:
+      operationId: getDeliveryKpis
+      tags: [KPIs]
+      summary: Get delivery KPIs for a date range
+      description: |
+        Returns aggregate delivery KPIs for the authenticated tenant over the specified
+        date range: total shipments, success rate, on-time delivery rate, COD collection
+        rate, average delivery time, and failure breakdown.
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+          description: Start date (inclusive) ISO 8601
+          example: "2026-03-01"
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+          description: End date (inclusive) ISO 8601
+          example: "2026-03-24"
+      responses:
+        "200":
+          description: KPI summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeliveryKpis"
+              examples:
+                march:
+                  summary: March 2026 KPIs
+                  value:
+                    period_from: "2026-03-01"
+                    period_to: "2026-03-24"
+                    total_shipments: 4820
+                    delivered: 4321
+                    failed: 340
+                    pending: 159
+                    success_rate: 89.6
+                    on_time_rate: 82.3
+                    cod_collection_rate: 94.1
+                    avg_delivery_hours: 28.4
+                    failure_breakdown:
+                      no_one_home: 198
+                      wrong_address: 67
+                      refused: 41
+                      other: 34
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /analytics/timeseries:
+    get:
+      operationId: getDailyTimeseries
+      tags: [Timeseries]
+      summary: Get daily delivery volume time-series
+      description: Returns day-by-day shipment volume, success, and failure counts for charting.
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+          example: "2026-03-01"
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+          example: "2026-03-24"
+      responses:
+        "200":
+          description: Daily time-series data points
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DailyBucket"
+                  count:
+                    type: integer
+                    example: 24
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /analytics/driver-performance:
+    get:
+      operationId: getDriverPerformance
+      tags: [Drivers]
+      summary: Get driver performance leaderboard
+      description: |
+        Returns performance metrics per driver for the specified date range, sorted by
+        success rate descending. Used for the ops dashboard driver leaderboard.
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+          example: "2026-03-01"
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+          example: "2026-03-24"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: Number of drivers to return
+      responses:
+        "200":
+          description: Driver performance rankings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  drivers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DriverPerformance"
+                  count:
+                    type: integer
+              examples:
+                top_drivers:
+                  summary: Top 3 drivers
+                  value:
+                    drivers:
+                      - driver_id: "d1r2i3v4-e5r6-7890-abcd-ef1234567890"
+                        driver_name: "Jose dela Cruz"
+                        total_deliveries: 287
+                        successful: 271
+                        failed: 16
+                        success_rate: 94.4
+                        avg_delivery_minutes: 42
+                        cod_collected_php: 125400.00
+                    count: 1
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    BadRequest:
+      description: Invalid query parameters
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Missing or invalid JWT
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    DeliveryKpis:
+      type: object
+      properties:
+        period_from:
+          type: string
+          format: date
+        period_to:
+          type: string
+          format: date
+        total_shipments:
+          type: integer
+        delivered:
+          type: integer
+        failed:
+          type: integer
+        pending:
+          type: integer
+        success_rate:
+          type: number
+          format: float
+          description: Percentage of shipments delivered
+        on_time_rate:
+          type: number
+          format: float
+          description: Percentage delivered within SLA window
+        cod_collection_rate:
+          type: number
+          format: float
+          description: Percentage of COD shipments with successful collection
+        avg_delivery_hours:
+          type: number
+          format: float
+          description: Average hours from pickup to delivery
+        failure_breakdown:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Count of failures by reason code
+      required:
+        - period_from
+        - period_to
+        - total_shipments
+        - delivered
+        - failed
+        - success_rate
+        - on_time_rate
+
+    DailyBucket:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+          example: "2026-03-15"
+        total:
+          type: integer
+          example: 210
+        delivered:
+          type: integer
+          example: 188
+        failed:
+          type: integer
+          example: 15
+        pending:
+          type: integer
+          example: 7
+      required: [date, total, delivered, failed, pending]
+
+    DriverPerformance:
+      type: object
+      properties:
+        driver_id:
+          type: string
+          format: uuid
+        driver_name:
+          type: string
+          example: "Jose dela Cruz"
+        total_deliveries:
+          type: integer
+          example: 287
+        successful:
+          type: integer
+          example: 271
+        failed:
+          type: integer
+          example: 16
+        success_rate:
+          type: number
+          format: float
+          example: 94.4
+        avg_delivery_minutes:
+          type: integer
+          example: 42
+        cod_collected_php:
+          type: number
+          format: float
+          example: 125400.00
+      required: [driver_id, total_deliveries, successful, failed, success_rate]
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]

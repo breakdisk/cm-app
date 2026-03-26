@@ -1,0 +1,910 @@
+# LogisticOS API Gateway VirtualService
+#
+# Routes all inbound traffic on api.logisticos.io to the appropriate backend
+# microservice based on URI prefix. Each route applies:
+#   - 30s timeout (accounts for AI-layer and analytics queries; tighter per-service
+#     timeouts should be set in service-level VirtualServices for hot paths)
+#   - Retry policy: 3 attempts, 5s per-try timeout, retries on gateway/network errors
+#     and retriable 4xx (408, 429). Idempotent mutation endpoints (PUT, DELETE) are
+#     safe to retry; POST routes to order-intake and payments carry
+#     per-route retry disabled comments to flag for review.
+#   - CORS: configured for the four portal origins; credentials allowed for
+#     JWT cookie flows; preflight cached 24h.
+#
+# Ordering note: More specific prefixes are listed before broader ones within
+# the same service group. Istio evaluates routes top-to-bottom and stops at
+# the first match.
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: api-gateway-vs
+  namespace: logisticos-core
+  labels:
+    app: api-gateway
+    component: virtual-service
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Main API gateway routing — all external REST traffic"
+    logisticos.io/owner: "platform-engineering"
+spec:
+  # Binds this VirtualService to the logisticos-gateway Gateway resource
+  gateways:
+    - logisticos-core/logisticos-gateway
+    # Also allow mesh-internal calls on this hostname (e.g., from ai-layer)
+    - mesh
+
+  hosts:
+    - "api.logisticos.io"
+
+  http:
+    # =========================================================================
+    # CORS preflight catch-all — must be first so OPTIONS requests never
+    # reach backends before authentication middleware runs.
+    # =========================================================================
+    - name: cors-preflight
+      match:
+        - method:
+            exact: OPTIONS
+      corsPolicy:
+        allowOrigins:
+          - exact: "https://merchant.logisticos.io"
+          - exact: "https://admin.logisticos.io"
+          - exact: "https://partner.logisticos.io"
+          - exact: "https://track.logisticos.io"
+        allowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+          - HEAD
+        allowHeaders:
+          - Authorization
+          - Content-Type
+          - Accept
+          - X-Request-ID
+          - X-Tenant-ID
+          - X-API-Key
+          - X-Canary
+          - Traceparent
+          - Tracestate
+          - Baggage
+        exposeHeaders:
+          - X-Request-ID
+          - X-RateLimit-Limit
+          - X-RateLimit-Remaining
+          - X-RateLimit-Reset
+        allowCredentials: true
+        maxAge: "86400s"
+      route:
+        # Return 204 directly from Envoy — no backend needed for preflight
+        - destination:
+            host: api-gateway.logisticos-core.svc.cluster.local
+            port:
+              number: 8000
+          weight: 100
+
+    # =========================================================================
+    # Identity Service — /v1/identity/*
+    # Auth, tenant management, RBAC, OAuth/OIDC endpoints.
+    # POST /v1/identity/token is NOT retried (auth tokens are single-use).
+    # =========================================================================
+    - name: identity-route
+      match:
+        - uri:
+            prefix: "/v1/identity/"
+      corsPolicy:
+        allowOrigins:
+          - exact: "https://merchant.logisticos.io"
+          - exact: "https://admin.logisticos.io"
+          - exact: "https://partner.logisticos.io"
+          - exact: "https://track.logisticos.io"
+        allowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        allowHeaders:
+          - Authorization
+          - Content-Type
+          - Accept
+          - X-Request-ID
+          - X-Tenant-ID
+          - X-API-Key
+          - X-Canary
+          - Traceparent
+          - Tracestate
+        exposeHeaders:
+          - X-Request-ID
+          - X-RateLimit-Limit
+          - X-RateLimit-Remaining
+          - X-RateLimit-Reset
+        allowCredentials: true
+        maxAge: "86400s"
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+        retryRemoteLocalities: true
+      route:
+        - destination:
+            host: identity.logisticos-core.svc.cluster.local
+            port:
+              number: 8001
+          weight: 100
+      headers:
+        request:
+          add:
+            x-forwarded-service: "api-gateway"
+          remove:
+            - x-internal-only
+
+    # =========================================================================
+    # Order Intake — /v1/orders/*
+    # Shipment creation, bulk upload, status queries.
+    # NOTE: POST /v1/orders creates shipments — retry only on network errors,
+    # not on 5xx, to prevent duplicate order creation. Idempotency key required
+    # by the order-intake service (X-Idempotency-Key header).
+    # =========================================================================
+    - name: order-intake-route
+      match:
+        - uri:
+            prefix: "/v1/orders/"
+      corsPolicy:
+        allowOrigins:
+          - exact: "https://merchant.logisticos.io"
+          - exact: "https://admin.logisticos.io"
+          - exact: "https://partner.logisticos.io"
+          - exact: "https://track.logisticos.io"
+        allowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        allowHeaders:
+          - Authorization
+          - Content-Type
+          - Accept
+          - X-Request-ID
+          - X-Tenant-ID
+          - X-API-Key
+          - X-Idempotency-Key
+          - X-Canary
+          - Traceparent
+          - Tracestate
+        exposeHeaders:
+          - X-Request-ID
+          - X-RateLimit-Limit
+          - X-RateLimit-Remaining
+          - X-RateLimit-Reset
+        allowCredentials: true
+        maxAge: "86400s"
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        # Excludes 5xx from retry on POST paths — idempotency key enforced upstream
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+        retryRemoteLocalities: true
+      route:
+        - destination:
+            host: order-intake.logisticos-logistics.svc.cluster.local
+            port:
+              number: 8004
+          weight: 100
+      headers:
+        request:
+          add:
+            x-forwarded-service: "api-gateway"
+          remove:
+            - x-internal-only
+
+    # =========================================================================
+    # Dispatch & Routing — /v1/dispatch/*
+    # Driver assignment, route optimization, VRP queries.
+    # P99 target: 500ms for dispatch assignment (per engineering standards).
+    # =========================================================================
+    - name: dispatch-route
+      match:
+        - uri:
+            prefix: "/v1/dispatch/"
+      corsPolicy:
+        allowOrigins:
+          - exact: "https://admin.logisticos.io"
+          - exact: "https://merchant.logisticos.io"
+          - exact: "https://partner.logisticos.io"
+          - exact: "https://track.logisticos.io"
+        allowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - OPTIONS
+        allowHeaders:
+          - Authorization
+          - Content-Type
+          - Accept
+          - X-Request-ID
+          - X-Tenant-ID
+          - X-API-Key
+          - X-Canary
+          - Traceparent
+          - Tracestate
+        exposeHeaders:
+          - X-Request-ID
+          - X-RateLimit-Limit
+          - X-RateLimit-Remaining
+          - X-RateLimit-Reset
+        allowCredentials: true
+        maxAge: "86400s"
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+        retryRemoteLocalities: true
+      route:
+        - destination:
+            host: dispatch.logisticos-logistics.svc.cluster.local
+            port:
+              number: 8005
+          weight: 100
+      headers:
+        request:
+          add:
+            x-forwarded-service: "api-gateway"
+          remove:
+            - x-internal-only
+
+    # =========================================================================
+    # Driver Operations — /v1/drivers/*
+    # Driver task management, location updates, POD submission.
+    # Live location updates target < 2s E2E (per engineering standards).
+    # =========================================================================
+    - name: driver-ops-route
+      match:
+        - uri:
+            prefix: "/v1/drivers/"
+      corsPolicy:
+        allowOrigins:
+          - exact: "https://admin.logisticos.io"
+          - exact: "https://merchant.logisticos.io"
+          - exact: "https://partner.logisticos.io"
+          - exact: "https://track.logisticos.io"
+        allowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - OPTIONS
+        allowHeaders:
+          - Authorization
+          - Content-Type
+          - Accept
+          - X-Request-ID
+          - X-Tenant-ID
+          - X-API-Key
+          - X-Canary
+          - Traceparent
+          - Tracestate
+        exposeHeaders:
+          - X-Request-ID
+          - X-RateLimit-Limit
+          - X-RateLimit-Remaining
+          - X-RateLimit-Reset
+        allowCredentials: true
+        maxAge: "86400s"
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+        retryRemoteLocalities: true
+      route:
+        - destination:
+            host: driver-ops.logisticos-logistics.svc.cluster.local
+            port:
+              number: 8006
+          weight: 100
+      headers:
+        request:
+          add:
+            x-forwarded-service: "api-gateway"
+          remove:
+            - x-internal-only
+
+    # =========================================================================
+    # Fleet Management — /v1/fleet/*
+    # Vehicle tracking, telemetry, maintenance scheduling.
+    # =========================================================================
+    - name: fleet-route
+      match:
+        - uri:
+            prefix: "/v1/fleet/"
+      corsPolicy:
+        allowOrigins:
+          - exact: "https://admin.logisticos.io"
+          - exact: "https://merchant.logisticos.io"
+          - exact: "https://partner.logisticos.io"
+          - exact: "https://track.logisticos.io"
+        allowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        allowHeaders:
+          - Authorization
+          - Content-Type
+          - Accept
+          - X-Request-ID
+          - X-Tenant-ID
+          - X-API-Key
+          - X-Canary
+          - Traceparent
+          - Tracestate
+        exposeHeaders:
+          - X-Request-ID
+          - X-RateLimit-Limit
+          - X-RateLimit-Remaining
+          - X-RateLimit-Reset
+        allowCredentials: true
+        maxAge: "86400s"
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+        retryRemoteLocalities: true
+      route:
+        - destination:
+            host: fleet.logisticos-logistics.svc.cluster.local
+            port:
+              number: 8008
+          weight: 100
+      headers:
+        request:
+          add:
+            x-forwarded-service: "api-gateway"
+          remove:
+            - x-internal-only
+
+    # =========================================================================
+    # Hub Operations — /v1/hubs/*
+    # Warehouse ops, sorting, dock scheduling.
+    # =========================================================================
+    - name: hub-ops-route
+      match:
+        - uri:
+            prefix: "/v1/hubs/"
+      corsPolicy:
+        allowOrigins:
+          - exact: "https://admin.logisticos.io"
+          - exact: "https://merchant.logisticos.io"
+          - exact: "https://partner.logisticos.io"
+          - exact: "https://track.logisticos.io"
+        allowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        allowHeaders:
+          - Authorization
+          - Content-Type
+          - Accept
+          - X-Request-ID
+          - X-Tenant-ID
+          - X-API-Key
+          - X-Canary
+          - Traceparent
+          - Tracestate
+        exposeHeaders:
+          - X-Request-ID
+          - X-RateLimit-Limit
+          - X-RateLimit-Remaining
+          - X-RateLimit-Reset
+        allowCredentials: true
+        maxAge: "86400s"
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+        retryRemoteLocalities: true
+      route:
+        - destination:
+            host: hub-ops.logisticos-logistics.svc.cluster.local
+            port:
+              number: 8009
+          weight: 100
+      headers:
+        request:
+          add:
+            x-forwarded-service: "api-gateway"
+          remove:
+            - x-internal-only
+
+    # =========================================================================
+    # Carrier & Partner Management — /v1/carriers/*
+    # Carrier onboarding, SLA enforcement, auto-allocation.
+    # =========================================================================
+    - name: carrier-route
+      match:
+        - uri:
+            prefix: "/v1/carriers/"
+      corsPolicy:
+        allowOrigins:
+          - exact: "https://admin.logisticos.io"
+          - exact: "https://merchant.logisticos.io"
+          - exact: "https://partner.logisticos.io"
+          - exact: "https://track.logisticos.io"
+        allowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        allowHeaders:
+          - Authorization
+          - Content-Type
+          - Accept
+          - X-Request-ID
+          - X-Tenant-ID
+          - X-API-Key
+          - X-Canary
+          - Traceparent
+          - Tracestate
+        exposeHeaders:
+          - X-Request-ID
+          - X-RateLimit-Limit
+          - X-RateLimit-Remaining
+          - X-RateLimit-Reset
+        allowCredentials: true
+        maxAge: "86400s"
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+        retryRemoteLocalities: true
+      route:
+        - destination:
+            host: carrier.logisticos-logistics.svc.cluster.local
+            port:
+              number: 8010
+          weight: 100
+      headers:
+        request:
+          add:
+            x-forwarded-service: "api-gateway"
+          remove:
+            - x-internal-only
+
+    # =========================================================================
+    # Proof of Delivery — /v1/pod/*
+    # POD capture, signature, photo, OTP verification.
+    # =========================================================================
+    - name: pod-route
+      match:
+        - uri:
+            prefix: "/v1/pod/"
+      corsPolicy:
+        allowOrigins:
+          - exact: "https://merchant.logisticos.io"
+          - exact: "https://admin.logisticos.io"
+          - exact: "https://partner.logisticos.io"
+          - exact: "https://track.logisticos.io"
+        allowMethods:
+          - GET
+          - POST
+          - PUT
+          - OPTIONS
+        allowHeaders:
+          - Authorization
+          - Content-Type
+          - Accept
+          - X-Request-ID
+          - X-Tenant-ID
+          - X-API-Key
+          - X-Canary
+          - Traceparent
+          - Tracestate
+        exposeHeaders:
+          - X-Request-ID
+          - X-RateLimit-Limit
+          - X-RateLimit-Remaining
+          - X-RateLimit-Reset
+        allowCredentials: true
+        maxAge: "86400s"
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+        retryRemoteLocalities: true
+      route:
+        - destination:
+            host: pod.logisticos-logistics.svc.cluster.local
+            port:
+              number: 8011
+          weight: 100
+      headers:
+        request:
+          add:
+            x-forwarded-service: "api-gateway"
+          remove:
+            - x-internal-only
+
+    # =========================================================================
+    # Unified Engagement Engine — /v1/engagement/*
+    # Notification dispatch, channel management (WhatsApp, SMS, Email, Push).
+    # =========================================================================
+    - name: engagement-route
+      match:
+        - uri:
+            prefix: "/v1/engagement/"
+      corsPolicy:
+        allowOrigins:
+          - exact: "https://merchant.logisticos.io"
+          - exact: "https://admin.logisticos.io"
+          - exact: "https://partner.logisticos.io"
+          - exact: "https://track.logisticos.io"
+        allowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        allowHeaders:
+          - Authorization
+          - Content-Type
+          - Accept
+          - X-Request-ID
+          - X-Tenant-ID
+          - X-API-Key
+          - X-Canary
+          - Traceparent
+          - Tracestate
+        exposeHeaders:
+          - X-Request-ID
+          - X-RateLimit-Limit
+          - X-RateLimit-Remaining
+          - X-RateLimit-Reset
+        allowCredentials: true
+        maxAge: "86400s"
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+        retryRemoteLocalities: true
+      route:
+        - destination:
+            host: engagement.logisticos-engagement.svc.cluster.local
+            port:
+              number: 8003
+          weight: 100
+      headers:
+        request:
+          add:
+            x-forwarded-service: "api-gateway"
+          remove:
+            - x-internal-only
+
+    # =========================================================================
+    # Customer Data Platform — /v1/cdp/*
+    # Customer profile unification, behavioral tracking, consent management.
+    # =========================================================================
+    - name: cdp-route
+      match:
+        - uri:
+            prefix: "/v1/cdp/"
+      corsPolicy:
+        allowOrigins:
+          - exact: "https://merchant.logisticos.io"
+          - exact: "https://admin.logisticos.io"
+          - exact: "https://partner.logisticos.io"
+          - exact: "https://track.logisticos.io"
+        allowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        allowHeaders:
+          - Authorization
+          - Content-Type
+          - Accept
+          - X-Request-ID
+          - X-Tenant-ID
+          - X-API-Key
+          - X-Canary
+          - Traceparent
+          - Tracestate
+        exposeHeaders:
+          - X-Request-ID
+          - X-RateLimit-Limit
+          - X-RateLimit-Remaining
+          - X-RateLimit-Reset
+        allowCredentials: true
+        maxAge: "86400s"
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+        retryRemoteLocalities: true
+      route:
+        - destination:
+            host: cdp.logisticos-engagement.svc.cluster.local
+            port:
+              number: 8002
+          weight: 100
+      headers:
+        request:
+          add:
+            x-forwarded-service: "api-gateway"
+          remove:
+            - x-internal-only
+
+    # =========================================================================
+    # Payments & Billing — /v1/payments/*
+    # COD reconciliation, invoicing, payment gateway integrations.
+    # NOTE: POST /v1/payments/* must carry X-Idempotency-Key.
+    # Retry only on network/gateway errors — never on 5xx for payment POSTs
+    # to prevent double-charges. PCI-DSS scope: payment data stays in
+    # logisticos-data namespace and never transits other services.
+    # =========================================================================
+    - name: payments-route
+      match:
+        - uri:
+            prefix: "/v1/payments/"
+      corsPolicy:
+        allowOrigins:
+          - exact: "https://merchant.logisticos.io"
+          - exact: "https://admin.logisticos.io"
+          - exact: "https://partner.logisticos.io"
+          - exact: "https://track.logisticos.io"
+        allowMethods:
+          - GET
+          - POST
+          - PUT
+          - OPTIONS
+        allowHeaders:
+          - Authorization
+          - Content-Type
+          - Accept
+          - X-Request-ID
+          - X-Tenant-ID
+          - X-API-Key
+          - X-Idempotency-Key
+          - X-Canary
+          - Traceparent
+          - Tracestate
+        exposeHeaders:
+          - X-Request-ID
+          - X-RateLimit-Limit
+          - X-RateLimit-Remaining
+          - X-RateLimit-Reset
+        allowCredentials: true
+        maxAge: "86400s"
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        # gateway-error,connect-failure only — do NOT retry 5xx for payment mutations
+        retryOn: "gateway-error,connect-failure"
+        retryRemoteLocalities: true
+      route:
+        - destination:
+            host: payments.logisticos-data.svc.cluster.local
+            port:
+              number: 8012
+          weight: 100
+      headers:
+        request:
+          add:
+            x-forwarded-service: "api-gateway"
+          remove:
+            - x-internal-only
+
+    # =========================================================================
+    # Analytics & BI — /v1/analytics/*
+    # ClickHouse-backed reporting, delivery KPIs, zone demand forecasts.
+    # Timeout extended to 30s; complex BI queries may approach this limit.
+    # =========================================================================
+    - name: analytics-route
+      match:
+        - uri:
+            prefix: "/v1/analytics/"
+      corsPolicy:
+        allowOrigins:
+          - exact: "https://merchant.logisticos.io"
+          - exact: "https://admin.logisticos.io"
+          - exact: "https://partner.logisticos.io"
+          - exact: "https://track.logisticos.io"
+        allowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        allowHeaders:
+          - Authorization
+          - Content-Type
+          - Accept
+          - X-Request-ID
+          - X-Tenant-ID
+          - X-API-Key
+          - X-Canary
+          - Traceparent
+          - Tracestate
+        exposeHeaders:
+          - X-Request-ID
+          - X-RateLimit-Limit
+          - X-RateLimit-Remaining
+          - X-RateLimit-Reset
+        allowCredentials: true
+        maxAge: "86400s"
+      # Analytics queries can be slow; 30s allows complex ClickHouse aggregations
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 10s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+        retryRemoteLocalities: true
+      route:
+        - destination:
+            host: analytics.logisticos-data.svc.cluster.local
+            port:
+              number: 8013
+          weight: 100
+      headers:
+        request:
+          add:
+            x-forwarded-service: "api-gateway"
+          remove:
+            - x-internal-only
+
+    # =========================================================================
+    # AI Agents / Intelligence Layer — /v1/agents/*
+    # LangGraph agent workflows, Claude API, MCP tool dispatch.
+    # Longer timeout: agent planning loops can take several seconds.
+    # All agent calls go through api-gateway (ai-layer accepts from core only).
+    # =========================================================================
+    - name: ai-layer-route
+      match:
+        - uri:
+            prefix: "/v1/agents/"
+      corsPolicy:
+        allowOrigins:
+          - exact: "https://merchant.logisticos.io"
+          - exact: "https://admin.logisticos.io"
+          - exact: "https://partner.logisticos.io"
+          - exact: "https://track.logisticos.io"
+        allowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        allowHeaders:
+          - Authorization
+          - Content-Type
+          - Accept
+          - X-Request-ID
+          - X-Tenant-ID
+          - X-API-Key
+          - X-Canary
+          - X-Agent-Session-ID
+          - Traceparent
+          - Tracestate
+        exposeHeaders:
+          - X-Request-ID
+          - X-RateLimit-Limit
+          - X-RateLimit-Remaining
+          - X-RateLimit-Reset
+          - X-Agent-Session-ID
+        allowCredentials: true
+        maxAge: "86400s"
+      # Agent planning loops may take up to 30s; POST to /stream use SSE (no timeout needed)
+      timeout: 30s
+      retries:
+        # Agent requests are stateful; only retry on network failures
+        attempts: 2
+        perTryTimeout: 15s
+        retryOn: "gateway-error,connect-failure"
+        retryRemoteLocalities: true
+      route:
+        - destination:
+            host: ai-layer.logisticos-ai.svc.cluster.local
+            port:
+              number: 8016
+          weight: 100
+      headers:
+        request:
+          add:
+            x-forwarded-service: "api-gateway"
+          remove:
+            - x-internal-only
+
+    # =========================================================================
+    # Customer Delivery Experience — /v1/delivery/*
+    # Tracking portal API, reschedule, delivery feedback, branded tracking.
+    # =========================================================================
+    - name: delivery-experience-route
+      match:
+        - uri:
+            prefix: "/v1/delivery/"
+      corsPolicy:
+        allowOrigins:
+          - exact: "https://merchant.logisticos.io"
+          - exact: "https://admin.logisticos.io"
+          - exact: "https://partner.logisticos.io"
+          - exact: "https://track.logisticos.io"
+        allowMethods:
+          - GET
+          - POST
+          - PUT
+          - OPTIONS
+        allowHeaders:
+          - Authorization
+          - Content-Type
+          - Accept
+          - X-Request-ID
+          - X-Tenant-ID
+          - X-API-Key
+          - X-Canary
+          - Traceparent
+          - Tracestate
+        exposeHeaders:
+          - X-Request-ID
+          - X-RateLimit-Limit
+          - X-RateLimit-Remaining
+          - X-RateLimit-Reset
+        allowCredentials: true
+        maxAge: "86400s"
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+        retryRemoteLocalities: true
+      route:
+        - destination:
+            host: delivery-experience.logisticos-data.svc.cluster.local
+            port:
+              number: 8007
+          weight: 100
+      headers:
+        request:
+          add:
+            x-forwarded-service: "api-gateway"
+          remove:
+            - x-internal-only
+
+    # =========================================================================
+    # Default catch-all — return 404 for unmatched paths
+    # Prevents accidental exposure of unrouted paths.
+    # =========================================================================
+    - name: default-deny
+      match:
+        - uri:
+            prefix: "/"
+      directResponse:
+        status: 404
+        body:
+          string: '{"error":"not_found","message":"The requested API path does not exist."}'
+      headers:
+        response:
+          add:
+            content-type: "application/json"

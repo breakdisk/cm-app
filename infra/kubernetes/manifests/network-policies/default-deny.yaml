@@ -1,0 +1,785 @@
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# LogisticOS Kubernetes NetworkPolicies
+#
+# Security model: default-deny-all, then explicit allow.
+# Policies are applied per-namespace. Istio mTLS handles encryption and
+# service-level auth; NetworkPolicies handle IP-layer traffic control.
+#
+# Reading order:
+#   1. Default deny-all per namespace (this file, first section)
+#   2. Allow inbound from API gateway (core → all service namespaces)
+#   3. Allow intra-logistics namespace traffic (service mesh calls)
+#   4. Allow engagement → logistics (notification trigger calls)
+#   5. Allow ai-layer → all namespaces (MCP tool calls)
+#   6. Allow all service namespaces → infra (DB, cache, broker)
+#   7. Allow Prometheus scraping from infra namespace
+#
+# Managed by: Terraform (infra/terraform/modules/k8s-network-policies)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. DEFAULT DENY — logisticos-core
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: logisticos-core
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+    logisticos.io/policy-type: default-deny
+  annotations:
+    description: "Deny all ingress and egress for logisticos-core. Explicit allow policies override."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. DEFAULT DENY — logisticos-logistics
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: logisticos-logistics
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+    logisticos.io/policy-type: default-deny
+  annotations:
+    description: "Deny all ingress and egress for logisticos-logistics."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. DEFAULT DENY — logisticos-engagement
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: logisticos-engagement
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+    logisticos.io/policy-type: default-deny
+  annotations:
+    description: "Deny all ingress and egress for logisticos-engagement."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. DEFAULT DENY — logisticos-ai
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: logisticos-ai
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+    logisticos.io/policy-type: default-deny
+  annotations:
+    description: "Deny all ingress and egress for logisticos-ai."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. DEFAULT DENY — logisticos-data
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: logisticos-data
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+    logisticos.io/policy-type: default-deny
+  annotations:
+    description: "Deny all ingress and egress for logisticos-data."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. ALLOW: API Gateway (logisticos-core) → logisticos-logistics
+# The API Gateway is the single ingress point for external traffic.
+# All inter-service calls into the logistics domain must pass through it.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-core-gateway
+  namespace: logisticos-logistics
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+  annotations:
+    description: "Allow ingress from logisticos-core (api-gateway) into logistics services on HTTP(8080) and gRPC(9090)."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logisticos-core
+      ports:
+        - protocol: TCP
+          port: 8080   # HTTP / REST
+        - protocol: TCP
+          port: 9090   # gRPC
+
+---
+# ALLOW: API Gateway (logisticos-core) → logisticos-engagement
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-core-gateway
+  namespace: logisticos-engagement
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+  annotations:
+    description: "Allow ingress from logisticos-core (api-gateway) into engagement services."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logisticos-core
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 9090
+
+---
+# ALLOW: API Gateway (logisticos-core) → logisticos-data
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-core-gateway
+  namespace: logisticos-data
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+  annotations:
+    description: "Allow ingress from logisticos-core (api-gateway) into data services."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logisticos-core
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 9090
+
+---
+# ALLOW: Intra-core traffic (identity ↔ api-gateway ↔ business-logic)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-core
+  namespace: logisticos-core
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+  annotations:
+    description: "Allow internal service-to-service traffic within logisticos-core namespace."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logisticos-core
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logisticos-core
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. ALLOW: Intra-logistics namespace traffic
+# dispatch ↔ driver-ops, order-intake → dispatch, hub-ops → carrier, etc.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-logistics
+  namespace: logisticos-logistics
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+  annotations:
+    description: "Allow all pod-to-pod traffic within logisticos-logistics for intra-domain gRPC calls."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logisticos-logistics
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logisticos-logistics
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. ALLOW: Engagement → Logistics
+# The engagement engine calls dispatch (driver confirmation) and order-intake
+# (delivery status for notification triggers) via gRPC.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-engagement-to-logistics
+  namespace: logisticos-logistics
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+  annotations:
+    description: "Allow engagement namespace to call logistics services for notification trigger resolution."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logisticos-engagement
+      ports:
+        - protocol: TCP
+          port: 9090   # gRPC only — engagement has no need for REST endpoints
+
+---
+# Corresponding egress allow on engagement side to reach logistics
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-to-logistics
+  namespace: logisticos-engagement
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+  annotations:
+    description: "Allow engagement services to egress to logisticos-logistics namespace."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logisticos-logistics
+      ports:
+        - protocol: TCP
+          port: 9090
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. ALLOW: AI layer → all service namespaces (MCP tool calls)
+# The AI intelligence layer dispatches MCP tool calls to every service.
+# This is the agentic runtime's cross-namespace access grant.
+# Per ADR-0004: all agent actions are mediated by MCP — no direct DB access.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# AI → logistics
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ai-ingress
+  namespace: logisticos-logistics
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+  annotations:
+    description: "Allow AI layer to call logistics MCP tool endpoints."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logisticos-ai
+      ports:
+        - protocol: TCP
+          port: 8080   # MCP HTTP endpoint
+        - protocol: TCP
+          port: 9090   # MCP over gRPC
+
+---
+# AI → engagement
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ai-ingress
+  namespace: logisticos-engagement
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+  annotations:
+    description: "Allow AI layer to call engagement MCP tool endpoints."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logisticos-ai
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 9090
+
+---
+# AI → data
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ai-ingress
+  namespace: logisticos-data
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+  annotations:
+    description: "Allow AI layer to call data services MCP tool endpoints (analytics forecasts, payment status)."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logisticos-ai
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 9090
+
+---
+# AI → core
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ai-ingress
+  namespace: logisticos-core
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+  annotations:
+    description: "Allow AI layer to call core services (identity validation, business-logic rules engine)."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logisticos-ai
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 9090
+
+---
+# AI egress allow — must explicitly permit outbound to all service namespaces
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ai-egress-to-services
+  namespace: logisticos-ai
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+  annotations:
+    description: "Allow AI layer egress to all LogisticOS service namespaces for MCP tool dispatch."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values:
+                  - logisticos-core
+                  - logisticos-logistics
+                  - logisticos-engagement
+                  - logisticos-data
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 9090
+    # Allow AI egress to internet for Anthropic Claude API and OpenAI
+    - ports:
+        - protocol: TCP
+          port: 443
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. ALLOW: All service namespaces → logisticos-infra
+# Every service needs access to PostgreSQL, Redis, Kafka, ClickHouse.
+# Specific ports are explicitly listed to prevent any service from reaching
+# infrastructure management ports (e.g., Kafka JMX, PG admin).
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Core → infra
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-to-infra
+  namespace: logisticos-core
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+  annotations:
+    description: "Allow core services egress to infrastructure (postgres:5432, redis:6379, kafka:9092)."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logisticos-infra
+      ports:
+        - protocol: TCP
+          port: 5432   # PostgreSQL
+        - protocol: TCP
+          port: 6379   # Redis
+        - protocol: TCP
+          port: 9092   # Kafka (plaintext, cluster-internal)
+        - protocol: TCP
+          port: 9093   # Kafka (TLS)
+
+---
+# Logistics → infra
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-to-infra
+  namespace: logisticos-logistics
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+  annotations:
+    description: "Allow logistics services egress to infrastructure."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logisticos-infra
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 9092
+        - protocol: TCP
+          port: 9093
+
+---
+# Engagement → infra
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-to-infra
+  namespace: logisticos-engagement
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+  annotations:
+    description: "Allow engagement services egress to infrastructure."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logisticos-infra
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 9092
+        - protocol: TCP
+          port: 9093
+
+---
+# AI → infra
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-to-infra
+  namespace: logisticos-ai
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+  annotations:
+    description: "Allow AI layer egress to infrastructure (Kafka for event streaming, Redis for agent state)."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logisticos-infra
+      ports:
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 9092
+        - protocol: TCP
+          port: 9093
+
+---
+# Data → infra (includes ClickHouse and TimescaleDB)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-to-infra
+  namespace: logisticos-data
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+  annotations:
+    description: "Allow data services egress to infrastructure including ClickHouse and TimescaleDB."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logisticos-infra
+      ports:
+        - protocol: TCP
+          port: 5432   # PostgreSQL / TimescaleDB
+        - protocol: TCP
+          port: 6379   # Redis
+        - protocol: TCP
+          port: 9092   # Kafka
+        - protocol: TCP
+          port: 9093   # Kafka TLS
+        - protocol: TCP
+          port: 9000   # ClickHouse HTTP
+        - protocol: TCP
+          port: 9440   # ClickHouse HTTPS
+        - protocol: TCP
+          port: 9004   # ClickHouse MySQL compat port (BI tools)
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. ALLOW: Prometheus scraping (port 9090) from logisticos-infra → all namespaces
+# Prometheus is deployed in logisticos-infra and scrapes /metrics endpoints
+# on all service pods. Port 9091 is the Prometheus push gateway.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Allow Prometheus scrape ingress into logisticos-core
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape
+  namespace: logisticos-core
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+  annotations:
+    description: "Allow Prometheus (logisticos-infra) to scrape /metrics endpoints in logisticos-core."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logisticos-infra
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9090   # Standard Prometheus metrics port
+
+---
+# Allow Prometheus scrape ingress into logisticos-logistics
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape
+  namespace: logisticos-logistics
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+  annotations:
+    description: "Allow Prometheus (logisticos-infra) to scrape /metrics endpoints in logisticos-logistics."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logisticos-infra
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9090
+
+---
+# Allow Prometheus scrape ingress into logisticos-engagement
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape
+  namespace: logisticos-engagement
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+  annotations:
+    description: "Allow Prometheus (logisticos-infra) to scrape /metrics endpoints in logisticos-engagement."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logisticos-infra
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9090
+
+---
+# Allow Prometheus scrape ingress into logisticos-ai
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape
+  namespace: logisticos-ai
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+  annotations:
+    description: "Allow Prometheus (logisticos-infra) to scrape /metrics endpoints in logisticos-ai."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logisticos-infra
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9090
+
+---
+# Allow Prometheus scrape ingress into logisticos-data
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape
+  namespace: logisticos-data
+  labels:
+    app.kubernetes.io/part-of: logisticos
+    app.kubernetes.io/managed-by: terraform
+  annotations:
+    description: "Allow Prometheus (logisticos-infra) to scrape /metrics endpoints in logisticos-data."
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logisticos-infra
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9090

@@ -1,0 +1,40 @@
+{{ define "slack.logisticos.color" -}}
+  {{- if eq .Status "firing" -}}
+    {{- if eq (index .Alerts 0).Labels.severity "critical" -}}danger{{- else -}}warning{{- end -}}
+  {{- else -}}good{{- end -}}
+{{- end }}
+
+{{ define "slack.logisticos.title" -}}
+  [{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}]
+  {{ (index .Alerts 0).Labels.alertname }}
+  {{- if (index .Alerts 0).Labels.tenant_id }} (tenant: {{ (index .Alerts 0).Labels.tenant_id }}){{ end }}
+{{- end }}
+
+{{ define "slack.logisticos.text" -}}
+  {{ range .Alerts }}
+  *Summary:* {{ .Annotations.summary }}
+  *Description:* {{ .Annotations.description }}
+  *Severity:* {{ .Labels.severity | title }}
+  *Team:* {{ .Labels.team }}
+  *Since:* {{ .StartsAt | since }}
+  {{ end }}
+{{- end }}
+
+{{ define "slack.logisticos.silence_url" -}}
+  https://alertmanager.logisticos.io/#/silences/new?filter=%7B
+  {{- range $k, $v := (index .Alerts 0).Labels -}}
+    {{- if and (ne $k "severity") (ne $k "__name__") -}}
+      {{- $k -}}%3D%22{{- $v -}}%22%2C
+    {{- end -}}
+  {{- end -}}
+  %7D
+{{- end }}
+
+{{ define "pagerduty.logisticos.description" -}}
+  [{{ (index .Alerts 0).Labels.severity | toUpper }}] {{ (index .Alerts 0).Labels.alertname }}:
+  {{ (index .Alerts 0).Annotations.summary }}
+{{- end }}
+
+{{ define "pagerduty.logisticos.firing" -}}
+  {{ range .Alerts }}{{ .Annotations.description }}{{ end }}
+{{- end }}

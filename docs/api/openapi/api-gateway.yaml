@@ -1,0 +1,464 @@
+openapi: 3.1.0
+info:
+  title: LogisticOS API Gateway
+  version: 1.0.0
+  description: |
+    The API Gateway is the single ingress point for all LogisticOS service calls.
+    It handles JWT authentication, per-tenant rate limiting, request routing to
+    upstream microservices, and the MCP server registry for AI agent tool discovery.
+
+    **Rate Limit Headers** — every response includes:
+    - `X-RateLimit-Limit` — maximum requests per minute for the tenant's tier
+    - `X-RateLimit-Remaining` — requests remaining in the current window
+    - `X-RateLimit-Reset` — seconds until window resets
+
+    **Rate Limits by Tier:**
+    | Tier | Requests/min |
+    |------|-------------|
+    | Starter | 60 |
+    | Growth | 300 |
+    | Enterprise | 2000 |
+
+    **Tenant Context** — include `X-Tenant: <slug>` header on all requests.
+    Alternatively, the gateway extracts tenant context from the JWT `tenant_id` claim.
+
+    **Public Paths** (no auth required):
+    - `POST /v1/auth/login`
+    - `POST /v1/auth/refresh`
+    - `POST /v1/auth/signup`
+    - `GET /v1/tracking/public/*`
+
+servers:
+  - url: https://api.logisticos.io
+    description: Production
+  - url: https://staging-api.logisticos.io
+    description: Staging
+  - url: http://localhost:8000
+    description: Local development (gateway port)
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: gateway
+    description: Gateway health and routing metadata
+  - name: mcp
+    description: MCP server registry — AI agent tool discovery
+
+paths:
+  /health:
+    get:
+      operationId: gatewayHealth
+      summary: Gateway health check
+      tags: [gateway]
+      security: []
+      description: |
+        Returns gateway liveness status. Checks Redis connectivity for rate limiting.
+        Does **not** probe upstream services — use individual service `/health` endpoints
+        for downstream health.
+      responses:
+        '200':
+          description: Gateway healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok, degraded]
+                    example: ok
+                  redis:
+                    type: boolean
+                    description: Redis connection status (used for rate limiting)
+                    example: true
+        '503':
+          description: Gateway degraded (Redis unavailable — rate limiting disabled, requests still proxied)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: degraded
+                  redis:
+                    type: boolean
+                    example: false
+
+  /mcp/servers:
+    get:
+      operationId: listMcpServers
+      summary: List active MCP servers
+      tags: [mcp]
+      description: |
+        Returns a summary of all active MCP servers registered in the gateway,
+        including their available tools. Used by AI agents for service discovery.
+
+        Platform-level servers are always present. Enterprise tenants may see
+        additional tenant-registered external servers.
+      responses:
+        '200':
+          description: Active MCP servers and their tools
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [servers]
+                properties:
+                  servers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        service:
+                          type: string
+                          description: Service identifier
+                          example: dispatch
+                        tool:
+                          type: string
+                          description: Tool name
+                          example: assign_driver
+                        description:
+                          type: string
+                          example: Assign the optimal available driver to a shipment
+              example:
+                servers:
+                  - service: dispatch
+                    tool: assign_driver
+                    description: Assign the optimal available driver to a shipment
+                  - service: dispatch
+                    tool: optimize_route
+                    description: Re-optimize a driver's route given new stops
+                  - service: order-intake
+                    tool: get_shipment
+                    description: Retrieve full shipment details by ID or tracking number
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /mcp/tools:
+    get:
+      operationId: listMcpTools
+      summary: List all MCP tools with schemas
+      tags: [mcp]
+      description: |
+        Returns all MCP tools across all active servers, including their full
+        JSON Schema `input_schema`. This is the primary endpoint for AI agent
+        tool discovery — agents call this at session start to build their tool list.
+
+        Tools are sourced from:
+        1. Platform-level services (dispatch, order-intake, engagement, analytics, etc.)
+        2. Tenant-registered external MCP servers (Enterprise tier only)
+      responses:
+        '200':
+          description: All available MCP tools with input schemas
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tools, count]
+                properties:
+                  tools:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/McpToolSummary'
+                  count:
+                    type: integer
+                    description: Total number of available tools
+              example:
+                count: 9
+                tools:
+                  - service: dispatch
+                    name: assign_driver
+                    description: Assign the optimal available driver to a shipment
+                    input_schema:
+                      type: object
+                      properties:
+                        shipment_id:
+                          type: string
+                      required: [shipment_id]
+                  - service: analytics
+                    name: get_zone_demand_forecast
+                    description: Get predicted shipment volume for a zone for the next N days
+                    input_schema:
+                      type: object
+                      properties:
+                        zone_id:
+                          type: string
+                        days:
+                          type: integer
+                      required: [zone_id, days]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /mcp/servers/register:
+    post:
+      operationId: registerExternalMcpServer
+      summary: Register external MCP server (Enterprise only)
+      tags: [mcp]
+      description: |
+        Registers an external MCP server for an Enterprise-tier tenant. The gateway
+        will probe the provided endpoint to discover available tools before accepting
+        the registration.
+
+        **Enterprise only** — returns `403` for Starter and Growth tiers.
+
+        The registered server's tools become immediately available to the tenant's
+        AI agents via `/mcp/tools`. This enables the platform effect: merchants build
+        their own AI workflows on LogisticOS data without direct service API access.
+
+        The endpoint must:
+        - Respond to `GET {endpoint}/tools` with a valid MCP tool list
+        - Be reachable from the gateway network
+
+        Tool names must not conflict with platform-level tool names.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterMcpServerRequest'
+            example:
+              name: "Acme WMS Integration"
+              service: "acme-wms"
+              endpoint: "https://wms.acme.ph/mcp"
+      responses:
+        '201':
+          description: External MCP server registered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/McpServerEntry'
+        '400':
+          description: Invalid request or endpoint probe failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: MCP_PROBE_FAILED
+                  message: "Could not reach endpoint https://wms.acme.ph/mcp/tools — connection refused"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Tenant tier is not Enterprise
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: ENTERPRISE_REQUIRED
+                  message: "External MCP server registration requires Enterprise subscription"
+        '409':
+          description: Service name already registered for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: Endpoint probe returned an unexpected response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /mcp/servers/{service}:
+    parameters:
+      - name: service
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Service identifier (e.g. "dispatch", "acme-wms")
+        example: dispatch
+
+    get:
+      operationId: getMcpServer
+      summary: Get MCP server details
+      tags: [mcp]
+      description: Returns full details of a single MCP server registration including all tool schemas.
+      responses:
+        '200':
+          description: MCP server entry
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/McpServerEntry'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      operationId: deregisterMcpServer
+      summary: Deregister external MCP server
+      tags: [mcp]
+      description: |
+        Removes a tenant-registered external MCP server. Platform-level servers
+        cannot be deregistered via this endpoint.
+      responses:
+        '204':
+          description: Server deregistered
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Cannot deregister a platform-level server
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT issued by the Identity service. Include as `Authorization: Bearer <token>`.
+        The gateway validates the token signature and extracts `tenant_id` and
+        `subscription_tier` claims for rate limiting decisions.
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid JWT
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: UNAUTHORIZED
+              message: Missing Authorization header
+    Forbidden:
+      description: Insufficient permissions or wrong tier
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    TooManyRequests:
+      description: Rate limit exceeded
+      headers:
+        X-RateLimit-Limit:
+          schema:
+            type: integer
+        X-RateLimit-Remaining:
+          schema:
+            type: integer
+        X-RateLimit-Reset:
+          schema:
+            type: integer
+          description: Seconds until rate limit window resets
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: Rate limit exceeded
+              retry_after_seconds:
+                type: integer
+                example: 47
+
+  schemas:
+    McpToolSummary:
+      type: object
+      required: [service, name, description, input_schema]
+      properties:
+        service:
+          type: string
+          description: Owning service identifier
+          example: dispatch
+        name:
+          type: string
+          description: Tool name (snake_case)
+          example: assign_driver
+        description:
+          type: string
+          example: Assign the optimal available driver to a shipment
+        input_schema:
+          type: object
+          description: JSON Schema defining the tool's input parameters
+
+    McpServerEntry:
+      type: object
+      required: [id, name, service, endpoint, tools, is_active]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: Dispatch MCP
+        service:
+          type: string
+          description: Unique service key within the registry
+          example: dispatch
+        endpoint:
+          type: string
+          format: uri
+          example: https://dispatch.internal.logisticos.io/mcp
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/McpToolSummary'
+        tenant_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Null for platform-level servers; UUID for tenant-registered servers
+        is_active:
+          type: boolean
+
+    RegisterMcpServerRequest:
+      type: object
+      required: [name, service, endpoint]
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          description: Human-readable display name
+          example: Acme WMS Integration
+        service:
+          type: string
+          maxLength: 50
+          pattern: "^[a-z][a-z0-9-]*$"
+          description: Unique service key (lowercase, hyphens allowed). Must not conflict with platform service names.
+          example: acme-wms
+        endpoint:
+          type: string
+          format: uri
+          description: |
+            Base URL of the MCP server. The gateway will probe `{endpoint}/tools`
+            to discover available tools before accepting registration.
+          example: https://wms.acme.ph/mcp
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string

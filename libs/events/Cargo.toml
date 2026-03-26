@@ -1,0 +1,18 @@
+[package]
+name        = "logisticos-events"
+description = "Kafka event schemas, publisher, consumer helpers"
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace      = true
+serde_json.workspace = true
+thiserror.workspace  = true
+anyhow.workspace     = true
+uuid.workspace       = true
+chrono.workspace     = true
+tracing.workspace    = true
+rdkafka = { workspace = true }
+tokio   = { workspace = true }

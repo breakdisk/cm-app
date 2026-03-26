@@ -1,0 +1,127 @@
+# Default values for base-service.
+# This file contains sensible defaults for all LogisticOS microservices.
+# Override these in each service's own values.yaml or values-<env>.yaml file.
+
+# -- Number of pod replicas.
+replicaCount: 2
+
+image:
+  # -- Container image repository.
+  # Example: 123456789.dkr.ecr.ap-southeast-1.amazonaws.com/logisticos/identity
+  repository: ""
+  # -- Image tag. Defaults to Chart.appVersion if not set.
+  tag: ""
+  # -- Image pull policy.
+  pullPolicy: IfNotPresent
+
+# -- Image pull secrets for private registries.
+imagePullSecrets: []
+
+# -- Override the chart name portion of the resource names.
+nameOverride: ""
+# -- Override the full resource name prefix.
+fullnameOverride: ""
+
+serviceAccount:
+  # -- Whether to create a ServiceAccount for the deployment.
+  create: true
+  # -- Annotations to add to the ServiceAccount (e.g. IRSA annotation).
+  annotations: {}
+  # -- Override the ServiceAccount name. Defaults to fullname if create=true.
+  name: ""
+
+# -- Annotations added to every Pod.
+podAnnotations: {}
+
+podSecurityContext:
+  fsGroup: 2000
+  runAsNonRoot: true
+  runAsUser: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+
+service:
+  # -- Service type. ClusterIP is always used — external access goes through Istio ingress.
+  type: ClusterIP
+  # -- HTTP port exposed by the service.
+  port: 8080
+  # -- gRPC port exposed by the service.
+  grpcPort: 9090
+  # -- Annotations added to the Service resource.
+  annotations: {}
+
+# -- Environment variable overrides.
+env:
+  rustLog: "info"
+  tenantIdHeader: "X-Tenant-ID"
+
+# -- Additional environment variables injected as raw env entries.
+extraEnv: []
+
+# -- Additional envFrom sources (ConfigMaps, Secrets).
+extraEnvFrom: []
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+livenessProbe:
+  initialDelaySeconds: 15
+  periodSeconds: 20
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+  successThreshold: 1
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+monitoring:
+  enabled: true
+  scrapeInterval: "30s"
+  scrapeTimeout: "10s"
+  # -- Namespace where the Prometheus Operator is installed.
+  namespace: ""
+  # -- Additional labels required by your Prometheus ServiceMonitor selector.
+  additionalLabels:
+    prometheus: kube-prometheus
+  # -- Cluster name label injected into scraped metrics.
+  clusterName: logisticos
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# -- Additional volume mounts for the main container.
+volumeMounts: []
+
+# -- Additional volumes for the Pod spec.
+volumes: []

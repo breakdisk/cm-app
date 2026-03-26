@@ -1,0 +1,97 @@
+# Helm values override for the Carrier & Partner Management service.
+# Handles carrier onboarding, SLA contract enforcement, auto-allocation,
+# and partner payout calculations.
+# Ref: services/carrier — Rust + PostgreSQL
+
+image:
+  repository: ghcr.io/logisticos/carrier
+  pullPolicy: IfNotPresent
+  tag: ""
+
+replicaCount: 2
+
+service:
+  type: ClusterIP
+  port: 8010
+  grpcPort: 9010
+
+env:
+  - name: SERVICE_NAME
+    value: carrier
+  - name: SERVICE_PORT
+    value: "8010"
+  - name: GRPC_PORT
+    value: "9010"
+  - name: LOG_LEVEL
+    value: info
+  - name: RUST_LOG
+    value: "carrier=info,tower_http=info,sqlx=warn"
+  # Auto-allocation strategy: "lowest_cost" | "best_sla" | "ai_scored"
+  - name: ALLOCATION_STRATEGY
+    value: ai_scored
+  # SLA breach check interval in seconds.
+  - name: SLA_CHECK_INTERVAL_SECS
+    value: "60"
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8010
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8010
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  failureThreshold: 3
+
+podAnnotations:
+  vault.hashicorp.com/agent-inject: "true"
+  vault.hashicorp.com/role: "carrier"
+  vault.hashicorp.com/agent-inject-secret-config: "secret/data/logisticos/carrier"
+  vault.hashicorp.com/agent-inject-template-config: |
+    {{- with secret "secret/data/logisticos/carrier" -}}
+    export DATABASE_URL="{{ .Data.data.database_url }}"
+    export KAFKA_BROKERS="{{ .Data.data.kafka_brokers }}"
+    export REDIS_URL="{{ .Data.data.redis_url }}"
+    {{- end -}}
+
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    path: /metrics
+    interval: 15s
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app: carrier
+          topologyKey: kubernetes.io/hostname

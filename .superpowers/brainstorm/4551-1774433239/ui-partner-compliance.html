@@ -1,0 +1,149 @@
+<h2>Partner Portal — Driver Cards with Compliance Status</h2>
+<p class="subtitle">Read-only compliance badge on driver cards. Suspended and expiring drivers are visually flagged. No review actions — admin-only.</p>
+
+<style>
+* { box-sizing: border-box; }
+.grid { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 16px; }
+.driver-card { width: 260px; border-radius: 14px; padding: 16px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); }
+.driver-card.suspended { border-color: rgba(255,59,92,0.3); background: rgba(255,59,92,0.04); }
+.driver-card.expiring  { border-color: rgba(255,171,0,0.3);  background: rgba(255,171,0,0.04); }
+.driver-card.compliant { border-color: rgba(0,255,136,0.2);  background: rgba(0,255,136,0.03); }
+.driver-card.review    { border-color: rgba(0,229,255,0.2);  background: rgba(0,229,255,0.03); opacity: 0.7; }
+
+.card-top { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.av { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0; }
+.av.green  { background: rgba(0,255,136,0.15); color: #00FF88; border: 1.5px solid rgba(0,255,136,0.3); }
+.av.amber  { background: rgba(255,171,0,0.15);  color: #FFAB00; border: 1.5px solid rgba(255,171,0,0.3); }
+.av.red    { background: rgba(255,59,92,0.15);  color: #FF3B5C; border: 1.5px solid rgba(255,59,92,0.3); }
+.av.cyan   { background: rgba(0,229,255,0.12);  color: #00E5FF; border: 1.5px solid rgba(0,229,255,0.25); }
+.drv-name  { font-size: 13px; font-weight: 600; color: #fff; }
+.drv-meta  { font-size: 9px; font-family: monospace; color: rgba(255,255,255,0.3); margin-top: 2px; }
+
+/* Compliance badge */
+.comp-badge { display: flex; align-items: center; gap: 6px; border-radius: 8px; padding: 7px 10px; margin-bottom: 10px; }
+.comp-badge.ok      { background: rgba(0,255,136,0.08);  border: 1px solid rgba(0,255,136,0.2); }
+.comp-badge.warn    { background: rgba(255,171,0,0.10);  border: 1px solid rgba(255,171,0,0.25); }
+.comp-badge.suspend { background: rgba(255,59,92,0.10);  border: 1px solid rgba(255,59,92,0.25); }
+.comp-badge.review  { background: rgba(0,229,255,0.08);  border: 1px solid rgba(0,229,255,0.2); }
+.badge-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.badge-dot.green { background: #00FF88; box-shadow: 0 0 6px rgba(0,255,136,0.6); }
+.badge-dot.amber { background: #FFAB00; animation: pulse 1.5s infinite; }
+.badge-dot.red   { background: #FF3B5C; animation: pulse 1s infinite; }
+.badge-dot.cyan  { background: #00E5FF; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+.badge-text { font-size: 11px; font-weight: 600; flex: 1; }
+.badge-text.green { color: #00FF88; }
+.badge-text.amber { color: #FFAB00; }
+.badge-text.red   { color: #FF3B5C; }
+.badge-text.cyan  { color: #00E5FF; }
+.badge-sub  { font-size: 9px; font-family: monospace; }
+.badge-sub.green { color: rgba(0,255,136,0.5); }
+.badge-sub.amber { color: rgba(255,171,0,0.55); }
+.badge-sub.red   { color: rgba(255,59,92,0.6); }
+.badge-sub.cyan  { color: rgba(0,229,255,0.5); }
+
+/* Stats row */
+.stats { display: flex; gap: 0; border: 1px solid rgba(255,255,255,0.07); border-radius: 8px; overflow: hidden; margin-bottom: 10px; }
+.stat { flex: 1; padding: 6px 8px; text-align: center; border-right: 1px solid rgba(255,255,255,0.07); }
+.stat:last-child { border-right: none; }
+.stat-val { font-size: 15px; font-weight: 700; font-family: monospace; color: rgba(255,255,255,0.7); }
+.stat-lbl { font-size: 8px; text-transform: uppercase; letter-spacing: 0.5px; color: rgba(255,255,255,0.25); }
+
+/* Vehicle badge */
+.veh-row { display: flex; align-items: center; gap: 6px; }
+.veh-badge { font-size: 9px; padding: 2px 8px; border-radius: 8px; font-weight: 600; font-family: monospace; }
+.veh-sedan { background: rgba(0,229,255,0.10); color: #00E5FF; border: 1px solid rgba(0,229,255,0.2); }
+.veh-van   { background: rgba(168,85,247,0.10); color: #A855F7; border: 1px solid rgba(168,85,247,0.2); }
+.veh-moto  { background: rgba(0,255,136,0.08);  color: #00FF88; border: 1px solid rgba(0,255,136,0.18); }
+.veh-name  { font-size: 10px; color: rgba(255,255,255,0.3); font-family: monospace; }
+
+/* Assign btn — disabled when suspended/review */
+.assign-btn { width: 100%; margin-top: 10px; padding: 8px; border-radius: 8px; font-size: 11px; font-weight: 700; text-align: center; }
+.assign-btn.active   { background: rgba(0,229,255,0.12); border: 1px solid rgba(0,229,255,0.3); color: #00E5FF; cursor: pointer; }
+.assign-btn.disabled { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); color: rgba(255,255,255,0.2); cursor: not-allowed; }
+
+.section-note { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: rgba(255,255,255,0.25); margin: 20px 0 8px; }
+</style>
+
+<div class="grid">
+
+  <!-- Compliant driver -->
+  <div class="driver-card compliant">
+    <div class="card-top">
+      <div class="av green">RB</div>
+      <div><div class="drv-name">Rodel Bautista</div><div class="drv-meta">DRV-0012 · Dubai, UAE</div></div>
+    </div>
+    <div class="comp-badge ok">
+      <div class="badge-dot green"></div>
+      <div><div class="badge-text green">Compliant</div><div class="badge-sub green">All docs valid · Next exp Dec 2025</div></div>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="stat-val" style="color:#00FF88">8</div><div class="stat-lbl">Today</div></div>
+      <div class="stat"><div class="stat-val">94%</div><div class="stat-lbl">Rate</div></div>
+      <div class="stat"><div class="stat-val" style="color:#FFAB00">₱320</div><div class="stat-lbl">COD</div></div>
+    </div>
+    <div class="veh-row"><span class="veh-badge veh-van">Van</span><span class="veh-name">Toyota Hiace</span></div>
+    <div class="assign-btn active">Assign Task</div>
+  </div>
+
+  <!-- Expiring soon driver -->
+  <div class="driver-card expiring">
+    <div class="card-top">
+      <div class="av amber">CR</div>
+      <div><div class="drv-name">Carlo Reyes</div><div class="drv-meta">DRV-0045 · Dubai, UAE</div></div>
+    </div>
+    <div class="comp-badge warn">
+      <div class="badge-dot amber"></div>
+      <div><div class="badge-text amber">Expiring Soon</div><div class="badge-sub amber">UAE Driving License · 12 days left</div></div>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="stat-val" style="color:#00FF88">5</div><div class="stat-lbl">Today</div></div>
+      <div class="stat"><div class="stat-val">91%</div><div class="stat-lbl">Rate</div></div>
+      <div class="stat"><div class="stat-val" style="color:#FFAB00">₱180</div><div class="stat-lbl">COD</div></div>
+    </div>
+    <div class="veh-row"><span class="veh-badge veh-sedan">Sedan</span><span class="veh-name">Toyota Vios</span></div>
+    <div class="assign-btn active">Assign Task</div>
+  </div>
+
+  <!-- Suspended driver -->
+  <div class="driver-card suspended">
+    <div class="card-top">
+      <div class="av red">DS</div>
+      <div><div class="drv-name">Danny Soriano</div><div class="drv-meta">DRV-0033 · Dubai, UAE</div></div>
+    </div>
+    <div class="comp-badge suspend">
+      <div class="badge-dot red"></div>
+      <div><div class="badge-text red">Suspended</div><div class="badge-sub red">LTO License expired · Grace period ended</div></div>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="stat-val" style="color:rgba(255,255,255,0.3)">0</div><div class="stat-lbl">Today</div></div>
+      <div class="stat"><div class="stat-val" style="color:rgba(255,255,255,0.3)">88%</div><div class="stat-lbl">Rate</div></div>
+      <div class="stat"><div class="stat-val" style="color:rgba(255,255,255,0.3)">—</div><div class="stat-lbl">COD</div></div>
+    </div>
+    <div class="veh-row"><span class="veh-badge veh-van">Van</span><span class="veh-name">Ford Transit</span></div>
+    <div class="assign-btn disabled">Cannot Assign — Suspended</div>
+  </div>
+
+  <!-- Under review driver -->
+  <div class="driver-card review">
+    <div class="card-top">
+      <div class="av cyan">JM</div>
+      <div><div class="drv-name">Jessa Mariano</div><div class="drv-meta">DRV-0051 · Dubai, UAE</div></div>
+    </div>
+    <div class="comp-badge review">
+      <div class="badge-dot cyan"></div>
+      <div><div class="badge-text cyan">Under Review</div><div class="badge-sub cyan">Documents submitted · Pending admin</div></div>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="stat-val" style="color:rgba(255,255,255,0.3)">0</div><div class="stat-lbl">Today</div></div>
+      <div class="stat"><div class="stat-val" style="color:rgba(255,255,255,0.3)">—</div><div class="stat-lbl">Rate</div></div>
+      <div class="stat"><div class="stat-val" style="color:rgba(255,255,255,0.3)">—</div><div class="stat-lbl">COD</div></div>
+    </div>
+    <div class="veh-row"><span class="veh-badge veh-sedan">Sedan</span><span class="veh-name">Honda City</span></div>
+    <div class="assign-btn disabled">Cannot Assign — Pending Verification</div>
+  </div>
+
+</div>
+
+<div class="section-note">Partner Portal is read-only. Compliance review and overrides are Admin Portal only.</div>
+</content>

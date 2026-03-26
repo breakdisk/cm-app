@@ -1,0 +1,455 @@
+openapi: "3.1.0"
+info:
+  title: LogisticOS Payments & Billing API
+  version: "1.0.0"
+  description: |
+    Invoice generation, COD reconciliation, merchant wallet management, and
+    withdrawal requests for LogisticOS tenants.
+
+    **COD flow:**
+    1. Driver collects cash on delivery → POD service records `cod_collected_cents`
+    2. After delivery confirmed → POST /v1/cod/reconcile credits merchant wallet
+    3. Merchant requests withdrawal → POST /v1/wallet/withdraw (triggers bank transfer)
+
+    All amounts are in **Philippine Peso (PHP)** stored as integers (centavos).
+    API responses return float values in PHP.
+  contact:
+    name: LogisticOS Engineering
+    email: engineering@logisticos.io
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.logisticos.io/v1
+    description: Production
+  - url: https://staging-api.logisticos.io/v1
+    description: Staging
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Invoices
+    description: Shipment invoice management
+  - name: COD
+    description: Cash on Delivery reconciliation
+  - name: Wallet
+    description: Merchant wallet and withdrawal management
+
+paths:
+  /invoices:
+    get:
+      operationId: listInvoices
+      tags: [Invoices]
+      summary: List invoices for tenant
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, paid, void]
+      responses:
+        "200":
+          description: Invoice list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invoices:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Invoice"
+                  count:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    post:
+      operationId: generateInvoice
+      tags: [Invoices]
+      summary: Generate invoice for a shipment
+      description: |
+        Generates or retrieves an invoice for a specific shipment. If an invoice
+        already exists and `force` is false (default), returns the existing invoice.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                shipment_id:
+                  type: string
+                  format: uuid
+                force:
+                  type: boolean
+                  default: false
+                  description: Re-generate even if invoice already exists
+              required: [shipment_id]
+      responses:
+        "201":
+          description: Invoice generated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invoice"
+        "200":
+          description: Existing invoice returned (when force=false and invoice exists)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invoice"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          description: Shipment not found or not billable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /invoices/{id}:
+    get:
+      operationId: getInvoice
+      tags: [Invoices]
+      summary: Get invoice by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Invoice detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invoice"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /cod/reconcile:
+    post:
+      operationId: reconcileCod
+      tags: [COD]
+      summary: Reconcile COD payment for a delivered shipment
+      description: |
+        Credits the COD amount to the merchant's wallet after verifying the delivery
+        POD. Idempotent — calling multiple times for the same shipment is safe.
+
+        Triggers the AI reconciliation agent for anomaly detection if the collected
+        amount differs from the declared amount.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                shipment_id:
+                  type: string
+                  format: uuid
+              required: [shipment_id]
+      responses:
+        "200":
+          description: COD reconciled — wallet credited
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodReconciliationResult"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Shipment not delivered or COD not applicable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /wallet:
+    get:
+      operationId: getWallet
+      tags: [Wallet]
+      summary: Get merchant wallet balance
+      description: Returns the current wallet balance, pending amount, and last credit.
+      responses:
+        "200":
+          description: Wallet balance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WalletSummary"
+              examples:
+                example:
+                  value:
+                    available_php: 45200.50
+                    pending_php: 8750.00
+                    total_credited_php: 185000.00
+                    total_withdrawn_php: 131049.50
+                    last_credited_at: "2026-03-22T14:00:00Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /wallet/transactions:
+    get:
+      operationId: listWalletTransactions
+      tags: [Wallet]
+      summary: List wallet transaction history
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [credit, debit, withdrawal]
+      responses:
+        "200":
+          description: Transaction history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transactions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WalletTransaction"
+                  count:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /wallet/withdraw:
+    post:
+      operationId: requestWithdrawal
+      tags: [Wallet]
+      summary: Request a wallet withdrawal (bank transfer)
+      description: |
+        Initiates a bank transfer of the available wallet balance to the merchant's
+        registered bank account. Withdrawals are processed within 1-2 business days.
+        Minimum withdrawal: PHP 100.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amount_php:
+                  type: number
+                  format: float
+                  minimum: 100
+                  description: Amount to withdraw in PHP
+                  example: 5000.00
+              required: [amount_php]
+      responses:
+        "201":
+          description: Withdrawal request submitted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WithdrawalRequest"
+        "422":
+          description: Insufficient balance or amount below minimum
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Insufficient available balance. Available: PHP 45.00, requested: PHP 5000.00"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid JWT
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    UnprocessableEntity:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    InvoiceStatus:
+      type: string
+      enum: [pending, paid, void]
+
+    Invoice:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        shipment_id:
+          type: string
+          format: uuid
+        invoice_number:
+          type: string
+          example: "INV-2026-0012345"
+        status:
+          $ref: "#/components/schemas/InvoiceStatus"
+        subtotal_php:
+          type: number
+          format: float
+          example: 85.00
+        tax_php:
+          type: number
+          format: float
+          example: 10.20
+        total_php:
+          type: number
+          format: float
+          example: 95.20
+        pdf_url:
+          type: string
+          nullable: true
+          description: Pre-signed URL to download invoice PDF
+        issued_at:
+          type: string
+          format: date-time
+        due_at:
+          type: string
+          format: date-time
+          nullable: true
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+      required: [id, shipment_id, invoice_number, status, subtotal_php, tax_php, total_php, issued_at]
+
+    CodReconciliationResult:
+      type: object
+      properties:
+        shipment_id:
+          type: string
+          format: uuid
+        cod_amount_php:
+          type: number
+          format: float
+          example: 1500.00
+        wallet_credited_php:
+          type: number
+          format: float
+          example: 1500.00
+        new_wallet_balance_php:
+          type: number
+          format: float
+          example: 46700.50
+        reconciled_at:
+          type: string
+          format: date-time
+      required: [shipment_id, cod_amount_php, wallet_credited_php, reconciled_at]
+
+    WalletSummary:
+      type: object
+      properties:
+        available_php:
+          type: number
+          format: float
+        pending_php:
+          type: number
+          format: float
+          description: COD collected but not yet reconciled
+        total_credited_php:
+          type: number
+          format: float
+        total_withdrawn_php:
+          type: number
+          format: float
+        last_credited_at:
+          type: string
+          format: date-time
+          nullable: true
+      required: [available_php, pending_php, total_credited_php, total_withdrawn_php]
+
+    WalletTransaction:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [credit, debit, withdrawal]
+        amount_php:
+          type: number
+          format: float
+        reference:
+          type: string
+          description: Shipment ID or withdrawal ID
+        description:
+          type: string
+          example: "COD reconciliation — LOS-2026-0012345"
+        balance_after_php:
+          type: number
+          format: float
+        created_at:
+          type: string
+          format: date-time
+      required: [id, type, amount_php, description, balance_after_php, created_at]
+
+    WithdrawalRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        amount_php:
+          type: number
+          format: float
+        status:
+          type: string
+          enum: [pending, processing, completed, failed]
+        estimated_completion:
+          type: string
+          format: date
+          example: "2026-03-26"
+        created_at:
+          type: string
+          format: date-time
+      required: [id, amount_php, status, created_at]
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]

@@ -1,0 +1,475 @@
+syntax = "proto3";
+
+package logisticos.cdp.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/field_mask.proto";
+
+option go_package = "github.com/logisticos/proto/cdp/v1;cdpv1";
+option java_multiple_files = true;
+option java_package = "com.logisticos.cdp.v1";
+
+// ─────────────────────────────────────────────
+//  Enumerations
+// ─────────────────────────────────────────────
+
+// ChurnTier classifies a customer's churn risk level as computed by the
+// customer intelligence ML model. Updated nightly via batch scoring job.
+enum ChurnTier {
+  // Default unspecified value. Should never appear in production data.
+  CHURN_TIER_UNKNOWN = 0;
+
+  // Customer is active and engaged. Churn probability < 20%.
+  CHURN_TIER_HEALTHY = 1;
+
+  // Customer shows disengagement signals. Churn probability 20–60%.
+  // Triggers automated re-engagement campaign in the Engagement Engine.
+  CHURN_TIER_AT_RISK = 2;
+
+  // Customer has not shipped in > 90 days and engagement score is < 10.
+  // Churn probability > 60%. Triggers win-back campaign.
+  CHURN_TIER_CHURNED = 3;
+}
+
+// EventType classifies the behavioral signal recorded against a customer profile.
+// Events are the raw input for CLV, churn, and engagement scoring models.
+enum EventType {
+  EVENT_TYPE_UNKNOWN = 0;
+
+  // Customer placed a new shipment order.
+  EVENT_TYPE_SHIPMENT_CREATED = 1;
+
+  // Shipment was successfully delivered to the consignee.
+  EVENT_TYPE_SHIPMENT_DELIVERED = 2;
+
+  // Delivery attempt failed.
+  EVENT_TYPE_SHIPMENT_FAILED = 3;
+
+  // Customer cancelled a shipment.
+  EVENT_TYPE_SHIPMENT_CANCELLED = 4;
+
+  // Customer opened a notification (email open, WhatsApp read receipt).
+  EVENT_TYPE_NOTIFICATION_OPENED = 5;
+
+  // Customer clicked a link in a notification.
+  EVENT_TYPE_NOTIFICATION_CLICKED = 6;
+
+  // Customer viewed the tracking page.
+  EVENT_TYPE_TRACKING_VIEWED = 7;
+
+  // Customer submitted delivery feedback or a rating.
+  EVENT_TYPE_FEEDBACK_SUBMITTED = 8;
+
+  // Customer contacted support (chat, WhatsApp, phone).
+  EVENT_TYPE_SUPPORT_CONTACTED = 9;
+
+  // Customer redeemed a loyalty reward or promotional offer.
+  EVENT_TYPE_REWARD_REDEEMED = 10;
+
+  // Customer completed a COD payment at the door.
+  EVENT_TYPE_COD_PAID = 11;
+
+  // Customer scheduled a delivery reschedule.
+  EVENT_TYPE_DELIVERY_RESCHEDULED = 12;
+}
+
+// ─────────────────────────────────────────────
+//  Address Message
+// ─────────────────────────────────────────────
+
+// Address is the canonical address structure used across LogisticOS.
+// Fields are normalised by the Order Intake geocoding pipeline.
+message Address {
+  // Free-form street address line 1 (e.g., "123 Rizal St., Brgy. San Antonio").
+  string line1 = 1;
+
+  // Optional second address line (e.g., unit, floor, building name).
+  string line2 = 2;
+
+  // City or municipality name.
+  string city = 3;
+
+  // Province, state, or region.
+  string province = 4;
+
+  // Postal / ZIP code.
+  string postal_code = 5;
+
+  // ISO 3166-1 alpha-2 country code (e.g., "PH").
+  string country_code = 6;
+
+  // Geocoded latitude (WGS-84). Populated by geocoding pipeline.
+  double latitude = 7;
+
+  // Geocoded longitude (WGS-84). Populated by geocoding pipeline.
+  double longitude = 8;
+
+  // Normalised full address string produced by the geocoder.
+  string formatted_address = 9;
+
+  // Geolocation quality indicator (e.g., "rooftop", "street", "approximate").
+  string geocode_precision = 10;
+}
+
+// ─────────────────────────────────────────────
+//  Core Domain Messages
+// ─────────────────────────────────────────────
+
+// CustomerProfile is the unified record of a single end-customer (consignee)
+// within a tenant. It is built and maintained by the CDP service, aggregating
+// data from Order Intake, Engagement Engine, and behavioral event streams.
+//
+// Profiles are keyed on (tenant_id, external_customer_id). A new profile is
+// created automatically the first time an order is placed for a given phone/email.
+message CustomerProfile {
+  // Unique profile identifier (UUID v4). Assigned by the CDP service.
+  string id = 1;
+
+  // Tenant that owns this profile. Enforced by RLS.
+  string tenant_id = 2;
+
+  // External identifier from the merchant or e-commerce platform
+  // (e.g., Shopify customer ID, WooCommerce user ID).
+  // May be empty for walk-in customers.
+  string external_customer_id = 3;
+
+  // Customer's full name as provided at order time.
+  string name = 4;
+
+  // Primary email address. May be empty if customer is phone-only.
+  string email = 5;
+
+  // Primary phone number in E.164 format (e.g., "+639171234567").
+  // Used as the primary deduplication key for profile unification.
+  string phone = 6;
+
+  // Total number of shipments ever created for this customer.
+  int64 total_shipments = 7;
+
+  // Total number of shipments delivered successfully.
+  int64 successful_deliveries = 8;
+
+  // Total number of shipments that failed all delivery attempts.
+  int64 failed_deliveries = 9;
+
+  // Customer Lifetime Value score in minor currency units (e.g., PHP centavos).
+  // Computed by the CLV prediction model from historical shipment value and frequency.
+  double clv_score = 10;
+
+  // Engagement score in range [0.0, 100.0], representing how actively the
+  // customer interacts with notifications, tracking pages, and feedback flows.
+  // Higher is more engaged. Used for campaign audience segmentation.
+  double engagement_score = 11;
+
+  // Most frequently used delivery address for this customer.
+  // Inferred from historical delivery data and updated on each successful delivery.
+  Address preferred_address = 12;
+
+  // Timestamp of the customer's most recent shipment creation event.
+  google.protobuf.Timestamp last_shipment_at = 13;
+
+  // Timestamp when this profile was first created.
+  google.protobuf.Timestamp created_at = 14;
+
+  // Timestamp of the last modification to any field in this profile.
+  google.protobuf.Timestamp updated_at = 15;
+
+  // Churn risk tier, as computed by the most recent nightly scoring run.
+  ChurnTier churn_tier = 16;
+
+  // Whether the customer has given consent for behavioral tracking and
+  // marketing communications (GDPR/PDPA compliance).
+  bool marketing_consent = 17;
+
+  // ISO 639-1 language preference for notifications (e.g., "en", "tl").
+  string preferred_language = 18;
+
+  // Preferred notification channel ("whatsapp", "sms", "email", "push").
+  string preferred_channel = 19;
+}
+
+// BehavioralEvent records a single customer interaction or signal.
+// Events are the raw input stream for the CDP scoring models. They are
+// immutable once written — corrections are applied by emitting compensating events.
+message BehavioralEvent {
+  // Unique event identifier (UUID v4).
+  string id = 1;
+
+  // Profile this event is attributed to.
+  string customer_profile_id = 2;
+
+  // Tenant scope for RLS enforcement.
+  string tenant_id = 3;
+
+  // The type of behavioral signal this event captures.
+  EventType event_type = 4;
+
+  // Associated shipment or order, if applicable. Empty for non-shipment events.
+  string shipment_id = 5;
+
+  // Arbitrary key-value metadata relevant to the event type.
+  // Example for NOTIFICATION_CLICKED: {"channel": "whatsapp", "campaign_id": "..."}
+  // Example for FEEDBACK_SUBMITTED: {"rating": 5, "comment": "Fast delivery!"}
+  google.protobuf.Struct metadata = 6;
+
+  // Client-side or upstream timestamp when this event actually occurred.
+  // May differ from the CDP ingestion timestamp.
+  google.protobuf.Timestamp occurred_at = 7;
+
+  // Server-side timestamp when this event was ingested by the CDP.
+  google.protobuf.Timestamp ingested_at = 8;
+
+  // Source system that produced this event (e.g., "order-intake", "engagement", "driver-app").
+  string source_service = 9;
+}
+
+// ─────────────────────────────────────────────
+//  GetCustomerProfile RPC Messages
+// ─────────────────────────────────────────────
+
+// GetCustomerProfileRequest retrieves a single customer profile.
+// Exactly one lookup key must be set: id, phone, or email.
+message GetCustomerProfileRequest {
+  // Tenant scope — required for all lookups.
+  string tenant_id = 1;
+
+  // Look up by internal CDP profile UUID. Fastest path.
+  string id = 2;
+
+  // Look up by phone number (E.164). Used by Order Intake on new order creation.
+  string phone = 3;
+
+  // Look up by email address.
+  string email = 4;
+}
+
+// GetCustomerProfileResponse returns the matching profile or a not-found error.
+message GetCustomerProfileResponse {
+  // The customer profile. Absent if not found (service returns NOT_FOUND status).
+  CustomerProfile profile = 1;
+}
+
+// ─────────────────────────────────────────────
+//  UpdateCustomerProfile RPC Messages
+// ─────────────────────────────────────────────
+
+// UpdateCustomerProfileRequest applies a partial update to a customer profile.
+// Only fields listed in update_mask are modified. Omitting update_mask updates all fields.
+message UpdateCustomerProfileRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // Profile with updated field values. The `id` field must be populated.
+  CustomerProfile profile = 2;
+
+  // FieldMask specifying which fields to update. If empty, all non-zero
+  // fields in the profile message are updated (partial-update semantics).
+  google.protobuf.FieldMask update_mask = 3;
+}
+
+// UpdateCustomerProfileResponse returns the profile after the update is applied.
+message UpdateCustomerProfileResponse {
+  // The updated profile as persisted.
+  CustomerProfile profile = 1;
+}
+
+// ─────────────────────────────────────────────
+//  RecordEvent RPC Messages
+// ─────────────────────────────────────────────
+
+// RecordEventRequest ingests a behavioral event into the CDP.
+// The CDP service will:
+//   1. Persist the event to the behavioral event store.
+//   2. Upsert the customer profile aggregate fields (total_shipments, etc.).
+//   3. Publish a `cdp.event.recorded` Kafka event for downstream scoring.
+message RecordEventRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // Profile to associate this event with.
+  string customer_profile_id = 2;
+
+  // The event to record.
+  BehavioralEvent event = 3;
+}
+
+// RecordEventResponse confirms the event was ingested.
+message RecordEventResponse {
+  // The persisted event with ingested_at and id populated by the server.
+  BehavioralEvent event = 1;
+}
+
+// ─────────────────────────────────────────────
+//  GetChurnScore RPC Messages
+// ─────────────────────────────────────────────
+
+// GetChurnScoreRequest fetches the latest churn probability for a customer.
+message GetChurnScoreRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // The customer profile to score.
+  string customer_profile_id = 2;
+
+  // If true, triggers a real-time model re-score instead of returning the
+  // cached nightly score. Incurs additional latency (~200ms). Only available
+  // on PLAN_GROWTH and PLAN_ENTERPRISE tenants.
+  bool force_realtime = 3;
+}
+
+// GetChurnScoreResponse returns the churn probability and associated tier.
+message GetChurnScoreResponse {
+  // Churn probability in range [0.0, 1.0]. 1.0 = certain churn.
+  double score = 1;
+
+  // Discretised tier derived from the score.
+  ChurnTier tier = 2;
+
+  // Timestamp when this score was last computed (either nightly or realtime).
+  google.protobuf.Timestamp scored_at = 3;
+
+  // Key behavioural signals that drove this score (top 3), for explainability.
+  // Example: ["no_shipment_60d", "low_engagement_30d", "delivery_failed_rate_high"]
+  repeated string driving_factors = 4;
+
+  // Whether this score was computed in real-time (true) or from the nightly batch (false).
+  bool is_realtime = 5;
+}
+
+// ─────────────────────────────────────────────
+//  BulkGetProfiles RPC Messages
+// ─────────────────────────────────────────────
+
+// BulkGetProfilesRequest fetches multiple customer profiles in one call.
+// Used by the Marketing Automation Engine and Campaign Builder to hydrate
+// audience segments. Maximum 500 IDs per request.
+message BulkGetProfilesRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // List of customer profile UUIDs to fetch. Maximum 500.
+  repeated string profile_ids = 2;
+
+  // FieldMask to limit the fields returned per profile. Useful for
+  // high-throughput callers that only need a subset of fields.
+  // If empty, all fields are returned.
+  google.protobuf.FieldMask fields = 3;
+}
+
+// BulkGetProfilesResponse returns the profiles that were found.
+// Profiles not found for a given ID are silently omitted (not an error).
+message BulkGetProfilesResponse {
+  // Profiles found, in no guaranteed order.
+  repeated CustomerProfile profiles = 1;
+
+  // Total count of profiles returned.
+  int32 count = 2;
+
+  // IDs from the request that had no matching profile.
+  repeated string not_found_ids = 3;
+}
+
+// ─────────────────────────────────────────────
+//  SearchCustomers RPC Messages
+// ─────────────────────────────────────────────
+
+// CustomerSearchFilter specifies search criteria. At least one filter field
+// must be populated. Multiple populated fields are ANDed together.
+message CustomerSearchFilter {
+  // Partial or full phone number match (prefix search on normalised E.164).
+  string phone = 1;
+
+  // Exact or partial email match (case-insensitive).
+  string email = 2;
+
+  // Full-text name search (trigram-indexed, partial match supported).
+  string name = 3;
+
+  // Only return customers with churn_tier matching one of these values.
+  repeated ChurnTier churn_tiers = 4;
+
+  // Only return customers whose last_shipment_at is after this timestamp.
+  google.protobuf.Timestamp active_since = 5;
+
+  // Only return customers with total_shipments >= this value.
+  int64 min_total_shipments = 6;
+
+  // Only return customers with marketing_consent = true.
+  bool marketing_consent_only = 7;
+}
+
+// SearchCustomersRequest performs a filtered search over customer profiles.
+message SearchCustomersRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // Filter criteria.
+  CustomerSearchFilter filter = 2;
+
+  // Maximum number of profiles to return. Max 100. Defaults to 20.
+  int32 limit = 3;
+
+  // Pagination cursor (opaque string returned from a prior response).
+  string page_token = 4;
+}
+
+// SearchCustomersResponse returns matching profiles and a pagination cursor.
+message SearchCustomersResponse {
+  // Profiles matching the filter criteria.
+  repeated CustomerProfile profiles = 1;
+
+  // Total count of profiles matching the filter (regardless of limit).
+  int64 total_count = 2;
+
+  // Cursor to pass in the next request to retrieve the next page.
+  // Empty when there are no more results.
+  string next_page_token = 3;
+}
+
+// ─────────────────────────────────────────────
+//  CdpService Definition
+// ─────────────────────────────────────────────
+
+// CdpService is the authoritative gRPC interface for all Customer Data Platform
+// operations. It maintains the unified customer profile store and provides the
+// behavioral event ingestion and scoring APIs consumed by:
+//   - Order Intake Service: profile lookup and creation on new orders
+//   - Engagement Engine: customer preference lookups for notification delivery
+//   - Marketing Automation Engine: audience segmentation and campaign targeting
+//   - AI Intelligence Layer: churn scores and CLV via MCP tool wrappers
+//   - Admin Portal: customer search and profile management
+//
+// All RPCs require a valid JWT in gRPC metadata `authorization: Bearer <token>`.
+// Tenant isolation is enforced via RLS; the tenant_id in the JWT claim is
+// cross-checked against the tenant_id in each request.
+service CdpService {
+  // GetCustomerProfile retrieves a customer profile by internal ID, phone, or email.
+  // Returns NOT_FOUND if no matching profile exists for the given tenant.
+  rpc GetCustomerProfile(GetCustomerProfileRequest) returns (GetCustomerProfileResponse);
+
+  // UpdateCustomerProfile applies a partial update to an existing customer profile.
+  // Emits a `cdp.profile.updated` Kafka event on success.
+  // Returns NOT_FOUND if the profile does not exist.
+  rpc UpdateCustomerProfile(UpdateCustomerProfileRequest) returns (UpdateCustomerProfileResponse);
+
+  // RecordEvent ingests a behavioral event and updates the profile aggregate.
+  // Idempotent: duplicate event IDs are silently deduplicated.
+  // Emits a `cdp.event.recorded` Kafka event on success.
+  rpc RecordEvent(RecordEventRequest) returns (RecordEventResponse);
+
+  // GetChurnScore returns the current churn probability and tier for a customer.
+  // Optionally triggers a real-time model re-score (Enterprise plan only).
+  // This is the MCP-exposed `get_churn_score` tool for AI agent consumption.
+  rpc GetChurnScore(GetChurnScoreRequest) returns (GetChurnScoreResponse);
+
+  // BulkGetProfiles fetches up to 500 customer profiles in a single call.
+  // Intended for high-throughput callers such as the campaign audience builder.
+  // Profiles not found for a given ID are omitted without error.
+  rpc BulkGetProfiles(BulkGetProfilesRequest) returns (BulkGetProfilesResponse);
+
+  // SearchCustomers performs a filtered, paginated search over customer profiles.
+  // Supports phone, email, name, churn tier, and activity date filters.
+  // Used by the Merchant Portal customer search and the AI Operations Copilot.
+  rpc SearchCustomers(SearchCustomersRequest) returns (SearchCustomersResponse);
+}

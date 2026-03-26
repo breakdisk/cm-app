@@ -1,0 +1,535 @@
+syntax = "proto3";
+
+package logisticos.identity.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/field_mask.proto";
+
+option go_package = "github.com/logisticos/proto/identity/v1;identityv1";
+option java_multiple_files = true;
+option java_package = "com.logisticos.identity.v1";
+
+// ─────────────────────────────────────────────
+//  Enumerations
+// ─────────────────────────────────────────────
+
+// Role defines the permission set granted to a user within a tenant.
+// Roles are additive; a user may hold multiple roles.
+enum Role {
+  ROLE_UNKNOWN = 0;
+
+  // Full administrative access to all tenant resources.
+  ROLE_TENANT_ADMIN = 1;
+
+  // Can manage operations: dispatch, routes, driver assignments, hub ops.
+  ROLE_OPERATIONS_MANAGER = 2;
+
+  // Can create and manage shipments, view billing, configure campaigns.
+  ROLE_MERCHANT = 3;
+
+  // Read-only access to tracking data for a specific shipment set.
+  ROLE_MERCHANT_VIEWER = 4;
+
+  // Carrier partner: can view and update assigned shipment status.
+  ROLE_CARRIER_PARTNER = 5;
+
+  // Field driver: can receive assignments and submit POD via the Driver App.
+  ROLE_DRIVER = 6;
+
+  // Platform super-admin: cross-tenant access for LogisticOS staff.
+  ROLE_PLATFORM_ADMIN = 7;
+
+  // Billing manager: can view invoices, trigger payouts, manage COD reconciliation.
+  ROLE_BILLING_MANAGER = 8;
+}
+
+// TenantStatus reflects the lifecycle state of a tenant account.
+enum TenantStatus {
+  TENANT_STATUS_UNKNOWN = 0;
+
+  // Tenant is fully active and all APIs are accessible.
+  TENANT_STATUS_ACTIVE = 1;
+
+  // Tenant is in the onboarding / trial period. Some features may be limited.
+  TENANT_STATUS_TRIAL = 2;
+
+  // Tenant account has been suspended (e.g., non-payment, policy violation).
+  // All API calls from this tenant return 403.
+  TENANT_STATUS_SUSPENDED = 3;
+
+  // Tenant has been offboarded. Data is retained per retention policy.
+  TENANT_STATUS_DECOMMISSIONED = 4;
+}
+
+// Plan represents the billing and feature tier for a tenant.
+enum Plan {
+  PLAN_UNKNOWN = 0;
+  PLAN_STARTER = 1;
+  PLAN_GROWTH = 2;
+  PLAN_ENTERPRISE = 3;
+}
+
+// UserStatus reflects the lifecycle state of a user account.
+enum UserStatus {
+  USER_STATUS_UNKNOWN = 0;
+  USER_STATUS_ACTIVE = 1;
+  USER_STATUS_INACTIVE = 2;
+  USER_STATUS_INVITED = 3;
+  USER_STATUS_LOCKED = 4;
+}
+
+// ApiKeyStatus reflects whether an API key is usable.
+enum ApiKeyStatus {
+  API_KEY_STATUS_UNKNOWN = 0;
+  API_KEY_STATUS_ACTIVE = 1;
+  API_KEY_STATUS_REVOKED = 2;
+  API_KEY_STATUS_EXPIRED = 3;
+}
+
+// ─────────────────────────────────────────────
+//  Tenant Domain Messages
+// ─────────────────────────────────────────────
+
+// TenantSettings contains configurable options for a tenant.
+message TenantSettings {
+  // BCP-47 locale for this tenant's default language (e.g., "en-PH", "en-US").
+  string default_locale = 1;
+
+  // IANA timezone string (e.g., "Asia/Manila", "America/New_York").
+  string timezone = 2;
+
+  // ISO 4217 currency code used for all monetary values (e.g., "PHP", "USD").
+  string currency_code = 3;
+
+  // ISO 3166-1 alpha-2 country code for data residency routing (e.g., "PH").
+  string country_code = 4;
+
+  // Whether COD (Cash on Delivery) is enabled for this tenant.
+  bool cod_enabled = 5;
+
+  // Maximum number of API keys this tenant may have active simultaneously.
+  int32 max_api_keys = 6;
+
+  // Whether the tenant may register external MCP servers (Enterprise only).
+  bool mcp_extension_enabled = 7;
+
+  // Webhook URL to receive platform event notifications. Optional.
+  string webhook_url = 8;
+}
+
+// Tenant is the top-level multi-tenancy unit. Each Tenant represents one
+// logistics operator company using the LogisticOS platform.
+message Tenant {
+  // Unique tenant identifier (UUID v4).
+  string tenant_id = 1;
+
+  // Short slug used in subdomains and API paths (e.g., "acme-logistics").
+  // Immutable after creation.
+  string slug = 2;
+
+  // Legal company name.
+  string name = 3;
+
+  // Primary contact email address for the tenant account.
+  string contact_email = 4;
+
+  // Primary contact phone number (E.164).
+  string contact_phone = 5;
+
+  // Current lifecycle status.
+  TenantStatus status = 6;
+
+  // Billing and feature plan.
+  Plan plan = 7;
+
+  // Configurable tenant-level settings.
+  TenantSettings settings = 8;
+
+  // Timestamp when the tenant account was created.
+  google.protobuf.Timestamp created_at = 9;
+
+  // Timestamp of the last update to any tenant field.
+  google.protobuf.Timestamp updated_at = 10;
+
+  // Timestamp when the trial period expires. Zero if not on trial.
+  google.protobuf.Timestamp trial_expires_at = 11;
+}
+
+// ─────────────────────────────────────────────
+//  User Domain Messages
+// ─────────────────────────────────────────────
+
+// User represents an authenticated human or service account within a tenant.
+message User {
+  // Unique user identifier (UUID v4).
+  string user_id = 1;
+
+  // Tenant this user belongs to.
+  string tenant_id = 2;
+
+  // User's first name.
+  string first_name = 3;
+
+  // User's last name.
+  string last_name = 4;
+
+  // Email address. Must be unique within a tenant.
+  string email = 5;
+
+  // Phone number (E.164). Optional; used for MFA and driver comms.
+  string phone_number = 6;
+
+  // Roles granted to this user. At least one role must be set.
+  repeated Role roles = 7;
+
+  // Current account status.
+  UserStatus status = 8;
+
+  // Timestamp of the user's most recent successful authentication.
+  google.protobuf.Timestamp last_login_at = 9;
+
+  // Timestamp when the user account was created.
+  google.protobuf.Timestamp created_at = 10;
+
+  // Timestamp of the last user record update.
+  google.protobuf.Timestamp updated_at = 11;
+
+  // Whether MFA is enabled for this user.
+  bool mfa_enabled = 12;
+
+  // URL to the user's avatar image. Optional.
+  string avatar_url = 13;
+}
+
+// ─────────────────────────────────────────────
+//  API Key Domain Messages
+// ─────────────────────────────────────────────
+
+// ApiKeyScope restricts what operations an API key may perform.
+message ApiKeyScope {
+  // Allowed resource types (e.g., "shipments", "drivers", "webhooks").
+  repeated string resources = 1;
+
+  // Allowed HTTP-equivalent actions ("read", "write", "delete").
+  repeated string actions = 2;
+
+  // If non-empty, restricts key usage to requests from these IP CIDR blocks.
+  repeated string allowed_ip_cidrs = 3;
+}
+
+// ApiKey represents a machine-to-machine credential issued to a tenant or user.
+message ApiKey {
+  // Unique API key identifier (UUID v4).
+  string key_id = 1;
+
+  // Tenant this key is scoped to.
+  string tenant_id = 2;
+
+  // Human-readable label for this key (e.g., "Shopify Integration - Production").
+  string label = 3;
+
+  // The key value — only returned once at creation. Stored as a bcrypt hash.
+  // On retrieval RPCs, this field is always empty.
+  string key_value = 4;
+
+  // First 8 characters of the key for display/identification purposes.
+  string key_prefix = 5;
+
+  // Current status of the key.
+  ApiKeyStatus status = 6;
+
+  // Permissions granted to this key.
+  ApiKeyScope scope = 7;
+
+  // Timestamp when this key was created.
+  google.protobuf.Timestamp created_at = 8;
+
+  // Timestamp when this key was last used.
+  google.protobuf.Timestamp last_used_at = 9;
+
+  // Timestamp when this key expires. Zero means no expiry.
+  google.protobuf.Timestamp expires_at = 10;
+
+  // User who created this key.
+  string created_by_user_id = 11;
+}
+
+// ─────────────────────────────────────────────
+//  Token Claims Messages
+// ─────────────────────────────────────────────
+
+// TokenClaims contains the verified payload from a decoded JWT.
+message TokenClaims {
+  // Subject: the user_id this token was issued for.
+  string subject = 1;
+
+  // Tenant the subject belongs to.
+  string tenant_id = 2;
+
+  // Email of the authenticated user.
+  string email = 3;
+
+  // Roles held by the user at the time of token issuance.
+  repeated Role roles = 4;
+
+  // Token expiry (maps to JWT `exp` claim).
+  google.protobuf.Timestamp expires_at = 5;
+
+  // Token issuance time (maps to JWT `iat` claim).
+  google.protobuf.Timestamp issued_at = 6;
+
+  // Token ID for revocation tracking (maps to JWT `jti` claim).
+  string token_id = 7;
+
+  // Whether this token was issued via API key auth (machine-to-machine).
+  bool is_api_key_token = 8;
+
+  // Tenant plan at token issuance — used for fast feature-flag evaluation
+  // without an additional DB lookup.
+  Plan tenant_plan = 9;
+}
+
+// ─────────────────────────────────────────────
+//  CreateTenant RPC Messages
+// ─────────────────────────────────────────────
+
+// CreateTenantRequest provisions a new tenant account on the platform.
+message CreateTenantRequest {
+  // Short URL-safe slug. 3-63 characters, lowercase alphanumeric + hyphens.
+  string slug = 1;
+
+  // Legal company name.
+  string name = 2;
+
+  // Primary billing/admin contact email.
+  string contact_email = 3;
+
+  // Primary contact phone (E.164).
+  string contact_phone = 4;
+
+  // Initial plan to provision. Defaults to PLAN_STARTER if unset.
+  Plan plan = 5;
+
+  // Tenant configuration. Unset fields will use platform defaults.
+  TenantSettings settings = 6;
+
+  // Idempotency key — safe to retry on network failure.
+  string idempotency_key = 7;
+}
+
+// CreateTenantResponse confirms tenant creation.
+message CreateTenantResponse {
+  // The fully materialized tenant record.
+  Tenant tenant = 1;
+
+  // Initial admin user created automatically for the tenant.
+  User admin_user = 2;
+
+  // Temporary password for the admin user (valid 24h; user must change on first login).
+  string temporary_password = 3;
+}
+
+// ─────────────────────────────────────────────
+//  GetTenant RPC Messages
+// ─────────────────────────────────────────────
+
+// GetTenantRequest retrieves a tenant record.
+message GetTenantRequest {
+  // Retrieve by tenant_id (UUID). Exactly one of tenant_id or slug must be set.
+  string tenant_id = 1;
+
+  // Retrieve by slug. Exactly one of tenant_id or slug must be set.
+  string slug = 2;
+}
+
+// GetTenantResponse returns a single tenant record.
+message GetTenantResponse {
+  Tenant tenant = 1;
+}
+
+// ─────────────────────────────────────────────
+//  CreateUser RPC Messages
+// ─────────────────────────────────────────────
+
+// CreateUserRequest provisions a new user within an existing tenant.
+message CreateUserRequest {
+  // Tenant the new user belongs to.
+  string tenant_id = 1;
+
+  // First name.
+  string first_name = 2;
+
+  // Last name.
+  string last_name = 3;
+
+  // Email address. Must be unique within the tenant.
+  string email = 4;
+
+  // Phone number (E.164). Required if roles include ROLE_DRIVER.
+  string phone_number = 5;
+
+  // Initial roles to assign. Must contain at least one role.
+  repeated Role roles = 6;
+
+  // If true, sends an invitation email with a password-set link.
+  // If false, returns a temporary_password in the response.
+  bool send_invitation_email = 7;
+
+  // Idempotency key.
+  string idempotency_key = 8;
+}
+
+// CreateUserResponse returns the newly created user.
+message CreateUserResponse {
+  // The created user record.
+  User user = 1;
+
+  // Temporary password. Populated only when send_invitation_email is false.
+  string temporary_password = 2;
+}
+
+// ─────────────────────────────────────────────
+//  GetUser RPC Messages
+// ─────────────────────────────────────────────
+
+// GetUserRequest fetches a single user record.
+message GetUserRequest {
+  // Tenant scope for RLS enforcement.
+  string tenant_id = 1;
+
+  // Unique user identifier.
+  string user_id = 2;
+}
+
+// GetUserResponse returns a single user record.
+message GetUserResponse {
+  User user = 1;
+}
+
+// ─────────────────────────────────────────────
+//  ValidateToken RPC Messages
+// ─────────────────────────────────────────────
+
+// ValidateTokenRequest submits a JWT for server-side verification.
+message ValidateTokenRequest {
+  // The raw JWT string (without "Bearer " prefix).
+  string token = 1;
+}
+
+// ValidateTokenResponse returns the parsed claims if the token is valid.
+message ValidateTokenResponse {
+  // Whether the token passed all validation checks (signature, expiry, revocation).
+  bool valid = 1;
+
+  // Parsed claims. Populated only when valid is true.
+  TokenClaims claims = 2;
+
+  // Human-readable failure reason. Populated only when valid is false.
+  // Examples: "token expired", "token revoked", "invalid signature".
+  string failure_reason = 3;
+}
+
+// ─────────────────────────────────────────────
+//  ValidateApiKey RPC Messages
+// ─────────────────────────────────────────────
+
+// ValidateApiKeyRequest submits an API key for verification.
+message ValidateApiKeyRequest {
+  // The raw API key value (full string, not just the prefix).
+  string api_key = 1;
+
+  // Resource being accessed (used for scope evaluation, e.g., "shipments").
+  string resource = 2;
+
+  // Action being attempted (e.g., "write").
+  string action = 3;
+}
+
+// ValidateApiKeyResponse returns the result of API key validation.
+message ValidateApiKeyResponse {
+  // Whether the key is valid and authorized for the requested resource+action.
+  bool valid = 1;
+
+  // Tenant this key belongs to. Populated when valid is true.
+  string tenant_id = 2;
+
+  // Key metadata. Populated when valid is true.
+  ApiKey api_key = 3;
+
+  // Short synthetic JWT claims for downstream service consumption.
+  // Contains tenant_id, roles derived from key scope, and expiry.
+  TokenClaims synthetic_claims = 4;
+
+  // Human-readable failure reason. Populated when valid is false.
+  string failure_reason = 5;
+}
+
+// ─────────────────────────────────────────────
+//  RotateApiKey RPC Messages
+// ─────────────────────────────────────────────
+
+// RotateApiKeyRequest revokes an existing API key and issues a replacement.
+message RotateApiKeyRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // ID of the key to rotate.
+  string key_id = 2;
+
+  // Label for the new key. Defaults to the old key's label if empty.
+  string new_label = 3;
+}
+
+// RotateApiKeyResponse returns the newly issued replacement key.
+message RotateApiKeyResponse {
+  // The revoked (old) key's metadata record.
+  ApiKey revoked_key = 1;
+
+  // The newly created key. key_value is populated once here; store it securely.
+  ApiKey new_key = 2;
+}
+
+// ─────────────────────────────────────────────
+//  IdentityService Definition
+// ─────────────────────────────────────────────
+
+// IdentityService is the authoritative gRPC interface for all identity,
+// authentication, and multi-tenancy operations. It is called by the API
+// Gateway on every inbound request for token/key validation, and by the
+// Admin Portal for tenant and user management.
+//
+// Platform admin RPCs (CreateTenant, RotateApiKey) require ROLE_PLATFORM_ADMIN.
+// Tenant-scoped RPCs enforce row-level security via the tenant_id claim.
+service IdentityService {
+  // CreateTenant provisions a new tenant account and its initial admin user.
+  // Requires ROLE_PLATFORM_ADMIN. Emits `identity.tenant.created` Kafka event.
+  rpc CreateTenant(CreateTenantRequest) returns (CreateTenantResponse);
+
+  // GetTenant retrieves a tenant record by ID or slug.
+  // Requires ROLE_PLATFORM_ADMIN or a token scoped to the target tenant.
+  rpc GetTenant(GetTenantRequest) returns (GetTenantResponse);
+
+  // CreateUser provisions a new user within a tenant.
+  // Requires ROLE_TENANT_ADMIN or ROLE_PLATFORM_ADMIN.
+  rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);
+
+  // GetUser retrieves a user record by ID.
+  // Users may retrieve their own record; admins may retrieve any record
+  // within the same tenant.
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+
+  // ValidateToken verifies a JWT's signature, expiry, and revocation status,
+  // and returns the parsed claims. Called by the API Gateway on every request.
+  // No authentication required — this is an internal service-to-service RPC.
+  rpc ValidateToken(ValidateTokenRequest) returns (ValidateTokenResponse);
+
+  // ValidateApiKey verifies an API key, evaluates scope against the requested
+  // resource and action, and returns synthetic JWT claims for downstream use.
+  // No authentication required — called by the API Gateway auth middleware.
+  rpc ValidateApiKey(ValidateApiKeyRequest) returns (ValidateApiKeyResponse);
+
+  // RotateApiKey atomically revokes an existing API key and issues a replacement
+  // with identical scope. The old key is invalidated immediately.
+  // Requires ROLE_TENANT_ADMIN or ROLE_PLATFORM_ADMIN.
+  rpc RotateApiKey(RotateApiKeyRequest) returns (RotateApiKeyResponse);
+}

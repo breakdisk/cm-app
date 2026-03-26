@@ -1,0 +1,615 @@
+syntax = "proto3";
+
+package logisticos.hubops.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/logisticos/proto/hubops/v1;hubopsv1";
+option java_multiple_files = true;
+option java_package = "com.logisticos.hubops.v1";
+
+// ─────────────────────────────────────────────
+//  Enumerations
+// ─────────────────────────────────────────────
+
+// HubStatus reflects the operational state of a hub facility.
+enum HubStatus {
+  HUB_STATUS_UNKNOWN = 0;
+
+  // Hub is fully operational and accepting inbound and outbound parcels.
+  HUB_STATUS_ACTIVE = 1;
+
+  // Hub is temporarily closed (e.g., public holiday, maintenance).
+  HUB_STATUS_CLOSED = 2;
+
+  // Hub is undergoing maintenance and not accepting new parcels.
+  HUB_STATUS_MAINTENANCE = 3;
+
+  // Hub has been decommissioned and is no longer in operation.
+  HUB_STATUS_DECOMMISSIONED = 4;
+}
+
+// CapacityStatus reflects the current load level of a hub's parcel capacity.
+enum CapacityStatus {
+  CAPACITY_STATUS_UNKNOWN = 0;
+
+  // Utilisation < 70%. Hub is operating normally.
+  CAPACITY_STATUS_NORMAL = 1;
+
+  // Utilisation 70–89%. Operations team should monitor closely.
+  CAPACITY_STATUS_HIGH = 2;
+
+  // Utilisation >= 90%. Immediate action required — stop inbound routing
+  // to this hub and divert to nearest alternative.
+  CAPACITY_STATUS_CRITICAL = 3;
+}
+
+// DockType classifies whether a dock slot is for inbound vehicle arrivals
+// or outbound vehicle departures.
+enum DockType {
+  DOCK_TYPE_UNKNOWN = 0;
+
+  // Inbound dock: carriers and pickup drivers deliver parcels to the hub.
+  DOCK_TYPE_INBOUND = 1;
+
+  // Outbound dock: last-mile drivers depart from the hub with sorted parcels.
+  DOCK_TYPE_OUTBOUND = 2;
+
+  // Cross-dock: parcel transfers between vehicles without hub storage.
+  DOCK_TYPE_CROSS_DOCK = 3;
+}
+
+// DockStatus reflects the current state of a scheduled dock slot.
+enum DockStatus {
+  DOCK_STATUS_UNKNOWN = 0;
+
+  // Slot is scheduled but the vehicle has not yet arrived.
+  DOCK_STATUS_SCHEDULED = 1;
+
+  // Vehicle has checked in and is currently using the dock.
+  DOCK_STATUS_IN_PROGRESS = 2;
+
+  // Vehicle departed; all parcels processed.
+  DOCK_STATUS_COMPLETED = 3;
+
+  // Scheduled slot was cancelled (vehicle no-show or schedule change).
+  DOCK_STATUS_CANCELLED = 4;
+}
+
+// ─────────────────────────────────────────────
+//  Core Domain Messages
+// ─────────────────────────────────────────────
+
+// Hub represents a physical sorting and distribution facility in the logistics network.
+message Hub {
+  // Unique hub identifier (UUID v4).
+  string id = 1;
+
+  // Tenant that operates this hub.
+  string tenant_id = 2;
+
+  // Human-readable hub name (e.g., "BGC Sorting Center", "Cebu North Hub").
+  string name = 3;
+
+  // Short code used in AWBs and manifests (e.g., "MNL-BGC", "CEB-N").
+  string code = 4;
+
+  // Full address of the hub facility.
+  string address = 5;
+
+  // City the hub serves.
+  string city = 6;
+
+  // ISO 3166-1 alpha-2 country code.
+  string country_code = 7;
+
+  // GPS latitude of the hub facility (WGS-84).
+  double latitude = 8;
+
+  // GPS longitude of the hub facility (WGS-84).
+  double longitude = 9;
+
+  // Maximum number of parcels the hub can hold at one time.
+  int64 capacity_parcels = 10;
+
+  // Current number of parcels present at the hub.
+  int64 current_parcel_count = 11;
+
+  // Number of active dock bays available at this hub.
+  int32 dock_count = 12;
+
+  // Current operational status.
+  HubStatus status = 13;
+
+  // Timestamp when this hub record was created.
+  google.protobuf.Timestamp created_at = 14;
+
+  // Timestamp of the last update to any hub field.
+  google.protobuf.Timestamp updated_at = 15;
+}
+
+// HubCapacity is a lightweight real-time snapshot of a hub's capacity utilisation.
+// Used by the Dispatch Engine and Carrier Management service to make routing decisions.
+message HubCapacity {
+  // Hub this capacity snapshot belongs to.
+  string hub_id = 1;
+
+  // Hub display name (denormalised for convenience).
+  string hub_name = 2;
+
+  // Maximum parcel capacity of the hub.
+  int64 total_capacity = 3;
+
+  // Current number of parcels at the hub.
+  int64 current_count = 4;
+
+  // Utilisation as a percentage [0.0, 100.0].
+  double utilization_percent = 5;
+
+  // Discretised capacity status derived from utilization_percent.
+  CapacityStatus status = 6;
+
+  // Number of parcels expected to arrive in the next 2 hours
+  // (from confirmed inbound dock schedules).
+  int64 inbound_expected = 7;
+
+  // Number of parcels scheduled for outbound departure in the next 2 hours.
+  int64 outbound_expected = 8;
+
+  // Timestamp when this snapshot was last refreshed (updated by the
+  // sort-scan ingestion pipeline, typically every 60 seconds).
+  google.protobuf.Timestamp snapshot_at = 9;
+}
+
+// DockSlot represents a scheduled arrival or departure booking at a hub dock bay.
+// Dock scheduling ensures orderly vehicle flow and prevents congestion at hubs.
+message DockSlot {
+  // Unique dock slot identifier (UUID v4).
+  string id = 1;
+
+  // Hub this dock slot belongs to.
+  string hub_id = 2;
+
+  // Tenant scope.
+  string tenant_id = 3;
+
+  // Physical dock bay number at the hub (1-indexed).
+  int32 dock_number = 4;
+
+  // Scheduled start time for this dock slot.
+  google.protobuf.Timestamp scheduled_at = 5;
+
+  // Expected duration of the dock activity (minutes). Default: 30 minutes.
+  int32 duration_minutes = 6;
+
+  // Vehicle (driver_id or carrier_vehicle_id) assigned to this slot.
+  string vehicle_id = 7;
+
+  // Human-readable vehicle or driver name for ops display.
+  string vehicle_display_name = 8;
+
+  // Whether this is an inbound, outbound, or cross-dock slot.
+  DockType dock_type = 9;
+
+  // Current status of this dock slot.
+  DockStatus status = 10;
+
+  // Number of parcels expected on this vehicle. Used for dock resource planning.
+  int32 expected_parcel_count = 11;
+
+  // Actual parcel count processed (populated on COMPLETED status).
+  int32 actual_parcel_count = 12;
+
+  // Timestamp when the vehicle checked in at the dock.
+  google.protobuf.Timestamp checked_in_at = 13;
+
+  // Timestamp when the vehicle departed from the dock.
+  google.protobuf.Timestamp completed_at = 14;
+
+  // Timestamp when this slot was created.
+  google.protobuf.Timestamp created_at = 15;
+
+  // Notes from hub staff (e.g., "Late arrival", "Oversized parcels").
+  string notes = 16;
+}
+
+// SortScan records a single parcel barcode scan event at the hub sorter belt.
+// SortScans are the primary event source for parcel location tracking within hubs
+// and feed directly into the Analytics and Delivery Experience services.
+message SortScan {
+  // Unique scan event identifier (UUID v4).
+  string id = 1;
+
+  // Hub where the scan occurred.
+  string hub_id = 2;
+
+  // Tenant scope.
+  string tenant_id = 3;
+
+  // AWB barcode scanned from the parcel label.
+  string barcode = 4;
+
+  // Shipment identifier associated with this barcode.
+  string shipment_id = 5;
+
+  // Hub that this parcel is being routed to next (may be a delivery hub or transit hub).
+  // Empty if the parcel is at its final sort destination for last-mile delivery.
+  string destination_hub_id = 6;
+
+  // Sort belt lane number assigned by the sorter (0 = manual sort / exception lane).
+  int32 belt_lane = 7;
+
+  // ID of the staff member or scanner device that performed this scan.
+  string scanned_by = 8;
+
+  // Timestamp when the scan was recorded.
+  google.protobuf.Timestamp scanned_at = 9;
+
+  // Scan result: "ok", "unknown_barcode", "misrouted", "duplicate".
+  string scan_result = 10;
+
+  // Exception notes for non-OK scan results.
+  string exception_notes = 11;
+}
+
+// ManifestItem represents one parcel entry in a hub manifest.
+message ManifestItem {
+  // Shipment/AWB identifier.
+  string shipment_id = 1;
+
+  // Barcode label on the parcel.
+  string barcode = 2;
+
+  // Consignee name.
+  string recipient_name = 3;
+
+  // Destination city or delivery zone.
+  string destination = 4;
+
+  // Parcel weight in kilograms.
+  double weight_kg = 5;
+
+  // Whether this parcel requires COD collection.
+  bool requires_cod = 6;
+
+  // COD amount in minor currency units (centavos), if applicable.
+  int64 cod_amount_cents = 7;
+
+  // Current scan status of this parcel: "expected", "scanned", "missing".
+  string scan_status = 8;
+
+  // Timestamp when this parcel was scanned at the hub. Zero if not yet scanned.
+  google.protobuf.Timestamp scanned_at = 9;
+}
+
+// HubManifest is a point-in-time snapshot of all parcels expected at or
+// present in a hub for a given date, keyed to a specific dock slot or shift.
+message HubManifest {
+  // Hub this manifest belongs to.
+  string hub_id = 1;
+
+  // Date this manifest covers (ISO 8601 date string, e.g., "2026-03-17").
+  string manifest_date = 2;
+
+  // Dock slot this manifest is associated with. Empty for day-level manifests.
+  string dock_slot_id = 3;
+
+  // Direction of this manifest: "inbound" or "outbound".
+  string direction = 4;
+
+  // All parcel entries in this manifest.
+  repeated ManifestItem items = 5;
+
+  // Total parcel count in this manifest.
+  int32 total_count = 6;
+
+  // Number of parcels that have been scanned so far.
+  int32 scanned_count = 7;
+
+  // Number of parcels listed but not yet scanned (expected but missing).
+  int32 missing_count = 8;
+
+  // Timestamp when this manifest snapshot was generated.
+  google.protobuf.Timestamp generated_at = 9;
+}
+
+// ─────────────────────────────────────────────
+//  GetHubCapacity RPC Messages
+// ─────────────────────────────────────────────
+
+// GetHubCapacityRequest fetches the real-time capacity snapshot for a single hub.
+message GetHubCapacityRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // Hub to query.
+  string hub_id = 2;
+}
+
+// GetHubCapacityResponse returns the capacity snapshot.
+message GetHubCapacityResponse {
+  // Current capacity snapshot for the requested hub.
+  HubCapacity capacity = 1;
+
+  // Full hub details (for callers that need name, address, etc.).
+  Hub hub = 2;
+}
+
+// ─────────────────────────────────────────────
+//  GetAllHubCapacities RPC Messages
+// ─────────────────────────────────────────────
+
+// GetAllHubCapacitiesRequest fetches real-time capacity snapshots for all
+// active hubs belonging to a tenant. Used by the Admin Portal network map
+// and the AI Dispatch Agent for routing decisions.
+message GetAllHubCapacitiesRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // If true, only return hubs with CAPACITY_STATUS_HIGH or CAPACITY_STATUS_CRITICAL.
+  bool critical_only = 2;
+}
+
+// GetAllHubCapacitiesResponse returns capacity snapshots for all matching hubs.
+message GetAllHubCapacitiesResponse {
+  // Capacity snapshots, one per active hub.
+  repeated HubCapacity capacities = 1;
+
+  // Total number of hubs in the response.
+  int32 total_count = 2;
+
+  // Number of hubs in HIGH or CRITICAL capacity status.
+  int32 elevated_count = 3;
+}
+
+// ─────────────────────────────────────────────
+//  ScheduleDock RPC Messages
+// ─────────────────────────────────────────────
+
+// ScheduleDockRequest creates a dock slot reservation at a hub.
+// Called by the Dispatch Engine when assigning outbound routes and by the
+// Carrier Management service when scheduling inbound carrier arrivals.
+// This is the MCP-exposed `schedule_dock` tool for AI agent consumption.
+message ScheduleDockRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // Hub to book the dock slot at.
+  string hub_id = 2;
+
+  // Requested dock type.
+  DockType dock_type = 3;
+
+  // Requested start time for the dock slot.
+  google.protobuf.Timestamp requested_at = 4;
+
+  // Expected duration in minutes. Default: 30.
+  int32 duration_minutes = 5;
+
+  // Vehicle or driver to assign. Driver ID for outbound; carrier vehicle ID for inbound.
+  string vehicle_id = 6;
+
+  // Human-readable vehicle/driver display name.
+  string vehicle_display_name = 7;
+
+  // Number of parcels expected on this vehicle.
+  int32 expected_parcel_count = 8;
+
+  // Idempotency key — prevents duplicate dock bookings on retry.
+  string idempotency_key = 9;
+}
+
+// ScheduleDockResponse confirms the dock slot booking.
+message ScheduleDockResponse {
+  // The created dock slot with assigned dock_number and server timestamps.
+  DockSlot dock_slot = 1;
+
+  // Whether this response was served from the idempotency cache.
+  bool from_cache = 2;
+
+  // If the exact requested_at time was unavailable, the service may book the
+  // nearest available slot. This field contains the actual scheduled time.
+  google.protobuf.Timestamp actual_scheduled_at = 3;
+}
+
+// ─────────────────────────────────────────────
+//  GetDockSchedule RPC Messages
+// ─────────────────────────────────────────────
+
+// GetDockScheduleRequest fetches all dock slots for a hub within a time window.
+message GetDockScheduleRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // Hub to query.
+  string hub_id = 2;
+
+  // Start of the time window (inclusive).
+  google.protobuf.Timestamp from = 3;
+
+  // End of the time window (inclusive).
+  google.protobuf.Timestamp to = 4;
+
+  // Filter by dock type. Omit to return all types.
+  DockType dock_type_filter = 5;
+
+  // Filter by status. Omit or set UNKNOWN to return all statuses.
+  DockStatus status_filter = 6;
+}
+
+// GetDockScheduleResponse returns all dock slots matching the query.
+message GetDockScheduleResponse {
+  // Dock slots within the requested window, ordered by scheduled_at ascending.
+  repeated DockSlot slots = 1;
+
+  // Total count of slots returned.
+  int32 count = 2;
+}
+
+// ─────────────────────────────────────────────
+//  RecordSortScan RPC Messages
+// ─────────────────────────────────────────────
+
+// RecordSortScanRequest ingests a barcode scan event from a hub sorter belt.
+// Called in near-real-time by the hub scanner integration (USB or network scanner
+// via a lightweight Rust agent running on the sorter PLC).
+message RecordSortScanRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // Hub where the scan occurred.
+  string hub_id = 2;
+
+  // AWB barcode scanned.
+  string barcode = 3;
+
+  // Destination hub for this parcel. The sorter agent resolves this from
+  // the Dispatch service before calling this RPC.
+  string destination_hub_id = 4;
+
+  // Belt lane the sorter has assigned to this parcel.
+  int32 belt_lane = 5;
+
+  // ID of the scanning device or staff member.
+  string scanned_by = 6;
+
+  // Client-side timestamp of the scan event.
+  google.protobuf.Timestamp scanned_at = 7;
+}
+
+// RecordSortScanResponse confirms the scan was recorded.
+message RecordSortScanResponse {
+  // The persisted sort scan event.
+  SortScan scan = 1;
+
+  // Resolved shipment details for this barcode.
+  string shipment_id = 2;
+
+  // Routing action for the sorter to act on: "sort_to_lane", "hold", "exception".
+  string routing_action = 3;
+
+  // For "exception" actions, the reason code (e.g., "unknown_barcode", "misrouted").
+  string exception_code = 4;
+}
+
+// ─────────────────────────────────────────────
+//  GetHubManifest RPC Messages
+// ─────────────────────────────────────────────
+
+// GetHubManifestRequest retrieves the parcel manifest for a hub on a given date.
+message GetHubManifestRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // Hub to retrieve the manifest for.
+  string hub_id = 2;
+
+  // Date to retrieve the manifest for (ISO 8601, e.g., "2026-03-17").
+  string manifest_date = 3;
+
+  // Direction: "inbound", "outbound", or empty for both.
+  string direction = 4;
+
+  // Dock slot to filter by. Empty returns the day-level manifest.
+  string dock_slot_id = 5;
+}
+
+// GetHubManifestResponse returns the hub manifest.
+message GetHubManifestResponse {
+  // The hub manifest for the requested date and direction.
+  HubManifest manifest = 1;
+}
+
+// ─────────────────────────────────────────────
+//  TransferParcel RPC Messages
+// ─────────────────────────────────────────────
+
+// TransferParcelRequest records the transfer of a parcel from one hub to another.
+// Used during cross-docking and inter-hub linehaul operations. The parcel must
+// have a valid sort scan at the origin hub before transfer can be recorded.
+message TransferParcelRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // AWB barcode of the parcel being transferred.
+  string barcode = 2;
+
+  // Hub the parcel is departing from.
+  string origin_hub_id = 3;
+
+  // Hub the parcel is being sent to.
+  string destination_hub_id = 4;
+
+  // Vehicle or carrier used for the linehaul transfer.
+  string vehicle_id = 5;
+
+  // Dock slot on the origin hub used for this departure. Optional.
+  string dock_slot_id = 6;
+
+  // Timestamp of the parcel handover to the linehaul vehicle.
+  google.protobuf.Timestamp transferred_at = 7;
+
+  // Staff member recording the transfer.
+  string transferred_by = 8;
+}
+
+// TransferParcelResponse confirms the transfer was recorded.
+message TransferParcelResponse {
+  // Resolved shipment identifier for the transferred parcel.
+  string shipment_id = 1;
+
+  // New shipment status after transfer (e.g., "in_transit").
+  string new_shipment_status = 2;
+
+  // Estimated arrival time at destination hub.
+  google.protobuf.Timestamp estimated_arrival_at = 3;
+}
+
+// ─────────────────────────────────────────────
+//  HubOpsService Definition
+// ─────────────────────────────────────────────
+
+// HubOpsService is the authoritative gRPC interface for all Warehouse and Hub
+// Operations. It is consumed by:
+//   - Admin / Ops Portal: hub capacity overview, dock schedule management, manifest review
+//   - Dispatch Engine: hub capacity checks before routing decisions
+//   - Carrier Management: inbound dock scheduling for carrier arrivals
+//   - Sort Scanner Agent: real-time sort scan ingestion from sorter belt PLCs
+//   - AI Intelligence Layer: hub capacity and dock schedule via MCP tool wrappers
+//
+// MCP tools exposed: `get_hub_capacity`, `schedule_dock`
+//
+// All RPCs require a valid JWT in gRPC metadata `authorization: Bearer <token>`.
+// Hub data is tenant-scoped; cross-tenant hub queries are rejected.
+service HubOpsService {
+  // GetHubCapacity returns the real-time capacity snapshot for a single hub.
+  // This is the MCP-exposed `get_hub_capacity` tool for AI agent consumption.
+  rpc GetHubCapacity(GetHubCapacityRequest) returns (GetHubCapacityResponse);
+
+  // GetAllHubCapacities returns capacity snapshots for all active hubs in the tenant.
+  // Used by the Admin Portal network map and Dispatch Engine routing logic.
+  rpc GetAllHubCapacities(GetAllHubCapacitiesRequest) returns (GetAllHubCapacitiesResponse);
+
+  // ScheduleDock creates a dock slot reservation at a hub.
+  // Idempotent via idempotency_key. Selects the nearest available slot
+  // if the requested time is taken.
+  // This is the MCP-exposed `schedule_dock` tool for AI agent consumption.
+  rpc ScheduleDock(ScheduleDockRequest) returns (ScheduleDockResponse);
+
+  // GetDockSchedule returns all dock slots for a hub within a given time window.
+  // Used by hub staff tablets and the Ops Portal dispatch board.
+  rpc GetDockSchedule(GetDockScheduleRequest) returns (GetDockScheduleResponse);
+
+  // RecordSortScan ingests a barcode scan event from the hub sorter belt.
+  // Returns a routing action instruction for the sorter controller.
+  // Called in near-real-time by the hub scanner integration agent.
+  rpc RecordSortScan(RecordSortScanRequest) returns (RecordSortScanResponse);
+
+  // GetHubManifest retrieves the parcel manifest for a hub on a given date.
+  // Used by hub managers to verify inbound/outbound counts and identify missing parcels.
+  rpc GetHubManifest(GetHubManifestRequest) returns (GetHubManifestResponse);
+
+  // TransferParcel records a cross-hub parcel transfer for linehaul movements.
+  // Updates shipment status and emits a `hub.parcel.transferred` Kafka event.
+  rpc TransferParcel(TransferParcelRequest) returns (TransferParcelResponse);
+}

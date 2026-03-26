@@ -1,0 +1,386 @@
+groups:
+  # ── Service Health ─────────────────────────────────────────────────────────
+  - name: service_health
+    interval: 30s
+    rules:
+      - alert: ServiceDown
+        expr: up{job=~"logisticos-.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Service {{ $labels.job }} is DOWN"
+          description: "{{ $labels.job }} on {{ $labels.instance }} has been unreachable for more than 1 minute."
+          runbook: "https://wiki.logisticos.io/runbooks/service-down"
+
+      - alert: ServiceHighRestartRate
+        expr: increase(kube_pod_container_status_restarts_total{namespace="logisticos"}[15m]) > 3
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High restart rate for {{ $labels.container }}"
+          description: "Container {{ $labels.container }} restarted {{ $value }} times in the last 15 minutes."
+
+      - alert: HighCPUUsage
+        expr: rate(process_cpu_seconds_total{job=~"logisticos-.*"}[5m]) * 100 > 80
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High CPU on {{ $labels.job }}"
+          description: "CPU usage is {{ $value | printf \"%.1f\" }}% on {{ $labels.instance }}."
+
+      - alert: HighMemoryUsage
+        expr: process_resident_memory_bytes{job=~"logisticos-.*"} / 1024 / 1024 > 1024
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "High memory on {{ $labels.job }}"
+          description: "Memory usage is {{ $value | printf \"%.0f\" }} MB on {{ $labels.instance }}."
+
+  # ── API Latency ────────────────────────────────────────────────────────────
+  - name: api_latency
+    interval: 30s
+    rules:
+      - alert: HighAPILatencyP99
+        expr: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{job=~"logisticos-.*"}[5m])) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "P99 latency breach on {{ $labels.job }}"
+          description: "P99 latency is {{ $value | printf \"%.3f\" }}s (SLO: 200ms) on {{ $labels.handler }}."
+          runbook: "https://wiki.logisticos.io/runbooks/high-latency"
+
+      - alert: HighAPILatencyP99Critical
+        expr: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{job=~"logisticos-.*"}[5m])) > 1.0
+        for: 2m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "CRITICAL P99 latency on {{ $labels.job }}"
+          description: "P99 latency is {{ $value | printf \"%.3f\" }}s on {{ $labels.handler }}. Investigate immediately."
+
+      - alert: DispatchAssignmentSlow
+        expr: histogram_quantile(0.99, rate(dispatch_assignment_duration_seconds_bucket[5m])) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          team: logistics
+        annotations:
+          summary: "Dispatch assignment P99 > 500ms"
+          description: "Driver assignment is taking {{ $value | printf \"%.3f\" }}s P99 (SLO: 500ms)."
+
+      - alert: HighAPIErrorRate
+        expr: rate(http_requests_total{job=~"logisticos-.*", status=~"5.."}[5m]) / rate(http_requests_total{job=~"logisticos-.*"}[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "High 5xx error rate on {{ $labels.job }}"
+          description: "Error rate is {{ $value | printf \"%.2f\" }} ({{ $value | humanizePercentage }}) on {{ $labels.handler }}."
+
+      - alert: CriticalAPIErrorRate
+        expr: rate(http_requests_total{job=~"logisticos-.*", status=~"5.."}[5m]) / rate(http_requests_total{job=~"logisticos-.*"}[5m]) > 0.20
+        for: 2m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "CRITICAL error rate on {{ $labels.job }}"
+          description: "Error rate is {{ $value | humanizePercentage }} on {{ $labels.handler }}. Immediate action required."
+
+  # ── Delivery SLA ───────────────────────────────────────────────────────────
+  - name: delivery_sla
+    interval: 60s
+    rules:
+      - alert: SLABreachRateHigh
+        expr: |
+          (
+            rate(shipment_sla_breach_total[1h])
+            / rate(shipment_delivered_total[1h])
+          ) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          team: logistics
+        annotations:
+          summary: "SLA breach rate > 5% for tenant {{ $labels.tenant_id }}"
+          description: "{{ $value | humanizePercentage }} of deliveries are breaching SLA in the last hour."
+          runbook: "https://wiki.logisticos.io/runbooks/sla-breach"
+
+      - alert: SLABreachRateCritical
+        expr: |
+          (
+            rate(shipment_sla_breach_total[1h])
+            / rate(shipment_delivered_total[1h])
+          ) > 0.15
+        for: 5m
+        labels:
+          severity: critical
+          team: logistics
+        annotations:
+          summary: "CRITICAL SLA breach rate {{ $value | humanizePercentage }}"
+          description: "Delivery SLA breach rate has exceeded 15% for tenant {{ $labels.tenant_id }}."
+
+      - alert: DeliveryFailureRateHigh
+        expr: |
+          rate(shipment_delivery_failed_total[1h])
+          / rate(shipment_delivery_attempted_total[1h]) > 0.10
+        for: 15m
+        labels:
+          severity: warning
+          team: logistics
+        annotations:
+          summary: "Delivery failure rate > 10%"
+          description: "{{ $value | humanizePercentage }} of delivery attempts are failing in zone {{ $labels.zone }}."
+
+      - alert: LowDeliverySuccessRate
+        expr: |
+          (
+            rate(shipment_delivered_total[6h])
+            / rate(shipment_delivery_attempted_total[6h])
+          ) < 0.85
+        for: 30m
+        labels:
+          severity: warning
+          team: logistics
+        annotations:
+          summary: "6h delivery success rate below 85%"
+          description: "Delivery success rate is {{ $value | humanizePercentage }} over the last 6 hours."
+
+  # ── Driver Operations ──────────────────────────────────────────────────────
+  - name: driver_operations
+    interval: 60s
+    rules:
+      - alert: HighDriverOfflineRate
+        expr: |
+          (
+            count(driver_status{status="offline"})
+            / count(driver_status)
+          ) > 0.40
+        for: 10m
+        labels:
+          severity: warning
+          team: logistics
+        annotations:
+          summary: "More than 40% of drivers are offline"
+          description: "{{ $value | humanizePercentage }} of drivers are offline. Capacity at risk."
+
+      - alert: DriverNoGPSUpdate
+        expr: time() - driver_last_gps_timestamp_seconds > 300
+        for: 5m
+        labels:
+          severity: warning
+          team: logistics
+        annotations:
+          summary: "Driver {{ $labels.driver_id }} GPS stale > 5 minutes"
+          description: "No GPS update from driver {{ $labels.driver_id }} for {{ $value | humanizeDuration }}."
+
+      - alert: HighUnassignedOrderQueue
+        expr: dispatch_unassigned_orders_total > 50
+        for: 10m
+        labels:
+          severity: warning
+          team: logistics
+        annotations:
+          summary: "{{ $value }} unassigned orders in dispatch queue"
+          description: "Dispatch queue has {{ $value }} unassigned orders. Driver shortage or dispatch engine issue."
+
+      - alert: CriticalUnassignedOrderQueue
+        expr: dispatch_unassigned_orders_total > 200
+        for: 5m
+        labels:
+          severity: critical
+          team: logistics
+        annotations:
+          summary: "CRITICAL: {{ $value }} unassigned orders"
+          description: "Dispatch queue critically backlogged at {{ $value }} unassigned orders."
+
+  # ── Kafka ──────────────────────────────────────────────────────────────────
+  - name: kafka
+    interval: 30s
+    rules:
+      - alert: KafkaConsumerLagHigh
+        expr: kafka_consumer_group_lag{group=~"logisticos-.*"} > 1000
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Kafka consumer lag high on {{ $labels.topic }}"
+          description: "Consumer group {{ $labels.group }} has lag of {{ $value }} on topic {{ $labels.topic }}."
+          runbook: "https://wiki.logisticos.io/runbooks/kafka-lag"
+
+      - alert: KafkaConsumerLagCritical
+        expr: kafka_consumer_group_lag{group=~"logisticos-.*"} > 10000
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "CRITICAL Kafka lag on {{ $labels.topic }}: {{ $value }}"
+          description: "Consumer group {{ $labels.group }} has critical lag of {{ $value }} messages."
+
+      - alert: KafkaBrokerDown
+        expr: kafka_brokers < 3
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Kafka broker count below quorum: {{ $value }}"
+          description: "Only {{ $value }} Kafka brokers are up. Minimum is 3 for production quorum."
+
+  # ── Database ───────────────────────────────────────────────────────────────
+  - name: database
+    interval: 30s
+    rules:
+      - alert: PostgreSQLHighConnections
+        expr: pg_stat_database_numbackends / pg_settings_max_connections > 0.80
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "PostgreSQL connection pool at {{ $value | humanizePercentage }}"
+          description: "Connection pool is {{ $value | humanizePercentage }} full on {{ $labels.instance }}."
+
+      - alert: PostgreSQLSlowQueries
+        expr: rate(pg_stat_activity_max_tx_duration{state="active"}[5m]) > 30
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Long-running PostgreSQL queries detected"
+          description: "Queries running > 30s on {{ $labels.datname }}."
+
+      - alert: PostgreSQLReplicationLag
+        expr: pg_replication_lag_seconds > 60
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "PostgreSQL replication lag {{ $value }}s"
+          description: "Replica {{ $labels.instance }} is {{ $value }}s behind primary."
+
+      - alert: RedisHighMemoryUsage
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.85
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Redis memory usage at {{ $value | humanizePercentage }}"
+          description: "Redis on {{ $labels.instance }} is using {{ $value | humanizePercentage }} of max memory."
+
+  # ── AI Layer ───────────────────────────────────────────────────────────────
+  - name: ai_layer
+    interval: 60s
+    rules:
+      - alert: AgentEscalationRateHigh
+        expr: |
+          rate(agent_escalation_total[1h])
+          / rate(agent_invocation_total[1h]) > 0.10
+        for: 15m
+        labels:
+          severity: warning
+          team: ai
+        annotations:
+          summary: "AI agent escalation rate > 10%"
+          description: "{{ $value | humanizePercentage }} of agent sessions are escalating to human support."
+
+      - alert: AgentHighLatency
+        expr: histogram_quantile(0.99, rate(agent_session_duration_seconds_bucket[5m])) > 30
+        for: 10m
+        labels:
+          severity: warning
+          team: ai
+        annotations:
+          summary: "AI agent P99 session duration > 30s"
+          description: "Agent {{ $labels.agent_type }} P99 session time is {{ $value }}s."
+
+      - alert: AgentToolFailureRate
+        expr: |
+          rate(agent_tool_call_failed_total[5m])
+          / rate(agent_tool_call_total[5m]) > 0.15
+        for: 5m
+        labels:
+          severity: warning
+          team: ai
+        annotations:
+          summary: "AI agent tool failure rate > 15%"
+          description: "Tool {{ $labels.tool_name }} is failing at {{ $value | humanizePercentage }}."
+
+  # ── Payments & COD ─────────────────────────────────────────────────────────
+  - name: payments
+    interval: 60s
+    rules:
+      - alert: CODReconciliationBacklog
+        expr: cod_unreconciled_orders_total > 500
+        for: 30m
+        labels:
+          severity: warning
+          team: finance
+        annotations:
+          summary: "{{ $value }} COD orders pending reconciliation"
+          description: "COD reconciliation backlog has grown to {{ $value }} orders."
+
+      - alert: PaymentGatewayErrorRate
+        expr: |
+          rate(payment_gateway_errors_total[5m])
+          / rate(payment_gateway_requests_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          team: finance
+        annotations:
+          summary: "Payment gateway error rate {{ $value | humanizePercentage }}"
+          description: "Payment gateway {{ $labels.gateway }} is failing at {{ $value | humanizePercentage }}."
+
+  # ── Engagement Engine ──────────────────────────────────────────────────────
+  - name: engagement
+    interval: 30s
+    rules:
+      - alert: NotificationDeliveryLate
+        expr: histogram_quantile(0.95, rate(notification_delivery_duration_seconds_bucket[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+          team: engagement
+        annotations:
+          summary: "Notification P95 delivery > 5s SLO"
+          description: "Channel {{ $labels.channel }} P95 delivery time is {{ $value }}s (SLO: 5s)."
+
+      - alert: NotificationDeliveryFailureHigh
+        expr: |
+          rate(notification_delivery_failed_total[5m])
+          / rate(notification_delivery_attempted_total[5m]) > 0.10
+        for: 10m
+        labels:
+          severity: warning
+          team: engagement
+        annotations:
+          summary: "Notification failure rate {{ $value | humanizePercentage }} on {{ $labels.channel }}"
+          description: "Channel {{ $labels.channel }} has high delivery failure rate."
+
+      - alert: CampaignQueueBacklog
+        expr: campaign_pending_messages_total > 10000
+        for: 15m
+        labels:
+          severity: warning
+          team: engagement
+        annotations:
+          summary: "Campaign message queue backlog: {{ $value }}"
+          description: "Campaign engine has {{ $value }} messages pending delivery."

@@ -1,0 +1,461 @@
+syntax = "proto3";
+
+package logisticos.payments.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/logisticos/proto/payments/v1;paymentsv1";
+option java_multiple_files = true;
+option java_package = "com.logisticos.payments.v1";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum InvoiceStatus {
+  INVOICE_STATUS_UNSPECIFIED = 0;
+  INVOICE_STATUS_DRAFT       = 1;
+  INVOICE_STATUS_ISSUED      = 2;
+  INVOICE_STATUS_SENT        = 3;
+  INVOICE_STATUS_PAID        = 4;
+  INVOICE_STATUS_OVERDUE     = 5;
+  INVOICE_STATUS_VOID        = 6;
+  INVOICE_STATUS_DISPUTED    = 7;
+}
+
+enum TransactionType {
+  TRANSACTION_TYPE_UNSPECIFIED    = 0;
+  TRANSACTION_TYPE_CREDIT         = 1;
+  TRANSACTION_TYPE_DEBIT          = 2;
+  TRANSACTION_TYPE_COD_COLLECTION = 3;
+  TRANSACTION_TYPE_COD_REMITTANCE = 4;
+  TRANSACTION_TYPE_REFUND         = 5;
+  TRANSACTION_TYPE_ADJUSTMENT     = 6;
+  TRANSACTION_TYPE_FEE            = 7;
+}
+
+enum CodStatus {
+  COD_STATUS_UNSPECIFIED  = 0;
+  COD_STATUS_PENDING      = 1;  // Collected by driver, not yet remitted
+  COD_STATUS_REMITTED     = 2;  // Cash handed to hub/finance
+  COD_STATUS_RECONCILED   = 3;  // Matched against bank deposit
+  COD_STATUS_DISPUTED     = 4;
+  COD_STATUS_WRITTEN_OFF  = 5;
+}
+
+enum WalletOwnerType {
+  WALLET_OWNER_TYPE_UNSPECIFIED = 0;
+  WALLET_OWNER_TYPE_MERCHANT    = 1;
+  WALLET_OWNER_TYPE_DRIVER      = 2;
+  WALLET_OWNER_TYPE_CARRIER     = 3;
+  WALLET_OWNER_TYPE_TENANT      = 4;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Core Domain Messages
+// ─────────────────────────────────────────────────────────────────────────────
+
+// LineItem is a single billable entry within an invoice.
+message LineItem {
+  // Unique line item identifier within the invoice.
+  string line_item_id = 1;
+
+  // Human-readable description of the charge.
+  string description = 2;
+
+  // Quantity billed (e.g. number of shipments, weight in kg).
+  double quantity = 3;
+
+  // Unit of measurement (e.g. "shipment", "kg", "km").
+  string unit = 4;
+
+  // Unit price in cents.
+  int64 unit_price_cents = 5;
+
+  // Total amount for this line (quantity × unit_price_cents), before tax.
+  int64 subtotal_cents = 6;
+
+  // Tax rate as a percentage (e.g. 12.0 for 12% VAT).
+  double tax_rate_percent = 7;
+
+  // Tax amount in cents.
+  int64 tax_amount_cents = 8;
+
+  // Total including tax.
+  int64 total_cents = 9;
+
+  // Optional reference to the shipment or service this line covers.
+  string reference_id = 10;
+
+  // Service code used for GL mapping and revenue recognition.
+  string service_code = 11;
+}
+
+// Invoice is a formal billing document issued to a merchant or tenant.
+message Invoice {
+  // Unique invoice identifier (UUID).
+  string invoice_id = 1;
+
+  // Owning tenant.
+  string tenant_id = 2;
+
+  // The merchant or entity being billed.
+  string merchant_id = 3;
+
+  // Human-readable invoice number (e.g. "INV-2026-003412").
+  string invoice_number = 4;
+
+  // Current lifecycle state.
+  InvoiceStatus status = 5;
+
+  // ISO 4217 currency code.
+  string currency = 6;
+
+  // Individual charge lines composing the invoice.
+  repeated LineItem line_items = 7;
+
+  // Sum of all line subtotals before tax, in cents.
+  int64 subtotal_cents = 8;
+
+  // Total tax across all lines, in cents.
+  int64 total_tax_cents = 9;
+
+  // Grand total payable, in cents.
+  int64 total_cents = 10;
+
+  // Amount already paid (for partial payments), in cents.
+  int64 amount_paid_cents = 11;
+
+  // Outstanding balance, in cents.
+  int64 balance_cents = 12;
+
+  // Billing period start.
+  google.protobuf.Timestamp billing_period_start = 13;
+
+  // Billing period end.
+  google.protobuf.Timestamp billing_period_end = 14;
+
+  // Date the invoice was issued to the merchant.
+  google.protobuf.Timestamp issued_at = 15;
+
+  // Due date for payment.
+  google.protobuf.Timestamp due_at = 16;
+
+  // Date fully paid. Null until payment confirmed.
+  google.protobuf.Timestamp paid_at = 17;
+
+  // Optional reference to payment transaction that settled this invoice.
+  string payment_transaction_id = 18;
+
+  // Free-text notes visible to the merchant.
+  string notes = 19;
+
+  // Record creation timestamp.
+  google.protobuf.Timestamp created_at = 20;
+
+  // Last record update timestamp.
+  google.protobuf.Timestamp updated_at = 21;
+}
+
+// CodRecord tracks a single COD (Cash on Delivery) collection event.
+message CodRecord {
+  // Unique COD record identifier.
+  string cod_record_id = 1;
+
+  // Owning tenant.
+  string tenant_id = 2;
+
+  // Shipment this COD belongs to.
+  string shipment_id = 3;
+
+  // Driver who collected the cash.
+  string driver_id = 4;
+
+  // Merchant that should receive the remittance.
+  string merchant_id = 5;
+
+  // Amount collected from the consignee, in cents.
+  int64 amount_collected_cents = 6;
+
+  // Amount remitted to merchant (after platform fee), in cents.
+  int64 amount_remitted_cents = 7;
+
+  // Platform fee deducted, in cents.
+  int64 platform_fee_cents = 8;
+
+  // Currency code (ISO 4217).
+  string currency = 9;
+
+  // Current reconciliation status.
+  CodStatus status = 10;
+
+  // Timestamp of cash collection (from driver task POD).
+  google.protobuf.Timestamp collected_at = 11;
+
+  // Timestamp of hub remittance.
+  google.protobuf.Timestamp remitted_at = 12;
+
+  // Timestamp of bank reconciliation.
+  google.protobuf.Timestamp reconciled_at = 13;
+
+  // Internal notes for audit trail.
+  string notes = 14;
+
+  // Record creation timestamp.
+  google.protobuf.Timestamp created_at = 15;
+}
+
+// Wallet is a ledger account held by a merchant, driver, or carrier.
+message Wallet {
+  // Unique wallet identifier.
+  string wallet_id = 1;
+
+  // Owning tenant.
+  string tenant_id = 2;
+
+  // The entity that owns this wallet.
+  string owner_id = 3;
+
+  // Type classification of the wallet owner.
+  WalletOwnerType owner_type = 4;
+
+  // Current available balance in cents.
+  int64 balance_cents = 5;
+
+  // Amount locked/reserved by pending transactions, in cents.
+  int64 reserved_cents = 6;
+
+  // ISO 4217 currency code.
+  string currency = 7;
+
+  // Whether the wallet is active and can accept transactions.
+  bool is_active = 8;
+
+  // Optional credit limit (0 = no credit facility), in cents.
+  int64 credit_limit_cents = 9;
+
+  // Record creation timestamp.
+  google.protobuf.Timestamp created_at = 10;
+
+  // Last balance update timestamp.
+  google.protobuf.Timestamp updated_at = 11;
+}
+
+// WalletTransaction records a single debit or credit event on a wallet.
+message WalletTransaction {
+  // Unique transaction identifier.
+  string transaction_id = 1;
+
+  // Wallet affected by this transaction.
+  string wallet_id = 2;
+
+  // Owning tenant.
+  string tenant_id = 3;
+
+  // Classification of the transaction.
+  TransactionType type = 4;
+
+  // Absolute amount of the transaction in cents (always positive).
+  int64 amount_cents = 5;
+
+  // ISO 4217 currency code.
+  string currency = 6;
+
+  // Balance after this transaction was applied, in cents.
+  int64 balance_after_cents = 7;
+
+  // Human-readable description.
+  string description = 8;
+
+  // Optional reference to the business object that caused this transaction
+  // (e.g. invoice_id, shipment_id, cod_record_id).
+  string reference_id = 9;
+
+  // Reference type discriminator (e.g. "invoice", "shipment", "cod").
+  string reference_type = 10;
+
+  // Idempotency key supplied by the caller to prevent duplicate transactions.
+  string idempotency_key = 11;
+
+  // Record creation timestamp.
+  google.protobuf.Timestamp created_at = 12;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Request / Response Messages
+// ─────────────────────────────────────────────────────────────────────────────
+
+message GenerateInvoiceRequest {
+  string tenant_id    = 1;
+  string merchant_id  = 2;
+  string currency     = 3;
+  repeated LineItem line_items = 4;
+  google.protobuf.Timestamp billing_period_start = 5;
+  google.protobuf.Timestamp billing_period_end   = 6;
+  // If provided, override the calculated due date.
+  google.protobuf.Timestamp due_at = 7;
+  string notes = 8;
+  // Idempotency key (prevents duplicate invoices if retried).
+  string idempotency_key = 9;
+}
+
+message GenerateInvoiceResponse {
+  Invoice invoice = 1;
+}
+
+message GetInvoiceRequest {
+  string invoice_id = 1;
+  string tenant_id  = 2;
+}
+
+message GetInvoiceResponse {
+  Invoice invoice = 1;
+}
+
+message GetCodBalanceRequest {
+  // Tenant context.
+  string tenant_id   = 1;
+  // Filter by merchant. If empty, returns aggregate across all merchants.
+  string merchant_id = 2;
+  // Filter by driver. Optional.
+  string driver_id   = 3;
+  // Only include COD in the specified statuses. Empty = all statuses.
+  repeated CodStatus statuses = 4;
+}
+
+message GetCodBalanceResponse {
+  // Total COD collected but not yet remitted, in cents.
+  int64 pending_cents    = 1;
+  // Total COD remitted to merchants, in cents.
+  int64 remitted_cents   = 2;
+  // Total COD reconciled against bank deposits, in cents.
+  int64 reconciled_cents = 3;
+  // Total disputed amount, in cents.
+  int64 disputed_cents   = 4;
+  // Currency.
+  string currency        = 5;
+  // Number of COD records in each status.
+  int32 pending_count    = 6;
+  int32 remitted_count   = 7;
+  int32 reconciled_count = 8;
+  int32 disputed_count   = 9;
+}
+
+message ReconcileCodRequest {
+  string tenant_id = 1;
+  // The specific COD records to reconcile.
+  repeated string cod_record_ids = 2;
+  // Reference to the bank deposit or remittance batch.
+  string remittance_reference = 3;
+  // Date of the bank deposit.
+  google.protobuf.Timestamp remittance_date = 4;
+  // Actor performing reconciliation (user_id of finance staff).
+  string actor_id = 5;
+}
+
+message ReconcileCodResponse {
+  // Number of records successfully reconciled.
+  int32 reconciled_count = 1;
+  // Records that failed reconciliation with reason.
+  repeated ReconciliationError errors = 2;
+}
+
+message ReconciliationError {
+  string cod_record_id = 1;
+  string reason        = 2;
+}
+
+message GetWalletBalanceRequest {
+  string wallet_id  = 1;
+  string tenant_id  = 2;
+}
+
+message GetWalletBalanceResponse {
+  Wallet wallet = 1;
+}
+
+message CreateWalletTransactionRequest {
+  string tenant_id      = 1;
+  string wallet_id      = 2;
+  TransactionType type  = 3;
+  int64 amount_cents    = 4;
+  string currency       = 5;
+  string description    = 6;
+  string reference_id   = 7;
+  string reference_type = 8;
+  // Idempotency key — callers MUST provide this for all mutation requests.
+  string idempotency_key = 9;
+}
+
+message CreateWalletTransactionResponse {
+  WalletTransaction transaction = 1;
+  // Updated wallet balance after the transaction.
+  Wallet wallet = 2;
+}
+
+message GetTransactionHistoryRequest {
+  string tenant_id  = 1;
+  string wallet_id  = 2;
+  // Filter by transaction type. Empty = all types.
+  repeated TransactionType types = 3;
+  google.protobuf.Timestamp from = 4;
+  google.protobuf.Timestamp to   = 5;
+  // Pagination cursor (transaction_id of last item from previous page).
+  string page_cursor = 6;
+  // Page size. Defaults to 50, max 200.
+  int32 page_size    = 7;
+}
+
+message GetTransactionHistoryResponse {
+  repeated WalletTransaction transactions = 1;
+  string next_cursor = 2;
+  int32 total_count  = 3;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Service Definition
+// ─────────────────────────────────────────────────────────────────────────────
+
+// PaymentsService manages invoicing, COD reconciliation, and wallet operations.
+//
+// PCI-DSS scope: raw card data is never handled by this service. Card
+// tokenisation is delegated to the payment gateway (Stripe / PayMongo).
+// This service stores only tokens, transaction references, and ledger entries.
+//
+// All mutations are idempotent when an idempotency_key is provided. Clients
+// MUST supply an idempotency_key on all state-changing RPCs to safely retry
+// on transient failures.
+//
+// All RPCs require a tenant-scoped JWT. Finance-role claim required for
+// ReconcileCod and CreateTransaction (debit type) operations.
+service PaymentsService {
+  // GenerateInvoice creates a new invoice for a merchant covering a billing
+  // period. Line items are calculated by the caller (typically the billing
+  // batch job). Emits a Kafka `payments.invoice.generated` event on success.
+  rpc GenerateInvoice(GenerateInvoiceRequest) returns (GenerateInvoiceResponse);
+
+  // GetInvoice retrieves a single invoice by ID.
+  rpc GetInvoice(GetInvoiceRequest) returns (GetInvoiceResponse);
+
+  // GetCodBalance returns aggregate COD totals, optionally filtered by
+  // merchant or driver. Used by the finance dashboard and settlement reports.
+  rpc GetCodBalance(GetCodBalanceRequest) returns (GetCodBalanceResponse);
+
+  // ReconcileCod marks a batch of COD records as reconciled against a bank
+  // deposit reference. Requires FINANCE role. Emits
+  // `payments.cod.reconciled` Kafka event per record.
+  rpc ReconcileCod(ReconcileCodRequest) returns (ReconcileCodResponse);
+
+  // GetWalletBalance retrieves current balance and reserved amounts for a
+  // wallet. Zero-latency path backed by Redis with PostgreSQL fallback.
+  rpc GetWalletBalance(GetWalletBalanceRequest) returns (GetWalletBalanceResponse);
+
+  // CreateTransaction applies a debit or credit to a wallet. Enforces
+  // sufficient balance before debits. Atomic — balance update and transaction
+  // record are written in a single PostgreSQL transaction.
+  rpc CreateTransaction(CreateWalletTransactionRequest) returns (CreateWalletTransactionResponse);
+
+  // GetTransactionHistory returns paginated transaction records for a wallet,
+  // optionally filtered by type and date range.
+  rpc GetTransactionHistory(GetTransactionHistoryRequest) returns (GetTransactionHistoryResponse);
+}

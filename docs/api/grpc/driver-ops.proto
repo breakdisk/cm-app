@@ -1,0 +1,456 @@
+syntax = "proto3";
+
+package logisticos.driverops.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+option go_package = "github.com/logisticos/proto/driverops/v1;driveropsv1";
+option java_multiple_files = true;
+option java_package = "com.logisticos.driverops.v1";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum TaskType {
+  TASK_TYPE_UNSPECIFIED = 0;
+  TASK_TYPE_PICKUP      = 1;
+  TASK_TYPE_DELIVERY    = 2;
+  TASK_TYPE_RETURN      = 3;
+  TASK_TYPE_HUB_TRANSFER = 4;
+}
+
+enum TaskStatus {
+  TASK_STATUS_UNSPECIFIED  = 0;
+  TASK_STATUS_ASSIGNED     = 1;
+  TASK_STATUS_EN_ROUTE     = 2;
+  TASK_STATUS_ARRIVED      = 3;
+  TASK_STATUS_IN_PROGRESS  = 4;
+  TASK_STATUS_COMPLETED    = 5;
+  TASK_STATUS_FAILED       = 6;
+  TASK_STATUS_CANCELLED    = 7;
+  TASK_STATUS_RESCHEDULED  = 8;
+}
+
+enum DriverStatus {
+  DRIVER_STATUS_UNSPECIFIED = 0;
+  DRIVER_STATUS_OFFLINE     = 1;
+  DRIVER_STATUS_AVAILABLE   = 2;
+  DRIVER_STATUS_ON_DUTY     = 3;
+  DRIVER_STATUS_ON_BREAK    = 4;
+  DRIVER_STATUS_SUSPENDED   = 5;
+}
+
+enum InstructionType {
+  INSTRUCTION_TYPE_UNSPECIFIED    = 0;
+  INSTRUCTION_TYPE_ROUTE_UPDATE   = 1;
+  INSTRUCTION_TYPE_PRIORITY_ALERT = 2;
+  INSTRUCTION_TYPE_CUSTOMER_NOTE  = 3;
+  INSTRUCTION_TYPE_RETURN_TO_HUB  = 4;
+  INSTRUCTION_TYPE_REASSIGNMENT   = 5;
+  INSTRUCTION_TYPE_SYSTEM_ALERT   = 6;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Core Domain Messages
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Driver represents a courier/field agent registered in the platform.
+message Driver {
+  // Unique driver identifier (UUID).
+  string driver_id = 1;
+
+  // Tenant that owns this driver record.
+  string tenant_id = 2;
+
+  // Human-readable display name.
+  string name = 3;
+
+  // Primary contact phone (E.164 format).
+  string phone = 4;
+
+  // Email address used for login and notifications.
+  string email = 5;
+
+  // Vehicle plate number or identifier.
+  string vehicle_id = 6;
+
+  // Driver's current operational status.
+  DriverStatus status = 7;
+
+  // Hub the driver is currently assigned to or checked into.
+  string hub_id = 8;
+
+  // ISO 3166-1 alpha-2 region code for data residency.
+  string region = 9;
+
+  // Profile photo URL (CDN link).
+  string avatar_url = 10;
+
+  // Record creation timestamp.
+  google.protobuf.Timestamp created_at = 11;
+
+  // Last record update timestamp.
+  google.protobuf.Timestamp updated_at = 12;
+
+  // Arbitrary key-value metadata (e.g., vehicle type, license class).
+  map<string, string> metadata = 13;
+}
+
+// DriverLocation captures a single GPS fix from a driver device.
+message DriverLocation {
+  // Driver this location belongs to.
+  string driver_id = 1;
+
+  // Tenant context for multi-tenancy enforcement.
+  string tenant_id = 2;
+
+  // WGS-84 latitude in decimal degrees.
+  double latitude = 3;
+
+  // WGS-84 longitude in decimal degrees.
+  double longitude = 4;
+
+  // Compass heading in degrees (0–360, 0 = north). -1 if unknown.
+  float heading = 5;
+
+  // Speed in kilometres per hour. -1 if unknown.
+  float speed_kmh = 6;
+
+  // Horizontal accuracy radius in metres. Lower is better.
+  float accuracy_metres = 7;
+
+  // Altitude in metres above sea level. 0 if unavailable.
+  float altitude_metres = 8;
+
+  // GPS fix timestamp from the device (authoritative time of position).
+  google.protobuf.Timestamp timestamp = 9;
+
+  // Server-side ingestion timestamp (for lag monitoring).
+  google.protobuf.Timestamp server_received_at = 10;
+
+  // Source of location fix: "gps", "network", "fused".
+  string provider = 11;
+}
+
+// DriverTask is a single unit of work assigned to a driver.
+message DriverTask {
+  // Unique task identifier (UUID).
+  string task_id = 1;
+
+  // Owning tenant.
+  string tenant_id = 2;
+
+  // Driver assigned to this task.
+  string driver_id = 3;
+
+  // Associated shipment/order AWB number.
+  string shipment_id = 4;
+
+  // Category of work to be performed.
+  TaskType task_type = 5;
+
+  // Current lifecycle state of the task.
+  TaskStatus status = 6;
+
+  // Sequence position within the driver's route (1-indexed).
+  int32 sequence = 7;
+
+  // Destination address — human-readable.
+  string address = 8;
+
+  // Geocoded latitude of the stop.
+  double destination_lat = 9;
+
+  // Geocoded longitude of the stop.
+  double destination_lng = 10;
+
+  // Consignee or pickup contact name.
+  string contact_name = 11;
+
+  // Contact phone number (E.164).
+  string contact_phone = 12;
+
+  // Earliest acceptable arrival (service window start).
+  google.protobuf.Timestamp earliest_arrival = 13;
+
+  // Latest acceptable arrival (service window end / SLA deadline).
+  google.protobuf.Timestamp latest_arrival = 14;
+
+  // Estimated time of arrival (computed by routing engine).
+  google.protobuf.Timestamp eta = 15;
+
+  // Special delivery instructions for the driver.
+  string notes = 16;
+
+  // COD amount to collect in cents (0 for prepaid).
+  int64 cod_amount_cents = 17;
+
+  // Currency code (ISO 4217).
+  string currency = 18;
+
+  // Barcode or QR string for parcel scan verification.
+  string parcel_barcode = 19;
+
+  // Proof of delivery captured after task completion.
+  ProofOfDelivery proof = 20;
+
+  // Failure reason if status = FAILED.
+  string failure_reason = 21;
+
+  // Task creation timestamp.
+  google.protobuf.Timestamp created_at = 22;
+
+  // Last status update timestamp.
+  google.protobuf.Timestamp updated_at = 23;
+}
+
+// ProofOfDelivery captures evidence recorded at delivery time.
+message ProofOfDelivery {
+  // URL to the signature image stored in object storage.
+  string signature_url = 20;
+
+  // URLs of delivery photo(s).
+  repeated string photo_urls = 2;
+
+  // OTP confirmed by the recipient (if OTP-delivery mode).
+  string otp_confirmed = 3;
+
+  // Name of the person who accepted the delivery.
+  string recipient_name = 4;
+
+  // GPS location at the time of delivery capture.
+  DriverLocation capture_location = 5;
+
+  // Device timestamp when POD was captured.
+  google.protobuf.Timestamp captured_at = 6;
+}
+
+// DriverInstruction is a push message sent from the backend to the driver app.
+message DriverInstruction {
+  // Unique instruction identifier.
+  string instruction_id = 1;
+
+  // Target driver.
+  string driver_id = 2;
+
+  // Owning tenant.
+  string tenant_id = 3;
+
+  // Category of the instruction.
+  InstructionType type = 4;
+
+  // Short display title shown in the app notification.
+  string title = 5;
+
+  // Full instruction body text.
+  string body = 6;
+
+  // Optional reference task to navigate to or act on.
+  string related_task_id = 7;
+
+  // Structured payload consumed by the driver app (JSON encoded).
+  string payload_json = 8;
+
+  // Priority level: 1 (low) to 5 (critical).
+  int32 priority = 9;
+
+  // Expiry after which the instruction is no longer valid.
+  google.protobuf.Timestamp expires_at = 10;
+
+  // Timestamp when the instruction was created.
+  google.protobuf.Timestamp created_at = 11;
+}
+
+// DriverPerformance is an aggregated summary of a driver's KPIs over a period.
+message DriverPerformance {
+  // Driver being evaluated.
+  string driver_id = 1;
+
+  // Tenant context.
+  string tenant_id = 2;
+
+  // Start of the evaluation window.
+  google.protobuf.Timestamp period_start = 3;
+
+  // End of the evaluation window.
+  google.protobuf.Timestamp period_end = 4;
+
+  // Total delivery tasks completed in period.
+  int32 delivery_count = 5;
+
+  // Total pickup tasks completed in period.
+  int32 pickup_count = 6;
+
+  // Total return tasks completed in period.
+  int32 return_count = 7;
+
+  // Failed tasks count.
+  int32 failed_count = 8;
+
+  // Delivery success rate as a fraction (0.0–1.0).
+  float success_rate = 9;
+
+  // Average customer rating (1.0–5.0). 0.0 if no ratings.
+  float avg_rating = 10;
+
+  // Percentage of tasks completed within SLA window (0.0–100.0).
+  float on_time_percent = 11;
+
+  // Total kilometres driven during period.
+  float total_km_driven = 12;
+
+  // Average minutes per task.
+  float avg_task_minutes = 13;
+
+  // Total COD collected in cents.
+  int64 total_cod_collected_cents = 14;
+
+  // Currency for cod_collected.
+  string currency = 15;
+
+  // Number of unique customer ratings received.
+  int32 rating_count = 16;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Request / Response Messages
+// ─────────────────────────────────────────────────────────────────────────────
+
+message GetDriverLocationRequest {
+  string driver_id = 1;
+  string tenant_id = 2;
+}
+
+message GetDriverLocationResponse {
+  DriverLocation location = 1;
+}
+
+message SendDriverInstructionRequest {
+  string tenant_id    = 1;
+  string driver_id    = 2;
+  InstructionType type = 3;
+  string title        = 4;
+  string body         = 5;
+  string related_task_id = 6;
+  string payload_json = 7;
+  // Priority 1–5. Defaults to 2 if omitted.
+  int32 priority      = 8;
+  google.protobuf.Timestamp expires_at = 9;
+}
+
+message SendDriverInstructionResponse {
+  // The created instruction record.
+  DriverInstruction instruction = 1;
+  // Whether the instruction was successfully delivered to the device.
+  bool delivered = 2;
+}
+
+message GetDriverTasksRequest {
+  string driver_id  = 1;
+  string tenant_id  = 2;
+  // Filter by status. Empty list returns all statuses.
+  repeated TaskStatus statuses = 3;
+  // If true, return only today's tasks.
+  bool today_only   = 4;
+  // Pagination cursor (task_id of the last item from previous page).
+  string page_cursor = 5;
+  // Maximum tasks to return. Defaults to 50, max 200.
+  int32 page_size   = 6;
+}
+
+message GetDriverTasksResponse {
+  repeated DriverTask tasks = 1;
+  // Cursor for the next page. Empty string means no more pages.
+  string next_cursor = 2;
+  // Total count of matching tasks (for pagination display).
+  int32 total_count  = 3;
+}
+
+message UpdateTaskStatusRequest {
+  string task_id    = 1;
+  string tenant_id  = 2;
+  string driver_id  = 3;
+  TaskStatus status = 4;
+  // Required when status = FAILED.
+  string failure_reason = 5;
+  // Proof of delivery; required when status = COMPLETED for delivery tasks.
+  ProofOfDelivery proof = 6;
+  // Driver's current location at the time of the update.
+  DriverLocation current_location = 7;
+  // Idempotency key to prevent duplicate status transitions.
+  string idempotency_key = 8;
+}
+
+message UpdateTaskStatusResponse {
+  DriverTask task = 1;
+}
+
+message GetDriverPerformanceRequest {
+  string driver_id  = 1;
+  string tenant_id  = 2;
+  google.protobuf.Timestamp period_start = 3;
+  google.protobuf.Timestamp period_end   = 4;
+}
+
+message GetDriverPerformanceResponse {
+  DriverPerformance performance = 1;
+}
+
+// StreamDriverLocationsRequest configures a server-streaming location feed.
+message StreamDriverLocationsRequest {
+  string tenant_id = 1;
+  // Filter to specific drivers. Empty = stream all active drivers for tenant.
+  repeated string driver_ids = 2;
+  // Only emit updates where location has changed by at least this many metres.
+  float min_displacement_metres = 3;
+  // Throttle: minimum milliseconds between updates per driver.
+  int32 throttle_ms = 4;
+}
+
+// StreamDriverLocationsResponse is the message emitted per location event.
+message StreamDriverLocationsResponse {
+  DriverLocation location = 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Service Definition
+// ─────────────────────────────────────────────────────────────────────────────
+
+// DriverOpsService manages driver state, tasks, instructions, and performance.
+//
+// All RPCs require a valid tenant-scoped JWT in the `authorization` metadata
+// header (Bearer token). Tenant isolation is enforced server-side; requests
+// for driver_ids that do not belong to the authenticated tenant are rejected
+// with NOT_FOUND to avoid tenant enumeration.
+service DriverOpsService {
+  // GetDriverLocation returns the latest known GPS fix for a specific driver.
+  // Returns NOT_FOUND if the driver has no recorded location yet.
+  rpc GetDriverLocation(GetDriverLocationRequest) returns (GetDriverLocationResponse);
+
+  // SendDriverInstruction pushes a structured command or notification to the
+  // driver's mobile device via FCM/APNs. The instruction is also persisted so
+  // the driver app can fetch missed instructions on reconnect.
+  rpc SendDriverInstruction(SendDriverInstructionRequest) returns (SendDriverInstructionResponse);
+
+  // GetDriverTasks returns the paginated task list for a driver, optionally
+  // filtered by status or restricted to today's assignments.
+  rpc GetDriverTasks(GetDriverTasksRequest) returns (GetDriverTasksResponse);
+
+  // UpdateTaskStatus transitions a task's lifecycle state and captures POD
+  // evidence atomically. Emits a Kafka `driver.task.status_updated` event.
+  rpc UpdateTaskStatus(UpdateTaskStatusRequest) returns (UpdateTaskStatusResponse);
+
+  // GetDriverPerformance returns aggregated KPI metrics for a driver over a
+  // specified time window. Backed by TimescaleDB continuous aggregates.
+  rpc GetDriverPerformance(GetDriverPerformanceRequest) returns (GetDriverPerformanceResponse);
+
+  // StreamDriverLocations is a server-streaming RPC that pushes live location
+  // updates for one or more drivers. Used by the Admin Portal live map and the
+  // Dispatch engine to monitor fleet positions in real time.
+  // The stream is kept alive until the client cancels or the server detects
+  // the client has disconnected. Each event is gated by min_displacement and
+  // throttle_ms to prevent flooding slow consumers.
+  rpc StreamDriverLocations(StreamDriverLocationsRequest) returns (stream StreamDriverLocationsResponse);
+}

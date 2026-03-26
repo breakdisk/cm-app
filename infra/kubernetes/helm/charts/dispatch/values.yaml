@@ -1,0 +1,109 @@
+# Helm values override for the Dispatch & Routing service.
+# CPU allocation is elevated due to VRP (Vehicle Routing Problem) solver
+# and geospatial computation via PostGIS. Memory reflects route graph caching.
+# Ref: services/dispatch — Rust + PostGIS + Redis
+
+image:
+  repository: ghcr.io/logisticos/dispatch
+  pullPolicy: IfNotPresent
+  tag: ""
+
+replicaCount: 2
+
+service:
+  type: ClusterIP
+  port: 8005
+  grpcPort: 9005
+
+env:
+  - name: SERVICE_NAME
+    value: dispatch
+  - name: SERVICE_PORT
+    value: "8005"
+  - name: GRPC_PORT
+    value: "9005"
+  - name: LOG_LEVEL
+    value: info
+  - name: RUST_LOG
+    value: "dispatch=info,tower_http=info"
+  # VRP solver algorithm: "clarke_wright" | "or_tools" | "ai_optimized"
+  - name: VRP_SOLVER
+    value: or_tools
+  # Maximum stops per route optimisation call.
+  - name: VRP_MAX_STOPS
+    value: "150"
+  # OR-Tools time limit per solve in milliseconds.
+  - name: VRP_SOLVE_TIMEOUT_MS
+    value: "3000"
+  # Driver location cache TTL in Redis (seconds).
+  - name: DRIVER_LOCATION_CACHE_TTL_SECS
+    value: "30"
+
+resources:
+  # VRP solver is CPU-intensive; 1000m ensures the solver is not throttled
+  # during peak dispatch windows.
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+  requests:
+    cpu: 300m
+    memory: 256Mi
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 15
+  targetCPUUtilizationPercentage: 65
+  targetMemoryUtilizationPercentage: 75
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8005
+  initialDelaySeconds: 15
+  periodSeconds: 15
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8005
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  failureThreshold: 3
+
+podAnnotations:
+  vault.hashicorp.com/agent-inject: "true"
+  vault.hashicorp.com/role: "dispatch"
+  vault.hashicorp.com/agent-inject-secret-config: "secret/data/logisticos/dispatch"
+  vault.hashicorp.com/agent-inject-template-config: |
+    {{- with secret "secret/data/logisticos/dispatch" -}}
+    export DATABASE_URL="{{ .Data.data.database_url }}"
+    export REDIS_URL="{{ .Data.data.redis_url }}"
+    export KAFKA_BROKERS="{{ .Data.data.kafka_brokers }}"
+    export HERE_ROUTING_API_KEY="{{ .Data.data.here_routing_api_key }}"
+    export MAPBOX_ACCESS_TOKEN="{{ .Data.data.mapbox_access_token }}"
+    {{- end -}}
+
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    path: /metrics
+    interval: 15s
+
+# Dispatch pods benefit from consistent node placement to keep the route
+# graph warm in memory; prefer not to reschedule unnecessarily.
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 80
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app: dispatch
+          topologyKey: kubernetes.io/hostname

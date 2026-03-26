@@ -1,0 +1,97 @@
+# Helm values override for the Order & Shipment Intake service.
+# Handles order creation, validation, address normalisation, and AWB generation.
+# Ref: services/order-intake — Rust + PostgreSQL
+
+image:
+  repository: ghcr.io/logisticos/order-intake
+  pullPolicy: IfNotPresent
+  tag: ""
+
+replicaCount: 3
+
+service:
+  type: ClusterIP
+  port: 8004
+  grpcPort: 9004
+
+env:
+  - name: SERVICE_NAME
+    value: order-intake
+  - name: SERVICE_PORT
+    value: "8004"
+  - name: GRPC_PORT
+    value: "9004"
+  - name: LOG_LEVEL
+    value: info
+  - name: RUST_LOG
+    value: "order_intake=info,tower_http=info,sqlx=warn"
+  # Geocoding provider for address normalisation.
+  - name: GEOCODER_PROVIDER
+    value: google
+  # Maximum bulk upload size per request (number of shipments).
+  - name: BULK_UPLOAD_MAX_ROWS
+    value: "5000"
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+hpa:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+pdb:
+  enabled: true
+  minAvailable: 2
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8004
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8004
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  failureThreshold: 3
+
+podAnnotations:
+  vault.hashicorp.com/agent-inject: "true"
+  vault.hashicorp.com/role: "order-intake"
+  vault.hashicorp.com/agent-inject-secret-config: "secret/data/logisticos/order-intake"
+  vault.hashicorp.com/agent-inject-template-config: |
+    {{- with secret "secret/data/logisticos/order-intake" -}}
+    export DATABASE_URL="{{ .Data.data.database_url }}"
+    export KAFKA_BROKERS="{{ .Data.data.kafka_brokers }}"
+    export GOOGLE_GEOCODING_API_KEY="{{ .Data.data.google_geocoding_api_key }}"
+    export AWB_SEQUENCE_REDIS_URL="{{ .Data.data.awb_sequence_redis_url }}"
+    {{- end -}}
+
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    path: /metrics
+    interval: 15s
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app: order-intake
+          topologyKey: kubernetes.io/hostname

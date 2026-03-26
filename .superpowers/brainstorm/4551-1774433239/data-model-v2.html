@@ -1,0 +1,169 @@
+<h2>Data Model — Generic Compliance Service (v2)</h2>
+<p class="subtitle">Revised: entity_type + entity_id replaces driver_id. Driver compliance is the first implementation.</p>
+
+<style>
+.erd { display: flex; gap: 24px; flex-wrap: wrap; margin-top: 16px; }
+.entity { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; min-width: 210px; flex: 1; overflow: hidden; }
+.entity-header { padding: 10px 14px; font-size: 11px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; }
+.entity-header.cyan   { background: rgba(0,229,255,0.12);  color: #00E5FF; border-bottom: 1px solid rgba(0,229,255,0.2); }
+.entity-header.purple { background: rgba(168,85,247,0.12); color: #A855F7; border-bottom: 1px solid rgba(168,85,247,0.2); }
+.entity-header.amber  { background: rgba(255,171,0,0.12);  color: #FFAB00; border-bottom: 1px solid rgba(255,171,0,0.2); }
+.entity-header.green  { background: rgba(0,255,136,0.10);  color: #00FF88; border-bottom: 1px solid rgba(0,255,136,0.2); }
+.entity-field { display: flex; align-items: center; gap: 8px; padding: 6px 14px; border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 12px; }
+.entity-field:last-child { border-bottom: none; }
+.field-name { flex: 1; color: rgba(255,255,255,0.75); font-family: monospace; }
+.field-type { font-size: 10px; color: rgba(255,255,255,0.3); font-family: monospace; }
+.field-tag { font-size: 9px; padding: 1px 5px; border-radius: 4px; font-weight: 600; letter-spacing: 0.5px; }
+.pk  { background: rgba(255,171,0,0.15); color: #FFAB00; }
+.fk  { background: rgba(0,229,255,0.12); color: #00E5FF; }
+.idx { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.4); }
+.new { background: rgba(0,255,136,0.15); color: #00FF88; }
+.enum-pill { display: inline-block; background: rgba(168,85,247,0.12); color: #A855F7; border: 1px solid rgba(168,85,247,0.25); border-radius: 20px; font-size: 10px; padding: 2px 8px; margin: 2px; font-family: monospace; }
+.new-pill  { display: inline-block; background: rgba(0,255,136,0.10); color: #00FF88; border: 1px solid rgba(0,255,136,0.25); border-radius: 20px; font-size: 10px; padding: 2px 8px; margin: 2px; font-family: monospace; }
+.enums { padding: 10px 14px; }
+.enum-label { font-size: 10px; color: rgba(255,255,255,0.3); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+.changed-note { font-size: 10px; color: #00FF88; background: rgba(0,255,136,0.08); border: 1px solid rgba(0,255,136,0.2); border-radius: 6px; padding: 6px 10px; margin: 8px 14px; }
+.rel-row { display: flex; align-items: center; gap: 10px; padding: 6px 14px; font-size: 11px; color: rgba(255,255,255,0.4); border-bottom: 1px solid rgba(255,255,255,0.04); }
+.rel-row:last-child { border-bottom: none; }
+.rel-from { color: #00E5FF; font-family: monospace; font-size: 11px; }
+.rel-to   { color: #A855F7; font-family: monospace; font-size: 11px; }
+.rel-type { font-size: 10px; background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; }
+.section-note { font-size: 11px; color: rgba(255,255,255,0.35); margin: 20px 0 6px; text-transform: uppercase; letter-spacing: 1px; }
+.scope-bar { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+.scope-pill { font-size: 11px; padding: 4px 12px; border-radius: 20px; font-weight: 600; }
+.scope-active  { background: rgba(0,229,255,0.15); color: #00E5FF; border: 1px solid rgba(0,229,255,0.3); }
+.scope-later   { background: rgba(255,255,255,0.05); color: rgba(255,255,255,0.3); border: 1px solid rgba(255,255,255,0.1); }
+</style>
+
+<div class="scope-bar">
+  <span class="scope-pill scope-active">✓ This spec: Driver</span>
+  <span class="scope-pill scope-later">Follow-on: Partner / Carrier</span>
+  <span class="scope-pill scope-later">Follow-on: Merchant</span>
+</div>
+
+<div class="erd">
+
+  <!-- ComplianceProfile -->
+  <div class="entity">
+    <div class="entity-header cyan">ComplianceProfile</div>
+    <div class="entity-field"><span class="field-tag pk">PK</span><span class="field-name">id</span><span class="field-type">uuid</span></div>
+    <div class="entity-field"><span class="field-tag fk">FK</span><span class="field-name">tenant_id</span><span class="field-type">uuid</span></div>
+    <div class="entity-field"><span class="field-tag new">NEW</span><span class="field-name">entity_type</span><span class="field-type">enum</span></div>
+    <div class="entity-field"><span class="field-tag new">NEW</span><span class="field-name">entity_id</span><span class="field-type">uuid</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">overall_status</span><span class="field-type">enum</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">jurisdiction</span><span class="field-type">varchar</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">last_reviewed_at</span><span class="field-type">timestamptz?</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">reviewed_by</span><span class="field-type">uuid?</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">suspended_at</span><span class="field-type">timestamptz?</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">created_at</span><span class="field-type">timestamptz</span></div>
+    <div class="changed-note">driver_id removed → entity_type + entity_id.<br>UNIQUE INDEX on (tenant_id, entity_type, entity_id).</div>
+    <div class="enums">
+      <div class="enum-label">entity_type</div>
+      <span class="new-pill">driver</span>
+      <span class="new-pill">partner</span>
+      <span class="new-pill">merchant</span>
+      <div class="enum-label" style="margin-top:8px">overall_status</div>
+      <span class="enum-pill">pending_submission</span>
+      <span class="enum-pill">under_review</span>
+      <span class="enum-pill">compliant</span>
+      <span class="enum-pill">expiring_soon</span>
+      <span class="enum-pill">expired</span>
+      <span class="enum-pill">suspended</span>
+      <span class="enum-pill">rejected</span>
+    </div>
+  </div>
+
+  <!-- DocumentType -->
+  <div class="entity">
+    <div class="entity-header amber">DocumentType</div>
+    <div class="entity-field"><span class="field-tag pk">PK</span><span class="field-name">id</span><span class="field-type">uuid</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">code</span><span class="field-type">varchar UNIQUE</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">jurisdiction</span><span class="field-type">varchar</span></div>
+    <div class="entity-field"><span class="field-tag new">NEW</span><span class="field-name">applicable_to</span><span class="field-type">text[]</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">name</span><span class="field-type">varchar</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">is_required</span><span class="field-type">bool</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">has_expiry</span><span class="field-type">bool</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">warn_days_before</span><span class="field-type">int</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">grace_period_days</span><span class="field-type">int</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">vehicle_classes</span><span class="field-type">text[]</span></div>
+    <div class="changed-note">applicable_to: ["driver"], ["partner"], ["merchant"], or ["driver","partner"] etc.</div>
+    <div class="enums">
+      <div class="enum-label">seeded — driver (this spec)</div>
+      <span class="enum-pill">UAE_EMIRATES_ID</span>
+      <span class="enum-pill">UAE_DRIVING_LICENSE</span>
+      <span class="enum-pill">UAE_MULKIYA</span>
+      <span class="enum-pill">UAE_INSURANCE</span>
+      <span class="enum-pill">PH_LTO_LICENSE</span>
+      <span class="enum-pill">PH_OR_CR</span>
+      <span class="enum-pill">PH_NBI_CLEARANCE</span>
+      <span class="enum-pill">PH_CTPL</span>
+      <div class="enum-label" style="margin-top:8px">seeded — follow-on specs</div>
+      <span class="new-pill">UAE_TRADE_LICENSE</span>
+      <span class="new-pill">UAE_RTA_PERMIT</span>
+      <span class="new-pill">PH_LTFRB_FRANCHISE</span>
+      <span class="new-pill">PH_TIN</span>
+      <span class="new-pill">PH_BIR_CERT</span>
+    </div>
+  </div>
+
+  <!-- DriverDocument -->
+  <div class="entity">
+    <div class="entity-header purple">DriverDocument</div>
+    <div class="entity-field"><span class="field-tag pk">PK</span><span class="field-name">id</span><span class="field-type">uuid</span></div>
+    <div class="entity-field"><span class="field-tag fk">FK</span><span class="field-name">compliance_profile_id</span><span class="field-type">uuid</span></div>
+    <div class="entity-field"><span class="field-tag fk">FK</span><span class="field-name">document_type_id</span><span class="field-type">uuid</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">document_number</span><span class="field-type">varchar</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">issue_date</span><span class="field-type">date?</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">expiry_date</span><span class="field-type">date?</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">file_url</span><span class="field-type">varchar</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">status</span><span class="field-type">enum</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">rejection_reason</span><span class="field-type">text?</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">reviewed_by</span><span class="field-type">uuid?</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">reviewed_at</span><span class="field-type">timestamptz?</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">submitted_at</span><span class="field-type">timestamptz</span></div>
+    <div class="enums">
+      <div class="enum-label">status</div>
+      <span class="enum-pill">submitted</span>
+      <span class="enum-pill">under_review</span>
+      <span class="enum-pill">approved</span>
+      <span class="enum-pill">rejected</span>
+      <span class="enum-pill">expired</span>
+      <span class="enum-pill">superseded</span>
+    </div>
+  </div>
+
+  <!-- ComplianceAuditLog -->
+  <div class="entity">
+    <div class="entity-header green">ComplianceAuditLog</div>
+    <div class="entity-field"><span class="field-tag pk">PK</span><span class="field-name">id</span><span class="field-type">uuid</span></div>
+    <div class="entity-field"><span class="field-tag fk">FK</span><span class="field-name">compliance_profile_id</span><span class="field-type">uuid</span></div>
+    <div class="entity-field"><span class="field-tag fk">FK</span><span class="field-name">document_id</span><span class="field-type">uuid?</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">event_type</span><span class="field-type">enum</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">actor_id</span><span class="field-type">uuid</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">actor_type</span><span class="field-type">enum</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">notes</span><span class="field-type">text?</span></div>
+    <div class="entity-field"><span class="field-tag idx">·</span><span class="field-name">created_at</span><span class="field-type">timestamptz</span></div>
+    <div class="enums">
+      <div class="enum-label">event_type</div>
+      <span class="enum-pill">doc_submitted</span>
+      <span class="enum-pill">doc_approved</span>
+      <span class="enum-pill">doc_rejected</span>
+      <span class="enum-pill">expiry_warned</span>
+      <span class="enum-pill">grace_started</span>
+      <span class="enum-pill">driver_suspended</span>
+      <span class="enum-pill">driver_reinstated</span>
+      <span class="enum-pill">admin_override</span>
+    </div>
+  </div>
+
+</div>
+
+<div class="section-note">Relationships</div>
+<div class="entity" style="max-width: 700px;">
+  <div class="rel-row"><span class="rel-from">ComplianceProfile</span><span class="rel-type">1 : N</span><span class="rel-to">DriverDocument</span><span style="color:rgba(255,255,255,0.3);font-size:11px">one profile → many doc submissions</span></div>
+  <div class="rel-row"><span class="rel-from">DriverDocument</span><span class="rel-type">N : 1</span><span class="rel-to">DocumentType</span><span style="color:rgba(255,255,255,0.3);font-size:11px">each doc instance typed from config registry</span></div>
+  <div class="rel-row"><span class="rel-from">ComplianceAuditLog</span><span class="rel-type">N : 1</span><span class="rel-to">ComplianceProfile</span><span style="color:rgba(255,255,255,0.3);font-size:11px">immutable event log, append-only</span></div>
+  <div class="rel-row"><span class="rel-from">overall_status</span><span class="rel-type">derived</span><span class="rel-to">DriverDocument.status[]</span><span style="color:rgba(255,255,255,0.3);font-size:11px">recomputed on every doc state change</span></div>
+</div>
+</content>
+</invoke>

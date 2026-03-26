@@ -1,0 +1,642 @@
+# ============================================================
+# LogisticOS — Rust CI Pipeline
+# ============================================================
+# Runs on every push/PR touching Rust source.
+# Jobs: detect-changes → lint → test → security-audit → benchmark
+# ============================================================
+
+name: CI — Rust
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - "services/**"
+      - "libs/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/ci-rust.yml"
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - "services/**"
+      - "libs/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/ci-rust.yml"
+
+concurrency:
+  group: ci-rust-${{ github.ref }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  SQLX_OFFLINE: "true"   # lint/check jobs use pre-generated .sqlx metadata
+
+jobs:
+  # ──────────────────────────────────────────────────────────────
+  # JOB 1: detect-changes
+  # Uses dorny/paths-filter to produce a JSON matrix of only the
+  # services/libs that actually changed, keeping CI fast.
+  # ──────────────────────────────────────────────────────────────
+  detect-changes:
+    name: Detect Changed Services
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+
+    outputs:
+      rust_changed: ${{ steps.filter.outputs.rust_any }}
+      has_lib_changes: ${{ steps.filter.outputs.libs }}
+      matrix: ${{ steps.build-matrix.outputs.matrix }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Detect changed paths
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            rust_any:
+              - "services/**"
+              - "libs/**"
+              - "Cargo.toml"
+              - "Cargo.lock"
+            libs:
+              - "libs/**"
+            api-gateway:
+              - "services/api-gateway/**"
+            identity:
+              - "services/identity/**"
+            cdp:
+              - "services/cdp/**"
+            engagement:
+              - "services/engagement/**"
+            order-intake:
+              - "services/order-intake/**"
+            dispatch:
+              - "services/dispatch/**"
+            driver-ops:
+              - "services/driver-ops/**"
+            delivery-experience:
+              - "services/delivery-experience/**"
+            fleet:
+              - "services/fleet/**"
+            hub-ops:
+              - "services/hub-ops/**"
+            carrier:
+              - "services/carrier/**"
+            pod:
+              - "services/pod/**"
+            payments:
+              - "services/payments/**"
+            analytics:
+              - "services/analytics/**"
+            marketing:
+              - "services/marketing/**"
+            business-logic:
+              - "services/business-logic/**"
+            ai-layer:
+              - "services/ai-layer/**"
+
+      - name: Build test matrix
+        id: build-matrix
+        shell: bash
+        run: |
+          ALL_SERVICES='["api-gateway","identity","cdp","engagement","order-intake","dispatch","driver-ops","delivery-experience","fleet","hub-ops","carrier","pod","payments","analytics","marketing","business-logic","ai-layer"]'
+
+          # If shared lib changes, test all services (transitive impact)
+          if [ "${{ steps.filter.outputs.libs }}" == "true" ]; then
+            echo "Lib changes detected — running full service matrix"
+            echo "matrix={\"service\":${ALL_SERVICES}}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Otherwise build matrix from only changed services
+          CHANGED="[]"
+          declare -a ALL=(
+            api-gateway identity cdp engagement order-intake dispatch
+            driver-ops delivery-experience fleet hub-ops carrier pod
+            payments analytics marketing business-logic ai-layer
+          )
+
+          for SVC in "${ALL[@]}"; do
+            # dorny/paths-filter outputs are available as JSON on steps.filter.outputs
+            VAL=$(echo '${{ toJSON(steps.filter.outputs) }}' | python3 -c \
+              "import sys,json; d=json.load(sys.stdin); print(d.get('$SVC','false'))" 2>/dev/null || echo "false")
+            if [ "$VAL" == "true" ]; then
+              CHANGED=$(echo "$CHANGED" | python3 -c \
+                "import sys,json; l=json.load(sys.stdin); l.append('${SVC}'); print(json.dumps(l))" 2>/dev/null || echo "$CHANGED")
+            fi
+          done
+
+          # Guarantee at least one entry so matrix jobs don't fail with empty matrix
+          if [ "$CHANGED" == "[]" ]; then
+            echo "No specific service changes detected — defaulting to api-gateway"
+            CHANGED='["api-gateway"]'
+          fi
+
+          echo "Test matrix services: $CHANGED"
+          echo "matrix={\"service\":${CHANGED}}" >> "$GITHUB_OUTPUT"
+
+  # ──────────────────────────────────────────────────────────────
+  # JOB 2: lint
+  # Runs rustfmt (format check) and clippy (deny all warnings)
+  # across the entire workspace. Runs once — not per-service.
+  # ──────────────────────────────────────────────────────────────
+  lint:
+    name: Lint (fmt + clippy)
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.rust_changed == 'true'
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable + components)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Restore Cargo registry cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Restore build cache (lint)
+        uses: actions/cache@v4
+        with:
+          path: target/
+          key: ${{ runner.os }}-cargo-build-lint-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-lint-
+            ${{ runner.os }}-cargo-build-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy — deny all warnings
+        run: |
+          cargo clippy \
+            --workspace \
+            --all-targets \
+            --all-features \
+            -- -D warnings \
+               -D clippy::all \
+               -A clippy::module_name_repetitions \
+               -A clippy::must_use_candidate \
+               -A clippy::missing_errors_doc \
+               -A clippy::missing_panics_doc \
+               -A clippy::too_many_lines
+
+      - name: Enforce zero .unwrap() in production paths
+        run: |
+          echo "Scanning for disallowed .unwrap() calls outside test code..."
+          VIOLATIONS=$(grep -rn '\.unwrap()' services/ libs/ \
+            --include='*.rs' \
+            | grep -v '#\[cfg(test)\]' \
+            | grep -v '#\[test\]' \
+            | grep -v '_test\.rs' \
+            | grep -v 'tests/' \
+            | grep -v '// SAFETY:' \
+            | grep -v '// unwrap_ok:' \
+            | head -30 || true)
+
+          if [ -n "$VIOLATIONS" ]; then
+            echo "ERROR: .unwrap() calls found in non-test production code:"
+            echo ""
+            echo "$VIOLATIONS"
+            echo ""
+            echo "Use ? operator with thiserror/anyhow for error propagation."
+            exit 1
+          fi
+          echo "No forbidden .unwrap() calls."
+
+      - name: Check all services expose /health /metrics /ready
+        run: |
+          echo "Verifying required endpoints are registered..."
+          MISSING=""
+          for SVC in services/*/src/main.rs services/*/src/router.rs; do
+            [ -f "$SVC" ] || continue
+            DIR=$(dirname "$(dirname "$SVC")")
+            NAME=$(basename "$DIR")
+            # Check for health route registration in main.rs or router.rs
+            if ! grep -qE '"/health"|health_handler|route_health' "$DIR/src/main.rs" \
+               "$DIR/src/router.rs" 2>/dev/null; then
+              MISSING="$MISSING $NAME"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "WARNING: Services possibly missing /health route:$MISSING"
+            echo "Ensure each service registers GET /health, /metrics, and /ready"
+          fi
+
+  # ──────────────────────────────────────────────────────────────
+  # JOB 3: test
+  # Runs full test suite per changed service with live PostgreSQL
+  # (postgis/postgis:16-3.4) and Redis (redis:7-alpine) sidecars.
+  # ──────────────────────────────────────────────────────────────
+  test:
+    name: Test (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    needs:
+      - detect-changes
+      - lint
+
+    if: needs.detect-changes.outputs.rust_changed == 'true'
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.detect-changes.outputs.matrix) }}
+
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: logisticos_test
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: logisticos_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U logisticos_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 30s
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: "postgres://logisticos_test:test_password@localhost:5432/logisticos_test"
+      REDIS_URL: "redis://localhost:6379"
+      KAFKA_BROKERS: ""          # Kafka not wired in CI — services must handle gracefully
+      JWT_SECRET: "ci-test-secret-not-for-production-use-32ch"
+      JWT_EXPIRY_SECONDS: "3600"
+      REFRESH_TOKEN_EXPIRY_DAYS: "7"
+      RUST_LOG: "debug"
+      SQLX_OFFLINE: "false"      # Use live DB for integration tests
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install sqlx-cli
+        run: |
+          cargo install sqlx-cli \
+            --no-default-features \
+            --features postgres,rustls \
+            --locked \
+            --quiet
+
+      - name: Restore Cargo registry cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Restore build cache
+        uses: actions/cache@v4
+        with:
+          path: target/
+          key: ${{ runner.os }}-cargo-build-test-${{ matrix.service }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-test-${{ matrix.service }}-
+            ${{ runner.os }}-cargo-build-test-
+            ${{ runner.os }}-cargo-build-
+
+      - name: Wait for PostgreSQL to be ready
+        run: |
+          echo "Waiting for PostgreSQL..."
+          for i in $(seq 1 30); do
+            pg_isready -h localhost -p 5432 -U logisticos_test && break
+            echo "  attempt $i/30…"
+            sleep 2
+          done
+          echo "PostgreSQL ready."
+
+      - name: Initialize base schema
+        run: |
+          psql "$DATABASE_URL" -f scripts/db/init.sql 2>/dev/null || true
+
+      - name: Run database migrations for ${{ matrix.service }}
+        run: |
+          MIGRATIONS_DIR="services/${{ matrix.service }}/migrations"
+          if [ -d "$MIGRATIONS_DIR" ]; then
+            echo "Running migrations for ${{ matrix.service }}..."
+            sqlx migrate run \
+              --source "$MIGRATIONS_DIR" \
+              --database-url "$DATABASE_URL"
+          else
+            echo "No migrations directory for ${{ matrix.service }} — skipping."
+          fi
+
+      - name: Build ${{ matrix.service }} (check compile)
+        run: |
+          cargo build \
+            --package "logisticos-${{ matrix.service }}" \
+            --all-features
+        env:
+          SQLX_OFFLINE: "false"
+
+      - name: Run unit tests
+        run: |
+          cargo test \
+            --package "logisticos-${{ matrix.service }}" \
+            --lib \
+            --no-fail-fast \
+            -- --nocapture 2>&1 | tee test-unit-${{ matrix.service }}.log
+
+      - name: Run integration tests
+        run: |
+          cargo test \
+            --package "logisticos-${{ matrix.service }}" \
+            --test '*' \
+            --no-fail-fast \
+            -- --nocapture 2>&1 | tee test-integration-${{ matrix.service }}.log
+        continue-on-error: false
+
+      - name: Run doc tests
+        run: |
+          cargo test \
+            --package "logisticos-${{ matrix.service }}" \
+            --doc
+
+      - name: Upload test logs on failure
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-logs-${{ matrix.service }}-${{ github.sha }}
+          path: |
+            test-unit-${{ matrix.service }}.log
+            test-integration-${{ matrix.service }}.log
+          retention-days: 7
+
+      - name: Generate coverage (PR only)
+        if: github.event_name == 'pull_request'
+        run: |
+          cargo install cargo-tarpaulin --locked --quiet 2>/dev/null || true
+          if command -v cargo-tarpaulin &>/dev/null; then
+            cargo tarpaulin \
+              --package "logisticos-${{ matrix.service }}" \
+              --out Xml \
+              --output-dir coverage/ \
+              --timeout 120 \
+              --skip-clean \
+              2>/dev/null || true
+          fi
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        if: github.event_name == 'pull_request'
+        with:
+          files: coverage/cobertura.xml
+          flags: ${{ matrix.service }}
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  # ──────────────────────────────────────────────────────────────
+  # JOB 4: security-audit
+  # cargo-audit checks Cargo.lock against RustSec advisory DB.
+  # cargo-deny enforces license policy, bans, and advisories.
+  # ──────────────────────────────────────────────────────────────
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.rust_changed == 'true'
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Cargo registry cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --quiet
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --quiet
+
+      - name: Run cargo audit (RustSec CVE check)
+        run: |
+          cargo audit \
+            --deny warnings \
+            --deny unmaintained \
+            --deny unsound \
+            --deny yanked
+
+      - name: Run cargo deny (license + bans policy)
+        run: cargo deny check
+        # Reads from deny.toml at workspace root
+
+      - name: Scan for hardcoded credentials
+        run: |
+          echo "Scanning for hardcoded secrets in Rust source..."
+          FOUND=false
+
+          # Patterns that indicate hardcoded credentials
+          PATTERNS=(
+            'password\s*[:=]\s*"[^"]{8,}"'
+            'secret\s*[:=]\s*"[^"]{8,}"'
+            'api_key\s*[:=]\s*"[^"]{8,}"'
+            'ANTHROPIC_API_KEY\s*[:=]\s*"sk-'
+            'OPENAI_API_KEY\s*[:=]\s*"sk-'
+            'token\s*[:=]\s*"[A-Za-z0-9+/]{40,}"'
+          )
+
+          for PATTERN in "${PATTERNS[@]}"; do
+            HITS=$(grep -rniE "$PATTERN" services/ libs/ \
+              --include='*.rs' \
+              | grep -v 'test\|mock\|example\|TODO\|placeholder\|your-' \
+              | grep -v '#\[cfg(test)\]' \
+              | head -5 || true)
+            if [ -n "$HITS" ]; then
+              echo "Potential secret found (pattern: $PATTERN):"
+              echo "$HITS"
+              FOUND=true
+            fi
+          done
+
+          if [ "$FOUND" == "true" ]; then
+            echo ""
+            echo "FAIL: Hardcoded credential patterns detected."
+            echo "Use environment variables or Vault references instead."
+            exit 1
+          fi
+
+          echo "Secrets scan passed."
+
+  # ──────────────────────────────────────────────────────────────
+  # JOB 5: benchmark
+  # Runs cargo bench on dispatch and order-intake (performance-
+  # critical services). Only on pushes to main. Uploads results
+  # as artifacts and posts regression alerts via PR comments.
+  # ──────────────────────────────────────────────────────────────
+  benchmark:
+    name: Benchmark (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    needs:
+      - detect-changes
+      - test
+    if: |
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.detect-changes.outputs.rust_changed == 'true'
+    permissions:
+      contents: write   # needed to push benchmark results to gh-pages branch
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - dispatch
+          - order-intake
+
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: logisticos_bench
+          POSTGRES_PASSWORD: bench_password
+          POSTGRES_DB: logisticos_bench
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U logisticos_bench"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 30s
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: "postgres://logisticos_bench:bench_password@localhost:5432/logisticos_bench"
+      REDIS_URL: "redis://localhost:6379"
+      SQLX_OFFLINE: "false"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install sqlx-cli
+        run: |
+          cargo install sqlx-cli \
+            --no-default-features \
+            --features postgres,rustls \
+            --locked --quiet
+
+      - name: Restore Cargo registry cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Restore build cache (bench)
+        uses: actions/cache@v4
+        with:
+          path: target/
+          key: ${{ runner.os }}-cargo-bench-${{ matrix.service }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bench-${{ matrix.service }}-
+            ${{ runner.os }}-cargo-bench-
+
+      - name: Run migrations
+        run: |
+          MIGRATIONS_DIR="services/${{ matrix.service }}/migrations"
+          if [ -d "$MIGRATIONS_DIR" ]; then
+            sqlx migrate run \
+              --source "$MIGRATIONS_DIR" \
+              --database-url "$DATABASE_URL"
+          fi
+
+      - name: Run benchmarks
+        run: |
+          cargo bench \
+            --package "logisticos-${{ matrix.service }}" \
+            -- --output-format bencher \
+            2>&1 | tee bench-results-${{ matrix.service }}.txt
+
+      - name: Upload benchmark artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.service }}-${{ github.sha }}
+          path: bench-results-${{ matrix.service }}.txt
+          retention-days: 90
+
+      - name: Track benchmark trend (alert on >20% regression)
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: "${{ matrix.service }} Benchmarks"
+          tool: cargo
+          output-file-path: bench-results-${{ matrix.service }}.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          comment-on-alert: true
+          alert-threshold: "120%"
+          fail-on-alert: true
+          alert-comment-cc-users: "@logisticos/backend-team"
+          benchmark-data-dir-path: docs/benchmarks/${{ matrix.service }}

@@ -1,0 +1,151 @@
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster:     logisticos
+    environment: production
+
+# ── Alertmanager ──────────────────────────────────────────────────────────────
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+# ── Rule files ────────────────────────────────────────────────────────────────
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+# ── Scrape configs — all 18 LogisticOS microservices ─────────────────────────
+scrape_configs:
+  # ── Platform Core ─────────────────────────────────────────────────────────
+  - job_name: api-gateway
+    static_configs:
+      - targets: ["api-gateway:8000"]
+    metrics_path: /metrics
+
+  - job_name: identity
+    static_configs:
+      - targets: ["identity:8001"]
+    metrics_path: /metrics
+
+  - job_name: business-logic
+    static_configs:
+      - targets: ["business-logic:8015"]
+    metrics_path: /metrics
+
+  # ── Engagement ────────────────────────────────────────────────────────────
+  - job_name: cdp
+    static_configs:
+      - targets: ["cdp:8002"]
+    metrics_path: /metrics
+
+  - job_name: engagement
+    static_configs:
+      - targets: ["engagement:8003"]
+    metrics_path: /metrics
+
+  - job_name: marketing
+    static_configs:
+      - targets: ["marketing:8014"]
+    metrics_path: /metrics
+
+  # ── Logistics ────────────────────────────────────────────────────────────
+  - job_name: order-intake
+    static_configs:
+      - targets: ["order-intake:8004"]
+    metrics_path: /metrics
+
+  - job_name: dispatch
+    static_configs:
+      - targets: ["dispatch:8005"]
+    metrics_path: /metrics
+
+  - job_name: driver-ops
+    static_configs:
+      - targets: ["driver-ops:8006"]
+    metrics_path: /metrics
+
+  - job_name: delivery-experience
+    static_configs:
+      - targets: ["delivery-experience:8007"]
+    metrics_path: /metrics
+
+  - job_name: fleet
+    static_configs:
+      - targets: ["fleet:8008"]
+    metrics_path: /metrics
+
+  - job_name: hub-ops
+    static_configs:
+      - targets: ["hub-ops:8009"]
+    metrics_path: /metrics
+
+  - job_name: carrier
+    static_configs:
+      - targets: ["carrier:8010"]
+    metrics_path: /metrics
+
+  - job_name: pod
+    static_configs:
+      - targets: ["pod:8011"]
+    metrics_path: /metrics
+
+  # ── Finance ───────────────────────────────────────────────────────────────
+  - job_name: payments
+    static_configs:
+      - targets: ["payments:8012"]
+    metrics_path: /metrics
+
+  # ── Intelligence ──────────────────────────────────────────────────────────
+  - job_name: analytics
+    static_configs:
+      - targets: ["analytics:8013"]
+    metrics_path: /metrics
+
+  - job_name: ai-layer
+    static_configs:
+      - targets: ["ai-layer:8016"]
+    metrics_path: /metrics
+
+  # ── Infrastructure ────────────────────────────────────────────────────────
+  - job_name: kafka
+    static_configs:
+      - targets: ["kafka-exporter:9308"]
+
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+
+  - job_name: node-exporter
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
+  # ── Kubernetes (if using kube-prometheus-stack) ───────────────────────────
+  - job_name: kubernetes-pods
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: ["logisticos"]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: "true"
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+        target_label: service

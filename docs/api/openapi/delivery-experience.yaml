@@ -1,0 +1,409 @@
+openapi: "3.1.0"
+info:
+  title: LogisticOS Customer Delivery Experience API
+  version: "1.0.0"
+  description: |
+    Public and authenticated tracking endpoints for the Customer Delivery Experience
+    service. The public endpoint requires no authentication and is designed to be
+    embedded in customer-facing tracking pages. Authenticated endpoints provide full
+    shipment detail and are used by merchant/ops portals.
+  contact:
+    name: LogisticOS Engineering
+    email: engineering@logisticos.io
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.logisticos.io
+    description: Production
+  - url: https://staging-api.logisticos.io
+    description: Staging
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Public Tracking
+    description: Unauthenticated customer-facing tracking (no auth required)
+  - name: Tracking
+    description: Authenticated tracking endpoints for merchants and operations
+
+paths:
+  /track/{tracking_number}:
+    get:
+      operationId: publicTrack
+      tags: [Public Tracking]
+      summary: Public shipment tracking
+      description: |
+        Returns customer-safe tracking information for a given AWB/tracking number.
+        No authentication required — designed for embedding in customer-facing pages
+        and SMS/WhatsApp tracking links.
+
+        Driver GPS coordinates are only returned when the shipment is `out_for_delivery`
+        or `assigned_to_driver`.
+      security: []
+      parameters:
+        - name: tracking_number
+          in: path
+          required: true
+          schema:
+            type: string
+          description: AWB / tracking number (e.g. LOS-2026-0012345)
+          example: LOS-2026-0012345
+      responses:
+        "200":
+          description: Tracking record found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicTrackingResponse"
+              examples:
+                out_for_delivery:
+                  summary: Shipment out for delivery with driver location
+                  value:
+                    tracking_number: "LOS-2026-0012345"
+                    status: "out_for_delivery"
+                    status_label: "Out for Delivery"
+                    origin: "123 Ayala Ave, Makati City, Metro Manila"
+                    destination: "456 Rizal St, Cebu City, Cebu"
+                    estimated_delivery: "2026-03-25"
+                    delivered_at: null
+                    attempt_number: 1
+                    next_attempt_at: null
+                    recipient_name: "Maria Santos"
+                    history:
+                      - status: "shipment_created"
+                        timestamp: "2026-03-24T08:00:00Z"
+                        note: "Shipment booked"
+                      - status: "picked_up"
+                        timestamp: "2026-03-24T10:30:00Z"
+                        note: "Picked up from sender"
+                      - status: "at_hub"
+                        timestamp: "2026-03-24T14:00:00Z"
+                        note: "Arrived at Makati Hub"
+                      - status: "out_for_delivery"
+                        timestamp: "2026-03-25T08:15:00Z"
+                        note: "Out for delivery"
+                    driver_location:
+                      lat: 10.3157
+                      lng: 123.8854
+        "404":
+          description: Tracking number not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Tracking number not found"
+
+  /v1/tracking/{shipment_id}:
+    get:
+      operationId: getTrackingByShipmentId
+      tags: [Tracking]
+      summary: Get full tracking record by shipment ID
+      description: |
+        Returns the complete internal tracking record for a shipment including all
+        status history events, attempt details, and driver information. Tenants can
+        only access their own shipments.
+      parameters:
+        - name: shipment_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Shipment UUID
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+      responses:
+        "200":
+          description: Tracking record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrackingRecord"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/tracking:
+    get:
+      operationId: listTracking
+      tags: [Tracking]
+      summary: List tracking records for tenant
+      description: |
+        Returns paginated tracking records for the authenticated tenant.
+        Results are ordered by creation time descending.
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+          description: Maximum records to return
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Pagination offset
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/TrackingStatus"
+          description: Filter by current status
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Filter shipments created from this date (ISO 8601)
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Filter shipments created up to this date (ISO 8601)
+      responses:
+        "200":
+          description: List of tracking records
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  shipments:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TrackingRecord"
+                  count:
+                    type: integer
+                    example: 42
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid JWT
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "Unauthorized"
+    Forbidden:
+      description: Insufficient permissions or cross-tenant access
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "Access denied"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "Not found"
+    RateLimited:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "Rate limit exceeded. Retry after 60 seconds."
+
+  schemas:
+    TrackingStatus:
+      type: string
+      enum:
+        - shipment_created
+        - assigned_to_driver
+        - pickup_attempted
+        - picked_up
+        - at_hub
+        - in_transit
+        - out_for_delivery
+        - delivery_attempted
+        - delivered
+        - return_initiated
+        - returned
+        - cancelled
+
+    StatusHistoryEvent:
+      type: object
+      properties:
+        status:
+          $ref: "#/components/schemas/TrackingStatus"
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-03-24T10:30:00Z"
+        note:
+          type: string
+          example: "Picked up from sender"
+        location:
+          type: string
+          nullable: true
+          example: "Makati City, Metro Manila"
+      required: [status, timestamp]
+
+    DriverPosition:
+      type: object
+      properties:
+        lat:
+          type: number
+          format: double
+          example: 10.3157
+        lng:
+          type: number
+          format: double
+          example: 123.8854
+      required: [lat, lng]
+
+    PublicTrackingResponse:
+      type: object
+      properties:
+        tracking_number:
+          type: string
+          example: "LOS-2026-0012345"
+        status:
+          $ref: "#/components/schemas/TrackingStatus"
+        status_label:
+          type: string
+          description: Human-readable status for display
+          example: "Out for Delivery"
+        origin:
+          type: string
+          example: "123 Ayala Ave, Makati City, Metro Manila"
+        destination:
+          type: string
+          example: "456 Rizal St, Cebu City, Cebu"
+        estimated_delivery:
+          type: string
+          format: date
+          nullable: true
+          example: "2026-03-25"
+        delivered_at:
+          type: string
+          format: date-time
+          nullable: true
+        attempt_number:
+          type: integer
+          minimum: 1
+          example: 1
+        next_attempt_at:
+          type: string
+          format: date-time
+          nullable: true
+        recipient_name:
+          type: string
+          example: "Maria Santos"
+        history:
+          type: array
+          items:
+            $ref: "#/components/schemas/StatusHistoryEvent"
+        driver_location:
+          $ref: "#/components/schemas/DriverPosition"
+          nullable: true
+          description: Present only when status is out_for_delivery or assigned_to_driver
+      required: [tracking_number, status, status_label, origin, destination, attempt_number, history]
+
+    TrackingRecord:
+      type: object
+      description: Full internal tracking record (authenticated access only)
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        shipment_id:
+          type: string
+          format: uuid
+          example: "b2c3d4e5-f6a7-8901-bcde-f12345678901"
+        tenant_id:
+          type: string
+          format: uuid
+        tracking_number:
+          type: string
+          example: "LOS-2026-0012345"
+        current_status:
+          $ref: "#/components/schemas/TrackingStatus"
+        origin_address:
+          type: string
+          example: "123 Ayala Ave, Makati City, Metro Manila 1226"
+        destination_address:
+          type: string
+          example: "456 Rizal St, Cebu City, Cebu 6000"
+        recipient_name:
+          type: string
+          example: "Maria Santos"
+        estimated_delivery:
+          type: string
+          format: date
+          nullable: true
+        delivered_at:
+          type: string
+          format: date-time
+          nullable: true
+        attempt_number:
+          type: integer
+          example: 1
+        next_attempt_at:
+          type: string
+          format: date-time
+          nullable: true
+        driver_id:
+          type: string
+          format: uuid
+          nullable: true
+        driver_position:
+          $ref: "#/components/schemas/DriverPosition"
+          nullable: true
+        status_history:
+          type: array
+          items:
+            $ref: "#/components/schemas/StatusHistoryEvent"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - shipment_id
+        - tenant_id
+        - tracking_number
+        - current_status
+        - origin_address
+        - destination_address
+        - recipient_name
+        - attempt_number
+        - status_history
+        - created_at
+        - updated_at
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]

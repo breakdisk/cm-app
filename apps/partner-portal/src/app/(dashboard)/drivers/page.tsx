@@ -1,0 +1,490 @@
+"use client";
+/**
+ * Partner Portal — Drivers Management Page
+ * Set driver type (part-time / full-time) and commission rates per driver.
+ */
+import { useState } from "react";
+import { motion } from "framer-motion";
+import { variants } from "@/lib/design-system/tokens";
+import { GlassCard } from "@/components/ui/glass-card";
+import { NeonBadge } from "@/components/ui/neon-badge";
+import { Users, Clock, Briefcase, Search, ChevronDown, Check, Pencil, X } from "lucide-react";
+import { cn } from "@/lib/design-system/cn";
+import { ComplianceBadge, canAssign } from "@/components/compliance/compliance-badge";
+
+// ── Types ──────────────────────────────────────────────────────────────────────
+
+type DriverType = "full_time" | "part_time";
+
+interface Driver {
+  id:                string;
+  name:              string;
+  phone:             string;
+  zone:              string;
+  driverType:        DriverType;
+  commissionRate:    number;   // PHP per delivery (part-time only)
+  codCommissionRate: number;   // fraction, e.g. 0.02 = 2%
+  deliveriesToday:   number;
+  deliveriesWeek:    number;
+  earningsToday:     number;
+  status:             "active" | "offline" | "on_delivery";
+  compliance_status:  "compliant" | "expiring_soon" | "expired" | "suspended" | "under_review" | "pending_submission" | "rejected";
+  compliance_detail?: string;   // e.g. "License · 18d left"
+}
+
+// ── Mock data ──────────────────────────────────────────────────────────────────
+
+const INITIAL_DRIVERS: Driver[] = [
+  { id: "DRV-001", name: "Juan Dela Cruz",   phone: "+63 917 123 4567", zone: "Makati CBD",       driverType: "full_time",  commissionRate: 0,    codCommissionRate: 0,    deliveriesToday: 18, deliveriesWeek: 94,  earningsToday: 0,    status: "on_delivery", compliance_status: "compliant"                                              },
+  { id: "DRV-002", name: "Maria Santos",     phone: "+63 918 234 5678", zone: "BGC / Taguig",     driverType: "part_time",  commissionRate: 55,   codCommissionRate: 0.02, deliveriesToday: 12, deliveriesWeek: 48,  earningsToday: 660,  status: "active",      compliance_status: "expiring_soon",   compliance_detail: "License · 18d left"       },
+  { id: "DRV-003", name: "Ricardo Reyes",    phone: "+63 919 345 6789", zone: "Pasig / Ortigas",  driverType: "part_time",  commissionRate: 50,   codCommissionRate: 0.015,deliveriesToday: 9,  deliveriesWeek: 37,  earningsToday: 450,  status: "on_delivery", compliance_status: "suspended",        compliance_detail: "LTO License expired"      },
+  { id: "DRV-004", name: "Ana Torres",       phone: "+63 920 456 7890", zone: "Quezon City N",    driverType: "full_time",  commissionRate: 0,    codCommissionRate: 0,    deliveriesToday: 22, deliveriesWeek: 110, earningsToday: 0,    status: "on_delivery", compliance_status: "compliant"                                              },
+  { id: "DRV-005", name: "Pedro Villanueva", phone: "+63 921 567 8901", zone: "Caloocan",         driverType: "part_time",  commissionRate: 45,   codCommissionRate: 0.02, deliveriesToday: 7,  deliveriesWeek: 29,  earningsToday: 315,  status: "offline",     compliance_status: "under_review"                                           },
+  { id: "DRV-006", name: "Liza Navarro",     phone: "+63 922 678 9012", zone: "Mandaluyong",      driverType: "full_time",  commissionRate: 0,    codCommissionRate: 0,    deliveriesToday: 15, deliveriesWeek: 77,  earningsToday: 0,    status: "active",      compliance_status: "compliant"                                              },
+  { id: "DRV-007", name: "Marco Bautista",   phone: "+63 923 789 0123", zone: "Pasay / Parañaque",driverType: "part_time",  commissionRate: 60,   codCommissionRate: 0.025,deliveriesToday: 14, deliveriesWeek: 56,  earningsToday: 840,  status: "on_delivery", compliance_status: "pending_submission"                                      },
+  { id: "DRV-008", name: "Grace Fernandez",  phone: "+63 924 890 1234", zone: "Las Piñas",        driverType: "full_time",  commissionRate: 0,    codCommissionRate: 0,    deliveriesToday: 19, deliveriesWeek: 88,  earningsToday: 0,    status: "active",      compliance_status: "compliant"                                              },
+];
+
+const fmt = (n: number) =>
+  `₱${n.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`;
+
+const STATUS_CONFIG = {
+  active:      { label: "Active",      variant: "green" as const },
+  offline:     { label: "Offline",     variant: "red"   as const },
+  on_delivery: { label: "On Delivery", variant: "cyan"  as const },
+};
+
+// ── Edit commission drawer ──────────────────────────────────────────────────────
+
+function EditDrawer({
+  driver,
+  onSave,
+  onClose,
+}: {
+  driver: Driver;
+  onSave: (updates: Partial<Driver>) => void;
+  onClose: () => void;
+}) {
+  const [driverType, setDriverType]               = useState<DriverType>(driver.driverType);
+  const [commissionRate, setCommissionRate]        = useState(String(driver.commissionRate));
+  const [codCommissionRate, setCodCommissionRate]  = useState(String((driver.codCommissionRate * 100).toFixed(1)));
+
+  function handleSave() {
+    onSave({
+      driverType,
+      commissionRate:    driverType === "part_time" ? parseFloat(commissionRate) || 0 : 0,
+      codCommissionRate: driverType === "part_time" ? (parseFloat(codCommissionRate) || 0) / 100 : 0,
+    });
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 12 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 12 }}
+        transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+        className="w-full max-w-md rounded-2xl border border-glass-border bg-canvas-100 p-6 shadow-2xl"
+        style={{ boxShadow: "0 0 40px rgba(0,229,255,0.08), 0 24px 48px rgba(0,0,0,0.6)" }}
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between mb-6">
+          <div>
+            <h2 className="font-heading text-base font-semibold text-white">{driver.name}</h2>
+            <p className="text-xs text-white/40 font-mono mt-0.5">{driver.id} · {driver.zone}</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="flex h-8 w-8 items-center justify-center rounded-lg border border-glass-border text-white/40 hover:text-white/70 hover:bg-glass-200 transition-all"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        {/* Driver type toggle */}
+        <div className="mb-5">
+          <label className="block text-xs font-mono text-white/40 uppercase tracking-wider mb-2">Driver Type</label>
+          <div className="grid grid-cols-2 gap-2">
+            {(["full_time", "part_time"] as DriverType[]).map((type) => (
+              <button
+                key={type}
+                onClick={() => setDriverType(type)}
+                className={cn(
+                  "flex items-center gap-2.5 rounded-xl border px-4 py-3 text-sm font-medium transition-all",
+                  driverType === type
+                    ? type === "part_time"
+                      ? "border-amber-400/40 bg-amber-400/10 text-amber-400"
+                      : "border-cyan-signal/40 bg-cyan-signal/10 text-cyan-signal"
+                    : "border-glass-border bg-glass-100 text-white/40 hover:text-white/60 hover:bg-glass-200"
+                )}
+              >
+                {type === "part_time" ? <Clock className="h-4 w-4" /> : <Briefcase className="h-4 w-4" />}
+                {type === "part_time" ? "Part-Time" : "Full-Time"}
+                {driverType === type && <Check className="h-3.5 w-3.5 ml-auto" />}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Commission fields — only for part-time */}
+        {driverType === "part_time" && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.2 }}
+            className="space-y-4 mb-6"
+          >
+            <div>
+              <label className="block text-xs font-mono text-white/40 uppercase tracking-wider mb-2">
+                Base Rate per Delivery (PHP)
+              </label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 font-mono text-sm text-white/40">₱</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="5"
+                  value={commissionRate}
+                  onChange={(e) => setCommissionRate(e.target.value)}
+                  className={cn(
+                    "w-full rounded-xl border border-glass-border bg-glass-100 pl-7 pr-4 py-2.5",
+                    "font-mono text-sm text-white placeholder-white/20",
+                    "focus:outline-none focus:border-cyan-signal/50 focus:bg-glass-200 transition-all"
+                  )}
+                  placeholder="50"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-mono text-white/40 uppercase tracking-wider mb-2">
+                COD Commission Rate (%)
+              </label>
+              <div className="relative">
+                <input
+                  type="number"
+                  min="0"
+                  max="10"
+                  step="0.5"
+                  value={codCommissionRate}
+                  onChange={(e) => setCodCommissionRate(e.target.value)}
+                  className={cn(
+                    "w-full rounded-xl border border-glass-border bg-glass-100 px-4 py-2.5 pr-8",
+                    "font-mono text-sm text-white placeholder-white/20",
+                    "focus:outline-none focus:border-amber-400/50 focus:bg-glass-200 transition-all"
+                  )}
+                  placeholder="2.0"
+                />
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 font-mono text-sm text-white/40">%</span>
+              </div>
+              <p className="mt-1.5 text-xs text-white/30 font-mono">Applied on top of base rate for COD deliveries</p>
+            </div>
+          </motion.div>
+        )}
+
+        {driverType === "full_time" && (
+          <div className="mb-6 rounded-xl border border-cyan-signal/15 bg-cyan-signal/5 px-4 py-3">
+            <p className="text-xs text-cyan-signal/70">
+              Full-time drivers receive a fixed salary. Commission settings are not applicable.
+            </p>
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="flex gap-3">
+          <button
+            onClick={onClose}
+            className="flex-1 rounded-xl border border-glass-border bg-glass-100 py-2.5 text-sm text-white/50 hover:text-white/70 hover:bg-glass-200 transition-all"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            className={cn(
+              "flex-1 rounded-xl py-2.5 text-sm font-semibold transition-all",
+              "bg-green-signal/15 border border-green-signal/40 text-green-signal",
+              "hover:bg-green-signal/25 hover:shadow-[0_0_12px_rgba(0,255,136,0.25)]"
+            )}
+          >
+            Save Changes
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ── Driver row ─────────────────────────────────────────────────────────────────
+
+function DriverRow({ driver, onEdit }: { driver: Driver; onEdit: () => void }) {
+  const isPartTime  = driver.driverType === "part_time";
+  const statusCfg   = STATUS_CONFIG[driver.status];
+
+  return (
+    <tr className="group border-b border-glass-border transition-colors hover:bg-glass-100/60">
+      <td className="py-3.5 pl-4 pr-3">
+        <div className="flex items-center gap-3">
+          <div
+            className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full text-xs font-bold text-canvas"
+            style={{
+              background: isPartTime
+                ? "linear-gradient(135deg, #FFAB00 0%, #FF6B00 100%)"
+                : "linear-gradient(135deg, #00E5FF 0%, #A855F7 100%)",
+            }}
+          >
+            {driver.name.split(" ").map((n) => n[0]).slice(0, 2).join("")}
+          </div>
+          <div>
+            <p className="text-sm font-medium text-white/90">{driver.name}</p>
+            <p className="text-xs font-mono text-white/30">{driver.id}</p>
+          </div>
+        </div>
+      </td>
+      <td className="py-3.5 px-3 text-xs text-white/50">{driver.zone}</td>
+      <td className="py-3.5 px-3">
+        <span
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium",
+            isPartTime
+              ? "border-amber-400/30 bg-amber-400/10 text-amber-400"
+              : "border-cyan-signal/30 bg-cyan-signal/10 text-cyan-signal"
+          )}
+        >
+          {isPartTime ? <Clock className="h-3 w-3" /> : <Briefcase className="h-3 w-3" />}
+          {isPartTime ? "Part-Time" : "Full-Time"}
+        </span>
+      </td>
+      <td className="py-3.5 px-3">
+        {isPartTime ? (
+          <div className="space-y-0.5">
+            <p className="text-sm font-mono text-white/80">{fmt(driver.commissionRate)}<span className="text-white/30 text-xs">/delivery</span></p>
+            <p className="text-xs font-mono text-amber-400/60">{(driver.codCommissionRate * 100).toFixed(1)}% COD bonus</p>
+          </div>
+        ) : (
+          <span className="text-xs text-white/25 font-mono">Fixed salary</span>
+        )}
+      </td>
+      <td className="py-3.5 px-3 text-center">
+        <p className="text-sm font-mono text-white/80">{driver.deliveriesToday}</p>
+        <p className="text-xs text-white/30">{driver.deliveriesWeek} / wk</p>
+      </td>
+      <td className="py-3.5 px-3">
+        {isPartTime ? (
+          <span className="font-mono text-sm text-green-signal">{fmt(driver.earningsToday)}</span>
+        ) : (
+          <span className="text-xs text-white/25 font-mono">—</span>
+        )}
+      </td>
+      <td className="py-3.5 px-3">
+        <NeonBadge variant={statusCfg.variant} dot={driver.status !== "offline"} pulse={driver.status === "on_delivery"}>
+          {statusCfg.label}
+        </NeonBadge>
+      </td>
+      <td className="py-3.5 px-3">
+        <ComplianceBadge status={driver.compliance_status} expiryDetail={driver.compliance_detail} />
+      </td>
+      <td className="py-3.5 pl-3 pr-4 text-right">
+        <div className="flex items-center justify-end gap-2 opacity-0 transition-all group-hover:opacity-100">
+          <button
+            disabled={!canAssign(driver.compliance_status)}
+            className={cn(
+              "inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-all",
+              canAssign(driver.compliance_status)
+                ? "border-purple-plasma/30 bg-purple-plasma/10 text-purple-plasma hover:bg-purple-plasma/20"
+                : "border-glass-border bg-glass-100 text-white/20 cursor-not-allowed opacity-40"
+            )}
+          >
+            Assign Task
+          </button>
+          <button
+            onClick={onEdit}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-2.5 py-1.5 text-xs text-white/50 transition-all hover:border-cyan-signal/30 hover:bg-glass-200 hover:text-white/80"
+          >
+            <Pencil className="h-3 w-3" />
+            Edit
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+// ── Page ───────────────────────────────────────────────────────────────────────
+
+export default function DriversPage() {
+  const [drivers, setDrivers]       = useState<Driver[]>(INITIAL_DRIVERS);
+  const [editingDriver, setEditing] = useState<Driver | null>(null);
+  const [search, setSearch]         = useState("");
+  const [filter, setFilter]         = useState<"all" | DriverType>("all");
+
+  const partTimeCount = drivers.filter((d) => d.driverType === "part_time").length;
+  const fullTimeCount = drivers.filter((d) => d.driverType === "full_time").length;
+  const activeCount   = drivers.filter((d) => d.status !== "offline").length;
+
+  const filtered = drivers.filter((d) => {
+    const matchSearch = d.name.toLowerCase().includes(search.toLowerCase()) ||
+                        d.id.toLowerCase().includes(search.toLowerCase()) ||
+                        d.zone.toLowerCase().includes(search.toLowerCase());
+    const matchFilter = filter === "all" || d.driverType === filter;
+    return matchSearch && matchFilter;
+  });
+
+  function handleSave(updates: Partial<Driver>) {
+    if (!editingDriver) return;
+    setDrivers((prev) =>
+      prev.map((d) => d.id === editingDriver.id ? { ...d, ...updates } : d)
+    );
+    setEditing(null);
+  }
+
+  return (
+    <div className="space-y-6">
+
+      {/* KPI strip */}
+      <motion.div
+        variants={variants.staggerContainer}
+        initial="initial"
+        animate="animate"
+        className="grid grid-cols-2 gap-3 sm:grid-cols-4"
+      >
+        {[
+          { label: "Total Drivers",   value: drivers.length, color: "cyan",   icon: <Users className="h-4 w-4" /> },
+          { label: "Active Now",      value: activeCount,    color: "green",  icon: <div className="h-2 w-2 rounded-full bg-green-signal animate-pulse" /> },
+          { label: "Full-Time",       value: fullTimeCount,  color: "cyan",   icon: <Briefcase className="h-4 w-4" /> },
+          { label: "Part-Time",       value: partTimeCount,  color: "amber",  icon: <Clock className="h-4 w-4" /> },
+        ].map(({ label, value, color, icon }, i) => (
+          <motion.div key={label} variants={variants.fadeInUp}>
+            <GlassCard
+              glowColor={color as "cyan" | "green" | "amber"}
+              className="flex items-center gap-4 p-4"
+            >
+              <div
+                className={cn(
+                  "flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl",
+                  color === "green" ? "bg-green-signal/10 text-green-signal" :
+                  color === "amber" ? "bg-amber-400/10 text-amber-400" :
+                  "bg-cyan-signal/10 text-cyan-signal"
+                )}
+              >
+                {icon}
+              </div>
+              <div>
+                <p className="text-2xl font-bold font-heading text-white">{value}</p>
+                <p className="text-xs text-white/40 font-mono uppercase tracking-wider">{label}</p>
+              </div>
+            </GlassCard>
+          </motion.div>
+        ))}
+      </motion.div>
+
+      {/* Table card */}
+      <motion.div variants={variants.fadeInUp} initial="initial" animate="animate">
+        <GlassCard className="overflow-hidden p-0">
+
+          {/* Table header row — search + filters */}
+          <div className="flex flex-col gap-3 border-b border-glass-border p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="font-heading text-sm font-semibold text-white">Driver Roster</h2>
+              <p className="text-xs text-white/40 mt-0.5">
+                Set driver type and commission rates. Changes apply to the driver's next shift.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              {/* Search */}
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-white/30" />
+                <input
+                  type="text"
+                  placeholder="Search drivers..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className={cn(
+                    "w-44 rounded-lg border border-glass-border bg-glass-100 py-1.5 pl-8 pr-3",
+                    "text-xs text-white placeholder-white/25 font-mono",
+                    "focus:outline-none focus:border-cyan-signal/40 focus:bg-glass-200 transition-all"
+                  )}
+                />
+              </div>
+              {/* Filter */}
+              <div className="flex rounded-lg border border-glass-border overflow-hidden">
+                {(["all", "full_time", "part_time"] as const).map((f) => (
+                  <button
+                    key={f}
+                    onClick={() => setFilter(f)}
+                    className={cn(
+                      "px-3 py-1.5 text-xs font-mono transition-all",
+                      filter === f
+                        ? "bg-glass-300 text-white/90"
+                        : "text-white/40 hover:text-white/60 hover:bg-glass-200"
+                    )}
+                  >
+                    {f === "all" ? "All" : f === "full_time" ? "Full-Time" : "Part-Time"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Table */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="border-b border-glass-border">
+                  {["Driver", "Zone", "Type", "Commission", "Deliveries", "Today's Earnings", "Status", "Compliance", ""].map((h) => (
+                    <th
+                      key={h}
+                      className={cn(
+                        "py-3 text-xs font-mono font-medium uppercase tracking-wider text-white/30",
+                        h === "" ? "pl-3 pr-4 text-right" : h === "Driver" ? "pl-4 pr-3" : "px-3"
+                      )}
+                      style={h === "Compliance" ? { minWidth: 130 } : undefined}
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((driver) => (
+                  <DriverRow
+                    key={driver.id}
+                    driver={driver}
+                    onEdit={() => setEditing(driver)}
+                  />
+                ))}
+                {filtered.length === 0 && (
+                  <tr>
+                    <td colSpan={9} className="py-12 text-center text-sm text-white/25 font-mono">
+                      No drivers match your search
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Footer */}
+          <div className="border-t border-glass-border px-4 py-3 flex items-center justify-between">
+            <p className="text-xs text-white/30 font-mono">{filtered.length} of {drivers.length} drivers shown</p>
+            <p className="text-xs text-white/25 font-mono">Part-time commission is paid per completed delivery, settled weekly</p>
+          </div>
+        </GlassCard>
+      </motion.div>
+
+      {/* Edit drawer */}
+      {editingDriver && (
+        <EditDrawer
+          driver={editingDriver}
+          onSave={handleSave}
+          onClose={() => setEditing(null)}
+        />
+      )}
+    </div>
+  );
+}

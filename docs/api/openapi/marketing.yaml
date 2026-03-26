@@ -1,0 +1,352 @@
+openapi: "3.1.0"
+info:
+  title: LogisticOS Marketing Automation Engine API
+  version: "1.0.0"
+  description: |
+    Campaign creation, scheduling, and lifecycle management for the LogisticOS
+    Marketing Automation Engine.
+
+    **Campaign lifecycle:**
+    `draft` → `POST /:id/schedule` → `scheduled` → `POST /:id/activate` → `active` → (auto) → `completed`
+    Any state → `POST /:id/cancel` → `cancelled`
+
+    Campaign execution triggers the Engagement Engine to send notifications to the
+    target audience at the scheduled time.
+  contact:
+    name: LogisticOS Engineering
+    email: engineering@logisticos.io
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.logisticos.io/v1
+    description: Production
+  - url: https://staging-api.logisticos.io/v1
+    description: Staging
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Campaigns
+    description: Marketing campaign management
+
+paths:
+  /campaigns:
+    get:
+      operationId: listCampaigns
+      tags: [Campaigns]
+      summary: List campaigns for tenant
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/CampaignStatus"
+      responses:
+        "200":
+          description: Campaign list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  campaigns:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Campaign"
+                  count:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    post:
+      operationId: createCampaign
+      tags: [Campaigns]
+      summary: Create a new campaign
+      description: Creates a campaign in `draft` status. Schedule and activate separately.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCampaignRequest"
+            examples:
+              reactivation:
+                summary: Win-back campaign for churned customers
+                value:
+                  name: "March Win-Back 2026"
+                  channel: "whatsapp"
+                  template_id: "t1e2m3p4-l5a6-7890-abcd-ef1234567890"
+                  audience_segment: "churned_30_days"
+                  template_vars:
+                    discount_code: "COMEBACK20"
+                    offer: "20% off your next shipment"
+      responses:
+        "201":
+          description: Campaign created in draft status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Campaign"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /campaigns/{id}:
+    get:
+      operationId: getCampaign
+      tags: [Campaigns]
+      summary: Get campaign by ID
+      parameters:
+        - $ref: "#/components/parameters/CampaignId"
+      responses:
+        "200":
+          description: Campaign detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Campaign"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /campaigns/{id}/schedule:
+    post:
+      operationId: scheduleCampaign
+      tags: [Campaigns]
+      summary: Schedule campaign for send
+      description: Sets the send time for the campaign. Status changes to `scheduled`.
+      parameters:
+        - $ref: "#/components/parameters/CampaignId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                send_at:
+                  type: string
+                  format: date-time
+                  description: When to send the campaign (must be in the future)
+                  example: "2026-03-28T09:00:00+08:00"
+              required: [send_at]
+      responses:
+        "200":
+          description: Campaign scheduled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Campaign"
+        "422":
+          description: Send time in the past or campaign not in draft status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /campaigns/{id}/activate:
+    post:
+      operationId: activateCampaign
+      tags: [Campaigns]
+      summary: Activate a scheduled campaign
+      description: |
+        Activates a scheduled campaign, locking it for execution. Once active,
+        the campaign cannot be edited. Requires `campaigns:send` permission.
+      parameters:
+        - $ref: "#/components/parameters/CampaignId"
+      responses:
+        "200":
+          description: Campaign activated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Campaign"
+        "422":
+          description: Campaign not in scheduled status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /campaigns/{id}/cancel:
+    post:
+      operationId: cancelCampaign
+      tags: [Campaigns]
+      summary: Cancel a campaign
+      description: Cancels a campaign in any non-completed status. Cannot be undone.
+      parameters:
+        - $ref: "#/components/parameters/CampaignId"
+      responses:
+        "200":
+          description: Campaign cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Campaign"
+        "422":
+          description: Campaign already completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    CampaignId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid JWT
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: Insufficient permissions or cross-tenant access
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Campaign not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    UnprocessableEntity:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    CampaignStatus:
+      type: string
+      enum: [draft, scheduled, active, completed, cancelled]
+
+    Campaign:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: "March Win-Back 2026"
+        status:
+          $ref: "#/components/schemas/CampaignStatus"
+        channel:
+          type: string
+          enum: [whatsapp, sms, email, push]
+          example: whatsapp
+        template_id:
+          type: string
+          format: uuid
+        audience_segment:
+          type: string
+          description: Segment identifier for targeting
+          example: churned_30_days
+        template_vars:
+          type: object
+          additionalProperties:
+            type: string
+        audience_size:
+          type: integer
+          nullable: true
+          description: Number of customers in audience (populated at schedule time)
+        sent_count:
+          type: integer
+          nullable: true
+        delivered_count:
+          type: integer
+          nullable: true
+        failed_count:
+          type: integer
+          nullable: true
+        send_at:
+          type: string
+          format: date-time
+          nullable: true
+        sent_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_by:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - tenant_id
+        - name
+        - status
+        - channel
+        - template_id
+        - created_by
+        - created_at
+        - updated_at
+
+    CreateCampaignRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          example: "March Win-Back 2026"
+        channel:
+          type: string
+          enum: [whatsapp, sms, email, push]
+        template_id:
+          type: string
+          format: uuid
+        audience_segment:
+          type: string
+          description: Segment ID to target
+          example: churned_30_days
+        template_vars:
+          type: object
+          additionalProperties:
+            type: string
+      required: [name, channel, template_id]
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]

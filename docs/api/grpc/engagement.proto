@@ -1,0 +1,453 @@
+syntax = "proto3";
+
+package logisticos.engagement.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+option go_package = "github.com/logisticos/proto/engagement/v1;engagementv1";
+option java_multiple_files = true;
+option java_package = "com.logisticos.engagement.v1";
+
+// ─────────────────────────────────────────────
+//  Enumerations
+// ─────────────────────────────────────────────
+
+// Channel identifies the outbound communication channel for a notification.
+enum Channel {
+  CHANNEL_UNKNOWN = 0;
+
+  // WhatsApp Business API message.
+  CHANNEL_WHATSAPP = 1;
+
+  // SMS via a configured telecom gateway (Twilio, Globe, PLDT).
+  CHANNEL_SMS = 2;
+
+  // Transactional or marketing email.
+  CHANNEL_EMAIL = 3;
+
+  // Mobile push notification via FCM (Android) or APNs (iOS).
+  CHANNEL_PUSH = 4;
+
+  // In-app message shown in the Customer Portal or Customer App.
+  CHANNEL_IN_APP = 5;
+}
+
+// NotificationStatusCode reflects the delivery lifecycle of one notification attempt.
+enum NotificationStatusCode {
+  NOTIFICATION_STATUS_UNKNOWN = 0;
+
+  // The notification has been accepted and queued for delivery.
+  NOTIFICATION_STATUS_QUEUED = 1;
+
+  // The notification has been dispatched to the channel provider.
+  NOTIFICATION_STATUS_SENT = 2;
+
+  // The channel provider has confirmed delivery to the device or inbox.
+  NOTIFICATION_STATUS_DELIVERED = 3;
+
+  // The recipient opened or interacted with the notification.
+  NOTIFICATION_STATUS_READ = 4;
+
+  // Delivery failed permanently (invalid number, blocked, etc.).
+  NOTIFICATION_STATUS_FAILED = 5;
+
+  // Delivery has been retried the maximum number of times without success.
+  NOTIFICATION_STATUS_EXHAUSTED = 6;
+
+  // The notification was suppressed due to customer opt-out or quiet hours.
+  NOTIFICATION_STATUS_SUPPRESSED = 7;
+}
+
+// NotificationPriority controls queue priority and channel fallback behaviour.
+enum NotificationPriority {
+  // Standard delivery — batched and rate-limited per channel quotas.
+  NOTIFICATION_PRIORITY_NORMAL = 0;
+
+  // High priority — bypasses batch queues; used for delivery status alerts.
+  NOTIFICATION_PRIORITY_HIGH = 1;
+
+  // Critical — reserved for OTP and security alerts; no quiet-hour suppression.
+  NOTIFICATION_PRIORITY_CRITICAL = 2;
+}
+
+// PreferenceStatus reflects whether a customer has opted in or out of a channel.
+enum PreferenceStatus {
+  PREFERENCE_STATUS_UNKNOWN = 0;
+  PREFERENCE_STATUS_OPTED_IN = 1;
+  PREFERENCE_STATUS_OPTED_OUT = 2;
+  PREFERENCE_STATUS_PENDING_CONFIRMATION = 3;
+}
+
+// ─────────────────────────────────────────────
+//  Template & Content Messages
+// ─────────────────────────────────────────────
+
+// TemplateMessage references a pre-approved message template and its
+// variable bindings. Required for WhatsApp Business API messages.
+message TemplateMessage {
+  // Template name as registered with the WhatsApp Business Account
+  // or the platform's internal template registry.
+  string template_name = 1;
+
+  // BCP-47 language code for the template variant (e.g., "en", "fil").
+  string language_code = 2;
+
+  // Named variable substitutions for the template body.
+  // Keys match the {{variable_name}} placeholders in the template.
+  map<string, string> variables = 3;
+
+  // Template namespace / WABA account ID (WhatsApp-specific).
+  string namespace = 4;
+}
+
+// RichContent carries optional multimedia attachments for channels that
+// support them (WhatsApp, Push, Email).
+message RichContent {
+  // Public HTTPS URL of an image, video, or document to attach.
+  string media_url = 1;
+
+  // MIME type of the media (e.g., "image/jpeg", "application/pdf").
+  string media_type = 2;
+
+  // Caption text shown below images in WhatsApp and push notifications.
+  string caption = 3;
+
+  // Call-to-action button labels and deep-link URLs (WhatsApp interactive msgs).
+  repeated CtaButton cta_buttons = 4;
+}
+
+// CtaButton defines a tappable call-to-action button on supported channels.
+message CtaButton {
+  // Button display label (max 20 characters for WhatsApp CTA buttons).
+  string label = 1;
+
+  // Deep link or HTTPS URL opened when the button is tapped.
+  string url = 2;
+}
+
+// ─────────────────────────────────────────────
+//  SendNotification RPC Messages
+// ─────────────────────────────────────────────
+
+// SendNotificationRequest triggers a single notification to one recipient.
+message SendNotificationRequest {
+  // Tenant making the request.
+  string tenant_id = 1;
+
+  // Channel to deliver through.
+  Channel channel = 2;
+
+  // Recipient's phone number (E.164). Required for WHATSAPP and SMS channels.
+  string recipient_phone = 3;
+
+  // Recipient's email address. Required for EMAIL channel.
+  string recipient_email = 4;
+
+  // Recipient's FCM registration token or APNs device token.
+  // Required for PUSH channel.
+  string device_token = 5;
+
+  // Customer profile ID from the CDP. Used for preference checks and
+  // engagement analytics. Optional but strongly recommended.
+  string customer_id = 6;
+
+  // For WhatsApp: structured template message (required by WhatsApp policy).
+  // For SMS/Email/Push: use body_text instead.
+  TemplateMessage template = 7;
+
+  // Free-text notification body for SMS, Push, and Email channels.
+  // Mutually exclusive with template for WhatsApp.
+  string body_text = 8;
+
+  // Subject line for EMAIL channel.
+  string email_subject = 9;
+
+  // Optional multimedia content.
+  RichContent rich_content = 10;
+
+  // Notification priority. Defaults to NORMAL.
+  NotificationPriority priority = 11;
+
+  // Ordered list of fallback channels if primary delivery fails after
+  // max_retry_attempts. E.g., [CHANNEL_SMS] means "fall back to SMS if
+  // WhatsApp delivery fails".
+  repeated Channel fallback_channels = 12;
+
+  // Shipment or order ID this notification relates to. Used for deduplication
+  // and analytics correlation.
+  string reference_id = 13;
+
+  // Idempotency key. Re-submitting the same key within 24 hours returns
+  // the original result without re-sending.
+  string idempotency_key = 14;
+
+  // Arbitrary key-value metadata for analytics tagging (e.g., campaign_id,
+  // trigger_event). Values must be scalar strings.
+  map<string, string> metadata = 15;
+}
+
+// SendNotificationResponse returns the outcome of a send request.
+message SendNotificationResponse {
+  // Platform-assigned notification identifier for status tracking.
+  string notification_id = 1;
+
+  // Channel on which the notification was actually queued (may differ from
+  // request channel if an immediate fallback was applied).
+  Channel channel_used = 2;
+
+  // Status at the time of response. Typically QUEUED or SENT.
+  NotificationStatusCode status = 3;
+
+  // Provider-assigned message identifier (e.g., WhatsApp wamid, Twilio SID).
+  string provider_message_id = 4;
+
+  // Whether this response was served from an idempotency cache.
+  bool from_cache = 5;
+}
+
+// ─────────────────────────────────────────────
+//  BulkSend RPC Messages
+// ─────────────────────────────────────────────
+
+// BulkSendRequest submits a batch of notifications in a single RPC call.
+// Used by the Marketing Automation Engine for campaign execution.
+message BulkSendRequest {
+  // Tenant making the request.
+  string tenant_id = 1;
+
+  // Campaign or automation run identifier for analytics grouping.
+  string campaign_id = 2;
+
+  // Individual notification payloads. Maximum 1,000 per request.
+  repeated SendNotificationRequest notifications = 3;
+
+  // If true, the RPC returns immediately with a batch_id and processes
+  // notifications asynchronously. If false, the RPC waits for all channel
+  // submissions to complete (max 30 seconds) before returning.
+  bool async_mode = 4;
+}
+
+// BulkSendResponse returns a summary of the bulk submission.
+message BulkSendResponse {
+  // Platform-assigned batch identifier for status polling.
+  string batch_id = 1;
+
+  // Total notifications accepted for processing.
+  int32 accepted_count = 2;
+
+  // Notifications rejected at submission time (e.g., invalid recipient,
+  // opted-out customer). Full detail available via GetDeliveryStatus.
+  int32 rejected_count = 3;
+
+  // Per-notification results. Populated only when async_mode is false.
+  repeated SendNotificationResponse results = 4;
+
+  // Estimated completion time for async batches.
+  google.protobuf.Timestamp estimated_completion_at = 5;
+}
+
+// ─────────────────────────────────────────────
+//  Customer Preferences RPC Messages
+// ─────────────────────────────────────────────
+
+// ChannelPreference holds opt-in status and metadata for one channel.
+message ChannelPreference {
+  // The channel this preference applies to.
+  Channel channel = 1;
+
+  // Whether the customer has consented to receive messages on this channel.
+  PreferenceStatus status = 2;
+
+  // Timestamp when this preference was last updated by the customer.
+  google.protobuf.Timestamp updated_at = 3;
+
+  // Source of the preference update (e.g., "customer_portal", "whatsapp_opt_in",
+  // "merchant_import").
+  string source = 4;
+}
+
+// CustomerPreferences holds all channel consent and delivery preferences
+// for a single customer profile.
+message CustomerPreferences {
+  // CDP customer profile ID.
+  string customer_id = 1;
+
+  // Tenant scope.
+  string tenant_id = 2;
+
+  // Per-channel opt-in status.
+  repeated ChannelPreference channel_preferences = 3;
+
+  // Customer's preferred language for notifications (BCP-47).
+  string preferred_language = 4;
+
+  // Start of the quiet hours window (local time, HH:MM 24h format).
+  // Notifications are suppressed between quiet_hours_start and quiet_hours_end
+  // unless priority is CRITICAL.
+  string quiet_hours_start = 5;
+
+  // End of the quiet hours window (local time, HH:MM 24h format).
+  string quiet_hours_end = 6;
+
+  // IANA timezone used to evaluate quiet hours.
+  string timezone = 7;
+
+  // Whether the customer has consented to marketing/promotional messages
+  // (distinct from transactional delivery notifications).
+  bool marketing_consent = 8;
+
+  // Timestamp when marketing_consent was last explicitly set.
+  google.protobuf.Timestamp marketing_consent_updated_at = 9;
+}
+
+// GetCustomerPreferencesRequest fetches preferences for a single customer.
+message GetCustomerPreferencesRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // CDP customer ID. Exactly one of customer_id or phone_number must be set.
+  string customer_id = 2;
+
+  // Phone number (E.164). Looked up against the CDP for the matching profile.
+  string phone_number = 3;
+}
+
+// GetCustomerPreferencesResponse returns the customer's full preferences record.
+message GetCustomerPreferencesResponse {
+  // Customer preferences. If no record exists, defaults are returned with
+  // all channels in PREFERENCE_STATUS_UNKNOWN.
+  CustomerPreferences preferences = 1;
+}
+
+// UpdateCustomerPreferencesRequest modifies one or more preference fields.
+message UpdateCustomerPreferencesRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // Customer to update. Required.
+  string customer_id = 2;
+
+  // Full replacement preferences record. All fields are applied.
+  CustomerPreferences preferences = 3;
+}
+
+// UpdateCustomerPreferencesResponse confirms the update.
+message UpdateCustomerPreferencesResponse {
+  // The updated preferences as persisted.
+  CustomerPreferences preferences = 1;
+}
+
+// ─────────────────────────────────────────────
+//  GetDeliveryStatus RPC Messages
+// ─────────────────────────────────────────────
+
+// NotificationDeliveryEvent records one state transition in a notification's
+// lifecycle (e.g., SENT → DELIVERED → READ).
+message NotificationDeliveryEvent {
+  // The new status reached in this event.
+  NotificationStatusCode status = 1;
+
+  // Timestamp of this status transition, as reported by the channel provider.
+  google.protobuf.Timestamp occurred_at = 2;
+
+  // Provider-specific status detail or error code (e.g., "delivery_ack",
+  // "undeliverable_number_disconnected").
+  string provider_detail = 3;
+}
+
+// NotificationStatus is the full delivery record for one notification.
+message NotificationStatus {
+  // Platform notification ID.
+  string notification_id = 1;
+
+  // Channel used for delivery.
+  Channel channel = 2;
+
+  // Current status (latest state).
+  NotificationStatusCode current_status = 3;
+
+  // Full ordered history of status transitions.
+  repeated NotificationDeliveryEvent events = 4;
+
+  // Provider message ID.
+  string provider_message_id = 5;
+
+  // Timestamp when the notification was first created.
+  google.protobuf.Timestamp created_at = 6;
+
+  // Timestamp of the most recent status update.
+  google.protobuf.Timestamp updated_at = 7;
+}
+
+// GetDeliveryStatusRequest queries the delivery status of a notification
+// or an entire batch.
+message GetDeliveryStatusRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // Single notification ID to query. Mutually exclusive with batch_id.
+  string notification_id = 2;
+
+  // Batch ID to query. Returns status for all notifications in the batch.
+  // Mutually exclusive with notification_id.
+  string batch_id = 3;
+}
+
+// GetDeliveryStatusResponse returns one or more notification status records.
+message GetDeliveryStatusResponse {
+  // Status records. One entry per notification ID.
+  repeated NotificationStatus statuses = 1;
+
+  // For batch queries: total notifications in the batch.
+  int32 total_in_batch = 2;
+
+  // For batch queries: count of notifications in a terminal state
+  // (DELIVERED, READ, FAILED, EXHAUSTED, SUPPRESSED).
+  int32 completed_count = 3;
+}
+
+// ─────────────────────────────────────────────
+//  EngagementService Definition
+// ─────────────────────────────────────────────
+
+// EngagementService is the authoritative gRPC interface for all outbound
+// customer communications. It abstracts WhatsApp, SMS, Email, and Push
+// channels behind a unified API, handles opt-out enforcement, quiet hours,
+// template management, and delivery tracking.
+//
+// Called by:
+//   - AI Intelligence Layer (via MCP tool `send_notification`)
+//   - Dispatch Service (driver assignment confirmations)
+//   - Order Intake Service (booking confirmations)
+//   - Marketing Automation Engine (campaign execution via BulkSend)
+//   - Customer Delivery Experience Service (live tracking updates)
+//
+// All RPCs require a valid JWT in the `authorization` metadata key.
+// Tenant isolation is enforced via the `tenant_id` claim.
+service EngagementService {
+  // SendNotification delivers a single transactional or marketing notification
+  // to one recipient on the specified channel. Handles opt-out checks, quiet
+  // hours suppression, retry logic, and fallback channel escalation.
+  // Emits `engagement.notification.sent` Kafka event on successful dispatch.
+  rpc SendNotification(SendNotificationRequest) returns (SendNotificationResponse);
+
+  // BulkSend submits a batch of notifications for campaign delivery. Supports
+  // async mode for large-volume sends (> 100 recipients). Rate-limited per
+  // tenant channel quotas. Emits `engagement.batch.submitted` Kafka event.
+  rpc BulkSend(BulkSendRequest) returns (BulkSendResponse);
+
+  // GetCustomerPreferences retrieves a customer's communication consent record
+  // and channel preferences. Called before every send to enforce opt-outs.
+  rpc GetCustomerPreferences(GetCustomerPreferencesRequest) returns (GetCustomerPreferencesResponse);
+
+  // UpdateCustomerPreferences persists a full replacement of a customer's
+  // channel preferences. Emits `engagement.preferences.updated` Kafka event
+  // so the CDP and Marketing Engine can react to consent changes.
+  rpc UpdateCustomerPreferences(UpdateCustomerPreferencesRequest) returns (UpdateCustomerPreferencesResponse);
+
+  // GetDeliveryStatus returns the current delivery state and full event history
+  // for a single notification or an entire BulkSend batch. Used by the
+  // Analytics Service and Admin Portal for campaign performance reporting.
+  rpc GetDeliveryStatus(GetDeliveryStatusRequest) returns (GetDeliveryStatusResponse);
+}

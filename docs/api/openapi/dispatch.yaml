@@ -1,0 +1,540 @@
+openapi: "3.1.0"
+info:
+  title: LogisticOS Dispatch & Routing API
+  version: "1.0.0"
+  description: |
+    Driver assignment, route optimisation (VRP), real-time driver location,
+    and dispatch queue management. Primarily consumed by the Driver App and
+    the AI Dispatch Agent via MCP tools.
+  contact:
+    name: LogisticOS Engineering
+    email: engineering@logisticos.io
+
+servers:
+  - url: https://api.logisticos.io/v1
+    description: Production
+  - url: https://staging-api.logisticos.io/v1
+    description: Staging
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Dispatch
+    description: Order assignment and queue management
+  - name: Routes
+    description: Route planning and optimisation
+  - name: Drivers
+    description: Driver availability and location
+
+paths:
+  /dispatch/assign:
+    post:
+      operationId: assignDriver
+      tags: [Dispatch]
+      summary: Assign a driver to one or more shipments
+      description: |
+        Assigns an available driver to a batch of shipments for pickup or delivery.
+        If `driver_id` is omitted the engine auto-selects the optimal driver using
+        the VRP algorithm. Publishes `dispatch.driver_assigned` to Kafka.
+        SLO: P99 < 500ms.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [awbs]
+              properties:
+                awbs:
+                  type: array
+                  minItems: 1
+                  maxItems: 200
+                  items:
+                    type: string
+                    pattern: "^LS-[A-Z0-9]{8}$"
+                driver_id:
+                  type: string
+                  format: uuid
+                  description: Omit to use AI auto-assignment
+                assignment_type:
+                  type: string
+                  enum: [pickup, delivery]
+                  default: delivery
+                zone_override:
+                  type: string
+                  nullable: true
+                  description: Force assignment within a specific zone code
+      responses:
+        "200":
+          description: Assignment result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssignmentResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: One or more AWBs already assigned or not in an assignable state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /dispatch/queue:
+    get:
+      operationId: getDispatchQueue
+      tags: [Dispatch]
+      summary: Get the current unassigned order queue
+      parameters:
+        - name: zone
+          in: query
+          schema:
+            type: string
+          description: Filter by zone code
+        - name: service_type
+          in: query
+          schema:
+            type: string
+            enum: [standard, express, same_day, bulky, balikbayan]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        "200":
+          description: Unassigned shipments in dispatch queue
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_unassigned:
+                    type: integer
+                  queue:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/QueueEntry"
+
+  /dispatch/drivers/available:
+    get:
+      operationId: getAvailableDrivers
+      tags: [Drivers]
+      summary: Get available drivers for assignment
+      parameters:
+        - name: zone
+          in: query
+          schema:
+            type: string
+          description: Filter by zone code
+        - name: lat
+          in: query
+          schema:
+            type: number
+            format: double
+          description: Center latitude for proximity sort
+        - name: lng
+          in: query
+          schema:
+            type: number
+            format: double
+          description: Center longitude for proximity sort
+        - name: radius_km
+          in: query
+          schema:
+            type: number
+            format: double
+            default: 10
+      responses:
+        "200":
+          description: Available drivers with current location and capacity
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  drivers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DriverAvailability"
+
+  /dispatch/drivers/{driver_id}/location:
+    parameters:
+      - name: driver_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    get:
+      operationId: getDriverLocation
+      tags: [Drivers]
+      summary: Get the latest GPS location for a driver
+      responses:
+        "200":
+          description: Driver location
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DriverLocation"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    put:
+      operationId: updateDriverLocation
+      tags: [Drivers]
+      summary: Update driver GPS location (called by Driver App)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [latitude, longitude, timestamp]
+              properties:
+                latitude:
+                  type: number
+                  format: double
+                longitude:
+                  type: number
+                  format: double
+                accuracy_meters:
+                  type: number
+                  format: double
+                  nullable: true
+                speed_kmh:
+                  type: number
+                  format: double
+                  nullable: true
+                bearing_degrees:
+                  type: number
+                  format: double
+                  nullable: true
+                timestamp:
+                  type: string
+                  format: date-time
+      responses:
+        "204":
+          description: Location updated
+
+  /dispatch/routes/optimise:
+    post:
+      operationId: optimiseRoute
+      tags: [Routes]
+      summary: Optimise a multi-stop delivery route (VRP)
+      description: |
+        Runs the Vehicle Routing Problem solver for a given driver and set of
+        shipments. Returns an ordered stop sequence minimising total travel time
+        and respecting time-window constraints. Backed by OSRM + PostGIS.
+        Typical response time: < 1s for up to 30 stops.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [driver_id, awbs]
+              properties:
+                driver_id:
+                  type: string
+                  format: uuid
+                awbs:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items:
+                    type: string
+                start_location:
+                  type: object
+                  properties:
+                    latitude:
+                      type: number
+                      format: double
+                    longitude:
+                      type: number
+                      format: double
+                  description: Starting point (defaults to driver's current GPS)
+                optimise_for:
+                  type: string
+                  enum: [time, distance, sla_priority]
+                  default: sla_priority
+      responses:
+        "200":
+          description: Optimised route
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OptimisedRoute"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /dispatch/drivers/{driver_id}/route:
+    get:
+      operationId: getDriverRoute
+      tags: [Routes]
+      summary: Get the current assigned route for a driver
+      parameters:
+        - name: driver_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Driver's current route
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OptimisedRoute"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    AssignmentResult:
+      type: object
+      properties:
+        assignment_id:
+          type: string
+          format: uuid
+        driver_id:
+          type: string
+          format: uuid
+        driver_name:
+          type: string
+        assigned_awbs:
+          type: array
+          items:
+            type: string
+        failed_awbs:
+          type: array
+          items:
+            type: object
+            properties:
+              awb:
+                type: string
+              reason:
+                type: string
+        optimised_route:
+          $ref: "#/components/schemas/OptimisedRoute"
+          nullable: true
+        assigned_at:
+          type: string
+          format: date-time
+
+    QueueEntry:
+      type: object
+      properties:
+        awb:
+          type: string
+        service_type:
+          type: string
+        recipient_city:
+          type: string
+        recipient_zone:
+          type: string
+        weight_kg:
+          type: number
+        is_cod:
+          type: boolean
+        cod_amount:
+          type: number
+          nullable: true
+        sla_deadline:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        priority_score:
+          type: number
+          format: double
+          description: AI-computed priority score (higher = more urgent)
+
+    DriverAvailability:
+      type: object
+      properties:
+        driver_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        phone:
+          type: string
+        status:
+          type: string
+          enum: [online, idle, on_break]
+        current_load:
+          type: integer
+          description: Number of active deliveries
+        max_load:
+          type: integer
+        vehicle_type:
+          type: string
+          enum: [motorcycle, bicycle, van, truck]
+        current_location:
+          $ref: "#/components/schemas/DriverLocation"
+        distance_km:
+          type: number
+          format: double
+          nullable: true
+          description: Distance from the requested coordinates
+        eta_minutes:
+          type: integer
+          nullable: true
+
+    DriverLocation:
+      type: object
+      properties:
+        driver_id:
+          type: string
+          format: uuid
+        latitude:
+          type: number
+          format: double
+        longitude:
+          type: number
+          format: double
+        accuracy_meters:
+          type: number
+          nullable: true
+        speed_kmh:
+          type: number
+          nullable: true
+        bearing_degrees:
+          type: number
+          nullable: true
+        recorded_at:
+          type: string
+          format: date-time
+
+    RouteStop:
+      type: object
+      properties:
+        sequence:
+          type: integer
+          description: 1-based stop order
+        awb:
+          type: string
+        recipient_name:
+          type: string
+        address:
+          type: string
+        latitude:
+          type: number
+          format: double
+        longitude:
+          type: number
+          format: double
+        estimated_arrival:
+          type: string
+          format: date-time
+        distance_from_prev_km:
+          type: number
+          format: double
+        duration_from_prev_minutes:
+          type: integer
+        stop_type:
+          type: string
+          enum: [pickup, delivery]
+        is_cod:
+          type: boolean
+        cod_amount:
+          type: number
+          nullable: true
+        status:
+          type: string
+          enum: [pending, completed, failed, skipped]
+
+    OptimisedRoute:
+      type: object
+      properties:
+        route_id:
+          type: string
+          format: uuid
+        driver_id:
+          type: string
+          format: uuid
+        stops:
+          type: array
+          items:
+            $ref: "#/components/schemas/RouteStop"
+        total_distance_km:
+          type: number
+          format: double
+        total_duration_minutes:
+          type: integer
+        estimated_completion:
+          type: string
+          format: date-time
+        polyline:
+          type: string
+          description: Encoded Google Maps polyline for the full route
+          nullable: true
+        optimised_at:
+          type: string
+          format: date-time
+
+    ErrorResponse:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string
+        request_id:
+          type: string
+          format: uuid
+
+  responses:
+    BadRequest:
+      description: Invalid request body or parameters
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    Unauthorized:
+      description: Missing or invalid JWT
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    Forbidden:
+      description: Not authorised
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"

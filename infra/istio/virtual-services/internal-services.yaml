@@ -1,0 +1,918 @@
+# LogisticOS Internal Services VirtualServices — Canary Deployment Support
+#
+# One VirtualService per service. Each VS:
+#   1. Splits traffic between `stable` and `canary` subsets (defined in destination-rules.yaml)
+#   2. Default weights: stable=100, canary=0 (canary is dark by default)
+#   3. Header-based canary override: x-canary: "true" routes 100% to canary subset,
+#      enabling QA, integration testing, and progressive rollout without affecting
+#      production traffic.
+#
+# Canary rollout procedure (example: rolling dispatch to 10% canary):
+#   kubectl patch vs dispatch-vs -n logisticos-logistics --type=json \
+#     -p='[{"op":"replace","path":"/spec/http/1/route/0/weight","value":90},
+#          {"op":"replace","path":"/spec/http/1/route/1/weight","value":10}]'
+#
+# These VirtualServices operate on mesh-internal traffic only (no gateway binding).
+# The api-gateway VS routes external traffic; these VSes apply to service-to-service calls.
+#
+# All 17 services are covered:
+#   Core:       identity, business-logic, api-gateway (internal mesh face)
+#   Logistics:  order-intake, dispatch, driver-ops, fleet, hub-ops, carrier, pod
+#   Engagement: engagement, cdp, marketing
+#   Data:       delivery-experience, payments, analytics
+#   AI:         ai-layer
+
+---
+# =============================================================================
+# LOGISTICOS-CORE NAMESPACE
+# =============================================================================
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: identity-vs
+  namespace: logisticos-core
+  labels:
+    app: identity
+    component: virtual-service
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Canary-capable VS for identity service"
+    logisticos.io/canary-procedure: "Patch route index 1 weights to shift stable/canary split"
+spec:
+  hosts:
+    - identity.logisticos-core.svc.cluster.local
+  http:
+    # Rule 1: Header-based canary override — 100% to canary for marked requests
+    - name: identity-canary-header
+      match:
+        - headers:
+            x-canary:
+              exact: "true"
+      route:
+        - destination:
+            host: identity.logisticos-core.svc.cluster.local
+            subset: canary
+            port:
+              number: 8001
+          weight: 100
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+    # Rule 2: Weight-based split — default stable=100, canary=0
+    - name: identity-weight-split
+      route:
+        - destination:
+            host: identity.logisticos-core.svc.cluster.local
+            subset: stable
+            port:
+              number: 8001
+          weight: 100
+        - destination:
+            host: identity.logisticos-core.svc.cluster.local
+            subset: canary
+            port:
+              number: 8001
+          weight: 0
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: business-logic-vs
+  namespace: logisticos-core
+  labels:
+    app: business-logic
+    component: virtual-service
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Canary-capable VS for business-logic service"
+spec:
+  hosts:
+    - business-logic.logisticos-core.svc.cluster.local
+  http:
+    - name: business-logic-canary-header
+      match:
+        - headers:
+            x-canary:
+              exact: "true"
+      route:
+        - destination:
+            host: business-logic.logisticos-core.svc.cluster.local
+            subset: canary
+            port:
+              number: 8015
+          weight: 100
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+    - name: business-logic-weight-split
+      route:
+        - destination:
+            host: business-logic.logisticos-core.svc.cluster.local
+            subset: stable
+            port:
+              number: 8015
+          weight: 100
+        - destination:
+            host: business-logic.logisticos-core.svc.cluster.local
+            subset: canary
+            port:
+              number: 8015
+          weight: 0
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+---
+# =============================================================================
+# LOGISTICOS-LOGISTICS NAMESPACE
+# =============================================================================
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: order-intake-vs
+  namespace: logisticos-logistics
+  labels:
+    app: order-intake
+    component: virtual-service
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Canary-capable VS for order-intake service"
+    logisticos.io/idempotency-note: "Callers must supply X-Idempotency-Key on POST requests"
+spec:
+  hosts:
+    - order-intake.logisticos-logistics.svc.cluster.local
+  http:
+    - name: order-intake-canary-header
+      match:
+        - headers:
+            x-canary:
+              exact: "true"
+      route:
+        - destination:
+            host: order-intake.logisticos-logistics.svc.cluster.local
+            subset: canary
+            port:
+              number: 8004
+          weight: 100
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+    - name: order-intake-weight-split
+      route:
+        - destination:
+            host: order-intake.logisticos-logistics.svc.cluster.local
+            subset: stable
+            port:
+              number: 8004
+          weight: 100
+        - destination:
+            host: order-intake.logisticos-logistics.svc.cluster.local
+            subset: canary
+            port:
+              number: 8004
+          weight: 0
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: dispatch-vs
+  namespace: logisticos-logistics
+  labels:
+    app: dispatch
+    component: virtual-service
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Canary-capable VS for dispatch service"
+    logisticos.io/sla-note: "P99 dispatch assignment target: 500ms"
+spec:
+  hosts:
+    - dispatch.logisticos-logistics.svc.cluster.local
+  http:
+    - name: dispatch-canary-header
+      match:
+        - headers:
+            x-canary:
+              exact: "true"
+      route:
+        - destination:
+            host: dispatch.logisticos-logistics.svc.cluster.local
+            subset: canary
+            port:
+              number: 8005
+          weight: 100
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+    - name: dispatch-weight-split
+      route:
+        - destination:
+            host: dispatch.logisticos-logistics.svc.cluster.local
+            subset: stable
+            port:
+              number: 8005
+          weight: 100
+        - destination:
+            host: dispatch.logisticos-logistics.svc.cluster.local
+            subset: canary
+            port:
+              number: 8005
+          weight: 0
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: driver-ops-vs
+  namespace: logisticos-logistics
+  labels:
+    app: driver-ops
+    component: virtual-service
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Canary-capable VS for driver-ops service"
+spec:
+  hosts:
+    - driver-ops.logisticos-logistics.svc.cluster.local
+  http:
+    - name: driver-ops-canary-header
+      match:
+        - headers:
+            x-canary:
+              exact: "true"
+      route:
+        - destination:
+            host: driver-ops.logisticos-logistics.svc.cluster.local
+            subset: canary
+            port:
+              number: 8006
+          weight: 100
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+    - name: driver-ops-weight-split
+      route:
+        - destination:
+            host: driver-ops.logisticos-logistics.svc.cluster.local
+            subset: stable
+            port:
+              number: 8006
+          weight: 100
+        - destination:
+            host: driver-ops.logisticos-logistics.svc.cluster.local
+            subset: canary
+            port:
+              number: 8006
+          weight: 0
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: fleet-vs
+  namespace: logisticos-logistics
+  labels:
+    app: fleet
+    component: virtual-service
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Canary-capable VS for fleet service"
+spec:
+  hosts:
+    - fleet.logisticos-logistics.svc.cluster.local
+  http:
+    - name: fleet-canary-header
+      match:
+        - headers:
+            x-canary:
+              exact: "true"
+      route:
+        - destination:
+            host: fleet.logisticos-logistics.svc.cluster.local
+            subset: canary
+            port:
+              number: 8008
+          weight: 100
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+    - name: fleet-weight-split
+      route:
+        - destination:
+            host: fleet.logisticos-logistics.svc.cluster.local
+            subset: stable
+            port:
+              number: 8008
+          weight: 100
+        - destination:
+            host: fleet.logisticos-logistics.svc.cluster.local
+            subset: canary
+            port:
+              number: 8008
+          weight: 0
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: hub-ops-vs
+  namespace: logisticos-logistics
+  labels:
+    app: hub-ops
+    component: virtual-service
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Canary-capable VS for hub-ops service"
+spec:
+  hosts:
+    - hub-ops.logisticos-logistics.svc.cluster.local
+  http:
+    - name: hub-ops-canary-header
+      match:
+        - headers:
+            x-canary:
+              exact: "true"
+      route:
+        - destination:
+            host: hub-ops.logisticos-logistics.svc.cluster.local
+            subset: canary
+            port:
+              number: 8009
+          weight: 100
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+    - name: hub-ops-weight-split
+      route:
+        - destination:
+            host: hub-ops.logisticos-logistics.svc.cluster.local
+            subset: stable
+            port:
+              number: 8009
+          weight: 100
+        - destination:
+            host: hub-ops.logisticos-logistics.svc.cluster.local
+            subset: canary
+            port:
+              number: 8009
+          weight: 0
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: carrier-vs
+  namespace: logisticos-logistics
+  labels:
+    app: carrier
+    component: virtual-service
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Canary-capable VS for carrier service"
+spec:
+  hosts:
+    - carrier.logisticos-logistics.svc.cluster.local
+  http:
+    - name: carrier-canary-header
+      match:
+        - headers:
+            x-canary:
+              exact: "true"
+      route:
+        - destination:
+            host: carrier.logisticos-logistics.svc.cluster.local
+            subset: canary
+            port:
+              number: 8010
+          weight: 100
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+    - name: carrier-weight-split
+      route:
+        - destination:
+            host: carrier.logisticos-logistics.svc.cluster.local
+            subset: stable
+            port:
+              number: 8010
+          weight: 100
+        - destination:
+            host: carrier.logisticos-logistics.svc.cluster.local
+            subset: canary
+            port:
+              number: 8010
+          weight: 0
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: pod-vs
+  namespace: logisticos-logistics
+  labels:
+    app: pod
+    component: virtual-service
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Canary-capable VS for pod (proof of delivery) service"
+spec:
+  hosts:
+    - pod.logisticos-logistics.svc.cluster.local
+  http:
+    - name: pod-canary-header
+      match:
+        - headers:
+            x-canary:
+              exact: "true"
+      route:
+        - destination:
+            host: pod.logisticos-logistics.svc.cluster.local
+            subset: canary
+            port:
+              number: 8011
+          weight: 100
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+    - name: pod-weight-split
+      route:
+        - destination:
+            host: pod.logisticos-logistics.svc.cluster.local
+            subset: stable
+            port:
+              number: 8011
+          weight: 100
+        - destination:
+            host: pod.logisticos-logistics.svc.cluster.local
+            subset: canary
+            port:
+              number: 8011
+          weight: 0
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+---
+# =============================================================================
+# LOGISTICOS-ENGAGEMENT NAMESPACE
+# =============================================================================
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: engagement-vs
+  namespace: logisticos-engagement
+  labels:
+    app: engagement
+    component: virtual-service
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Canary-capable VS for engagement service"
+    logisticos.io/sla-note: "WhatsApp/SMS notification delivery target: 5s from trigger"
+spec:
+  hosts:
+    - engagement.logisticos-engagement.svc.cluster.local
+  http:
+    - name: engagement-canary-header
+      match:
+        - headers:
+            x-canary:
+              exact: "true"
+      route:
+        - destination:
+            host: engagement.logisticos-engagement.svc.cluster.local
+            subset: canary
+            port:
+              number: 8003
+          weight: 100
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+    - name: engagement-weight-split
+      route:
+        - destination:
+            host: engagement.logisticos-engagement.svc.cluster.local
+            subset: stable
+            port:
+              number: 8003
+          weight: 100
+        - destination:
+            host: engagement.logisticos-engagement.svc.cluster.local
+            subset: canary
+            port:
+              number: 8003
+          weight: 0
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: cdp-vs
+  namespace: logisticos-engagement
+  labels:
+    app: cdp
+    component: virtual-service
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Canary-capable VS for cdp (customer data platform) service"
+spec:
+  hosts:
+    - cdp.logisticos-engagement.svc.cluster.local
+  http:
+    - name: cdp-canary-header
+      match:
+        - headers:
+            x-canary:
+              exact: "true"
+      route:
+        - destination:
+            host: cdp.logisticos-engagement.svc.cluster.local
+            subset: canary
+            port:
+              number: 8002
+          weight: 100
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+    - name: cdp-weight-split
+      route:
+        - destination:
+            host: cdp.logisticos-engagement.svc.cluster.local
+            subset: stable
+            port:
+              number: 8002
+          weight: 100
+        - destination:
+            host: cdp.logisticos-engagement.svc.cluster.local
+            subset: canary
+            port:
+              number: 8002
+          weight: 0
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: marketing-vs
+  namespace: logisticos-engagement
+  labels:
+    app: marketing
+    component: virtual-service
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Canary-capable VS for marketing automation service"
+spec:
+  hosts:
+    - marketing.logisticos-engagement.svc.cluster.local
+  http:
+    - name: marketing-canary-header
+      match:
+        - headers:
+            x-canary:
+              exact: "true"
+      route:
+        - destination:
+            host: marketing.logisticos-engagement.svc.cluster.local
+            subset: canary
+            port:
+              number: 8014
+          weight: 100
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+    - name: marketing-weight-split
+      route:
+        - destination:
+            host: marketing.logisticos-engagement.svc.cluster.local
+            subset: stable
+            port:
+              number: 8014
+          weight: 100
+        - destination:
+            host: marketing.logisticos-engagement.svc.cluster.local
+            subset: canary
+            port:
+              number: 8014
+          weight: 0
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+---
+# =============================================================================
+# LOGISTICOS-DATA NAMESPACE
+# =============================================================================
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: delivery-experience-vs
+  namespace: logisticos-data
+  labels:
+    app: delivery-experience
+    component: virtual-service
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Canary-capable VS for delivery-experience service"
+spec:
+  hosts:
+    - delivery-experience.logisticos-data.svc.cluster.local
+  http:
+    - name: delivery-experience-canary-header
+      match:
+        - headers:
+            x-canary:
+              exact: "true"
+      route:
+        - destination:
+            host: delivery-experience.logisticos-data.svc.cluster.local
+            subset: canary
+            port:
+              number: 8007
+          weight: 100
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+    - name: delivery-experience-weight-split
+      route:
+        - destination:
+            host: delivery-experience.logisticos-data.svc.cluster.local
+            subset: stable
+            port:
+              number: 8007
+          weight: 100
+        - destination:
+            host: delivery-experience.logisticos-data.svc.cluster.local
+            subset: canary
+            port:
+              number: 8007
+          weight: 0
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 5s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: payments-vs
+  namespace: logisticos-data
+  labels:
+    app: payments
+    component: virtual-service
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Canary-capable VS for payments service"
+    logisticos.io/pci-note: "Payment data must remain in logisticos-data namespace (PCI-DSS scope)"
+spec:
+  hosts:
+    - payments.logisticos-data.svc.cluster.local
+  http:
+    - name: payments-canary-header
+      match:
+        - headers:
+            x-canary:
+              exact: "true"
+      route:
+        - destination:
+            host: payments.logisticos-data.svc.cluster.local
+            subset: canary
+            port:
+              number: 8012
+          weight: 100
+      # Shorter perTryTimeout for payment paths; idempotency key required upstream
+      timeout: 30s
+      retries:
+        attempts: 2
+        perTryTimeout: 10s
+        retryOn: "gateway-error,connect-failure"
+
+    - name: payments-weight-split
+      route:
+        - destination:
+            host: payments.logisticos-data.svc.cluster.local
+            subset: stable
+            port:
+              number: 8012
+          weight: 100
+        - destination:
+            host: payments.logisticos-data.svc.cluster.local
+            subset: canary
+            port:
+              number: 8012
+          weight: 0
+      timeout: 30s
+      retries:
+        attempts: 2
+        perTryTimeout: 10s
+        retryOn: "gateway-error,connect-failure"
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: analytics-vs
+  namespace: logisticos-data
+  labels:
+    app: analytics
+    component: virtual-service
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Canary-capable VS for analytics service"
+    logisticos.io/perf-note: "Higher connection limits in DestinationRule for ClickHouse query load"
+spec:
+  hosts:
+    - analytics.logisticos-data.svc.cluster.local
+  http:
+    - name: analytics-canary-header
+      match:
+        - headers:
+            x-canary:
+              exact: "true"
+      route:
+        - destination:
+            host: analytics.logisticos-data.svc.cluster.local
+            subset: canary
+            port:
+              number: 8013
+          weight: 100
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 10s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+    - name: analytics-weight-split
+      route:
+        - destination:
+            host: analytics.logisticos-data.svc.cluster.local
+            subset: stable
+            port:
+              number: 8013
+          weight: 100
+        - destination:
+            host: analytics.logisticos-data.svc.cluster.local
+            subset: canary
+            port:
+              number: 8013
+          weight: 0
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 10s
+        retryOn: "gateway-error,connect-failure,retriable-4xx"
+
+---
+# =============================================================================
+# LOGISTICOS-AI NAMESPACE
+# =============================================================================
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: ai-layer-vs
+  namespace: logisticos-ai
+  labels:
+    app: ai-layer
+    component: virtual-service
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Canary-capable VS for ai-layer service"
+    logisticos.io/security-note: "Only accepts inbound traffic from logisticos-core (see AuthorizationPolicy)"
+spec:
+  hosts:
+    - ai-layer.logisticos-ai.svc.cluster.local
+  http:
+    - name: ai-layer-canary-header
+      match:
+        - headers:
+            x-canary:
+              exact: "true"
+      route:
+        - destination:
+            host: ai-layer.logisticos-ai.svc.cluster.local
+            subset: canary
+            port:
+              number: 8016
+          weight: 100
+      # Agent planning may take several seconds; generous timeout
+      timeout: 30s
+      retries:
+        attempts: 2
+        perTryTimeout: 15s
+        retryOn: "gateway-error,connect-failure"
+
+    - name: ai-layer-weight-split
+      route:
+        - destination:
+            host: ai-layer.logisticos-ai.svc.cluster.local
+            subset: stable
+            port:
+              number: 8016
+          weight: 100
+        - destination:
+            host: ai-layer.logisticos-ai.svc.cluster.local
+            subset: canary
+            port:
+              number: 8016
+          weight: 0
+      timeout: 30s
+      retries:
+        attempts: 2
+        perTryTimeout: 15s
+        retryOn: "gateway-error,connect-failure"

@@ -1,0 +1,619 @@
+openapi: "3.1.0"
+info:
+  title: LogisticOS Warehouse & Hub Operations API
+  version: "1.0.0"
+  description: |
+    Manages hub facilities and the parcel induction lifecycle within LogisticOS.
+    A hub is a physical sorting/distribution centre in the logistics network.
+
+    **Parcel lifecycle at a hub:**
+    1. **Induct** (`POST /v1/inductions`) — parcel arrives and is scanned in
+    2. **Sort** (`POST /v1/inductions/:id/sort`) — parcel assigned to delivery zone and bay
+    3. **Dispatch** (`POST /v1/inductions/:id/dispatch`) — parcel loaded onto outbound route
+
+    Induction is idempotent: inducting the same `(shipment_id, hub_id)` pair returns
+    the existing record. All endpoints require a valid JWT. Hub read operations require
+    `fleet:read`; hub management and induction operations require `fleet:manage` or
+    `shipment:update` depending on the endpoint.
+  contact:
+    name: LogisticOS Engineering
+    email: engineering@logisticos.io
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.logisticos.io/v1
+    description: Production
+  - url: https://staging-api.logisticos.io/v1
+    description: Staging
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Hubs
+    description: Hub facility management
+  - name: Inductions
+    description: Parcel induction, sorting, and dispatch lifecycle
+
+paths:
+  /hubs:
+    get:
+      operationId: listHubs
+      tags: [Hubs]
+      summary: List hubs for tenant
+      description: Returns all active hub facilities registered to the authenticated tenant.
+      responses:
+        "200":
+          description: List of hubs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  hubs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Hub"
+                  count:
+                    type: integer
+                    example: 3
+              examples:
+                multiple_hubs:
+                  summary: Tenant with 3 hubs across NCR
+                  value:
+                    hubs:
+                      - id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                        tenant_id: "t1e2n3a4-n5t6-7890-abcd-123456789012"
+                        name: "Makati Main Hub"
+                        address: "100 EDSA, Guadalupe, Makati City, Metro Manila"
+                        capacity: 5000
+                        current_load: 1240
+                        status: "active"
+                      - id: "b2c3d4e5-f6a7-8901-bcde-f12345678901"
+                        tenant_id: "t1e2n3a4-n5t6-7890-abcd-123456789012"
+                        name: "Quezon City Hub"
+                        address: "200 Commonwealth Ave, Quezon City, Metro Manila"
+                        capacity: 3000
+                        current_load: 890
+                        status: "active"
+                    count: 2
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    post:
+      operationId: createHub
+      tags: [Hubs]
+      summary: Create a new hub facility
+      description: |
+        Registers a new hub facility for the tenant. Requires `fleet:manage` permission.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateHubRequest"
+            examples:
+              cebu_hub:
+                summary: Create Cebu City hub
+                value:
+                  name: "Cebu City Hub"
+                  address: "50 N. Bacalso Ave, Cebu City, Cebu"
+                  lat: 10.3157
+                  lng: 123.8854
+                  capacity: 2000
+                  contact_phone: "+63322345678"
+      responses:
+        "201":
+          description: Hub created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Hub"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /hubs/{hub_id}:
+    get:
+      operationId: getHub
+      tags: [Hubs]
+      summary: Get hub by ID
+      parameters:
+        - $ref: "#/components/parameters/HubId"
+      responses:
+        "200":
+          description: Hub detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Hub"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /hubs/{hub_id}/capacity:
+    get:
+      operationId: getHubCapacity
+      tags: [Hubs]
+      summary: Get hub capacity summary
+      description: |
+        Returns a lightweight capacity snapshot: total capacity, current parcel load,
+        utilisation percentage, and whether the hub is over capacity. Updated in
+        real-time as parcels are inducted and dispatched.
+      parameters:
+        - $ref: "#/components/parameters/HubId"
+      responses:
+        "200":
+          description: Capacity summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HubCapacitySummary"
+              examples:
+                normal:
+                  summary: Hub at 25% utilisation
+                  value:
+                    hub_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                    hub_name: "Makati Main Hub"
+                    capacity: 5000
+                    current_load: 1240
+                    capacity_pct: 24.8
+                    is_over_capacity: false
+                over_capacity:
+                  summary: Hub over capacity — needs attention
+                  value:
+                    hub_id: "b2c3d4e5-f6a7-8901-bcde-f12345678901"
+                    hub_name: "Quezon City Hub"
+                    capacity: 3000
+                    current_load: 3150
+                    capacity_pct: 105.0
+                    is_over_capacity: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /hubs/{hub_id}/manifest:
+    get:
+      operationId: getHubManifest
+      tags: [Hubs]
+      summary: Get active parcel manifest for a hub
+      description: |
+        Returns all parcels currently in the hub with status `inducted` or `sorted`.
+        Dispatched parcels are excluded. Useful for hub scanning operations and
+        capacity planning.
+      parameters:
+        - $ref: "#/components/parameters/HubId"
+      responses:
+        "200":
+          description: Active manifest
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  hub_id:
+                    type: string
+                    format: uuid
+                  parcels:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/InductionRecord"
+                  count:
+                    type: integer
+                    example: 87
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /inductions:
+    post:
+      operationId: inductParcel
+      tags: [Inductions]
+      summary: Induct a parcel into a hub
+      description: |
+        Registers a parcel arriving at a hub. Records the scan timestamp, hub,
+        and shipment association.
+
+        **Idempotent**: if the same `(shipment_id, hub_id)` combination has
+        already been inducted, the existing record is returned unchanged with
+        status 201.
+
+        Requires `shipment:update` permission. The hub must belong to the
+        caller's tenant.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InductParcelRequest"
+            examples:
+              standard:
+                summary: Induct a parcel via barcode scan
+                value:
+                  shipment_id: "s1h2i3p4-m5e6-7890-abcd-ef1234567890"
+                  hub_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                  scanned_by: "d5e6f7a8-b9c0-1234-deff-012345678901"
+      responses:
+        "201":
+          description: Parcel inducted (or existing record returned if already inducted)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InductionRecord"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          description: Hub is over capacity or parcel already dispatched
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Hub is at capacity — cannot induct additional parcels"
+
+  /inductions/{id}:
+    get:
+      operationId: getInduction
+      tags: [Inductions]
+      summary: Get induction record by ID
+      description: |
+        Fetches a single induction record. Searches across all hub manifests
+        belonging to the authenticated tenant.
+      parameters:
+        - $ref: "#/components/parameters/InductionId"
+      responses:
+        "200":
+          description: Induction record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InductionRecord"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /inductions/{id}/sort:
+    post:
+      operationId: sortParcel
+      tags: [Inductions]
+      summary: Sort parcel to delivery zone and bay
+      description: |
+        Assigns an inducted parcel to a specific delivery zone and physical bay slot.
+        Status changes from `inducted` → `sorted`. Requires `shipment:update` permission.
+      parameters:
+        - $ref: "#/components/parameters/InductionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SortParcelRequest"
+            examples:
+              sort_to_zone:
+                summary: Sort to Zone A, Bay 14
+                value:
+                  zone: "MM-QC-A"
+                  bay: "A14"
+      responses:
+        "200":
+          description: Parcel sorted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InductionRecord"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Parcel not in inducted status or already dispatched
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /inductions/{id}/dispatch:
+    post:
+      operationId: dispatchParcel
+      tags: [Inductions]
+      summary: Dispatch parcel out of hub
+      description: |
+        Marks a sorted parcel as dispatched on an outbound delivery route.
+        Status changes from `sorted` → `dispatched`. Decrements the hub's
+        current load counter. Requires `shipment:update` permission.
+      parameters:
+        - $ref: "#/components/parameters/InductionId"
+      responses:
+        "200":
+          description: Parcel dispatched
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InductionRecord"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Parcel must be in sorted status before dispatch
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Parcel must be sorted before it can be dispatched"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    HubId:
+      name: hub_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Hub UUID
+      example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+    InductionId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Induction record UUID
+      example: "i1n2d3u4-c5t6-7890-abcd-ef1234567890"
+
+  responses:
+    BadRequest:
+      description: Malformed request body
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Missing or invalid JWT
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: Insufficient permissions or cross-tenant access
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    UnprocessableEntity:
+      description: Business logic validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    HubStatus:
+      type: string
+      enum: [active, inactive, maintenance]
+      example: active
+
+    InductionStatus:
+      type: string
+      enum: [inducted, sorted, dispatched]
+      example: inducted
+
+    Hub:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        tenant_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: "Makati Main Hub"
+        address:
+          type: string
+          example: "100 EDSA, Guadalupe, Makati City, Metro Manila"
+        lat:
+          type: number
+          format: double
+          nullable: true
+          example: 14.5547
+        lng:
+          type: number
+          format: double
+          nullable: true
+          example: 121.0244
+        capacity:
+          type: integer
+          description: Maximum parcel capacity at one time
+          example: 5000
+        current_load:
+          type: integer
+          description: Current number of parcels in hub
+          example: 1240
+        status:
+          $ref: "#/components/schemas/HubStatus"
+        contact_phone:
+          type: string
+          nullable: true
+          example: "+63212345678"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required: [id, tenant_id, name, address, capacity, current_load, status, created_at, updated_at]
+
+    HubCapacitySummary:
+      type: object
+      properties:
+        hub_id:
+          type: string
+          format: uuid
+        hub_name:
+          type: string
+          example: "Makati Main Hub"
+        capacity:
+          type: integer
+          example: 5000
+        current_load:
+          type: integer
+          example: 1240
+        capacity_pct:
+          type: number
+          format: float
+          description: Utilisation percentage (current_load / capacity * 100)
+          example: 24.8
+        is_over_capacity:
+          type: boolean
+          example: false
+      required: [hub_id, hub_name, capacity, current_load, capacity_pct, is_over_capacity]
+
+    InductionRecord:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "i1n2d3u4-c5t6-7890-abcd-ef1234567890"
+        shipment_id:
+          type: string
+          format: uuid
+          example: "s1h2i3p4-m5e6-7890-abcd-ef1234567890"
+        hub_id:
+          type: string
+          format: uuid
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        status:
+          $ref: "#/components/schemas/InductionStatus"
+        zone:
+          type: string
+          nullable: true
+          description: Delivery zone assigned during sorting
+          example: "MM-QC-A"
+        bay:
+          type: string
+          nullable: true
+          description: Physical bay slot assigned during sorting
+          example: "A14"
+        scanned_by:
+          type: string
+          format: uuid
+          nullable: true
+          description: UUID of the operator who scanned the parcel in
+        inducted_at:
+          type: string
+          format: date-time
+        sorted_at:
+          type: string
+          format: date-time
+          nullable: true
+        dispatched_at:
+          type: string
+          format: date-time
+          nullable: true
+      required: [id, shipment_id, hub_id, status, inducted_at]
+
+    CreateHubRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          example: "Cebu City Hub"
+        address:
+          type: string
+          example: "50 N. Bacalso Ave, Cebu City, Cebu"
+        lat:
+          type: number
+          format: double
+          nullable: true
+          example: 10.3157
+        lng:
+          type: number
+          format: double
+          nullable: true
+          example: 123.8854
+        capacity:
+          type: integer
+          minimum: 1
+          description: Maximum parcel capacity
+          example: 2000
+        contact_phone:
+          type: string
+          nullable: true
+          example: "+63322345678"
+      required: [name, address, capacity]
+
+    InductParcelRequest:
+      type: object
+      properties:
+        shipment_id:
+          type: string
+          format: uuid
+          example: "s1h2i3p4-m5e6-7890-abcd-ef1234567890"
+        hub_id:
+          type: string
+          format: uuid
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        scanned_by:
+          type: string
+          format: uuid
+          nullable: true
+          description: UUID of the operator performing the induction scan
+      required: [shipment_id, hub_id]
+
+    SortParcelRequest:
+      type: object
+      properties:
+        zone:
+          type: string
+          description: Delivery zone code (e.g. MM-QC-A for Metro Manila Quezon City zone A)
+          example: "MM-QC-A"
+        bay:
+          type: string
+          description: Physical bay slot identifier
+          example: "A14"
+      required: [zone, bay]
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]

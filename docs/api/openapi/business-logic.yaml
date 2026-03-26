@@ -1,0 +1,743 @@
+openapi: 3.1.0
+info:
+  title: LogisticOS Business Logic & Automation Engine API
+  version: 1.0.0
+  description: |
+    Event-Condition-Action (ECA) rules engine for automating logistics workflows.
+    Rules fire when Kafka events arrive, evaluate conditions against the event context,
+    then execute actions (notify, reschedule, escalate, etc.). All rules are
+    tenant-scoped; platform-level rules use tenant_id = nil UUID.
+
+servers:
+  - url: https://api.logisticos.io
+    description: Production
+  - url: https://staging-api.logisticos.io
+    description: Staging
+  - url: http://localhost:8015
+    description: Local development
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: rules
+    description: Automation rule management
+  - name: executions
+    description: Rule execution history and audit trail
+
+paths:
+  /v1/rules:
+    get:
+      operationId: listRules
+      summary: List automation rules
+      tags: [rules]
+      description: Returns all automation rules for the authenticated tenant, ordered by priority (ascending).
+      parameters:
+        - name: is_active
+          in: query
+          schema:
+            type: boolean
+          description: Filter by active/inactive status
+        - name: trigger_type
+          in: query
+          schema:
+            $ref: '#/components/schemas/TriggerType'
+          description: Filter rules by trigger type
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: per_page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Paginated list of automation rules
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/AutomationRule'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    post:
+      operationId: createRule
+      summary: Create automation rule
+      tags: [rules]
+      description: |
+        Creates a new automation rule. Rules are evaluated in priority order (lower number
+        = higher priority). Multiple rules with the same trigger implement OR logic.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRuleRequest'
+            examples:
+              failed_delivery:
+                summary: Auto-reschedule on failed delivery
+                value:
+                  name: "Auto-Reschedule on Failed Delivery"
+                  description: "Reschedule and notify customer when delivery fails within attempt limit"
+                  trigger:
+                    type: "DeliveryFailed"
+                  conditions:
+                    - type: "AttemptCount"
+                      lte: 3
+                  actions:
+                    - type: "RescheduleDelivery"
+                      delay_hours: 24
+                    - type: "NotifyCustomer"
+                      channel: "whatsapp"
+                      template_id: "delivery_failed_reschedule"
+                    - type: "AlertDispatcher"
+                      message: "Delivery failed — auto-rescheduled"
+                      priority: "normal"
+                  priority: 10
+              high_value_express:
+                summary: Escalate high-value express failures
+                value:
+                  name: "High-Value Express Escalation"
+                  description: "Immediately escalate support for high-value express shipment failures"
+                  trigger:
+                    type: "DeliveryFailed"
+                  conditions:
+                    - type: "ServiceType"
+                      equals: "express"
+                    - type: "ShipmentValue"
+                      greater_than: 1000000
+                  actions:
+                    - type: "EscalateToSupport"
+                      tier: 2
+                    - type: "NotifyMerchant"
+                      template_id: "express_failure_escalated"
+                  priority: 1
+      responses:
+        '201':
+          description: Rule created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AutomationRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /v1/rules/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+    get:
+      operationId: getRule
+      summary: Get automation rule
+      tags: [rules]
+      responses:
+        '200':
+          description: Automation rule details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AutomationRule'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      operationId: updateRule
+      summary: Update automation rule
+      tags: [rules]
+      description: Full replacement of the rule. All fields required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRuleRequest'
+      responses:
+        '200':
+          description: Updated rule
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AutomationRule'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+    delete:
+      operationId: deleteRule
+      summary: Delete automation rule
+      tags: [rules]
+      responses:
+        '204':
+          description: Rule deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/rules/{id}/toggle:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    patch:
+      operationId: toggleRule
+      summary: Toggle rule active/inactive
+      tags: [rules]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [is_active]
+              properties:
+                is_active:
+                  type: boolean
+      responses:
+        '200':
+          description: Rule toggled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AutomationRule'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/rules/{id}/executions:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getRuleExecutions
+      summary: List rule execution history
+      tags: [executions]
+      description: Returns the audit trail of every time this rule fired, in reverse chronological order.
+      parameters:
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Start of time range (ISO 8601)
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: End of time range (ISO 8601)
+        - name: cursor
+          in: query
+          schema:
+            type: string
+          description: Opaque cursor for pagination
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+      responses:
+        '200':
+          description: Rule execution records
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RuleExecution'
+                  next_cursor:
+                    type: string
+                    nullable: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/rules/reload:
+    post:
+      operationId: reloadRules
+      summary: Hot-reload rules from database
+      tags: [rules]
+      description: |
+        Forces the rules engine to reload all rules from PostgreSQL without a service
+        restart. Requires `rules:admin` permission. Called automatically after rule
+        mutations but available for emergency use.
+      responses:
+        '200':
+          description: Rules reloaded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rules_loaded:
+                    type: integer
+                    example: 42
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Health check
+      tags: [rules]
+      security: []
+      responses:
+        '200':
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    BadRequest:
+      description: Malformed request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing or invalid JWT
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Rule not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UnprocessableEntity:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    AutomationRule:
+      type: object
+      required: [id, tenant_id, name, description, is_active, trigger, conditions, actions, priority, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+          description: Nil UUID indicates a platform-level rule applied to all tenants
+        name:
+          type: string
+          example: "Auto-Reschedule on Failed Delivery"
+        description:
+          type: string
+        is_active:
+          type: boolean
+        trigger:
+          $ref: '#/components/schemas/RuleTrigger'
+        conditions:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuleCondition'
+          description: All conditions must pass (AND logic). Empty array = always fires.
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuleAction'
+          minItems: 1
+        priority:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          description: Lower number = higher priority. Rules with same trigger fire in priority order.
+          example: 10
+        created_at:
+          type: string
+          format: date-time
+
+    CreateRuleRequest:
+      type: object
+      required: [name, trigger, actions, priority]
+      properties:
+        name:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 1000
+          default: ""
+        trigger:
+          $ref: '#/components/schemas/RuleTrigger'
+        conditions:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuleCondition'
+          default: []
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuleAction'
+          minItems: 1
+        priority:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 100
+
+    TriggerType:
+      type: string
+      enum:
+        - DeliveryFailed
+        - DeliveryCompleted
+        - DeliveryAttempted
+        - ShipmentCreated
+        - ShipmentDelayed
+        - CustomerInactive
+        - DriverIdleExceeded
+        - HubCapacityExceeded
+        - PaymentOverdue
+        - SlaBreach
+        - CampaignTriggered
+
+    RuleTrigger:
+      type: object
+      required: [type]
+      discriminator:
+        propertyName: type
+      properties:
+        type:
+          $ref: '#/components/schemas/TriggerType'
+        # DeliveryAttempted
+        attempts:
+          type: integer
+          minimum: 1
+          description: "[DeliveryAttempted] Fire after this many attempts"
+        # ShipmentDelayed
+        minutes_late:
+          type: integer
+          minimum: 1
+          description: "[ShipmentDelayed] Minutes past ETA to trigger"
+        # CustomerInactive
+        days:
+          type: integer
+          minimum: 1
+          description: "[CustomerInactive | PaymentOverdue] Number of days"
+        # DriverIdleExceeded
+        minutes:
+          type: integer
+          minimum: 1
+          description: "[DriverIdleExceeded] Minutes of driver idle time"
+        # HubCapacityExceeded
+        threshold_pct:
+          type: integer
+          minimum: 50
+          maximum: 100
+          description: "[HubCapacityExceeded] Capacity percentage threshold"
+        # SlaBreach
+        sla_type:
+          type: string
+          description: "[SlaBreach] SLA type identifier (e.g. 'same_day', 'express_4h')"
+        # CampaignTriggered
+        campaign_id:
+          type: string
+          format: uuid
+          description: "[CampaignTriggered] Campaign UUID"
+      example:
+        type: DeliveryFailed
+
+    RuleCondition:
+      type: object
+      required: [type]
+      discriminator:
+        propertyName: type
+      properties:
+        type:
+          type: string
+          enum:
+            - ServiceType
+            - ShipmentValue
+            - Zone
+            - CustomerSegment
+            - TimeOfDay
+            - DayOfWeek
+            - AttemptCount
+            - MerchantTier
+            - WeatherCondition
+            - Custom
+        # ServiceType
+        equals:
+          type: string
+          description: "[ServiceType] standard | express | same_day | balikbayan"
+        # ShipmentValue
+        greater_than:
+          type: integer
+          description: "[ShipmentValue] Value in cents (PHP)"
+        # Zone
+        in_zones:
+          type: array
+          items:
+            type: string
+          description: "[Zone] Zone IDs to match"
+        # CustomerSegment
+        segment_id:
+          type: string
+          format: uuid
+          description: "[CustomerSegment] CDP segment UUID"
+        # TimeOfDay
+        hour_from:
+          type: integer
+          minimum: 0
+          maximum: 23
+        hour_to:
+          type: integer
+          minimum: 0
+          maximum: 23
+        # DayOfWeek
+        days:
+          type: array
+          items:
+            type: string
+            enum: [Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday]
+        # AttemptCount
+        lte:
+          type: integer
+          minimum: 1
+          description: "[AttemptCount] Fire only if attempts <= this value"
+        # MerchantTier
+        tiers:
+          type: array
+          items:
+            type: string
+            enum: [starter, growth, enterprise]
+        # WeatherCondition
+        condition:
+          type: string
+          description: "[WeatherCondition] e.g. 'typhoon', 'heavy_rain'"
+        # Custom
+        expression:
+          type: string
+          description: "[Custom] DSL expression string for advanced conditions"
+
+    RuleAction:
+      type: object
+      required: [type]
+      discriminator:
+        propertyName: type
+      properties:
+        type:
+          type: string
+          enum:
+            - RescheduleDelivery
+            - NotifyCustomer
+            - NotifyMerchant
+            - AlertDispatcher
+            - AssignNewDriver
+            - UpdateShipmentStatus
+            - ApplyDiscount
+            - TriggerCampaign
+            - CreateRefund
+            - EscalateToSupport
+            - RunAiDispatch
+            - WebhookCall
+            - LogAuditEvent
+        # RescheduleDelivery
+        delay_hours:
+          type: integer
+          minimum: 1
+          description: "[RescheduleDelivery] Hours to delay before next attempt"
+        # NotifyCustomer
+        channel:
+          type: string
+          enum: [whatsapp, sms, email, push]
+          description: "[NotifyCustomer] Delivery channel"
+        template_id:
+          type: string
+          description: "[NotifyCustomer | NotifyMerchant] Engagement template ID"
+        # AlertDispatcher
+        message:
+          type: string
+          description: "[AlertDispatcher] Alert message to dispatcher"
+        priority:
+          type: string
+          enum: [low, normal, high, urgent]
+          description: "[AlertDispatcher] Alert priority level"
+        # UpdateShipmentStatus
+        status:
+          type: string
+          description: "[UpdateShipmentStatus] Target status string"
+        # ApplyDiscount
+        percentage:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          description: "[ApplyDiscount] Discount percentage 0-100"
+        # TriggerCampaign
+        campaign_id:
+          type: string
+          format: uuid
+          description: "[TriggerCampaign] Marketing campaign UUID"
+        # CreateRefund
+        reason:
+          type: string
+          description: "[CreateRefund] Refund reason text"
+        # EscalateToSupport
+        tier:
+          type: integer
+          minimum: 1
+          maximum: 3
+          description: "[EscalateToSupport] Support tier (1=L1, 2=L2, 3=L3)"
+        # WebhookCall
+        url:
+          type: string
+          format: uri
+          description: "[WebhookCall] Webhook endpoint URL"
+        method:
+          type: string
+          enum: [GET, POST, PUT, PATCH]
+          description: "[WebhookCall] HTTP method"
+        # LogAuditEvent
+        event_type:
+          type: string
+          description: "[LogAuditEvent] Audit event type string"
+
+    RuleExecution:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        rule_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        kafka_topic:
+          type: string
+          example: "logisticos.driver.delivery.failed"
+        kafka_offset:
+          type: integer
+          format: int64
+        shipment_id:
+          type: string
+          format: uuid
+          nullable: true
+        conditions_passed:
+          type: boolean
+        actions_executed:
+          type: array
+          items:
+            type: string
+          description: Action types that were executed
+        outcome:
+          type: string
+          enum: [success, partial_failure, skipped, error]
+        error_message:
+          type: string
+          nullable: true
+        fired_at:
+          type: string
+          format: date-time
+
+    PaginatedResponse:
+      type: object
+      properties:
+        total:
+          type: integer
+        page:
+          type: integer
+        per_page:
+          type: integer
+        total_pages:
+          type: integer
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              example: RULE_NOT_FOUND
+            message:
+              type: string
+              example: Automation rule not found

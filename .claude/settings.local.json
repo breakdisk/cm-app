@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /c/Users/Admin/.cargo/registry/src -name *.toml)",
+      "Bash(xargs grep:*)",
+      "Bash(xargs wc:*)",
+      "Bash(find d:/LogisticOS/services/api-gateway/src -name *.rs)"
+    ]
+  }
+}

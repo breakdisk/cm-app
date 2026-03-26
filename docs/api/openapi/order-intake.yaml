@@ -1,0 +1,619 @@
+openapi: "3.1.0"
+info:
+  title: LogisticOS Order & Shipment Intake API
+  version: "1.0.0"
+  description: |
+    Accepts new shipment bookings from merchants, validates addresses, normalises
+    parcel data, and emits `shipment.created` events to the Kafka broker.
+    All endpoints require a valid JWT in the `Authorization: Bearer` header with
+    `tenant_id` and `merchant_id` claims.
+  contact:
+    name: LogisticOS Engineering
+    email: engineering@logisticos.io
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.logisticos.io/v1
+    description: Production
+  - url: https://staging-api.logisticos.io/v1
+    description: Staging
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Shipments
+    description: Shipment lifecycle operations
+  - name: Bulk
+    description: Bulk import endpoints
+  - name: Webhooks
+    description: Merchant webhook registration
+
+paths:
+  /shipments:
+    post:
+      operationId: createShipment
+      tags: [Shipments]
+      summary: Create a new shipment
+      description: |
+        Validates the shipment request, assigns a tracking number (AWB),
+        persists the order, and publishes `shipment.created` to Kafka.
+        Returns the new shipment with assigned AWB.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateShipmentRequest"
+            examples:
+              standard:
+                summary: Standard COD shipment
+                value:
+                  merchant_reference: "ORD-2024-00123"
+                  sender:
+                    name: "Juan dela Cruz"
+                    phone: "+639171234567"
+                    address: "123 Ayala Ave, Makati City, Metro Manila"
+                    barangay: "Bel-Air"
+                    city: "Makati"
+                    province: "Metro Manila"
+                    zip: "1226"
+                  recipient:
+                    name: "Maria Santos"
+                    phone: "+639281234567"
+                    address: "456 Rizal St, Cebu City, Cebu"
+                    barangay: "Capitol Site"
+                    city: "Cebu City"
+                    province: "Cebu"
+                    zip: "6000"
+                  parcel:
+                    weight_kg: 1.5
+                    length_cm: 20
+                    width_cm: 15
+                    height_cm: 10
+                    declared_value: 500.00
+                    description: "Electronics"
+                    is_fragile: false
+                  service_type: "standard"
+                  payment_method: "cod"
+                  cod_amount: 1500.00
+                  special_instructions: "Handle with care"
+      responses:
+        "201":
+          description: Shipment created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShipmentResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+    get:
+      operationId: listShipments
+      tags: [Shipments]
+      summary: List shipments for the authenticated merchant
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/ShipmentStatus"
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date
+          example: "2024-03-01"
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date
+          example: "2024-03-31"
+        - name: cursor
+          in: query
+          schema:
+            type: string
+          description: Opaque pagination cursor from previous response
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: Paginated shipment list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShipmentListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /shipments/{awb}:
+    parameters:
+      - name: awb
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: "^LS-[A-Z0-9]{8}$"
+        example: "LS-A1B2C3D4"
+
+    get:
+      operationId: getShipment
+      tags: [Shipments]
+      summary: Get a single shipment by tracking number (AWB)
+      responses:
+        "200":
+          description: Shipment detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShipmentResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    patch:
+      operationId: updateShipment
+      tags: [Shipments]
+      summary: Update a shipment (pre-pickup only)
+      description: |
+        Updates are only allowed while the shipment is in `pending` or `confirmed`
+        status. Once picked up, only `reschedule_delivery` is available.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateShipmentRequest"
+      responses:
+        "200":
+          description: Updated shipment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShipmentResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: Conflict — shipment already picked up
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      operationId: cancelShipment
+      tags: [Shipments]
+      summary: Cancel a shipment
+      description: |
+        Cancels a shipment if it is still in `pending` or `confirmed` status.
+        Publishes `shipment.cancelled` event to Kafka.
+      responses:
+        "204":
+          description: Cancelled
+        "409":
+          description: Shipment cannot be cancelled (already in transit or delivered)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /shipments/{awb}/reschedule:
+    post:
+      operationId: rescheduleDelivery
+      tags: [Shipments]
+      summary: Reschedule a failed delivery attempt
+      parameters:
+        - name: awb
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [preferred_date]
+              properties:
+                preferred_date:
+                  type: string
+                  format: date
+                  description: Preferred re-delivery date (must be a business day within 7 days)
+                time_window:
+                  type: string
+                  enum: [morning, afternoon, anytime]
+                  default: anytime
+                special_instructions:
+                  type: string
+                  maxLength: 500
+      responses:
+        "200":
+          description: Rescheduled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShipmentResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: Shipment is not in a reschedulable state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /shipments/bulk:
+    post:
+      operationId: bulkCreateShipments
+      tags: [Bulk]
+      summary: Bulk create shipments (up to 500 per request)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [shipments]
+              properties:
+                shipments:
+                  type: array
+                  minItems: 1
+                  maxItems: 500
+                  items:
+                    $ref: "#/components/schemas/CreateShipmentRequest"
+      responses:
+        "202":
+          description: Accepted for async processing
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  batch_id:
+                    type: string
+                    format: uuid
+                  accepted_count:
+                    type: integer
+                  validation_errors:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        index:
+                          type: integer
+                        merchant_reference:
+                          type: string
+                        errors:
+                          type: array
+                          items:
+                            type: string
+
+  /shipments/bulk/{batch_id}:
+    get:
+      operationId: getBulkStatus
+      tags: [Bulk]
+      summary: Get status of a bulk import job
+      parameters:
+        - name: batch_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Batch job status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  batch_id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    enum: [processing, completed, partial_failure, failed]
+                  total:
+                    type: integer
+                  succeeded:
+                    type: integer
+                  failed:
+                    type: integer
+                  created_awbs:
+                    type: array
+                    items:
+                      type: string
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Address:
+      type: object
+      required: [name, phone, address, city, province, zip]
+      properties:
+        name:
+          type: string
+          maxLength: 100
+        phone:
+          type: string
+          pattern: "^\\+63[0-9]{10}$"
+        address:
+          type: string
+          maxLength: 255
+          description: Street-level address line
+        barangay:
+          type: string
+          maxLength: 100
+        city:
+          type: string
+          maxLength: 100
+        province:
+          type: string
+          maxLength: 100
+        zip:
+          type: string
+          pattern: "^[0-9]{4}$"
+        latitude:
+          type: number
+          format: double
+          nullable: true
+        longitude:
+          type: number
+          format: double
+          nullable: true
+
+    Parcel:
+      type: object
+      required: [weight_kg, description]
+      properties:
+        weight_kg:
+          type: number
+          format: double
+          minimum: 0.1
+          maximum: 500
+        length_cm:
+          type: number
+          format: double
+          nullable: true
+        width_cm:
+          type: number
+          format: double
+          nullable: true
+        height_cm:
+          type: number
+          format: double
+          nullable: true
+        declared_value:
+          type: number
+          format: double
+          minimum: 0
+        description:
+          type: string
+          maxLength: 500
+        is_fragile:
+          type: boolean
+          default: false
+
+    CreateShipmentRequest:
+      type: object
+      required: [sender, recipient, parcel, service_type, payment_method]
+      properties:
+        merchant_reference:
+          type: string
+          maxLength: 100
+          description: Merchant's own order reference number
+        sender:
+          $ref: "#/components/schemas/Address"
+        recipient:
+          $ref: "#/components/schemas/Address"
+        parcel:
+          $ref: "#/components/schemas/Parcel"
+        service_type:
+          type: string
+          enum: [standard, express, same_day, bulky, balikbayan]
+        payment_method:
+          type: string
+          enum: [prepaid, cod]
+        cod_amount:
+          type: number
+          format: double
+          minimum: 0
+          description: Required when payment_method is cod
+        special_instructions:
+          type: string
+          maxLength: 500
+
+    UpdateShipmentRequest:
+      type: object
+      properties:
+        recipient:
+          $ref: "#/components/schemas/Address"
+        parcel:
+          $ref: "#/components/schemas/Parcel"
+        special_instructions:
+          type: string
+          maxLength: 500
+
+    ShipmentStatus:
+      type: string
+      enum:
+        - pending
+        - confirmed
+        - picked_up
+        - in_transit
+        - out_for_delivery
+        - delivery_attempted
+        - delivered
+        - returned
+        - cancelled
+
+    ShipmentResponse:
+      type: object
+      properties:
+        awb:
+          type: string
+          example: "LS-A1B2C3D4"
+        merchant_reference:
+          type: string
+          nullable: true
+        status:
+          $ref: "#/components/schemas/ShipmentStatus"
+        service_type:
+          type: string
+        sender:
+          $ref: "#/components/schemas/Address"
+        recipient:
+          $ref: "#/components/schemas/Address"
+        parcel:
+          $ref: "#/components/schemas/Parcel"
+        payment_method:
+          type: string
+        cod_amount:
+          type: number
+          nullable: true
+        estimated_fee:
+          type: number
+          description: Calculated shipping fee in PHP
+        estimated_delivery_date:
+          type: string
+          format: date
+          nullable: true
+        tracking_url:
+          type: string
+          format: uri
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/TrackingEvent"
+
+    TrackingEvent:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          $ref: "#/components/schemas/ShipmentStatus"
+        description:
+          type: string
+        location:
+          type: string
+          nullable: true
+        actor:
+          type: string
+          nullable: true
+          description: Driver ID, hub name, or system
+
+    ShipmentListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ShipmentResponse"
+        cursor:
+          type: string
+          nullable: true
+          description: Pass this as the `cursor` query param to fetch the next page. Null when no more pages.
+        total_count:
+          type: integer
+
+    ErrorResponse:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          description: Machine-readable error code
+          example: "shipment_already_in_transit"
+        message:
+          type: string
+          description: Human-readable description
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string
+        request_id:
+          type: string
+          format: uuid
+
+  responses:
+    BadRequest:
+      description: Invalid request body or parameters
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    Unauthorized:
+      description: Missing or invalid JWT
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    Forbidden:
+      description: Authenticated but not authorised (wrong tenant / merchant)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    UnprocessableEntity:
+      description: Validation failed (field-level errors)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    RateLimited:
+      description: Rate limit exceeded
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds until the rate limit window resets
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"

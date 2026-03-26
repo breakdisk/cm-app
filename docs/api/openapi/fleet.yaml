@@ -1,0 +1,611 @@
+openapi: "3.1.0"
+info:
+  title: LogisticOS Fleet Management API
+  version: "1.0.0"
+  description: |
+    Manages the vehicle fleet for a logistics tenant. Covers vehicle registration,
+    driver assignment, maintenance scheduling, and maintenance alert monitoring.
+
+    All endpoints require a valid JWT in the `Authorization: Bearer` header.
+    Fleet read operations require `fleet:read`, management operations require `fleet:manage`.
+  contact:
+    name: LogisticOS Engineering
+    email: engineering@logisticos.io
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.logisticos.io/v1
+    description: Production
+  - url: https://staging-api.logisticos.io/v1
+    description: Staging
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Vehicles
+    description: Vehicle lifecycle management
+  - name: Maintenance
+    description: Maintenance scheduling and alerts
+
+paths:
+  /vehicles:
+    get:
+      operationId: listVehicles
+      tags: [Vehicles]
+      summary: List vehicles
+      description: Returns all vehicles registered to the authenticated tenant, paginated.
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/VehicleStatus"
+          description: Filter by vehicle status
+        - name: vehicle_type
+          in: query
+          schema:
+            $ref: "#/components/schemas/VehicleType"
+          description: Filter by vehicle type
+      responses:
+        "200":
+          description: List of vehicles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vehicles:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Vehicle"
+                  count:
+                    type: integer
+                    example: 15
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+    post:
+      operationId: createVehicle
+      tags: [Vehicles]
+      summary: Register a new vehicle
+      description: |
+        Adds a new vehicle to the tenant fleet. The vehicle starts with `active` status.
+        Requires `fleet:manage` permission.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateVehicleRequest"
+            examples:
+              motorcycle:
+                summary: Register a delivery motorcycle
+                value:
+                  plate_number: "NCR-2026-001"
+                  vehicle_type: "motorcycle"
+                  make: "Honda"
+                  model: "Click 125i"
+                  year: 2024
+                  max_weight_kg: 30.0
+                  max_volume_cm3: 50000
+      responses:
+        "201":
+          description: Vehicle registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Vehicle"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /vehicles/maintenance-alerts:
+    get:
+      operationId: getMaintenanceAlerts
+      tags: [Maintenance]
+      summary: Get vehicles with upcoming maintenance
+      description: |
+        Returns vehicles that have maintenance due within the specified number of days.
+        Defaults to 7 days. Useful for proactive fleet management.
+      parameters:
+        - name: within_days
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 90
+            default: 7
+          description: Alert window in days
+          example: 7
+      responses:
+        "200":
+          description: Vehicles needing maintenance attention
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  alerts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Vehicle"
+                  count:
+                    type: integer
+                    example: 3
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /vehicles/{id}:
+    get:
+      operationId: getVehicle
+      tags: [Vehicles]
+      summary: Get vehicle by ID
+      parameters:
+        - $ref: "#/components/parameters/VehicleId"
+      responses:
+        "200":
+          description: Vehicle detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Vehicle"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    delete:
+      operationId: decommissionVehicle
+      tags: [Vehicles]
+      summary: Decommission a vehicle
+      description: |
+        Marks a vehicle as decommissioned. Decommissioned vehicles cannot be assigned
+        drivers or scheduled for maintenance. This action is not reversible via the API.
+        Requires `fleet:manage` permission.
+      parameters:
+        - $ref: "#/components/parameters/VehicleId"
+      responses:
+        "200":
+          description: Vehicle decommissioned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Vehicle"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /vehicles/{id}/assign-driver:
+    post:
+      operationId: assignDriver
+      tags: [Vehicles]
+      summary: Assign a driver to a vehicle
+      description: |
+        Assigns a driver to a vehicle. The vehicle must be in `active` status.
+        A vehicle can only have one assigned driver at a time — assigning a new
+        driver replaces the current assignment. Requires `fleet:manage`.
+      parameters:
+        - $ref: "#/components/parameters/VehicleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                driver_id:
+                  type: string
+                  format: uuid
+                  description: UUID of the driver to assign
+                  example: "d5e6f7a8-b9c0-1234-deff-012345678901"
+              required: [driver_id]
+      responses:
+        "200":
+          description: Driver assigned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Vehicle"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Vehicle is not in active status (e.g. under maintenance or decommissioned)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Cannot assign driver to a decommissioned vehicle"
+
+  /vehicles/{id}/unassign-driver:
+    post:
+      operationId: unassignDriver
+      tags: [Vehicles]
+      summary: Unassign the current driver from a vehicle
+      description: Removes the current driver assignment. Idempotent — safe to call when no driver is assigned.
+      parameters:
+        - $ref: "#/components/parameters/VehicleId"
+      responses:
+        "200":
+          description: Driver unassigned (or was already unassigned)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Vehicle"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /vehicles/{id}/maintenance:
+    post:
+      operationId: scheduleMaintenance
+      tags: [Maintenance]
+      summary: Schedule maintenance for a vehicle
+      description: |
+        Schedules a maintenance event for a vehicle and sets its status to
+        `under_maintenance`. The vehicle cannot be assigned to deliveries
+        until maintenance is completed. Requires `fleet:manage`.
+      parameters:
+        - $ref: "#/components/parameters/VehicleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScheduleMaintenanceRequest"
+            examples:
+              oil_change:
+                summary: Schedule routine oil change
+                value:
+                  maintenance_type: "oil_change"
+                  description: "10,000 km service — oil change and filter replacement"
+                  scheduled_at: "2026-03-26T08:00:00Z"
+                  estimated_completion: "2026-03-26T12:00:00Z"
+      responses:
+        "200":
+          description: Maintenance scheduled, vehicle status set to under_maintenance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Vehicle"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /vehicles/{id}/maintenance/complete:
+    post:
+      operationId: completeMaintenance
+      tags: [Maintenance]
+      summary: Mark maintenance as completed
+      description: |
+        Marks the current maintenance record as completed, restores the vehicle
+        to `active` status, and updates the odometer reading. There must be a
+        pending maintenance record for this call to succeed. Requires `fleet:manage`.
+      parameters:
+        - $ref: "#/components/parameters/VehicleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompleteMaintenanceRequest"
+            examples:
+              completed:
+                summary: Complete oil change
+                value:
+                  notes: "Oil change completed. Next service at 120,000 km."
+                  odometer_km: 110500
+                  next_due_at: "2026-06-26T00:00:00Z"
+      responses:
+        "200":
+          description: Maintenance completed, vehicle restored to active
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Vehicle"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: No pending maintenance record found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "No pending maintenance record to complete"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    VehicleId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Vehicle UUID
+      example: "c3d4e5f6-a7b8-9012-cdef-234567890123"
+
+  responses:
+    BadRequest:
+      description: Malformed request body
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Missing or invalid JWT
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "Unauthorized"
+    Forbidden:
+      description: Insufficient permissions or cross-tenant access
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "Access denied"
+    NotFound:
+      description: Vehicle not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "Not found"
+    UnprocessableEntity:
+      description: Business logic validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    RateLimited:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    VehicleType:
+      type: string
+      enum: [motorcycle, van, truck, bicycle, tricycle]
+      example: motorcycle
+
+    VehicleStatus:
+      type: string
+      enum: [active, under_maintenance, decommissioned]
+      example: active
+
+    MaintenanceRecord:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        maintenance_type:
+          type: string
+          example: "oil_change"
+        description:
+          type: string
+          example: "10,000 km service"
+        scheduled_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        odometer_at_completion_km:
+          type: number
+          nullable: true
+        next_due_at:
+          type: string
+          format: date-time
+          nullable: true
+        is_pending:
+          type: boolean
+      required: [id, maintenance_type, scheduled_at, is_pending]
+
+    Vehicle:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "c3d4e5f6-a7b8-9012-cdef-234567890123"
+        tenant_id:
+          type: string
+          format: uuid
+        plate_number:
+          type: string
+          example: "NCR-2026-001"
+        vehicle_type:
+          $ref: "#/components/schemas/VehicleType"
+        make:
+          type: string
+          example: "Honda"
+        model:
+          type: string
+          example: "Click 125i"
+        year:
+          type: integer
+          example: 2024
+        status:
+          $ref: "#/components/schemas/VehicleStatus"
+        assigned_driver_id:
+          type: string
+          format: uuid
+          nullable: true
+        max_weight_kg:
+          type: number
+          format: float
+          example: 30.0
+        max_volume_cm3:
+          type: integer
+          example: 50000
+        current_odometer_km:
+          type: number
+          format: float
+          example: 110500.0
+        maintenance_history:
+          type: array
+          items:
+            $ref: "#/components/schemas/MaintenanceRecord"
+          description: Most recent 20 records, newest first
+        next_maintenance_due_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - tenant_id
+        - plate_number
+        - vehicle_type
+        - make
+        - model
+        - year
+        - status
+        - max_weight_kg
+        - maintenance_history
+        - created_at
+        - updated_at
+
+    CreateVehicleRequest:
+      type: object
+      properties:
+        plate_number:
+          type: string
+          description: Vehicle plate number — must be unique within tenant
+          example: "NCR-2026-001"
+        vehicle_type:
+          $ref: "#/components/schemas/VehicleType"
+        make:
+          type: string
+          example: "Honda"
+        model:
+          type: string
+          example: "Click 125i"
+        year:
+          type: integer
+          minimum: 2000
+          maximum: 2030
+          example: 2024
+        max_weight_kg:
+          type: number
+          format: float
+          description: Maximum cargo weight capacity in kilograms
+          example: 30.0
+        max_volume_cm3:
+          type: integer
+          description: Maximum cargo volume in cubic centimetres
+          example: 50000
+      required: [plate_number, vehicle_type, make, model, year, max_weight_kg]
+
+    ScheduleMaintenanceRequest:
+      type: object
+      properties:
+        maintenance_type:
+          type: string
+          description: Type of maintenance (e.g. oil_change, brake_service, annual_pms)
+          example: "oil_change"
+        description:
+          type: string
+          example: "10,000 km service — oil change and filter replacement"
+        scheduled_at:
+          type: string
+          format: date-time
+          example: "2026-03-26T08:00:00Z"
+        estimated_completion:
+          type: string
+          format: date-time
+          nullable: true
+          example: "2026-03-26T12:00:00Z"
+      required: [maintenance_type, description, scheduled_at]
+
+    CompleteMaintenanceRequest:
+      type: object
+      properties:
+        notes:
+          type: string
+          example: "Oil change completed. Next service at 120,000 km."
+        odometer_km:
+          type: number
+          format: float
+          description: Current odometer reading at time of completion
+          example: 110500.0
+        next_due_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the next maintenance should be scheduled
+          example: "2026-06-26T00:00:00Z"
+      required: [notes, odometer_km]
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]

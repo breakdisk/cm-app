@@ -1,0 +1,100 @@
+# Helm values override for the Fleet Management service.
+# Handles vehicle tracking, telemetry ingestion, and maintenance scheduling.
+# Ref: services/fleet — Rust + TimescaleDB
+
+image:
+  repository: ghcr.io/logisticos/fleet
+  pullPolicy: IfNotPresent
+  tag: ""
+
+replicaCount: 2
+
+service:
+  type: ClusterIP
+  port: 8008
+  grpcPort: 9008
+
+env:
+  - name: SERVICE_NAME
+    value: fleet
+  - name: SERVICE_PORT
+    value: "8008"
+  - name: GRPC_PORT
+    value: "9008"
+  - name: LOG_LEVEL
+    value: info
+  - name: RUST_LOG
+    value: "fleet=info,tower_http=info"
+  # Telemetry batch insert threshold (rows) before flush.
+  - name: TELEMETRY_BATCH_SIZE
+    value: "500"
+  # Telemetry flush interval in milliseconds when batch threshold is not reached.
+  - name: TELEMETRY_FLUSH_INTERVAL_MS
+    value: "5000"
+  # Odometer reading provider: "gps_derived" | "obd" | "manual"
+  - name: ODOMETER_SOURCE
+    value: gps_derived
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 256Mi
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 15
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8008
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8008
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  failureThreshold: 3
+
+podAnnotations:
+  vault.hashicorp.com/agent-inject: "true"
+  vault.hashicorp.com/role: "fleet"
+  vault.hashicorp.com/agent-inject-secret-config: "secret/data/logisticos/fleet"
+  vault.hashicorp.com/agent-inject-template-config: |
+    {{- with secret "secret/data/logisticos/fleet" -}}
+    export DATABASE_URL="{{ .Data.data.database_url }}"
+    export TIMESCALEDB_URL="{{ .Data.data.timescaledb_url }}"
+    export KAFKA_BROKERS="{{ .Data.data.kafka_brokers }}"
+    export REDIS_URL="{{ .Data.data.redis_url }}"
+    {{- end -}}
+
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    path: /metrics
+    interval: 15s
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app: fleet
+          topologyKey: kubernetes.io/hostname

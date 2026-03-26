@@ -1,0 +1,586 @@
+openapi: "3.1.0"
+info:
+  title: LogisticOS Carrier & Partner Management API
+  version: "1.0.0"
+  description: |
+    Manages third-party carrier integrations, SLA contracts, and rate cards for
+    LogisticOS tenants. Carriers are onboarded in `pending_verification` status and
+    must be activated before they can participate in route allocation.
+
+    **Rate Shopping**: The `GET /v1/carriers/rate-shop` endpoint returns quotes from
+    all active carriers for a given service type and weight, sorted by price ascending.
+    This powers the AI-driven carrier selection logic.
+
+    All endpoints require a valid JWT. Read operations require `carriers:read`,
+    management operations require `carriers:manage`.
+  contact:
+    name: LogisticOS Engineering
+    email: engineering@logisticos.io
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.logisticos.io/v1
+    description: Production
+  - url: https://staging-api.logisticos.io/v1
+    description: Staging
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Carriers
+    description: Carrier registration and lifecycle management
+  - name: Rate Shop
+    description: Multi-carrier rate comparison
+
+paths:
+  /carriers:
+    get:
+      operationId: listCarriers
+      tags: [Carriers]
+      summary: List carriers for tenant
+      description: Returns all carriers registered to the authenticated tenant, paginated.
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+          description: Maximum results per page
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Pagination offset
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/CarrierStatus"
+          description: Filter by carrier status
+      responses:
+        "200":
+          description: List of carriers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  carriers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Carrier"
+                  count:
+                    type: integer
+                    example: 4
+              examples:
+                with_carriers:
+                  summary: Tenant with active and pending carriers
+                  value:
+                    carriers:
+                      - id: "c1a2r3r4-i5e6-7890-abcd-ef1234567890"
+                        tenant_id: "t1e2n3a4-n5t6-7890-abcd-123456789012"
+                        name: "LBC Express"
+                        code: "LBC"
+                        status: "active"
+                        on_time_rate: 92.5
+                        total_deliveries: 4820
+                        performance_grade: "good"
+                      - id: "c2a3r4r5-i6e7-8901-bcde-f12345678901"
+                        tenant_id: "t1e2n3a4-n5t6-7890-abcd-123456789012"
+                        name: "J&T Express PH"
+                        code: "JNT"
+                        status: "active"
+                        on_time_rate: 87.1
+                        total_deliveries: 2310
+                        performance_grade: "good"
+                    count: 2
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+    post:
+      operationId: onboardCarrier
+      tags: [Carriers]
+      summary: Onboard a new carrier
+      description: |
+        Registers a new third-party carrier partner. The carrier starts in
+        `pending_verification` status and must be activated separately before
+        it can receive shipment allocations.
+
+        Carrier codes are automatically uppercased and must be unique within a tenant.
+        Requires `carriers:manage` permission.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OnboardCarrierRequest"
+            examples:
+              lbc:
+                summary: Onboard LBC Express
+                value:
+                  name: "LBC Express"
+                  code: "lbc"
+                  contact_email: "partners@lbc.com.ph"
+                  contact_phone: "+6328888522"
+                  service_areas:
+                    - "Metro Manila"
+                    - "Cebu"
+                    - "Davao"
+                  rate_cards:
+                    - service_type: "standard"
+                      weight_bracket_kg: 1.0
+                      base_rate: 85.00
+                      per_kg_rate: 15.00
+                    - service_type: "express"
+                      weight_bracket_kg: 1.0
+                      base_rate: 150.00
+                      per_kg_rate: 25.00
+      responses:
+        "201":
+          description: Carrier onboarded in pending_verification status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Carrier"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          description: Carrier code already exists for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Carrier code 'LBC' already exists for this tenant"
+
+  /carriers/rate-shop:
+    get:
+      operationId: rateShop
+      tags: [Rate Shop]
+      summary: Compare rates across all active carriers
+      description: |
+        Returns pricing quotes from all active carriers that cover the specified
+        service type and weight. Results are sorted by total estimated cost ascending
+        (cheapest first). Only carriers with matching rate cards are returned.
+
+        This endpoint powers the AI carrier selection and is also exposed directly
+        to operations staff for manual carrier override decisions.
+      parameters:
+        - name: service_type
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [standard, express, same_day, freight]
+          description: Service level required
+          example: standard
+        - name: weight_kg
+          in: query
+          required: true
+          schema:
+            type: number
+            format: float
+            minimum: 0.1
+          description: Parcel weight in kilograms
+          example: 2.5
+      responses:
+        "200":
+          description: Carrier quotes sorted by total price ascending
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  quotes:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CarrierQuote"
+              examples:
+                multiple_quotes:
+                  summary: 3 carriers quoted for 2.5 kg standard delivery
+                  value:
+                    quotes:
+                      - carrier_id: "c2a3r4r5-i6e7-8901-bcde-f12345678901"
+                        carrier_name: "J&T Express PH"
+                        carrier_code: "JNT"
+                        service_type: "standard"
+                        estimated_cost: 122.50
+                        transit_days: 3
+                        currency: "PHP"
+                      - carrier_id: "c1a2r3r4-i5e6-7890-abcd-ef1234567890"
+                        carrier_name: "LBC Express"
+                        carrier_code: "LBC"
+                        service_type: "standard"
+                        estimated_cost: 127.50
+                        transit_days: 2
+                        currency: "PHP"
+                      - carrier_id: "c3a4r5r6-i7e8-9012-cdef-234567890123"
+                        carrier_name: "Ninja Van PH"
+                        carrier_code: "NVN"
+                        service_type: "standard"
+                        estimated_cost: 135.00
+                        transit_days: 3
+                        currency: "PHP"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /carriers/{id}:
+    get:
+      operationId: getCarrier
+      tags: [Carriers]
+      summary: Get carrier by ID
+      parameters:
+        - $ref: "#/components/parameters/CarrierId"
+      responses:
+        "200":
+          description: Carrier detail with full rate card and performance stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Carrier"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /carriers/{id}/activate:
+    post:
+      operationId: activateCarrier
+      tags: [Carriers]
+      summary: Activate a carrier
+      description: |
+        Activates a carrier that is in `pending_verification` or `suspended` status,
+        making it eligible for shipment allocation. Cannot activate a `deactivated`
+        (permanently removed) carrier.
+
+        Requires `carriers:manage` permission.
+      parameters:
+        - $ref: "#/components/parameters/CarrierId"
+      responses:
+        "200":
+          description: Carrier activated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Carrier"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Carrier cannot be activated (e.g. already deactivated)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Deactivated carriers cannot be reactivated"
+
+  /carriers/{id}/suspend:
+    post:
+      operationId: suspendCarrier
+      tags: [Carriers]
+      summary: Suspend an active carrier
+      description: |
+        Suspends an active carrier, preventing new shipment allocations. Existing
+        in-flight shipments are not affected. A reason must be provided for audit
+        purposes. Requires `carriers:manage` permission.
+      parameters:
+        - $ref: "#/components/parameters/CarrierId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: Reason for suspension (logged for audit)
+                  example: "SLA breach — on-time rate dropped below 70% for 3 consecutive weeks"
+              required: [reason]
+      responses:
+        "200":
+          description: Carrier suspended
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Carrier"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Carrier is not in active status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Only active carriers can be suspended"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    CarrierId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Carrier UUID
+      example: "c1a2r3r4-i5e6-7890-abcd-ef1234567890"
+
+  responses:
+    BadRequest:
+      description: Malformed request body
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Missing or invalid JWT
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: Insufficient permissions or cross-tenant access
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Carrier not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    UnprocessableEntity:
+      description: Business logic validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    RateLimited:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    CarrierStatus:
+      type: string
+      enum: [pending_verification, active, suspended, deactivated]
+      example: active
+
+    PerformanceGrade:
+      type: string
+      enum: [excellent, good, fair, poor]
+      description: |
+        Derived from on-time delivery rate:
+        - excellent: ≥ 95%
+        - good: ≥ 85%
+        - fair: ≥ 70%
+        - poor: < 70%
+      example: good
+
+    RateCard:
+      type: object
+      properties:
+        service_type:
+          type: string
+          enum: [standard, express, same_day, freight]
+          example: standard
+        weight_bracket_kg:
+          type: number
+          format: float
+          description: Weight threshold this rate applies up to
+          example: 1.0
+        base_rate:
+          type: number
+          format: float
+          description: Base rate in PHP for parcels up to weight_bracket_kg
+          example: 85.00
+        per_kg_rate:
+          type: number
+          format: float
+          description: Additional rate per kg above the weight bracket
+          example: 15.00
+        currency:
+          type: string
+          default: PHP
+          example: PHP
+      required: [service_type, weight_bracket_kg, base_rate, per_kg_rate]
+
+    Carrier:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "c1a2r3r4-i5e6-7890-abcd-ef1234567890"
+        tenant_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: "LBC Express"
+        code:
+          type: string
+          description: Carrier code (always uppercase, unique per tenant)
+          example: "LBC"
+        status:
+          $ref: "#/components/schemas/CarrierStatus"
+        contact_email:
+          type: string
+          format: email
+          nullable: true
+          example: "partners@lbc.com.ph"
+        contact_phone:
+          type: string
+          nullable: true
+          example: "+6328888522"
+        service_areas:
+          type: array
+          items:
+            type: string
+          description: Geographic areas this carrier covers
+          example: ["Metro Manila", "Cebu", "Davao"]
+        rate_cards:
+          type: array
+          items:
+            $ref: "#/components/schemas/RateCard"
+        on_time_rate:
+          type: number
+          format: float
+          description: On-time delivery rate percentage (0–100), computed from delivery history
+          example: 92.5
+        total_deliveries:
+          type: integer
+          description: Total deliveries recorded via LogisticOS
+          example: 4820
+        successful_deliveries:
+          type: integer
+          example: 4459
+        performance_grade:
+          $ref: "#/components/schemas/PerformanceGrade"
+        suspension_reason:
+          type: string
+          nullable: true
+          description: Populated when status is suspended
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - tenant_id
+        - name
+        - code
+        - status
+        - rate_cards
+        - on_time_rate
+        - total_deliveries
+        - successful_deliveries
+        - performance_grade
+        - created_at
+        - updated_at
+
+    CarrierQuote:
+      type: object
+      description: A carrier rate quote from the rate-shop endpoint
+      properties:
+        carrier_id:
+          type: string
+          format: uuid
+        carrier_name:
+          type: string
+          example: "LBC Express"
+        carrier_code:
+          type: string
+          example: "LBC"
+        service_type:
+          type: string
+          example: "standard"
+        estimated_cost:
+          type: number
+          format: float
+          description: Total estimated cost in PHP for the requested shipment
+          example: 127.50
+        transit_days:
+          type: integer
+          nullable: true
+          description: Estimated transit time in business days
+          example: 2
+        currency:
+          type: string
+          default: PHP
+          example: PHP
+      required: [carrier_id, carrier_name, carrier_code, service_type, estimated_cost, currency]
+
+    OnboardCarrierRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          example: "LBC Express"
+        code:
+          type: string
+          description: Carrier short code — automatically uppercased. Must be unique per tenant.
+          example: "lbc"
+        contact_email:
+          type: string
+          format: email
+          nullable: true
+          example: "partners@lbc.com.ph"
+        contact_phone:
+          type: string
+          nullable: true
+          example: "+6328888522"
+        service_areas:
+          type: array
+          items:
+            type: string
+          example: ["Metro Manila", "Cebu", "Davao"]
+        rate_cards:
+          type: array
+          items:
+            $ref: "#/components/schemas/RateCard"
+          description: Initial rate cards — can be updated later
+      required: [name, code]
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]

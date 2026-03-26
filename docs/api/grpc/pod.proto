@@ -1,0 +1,412 @@
+syntax = "proto3";
+
+package logisticos.pod.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/logisticos/proto/pod/v1;podv1";
+option java_multiple_files = true;
+option java_package = "com.logisticos.pod.v1";
+
+// ─────────────────────────────────────────────
+//  Enumerations
+// ─────────────────────────────────────────────
+
+// PodStatus reflects the lifecycle state of a proof-of-delivery record.
+enum PodStatus {
+  // Default unspecified value. Should never appear in production data.
+  POD_STATUS_UNKNOWN = 0;
+
+  // Driver has acknowledged the delivery task but has not yet submitted POD.
+  POD_STATUS_PENDING = 1;
+
+  // Driver submitted the POD (photos, signature, OTP). Awaiting server-side verification.
+  POD_STATUS_SUBMITTED = 2;
+
+  // POD has passed automated and/or manual verification checks.
+  // The associated shipment is marked DELIVERED.
+  POD_STATUS_VERIFIED = 3;
+
+  // A dispute has been raised against this POD (merchant or consignee challenge).
+  // Triggers a manual review workflow.
+  POD_STATUS_DISPUTED = 4;
+}
+
+// DisputeReason classifies the grounds for a POD dispute.
+enum DisputeReason {
+  // Default unspecified value.
+  DISPUTE_REASON_UNKNOWN = 0;
+
+  // The consignee claims the package was not received despite the POD record.
+  DISPUTE_REASON_NOT_RECEIVED = 1;
+
+  // The item received was damaged. Photo evidence required by merchant.
+  DISPUTE_REASON_ITEM_DAMAGED = 2;
+
+  // The item received was incorrect (wrong product, wrong quantity).
+  DISPUTE_REASON_WRONG_ITEM = 3;
+
+  // The signature on the POD does not belong to the consignee.
+  DISPUTE_REASON_SIGNATURE_MISMATCH = 4;
+
+  // The GPS coordinates on the POD are inconsistent with the delivery address.
+  DISPUTE_REASON_LOCATION_MISMATCH = 5;
+
+  // The OTP verification failed or was bypassed fraudulently.
+  DISPUTE_REASON_OTP_FRAUD = 6;
+
+  // COD amount collected does not match the declared shipment value.
+  DISPUTE_REASON_COD_MISMATCH = 7;
+
+  // Catch-all for disputes not covered by the above categories.
+  DISPUTE_REASON_OTHER = 8;
+}
+
+// ─────────────────────────────────────────────
+//  Core Domain Messages
+// ─────────────────────────────────────────────
+
+// ProofOfDelivery is the authoritative record of a completed delivery attempt.
+// It captures the physical evidence collected by the driver at the point of delivery:
+// signature, photos, GPS coordinates, OTP verification, and recipient identity.
+//
+// Each POD is linked to exactly one shipment. Multiple PODs may exist for a
+// single shipment if the first attempt is disputed and re-delivery is performed.
+message ProofOfDelivery {
+  // Unique POD identifier (UUID v4).
+  string id = 1;
+
+  // Shipment this POD corresponds to.
+  string shipment_id = 2;
+
+  // Tenant scope for RLS enforcement.
+  string tenant_id = 3;
+
+  // Driver who completed the delivery.
+  string driver_id = 4;
+
+  // Name of the person who received the parcel, as entered by the driver.
+  string recipient_name = 5;
+
+  // URL of the uploaded recipient signature image (SVG or PNG).
+  // Stored in S3 with a CDN-fronted presigned URL. Expires in 7 years.
+  string signature_url = 6;
+
+  // URLs of delivery photos uploaded by the driver.
+  // Must include at least one photo when requires_pod_photo is true on the stop.
+  // Stored in S3 with long-lived CDN URLs.
+  repeated string photo_urls = 7;
+
+  // GPS latitude at the moment of POD submission (WGS-84).
+  double gps_lat = 8;
+
+  // GPS longitude at the moment of POD submission (WGS-84).
+  double gps_lng = 9;
+
+  // Whether the one-time password verification was completed by the recipient.
+  // OTPs are sent via SMS/WhatsApp to the consignee's registered phone number
+  // before the driver marks the delivery complete.
+  bool otp_verified = 10;
+
+  // Optional notes or observations recorded by the driver at time of delivery.
+  // Examples: "Left with security guard", "Delivered to family member".
+  string notes = 11;
+
+  // Timestamp when the driver submitted the POD from the driver app.
+  google.protobuf.Timestamp delivered_at = 12;
+
+  // Current lifecycle status of this POD record.
+  PodStatus status = 13;
+
+  // Timestamp when the POD was verified by the automated pipeline or a reviewer.
+  // Zero if status is not yet VERIFIED.
+  google.protobuf.Timestamp verified_at = 14;
+
+  // User ID of the reviewer who verified or disputed this POD.
+  // Empty for automated verification.
+  string verified_by_user_id = 15;
+
+  // If disputed, the reason for the dispute.
+  DisputeReason dispute_reason = 16;
+
+  // Human-readable description of the dispute claim.
+  string dispute_notes = 17;
+
+  // Timestamp when the dispute was raised.
+  google.protobuf.Timestamp disputed_at = 18;
+
+  // Timestamp when this POD record was created on the server.
+  google.protobuf.Timestamp created_at = 19;
+}
+
+// PresignedUploadUrl is a short-lived S3 presigned URL authorising a single
+// PUT upload. The driver app uses these to upload photos and signatures
+// directly to S3 without routing through the LogisticOS API.
+message PresignedUploadUrl {
+  // The unique key that will identify this object in S3 after upload.
+  // Pass this key back when calling CreatePod to link the uploaded file.
+  string object_key = 1;
+
+  // The presigned PUT URL. Valid for 15 minutes.
+  string upload_url = 2;
+
+  // The public CDN URL that will serve this object after upload is complete.
+  string cdn_url = 3;
+
+  // MIME type this presigned URL is authorised for (e.g., "image/jpeg", "image/png").
+  string content_type = 4;
+
+  // Maximum file size in bytes allowed for this upload (default: 10 MB).
+  int64 max_bytes = 5;
+}
+
+// ─────────────────────────────────────────────
+//  GenerateUploadUrls RPC Messages
+// ─────────────────────────────────────────────
+
+// GenerateUploadUrlsRequest asks the POD service to issue presigned S3 URLs
+// for the driver to upload photos and an optional signature before submitting
+// the POD. This must be called before CreatePod.
+message GenerateUploadUrlsRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // Shipment this upload batch belongs to.
+  string shipment_id = 2;
+
+  // Driver performing the upload. Must match the driver assigned to the shipment.
+  string driver_id = 3;
+
+  // Number of photo upload URLs to generate. Must be between 1 and 5.
+  int32 photo_count = 4;
+
+  // Whether to also generate a presigned URL for signature upload.
+  bool include_signature_url = 5;
+}
+
+// GenerateUploadUrlsResponse returns one presigned URL per requested asset.
+message GenerateUploadUrlsResponse {
+  // One presigned URL per requested photo slot, in index order.
+  repeated PresignedUploadUrl photo_upload_urls = 1;
+
+  // Presigned URL for the signature image. Populated only when
+  // include_signature_url was true in the request.
+  PresignedUploadUrl signature_upload_url = 2;
+
+  // ISO 8601 timestamp when all URLs in this batch expire.
+  string expires_at = 3;
+}
+
+// ─────────────────────────────────────────────
+//  CreatePod RPC Messages
+// ─────────────────────────────────────────────
+
+// CreatePodRequest submits a completed proof-of-delivery record.
+// The driver app must have already uploaded photos/signature via presigned URLs
+// (from GenerateUploadUrls) before calling this RPC.
+//
+// On success:
+//   - The shipment status is updated to DELIVERED in the Order Intake service.
+//   - A `pod.submitted` Kafka event is emitted for the verification pipeline.
+//   - An OTP confirmation is sent to the consignee if otp_verified is true.
+//   - The Engagement Engine triggers a delivery confirmation notification.
+message CreatePodRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // Shipment this POD covers.
+  string shipment_id = 2;
+
+  // Driver submitting the POD. Must match the assigned driver.
+  string driver_id = 3;
+
+  // Name of the recipient as entered by the driver.
+  string recipient_name = 4;
+
+  // S3 object keys of the uploaded photos (returned by GenerateUploadUrls).
+  repeated string photo_object_keys = 5;
+
+  // S3 object key of the uploaded signature image. May be empty if the
+  // shipment does not require a signature.
+  string signature_object_key = 6;
+
+  // GPS latitude at time of delivery.
+  double gps_lat = 7;
+
+  // GPS longitude at time of delivery.
+  double gps_lng = 8;
+
+  // Whether OTP verification was completed by the recipient.
+  bool otp_verified = 9;
+
+  // OTP code entered by the recipient. Required if otp_verified is true.
+  // The service validates this against the OTP issued to the consignee.
+  string otp_code = 10;
+
+  // Optional driver notes.
+  string notes = 11;
+
+  // Client-side timestamp of delivery (from driver app clock).
+  // Used as delivered_at in the POD record.
+  google.protobuf.Timestamp delivered_at = 12;
+
+  // Idempotency key — safe to retry on network failure.
+  // Duplicate submissions with the same key return the original POD.
+  string idempotency_key = 13;
+}
+
+// CreatePodResponse confirms the POD was accepted and persisted.
+message CreatePodResponse {
+  // The created POD record, including server-assigned id and timestamps.
+  ProofOfDelivery pod = 1;
+
+  // Whether this response was served from the idempotency cache.
+  bool from_cache = 2;
+}
+
+// ─────────────────────────────────────────────
+//  GetPod RPC Messages
+// ─────────────────────────────────────────────
+
+// GetPodRequest retrieves a single POD by its unique identifier.
+message GetPodRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // Unique POD identifier.
+  string pod_id = 2;
+}
+
+// GetPodResponse returns the matching POD or NOT_FOUND.
+message GetPodResponse {
+  // The proof-of-delivery record.
+  ProofOfDelivery pod = 1;
+}
+
+// ─────────────────────────────────────────────
+//  GetPodByShipment RPC Messages
+// ─────────────────────────────────────────────
+
+// GetPodByShipmentRequest retrieves all POD records for a given shipment.
+// Multiple PODs exist when a first delivery attempt was disputed and a
+// re-delivery was subsequently completed.
+message GetPodByShipmentRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // Shipment to retrieve PODs for.
+  string shipment_id = 2;
+}
+
+// GetPodByShipmentResponse returns all PODs for the given shipment,
+// ordered by created_at ascending.
+message GetPodByShipmentResponse {
+  // All POD records associated with the shipment.
+  repeated ProofOfDelivery pods = 1;
+}
+
+// ─────────────────────────────────────────────
+//  VerifyPod RPC Messages
+// ─────────────────────────────────────────────
+
+// VerifyPodRequest marks a submitted POD as verified.
+// Can be triggered by the automated verification pipeline or manually by
+// an operations manager via the Admin Portal.
+message VerifyPodRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // POD to verify. Must be in POD_STATUS_SUBMITTED status.
+  string pod_id = 2;
+
+  // User performing the verification. Empty for automated verification.
+  string verified_by_user_id = 3;
+
+  // Optional verification notes (e.g., "GPS coordinates validated", "Auto-verified").
+  string notes = 4;
+}
+
+// VerifyPodResponse returns the updated POD after verification.
+message VerifyPodResponse {
+  // The verified POD record with updated status and verified_at timestamp.
+  ProofOfDelivery pod = 1;
+}
+
+// ─────────────────────────────────────────────
+//  DisputePod RPC Messages
+// ─────────────────────────────────────────────
+
+// DisputePodRequest raises a formal dispute against a verified or submitted POD.
+// Disputes can be initiated by the merchant via the Merchant Portal or by an
+// ops manager following a consignee complaint.
+//
+// Raises a `pod.disputed` Kafka event to trigger the dispute resolution workflow.
+message DisputePodRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // POD to dispute. Must be in POD_STATUS_SUBMITTED or POD_STATUS_VERIFIED.
+  string pod_id = 2;
+
+  // Reason category for the dispute.
+  DisputeReason reason = 3;
+
+  // Detailed description of the dispute claim. Required.
+  string notes = 4;
+
+  // User raising the dispute.
+  string raised_by_user_id = 5;
+
+  // Optional supporting evidence (e.g., URLs to customer-submitted counter-photos).
+  repeated string evidence_urls = 6;
+}
+
+// DisputePodResponse returns the updated POD after the dispute is recorded.
+message DisputePodResponse {
+  // The disputed POD record with updated status, dispute_reason, and disputed_at.
+  ProofOfDelivery pod = 1;
+}
+
+// ─────────────────────────────────────────────
+//  PodService Definition
+// ─────────────────────────────────────────────
+
+// PodService is the authoritative gRPC interface for all Proof of Delivery
+// operations. It is consumed by:
+//   - Driver App Backend: GenerateUploadUrls + CreatePod on delivery completion
+//   - Admin Portal: GetPod, VerifyPod, DisputePod for operations review
+//   - Merchant Portal: GetPodByShipment for shipment status and evidence access
+//   - AI Intelligence Layer: POD fraud scoring signals via event stream
+//
+// All RPCs require a valid JWT in gRPC metadata `authorization: Bearer <token>`.
+// ROLE_DRIVER is required for GenerateUploadUrls and CreatePod.
+// ROLE_OPERATIONS_MANAGER or ROLE_TENANT_ADMIN is required for VerifyPod and DisputePod.
+service PodService {
+  // GenerateUploadUrls issues presigned S3 PUT URLs for photo and signature upload.
+  // Must be called before CreatePod. URLs are valid for 15 minutes.
+  // Requires ROLE_DRIVER. The driver_id in the request must match the JWT subject.
+  rpc GenerateUploadUrls(GenerateUploadUrlsRequest) returns (GenerateUploadUrlsResponse);
+
+  // CreatePod submits a completed proof-of-delivery record.
+  // Triggers shipment status update to DELIVERED and delivery confirmation notification.
+  // Idempotent via idempotency_key. Requires ROLE_DRIVER.
+  rpc CreatePod(CreatePodRequest) returns (CreatePodResponse);
+
+  // GetPod retrieves a single POD by its identifier.
+  // Accessible to ROLE_DRIVER (own deliveries only), ROLE_MERCHANT, and ops roles.
+  rpc GetPod(GetPodRequest) returns (GetPodResponse);
+
+  // GetPodByShipment returns all POD records for a given shipment, including
+  // any re-delivery records following a dispute resolution.
+  rpc GetPodByShipment(GetPodByShipmentRequest) returns (GetPodByShipmentResponse);
+
+  // VerifyPod marks a submitted POD as verified. Can be called by the automated
+  // verification pipeline (GPS + image validation) or manually by an ops manager.
+  // Requires ROLE_OPERATIONS_MANAGER or ROLE_TENANT_ADMIN.
+  rpc VerifyPod(VerifyPodRequest) returns (VerifyPodResponse);
+
+  // DisputePod raises a formal dispute against a POD record. Transitions the
+  // shipment back to a DISPUTE_IN_PROGRESS status and triggers the dispute
+  // resolution workflow. Requires ROLE_MERCHANT or ROLE_OPERATIONS_MANAGER.
+  rpc DisputePod(DisputePodRequest) returns (DisputePodResponse);
+}

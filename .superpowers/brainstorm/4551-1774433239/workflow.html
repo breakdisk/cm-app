@@ -1,0 +1,165 @@
+<h2>Compliance Workflow</h2>
+<p class="subtitle">Three actors, two flows: initial onboarding and ongoing renewal. Does this cover the full lifecycle?</p>
+
+<style>
+/* ── Swimlane ── */
+.swimlane-wrap { display: flex; gap: 0; margin-top: 20px; border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; overflow: hidden; }
+.lane { flex: 1; display: flex; flex-direction: column; }
+.lane-header { padding: 10px 14px; text-align: center; font-size: 10px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; border-bottom: 1px solid rgba(255,255,255,0.08); }
+.lane-header.driver  { background: rgba(168,85,247,0.12); color: #A855F7; border-right: 1px solid rgba(255,255,255,0.06); }
+.lane-header.system  { background: rgba(0,229,255,0.08);  color: #00E5FF; border-right: 1px solid rgba(255,255,255,0.06); }
+.lane-header.admin   { background: rgba(255,171,0,0.10);  color: #FFAB00; }
+.lane-body { flex: 1; padding: 14px 10px; display: flex; flex-direction: column; gap: 10px; border-right: 1px dashed rgba(255,255,255,0.06); }
+.lane-body:last-child { border-right: none; }
+.step { border-radius: 8px; padding: 8px 10px; font-size: 11px; line-height: 1.5; }
+.step.purple { background: rgba(168,85,247,0.10); border: 1px solid rgba(168,85,247,0.25); color: rgba(255,255,255,0.8); }
+.step.cyan   { background: rgba(0,229,255,0.08);  border: 1px solid rgba(0,229,255,0.2);  color: rgba(255,255,255,0.8); }
+.step.amber  { background: rgba(255,171,0,0.09);  border: 1px solid rgba(255,171,0,0.22); color: rgba(255,255,255,0.8); }
+.step.green  { background: rgba(0,255,136,0.08);  border: 1px solid rgba(0,255,136,0.2);  color: rgba(255,255,255,0.8); }
+.step.red    { background: rgba(255,59,92,0.08);  border: 1px solid rgba(255,59,92,0.2);  color: rgba(255,255,255,0.8); }
+.step.ghost  { background: transparent; border: 1px dashed rgba(255,255,255,0.08); color: rgba(255,255,255,0.25); font-style: italic; }
+.step-label  { font-size: 9px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; opacity: 0.6; }
+.kafka-tag   { display: inline-block; font-size: 9px; font-family: monospace; background: rgba(0,229,255,0.12); color: #00E5FF; border: 1px solid rgba(0,229,255,0.2); border-radius: 4px; padding: 1px 6px; margin-top: 4px; }
+.flow-divider { text-align: center; font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: rgba(255,255,255,0.2); padding: 8px 0 4px; border-top: 1px dashed rgba(255,255,255,0.07); margin-top: 4px; }
+
+/* ── State machine ── */
+.sm-wrap { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+.state { border-radius: 20px; padding: 5px 14px; font-size: 11px; font-weight: 600; font-family: monospace; }
+.s-pending  { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.5); border: 1px solid rgba(255,255,255,0.15); }
+.s-review   { background: rgba(255,171,0,0.12);  color: #FFAB00; border: 1px solid rgba(255,171,0,0.3); }
+.s-ok       { background: rgba(0,255,136,0.10);  color: #00FF88; border: 1px solid rgba(0,255,136,0.3); }
+.s-warn     { background: rgba(255,171,0,0.12);  color: #FFAB00; border: 1px solid rgba(255,171,0,0.3); }
+.s-exp      { background: rgba(255,59,92,0.10);  color: #FF3B5C; border: 1px solid rgba(255,59,92,0.25); }
+.s-susp     { background: rgba(255,59,92,0.15);  color: #FF3B5C; border: 1px solid rgba(255,59,92,0.4); }
+.s-rej      { background: rgba(168,85,247,0.12); color: #A855F7; border: 1px solid rgba(168,85,247,0.3); }
+.trans-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 8px; }
+.trans-table th { text-align: left; padding: 6px 10px; font-size: 9px; text-transform: uppercase; letter-spacing: 1px; color: rgba(255,255,255,0.3); border-bottom: 1px solid rgba(255,255,255,0.08); }
+.trans-table td { padding: 7px 10px; border-bottom: 1px solid rgba(255,255,255,0.04); color: rgba(255,255,255,0.7); font-family: monospace; font-size: 11px; }
+.trans-table td:last-child { color: rgba(255,255,255,0.35); font-family: sans-serif; font-size: 10px; }
+.arr { color: rgba(255,255,255,0.3); }
+.kafka-inline { font-size: 9px; font-family: monospace; background: rgba(0,229,255,0.10); color: #00E5FF; border-radius: 3px; padding: 1px 5px; }
+.section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: rgba(255,255,255,0.35); margin: 24px 0 8px; }
+.dispatch-gate { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+.gate-item { flex: 1; min-width: 140px; border-radius: 8px; padding: 10px 12px; font-size: 11px; }
+.gate-ok   { background: rgba(0,255,136,0.07);  border: 1px solid rgba(0,255,136,0.2); }
+.gate-no   { background: rgba(255,59,92,0.07);  border: 1px solid rgba(255,59,92,0.2); }
+.gate-warn { background: rgba(255,171,0,0.07);  border: 1px solid rgba(255,171,0,0.2); }
+.gate-label { font-size: 9px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 5px; }
+</style>
+
+<!-- ── Flow A: Onboarding ─────────────────────────────────────────── -->
+<div class="section-title">Flow A — Initial Onboarding</div>
+<div class="swimlane-wrap">
+  <div class="lane">
+    <div class="lane-header driver">Driver App</div>
+    <div class="lane-body">
+      <div class="step purple"><div class="step-label">1</div>Driver registers account</div>
+      <div class="step ghost">— waits for doc checklist —</div>
+      <div class="step purple"><div class="step-label">3</div>Opens "Documents" screen<br>Sees required doc list for jurisdiction</div>
+      <div class="step purple"><div class="step-label">4</div>Photographs each document<br>Enters doc number + expiry date<br>Submits per document<div class="kafka-tag">→ doc_submitted</div></div>
+      <div class="step ghost">— awaiting review —</div>
+      <div class="step purple"><div class="step-label">6a</div>Push: "Document approved ✓"<br><em>or</em> "Rejected — see reason"<br>Re-upload if rejected</div>
+      <div class="step green"><div class="step-label">7</div>Push: "You're verified! ✓"<br>Status bar turns green<br>Can now receive tasks</div>
+    </div>
+  </div>
+  <div class="lane">
+    <div class="lane-header system">Compliance Service</div>
+    <div class="lane-body">
+      <div class="step cyan"><div class="step-label">2</div>Listens: <span style="font-family:monospace;font-size:10px">driver.registered</span><br>Creates ComplianceProfile<br>status → pending_submission<div class="kafka-tag">→ compliance.profile_created</div></div>
+      <div class="step ghost">— profile ready —</div>
+      <div class="step ghost">— driver uploading —</div>
+      <div class="step cyan"><div class="step-label">5</div>Receives doc upload<br>Creates DriverDocument record<br>status → submitted<br>Recomputes overall_status<br>→ under_review</div>
+      <div class="step cyan"><div class="step-label">6</div>Receives admin decision<br>Updates DriverDocument.status<br>Writes AuditLog entry<br>Recomputes overall_status<div class="kafka-tag">→ compliance.status_changed</div></div>
+      <div class="step green"><div class="step-label">7</div>All required docs approved<br>overall_status → compliant<div class="kafka-tag">→ compliance.driver_verified</div></div>
+    </div>
+  </div>
+  <div class="lane">
+    <div class="lane-header admin">Admin Portal</div>
+    <div class="lane-body">
+      <div class="step ghost">— not yet involved —</div>
+      <div class="step ghost">— not yet involved —</div>
+      <div class="step ghost">— not yet involved —</div>
+      <div class="step ghost">— driver submitting —</div>
+      <div class="step amber"><div class="step-label">5</div>Review queue updated<br>New item: driver + doc type<br>Badge count increments</div>
+      <div class="step amber"><div class="step-label">6</div>Admin opens doc review<br>Views photo + metadata<br>Clicks Approve or Reject<br>Enters rejection reason if needed</div>
+      <div class="step ghost">— review complete —</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Flow B: Expiry & Renewal ──────────────────────────────────── -->
+<div class="section-title">Flow B — Expiry & Renewal (Ongoing)</div>
+<div class="swimlane-wrap">
+  <div class="lane">
+    <div class="lane-header driver">Driver App</div>
+    <div class="lane-body">
+      <div class="step ghost">— working normally —</div>
+      <div class="step purple"><div class="step-label">2</div>Push: "License expires in 30 days<br>Tap to renew" → amber status</div>
+      <div class="step purple"><div class="step-label">4</div>Uploads renewed document<br>Enters new expiry date<div class="kafka-tag">→ doc_submitted</div></div>
+      <div class="step ghost">— awaiting review —</div>
+      <div class="step green"><div class="step-label">6</div>Push: "Renewal approved ✓"<br>Status returns to green</div>
+    </div>
+  </div>
+  <div class="lane">
+    <div class="lane-header system">Compliance Service</div>
+    <div class="lane-body">
+      <div class="step cyan"><div class="step-label">1</div>Daily expiry checker runs<br>Finds docs expiring ≤ 30 days<br>overall_status → expiring_soon<div class="kafka-tag">→ compliance.expiry_warning</div></div>
+      <div class="step ghost">— driver notified —</div>
+      <div class="step ghost">— driver renewing —</div>
+      <div class="step cyan"><div class="step-label">5</div>Old doc → superseded<br>New doc → under_review<br>overall_status stays expiring_soon</div>
+      <div class="step cyan"><div class="step-label">6</div>Admin approves renewal<br>overall_status → compliant<div class="kafka-tag">→ compliance.driver_reinstated</div></div>
+      <div class="step red"><div class="step-label">alt</div>Driver ignores warning<br>Expiry date passes →<br>overall_status → expired<br>+7 day grace then → suspended<div class="kafka-tag">→ compliance.driver_suspended</div></div>
+    </div>
+  </div>
+  <div class="lane">
+    <div class="lane-header admin">Admin Portal</div>
+    <div class="lane-body">
+      <div class="step amber"><div class="step-label">1</div>Expiry dashboard flags driver<br>Ops team sees amber status</div>
+      <div class="step ghost">— driver notified —</div>
+      <div class="step ghost">— driver uploading —</div>
+      <div class="step amber"><div class="step-label">5</div>Renewal appears in review queue<br>Marked "Renewal" vs new submission</div>
+      <div class="step amber"><div class="step-label">6</div>Admin approves renewal doc<br>Previous doc auto-superseded</div>
+      <div class="step red"><div class="step-label">alt</div>Admin sees suspended driver<br>Can manually reinstate<br>after verifying offline<div class="kafka-tag">→ admin_override</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── State machine ─────────────────────────────────────────── -->
+<div class="section-title">Status State Machine</div>
+<div class="sm-wrap">
+  <span class="state s-pending">pending_submission</span>
+  <span style="color:rgba(255,255,255,0.3);align-self:center">→</span>
+  <span class="state s-review">under_review</span>
+  <span style="color:rgba(255,255,255,0.3);align-self:center">→</span>
+  <span class="state s-ok">compliant</span>
+  <span style="color:rgba(255,255,255,0.3);align-self:center">→</span>
+  <span class="state s-warn">expiring_soon</span>
+  <span style="color:rgba(255,255,255,0.3);align-self:center">→</span>
+  <span class="state s-exp">expired</span>
+  <span style="color:rgba(255,255,255,0.3);align-self:center">→</span>
+  <span class="state s-susp">suspended</span>
+</div>
+<table class="trans-table" style="margin-top:12px">
+  <thead><tr><th>From</th><th>To</th><th>Trigger</th><th>Kafka Event</th><th>Who</th></tr></thead>
+  <tbody>
+    <tr><td>pending_submission</td><td class="arr">→</td><td>under_review</td><td><span class="kafka-inline">doc_submitted</span></td><td>Driver submits all required docs</td></tr>
+    <tr><td>under_review</td><td class="arr">→</td><td>compliant</td><td><span class="kafka-inline">driver_verified</span></td><td>Admin approves all required docs</td></tr>
+    <tr><td>under_review</td><td class="arr">→</td><td>pending_submission</td><td><span class="kafka-inline">doc_rejected</span></td><td>Admin rejects any required doc</td></tr>
+    <tr><td>compliant</td><td class="arr">→</td><td>expiring_soon</td><td><span class="kafka-inline">expiry_warning</span></td><td>System: expiry ≤ warn_days_before</td></tr>
+    <tr><td>expiring_soon</td><td class="arr">→</td><td>compliant</td><td><span class="kafka-inline">driver_reinstated</span></td><td>Driver renews + admin approves before expiry</td></tr>
+    <tr><td>expiring_soon</td><td class="arr">→</td><td>expired</td><td><span class="kafka-inline">grace_started</span></td><td>System: expiry date passed</td></tr>
+    <tr><td>expired</td><td class="arr">→</td><td>compliant</td><td><span class="kafka-inline">driver_reinstated</span></td><td>Renewal approved within grace period</td></tr>
+    <tr><td>expired</td><td class="arr">→</td><td>suspended</td><td><span class="kafka-inline">driver_suspended</span></td><td>System: grace_period_days elapsed</td></tr>
+    <tr><td>suspended</td><td class="arr">→</td><td>compliant</td><td><span class="kafka-inline">driver_reinstated</span></td><td>Renewal approved + admin clears suspension</td></tr>
+    <tr><td>any</td><td class="arr">→</td><td>suspended</td><td><span class="kafka-inline">admin_override</span></td><td>Admin manually suspends driver</td></tr>
+  </tbody>
+</table>
+
+<!-- ── Dispatch Gate ─────────────────────────────────────────── -->
+<div class="section-title">Dispatch Gate — Task Assignment Rules</div>
+<div class="dispatch-gate">
+  <div class="gate-item gate-ok"><div class="gate-label" style="color:#00FF88">✓ Assignable</div><code style="color:#00FF88">compliant</code><br><code style="color:#00FF88">expiring_soon</code><br><span style="font-size:10px;color:rgba(255,255,255,0.4)">Docs valid, renewal in progress</span></div>
+  <div class="gate-item gate-warn"><div class="gate-label" style="color:#FFAB00">⚠ Assignable + Warning</div><code style="color:#FFAB00">expired</code> (within grace)<br><span style="font-size:10px;color:rgba(255,255,255,0.4)">Dispatcher sees amber flag on driver card<br>Admin decides whether to proceed</span></div>
+  <div class="gate-item gate-no"><div class="gate-label" style="color:#FF3B5C">✗ Blocked</div><code style="color:#FF3B5C">pending_submission</code><br><code style="color:#FF3B5C">under_review</code><br><code style="color:#FF3B5C">suspended</code><br><code style="color:#FF3B5C">rejected</code><br><span style="font-size:10px;color:rgba(255,255,255,0.4)">Cannot receive task assignments</span></div>
+</div>
+</content>

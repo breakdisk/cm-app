@@ -1,0 +1,831 @@
+# LogisticOS Istio mTLS and Authorization Policy Configuration
+#
+# This file contains:
+#   1. Mesh-wide default PeerAuthentication (PERMISSIVE) — allows gradual mTLS migration
+#   2. Per-namespace STRICT PeerAuthentication for all application namespaces
+#   3. PERMISSIVE PeerAuthentication for logisticos-infra (Postgres/Redis/Kafka cannot
+#      present mTLS certificates; they run outside the sidecar mesh)
+#   4. AuthorizationPolicy for each service, restricting allowed source namespaces
+#      to the minimum required set (least-privilege principle).
+#
+# Namespace mTLS summary:
+#   logisticos-core        → STRICT
+#   logisticos-logistics   → STRICT
+#   logisticos-engagement  → STRICT
+#   logisticos-ai          → STRICT
+#   logisticos-data        → STRICT
+#   logisticos-infra       → PERMISSIVE (data infrastructure — no sidecars on Postgres/Redis/Kafka)
+#   mesh-wide default      → PERMISSIVE (safe fallback during migration; tighten after full sidecar rollout)
+#
+# AuthorizationPolicy communication matrix:
+#
+#   api-gateway        ← istio-system (ingress gateway), logisticos-ai
+#   identity           ← logisticos-core, logisticos-logistics, logisticos-engagement,
+#                        logisticos-ai, logisticos-data
+#   dispatch           ← logisticos-core, logisticos-ai
+#   order-intake       ← logisticos-core, logisticos-logistics, logisticos-ai
+#   driver-ops         ← logisticos-core, logisticos-logistics, logisticos-ai
+#   fleet              ← logisticos-core, logisticos-logistics, logisticos-ai
+#   hub-ops            ← logisticos-core, logisticos-logistics, logisticos-ai
+#   carrier            ← logisticos-core, logisticos-logistics, logisticos-ai
+#   pod                ← logisticos-core, logisticos-logistics, logisticos-ai
+#   engagement         ← logisticos-core, logisticos-logistics, logisticos-engagement, logisticos-ai
+#   cdp                ← logisticos-core, logisticos-engagement, logisticos-ai
+#   marketing          ← logisticos-core, logisticos-engagement, logisticos-ai
+#   delivery-experience← logisticos-core, logisticos-logistics, logisticos-data
+#   payments           ← logisticos-core, logisticos-logistics, logisticos-data
+#   analytics          ← all logisticos-* namespaces + logisticos-infra (Prometheus scrape)
+#   ai-layer           ← logisticos-core ONLY (all agent invocations via api-gateway)
+#   business-logic     ← logisticos-core, logisticos-logistics, logisticos-engagement, logisticos-ai
+
+# =============================================================================
+# 1. MESH-WIDE DEFAULT: PERMISSIVE
+#    Installed in istio-system. Allows services without sidecars (e.g., during
+#    initial rollout) to still communicate. Override per-namespace below.
+# =============================================================================
+
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: mesh-default-permissive
+  namespace: istio-system
+  labels:
+    managed-by: istio
+  annotations:
+    logisticos.io/description: >
+      Mesh-wide default: PERMISSIVE. Accepts both mTLS and plaintext.
+      Namespace-level STRICT policies take precedence for enrolled namespaces.
+      Tighten to STRICT mesh-wide once all workloads have confirmed sidecar injection.
+spec:
+  mtls:
+    mode: PERMISSIVE
+
+---
+# =============================================================================
+# 2. PER-NAMESPACE STRICT mTLS — APPLICATION NAMESPACES
+#    Any pod in these namespaces without a valid SPIFFE certificate will be
+#    rejected. Ensures no plaintext service-to-service communication.
+# =============================================================================
+
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: strict-mtls
+  namespace: logisticos-core
+  labels:
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Strict mTLS for logisticos-core namespace"
+spec:
+  mtls:
+    mode: STRICT
+
+---
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: strict-mtls
+  namespace: logisticos-logistics
+  labels:
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Strict mTLS for logisticos-logistics namespace"
+spec:
+  mtls:
+    mode: STRICT
+
+---
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: strict-mtls
+  namespace: logisticos-engagement
+  labels:
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Strict mTLS for logisticos-engagement namespace"
+spec:
+  mtls:
+    mode: STRICT
+
+---
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: strict-mtls
+  namespace: logisticos-ai
+  labels:
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Strict mTLS for logisticos-ai namespace"
+spec:
+  mtls:
+    mode: STRICT
+
+---
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: strict-mtls
+  namespace: logisticos-data
+  labels:
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Strict mTLS for logisticos-data namespace"
+spec:
+  mtls:
+    mode: STRICT
+
+---
+# =============================================================================
+# 3. PERMISSIVE mTLS — INFRASTRUCTURE NAMESPACE
+#    PostgreSQL, Redis, and Kafka pods run without Istio sidecars; they cannot
+#    present mTLS certificates. PERMISSIVE allows application sidecars to initiate
+#    plaintext connections to these data stores on their cluster-internal IPs.
+#    The logisticos-infra namespace is not exposed externally.
+# =============================================================================
+
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: infra-permissive-mtls
+  namespace: logisticos-infra
+  labels:
+    managed-by: istio
+  annotations:
+    logisticos.io/description: >
+      PERMISSIVE for logisticos-infra. Postgres, Redis, and Kafka do not support
+      mTLS. Application services connect to these with TLS-at-rest (Postgres SSL,
+      Redis TLS, Kafka TLS) but these are not managed by Istio.
+spec:
+  mtls:
+    mode: PERMISSIVE
+
+---
+# =============================================================================
+# 4. AUTHORIZATION POLICIES
+#    Each policy uses `from.source.namespaces` to restrict which namespaces
+#    may call each service. Combined with STRICT mTLS, this enforces SPIFFE
+#    identity at the namespace level (namespace = service account SPIFFE URI prefix).
+#
+#    Note: istio-system is included for services reachable from the ingress gateway.
+#    The `principals` approach (SPIFFE SVIDs) is the correct enforcement mechanism
+#    when you need service-account-level granularity; namespace-level is sufficient
+#    for this platform's security posture.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# api-gateway
+# Accepts from: istio-system (Envoy ingress), logisticos-ai (agent callbacks)
+# -----------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: api-gateway-authz
+  namespace: logisticos-core
+  labels:
+    app: api-gateway
+    component: authorization-policy
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Restrict api-gateway inbound to ingress and ai-layer"
+spec:
+  selector:
+    matchLabels:
+      app: api-gateway
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            # Istio ingress gateway (external traffic post-TLS termination)
+            namespaces:
+              - istio-system
+        - source:
+            # ai-layer calls api-gateway for MCP tool dispatch coordination
+            namespaces:
+              - logisticos-ai
+      to:
+        - operation:
+            methods:
+              - GET
+              - POST
+              - PUT
+              - PATCH
+              - DELETE
+              - OPTIONS
+              - HEAD
+
+---
+# -----------------------------------------------------------------------------
+# identity
+# Accepts from: all application namespaces — every service may need to verify
+# tokens or fetch RBAC policy during request processing.
+# -----------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: identity-authz
+  namespace: logisticos-core
+  labels:
+    app: identity
+    component: authorization-policy
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Restrict identity inbound to all application namespaces"
+spec:
+  selector:
+    matchLabels:
+      app: identity
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            namespaces:
+              - istio-system
+              - logisticos-core
+              - logisticos-logistics
+              - logisticos-engagement
+              - logisticos-ai
+              - logisticos-data
+      to:
+        - operation:
+            methods:
+              - GET
+              - POST
+              - PUT
+              - PATCH
+              - DELETE
+              - OPTIONS
+
+---
+# -----------------------------------------------------------------------------
+# business-logic
+# Accepts from: core, logistics, engagement, ai — the rules engine is called
+# by services that need to evaluate trigger conditions, pricing, or SLA rules.
+# -----------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: business-logic-authz
+  namespace: logisticos-core
+  labels:
+    app: business-logic
+    component: authorization-policy
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Restrict business-logic inbound to operational namespaces"
+spec:
+  selector:
+    matchLabels:
+      app: business-logic
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            namespaces:
+              - logisticos-core
+              - logisticos-logistics
+              - logisticos-engagement
+              - logisticos-ai
+      to:
+        - operation:
+            methods:
+              - GET
+              - POST
+              - PUT
+              - OPTIONS
+
+---
+# -----------------------------------------------------------------------------
+# dispatch
+# Accepts from: logisticos-core (api-gateway routes), logisticos-ai (dispatch agent)
+# No direct calls from other logistics services — they go through api-gateway.
+# -----------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: dispatch-authz
+  namespace: logisticos-logistics
+  labels:
+    app: dispatch
+    component: authorization-policy
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Restrict dispatch inbound to core and ai namespaces"
+spec:
+  selector:
+    matchLabels:
+      app: dispatch
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            namespaces:
+              - logisticos-core
+              - logisticos-ai
+      to:
+        - operation:
+            methods:
+              - GET
+              - POST
+              - PUT
+              - PATCH
+              - OPTIONS
+
+---
+# -----------------------------------------------------------------------------
+# order-intake
+# Accepts from: core (api-gateway), logistics (dispatch uses order data), ai
+# -----------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: order-intake-authz
+  namespace: logisticos-logistics
+  labels:
+    app: order-intake
+    component: authorization-policy
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Restrict order-intake inbound to core, logistics, and ai"
+spec:
+  selector:
+    matchLabels:
+      app: order-intake
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            namespaces:
+              - logisticos-core
+              - logisticos-logistics
+              - logisticos-ai
+      to:
+        - operation:
+            methods:
+              - GET
+              - POST
+              - PUT
+              - PATCH
+              - DELETE
+              - OPTIONS
+
+---
+# -----------------------------------------------------------------------------
+# driver-ops
+# Accepts from: core, logistics, ai (driver location MCP tools)
+# -----------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: driver-ops-authz
+  namespace: logisticos-logistics
+  labels:
+    app: driver-ops
+    component: authorization-policy
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Restrict driver-ops inbound to core, logistics, and ai"
+spec:
+  selector:
+    matchLabels:
+      app: driver-ops
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            namespaces:
+              - logisticos-core
+              - logisticos-logistics
+              - logisticos-ai
+      to:
+        - operation:
+            methods:
+              - GET
+              - POST
+              - PUT
+              - PATCH
+              - OPTIONS
+
+---
+# -----------------------------------------------------------------------------
+# fleet
+# Accepts from: core, logistics, ai (vehicle status MCP tools)
+# -----------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: fleet-authz
+  namespace: logisticos-logistics
+  labels:
+    app: fleet
+    component: authorization-policy
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Restrict fleet inbound to core, logistics, and ai"
+spec:
+  selector:
+    matchLabels:
+      app: fleet
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            namespaces:
+              - logisticos-core
+              - logisticos-logistics
+              - logisticos-ai
+      to:
+        - operation:
+            methods:
+              - GET
+              - POST
+              - PUT
+              - PATCH
+              - OPTIONS
+
+---
+# -----------------------------------------------------------------------------
+# hub-ops
+# Accepts from: core, logistics, ai (hub capacity MCP tools)
+# -----------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: hub-ops-authz
+  namespace: logisticos-logistics
+  labels:
+    app: hub-ops
+    component: authorization-policy
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Restrict hub-ops inbound to core, logistics, and ai"
+spec:
+  selector:
+    matchLabels:
+      app: hub-ops
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            namespaces:
+              - logisticos-core
+              - logisticos-logistics
+              - logisticos-ai
+      to:
+        - operation:
+            methods:
+              - GET
+              - POST
+              - PUT
+              - PATCH
+              - OPTIONS
+
+---
+# -----------------------------------------------------------------------------
+# carrier
+# Accepts from: core, logistics (dispatch selects carrier), ai
+# -----------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: carrier-authz
+  namespace: logisticos-logistics
+  labels:
+    app: carrier
+    component: authorization-policy
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Restrict carrier inbound to core, logistics, and ai"
+spec:
+  selector:
+    matchLabels:
+      app: carrier
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            namespaces:
+              - logisticos-core
+              - logisticos-logistics
+              - logisticos-ai
+      to:
+        - operation:
+            methods:
+              - GET
+              - POST
+              - PUT
+              - PATCH
+              - DELETE
+              - OPTIONS
+
+---
+# -----------------------------------------------------------------------------
+# pod (proof of delivery)
+# Accepts from: core, logistics (driver-ops submits POD), ai
+# -----------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: pod-authz
+  namespace: logisticos-logistics
+  labels:
+    app: pod
+    component: authorization-policy
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Restrict pod inbound to core, logistics, and ai"
+spec:
+  selector:
+    matchLabels:
+      app: pod
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            namespaces:
+              - logisticos-core
+              - logisticos-logistics
+              - logisticos-ai
+      to:
+        - operation:
+            methods:
+              - GET
+              - POST
+              - PUT
+              - OPTIONS
+
+---
+# -----------------------------------------------------------------------------
+# engagement
+# Accepts from: core, logistics (delivery events trigger notifications),
+#               engagement (internal orchestration), ai (send_notification MCP tool)
+# -----------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: engagement-authz
+  namespace: logisticos-engagement
+  labels:
+    app: engagement
+    component: authorization-policy
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Restrict engagement inbound to core, logistics, engagement, and ai"
+spec:
+  selector:
+    matchLabels:
+      app: engagement
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            namespaces:
+              - logisticos-core
+              - logisticos-logistics
+              - logisticos-engagement
+              - logisticos-ai
+      to:
+        - operation:
+            methods:
+              - GET
+              - POST
+              - PUT
+              - PATCH
+              - DELETE
+              - OPTIONS
+
+---
+# -----------------------------------------------------------------------------
+# cdp (customer data platform)
+# Accepts from: core, engagement (campaign segmentation), ai (get_customer_profile MCP)
+# Not exposed to logistics services directly — customer data flows via engagement.
+# -----------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: cdp-authz
+  namespace: logisticos-engagement
+  labels:
+    app: cdp
+    component: authorization-policy
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Restrict cdp inbound to core, engagement, and ai"
+spec:
+  selector:
+    matchLabels:
+      app: cdp
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            namespaces:
+              - logisticos-core
+              - logisticos-engagement
+              - logisticos-ai
+      to:
+        - operation:
+            methods:
+              - GET
+              - POST
+              - PUT
+              - PATCH
+              - DELETE
+              - OPTIONS
+
+---
+# -----------------------------------------------------------------------------
+# marketing
+# Accepts from: core, engagement (campaign scheduler), ai (marketing automation)
+# -----------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: marketing-authz
+  namespace: logisticos-engagement
+  labels:
+    app: marketing
+    component: authorization-policy
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Restrict marketing inbound to core, engagement, and ai"
+spec:
+  selector:
+    matchLabels:
+      app: marketing
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            namespaces:
+              - logisticos-core
+              - logisticos-engagement
+              - logisticos-ai
+      to:
+        - operation:
+            methods:
+              - GET
+              - POST
+              - PUT
+              - PATCH
+              - DELETE
+              - OPTIONS
+
+---
+# -----------------------------------------------------------------------------
+# delivery-experience
+# Accepts from: core (api-gateway routes), logistics (status push from driver-ops),
+#               data (payments reconciliation may update delivery record)
+# -----------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: delivery-experience-authz
+  namespace: logisticos-data
+  labels:
+    app: delivery-experience
+    component: authorization-policy
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Restrict delivery-experience inbound to core, logistics, and data"
+spec:
+  selector:
+    matchLabels:
+      app: delivery-experience
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            namespaces:
+              - logisticos-core
+              - logisticos-logistics
+              - logisticos-data
+      to:
+        - operation:
+            methods:
+              - GET
+              - POST
+              - PUT
+              - OPTIONS
+
+---
+# -----------------------------------------------------------------------------
+# payments
+# Accepts from: core (api-gateway routes), logistics (COD at delivery),
+#               data (reconciliation between delivery-experience and payments)
+# PCI-DSS: payment data must not leave logisticos-data namespace.
+# -----------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: payments-authz
+  namespace: logisticos-data
+  labels:
+    app: payments
+    component: authorization-policy
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Restrict payments inbound to core, logistics, and data (PCI-DSS)"
+spec:
+  selector:
+    matchLabels:
+      app: payments
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            namespaces:
+              - logisticos-core
+              - logisticos-logistics
+              - logisticos-data
+      to:
+        - operation:
+            methods:
+              - GET
+              - POST
+              - PUT
+              - OPTIONS
+
+---
+# -----------------------------------------------------------------------------
+# analytics
+# Accepts from: ALL logisticos-* namespaces (every service emits metrics/events)
+#               + logisticos-infra (Prometheus scrapes /metrics from analytics pods)
+# This is the broadest AuthorizationPolicy in the platform; it is intentional —
+# analytics is a read-heavy observability target for all services.
+# -----------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: analytics-authz
+  namespace: logisticos-data
+  labels:
+    app: analytics
+    component: authorization-policy
+    managed-by: istio
+  annotations:
+    logisticos.io/description: >
+      Analytics accepts from all application namespaces and infra (Prometheus).
+      Intentionally broad — analytics is the platform-wide BI and observability sink.
+spec:
+  selector:
+    matchLabels:
+      app: analytics
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            namespaces:
+              - logisticos-core
+              - logisticos-logistics
+              - logisticos-engagement
+              - logisticos-ai
+              - logisticos-data
+              # logisticos-infra: Prometheus, Grafana, and Loki scrape analytics metrics
+              - logisticos-infra
+      to:
+        - operation:
+            methods:
+              - GET
+              - POST
+              - OPTIONS
+
+---
+# -----------------------------------------------------------------------------
+# ai-layer
+# Accepts from: logisticos-core ONLY.
+# All agent invocations are routed through api-gateway (logisticos-core).
+# Direct service-to-ai-layer calls from logistics/engagement are prohibited —
+# this enforces the MCP gateway pattern defined in ADR-0004.
+# -----------------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: ai-layer-authz
+  namespace: logisticos-ai
+  labels:
+    app: ai-layer
+    component: authorization-policy
+    managed-by: istio
+  annotations:
+    logisticos.io/description: >
+      ai-layer accepts ONLY from logisticos-core. Enforces ADR-0004: all agent
+      invocations go through api-gateway; no direct service-to-agent calls.
+spec:
+  selector:
+    matchLabels:
+      app: ai-layer
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            # Exclusively logisticos-core — api-gateway is the sole caller
+            namespaces:
+              - logisticos-core
+      to:
+        - operation:
+            methods:
+              - GET
+              - POST
+              - OPTIONS

@@ -1,0 +1,41 @@
+{
+  "expo": {
+    "name": "LogisticOS",
+    "slug": "logisticos-customer",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "logisticos",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#050810",
+    "icon": "./assets/icon.png",
+    "splash": {
+      "backgroundColor": "#050810"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "io.logisticos.customer"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#050810"
+      },
+      "package": "io.logisticos.customer"
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/icon.png"
+    },
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-notifications",
+        { "sounds": [] }
+      ],
+      [
+        "expo-location",
+        { "locationWhenInUsePermission": "Allow LogisticOS to use your location for delivery tracking." }
+      ]
+    ]
+  }
+}

@@ -1,0 +1,225 @@
+global:
+  resolve_timeout: 5m
+  smtp_from: "alerts@logisticos.io"
+  smtp_smarthost: "smtp.logisticos.io:587"
+  smtp_auth_username: "alerts@logisticos.io"
+  smtp_auth_password: "${SMTP_PASSWORD}"
+  slack_api_url: "${SLACK_WEBHOOK_URL}"
+  pagerduty_url: "https://events.pagerduty.com/v2/enqueue"
+
+# ── Templates ─────────────────────────────────────────────────────────────────
+templates:
+  - "/etc/alertmanager/templates/*.tmpl"
+
+# ── Routing Tree ──────────────────────────────────────────────────────────────
+route:
+  group_by: ["alertname", "cluster", "service", "tenant_id"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: slack-ops-default
+
+  routes:
+    # Critical alerts — immediate PagerDuty escalation
+    - match:
+        severity: critical
+      receiver: pagerduty-critical
+      group_wait: 10s
+      repeat_interval: 1h
+      routes:
+        # Logistics critical — also notify logistics on-call Slack
+        - match:
+            team: logistics
+          receiver: pagerduty-critical
+          continue: true
+        - match:
+            team: logistics
+          receiver: slack-logistics
+
+        # Platform critical — notify platform SRE
+        - match:
+            team: platform
+          receiver: pagerduty-critical
+          continue: true
+        - match:
+            team: platform
+          receiver: slack-sre
+
+        # Finance critical — notify finance + ops
+        - match:
+            team: finance
+          receiver: pagerduty-critical
+          continue: true
+        - match:
+            team: finance
+          receiver: slack-finance
+
+    # Warning alerts — Slack only by team
+    - match:
+        severity: warning
+        team: logistics
+      receiver: slack-logistics
+      repeat_interval: 2h
+
+    - match:
+        severity: warning
+        team: platform
+      receiver: slack-sre
+      repeat_interval: 2h
+
+    - match:
+        severity: warning
+        team: ai
+      receiver: slack-ai
+      repeat_interval: 4h
+
+    - match:
+        severity: warning
+        team: finance
+      receiver: slack-finance
+      repeat_interval: 4h
+
+    - match:
+        severity: warning
+        team: engagement
+      receiver: slack-engagement
+      repeat_interval: 4h
+
+    - match:
+        severity: warning
+        team: backend
+      receiver: slack-backend
+      repeat_interval: 2h
+
+    # Watchdog / heartbeat — must always fire to confirm Alertmanager is alive
+    - match:
+        alertname: Watchdog
+      receiver: watchdog-null
+      repeat_interval: 1m
+
+# ── Inhibition Rules ──────────────────────────────────────────────────────────
+inhibit_rules:
+  # If a service is completely down, suppress downstream warning alerts for it
+  - source_match:
+      severity: critical
+      alertname: ServiceDown
+    target_match:
+      severity: warning
+    equal: ["job"]
+
+  # If Kafka cluster has a broker down, suppress consumer lag warnings (expected)
+  - source_match:
+      alertname: KafkaBrokerDown
+    target_match:
+      alertname: KafkaConsumerLagHigh
+    equal: []
+
+  # If PostgreSQL has a critical failure, suppress slow query warnings
+  - source_match:
+      severity: critical
+      team: platform
+    target_match:
+      severity: warning
+      alertname: PostgreSQLSlowQueries
+    equal: ["instance"]
+
+  # If a critical SLA breach is firing, suppress the warning-level version
+  - source_match:
+      alertname: SLABreachRateCritical
+    target_match:
+      alertname: SLABreachRateHigh
+    equal: ["tenant_id"]
+
+  # Critical API error rate inhibits warning-level latency alerts (causality)
+  - source_match:
+      alertname: CriticalAPIErrorRate
+    target_match:
+      alertname: HighAPILatencyP99
+    equal: ["job"]
+
+# ── Receivers ─────────────────────────────────────────────────────────────────
+receivers:
+  # Default catch-all
+  - name: slack-ops-default
+    slack_configs:
+      - channel: "#ops-alerts"
+        send_resolved: true
+        title: '{{ template "slack.logisticos.title" . }}'
+        text: '{{ template "slack.logisticos.text" . }}'
+        color: '{{ template "slack.logisticos.color" . }}'
+        icon_emoji: ":logisticos:"
+        actions:
+          - type: button
+            text: "View Runbook"
+            url: '{{ (index .Alerts 0).Annotations.runbook }}'
+          - type: button
+            text: "Silence 1h"
+            url: '{{ template "slack.logisticos.silence_url" . }}'
+
+  # PagerDuty — critical incidents
+  - name: pagerduty-critical
+    pagerduty_configs:
+      - routing_key: "${PAGERDUTY_INTEGRATION_KEY}"
+        description: '{{ template "pagerduty.logisticos.description" . }}'
+        severity: '{{ if eq (index .Alerts 0).Labels.severity "critical" }}critical{{ else }}warning{{ end }}'
+        details:
+          firing: '{{ template "pagerduty.logisticos.firing" . }}'
+          runbook: '{{ (index .Alerts 0).Annotations.runbook }}'
+          dashboard: "https://grafana.logisticos.io/d/overview"
+
+  # Slack — SRE / Platform team
+  - name: slack-sre
+    slack_configs:
+      - channel: "#alerts-sre"
+        send_resolved: true
+        title: '{{ template "slack.logisticos.title" . }}'
+        text: '{{ template "slack.logisticos.text" . }}'
+        color: '{{ template "slack.logisticos.color" . }}'
+
+  # Slack — Logistics ops
+  - name: slack-logistics
+    slack_configs:
+      - channel: "#alerts-logistics"
+        send_resolved: true
+        title: '{{ template "slack.logisticos.title" . }}'
+        text: '{{ template "slack.logisticos.text" . }}'
+        color: '{{ template "slack.logisticos.color" . }}'
+
+  # Slack — AI team
+  - name: slack-ai
+    slack_configs:
+      - channel: "#alerts-ai"
+        send_resolved: true
+        title: '{{ template "slack.logisticos.title" . }}'
+        text: '{{ template "slack.logisticos.text" . }}'
+        color: '{{ template "slack.logisticos.color" . }}'
+
+  # Slack — Finance
+  - name: slack-finance
+    slack_configs:
+      - channel: "#alerts-finance"
+        send_resolved: true
+        title: '{{ template "slack.logisticos.title" . }}'
+        text: '{{ template "slack.logisticos.text" . }}'
+        color: '{{ template "slack.logisticos.color" . }}'
+
+  # Slack — Engagement
+  - name: slack-engagement
+    slack_configs:
+      - channel: "#alerts-engagement"
+        send_resolved: true
+        title: '{{ template "slack.logisticos.title" . }}'
+        text: '{{ template "slack.logisticos.text" . }}'
+        color: '{{ template "slack.logisticos.color" . }}'
+
+  # Slack — Backend
+  - name: slack-backend
+    slack_configs:
+      - channel: "#alerts-backend"
+        send_resolved: true
+        title: '{{ template "slack.logisticos.title" . }}'
+        text: '{{ template "slack.logisticos.text" . }}'
+        color: '{{ template "slack.logisticos.color" . }}'
+
+  # Watchdog null receiver — alerts are silenced, used only for uptime verification
+  - name: watchdog-null

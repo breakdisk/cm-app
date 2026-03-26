@@ -1,0 +1,42 @@
+[package]
+name        = "logisticos-compliance"
+description = "Compliance — document verification, expiry enforcement, dispatch gating"
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+rust-version.workspace = true
+
+[[bin]]
+name = "compliance"
+path = "src/main.rs"
+
+[dependencies]
+logisticos-common.workspace  = true
+logisticos-errors.workspace  = true
+logisticos-auth.workspace    = true
+logisticos-tracing.workspace = true
+logisticos-types.workspace   = true
+logisticos-events.workspace  = true
+tokio.workspace      = true
+axum.workspace       = true
+axum-extra.workspace = true
+tower-http.workspace = true
+sqlx.workspace       = true
+redis.workspace      = true
+serde.workspace      = true
+serde_json.workspace = true
+thiserror.workspace  = true
+anyhow.workspace     = true
+uuid.workspace       = true
+chrono.workspace     = true
+config.workspace     = true
+dotenvy.workspace    = true
+validator.workspace  = true
+rdkafka.workspace    = true
+tracing.workspace    = true
+async-trait.workspace = true
+aws-sdk-s3.workspace = true
+aws-config.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

@@ -1,0 +1,102 @@
+# LogisticOS Istio Gateway Configuration
+# Handles all ingress traffic into the mesh with TLS termination,
+# HTTP-to-HTTPS redirect, and gRPC support for internal service communication.
+#
+# Prerequisites:
+#   - Istio ingress gateway deployed in istio-system namespace
+#   - TLS secret 'logisticos-tls-cert' created in istio-system namespace:
+#       kubectl create -n istio-system secret tls logisticos-tls-cert \
+#         --cert=server.crt --key=server.key
+#   - DNS records pointing all listed hostnames to the ingress gateway external IP
+
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: logisticos-gateway
+  namespace: logisticos-core
+  labels:
+    app: logisticos-gateway
+    component: ingress
+    managed-by: istio
+  annotations:
+    # Docs reference for this gateway configuration
+    logisticos.io/description: "Primary ingress gateway for all LogisticOS external traffic"
+    logisticos.io/owner: "platform-engineering"
+spec:
+  selector:
+    # Targets the default Istio ingress gateway pod in istio-system
+    istio: ingressgateway
+
+  servers:
+    # -------------------------------------------------------------------------
+    # HTTP — Port 80: Redirect all traffic to HTTPS
+    # No plaintext traffic is processed; this server exists solely to issue
+    # a 301 redirect to the HTTPS equivalent URL.
+    # -------------------------------------------------------------------------
+    - name: http-redirect
+      port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "api.logisticos.io"
+        - "merchant.logisticos.io"
+        - "admin.logisticos.io"
+        - "partner.logisticos.io"
+        - "track.logisticos.io"
+      tls:
+        # HTTPS_REDIRECT causes Envoy to return a 301 for all HTTP requests
+        httpsRedirect: true
+
+    # -------------------------------------------------------------------------
+    # HTTPS — Port 443: TLS termination for all external-facing portals
+    # TLS mode SIMPLE means the gateway terminates TLS; downstream mTLS is
+    # handled by the Istio sidecar proxies between services.
+    # -------------------------------------------------------------------------
+    - name: https
+      port:
+        number: 443
+        name: https
+        protocol: HTTPS
+      hosts:
+        - "api.logisticos.io"       # REST API — routes to api-gateway service
+        - "merchant.logisticos.io"  # Merchant portal (Next.js SSR/API routes)
+        - "admin.logisticos.io"     # Admin / ops portal
+        - "partner.logisticos.io"   # Partner / carrier portal
+        - "track.logisticos.io"     # Customer tracking portal
+      tls:
+        mode: SIMPLE
+        # Secret must exist in the istio-system namespace (Istio reads it there
+        # regardless of which namespace the Gateway resource lives in)
+        credentialName: logisticos-tls-cert
+        # Enforce TLS 1.2 minimum; TLS 1.3 preferred by modern clients
+        minProtocolVersion: TLSV1_2
+        maxProtocolVersion: TLSV1_3
+        # Cipher suites limited to those with forward secrecy and AEAD
+        cipherSuites:
+          - ECDHE-ECDSA-AES256-GCM-SHA384
+          - ECDHE-RSA-AES256-GCM-SHA384
+          - ECDHE-ECDSA-CHACHA20-POLY1305
+          - ECDHE-RSA-CHACHA20-POLY1305
+          - ECDHE-ECDSA-AES128-GCM-SHA256
+          - ECDHE-RSA-AES128-GCM-SHA256
+
+    # -------------------------------------------------------------------------
+    # gRPC — Port 9443: Internal gRPC traffic (Tonic service-to-service calls
+    # that originate outside the mesh, e.g., from enterprise tenant MCP clients
+    # or external integrations).
+    # TLS mode SIMPLE — same cert as HTTPS; gRPC uses HTTP/2 over TLS.
+    # -------------------------------------------------------------------------
+    - name: grpc
+      port:
+        number: 9443
+        name: https-grpc
+        # HTTPS protocol with HTTP/2 upgrade allows gRPC framing
+        protocol: HTTPS
+      hosts:
+        - "grpc.logisticos.io"
+      tls:
+        mode: SIMPLE
+        credentialName: logisticos-tls-cert
+        minProtocolVersion: TLSV1_2
+        maxProtocolVersion: TLSV1_3

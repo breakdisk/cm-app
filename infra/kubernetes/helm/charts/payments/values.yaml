@@ -1,0 +1,113 @@
+# Helm values override for the Payments & Billing service.
+# PCI-DSS scope service: Vault agent sidecar injection is mandatory.
+# Raw card data is never stored; only gateway tokens and ledger entries.
+# Ref: services/payments — Rust + PostgreSQL
+
+image:
+  repository: ghcr.io/logisticos/payments
+  pullPolicy: IfNotPresent
+  tag: ""
+
+replicaCount: 2
+
+service:
+  type: ClusterIP
+  port: 8012
+  grpcPort: 9012
+
+env:
+  - name: SERVICE_NAME
+    value: payments
+  - name: SERVICE_PORT
+    value: "8012"
+  - name: GRPC_PORT
+    value: "9012"
+  - name: LOG_LEVEL
+    value: info
+  - name: RUST_LOG
+    value: "payments=info,tower_http=info,sqlx=warn"
+  # Default billing cycle: "monthly" | "weekly"
+  - name: DEFAULT_BILLING_CYCLE
+    value: monthly
+  # Invoice number prefix.
+  - name: INVOICE_NUMBER_PREFIX
+    value: INV
+  # Payment gateway provider: "stripe" | "paymongo" | "xendit"
+  - name: PAYMENT_GATEWAY_PROVIDER
+    value: stripe
+  # COD remittance cutoff hour (24h format, local time).
+  - name: COD_REMITTANCE_CUTOFF_HOUR
+    value: "17"
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8012
+  initialDelaySeconds: 15
+  periodSeconds: 15
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8012
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  failureThreshold: 3
+
+# Vault agent sidecar injection is required for PCI-DSS scope management.
+# The payments service must never receive secrets via environment variables
+# set outside of Vault — all credentials come through the agent sidecar.
+podAnnotations:
+  vault.hashicorp.com/agent-inject: "true"
+  vault.hashicorp.com/role: "payments"
+  vault.hashicorp.com/agent-inject-secret-config: "secret/data/logisticos/payments"
+  vault.hashicorp.com/agent-pre-populate-only: "false"
+  vault.hashicorp.com/agent-inject-template-config: |
+    {{- with secret "secret/data/logisticos/payments" -}}
+    export DATABASE_URL="{{ .Data.data.database_url }}"
+    export KAFKA_BROKERS="{{ .Data.data.kafka_brokers }}"
+    export REDIS_URL="{{ .Data.data.redis_url }}"
+    export STRIPE_SECRET_KEY="{{ .Data.data.stripe_secret_key }}"
+    export STRIPE_WEBHOOK_SECRET="{{ .Data.data.stripe_webhook_secret }}"
+    export PAYMONGO_SECRET_KEY="{{ .Data.data.paymongo_secret_key }}"
+    export XENDIT_API_KEY="{{ .Data.data.xendit_api_key }}"
+    {{- end -}}
+
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    path: /metrics
+    interval: 15s
+
+# Payments pods must not share a node with other financial workloads to
+# simplify PCI-DSS network segmentation via Kubernetes NetworkPolicy.
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app: payments
+          topologyKey: kubernetes.io/hostname

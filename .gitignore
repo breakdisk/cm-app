@@ -1,0 +1,56 @@
+# Rust
+target/
+Cargo.lock
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Node / JS
+node_modules/
+.next/
+.turbo/
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# React Native
+.expo/
+android/
+ios/
+*.keystore
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Infra / Secrets
+infra/terraform/.terraform/
+infra/terraform/**/*.tfstate
+infra/terraform/**/*.tfstate.backup
+infra/terraform/**/*.tfvars
+!infra/terraform/**/*.tfvars.example
+*.pem
+*.key
+*.crt
+
+# Logs
+*.log
+logs/
+
+# Coverage
+coverage/
+lcov.info
+
+# Docker
+docker-compose.override.yml
+
+# Generated
+libs/sdk/generated/
+libs/proto/src/generated/

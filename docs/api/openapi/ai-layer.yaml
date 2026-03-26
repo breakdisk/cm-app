@@ -1,0 +1,454 @@
+openapi: "3.1.0"
+info:
+  title: LogisticOS AI Intelligence Layer API
+  version: "1.0.0"
+  description: |
+    HTTP interface for the LogisticOS AI Intelligence Layer. Allows external
+    callers (admin portal, enterprise tenants) to invoke AI agents, inspect
+    active sessions, list escalated sessions awaiting human review, and resolve
+    them. Internal agent-to-service communication uses MCP tool calls — not this API.
+
+    All agent invocations are asynchronous. The caller receives a `session_id`
+    and polls `GET /v1/agents/sessions/{session_id}` or listens on the Kafka
+    topic `agent.session.completed` for the result.
+  contact:
+    name: AI Team
+    email: ai@logisticos.io
+
+servers:
+  - url: https://api.logisticos.io/v1
+    description: Production
+  - url: https://staging-api.logisticos.io/v1
+    description: Staging
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Agents
+    description: Agent invocation and management
+  - name: Sessions
+    description: Agent session inspection
+  - name: Escalations
+    description: Human-in-the-loop escalation handling
+  - name: Tools
+    description: MCP tool registry
+
+paths:
+  /agents/run:
+    post:
+      operationId: runAgent
+      tags: [Agents]
+      summary: Invoke an AI agent
+      description: |
+        Starts an agent session. The agent runs asynchronously using the
+        Claude API (claude-opus-4-6) with a registered tool set. Returns
+        immediately with a `session_id`.
+
+        Allowed agent types per caller role:
+        - `ops_admin`: all types
+        - `merchant`: `support` only
+        - `system` (internal Kafka trigger): all types
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunAgentRequest"
+            examples:
+              dispatch:
+                summary: Trigger a dispatch agent for a new shipment
+                value:
+                  agent_type: dispatch
+                  context:
+                    awb: "LS-A1B2C3D4"
+                    trigger: "shipment.created"
+                    tenant_id: "tenant-uuid-here"
+              support:
+                summary: Customer support session
+                value:
+                  agent_type: support
+                  context:
+                    customer_id: "cust-uuid"
+                    channel: "whatsapp"
+                    message: "Where is my package LS-A1B2C3D4?"
+      responses:
+        "202":
+          description: Agent session started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_id:
+                    type: string
+                    format: uuid
+                  agent_type:
+                    $ref: "#/components/schemas/AgentType"
+                  status:
+                    type: string
+                    enum: [running]
+                  started_at:
+                    type: string
+                    format: date-time
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /agents/sessions:
+    get:
+      operationId: listSessions
+      tags: [Sessions]
+      summary: List agent sessions
+      parameters:
+        - name: agent_type
+          in: query
+          schema:
+            $ref: "#/components/schemas/AgentType"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/SessionStatus"
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: Paginated session list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AgentSessionSummary"
+                  cursor:
+                    type: string
+                    nullable: true
+                  total_count:
+                    type: integer
+
+  /agents/sessions/{session_id}:
+    get:
+      operationId: getSession
+      tags: [Sessions]
+      summary: Get full detail of an agent session
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Session detail with full message history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentSessionDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /agents/escalated:
+    get:
+      operationId: listEscalatedSessions
+      tags: [Escalations]
+      summary: List sessions awaiting human review
+      parameters:
+        - name: agent_type
+          in: query
+          schema:
+            $ref: "#/components/schemas/AgentType"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Escalated sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AgentSessionSummary"
+                  total_count:
+                    type: integer
+
+  /agents/sessions/{session_id}/resolve:
+    post:
+      operationId: resolveEscalation
+      tags: [Escalations]
+      summary: Resolve an escalated agent session
+      description: |
+        Human operator provides a resolution note. The session is marked
+        `resolved`, the action is audit-logged, and a `agent.session.resolved`
+        event is published to Kafka. The Engagement Engine may send a follow-up
+        notification to the customer if `notify_customer` is true.
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resolution_note]
+              properties:
+                resolution_note:
+                  type: string
+                  maxLength: 2000
+                actions_taken:
+                  type: array
+                  items:
+                    type: string
+                  description: Free-form list of actions the human operator took
+                notify_customer:
+                  type: boolean
+                  default: false
+                  description: Whether to trigger a customer notification via Engagement Engine
+      responses:
+        "200":
+          description: Resolved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentSessionSummary"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Session is not in escalated state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /agents/tools:
+    get:
+      operationId: listTools
+      tags: [Tools]
+      summary: List registered MCP tools available to agents
+      responses:
+        "200":
+          description: Tool registry
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tools:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ToolDefinition"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    AgentType:
+      type: string
+      enum:
+        - dispatch
+        - support
+        - marketing
+        - fraud
+        - logistics_planner
+        - customer_intelligence
+
+    SessionStatus:
+      type: string
+      enum:
+        - running
+        - completed
+        - escalated
+        - resolved
+        - failed
+
+    RunAgentRequest:
+      type: object
+      required: [agent_type, context]
+      properties:
+        agent_type:
+          $ref: "#/components/schemas/AgentType"
+        context:
+          type: object
+          description: Arbitrary key-value context passed as the initial user message to the agent
+          additionalProperties: true
+        idempotency_key:
+          type: string
+          maxLength: 64
+          description: Optional idempotency key. Same key within 24h returns the existing session.
+
+    AgentMessage:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [user, assistant, tool_result]
+        content:
+          type: string
+        tool_name:
+          type: string
+          nullable: true
+        tool_input:
+          type: object
+          nullable: true
+          additionalProperties: true
+        tool_output:
+          type: object
+          nullable: true
+          additionalProperties: true
+        timestamp:
+          type: string
+          format: date-time
+
+    AgentSessionSummary:
+      type: object
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        agent_type:
+          $ref: "#/components/schemas/AgentType"
+        status:
+          $ref: "#/components/schemas/SessionStatus"
+        tenant_id:
+          type: string
+          format: uuid
+        trigger_context:
+          type: object
+          additionalProperties: true
+        turns_taken:
+          type: integer
+        tool_calls_made:
+          type: integer
+        escalation_reason:
+          type: string
+          nullable: true
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        duration_ms:
+          type: integer
+          nullable: true
+
+    AgentSessionDetail:
+      allOf:
+        - $ref: "#/components/schemas/AgentSessionSummary"
+        - type: object
+          properties:
+            messages:
+              type: array
+              items:
+                $ref: "#/components/schemas/AgentMessage"
+            final_output:
+              type: string
+              nullable: true
+            actions_taken:
+              type: array
+              items:
+                type: object
+                properties:
+                  tool:
+                    type: string
+                  input:
+                    type: object
+                    additionalProperties: true
+                  output:
+                    type: object
+                    additionalProperties: true
+                  timestamp:
+                    type: string
+                    format: date-time
+
+    ToolDefinition:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        service:
+          type: string
+          description: The LogisticOS microservice this tool proxies
+        input_schema:
+          type: object
+          description: JSON Schema for the tool's input
+          additionalProperties: true
+        available_to:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentType"
+
+    ErrorResponse:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        request_id:
+          type: string
+          format: uuid
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    Forbidden:
+      description: Not authorised
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"

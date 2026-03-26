@@ -1,0 +1,389 @@
+openapi: "3.1.0"
+info:
+  title: LogisticOS Customer Data Platform API
+  version: "1.0.0"
+  description: |
+    Unified customer profile management for LogisticOS. The CDP aggregates
+    customer data from all touchpoints (order intake, delivery experience,
+    engagement) into a single profile per customer.
+
+    Profiles are keyed by `external_id` — a stable identifier from the merchant's
+    system. The CDP also maintains ML-derived scores (CLV, churn probability) updated
+    nightly by the AI intelligence layer.
+  contact:
+    name: LogisticOS Engineering
+    email: engineering@logisticos.io
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.logisticos.io/v1
+    description: Production
+  - url: https://staging-api.logisticos.io/v1
+    description: Staging
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Profiles
+    description: Customer profile CRUD and search
+  - name: Events
+    description: Behavioral event tracking
+
+paths:
+  /customers:
+    get:
+      operationId: listCustomerProfiles
+      tags: [Profiles]
+      summary: List customer profiles
+      description: Returns customer profiles for the tenant with optional filtering.
+      parameters:
+        - name: name
+          in: query
+          schema:
+            type: string
+          description: Filter by name (partial match)
+          example: Santos
+        - name: email
+          in: query
+          schema:
+            type: string
+          description: Exact email match
+        - name: phone
+          in: query
+          schema:
+            type: string
+          description: Exact phone match
+          example: "+639171234567"
+        - name: min_clv
+          in: query
+          schema:
+            type: number
+            format: float
+          description: Filter to profiles with CLV score above this value
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: Customer profiles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  profiles:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CustomerProfile"
+                  count:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /customers/top-clv:
+    get:
+      operationId: getTopClvCustomers
+      tags: [Profiles]
+      summary: Get top customers by Customer Lifetime Value
+      description: Returns customers ranked by CLV score descending. Used for VIP targeting.
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: Top CLV customers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  profiles:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CustomerProfile"
+                  count:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /customers/{external_id}:
+    get:
+      operationId: getCustomerProfile
+      tags: [Profiles]
+      summary: Get customer profile by external ID
+      parameters:
+        - $ref: "#/components/parameters/ExternalId"
+      responses:
+        "200":
+          description: Customer profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomerProfile"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    put:
+      operationId: upsertCustomerProfile
+      tags: [Profiles]
+      summary: Create or update a customer profile
+      description: |
+        Upserts a customer profile by `external_id`. If a profile with this
+        `external_id` already exists for the tenant, it is updated. Otherwise a
+        new profile is created. This is the primary ingestion path from order intake.
+      parameters:
+        - $ref: "#/components/parameters/ExternalId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpsertProfileRequest"
+            examples:
+              standard:
+                summary: Upsert a customer profile
+                value:
+                  name: "Maria Santos"
+                  email: "maria.santos@gmail.com"
+                  phone: "+639171234567"
+                  address:
+                    line1: "456 Rizal St"
+                    city: "Cebu City"
+                    province: "Cebu"
+                    postal_code: "6000"
+      responses:
+        "200":
+          description: Profile updated or created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CustomerProfile"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /customers/{external_id}/events:
+    get:
+      operationId: getCustomerEvents
+      tags: [Events]
+      summary: Get behavioral events for a customer
+      description: Returns the event history for a customer ordered by timestamp descending.
+      parameters:
+        - $ref: "#/components/parameters/ExternalId"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: event_type
+          in: query
+          schema:
+            type: string
+          description: Filter by event type (e.g. shipment_created, delivery_completed)
+      responses:
+        "200":
+          description: Customer events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CustomerEvent"
+                  count:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    ExternalId:
+      name: external_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Merchant-assigned customer identifier (stable across shipments)
+      example: "CUST-12345"
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid JWT
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Profile not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    UnprocessableEntity:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    CustomerAddress:
+      type: object
+      properties:
+        line1:
+          type: string
+          example: "456 Rizal St"
+        line2:
+          type: string
+          nullable: true
+        city:
+          type: string
+          example: "Cebu City"
+        province:
+          type: string
+          example: "Cebu"
+        postal_code:
+          type: string
+          example: "6000"
+      required: [line1, city, province, postal_code]
+
+    CustomerProfile:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        external_id:
+          type: string
+          example: "CUST-12345"
+        name:
+          type: string
+          example: "Maria Santos"
+        email:
+          type: string
+          format: email
+          nullable: true
+          example: "maria.santos@gmail.com"
+        phone:
+          type: string
+          nullable: true
+          example: "+639171234567"
+        address:
+          $ref: "#/components/schemas/CustomerAddress"
+          nullable: true
+        clv_score:
+          type: number
+          format: float
+          description: Customer Lifetime Value score — higher is more valuable
+          nullable: true
+          example: 87.5
+        churn_probability:
+          type: number
+          format: float
+          description: ML-predicted churn probability (0.0–1.0). Updated nightly.
+          nullable: true
+          example: 0.12
+        total_shipments:
+          type: integer
+          example: 14
+        total_shipment_value_php:
+          type: number
+          format: float
+          example: 12500.00
+        last_shipment_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - tenant_id
+        - external_id
+        - name
+        - total_shipments
+        - total_shipment_value_php
+        - created_at
+        - updated_at
+
+    CustomerEvent:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        customer_id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+          example: "shipment_created"
+        properties:
+          type: object
+          description: Event-specific data (varies by event_type)
+        occurred_at:
+          type: string
+          format: date-time
+      required: [id, customer_id, event_type, occurred_at]
+
+    UpsertProfileRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          example: "Maria Santos"
+        email:
+          type: string
+          format: email
+          nullable: true
+          example: "maria.santos@gmail.com"
+        phone:
+          type: string
+          nullable: true
+          example: "+639171234567"
+        address:
+          $ref: "#/components/schemas/CustomerAddress"
+      required: [name]
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]

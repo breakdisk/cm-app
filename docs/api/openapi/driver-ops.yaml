@@ -1,0 +1,501 @@
+openapi: "3.1.0"
+info:
+  title: LogisticOS Driver Operations API
+  version: "1.0.0"
+  description: |
+    Driver registration, task management, and real-time location tracking for the
+    LogisticOS driver operations service.
+
+    **WebSocket**: Live driver location streaming is available at
+    `ws://api.logisticos.io/ws/locations?token=<jwt>` — used by the ops dashboard
+    for the live driver map.
+  contact:
+    name: LogisticOS Engineering
+    email: engineering@logisticos.io
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.logisticos.io/v1
+    description: Production
+  - url: https://staging-api.logisticos.io/v1
+    description: Staging
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Drivers
+    description: Driver profile and availability management
+  - name: Tasks
+    description: Delivery task management (driver app)
+  - name: Location
+    description: GPS location updates from driver app
+
+paths:
+  /drivers:
+    get:
+      operationId: listDrivers
+      tags: [Drivers]
+      summary: List drivers for tenant
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/DriverStatus"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: Drivers list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  drivers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Driver"
+                  count:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    post:
+      operationId: registerDriver
+      tags: [Drivers]
+      summary: Register a new driver
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterDriverRequest"
+            examples:
+              standard:
+                summary: Register a motorcycle driver
+                value:
+                  name: "Jose dela Cruz"
+                  phone: "+639181234567"
+                  email: "jose.delacruz@fastship.com.ph"
+                  license_number: "N01-23-456789"
+                  vehicle_type: "motorcycle"
+      responses:
+        "201":
+          description: Driver registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Driver"
+        "422":
+          description: Phone or license already registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /drivers/{id}:
+    get:
+      operationId: getDriver
+      tags: [Drivers]
+      summary: Get driver by ID
+      parameters:
+        - $ref: "#/components/parameters/DriverId"
+      responses:
+        "200":
+          description: Driver detail with last known location
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Driver"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /drivers/me/online:
+    put:
+      operationId: goOnline
+      tags: [Drivers]
+      summary: Set driver status to online (driver app)
+      description: Called by the driver app when the driver starts their shift. Sets status to `online`.
+      responses:
+        "200":
+          description: Driver is now online
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Driver"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /drivers/me/offline:
+    put:
+      operationId: goOffline
+      tags: [Drivers]
+      summary: Set driver status to offline (driver app)
+      description: Called by the driver app when ending a shift.
+      responses:
+        "200":
+          description: Driver is now offline
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Driver"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /location:
+    post:
+      operationId: updateLocation
+      tags: [Location]
+      summary: Update driver GPS location (driver app)
+      description: |
+        Called by the driver app every 30 seconds to report current GPS position.
+        Updates the driver's last_known_location and broadcasts to WebSocket subscribers.
+        Driver JWT required (the location is attributed to the authenticated driver).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LocationUpdateRequest"
+            examples:
+              standard:
+                summary: Location update from driver app
+                value:
+                  lat: 14.5547
+                  lng: 121.0244
+                  heading: 45.0
+                  speed_kmh: 32.5
+                  accuracy_m: 8.0
+      responses:
+        "204":
+          description: Location recorded
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /tasks:
+    get:
+      operationId: listMyTasks
+      tags: [Tasks]
+      summary: Get task list for authenticated driver (driver app)
+      description: Returns pending and in-progress tasks for the driver, ordered by sequence.
+      responses:
+        "200":
+          description: Driver's task list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DeliveryTask"
+                  count:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /tasks/{id}/start:
+    put:
+      operationId: startTask
+      tags: [Tasks]
+      summary: Mark task as started (driver en route)
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "200":
+          description: Task started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeliveryTask"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Task cannot be started in current status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /tasks/{id}/complete:
+    put:
+      operationId: completeTask
+      tags: [Tasks]
+      summary: Mark task as completed (delivery successful)
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pod_id:
+                  type: string
+                  format: uuid
+                  description: Proof of Delivery record ID
+                notes:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Task completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeliveryTask"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /tasks/{id}/fail:
+    put:
+      operationId: failTask
+      tags: [Tasks]
+      summary: Mark task as failed (delivery attempt unsuccessful)
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  enum: [no_one_home, wrong_address, refused, customer_request, access_denied, other]
+                notes:
+                  type: string
+                  nullable: true
+              required: [reason]
+      responses:
+        "200":
+          description: Task failed — recovery agent will be triggered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeliveryTask"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    DriverId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    TaskId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid JWT
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    UnprocessableEntity:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    DriverStatus:
+      type: string
+      enum: [online, offline, on_delivery, on_break]
+
+    GpsCoordinate:
+      type: object
+      properties:
+        lat:
+          type: number
+          format: double
+          example: 14.5547
+        lng:
+          type: number
+          format: double
+          example: 121.0244
+      required: [lat, lng]
+
+    Driver:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: "Jose dela Cruz"
+        phone:
+          type: string
+          example: "+639181234567"
+        email:
+          type: string
+          format: email
+          nullable: true
+        license_number:
+          type: string
+          example: "N01-23-456789"
+        vehicle_type:
+          type: string
+          example: motorcycle
+        status:
+          $ref: "#/components/schemas/DriverStatus"
+        last_known_location:
+          $ref: "#/components/schemas/GpsCoordinate"
+          nullable: true
+        last_location_at:
+          type: string
+          format: date-time
+          nullable: true
+        active_task_count:
+          type: integer
+          example: 3
+        created_at:
+          type: string
+          format: date-time
+      required: [id, tenant_id, name, phone, status, active_task_count, created_at]
+
+    TaskStatus:
+      type: string
+      enum: [pending, in_progress, completed, failed]
+
+    DeliveryTask:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        shipment_id:
+          type: string
+          format: uuid
+        driver_id:
+          type: string
+          format: uuid
+        sequence:
+          type: integer
+          description: Order in driver's route
+          example: 3
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        task_type:
+          type: string
+          enum: [pickup, delivery, return]
+        address:
+          type: string
+          example: "456 Rizal St, Cebu City, Cebu"
+        recipient_name:
+          type: string
+          example: "Maria Santos"
+        recipient_phone:
+          type: string
+          example: "+639171234567"
+        cod_amount_php:
+          type: number
+          format: float
+          nullable: true
+          example: 1500.00
+        notes:
+          type: string
+          nullable: true
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+      required: [id, shipment_id, driver_id, sequence, status, task_type, address, recipient_name, created_at]
+
+    RegisterDriverRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        phone:
+          type: string
+          example: "+639181234567"
+        email:
+          type: string
+          format: email
+          nullable: true
+        license_number:
+          type: string
+        vehicle_type:
+          type: string
+          example: motorcycle
+      required: [name, phone, license_number]
+
+    LocationUpdateRequest:
+      type: object
+      properties:
+        lat:
+          type: number
+          format: double
+        lng:
+          type: number
+          format: double
+        heading:
+          type: number
+          format: float
+          nullable: true
+          description: Direction of travel in degrees (0–360)
+        speed_kmh:
+          type: number
+          format: float
+          nullable: true
+        accuracy_m:
+          type: number
+          format: float
+          nullable: true
+          description: GPS accuracy in metres
+      required: [lat, lng]
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]

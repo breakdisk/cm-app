@@ -1,0 +1,102 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Fonts ──────────────────────────────────────────────────── */
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+
+/* ── CSS variables (consumed by shadcn/ui) ──────────────────── */
+@layer base {
+  :root {
+    --background: 222 47% 4%;
+    --foreground: 210 40% 98%;
+    --card: 222 47% 6%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222 47% 5%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 189 100% 50%;      /* cyan neon */
+    --primary-foreground: 222 47% 4%;
+    --secondary: 270 91% 65%;     /* plasma purple */
+    --secondary-foreground: 210 40% 98%;
+    --muted: 222 30% 14%;
+    --muted-foreground: 215 20% 55%;
+    --accent: 142 100% 50%;       /* signal green */
+    --accent-foreground: 222 47% 4%;
+    --destructive: 348 100% 61%;  /* signal red */
+    --destructive-foreground: 210 40% 98%;
+    --border: 222 30% 14%;
+    --input: 222 30% 12%;
+    --ring: 189 100% 50%;
+    --radius: 0.75rem;
+  }
+}
+
+/* ── Base resets ─────────────────────────────────────────────── */
+@layer base {
+  * {
+    @apply border-glass-border;
+  }
+  html {
+    @apply antialiased;
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-canvas text-white font-sans;
+    background-image:
+      linear-gradient(rgba(0, 229, 255, 0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0, 229, 255, 0.025) 1px, transparent 1px);
+    background-size: 48px 48px;
+  }
+  /* Scrollbar */
+  ::-webkit-scrollbar       { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { @apply bg-glass-300 rounded-full; }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-glass-400; }
+}
+
+/* ── Utility layer: reusable futuristic patterns ─────────────── */
+@layer utilities {
+  /* Glass panels */
+  .glass {
+    @apply bg-glass-200 backdrop-blur-xl border border-glass-border rounded-2xl shadow-glass;
+  }
+  .glass-sm {
+    @apply bg-glass-100 backdrop-blur-md border border-glass-border rounded-xl shadow-glass;
+  }
+  .glass-lg {
+    @apply bg-glass-300 backdrop-blur-2xl border border-glass-border-bright rounded-3xl shadow-glass-lg;
+  }
+
+  /* Neon text */
+  .text-neon-cyan   { @apply text-cyan-neon drop-shadow-[0_0_8px_rgba(0,229,255,0.8)]; }
+  .text-neon-purple { @apply text-purple-plasma drop-shadow-[0_0_8px_rgba(168,85,247,0.8)]; }
+  .text-neon-green  { @apply text-green-signal drop-shadow-[0_0_8px_rgba(0,255,136,0.8)]; }
+  .text-neon-amber  { @apply text-amber-signal drop-shadow-[0_0_8px_rgba(255,171,0,0.8)]; }
+
+  /* Gradient text */
+  .text-gradient-brand {
+    @apply bg-gradient-brand bg-clip-text text-transparent;
+  }
+  .text-gradient-dispatch {
+    @apply bg-gradient-dispatch bg-clip-text text-transparent;
+  }
+
+  /* Glow borders */
+  .border-glow-cyan   { border-color: rgba(0, 229, 255, 0.5); box-shadow: 0 0 12px rgba(0,229,255,0.2); }
+  .border-glow-purple { border-color: rgba(168, 85, 247, 0.5); box-shadow: 0 0 12px rgba(168,85,247,0.2); }
+  .border-glow-green  { border-color: rgba(0, 255, 136, 0.5); box-shadow: 0 0 12px rgba(0,255,136,0.2); }
+  .border-glow-red    { border-color: rgba(255, 59, 92, 0.5);  box-shadow: 0 0 12px rgba(255,59,92,0.2); }
+
+  /* Live indicator pulse */
+  .beacon::after {
+    content: "";
+    @apply absolute inset-0 rounded-full animate-beacon;
+    background: inherit;
+  }
+
+  /* Scan line overlay (for map/camera views) */
+  .scan-overlay::after {
+    content: "";
+    @apply absolute inset-x-0 h-px bg-cyan-neon/30 animate-scan-line pointer-events-none;
+  }
+}

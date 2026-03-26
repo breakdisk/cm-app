@@ -1,0 +1,551 @@
+# ============================================================
+# LogisticOS — Frontend CI Pipeline
+# ============================================================
+# Covers all Next.js portals and React Native mobile apps.
+# Jobs: lint-and-type-check → test → build → e2e → mobile-check
+# ============================================================
+
+name: CI — Frontend
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - "apps/**"
+      - "packages/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "package.json"
+      - ".github/workflows/ci-frontend.yml"
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - "apps/**"
+      - "packages/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "package.json"
+      - ".github/workflows/ci-frontend.yml"
+
+concurrency:
+  group: ci-frontend-${{ github.ref }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "20"
+  PNPM_VERSION: "9"
+
+jobs:
+  # ──────────────────────────────────────────────────────────────
+  # JOB 1: lint-and-type-check
+  # Runs ESLint + TypeScript compiler (noEmit) per web portal.
+  # Matrix: all four Next.js portals in parallel.
+  # ──────────────────────────────────────────────────────────────
+  lint-and-type-check:
+    name: Lint & Type Check (${{ matrix.app }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        app:
+          - merchant-portal
+          - admin-portal
+          - partner-portal
+          - customer-portal
+
+    defaults:
+      run:
+        working-directory: apps/${{ matrix.app }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Restore Next.js build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            apps/${{ matrix.app }}/.next/cache
+          key: ${{ runner.os }}-nextjs-${{ matrix.app }}-${{ hashFiles(format('apps/{0}/**.[jt]s', matrix.app), format('apps/{0}/**.[jt]sx', matrix.app)) }}
+          restore-keys: |
+            ${{ runner.os }}-nextjs-${{ matrix.app }}-
+
+      - name: Install dependencies (workspace root)
+        working-directory: .
+        run: pnpm install --frozen-lockfile
+
+      - name: Run ESLint
+        run: pnpm lint
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+
+      - name: Run TypeScript type check
+        run: pnpm tsc --noEmit
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+
+      - name: Check for console.log in production code
+        run: |
+          echo "Checking for console.log statements in production source..."
+          VIOLATIONS=$(grep -rn 'console\.log(' src/ \
+            --include='*.ts' \
+            --include='*.tsx' \
+            | grep -v '\.test\.' \
+            | grep -v '\.spec\.' \
+            | grep -v '__tests__' \
+            | grep -v '// eslint-disable' \
+            | head -20 || true)
+
+          if [ -n "$VIOLATIONS" ]; then
+            echo "WARNING: console.log found in production code (use logger utility instead):"
+            echo "$VIOLATIONS"
+            # Non-fatal warning — fail only on explicit console.error/warn misuse
+          fi
+
+      - name: Validate i18n keys consistency
+        run: |
+          # Check that all translation keys present in en.json also exist in ph.json
+          if [ -f "src/locales/en.json" ] && [ -f "src/locales/ph.json" ]; then
+            EN_KEYS=$(python3 -c "import json,sys; d=json.load(open('src/locales/en.json')); print('\n'.join(sorted(d.keys())))" 2>/dev/null || true)
+            PH_KEYS=$(python3 -c "import json,sys; d=json.load(open('src/locales/ph.json')); print('\n'.join(sorted(d.keys())))" 2>/dev/null || true)
+            MISSING=$(comm -23 <(echo "$EN_KEYS" | sort) <(echo "$PH_KEYS" | sort) 2>/dev/null || true)
+            if [ -n "$MISSING" ]; then
+              echo "WARNING: Missing Filipino (ph) translations for keys:"
+              echo "$MISSING"
+            fi
+          fi
+
+  # ──────────────────────────────────────────────────────────────
+  # JOB 2: test
+  # Runs Jest unit/component tests with coverage per portal.
+  # ──────────────────────────────────────────────────────────────
+  test:
+    name: Unit Tests (${{ matrix.app }})
+    runs-on: ubuntu-latest
+    needs: lint-and-type-check
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        app:
+          - merchant-portal
+          - admin-portal
+          - partner-portal
+          - customer-portal
+
+    defaults:
+      run:
+        working-directory: apps/${{ matrix.app }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: .
+        run: pnpm install --frozen-lockfile
+
+      - name: Run tests with coverage
+        run: pnpm test --coverage --ci --passWithNoTests
+        env:
+          CI: "true"
+          NEXT_TELEMETRY_DISABLED: "1"
+          NODE_ENV: "test"
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        if: github.event_name == 'pull_request'
+        with:
+          files: coverage/lcov.info
+          flags: frontend-${{ matrix.app }}
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.app }}-${{ github.sha }}
+          path: |
+            apps/${{ matrix.app }}/coverage/
+            apps/${{ matrix.app }}/jest-results.json
+          retention-days: 7
+
+  # ──────────────────────────────────────────────────────────────
+  # JOB 3: build
+  # Runs Next.js production build per portal.
+  # Uploads .next/standalone as artifact for E2E and deployment.
+  # ──────────────────────────────────────────────────────────────
+  build:
+    name: Build (${{ matrix.app }})
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: merchant-portal
+            api_port: 8000
+          - app: admin-portal
+            api_port: 8000
+          - app: partner-portal
+            api_port: 8000
+          - app: customer-portal
+            api_port: 8000
+
+    defaults:
+      run:
+        working-directory: apps/${{ matrix.app }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Restore Next.js build cache
+        uses: actions/cache@v4
+        with:
+          path: apps/${{ matrix.app }}/.next/cache
+          key: ${{ runner.os }}-nextjs-build-${{ matrix.app }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles(format('apps/{0}/src/**', matrix.app)) }}
+          restore-keys: |
+            ${{ runner.os }}-nextjs-build-${{ matrix.app }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            ${{ runner.os }}-nextjs-build-${{ matrix.app }}-
+
+      - name: Install dependencies
+        working-directory: .
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Next.js application
+        run: pnpm build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL || 'https://api.logisticos.io' }}
+          NEXT_PUBLIC_MAPBOX_TOKEN: ${{ secrets.MAPBOX_TOKEN }}
+          NEXT_PUBLIC_APP_ENV: "production"
+          NODE_ENV: "production"
+
+      - name: Analyze bundle size
+        run: |
+          if [ -f ".next/build-manifest.json" ]; then
+            echo "=== Build Size Summary ==="
+            du -sh .next/ || true
+            # Check if any page bundle exceeds 500KB (warning threshold)
+            find .next/static/chunks -name '*.js' -size +500k \
+              -exec echo "LARGE BUNDLE: {}" \; 2>/dev/null || true
+          fi
+
+      - name: Upload standalone build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.app }}-${{ github.sha }}
+          path: |
+            apps/${{ matrix.app }}/.next/standalone/
+            apps/${{ matrix.app }}/.next/static/
+            apps/${{ matrix.app }}/public/
+          retention-days: 1
+          if-no-files-found: warn
+
+  # ──────────────────────────────────────────────────────────────
+  # JOB 4: e2e
+  # Runs Playwright end-to-end tests for all web portals.
+  # Uses official Playwright Docker image for browser consistency.
+  # Uploads traces and screenshots as artifacts on failure.
+  # ──────────────────────────────────────────────────────────────
+  e2e:
+    name: E2E Tests (${{ matrix.app }})
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        app:
+          - merchant-portal
+          - admin-portal
+          - partner-portal
+          - customer-portal
+
+    container:
+      image: mcr.microsoft.com/playwright:v1.44.0-jammy
+      options: --ipc=host
+
+    env:
+      CI: "true"
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+      NEXT_TELEMETRY_DISABLED: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-${{ matrix.app }}-${{ github.sha }}
+          path: apps/${{ matrix.app }}-build/
+
+      - name: Start application server
+        working-directory: apps/${{ matrix.app }}
+        run: |
+          # Start the standalone Next.js server in background
+          STANDALONE_DIR="../${{ matrix.app }}-build"
+          if [ -f "$STANDALONE_DIR/server.js" ]; then
+            PORT=3000 node "$STANDALONE_DIR/server.js" &
+            APP_PID=$!
+            echo "APP_PID=$APP_PID" >> "$GITHUB_ENV"
+          else
+            # Fallback: build and run dev server for E2E
+            pnpm build
+            pnpm start &
+            APP_PID=$!
+            echo "APP_PID=$APP_PID" >> "$GITHUB_ENV"
+          fi
+
+          # Wait for server to be ready
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3000 > /dev/null 2>&1 && break
+            echo "Waiting for server... ($i/30)"
+            sleep 2
+          done
+          echo "Application server ready."
+        env:
+          NEXT_PUBLIC_API_URL: ${{ secrets.INTEGRATION_API_URL || 'http://localhost:8000' }}
+          NEXT_PUBLIC_MAPBOX_TOKEN: ${{ secrets.MAPBOX_TOKEN }}
+
+      - name: Run Playwright E2E tests
+        working-directory: apps/${{ matrix.app }}
+        run: |
+          pnpm exec playwright test \
+            --reporter=html \
+            --reporter=github \
+            tests/e2e/
+        env:
+          BASE_URL: "http://localhost:3000"
+          TEST_USER_EMAIL: ${{ secrets.E2E_TEST_USER_EMAIL }}
+          TEST_USER_PASSWORD: ${{ secrets.E2E_TEST_USER_PASSWORD }}
+          TEST_TENANT_ID: ${{ secrets.E2E_TEST_TENANT_ID }}
+
+      - name: Upload Playwright traces on failure
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-traces-${{ matrix.app }}-${{ github.sha }}
+          path: |
+            apps/${{ matrix.app }}/playwright-report/
+            apps/${{ matrix.app }}/test-results/
+          retention-days: 7
+
+      - name: Upload Playwright HTML report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report-${{ matrix.app }}-${{ github.sha }}
+          path: apps/${{ matrix.app }}/playwright-report/
+          retention-days: 7
+
+  # ──────────────────────────────────────────────────────────────
+  # JOB 5: mobile-check
+  # Validates React Native / Expo apps: Expo Doctor, TypeScript,
+  # and dependency audit for driver-app and customer-app.
+  # ──────────────────────────────────────────────────────────────
+  mobile-check:
+    name: Mobile Check (${{ matrix.app }})
+    runs-on: ubuntu-latest
+    needs: lint-and-type-check
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        app:
+          - driver-app
+          - customer-app
+
+    defaults:
+      run:
+        working-directory: apps/${{ matrix.app }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "pnpm"
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: .
+        run: pnpm install --frozen-lockfile
+
+      - name: Run TypeScript type check
+        run: pnpm tsc --noEmit
+        env:
+          CI: "true"
+
+      - name: Run ESLint
+        run: pnpm lint
+        env:
+          CI: "true"
+
+      - name: Run Expo Doctor
+        run: pnpm exec expo-doctor
+        continue-on-error: true  # Non-fatal: Expo Doctor output is informational
+
+      - name: Validate app.json / app.config.js
+        run: |
+          if [ -f "app.json" ]; then
+            python3 -c "
+          import json, sys
+          try:
+              d = json.load(open('app.json'))
+              exp = d.get('expo', {})
+              assert exp.get('name'), 'Missing expo.name'
+              assert exp.get('slug'), 'Missing expo.slug'
+              assert exp.get('version'), 'Missing expo.version'
+              assert exp.get('icon'), 'Missing expo.icon'
+              print('app.json validation passed')
+          except (AssertionError, KeyError) as e:
+              print(f'app.json validation failed: {e}', file=sys.stderr)
+              sys.exit(1)
+          "
+          fi
+
+      - name: Check for React Native version compatibility
+        run: |
+          # Warn if react-native and expo versions are incompatible
+          if [ -f "package.json" ]; then
+            RN_VERSION=$(python3 -c "import json; d=json.load(open('package.json')); print(d.get('dependencies',{}).get('react-native','unknown'))" 2>/dev/null || echo "unknown")
+            EXPO_VERSION=$(python3 -c "import json; d=json.load(open('package.json')); print(d.get('dependencies',{}).get('expo','unknown'))" 2>/dev/null || echo "unknown")
+            echo "React Native: $RN_VERSION | Expo SDK: $EXPO_VERSION"
+          fi
+
+      - name: Run unit tests (mobile)
+        run: pnpm test --ci --passWithNoTests
+        env:
+          CI: "true"
+          NODE_ENV: "test"
+
+      - name: Upload mobile test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mobile-test-results-${{ matrix.app }}-${{ github.sha }}
+          path: apps/${{ matrix.app }}/coverage/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ──────────────────────────────────────────────────────────────
+  # Summary gate — all required jobs must pass
+  # Referenced by branch protection rules as a required status
+  # ──────────────────────────────────────────────────────────────
+  frontend-ci-complete:
+    name: Frontend CI Complete
+    runs-on: ubuntu-latest
+    needs:
+      - lint-and-type-check
+      - test
+      - build
+      - e2e
+      - mobile-check
+    if: always()
+    steps:
+      - name: Check all jobs passed
+        run: |
+          LINT="${{ needs.lint-and-type-check.result }}"
+          TEST="${{ needs.test.result }}"
+          BUILD="${{ needs.build.result }}"
+          E2E="${{ needs.e2e.result }}"
+          MOBILE="${{ needs.mobile-check.result }}"
+
+          echo "lint-and-type-check: $LINT"
+          echo "test:               $TEST"
+          echo "build:              $BUILD"
+          echo "e2e:                $E2E"
+          echo "mobile-check:       $MOBILE"
+
+          FAILED=false
+          for RESULT in "$LINT" "$TEST" "$BUILD" "$E2E"; do
+            if [ "$RESULT" == "failure" ] || [ "$RESULT" == "cancelled" ]; then
+              FAILED=true
+            fi
+          done
+
+          if [ "$FAILED" == "true" ]; then
+            echo "One or more required frontend CI jobs failed."
+            exit 1
+          fi
+
+          echo "All frontend CI checks passed."

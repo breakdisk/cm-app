@@ -1,0 +1,1080 @@
+# LogisticOS Istio DestinationRules
+#
+# Defines traffic policy, connection pooling, circuit breaking, and subset
+# definitions for all 17 LogisticOS microservices.
+#
+# Key policies applied to every service:
+#
+#   connectionPool:
+#     tcp.maxConnections: 1000        — cap total TCP connections per sidecar
+#     http.http1MaxPendingRequests: 1000 — queue depth before circuit breaks
+#     http.http2MaxRequests: 10000    — gRPC / HTTP/2 concurrency ceiling
+#
+#   outlierDetection (circuit breaker):
+#     consecutive5xxErrors: 5         — 5 consecutive 5xx ejects endpoint
+#     interval: 30s                   — rolling window for error counting
+#     baseEjectionTime: 30s           — minimum ejection duration
+#     maxEjectionPercent: 50          — at most half the endpoints ejected
+#     minHealthPercent: 30            — stop ejecting if < 30% hosts healthy
+#
+#   loadBalancer: LEAST_CONN         — distributes load by least active connections;
+#                                      better than ROUND_ROBIN for heterogeneous RPC latency
+#
+#   tls.mode: ISTIO_MUTUAL           — enforces mTLS between all sidecar pairs;
+#                                      certificates managed by Istiod (SPIFFE/SVID)
+#
+# Subset labels:
+#   stable: version=stable           — production pods
+#   canary: version=canary           — canary/shadow pods (0 traffic by default)
+#
+# Analytics exception:
+#   maxConnections: 5000 (TCP) and http2MaxRequests: 50000 to accommodate
+#   high-concurrency ClickHouse query fan-out from the analytics service.
+
+---
+# =============================================================================
+# LOGISTICOS-CORE NAMESPACE
+# =============================================================================
+
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: api-gateway-dr
+  namespace: logisticos-core
+  labels:
+    app: api-gateway
+    component: destination-rule
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Traffic policy for api-gateway service"
+spec:
+  host: api-gateway.logisticos-core.svc.cluster.local
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 1000
+        connectTimeout: 10s
+        tcpKeepalive:
+          time: 7200s
+          interval: 75s
+          probes: 10
+      http:
+        http1MaxPendingRequests: 1000
+        http2MaxRequests: 10000
+        maxRequestsPerConnection: 1000
+        maxRetries: 5
+        idleTimeout: 90s
+        h2UpgradePolicy: UPGRADE
+    outlierDetection:
+      consecutive5xxErrors: 5
+      consecutiveGatewayErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+      splitExternalLocalOriginErrors: true
+    tls:
+      mode: ISTIO_MUTUAL
+  subsets:
+    - name: stable
+      labels:
+        version: stable
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+    - name: canary
+      labels:
+        version: canary
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: identity-dr
+  namespace: logisticos-core
+  labels:
+    app: identity
+    component: destination-rule
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Traffic policy for identity service"
+spec:
+  host: identity.logisticos-core.svc.cluster.local
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 1000
+        connectTimeout: 10s
+        tcpKeepalive:
+          time: 7200s
+          interval: 75s
+          probes: 10
+      http:
+        http1MaxPendingRequests: 1000
+        http2MaxRequests: 10000
+        maxRequestsPerConnection: 1000
+        maxRetries: 5
+        idleTimeout: 90s
+        h2UpgradePolicy: UPGRADE
+    outlierDetection:
+      consecutive5xxErrors: 5
+      consecutiveGatewayErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+      splitExternalLocalOriginErrors: true
+    tls:
+      mode: ISTIO_MUTUAL
+  subsets:
+    - name: stable
+      labels:
+        version: stable
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+    - name: canary
+      labels:
+        version: canary
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: business-logic-dr
+  namespace: logisticos-core
+  labels:
+    app: business-logic
+    component: destination-rule
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Traffic policy for business-logic service"
+spec:
+  host: business-logic.logisticos-core.svc.cluster.local
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 1000
+        connectTimeout: 10s
+        tcpKeepalive:
+          time: 7200s
+          interval: 75s
+          probes: 10
+      http:
+        http1MaxPendingRequests: 1000
+        http2MaxRequests: 10000
+        maxRequestsPerConnection: 1000
+        maxRetries: 5
+        idleTimeout: 90s
+        h2UpgradePolicy: UPGRADE
+    outlierDetection:
+      consecutive5xxErrors: 5
+      consecutiveGatewayErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+      splitExternalLocalOriginErrors: true
+    tls:
+      mode: ISTIO_MUTUAL
+  subsets:
+    - name: stable
+      labels:
+        version: stable
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+    - name: canary
+      labels:
+        version: canary
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+
+---
+# =============================================================================
+# LOGISTICOS-LOGISTICS NAMESPACE
+# =============================================================================
+
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: order-intake-dr
+  namespace: logisticos-logistics
+  labels:
+    app: order-intake
+    component: destination-rule
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Traffic policy for order-intake service"
+spec:
+  host: order-intake.logisticos-logistics.svc.cluster.local
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 1000
+        connectTimeout: 10s
+        tcpKeepalive:
+          time: 7200s
+          interval: 75s
+          probes: 10
+      http:
+        http1MaxPendingRequests: 1000
+        http2MaxRequests: 10000
+        maxRequestsPerConnection: 1000
+        maxRetries: 5
+        idleTimeout: 90s
+        h2UpgradePolicy: UPGRADE
+    outlierDetection:
+      consecutive5xxErrors: 5
+      consecutiveGatewayErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+      splitExternalLocalOriginErrors: true
+    tls:
+      mode: ISTIO_MUTUAL
+  subsets:
+    - name: stable
+      labels:
+        version: stable
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+    - name: canary
+      labels:
+        version: canary
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: dispatch-dr
+  namespace: logisticos-logistics
+  labels:
+    app: dispatch
+    component: destination-rule
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Traffic policy for dispatch service"
+spec:
+  host: dispatch.logisticos-logistics.svc.cluster.local
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 1000
+        connectTimeout: 10s
+        tcpKeepalive:
+          time: 7200s
+          interval: 75s
+          probes: 10
+      http:
+        http1MaxPendingRequests: 1000
+        http2MaxRequests: 10000
+        maxRequestsPerConnection: 1000
+        maxRetries: 5
+        idleTimeout: 90s
+        h2UpgradePolicy: UPGRADE
+    outlierDetection:
+      consecutive5xxErrors: 5
+      consecutiveGatewayErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+      splitExternalLocalOriginErrors: true
+    tls:
+      mode: ISTIO_MUTUAL
+  subsets:
+    - name: stable
+      labels:
+        version: stable
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+    - name: canary
+      labels:
+        version: canary
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: driver-ops-dr
+  namespace: logisticos-logistics
+  labels:
+    app: driver-ops
+    component: destination-rule
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Traffic policy for driver-ops service"
+spec:
+  host: driver-ops.logisticos-logistics.svc.cluster.local
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 1000
+        connectTimeout: 10s
+        tcpKeepalive:
+          time: 7200s
+          interval: 75s
+          probes: 10
+      http:
+        http1MaxPendingRequests: 1000
+        http2MaxRequests: 10000
+        maxRequestsPerConnection: 1000
+        maxRetries: 5
+        idleTimeout: 90s
+        h2UpgradePolicy: UPGRADE
+    outlierDetection:
+      consecutive5xxErrors: 5
+      consecutiveGatewayErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+      splitExternalLocalOriginErrors: true
+    tls:
+      mode: ISTIO_MUTUAL
+  subsets:
+    - name: stable
+      labels:
+        version: stable
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+    - name: canary
+      labels:
+        version: canary
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: fleet-dr
+  namespace: logisticos-logistics
+  labels:
+    app: fleet
+    component: destination-rule
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Traffic policy for fleet service"
+spec:
+  host: fleet.logisticos-logistics.svc.cluster.local
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 1000
+        connectTimeout: 10s
+        tcpKeepalive:
+          time: 7200s
+          interval: 75s
+          probes: 10
+      http:
+        http1MaxPendingRequests: 1000
+        http2MaxRequests: 10000
+        maxRequestsPerConnection: 1000
+        maxRetries: 5
+        idleTimeout: 90s
+        h2UpgradePolicy: UPGRADE
+    outlierDetection:
+      consecutive5xxErrors: 5
+      consecutiveGatewayErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+      splitExternalLocalOriginErrors: true
+    tls:
+      mode: ISTIO_MUTUAL
+  subsets:
+    - name: stable
+      labels:
+        version: stable
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+    - name: canary
+      labels:
+        version: canary
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: hub-ops-dr
+  namespace: logisticos-logistics
+  labels:
+    app: hub-ops
+    component: destination-rule
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Traffic policy for hub-ops service"
+spec:
+  host: hub-ops.logisticos-logistics.svc.cluster.local
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 1000
+        connectTimeout: 10s
+        tcpKeepalive:
+          time: 7200s
+          interval: 75s
+          probes: 10
+      http:
+        http1MaxPendingRequests: 1000
+        http2MaxRequests: 10000
+        maxRequestsPerConnection: 1000
+        maxRetries: 5
+        idleTimeout: 90s
+        h2UpgradePolicy: UPGRADE
+    outlierDetection:
+      consecutive5xxErrors: 5
+      consecutiveGatewayErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+      splitExternalLocalOriginErrors: true
+    tls:
+      mode: ISTIO_MUTUAL
+  subsets:
+    - name: stable
+      labels:
+        version: stable
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+    - name: canary
+      labels:
+        version: canary
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: carrier-dr
+  namespace: logisticos-logistics
+  labels:
+    app: carrier
+    component: destination-rule
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Traffic policy for carrier service"
+spec:
+  host: carrier.logisticos-logistics.svc.cluster.local
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 1000
+        connectTimeout: 10s
+        tcpKeepalive:
+          time: 7200s
+          interval: 75s
+          probes: 10
+      http:
+        http1MaxPendingRequests: 1000
+        http2MaxRequests: 10000
+        maxRequestsPerConnection: 1000
+        maxRetries: 5
+        idleTimeout: 90s
+        h2UpgradePolicy: UPGRADE
+    outlierDetection:
+      consecutive5xxErrors: 5
+      consecutiveGatewayErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+      splitExternalLocalOriginErrors: true
+    tls:
+      mode: ISTIO_MUTUAL
+  subsets:
+    - name: stable
+      labels:
+        version: stable
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+    - name: canary
+      labels:
+        version: canary
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: pod-dr
+  namespace: logisticos-logistics
+  labels:
+    app: pod
+    component: destination-rule
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Traffic policy for pod (proof of delivery) service"
+spec:
+  host: pod.logisticos-logistics.svc.cluster.local
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 1000
+        connectTimeout: 10s
+        tcpKeepalive:
+          time: 7200s
+          interval: 75s
+          probes: 10
+      http:
+        http1MaxPendingRequests: 1000
+        http2MaxRequests: 10000
+        maxRequestsPerConnection: 1000
+        maxRetries: 5
+        idleTimeout: 90s
+        h2UpgradePolicy: UPGRADE
+    outlierDetection:
+      consecutive5xxErrors: 5
+      consecutiveGatewayErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+      splitExternalLocalOriginErrors: true
+    tls:
+      mode: ISTIO_MUTUAL
+  subsets:
+    - name: stable
+      labels:
+        version: stable
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+    - name: canary
+      labels:
+        version: canary
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+
+---
+# =============================================================================
+# LOGISTICOS-ENGAGEMENT NAMESPACE
+# =============================================================================
+
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: engagement-dr
+  namespace: logisticos-engagement
+  labels:
+    app: engagement
+    component: destination-rule
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Traffic policy for engagement service"
+spec:
+  host: engagement.logisticos-engagement.svc.cluster.local
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 1000
+        connectTimeout: 10s
+        tcpKeepalive:
+          time: 7200s
+          interval: 75s
+          probes: 10
+      http:
+        http1MaxPendingRequests: 1000
+        http2MaxRequests: 10000
+        maxRequestsPerConnection: 1000
+        maxRetries: 5
+        idleTimeout: 90s
+        h2UpgradePolicy: UPGRADE
+    outlierDetection:
+      consecutive5xxErrors: 5
+      consecutiveGatewayErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+      splitExternalLocalOriginErrors: true
+    tls:
+      mode: ISTIO_MUTUAL
+  subsets:
+    - name: stable
+      labels:
+        version: stable
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+    - name: canary
+      labels:
+        version: canary
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: cdp-dr
+  namespace: logisticos-engagement
+  labels:
+    app: cdp
+    component: destination-rule
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Traffic policy for cdp (customer data platform) service"
+spec:
+  host: cdp.logisticos-engagement.svc.cluster.local
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 1000
+        connectTimeout: 10s
+        tcpKeepalive:
+          time: 7200s
+          interval: 75s
+          probes: 10
+      http:
+        http1MaxPendingRequests: 1000
+        http2MaxRequests: 10000
+        maxRequestsPerConnection: 1000
+        maxRetries: 5
+        idleTimeout: 90s
+        h2UpgradePolicy: UPGRADE
+    outlierDetection:
+      consecutive5xxErrors: 5
+      consecutiveGatewayErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+      splitExternalLocalOriginErrors: true
+    tls:
+      mode: ISTIO_MUTUAL
+  subsets:
+    - name: stable
+      labels:
+        version: stable
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+    - name: canary
+      labels:
+        version: canary
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: marketing-dr
+  namespace: logisticos-engagement
+  labels:
+    app: marketing
+    component: destination-rule
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Traffic policy for marketing automation service"
+spec:
+  host: marketing.logisticos-engagement.svc.cluster.local
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 1000
+        connectTimeout: 10s
+        tcpKeepalive:
+          time: 7200s
+          interval: 75s
+          probes: 10
+      http:
+        http1MaxPendingRequests: 1000
+        http2MaxRequests: 10000
+        maxRequestsPerConnection: 1000
+        maxRetries: 5
+        idleTimeout: 90s
+        h2UpgradePolicy: UPGRADE
+    outlierDetection:
+      consecutive5xxErrors: 5
+      consecutiveGatewayErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+      splitExternalLocalOriginErrors: true
+    tls:
+      mode: ISTIO_MUTUAL
+  subsets:
+    - name: stable
+      labels:
+        version: stable
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+    - name: canary
+      labels:
+        version: canary
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+
+---
+# =============================================================================
+# LOGISTICOS-DATA NAMESPACE
+# =============================================================================
+
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: delivery-experience-dr
+  namespace: logisticos-data
+  labels:
+    app: delivery-experience
+    component: destination-rule
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Traffic policy for delivery-experience service"
+spec:
+  host: delivery-experience.logisticos-data.svc.cluster.local
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 1000
+        connectTimeout: 10s
+        tcpKeepalive:
+          time: 7200s
+          interval: 75s
+          probes: 10
+      http:
+        http1MaxPendingRequests: 1000
+        http2MaxRequests: 10000
+        maxRequestsPerConnection: 1000
+        maxRetries: 5
+        idleTimeout: 90s
+        h2UpgradePolicy: UPGRADE
+    outlierDetection:
+      consecutive5xxErrors: 5
+      consecutiveGatewayErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+      splitExternalLocalOriginErrors: true
+    tls:
+      mode: ISTIO_MUTUAL
+  subsets:
+    - name: stable
+      labels:
+        version: stable
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+    - name: canary
+      labels:
+        version: canary
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: payments-dr
+  namespace: logisticos-data
+  labels:
+    app: payments
+    component: destination-rule
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Traffic policy for payments service (PCI-DSS scoped)"
+spec:
+  host: payments.logisticos-data.svc.cluster.local
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 1000
+        connectTimeout: 10s
+        tcpKeepalive:
+          time: 7200s
+          interval: 75s
+          probes: 10
+      http:
+        http1MaxPendingRequests: 1000
+        http2MaxRequests: 10000
+        maxRequestsPerConnection: 1000
+        maxRetries: 5
+        idleTimeout: 90s
+        h2UpgradePolicy: UPGRADE
+    outlierDetection:
+      consecutive5xxErrors: 5
+      consecutiveGatewayErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+      splitExternalLocalOriginErrors: true
+    tls:
+      mode: ISTIO_MUTUAL
+  subsets:
+    - name: stable
+      labels:
+        version: stable
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+    - name: canary
+      labels:
+        version: canary
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+
+---
+# Analytics — SPECIAL CASE: 5x higher connection limits for ClickHouse query load.
+# The analytics service fans out queries across multiple ClickHouse shards and may
+# open many concurrent connections. Standard limits would cause false circuit trips.
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: analytics-dr
+  namespace: logisticos-data
+  labels:
+    app: analytics
+    component: destination-rule
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Traffic policy for analytics service — elevated limits for ClickHouse"
+    logisticos.io/perf-note: "maxConnections=5000, http2MaxRequests=50000 to support ClickHouse fan-out"
+spec:
+  host: analytics.logisticos-data.svc.cluster.local
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        # 5x standard limit — ClickHouse query fan-out requires many TCP connections
+        maxConnections: 5000
+        connectTimeout: 10s
+        tcpKeepalive:
+          time: 7200s
+          interval: 75s
+          probes: 10
+      http:
+        # 5x standard — concurrent BI dashboard queries from multiple tenants
+        http1MaxPendingRequests: 5000
+        http2MaxRequests: 50000
+        maxRequestsPerConnection: 5000
+        maxRetries: 5
+        idleTimeout: 120s
+        h2UpgradePolicy: UPGRADE
+    outlierDetection:
+      consecutive5xxErrors: 5
+      consecutiveGatewayErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+      splitExternalLocalOriginErrors: true
+    tls:
+      mode: ISTIO_MUTUAL
+  subsets:
+    - name: stable
+      labels:
+        version: stable
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+    - name: canary
+      labels:
+        version: canary
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+
+---
+# =============================================================================
+# LOGISTICOS-AI NAMESPACE
+# =============================================================================
+
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: ai-layer-dr
+  namespace: logisticos-ai
+  labels:
+    app: ai-layer
+    component: destination-rule
+    managed-by: istio
+  annotations:
+    logisticos.io/description: "Traffic policy for ai-layer service"
+    logisticos.io/security-note: "Only accepts inbound from logisticos-core — see AuthorizationPolicy in mtls.yaml"
+spec:
+  host: ai-layer.logisticos-ai.svc.cluster.local
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 1000
+        connectTimeout: 10s
+        tcpKeepalive:
+          time: 7200s
+          interval: 75s
+          probes: 10
+      http:
+        http1MaxPendingRequests: 1000
+        http2MaxRequests: 10000
+        maxRequestsPerConnection: 1000
+        maxRetries: 3
+        # Longer idle timeout — agent sessions are long-lived
+        idleTimeout: 300s
+        h2UpgradePolicy: UPGRADE
+    outlierDetection:
+      consecutive5xxErrors: 5
+      consecutiveGatewayErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+      splitExternalLocalOriginErrors: true
+    tls:
+      mode: ISTIO_MUTUAL
+  subsets:
+    - name: stable
+      labels:
+        version: stable
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL
+    - name: canary
+      labels:
+        version: canary
+      trafficPolicy:
+        loadBalancer:
+          simple: LEAST_CONN
+        tls:
+          mode: ISTIO_MUTUAL

@@ -1,0 +1,522 @@
+openapi: "3.1.0"
+info:
+  title: LogisticOS Unified Engagement Engine API
+  version: "1.0.0"
+  description: |
+    Multi-channel notification dispatch, template management, and campaign visibility
+    for LogisticOS. Supports WhatsApp, SMS, Email, and Push notification channels.
+
+    Template bodies use Handlebars-style interpolation: `{{variable_name}}`.
+
+    All mutating endpoints require `engagement:send` or `engagement:templates:write`.
+    Read operations require `engagement:read`.
+  contact:
+    name: LogisticOS Engineering
+    email: engineering@logisticos.io
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.logisticos.io/v1
+    description: Production
+  - url: https://staging-api.logisticos.io/v1
+    description: Staging
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Notifications
+    description: Send and track individual notifications
+  - name: Templates
+    description: Notification template management
+  - name: Campaigns
+    description: Campaign visibility (read-only — management via marketing service)
+
+paths:
+  /notifications:
+    post:
+      operationId: sendNotification
+      tags: [Notifications]
+      summary: Send a notification to a customer
+      description: |
+        Dispatches a notification to a customer via the specified channel using a template.
+        Template variables are merged into the body. Returns immediately with a notification
+        ID for status tracking.
+
+        Channel preference: prefer `whatsapp` for Philippine customers (highest open rate).
+        Fall back to `sms` if WhatsApp is unavailable.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendNotificationRequest"
+            examples:
+              delivery_update:
+                summary: Send delivery out-for-delivery notification via WhatsApp
+                value:
+                  customer_id: "c1u2s3t4-o5m6-7890-abcd-ef1234567890"
+                  channel: "whatsapp"
+                  template_id: "t1e2m3p4-l5a6-7890-abcd-ef1234567890"
+                  template_vars:
+                    recipient_name: "Maria Santos"
+                    tracking_number: "LOS-2026-0012345"
+                    driver_name: "Jose dela Cruz"
+                    eta: "2:00 PM - 5:00 PM"
+                  priority: "high"
+      responses:
+        "201":
+          description: Notification queued for delivery
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationRecord"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          description: Unknown template, invalid channel, or missing variables
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    get:
+      operationId: listNotifications
+      tags: [Notifications]
+      summary: List notification delivery logs
+      parameters:
+        - name: customer_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+          description: Filter by customer
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/NotificationStatus"
+          description: Filter by delivery status
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: Notification log entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  notifications:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/NotificationRecord"
+                  count:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /notifications/{id}:
+    get:
+      operationId: getNotification
+      tags: [Notifications]
+      summary: Get notification status by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Notification detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationRecord"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /templates:
+    get:
+      operationId: listTemplates
+      tags: [Templates]
+      summary: List notification templates
+      parameters:
+        - name: channel
+          in: query
+          schema:
+            $ref: "#/components/schemas/NotificationChannel"
+          description: Filter by channel
+        - name: is_active
+          in: query
+          schema:
+            type: boolean
+          description: Filter active/inactive templates
+      responses:
+        "200":
+          description: Templates
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  templates:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/NotificationTemplate"
+                  count:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    post:
+      operationId: createTemplate
+      tags: [Templates]
+      summary: Create a notification template
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTemplateRequest"
+            examples:
+              whatsapp_delivery:
+                summary: WhatsApp out-for-delivery template
+                value:
+                  name: "out_for_delivery_whatsapp"
+                  channel: "whatsapp"
+                  body_template: "Hi {{recipient_name}}! 📦 Your parcel ({{tracking_number}}) is out for delivery today. Driver: {{driver_name}}. ETA: {{eta}}. Track: https://track.logisticos.io/{{tracking_number}}"
+                  variables: ["recipient_name", "tracking_number", "driver_name", "eta"]
+      responses:
+        "201":
+          description: Template created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationTemplate"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /templates/{id}:
+    get:
+      operationId: getTemplate
+      tags: [Templates]
+      summary: Get template by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Template detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationTemplate"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    put:
+      operationId: updateTemplate
+      tags: [Templates]
+      summary: Update a notification template
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTemplateRequest"
+      responses:
+        "200":
+          description: Template updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationTemplate"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /campaigns:
+    get:
+      operationId: listCampaignsEngagement
+      tags: [Campaigns]
+      summary: List campaigns (read-only view)
+      description: Returns campaigns for the tenant. For creating/managing campaigns, use the Marketing API.
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Campaign list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  campaigns:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CampaignSummary"
+                  count:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    BadRequest:
+      description: Malformed request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Missing or invalid JWT
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    UnprocessableEntity:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    NotificationChannel:
+      type: string
+      enum: [whatsapp, sms, email, push]
+
+    NotificationStatus:
+      type: string
+      enum: [queued, sent, delivered, failed, bounced]
+
+    NotificationPriority:
+      type: string
+      enum: [high, normal, low]
+
+    SendNotificationRequest:
+      type: object
+      properties:
+        customer_id:
+          type: string
+          format: uuid
+        channel:
+          $ref: "#/components/schemas/NotificationChannel"
+        template_id:
+          type: string
+          format: uuid
+        template_vars:
+          type: object
+          additionalProperties:
+            type: string
+          description: Variables to substitute into the template body
+        priority:
+          $ref: "#/components/schemas/NotificationPriority"
+          default: normal
+      required: [customer_id, channel, template_id]
+
+    NotificationRecord:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        customer_id:
+          type: string
+          format: uuid
+        channel:
+          $ref: "#/components/schemas/NotificationChannel"
+        template_id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/NotificationStatus"
+        priority:
+          $ref: "#/components/schemas/NotificationPriority"
+        sent_at:
+          type: string
+          format: date-time
+          nullable: true
+        delivered_at:
+          type: string
+          format: date-time
+          nullable: true
+        failure_reason:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+      required: [id, customer_id, channel, template_id, status, priority, created_at]
+
+    NotificationTemplate:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: null for platform-wide templates
+        name:
+          type: string
+          example: out_for_delivery_whatsapp
+        channel:
+          $ref: "#/components/schemas/NotificationChannel"
+        subject:
+          type: string
+          nullable: true
+          description: Email subject line (email channel only)
+        body_template:
+          type: string
+          description: Handlebars-style template body
+          example: "Hi {{recipient_name}}! Your parcel {{tracking_number}} is out for delivery."
+        variables:
+          type: array
+          items:
+            type: string
+          description: Required variable names
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+      required: [id, name, channel, body_template, variables, is_active, created_at]
+
+    CreateTemplateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        channel:
+          $ref: "#/components/schemas/NotificationChannel"
+        subject:
+          type: string
+          nullable: true
+        body_template:
+          type: string
+        variables:
+          type: array
+          items:
+            type: string
+      required: [name, channel, body_template, variables]
+
+    UpdateTemplateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          nullable: true
+        subject:
+          type: string
+          nullable: true
+        body_template:
+          type: string
+          nullable: true
+        variables:
+          type: array
+          items:
+            type: string
+          nullable: true
+        is_active:
+          type: boolean
+          nullable: true
+
+    CampaignSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        status:
+          type: string
+          enum: [draft, scheduled, active, paused, completed, cancelled]
+        channel:
+          $ref: "#/components/schemas/NotificationChannel"
+        audience_size:
+          type: integer
+          nullable: true
+        sent_count:
+          type: integer
+          nullable: true
+        scheduled_at:
+          type: string
+          format: date-time
+          nullable: true
+      required: [id, name, status, channel]
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]

@@ -1,0 +1,16 @@
+[package]
+name        = "logisticos-tracing"
+description = "OpenTelemetry + tracing-subscriber initialisation for all services"
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace             = true
+tracing.workspace            = true
+tracing-subscriber.workspace = true
+opentelemetry.workspace      = true
+opentelemetry-otlp.workspace = true
+tracing-opentelemetry.workspace = true
+opentelemetry_sdk = { version = "0.22", features = ["rt-tokio"] }

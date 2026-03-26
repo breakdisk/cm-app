@@ -1,0 +1,215 @@
+<h2>Driver App — Document Submission</h2>
+<p class="subtitle">Profile screen expands with a "Documents" section. Tap any doc to upload or view status.</p>
+
+<style>
+* { box-sizing: border-box; }
+.phones { display: flex; gap: 24px; justify-content: center; flex-wrap: wrap; margin-top: 16px; }
+.phone { width: 260px; border-radius: 28px; background: #050810; border: 2px solid rgba(255,255,255,0.12); overflow: hidden; padding: 0; box-shadow: 0 0 40px rgba(0,0,0,0.5); }
+.phone-bar { height: 28px; background: #050810; display: flex; align-items: center; justify-content: center; }
+.phone-notch { width: 80px; height: 16px; background: #111; border-radius: 0 0 12px 12px; }
+.phone-screen { padding: 0 0 20px; }
+.phone-label { text-align: center; font-size: 10px; color: rgba(255,255,255,0.3); text-transform: uppercase; letter-spacing: 1px; padding: 8px 0 4px; }
+
+/* Screen A: compliance status in Profile */
+.profile-card { margin: 8px; border-radius: 12px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); padding: 12px; display: flex; align-items: center; gap: 10px; }
+.profile-av { width: 40px; height: 40px; border-radius: 50%; background: rgba(0,229,255,0.15); border: 2px solid rgba(0,229,255,0.3); display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; color: #00E5FF; flex-shrink: 0; }
+.profile-name { font-size: 13px; font-weight: 700; color: #fff; }
+.profile-id   { font-size: 9px; font-family: monospace; color: rgba(255,255,255,0.3); margin-top: 2px; }
+.comp-banner  { margin: 0 8px 8px; border-radius: 10px; padding: 10px 12px; }
+.comp-banner.warn   { background: rgba(255,171,0,0.08);  border: 1px solid rgba(255,171,0,0.25); }
+.comp-banner.ok     { background: rgba(0,255,136,0.07);  border: 1px solid rgba(0,255,136,0.2); }
+.comp-banner.review { background: rgba(0,229,255,0.07);  border: 1px solid rgba(0,229,255,0.2); }
+.comp-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 4px; }
+.comp-sub   { font-size: 10px; line-height: 1.4; }
+.comp-banner.warn   .comp-title { color: #FFAB00; }
+.comp-banner.warn   .comp-sub   { color: rgba(255,171,0,0.6); }
+.comp-banner.ok     .comp-title { color: #00FF88; }
+.comp-banner.ok     .comp-sub   { color: rgba(0,255,136,0.5); }
+.comp-banner.review .comp-title { color: #00E5FF; }
+.comp-banner.review .comp-sub   { color: rgba(0,229,255,0.5); }
+.section-lbl { font-size: 9px; text-transform: uppercase; letter-spacing: 1px; color: rgba(255,255,255,0.25); padding: 6px 12px 4px; }
+.doc-row-item { display: flex; align-items: center; gap: 10px; margin: 0 8px 6px; padding: 10px 12px; border-radius: 10px; border: 1px solid; }
+.doc-row-item.pending  { background: rgba(255,171,0,0.06);  border-color: rgba(255,171,0,0.2); }
+.doc-row-item.ok       { background: rgba(0,255,136,0.05);  border-color: rgba(0,255,136,0.15); }
+.doc-row-item.missing  { background: rgba(255,59,92,0.06);  border-color: rgba(255,59,92,0.2); }
+.doc-row-item.review   { background: rgba(0,229,255,0.05);  border-color: rgba(0,229,255,0.15); }
+.doc-icon { width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }
+.doc-icon.p { background: rgba(255,171,0,0.12); }
+.doc-icon.ok { background: rgba(0,255,136,0.10); }
+.doc-icon.m { background: rgba(255,59,92,0.10); }
+.doc-icon.r { background: rgba(0,229,255,0.10); }
+.doc-row-name { font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.8); }
+.doc-row-sub  { font-size: 9px; font-family: monospace; color: rgba(255,255,255,0.3); margin-top: 2px; }
+.doc-row-chevron { margin-left: auto; font-size: 12px; color: rgba(255,255,255,0.2); }
+.dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.dot.amber { background: #FFAB00; }
+.dot.green { background: #00FF88; }
+.dot.red   { background: #FF3B5C; }
+.dot.cyan  { background: #00E5FF; }
+
+/* Screen B: Upload flow */
+.upload-header { padding: 10px 12px 4px; display: flex; align-items: center; gap: 8px; }
+.back-btn { font-size: 12px; color: rgba(255,255,255,0.4); }
+.upload-title { font-size: 13px; font-weight: 700; color: #fff; }
+.upload-sub   { font-size: 9px; font-family: monospace; color: rgba(255,255,255,0.3); }
+.camera-area  { margin: 8px; border-radius: 12px; height: 120px; background: rgba(255,255,255,0.03); border: 1.5px dashed rgba(255,255,255,0.15); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; }
+.cam-icon { font-size: 28px; opacity: 0.3; }
+.cam-hint { font-size: 10px; color: rgba(255,255,255,0.25); }
+.cam-btn  { font-size: 10px; padding: 5px 14px; border-radius: 20px; background: rgba(168,85,247,0.15); border: 1px solid rgba(168,85,247,0.35); color: #A855F7; }
+.form-field { margin: 0 8px 6px; }
+.form-lbl   { font-size: 9px; text-transform: uppercase; letter-spacing: 1px; color: rgba(255,255,255,0.3); margin-bottom: 4px; }
+.form-input { width: 100%; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 8px 10px; font-size: 11px; color: rgba(255,255,255,0.7); font-family: monospace; }
+.form-input.filled { border-color: rgba(0,229,255,0.25); color: #00E5FF; background: rgba(0,229,255,0.04); }
+.submit-btn { margin: 8px; width: calc(100% - 16px); padding: 11px; border-radius: 10px; font-size: 12px; font-weight: 700; background: linear-gradient(135deg, rgba(168,85,247,0.3), rgba(0,229,255,0.2)); border: 1px solid rgba(168,85,247,0.4); color: #fff; text-align: center; }
+
+/* Screen C: Review pending state */
+.review-card { margin: 8px; border-radius: 12px; background: rgba(0,229,255,0.06); border: 1px solid rgba(0,229,255,0.2); padding: 14px 12px; text-align: center; }
+.review-icon { font-size: 32px; margin-bottom: 8px; }
+.review-title { font-size: 13px; font-weight: 700; color: #00E5FF; margin-bottom: 4px; }
+.review-sub   { font-size: 10px; color: rgba(0,229,255,0.5); line-height: 1.5; }
+.timeline { margin: 8px; }
+.tl-item { display: flex; gap: 10px; padding: 6px 0; }
+.tl-dot-col { display: flex; flex-direction: column; align-items: center; width: 12px; flex-shrink: 0; margin-top: 4px; }
+.tl-d { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.tl-line { flex: 1; width: 1px; background: rgba(255,255,255,0.07); margin: 2px 0; }
+.tl-content { flex: 1; padding-bottom: 8px; }
+.tl-title { font-size: 11px; font-weight: 600; }
+.tl-sub   { font-size: 9px; font-family: monospace; color: rgba(255,255,255,0.3); margin-top: 2px; }
+</style>
+
+<div class="phones">
+
+  <!-- Phone A: Document checklist in Profile -->
+  <div class="phone">
+    <div class="phone-bar"><div class="phone-notch"></div></div>
+    <div class="phone-screen">
+      <div class="phone-label">Screen A — Profile + Compliance Status</div>
+      <div class="profile-card">
+        <div class="profile-av">CR</div>
+        <div>
+          <div class="profile-name">Carlo Reyes</div>
+          <div class="profile-id">DRV-0045 · Sedan · DXB-A12345</div>
+        </div>
+      </div>
+
+      <div class="comp-banner warn">
+        <div class="comp-title">⚠ Action Required</div>
+        <div class="comp-sub">2 documents need upload before you can receive tasks</div>
+      </div>
+
+      <div class="section-lbl">Required Documents</div>
+
+      <div class="doc-row-item missing">
+        <div class="doc-icon m">🪪</div>
+        <div>
+          <div class="doc-row-name">UAE Driving License</div>
+          <div class="doc-row-sub">Not submitted · Required</div>
+        </div>
+        <div class="dot red"></div>
+        <div class="doc-row-chevron">›</div>
+      </div>
+
+      <div class="doc-row-item missing">
+        <div class="doc-icon m">🪪</div>
+        <div>
+          <div class="doc-row-name">Emirates ID</div>
+          <div class="doc-row-sub">Not submitted · Required</div>
+        </div>
+        <div class="dot red"></div>
+        <div class="doc-row-chevron">›</div>
+      </div>
+
+      <div class="doc-row-item ok">
+        <div class="doc-icon ok">🚗</div>
+        <div>
+          <div class="doc-row-name">Vehicle Registration</div>
+          <div class="doc-row-sub">Approved · Exp Mar 2026</div>
+        </div>
+        <div class="dot green"></div>
+        <div class="doc-row-chevron">›</div>
+      </div>
+
+      <div class="doc-row-item ok">
+        <div class="doc-icon ok">📋</div>
+        <div>
+          <div class="doc-row-name">Third-Party Insurance</div>
+          <div class="doc-row-sub">Approved · Exp Dec 2025</div>
+        </div>
+        <div class="dot green"></div>
+        <div class="doc-row-chevron">›</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Phone B: Upload flow -->
+  <div class="phone">
+    <div class="phone-bar"><div class="phone-notch"></div></div>
+    <div class="phone-screen">
+      <div class="phone-label">Screen B — Upload a Document</div>
+      <div class="upload-header">
+        <span class="back-btn">‹</span>
+        <div>
+          <div class="upload-title">UAE Driving License</div>
+          <div class="upload-sub">Required · Has expiry</div>
+        </div>
+      </div>
+
+      <div class="camera-area">
+        <div class="cam-icon">📷</div>
+        <div class="cam-hint">Tap to photograph your document</div>
+        <div class="cam-btn">Open Camera</div>
+      </div>
+
+      <div class="form-field">
+        <div class="form-lbl">License Number</div>
+        <div class="form-input filled">DL · 784-1990-1234567-8</div>
+      </div>
+      <div class="form-field">
+        <div class="form-lbl">Issue Date</div>
+        <div class="form-input">Select date…</div>
+      </div>
+      <div class="form-field">
+        <div class="form-lbl">Expiry Date</div>
+        <div class="form-input filled">15 Mar 2027</div>
+      </div>
+
+      <div class="submit-btn">Submit for Review →</div>
+    </div>
+  </div>
+
+  <!-- Phone C: Under review state + timeline -->
+  <div class="phone">
+    <div class="phone-bar"><div class="phone-notch"></div></div>
+    <div class="phone-screen">
+      <div class="phone-label">Screen C — Submitted, Awaiting Review</div>
+
+      <div class="review-card">
+        <div class="review-icon">🔍</div>
+        <div class="review-title">Under Review</div>
+        <div class="review-sub">Your UAE Driving License has been received. Our compliance team will verify it within 24 hours.</div>
+      </div>
+
+      <div class="section-lbl">Submission Timeline</div>
+      <div class="timeline">
+        <div class="tl-item">
+          <div class="tl-dot-col"><div class="tl-d" style="background:#00FF88"></div><div class="tl-line"></div></div>
+          <div class="tl-content"><div class="tl-title" style="color:#00FF88">Submitted</div><div class="tl-sub">Today · 2:14 PM</div></div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot-col"><div class="tl-d" style="background:#00E5FF"></div><div class="tl-line"></div></div>
+          <div class="tl-content"><div class="tl-title" style="color:#00E5FF">In Review Queue</div><div class="tl-sub">Assigned to compliance team</div></div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot-col"><div class="tl-d" style="background:rgba(255,255,255,0.15)"></div><div class="tl-line"></div></div>
+          <div class="tl-content"><div class="tl-title" style="color:rgba(255,255,255,0.3)">Decision</div><div class="tl-sub">Pending · Est. within 24h</div></div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot-col"><div class="tl-d" style="background:rgba(255,255,255,0.15)"></div></div>
+          <div class="tl-content"><div class="tl-title" style="color:rgba(255,255,255,0.3)">Active & Assignable</div><div class="tl-sub">All docs verified</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</content>

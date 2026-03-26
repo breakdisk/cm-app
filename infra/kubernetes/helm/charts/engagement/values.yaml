@@ -1,0 +1,114 @@
+# Helm values override for the Unified Engagement Engine service.
+# High-throughput notification dispatch: WhatsApp, SMS, Email, Push.
+# hpa.maxReplicas=30 reflects burst demand from campaign blasts and
+# delivery event triggers that fan out notifications at high volume.
+# Ref: services/engagement — Rust + Kafka + Redis
+
+image:
+  repository: ghcr.io/logisticos/engagement
+  pullPolicy: IfNotPresent
+  tag: ""
+
+replicaCount: 3
+
+service:
+  type: ClusterIP
+  port: 8003
+  grpcPort: 9003
+
+env:
+  - name: SERVICE_NAME
+    value: engagement
+  - name: SERVICE_PORT
+    value: "8003"
+  - name: GRPC_PORT
+    value: "9003"
+  - name: LOG_LEVEL
+    value: info
+  - name: RUST_LOG
+    value: "engagement=info,tower_http=info"
+  # Kafka consumer group for inbound notification trigger events.
+  - name: KAFKA_CONSUMER_GROUP
+    value: engagement-service
+  # Number of Tokio workers per replica for high-concurrency channel dispatch.
+  - name: WORKER_THREADS
+    value: "8"
+  # Max concurrent outbound channel requests per replica.
+  - name: MAX_CONCURRENT_SENDS
+    value: "500"
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 150m
+    memory: 256Mi
+
+hpa:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 30
+  targetCPUUtilizationPercentage: 60
+  targetMemoryUtilizationPercentage: 75
+
+pdb:
+  enabled: true
+  minAvailable: 2
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8003
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8003
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  failureThreshold: 3
+
+podAnnotations:
+  vault.hashicorp.com/agent-inject: "true"
+  vault.hashicorp.com/role: "engagement"
+  vault.hashicorp.com/agent-inject-secret-config: "secret/data/logisticos/engagement"
+  vault.hashicorp.com/agent-inject-template-config: |
+    {{- with secret "secret/data/logisticos/engagement" -}}
+    export DATABASE_URL="{{ .Data.data.database_url }}"
+    export REDIS_URL="{{ .Data.data.redis_url }}"
+    export KAFKA_BROKERS="{{ .Data.data.kafka_brokers }}"
+    export TWILIO_ACCOUNT_SID="{{ .Data.data.twilio_account_sid }}"
+    export TWILIO_AUTH_TOKEN="{{ .Data.data.twilio_auth_token }}"
+    export WHATSAPP_API_TOKEN="{{ .Data.data.whatsapp_api_token }}"
+    export SENDGRID_API_KEY="{{ .Data.data.sendgrid_api_key }}"
+    export FCM_SERVICE_ACCOUNT_JSON="{{ .Data.data.fcm_service_account_json }}"
+    {{- end -}}
+
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    path: /metrics
+    interval: 10s
+
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        app: engagement
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app: engagement
+          topologyKey: kubernetes.io/hostname

@@ -1,0 +1,179 @@
+# Helm values override for the AI Intelligence Layer service.
+# CPU 2000m and memory 2Gi limits support ONNX model inference (dispatch
+# scoring, delay prediction, CLV models) running in-process alongside the
+# Python LangGraph agent runtime and Claude API orchestration.
+# Ref: services/ai-layer — Python + ONNX + Rust FFI; LangGraph + Claude API
+
+image:
+  repository: ghcr.io/logisticos/ai-layer
+  pullPolicy: IfNotPresent
+  tag: ""
+
+replicaCount: 2
+
+service:
+  type: ClusterIP
+  port: 8016
+  grpcPort: 9016
+  # MCP SSE endpoint port (Model Context Protocol server-sent events).
+  mcpPort: 3000
+
+env:
+  - name: SERVICE_NAME
+    value: ai-layer
+  - name: SERVICE_PORT
+    value: "8016"
+  - name: GRPC_PORT
+    value: "9016"
+  - name: MCP_PORT
+    value: "3000"
+  - name: LOG_LEVEL
+    value: info
+  # Python asyncio event loop worker count.
+  - name: UVICORN_WORKERS
+    value: "4"
+  # ONNX inference thread pool size.
+  - name: ONNX_INTRA_OP_THREADS
+    value: "4"
+  - name: ONNX_INTER_OP_THREADS
+    value: "2"
+  # LangGraph checkpoint backend: "memory" | "redis" | "postgres"
+  - name: LANGGRAPH_CHECKPOINT_BACKEND
+    value: redis
+  # Agent execution timeout in seconds.
+  - name: AGENT_EXECUTION_TIMEOUT_SECS
+    value: "120"
+  # Maximum LangGraph recursion depth (prevents runaway agent loops).
+  - name: LANGGRAPH_MAX_RECURSION
+    value: "50"
+  # Claude API model for agent reasoning.
+  - name: CLAUDE_MODEL
+    value: claude-opus-4-5
+  # OpenAI model for embeddings.
+  - name: OPENAI_EMBEDDING_MODEL
+    value: text-embedding-3-small
+  # ONNX model store path (mounted from a PVC or init container).
+  - name: ONNX_MODEL_DIR
+    value: /app/models
+  # Feature flag: enable AI dispatch scoring or fall back to rule-based.
+  - name: FEATURE_AI_DISPATCH_SCORING
+    value: "true"
+  - name: FEATURE_AI_DEMAND_FORECAST
+    value: "true"
+  - name: FEATURE_AI_CUSTOMER_SUPPORT
+    value: "true"
+  - name: FEATURE_AI_CAMPAIGN_COPY
+    value: "true"
+
+# Extra environment variables sourced from Kubernetes Secrets.
+# ANTHROPIC_API_KEY and OPENAI_API_KEY are injected from named Secrets
+# (managed by the Vault secrets operator sync) rather than raw env literals
+# to ensure they never appear in Helm release manifests or pod specs.
+extraEnv:
+  - name: ANTHROPIC_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: ai-layer-api-keys
+        key: anthropic_api_key
+  - name: OPENAI_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: ai-layer-api-keys
+        key: openai_api_key
+
+resources:
+  # ONNX inference + LangGraph agent orchestration require significant compute.
+  # 2Gi memory accommodates multiple loaded ONNX models (dispatch, CLV, fraud)
+  # alongside the Python interpreter and LangGraph state graphs.
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 15
+  targetCPUUtilizationPercentage: 65
+  targetMemoryUtilizationPercentage: 75
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+# Volume for ONNX model artefacts — populated by an init container that
+# pulls the latest models from object storage at startup.
+volumes:
+  - name: onnx-models
+    emptyDir: {}
+
+volumeMounts:
+  - name: onnx-models
+    mountPath: /app/models
+
+initContainers:
+  - name: model-sync
+    image: ghcr.io/logisticos/model-sync:latest
+    env:
+      - name: MODEL_STORE_BUCKET
+        value: logisticos-models
+      - name: MODEL_DEST_DIR
+        value: /app/models
+    volumeMounts:
+      - name: onnx-models
+        mountPath: /app/models
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8016
+  # Allow time for Python runtime + ONNX model loading on first start.
+  initialDelaySeconds: 30
+  periodSeconds: 20
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8016
+  initialDelaySeconds: 20
+  periodSeconds: 15
+  failureThreshold: 3
+
+# Vault injects service-to-service credentials and infrastructure secrets.
+# API keys for external AI providers come from the extraEnv Secret references
+# above (managed via the Vault secrets operator, not inline agent templates).
+podAnnotations:
+  vault.hashicorp.com/agent-inject: "true"
+  vault.hashicorp.com/role: "ai-layer"
+  vault.hashicorp.com/agent-inject-secret-config: "secret/data/logisticos/ai-layer"
+  vault.hashicorp.com/agent-inject-template-config: |
+    {{- with secret "secret/data/logisticos/ai-layer" -}}
+    export KAFKA_BROKERS="{{ .Data.data.kafka_brokers }}"
+    export REDIS_URL="{{ .Data.data.redis_url }}"
+    export DATABASE_URL="{{ .Data.data.database_url }}"
+    export MODEL_STORE_S3_ACCESS_KEY="{{ .Data.data.model_store_s3_access_key }}"
+    export MODEL_STORE_S3_SECRET="{{ .Data.data.model_store_s3_secret }}"
+    export MODEL_STORE_BUCKET="{{ .Data.data.model_store_bucket }}"
+    {{- end -}}
+
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    path: /metrics
+    interval: 30s
+
+# AI pods are compute-intensive; prefer spreading across nodes to avoid
+# resource contention and ensure inference latency is consistent.
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app: ai-layer
+          topologyKey: kubernetes.io/hostname

@@ -1,0 +1,811 @@
+# ============================================================
+# LogisticOS — Production Deployment Pipeline
+# ============================================================
+# Triggers:
+#   - Push to main (after staging CI passes)
+#   - Manual workflow_dispatch with optional environment override
+#
+# Flow:
+#   validate → build-and-push → security-scan → deploy-production
+#                                                    ↓
+#                                           integration-tests → notify
+# ============================================================
+
+name: Deploy Production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment (production / staging)"
+        required: true
+        default: "production"
+        type: choice
+        options:
+          - production
+          - staging
+      services:
+        description: "Comma-separated list of services to deploy (leave blank for all)"
+        required: false
+        default: ""
+        type: string
+      canary_weight:
+        description: "Initial canary traffic percentage (1–50)"
+        required: false
+        default: "10"
+        type: string
+      skip_integration_tests:
+        description: "Skip post-deploy integration tests"
+        required: false
+        default: "false"
+        type: boolean
+
+# Prevent concurrent production deploys — queue them instead of cancelling
+concurrency:
+  group: deploy-production-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_ORG: logisticos
+  HELM_RELEASE_PREFIX: logisticos
+  HELM_CHART_PATH: infra/kubernetes/helm
+  K8S_NAMESPACE: logisticos-production
+  CANARY_STABLE_WEIGHT: 100
+  CANARY_PROMOTION_WAIT_SECONDS: 300  # 5 minutes
+
+jobs:
+  # ──────────────────────────────────────────────────────────────
+  # JOB 1: validate
+  # Runs clippy + tests on all services that changed relative to
+  # the previous production tag to catch regressions early.
+  # ──────────────────────────────────────────────────────────────
+  validate:
+    name: Validate (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: true
+      matrix:
+        service:
+          - api-gateway
+          - identity
+          - cdp
+          - engagement
+          - order-intake
+          - dispatch
+          - driver-ops
+          - delivery-experience
+          - fleet
+          - hub-ops
+          - carrier
+          - pod
+          - payments
+          - analytics
+          - marketing
+          - business-logic
+          - ai-layer
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Restore Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-${{ matrix.service }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-
+            ${{ runner.os }}-cargo-
+
+      - name: Run clippy (deny all warnings)
+        run: |
+          cargo clippy \
+            -p $(basename services/${{ matrix.service }}) \
+            --all-targets \
+            --all-features \
+            -- -D warnings
+        env:
+          SQLX_OFFLINE: "true"
+
+      - name: Run unit tests
+        run: |
+          cargo test \
+            -p $(basename services/${{ matrix.service }}) \
+            --lib \
+            --no-fail-fast
+        env:
+          SQLX_OFFLINE: "true"
+          RUST_LOG: "error"
+
+  # ──────────────────────────────────────────────────────────────
+  # JOB 2: build-and-push
+  # Builds Docker images for all 17 services in parallel and
+  # pushes to GHCR with both :sha and :latest tags.
+  # ──────────────────────────────────────────────────────────────
+  build-and-push:
+    name: Build & Push (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    needs: validate
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image_tag: ${{ github.sha }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: api-gateway
+            port: 8000
+          - service: identity
+            port: 8001
+          - service: cdp
+            port: 8002
+          - service: engagement
+            port: 8003
+          - service: order-intake
+            port: 8004
+          - service: dispatch
+            port: 8005
+          - service: driver-ops
+            port: 8006
+          - service: delivery-experience
+            port: 8007
+          - service: fleet
+            port: 8008
+          - service: hub-ops
+            port: 8009
+          - service: carrier
+            port: 8010
+          - service: pod
+            port: 8011
+          - service: payments
+            port: 8012
+          - service: analytics
+            port: 8013
+          - service: marketing
+            port: 8014
+          - service: business-logic
+            port: 8015
+          - service: ai-layer
+            port: 8016
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_ORG }}/${{ matrix.service }}
+          tags: |
+            type=sha,prefix=,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=production-{{date 'YYYYMMDD'}}-{{sha}}
+          labels: |
+            org.opencontainers.image.title=LogisticOS ${{ matrix.service }}
+            org.opencontainers.image.description=LogisticOS microservice: ${{ matrix.service }}
+            org.opencontainers.image.vendor=LogisticOS
+            logisticos.service=${{ matrix.service }}
+            logisticos.port=${{ matrix.port }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: services/${{ matrix.service }}
+          file: services/${{ matrix.service }}/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          cache-from: |
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_ORG }}/${{ matrix.service }}:buildcache
+          cache-to: |
+            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_ORG }}/${{ matrix.service }}:buildcache,mode=max
+          build-args: |
+            BUILD_SHA=${{ github.sha }}
+            BUILD_DATE=${{ github.event.repository.updated_at }}
+            SERVICE_PORT=${{ matrix.port }}
+
+  # ──────────────────────────────────────────────────────────────
+  # JOB 3: security-scan
+  # Runs Trivy vulnerability scanner on every built image.
+  # Fails the pipeline on any CRITICAL severity CVE.
+  # ──────────────────────────────────────────────────────────────
+  security-scan:
+    name: Security Scan (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    permissions:
+      contents: read
+      packages: read
+      security-events: write  # for SARIF upload to GitHub Security tab
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - api-gateway
+          - identity
+          - cdp
+          - engagement
+          - order-intake
+          - dispatch
+          - driver-ops
+          - delivery-experience
+          - fleet
+          - hub-ops
+          - carrier
+          - pod
+          - payments
+          - analytics
+          - marketing
+          - business-logic
+          - ai-layer
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_ORG }}/${{ matrix.service }}:${{ github.sha }}
+          format: sarif
+          output: trivy-${{ matrix.service }}.sarif
+          severity: CRITICAL,HIGH
+          exit-code: "1"          # Fail on CRITICAL
+          ignore-unfixed: true
+          vuln-type: os,library
+
+      - name: Upload Trivy SARIF report to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-${{ matrix.service }}.sarif
+          category: trivy-${{ matrix.service }}
+
+      - name: Run Trivy secrets scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_ORG }}/${{ matrix.service }}:${{ github.sha }}
+          scan-type: image
+          scanners: secret
+          format: table
+          exit-code: "1"
+
+  # ──────────────────────────────────────────────────────────────
+  # JOB 4: deploy-production
+  # Canary deployment via Istio VirtualService traffic splitting.
+  # Phase 1: route 10% (configurable) traffic to new pods.
+  # Phase 2: wait 5 min, validate metrics, promote to 100%.
+  # Uses GitHub environment "production" for approval gates.
+  # ──────────────────────────────────────────────────────────────
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs:
+      - build-and-push
+      - security-scan
+    environment:
+      name: ${{ github.event.inputs.environment || 'production' }}
+      url: https://api.logisticos.io/health
+    permissions:
+      contents: read
+      deployments: write
+
+    env:
+      TARGET_ENV: ${{ github.event.inputs.environment || 'production' }}
+      CANARY_WEIGHT: ${{ github.event.inputs.canary_weight || '10' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: "v1.29.0"
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: "v3.14.0"
+
+      - name: Configure kubectl credentials
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_PRODUCTION }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+          kubectl cluster-info
+
+      - name: Verify Istio is healthy
+        run: |
+          kubectl -n istio-system get pods --field-selector=status.phase!=Running \
+            -o jsonpath='{.items[*].metadata.name}' | \
+            xargs -r -I{} echo "WARNING: Istio pod {} is not running"
+          kubectl -n istio-system wait --for=condition=ready pod \
+            -l app=istiod --timeout=60s
+
+      - name: Determine services to deploy
+        id: services
+        run: |
+          INPUT_SERVICES="${{ github.event.inputs.services }}"
+          ALL_SERVICES="api-gateway identity cdp engagement order-intake dispatch driver-ops delivery-experience fleet hub-ops carrier pod payments analytics marketing business-logic ai-layer"
+          if [ -z "$INPUT_SERVICES" ]; then
+            echo "services=$ALL_SERVICES" >> "$GITHUB_OUTPUT"
+          else
+            echo "services=$INPUT_SERVICES" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Phase 1: Canary Deployment ──────────────────────────
+      - name: Phase 1 — Deploy canary pods (new version)
+        run: |
+          SERVICES="${{ steps.services.outputs.services }}"
+          IMAGE_TAG="${{ github.sha }}"
+          CANARY_WEIGHT="${{ env.CANARY_WEIGHT }}"
+          STABLE_WEIGHT=$((100 - CANARY_WEIGHT))
+
+          for SERVICE in $SERVICES; do
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "Deploying canary for: $SERVICE (weight=$CANARY_WEIGHT%)"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+            # Deploy canary subset (new image, subset=canary label)
+            helm upgrade --install \
+              "${HELM_RELEASE_PREFIX}-${SERVICE}-canary" \
+              "${{ env.HELM_CHART_PATH }}/logisticos-service" \
+              --namespace "${{ env.K8S_NAMESPACE }}" \
+              --create-namespace \
+              --set "service.name=${SERVICE}" \
+              --set "image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_ORG }}/${SERVICE}" \
+              --set "image.tag=${IMAGE_TAG}" \
+              --set "deployment.subset=canary" \
+              --set "deployment.replicaCount=1" \
+              --set "istio.enabled=true" \
+              --values "${{ env.HELM_CHART_PATH }}/logisticos-service/values-production.yaml" \
+              --wait \
+              --timeout 5m \
+              --atomic
+
+            # Patch Istio VirtualService to split traffic
+            kubectl patch virtualservice "${SERVICE}" \
+              --namespace "${{ env.K8S_NAMESPACE }}" \
+              --type=merge \
+              --patch "{
+                \"spec\": {
+                  \"http\": [{
+                    \"route\": [
+                      {
+                        \"destination\": {
+                          \"host\": \"${SERVICE}\",
+                          \"subset\": \"stable\"
+                        },
+                        \"weight\": ${STABLE_WEIGHT}
+                      },
+                      {
+                        \"destination\": {
+                          \"host\": \"${SERVICE}\",
+                          \"subset\": \"canary\"
+                        },
+                        \"weight\": ${CANARY_WEIGHT}
+                      }
+                    ]
+                  }]
+                }
+              }" || \
+            kubectl apply -f - <<EOF
+          apiVersion: networking.istio.io/v1beta1
+          kind: VirtualService
+          metadata:
+            name: ${SERVICE}
+            namespace: ${{ env.K8S_NAMESPACE }}
+          spec:
+            hosts:
+              - ${SERVICE}
+            http:
+              - route:
+                  - destination:
+                      host: ${SERVICE}
+                      subset: stable
+                    weight: ${STABLE_WEIGHT}
+                  - destination:
+                      host: ${SERVICE}
+                      subset: canary
+                    weight: ${CANARY_WEIGHT}
+          EOF
+
+            echo "Canary deployed for ${SERVICE}: ${CANARY_WEIGHT}% traffic"
+          done
+
+      # ── Canary Health Gate ──────────────────────────────────
+      - name: Wait for canary stabilisation (${{ env.CANARY_PROMOTION_WAIT_SECONDS }}s)
+        run: |
+          echo "Waiting ${{ env.CANARY_PROMOTION_WAIT_SECONDS }} seconds for canary to stabilise..."
+          echo "Monitor: https://grafana.logisticos.io/d/canary-analysis"
+          sleep ${{ env.CANARY_PROMOTION_WAIT_SECONDS }}
+
+      - name: Validate canary error rates via Prometheus
+        run: |
+          SERVICES="${{ steps.services.outputs.services }}"
+          PROM_URL="${{ secrets.PROMETHEUS_URL }}"
+          FAILED=""
+
+          for SERVICE in $SERVICES; do
+            # Query 5xx rate for canary subset over last 5 min
+            ERROR_RATE=$(curl -sf \
+              "${PROM_URL}/api/v1/query" \
+              --data-urlencode "query=rate(istio_requests_total{destination_service_name=\"${SERVICE}\",destination_version=\"canary\",response_code=~\"5..\"}[5m]) / rate(istio_requests_total{destination_service_name=\"${SERVICE}\",destination_version=\"canary\"}[5m]) * 100" \
+              | jq -r '.data.result[0].value[1] // "0"' 2>/dev/null || echo "0")
+
+            echo "Service: ${SERVICE} | Canary 5xx rate: ${ERROR_RATE}%"
+
+            # Fail if error rate > 5%
+            if (( $(echo "$ERROR_RATE > 5" | bc -l 2>/dev/null || echo 0) )); then
+              echo "ERROR: ${SERVICE} canary error rate ${ERROR_RATE}% exceeds 5% threshold"
+              FAILED="${FAILED} ${SERVICE}"
+            fi
+          done
+
+          if [ -n "$FAILED" ]; then
+            echo "Canary validation failed for services:${FAILED}"
+            echo "Initiating automatic rollback..."
+            exit 1
+          fi
+
+          echo "All canary services within error rate thresholds. Proceeding to promotion."
+
+      # ── Phase 2: Promote Canary to Stable ──────────────────
+      - name: Phase 2 — Promote canary to 100% (stable)
+        run: |
+          SERVICES="${{ steps.services.outputs.services }}"
+          IMAGE_TAG="${{ github.sha }}"
+
+          for SERVICE in $SERVICES; do
+            echo "Promoting $SERVICE to stable (100% traffic)..."
+
+            # Upgrade the stable release to the new image
+            helm upgrade --install \
+              "${HELM_RELEASE_PREFIX}-${SERVICE}" \
+              "${{ env.HELM_CHART_PATH }}/logisticos-service" \
+              --namespace "${{ env.K8S_NAMESPACE }}" \
+              --set "service.name=${SERVICE}" \
+              --set "image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_ORG }}/${SERVICE}" \
+              --set "image.tag=${IMAGE_TAG}" \
+              --set "deployment.subset=stable" \
+              --set "istio.enabled=true" \
+              --values "${{ env.HELM_CHART_PATH }}/logisticos-service/values-production.yaml" \
+              --wait \
+              --timeout 10m \
+              --atomic
+
+            # Route 100% traffic back to stable
+            kubectl patch virtualservice "${SERVICE}" \
+              --namespace "${{ env.K8S_NAMESPACE }}" \
+              --type=merge \
+              --patch "{
+                \"spec\": {
+                  \"http\": [{
+                    \"route\": [{
+                      \"destination\": {
+                        \"host\": \"${SERVICE}\",
+                        \"subset\": \"stable\"
+                      },
+                      \"weight\": 100
+                    }]
+                  }]
+                }
+              }"
+
+            # Tear down canary deployment
+            helm uninstall \
+              "${HELM_RELEASE_PREFIX}-${SERVICE}-canary" \
+              --namespace "${{ env.K8S_NAMESPACE }}" \
+              --ignore-not-found
+
+            echo "Promoted $SERVICE to stable."
+          done
+
+      - name: Verify all deployments are healthy
+        run: |
+          SERVICES="${{ steps.services.outputs.services }}"
+          for SERVICE in $SERVICES; do
+            kubectl rollout status deployment/"${SERVICE}" \
+              --namespace "${{ env.K8S_NAMESPACE }}" \
+              --timeout=5m
+          done
+
+      # ── Automatic Rollback on Failure ───────────────────────
+      - name: Rollback canary on failure
+        if: failure()
+        run: |
+          SERVICES="${{ steps.services.outputs.services }}"
+          echo "Rolling back canary deployments..."
+
+          for SERVICE in $SERVICES; do
+            # Restore 100% traffic to stable
+            kubectl patch virtualservice "${SERVICE}" \
+              --namespace "${{ env.K8S_NAMESPACE }}" \
+              --type=merge \
+              --patch "{
+                \"spec\": {
+                  \"http\": [{
+                    \"route\": [{
+                      \"destination\": {
+                        \"host\": \"${SERVICE}\",
+                        \"subset\": \"stable\"
+                      },
+                      \"weight\": 100
+                    }]
+                  }]
+                }
+              }" 2>/dev/null || true
+
+            # Remove canary deployment
+            helm uninstall \
+              "${HELM_RELEASE_PREFIX}-${SERVICE}-canary" \
+              --namespace "${{ env.K8S_NAMESPACE }}" \
+              --ignore-not-found 2>/dev/null || true
+
+            echo "Rolled back $SERVICE."
+          done
+
+          echo "Rollback complete. All traffic restored to stable."
+
+      - name: Tag production release in Git
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "production-${{ github.sha }}" \
+            -m "Production deploy: ${{ github.sha }} at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push origin "production-${{ github.sha }}"
+
+  # ──────────────────────────────────────────────────────────────
+  # JOB 5: integration-tests
+  # Runs k6 load + smoke tests against the production environment
+  # after a successful deployment to validate SLAs.
+  # ──────────────────────────────────────────────────────────────
+  integration-tests:
+    name: Post-Deploy Integration Tests
+    runs-on: ubuntu-latest
+    needs: deploy-production
+    if: ${{ github.event.inputs.skip_integration_tests != 'true' }}
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up k6
+        run: |
+          curl -fsSL https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
+            | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update -qq
+          sudo apt-get install -y k6
+
+      - name: Run k6 smoke test — API Gateway health checks
+        run: |
+          k6 run \
+            --env BASE_URL="https://api.logisticos.io" \
+            --env API_KEY="${{ secrets.INTEGRATION_TEST_API_KEY }}" \
+            infra/tests/k6/smoke-test.js \
+            --out json=k6-smoke-results.json
+        timeout-minutes: 5
+
+      - name: Run k6 load test — Order intake throughput
+        run: |
+          k6 run \
+            --env BASE_URL="https://api.logisticos.io" \
+            --env API_KEY="${{ secrets.INTEGRATION_TEST_API_KEY }}" \
+            --env TENANT_ID="${{ secrets.INTEGRATION_TEST_TENANT_ID }}" \
+            infra/tests/k6/load-test-order-intake.js \
+            --out json=k6-load-results.json
+        timeout-minutes: 10
+
+      - name: Run k6 load test — Dispatch assignment latency
+        run: |
+          k6 run \
+            --env BASE_URL="https://api.logisticos.io" \
+            --env API_KEY="${{ secrets.INTEGRATION_TEST_API_KEY }}" \
+            --env TENANT_ID="${{ secrets.INTEGRATION_TEST_TENANT_ID }}" \
+            infra/tests/k6/load-test-dispatch.js \
+            --out json=k6-dispatch-results.json
+        timeout-minutes: 10
+
+      - name: Validate SLA thresholds from k6 results
+        run: |
+          # Check P99 latency for operational endpoints (must be < 200ms)
+          GATEWAY_P99=$(jq '.metrics."http_req_duration".values.p99' k6-smoke-results.json 2>/dev/null || echo "0")
+          echo "API Gateway P99 latency: ${GATEWAY_P99}ms"
+
+          DISPATCH_P99=$(jq '.metrics."http_req_duration".values.p99' k6-dispatch-results.json 2>/dev/null || echo "0")
+          echo "Dispatch P99 latency: ${DISPATCH_P99}ms"
+
+          # Fail if gateway P99 > 200ms
+          if (( $(echo "$GATEWAY_P99 > 200" | bc -l 2>/dev/null || echo 0) )); then
+            echo "FAIL: API Gateway P99 ${GATEWAY_P99}ms exceeds 200ms SLA"
+            exit 1
+          fi
+
+          # Fail if dispatch P99 > 500ms
+          if (( $(echo "$DISPATCH_P99 > 500" | bc -l 2>/dev/null || echo 0) )); then
+            echo "FAIL: Dispatch P99 ${DISPATCH_P99}ms exceeds 500ms SLA"
+            exit 1
+          fi
+
+          echo "All SLA thresholds passed."
+
+      - name: Upload k6 test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: k6-results-${{ github.sha }}
+          path: k6-*.json
+          retention-days: 30
+
+  # ──────────────────────────────────────────────────────────────
+  # JOB 6: notify
+  # Posts deployment status to Slack with deployment summary,
+  # links to Grafana dashboards, and rollback instructions.
+  # ──────────────────────────────────────────────────────────────
+  notify:
+    name: Notify Slack
+    runs-on: ubuntu-latest
+    needs:
+      - deploy-production
+      - integration-tests
+    if: always()
+    permissions:
+      contents: read
+
+    steps:
+      - name: Determine deployment status
+        id: status
+        run: |
+          DEPLOY_RESULT="${{ needs.deploy-production.result }}"
+          TEST_RESULT="${{ needs.integration-tests.result }}"
+
+          if [ "$DEPLOY_RESULT" == "success" ] && [ "$TEST_RESULT" != "failure" ]; then
+            echo "status=success" >> "$GITHUB_OUTPUT"
+            echo "color=#00FF88" >> "$GITHUB_OUTPUT"
+            echo "emoji=:white_check_mark:" >> "$GITHUB_OUTPUT"
+            echo "title=Production Deploy Succeeded" >> "$GITHUB_OUTPUT"
+          elif [ "$DEPLOY_RESULT" == "skipped" ]; then
+            echo "status=skipped" >> "$GITHUB_OUTPUT"
+            echo "color=#FFAB00" >> "$GITHUB_OUTPUT"
+            echo "emoji=:warning:" >> "$GITHUB_OUTPUT"
+            echo "title=Production Deploy Skipped" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failure" >> "$GITHUB_OUTPUT"
+            echo "color=#FF4444" >> "$GITHUB_OUTPUT"
+            echo "emoji=:x:" >> "$GITHUB_OUTPUT"
+            echo "title=Production Deploy FAILED" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Send Slack notification
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "attachments": [
+                {
+                  "color": "${{ steps.status.outputs.color }}",
+                  "blocks": [
+                    {
+                      "type": "header",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "${{ steps.status.outputs.emoji }} ${{ steps.status.outputs.title }}"
+                      }
+                    },
+                    {
+                      "type": "section",
+                      "fields": [
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Environment:*\n${{ github.event.inputs.environment || 'production' }}"
+                        },
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Commit:*\n<${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|`${{ github.sha }}`>"
+                        },
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Actor:*\n${{ github.actor }}"
+                        },
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Branch:*\n`${{ github.ref_name }}`"
+                        },
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Services:*\n${{ github.event.inputs.services || 'all (17 services)' }}"
+                        },
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Deploy Run:*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Logs>"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "section",
+                      "text": {
+                        "type": "mrkdwn",
+                        "text": "*Quick Links:*\n• <https://grafana.logisticos.io/d/production-overview|Production Dashboard>\n• <https://grafana.logisticos.io/d/canary-analysis|Canary Analysis>\n• <https://sentry.io/organizations/logisticos/releases/${{ github.sha }}|Sentry Release>"
+                      }
+                    },
+                    {
+                      "type": "context",
+                      "elements": [
+                        {
+                          "type": "mrkdwn",
+                          "text": "To rollback: `helm rollback logisticos-<service> --namespace logisticos-production`"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+
+      - name: Create GitHub deployment status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const deployResult = "${{ needs.deploy-production.result }}";
+            const state = deployResult === "success" ? "success" : "failure";
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: context.payload.deployment?.id ?? 0,
+              state: state,
+              environment_url: "https://api.logisticos.io",
+              description: `Production deploy ${state}: ${{ github.sha }}`,
+              auto_inactive: true,
+            });

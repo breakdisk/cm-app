@@ -1,0 +1,22 @@
+apiVersion: v2
+name: base-service
+description: Base Helm chart for LogisticOS microservices
+type: application
+version: 0.1.0
+appVersion: "latest"
+
+keywords:
+  - logisticos
+  - microservice
+  - rust
+
+home: https://github.com/logisticos/logisticos
+sources:
+  - https://github.com/logisticos/logisticos
+
+maintainers:
+  - name: LogisticOS Platform Engineering
+    email: platform@logisticos.io
+
+annotations:
+  category: Infrastructure

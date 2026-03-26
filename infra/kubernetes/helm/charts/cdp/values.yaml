@@ -1,0 +1,93 @@
+# Helm values override for the Customer Data Platform (CDP) service.
+# Ref: services/cdp — Rust + PostgreSQL + Redis
+# Responsibilities: customer profile unification, behavioral tracking, consent management
+
+image:
+  repository: ghcr.io/logisticos/cdp
+  pullPolicy: IfNotPresent
+  tag: ""
+
+replicaCount: 2
+
+service:
+  type: ClusterIP
+  port: 8002
+  grpcPort: 9002
+
+env:
+  - name: SERVICE_NAME
+    value: cdp
+  - name: SERVICE_PORT
+    value: "8002"
+  - name: GRPC_PORT
+    value: "9002"
+  - name: LOG_LEVEL
+    value: info
+  - name: RUST_LOG
+    value: "cdp=info,tower_http=info"
+  # Profile cache TTL in seconds (5 minutes).
+  - name: PROFILE_CACHE_TTL_SECS
+    value: "300"
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 256Mi
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 15
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8002
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8002
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  failureThreshold: 3
+
+podAnnotations:
+  vault.hashicorp.com/agent-inject: "true"
+  vault.hashicorp.com/role: "cdp"
+  vault.hashicorp.com/agent-inject-secret-config: "secret/data/logisticos/cdp"
+  vault.hashicorp.com/agent-inject-template-config: |
+    {{- with secret "secret/data/logisticos/cdp" -}}
+    export DATABASE_URL="{{ .Data.data.database_url }}"
+    export REDIS_URL="{{ .Data.data.redis_url }}"
+    export KAFKA_BROKERS="{{ .Data.data.kafka_brokers }}"
+    {{- end -}}
+
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    path: /metrics
+    interval: 15s
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app: cdp
+          topologyKey: kubernetes.io/hostname

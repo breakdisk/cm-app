@@ -1,0 +1,132 @@
+[workspace]
+resolver = "2"
+
+members = [
+    # Shared Libraries
+    "libs/common",
+    "libs/config",
+    "libs/errors",
+    "libs/auth",
+    "libs/tracing",
+    "libs/types",
+    "libs/events",
+    "libs/geo",
+    "libs/ai-client",
+
+    # Microservices
+    "services/identity",
+    "services/cdp",
+    "services/engagement",
+    "services/order-intake",
+    "services/dispatch",
+    "services/driver-ops",
+    "services/compliance",
+    "services/delivery-experience",
+    "services/fleet",
+    "services/hub-ops",
+    "services/carrier",
+    "services/pod",
+    "services/payments",
+    "services/analytics",
+    "services/marketing",
+    "services/business-logic",
+    "services/ai-layer",
+    "services/api-gateway",
+]
+
+[workspace.package]
+version      = "0.1.0"
+edition      = "2021"
+authors      = ["LogisticOS Team"]
+license      = "UNLICENSED"
+rust-version = "1.78"
+
+[workspace.dependencies]
+# Async runtime
+tokio        = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1" }
+
+# Web framework
+axum         = { version = "0.7", features = ["macros", "multipart"] }
+axum-extra   = { version = "0.9", features = ["typed-header"] }
+tower        = { version = "0.4" }
+tower-http   = { version = "0.5", features = ["cors", "trace", "compression-gzip", "request-id"] }
+hyper        = { version = "1" }
+
+# gRPC
+tonic        = { version = "0.11" }
+tonic-build  = { version = "0.11" }
+prost        = { version = "0.12" }
+
+# Database
+sqlx         = { version = "0.7", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "migrate"] }
+redis        = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
+
+# Serialization
+serde        = { version = "1", features = ["derive"] }
+serde_json   = { version = "1" }
+
+# Error handling
+thiserror    = { version = "1" }
+anyhow       = { version = "1" }
+
+# Tracing / Observability
+tracing               = { version = "0.1" }
+tracing-subscriber    = { version = "0.3", features = ["env-filter", "json"] }
+opentelemetry         = { version = "0.22" }
+opentelemetry-otlp    = { version = "0.15" }
+tracing-opentelemetry = { version = "0.23" }
+
+# Auth / Security
+jsonwebtoken = { version = "9" }
+argon2       = { version = "0.5" }
+rand         = { version = "0.8" }
+
+# IDs & Time
+uuid         = { version = "1", features = ["v4", "serde"] }
+chrono       = { version = "0.4", features = ["serde"] }
+ulid         = { version = "1" }
+
+# Config
+config       = { version = "0.14" }
+dotenvy      = { version = "0.15" }
+
+# Validation
+validator    = { version = "0.18", features = ["derive"] }
+
+# Async traits
+async-trait  = { version = "0.1" }
+
+# Kafka
+rdkafka      = { version = "0.36", features = ["naive-runtime"] }
+
+# HTTP client
+reqwest      = { version = "0.11", features = ["json", "rustls-tls"] }
+
+# Object storage (S3-compatible)
+aws-sdk-s3   = { version = "1", features = ["behavior-version-latest"] }
+aws-config   = { version = "1" }
+
+# Geo / Spatial
+geo          = { version = "0.28" }
+
+# Internal crates
+logisticos-common  = { path = "libs/common" }
+logisticos-config  = { path = "libs/config" }
+logisticos-errors  = { path = "libs/errors" }
+logisticos-auth    = { path = "libs/auth" }
+logisticos-tracing = { path = "libs/tracing" }
+logisticos-types   = { path = "libs/types" }
+logisticos-events  = { path = "libs/events" }
+logisticos-geo     = { path = "libs/geo" }
+logisticos-ai      = { path = "libs/ai-client" }
+
+[profile.release]
+opt-level     = 3
+lto           = "thin"
+codegen-units = 1
+strip         = true
+
+[profile.dev]
+opt-level = 0
+debug     = true

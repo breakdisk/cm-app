@@ -1,0 +1,472 @@
+syntax = "proto3";
+
+package logisticos.dispatch.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/empty.proto";
+
+option go_package = "github.com/logisticos/proto/dispatch/v1;dispatchv1";
+option java_multiple_files = true;
+option java_package = "com.logisticos.dispatch.v1";
+
+// ─────────────────────────────────────────────
+//  Enumerations
+// ─────────────────────────────────────────────
+
+// DriverStatus represents the real-time operational state of a driver.
+enum DriverStatus {
+  // Default unspecified value. Should never appear in production data.
+  DRIVER_STATUS_UNKNOWN = 0;
+
+  // Driver is logged in, has no active tasks, and is ready to accept assignments.
+  DRIVER_STATUS_AVAILABLE = 1;
+
+  // Driver is actively navigating to or completing a stop on an assigned route.
+  DRIVER_STATUS_ON_ROUTE = 2;
+
+  // Driver is logged in but temporarily paused (e.g., break, waiting at hub).
+  DRIVER_STATUS_IDLE = 3;
+
+  // Driver is logged out or the mobile app has lost connectivity for > 5 minutes.
+  DRIVER_STATUS_OFFLINE = 4;
+
+  // Driver has been suspended by an operations manager and cannot receive tasks.
+  DRIVER_STATUS_SUSPENDED = 5;
+}
+
+// VehicleType describes the carrying capacity class of the driver's vehicle.
+enum VehicleType {
+  VEHICLE_TYPE_UNKNOWN = 0;
+  VEHICLE_TYPE_MOTORCYCLE = 1;
+  VEHICLE_TYPE_CAR = 2;
+  VEHICLE_TYPE_VAN = 3;
+  VEHICLE_TYPE_TRUCK = 4;
+}
+
+// OptimizationObjective controls the VRP solver objective function.
+enum OptimizationObjective {
+  // Minimize the sum of all route travel times across all drivers.
+  OPTIMIZATION_OBJECTIVE_MIN_TOTAL_TIME = 0;
+
+  // Minimize the maximum single-route duration (balance workload).
+  OPTIMIZATION_OBJECTIVE_MIN_MAX_ROUTE = 1;
+
+  // Minimize total distance traveled (fuel cost proxy).
+  OPTIMIZATION_OBJECTIVE_MIN_DISTANCE = 2;
+
+  // Maximize on-time delivery rate relative to customer time windows.
+  OPTIMIZATION_OBJECTIVE_MAX_ON_TIME = 3;
+}
+
+// StopType classifies the action required at a route stop.
+enum StopType {
+  STOP_TYPE_UNKNOWN = 0;
+  STOP_TYPE_PICKUP = 1;
+  STOP_TYPE_DELIVERY = 2;
+  STOP_TYPE_RETURN_TO_HUB = 3;
+  STOP_TYPE_CROSS_DOCK = 4;
+}
+
+// StopStatus reflects the completion state of an individual stop.
+enum StopStatus {
+  STOP_STATUS_PENDING = 0;
+  STOP_STATUS_IN_PROGRESS = 1;
+  STOP_STATUS_COMPLETED = 2;
+  STOP_STATUS_FAILED = 3;
+  STOP_STATUS_SKIPPED = 4;
+}
+
+// ─────────────────────────────────────────────
+//  Scalar / Shared Value Types
+// ─────────────────────────────────────────────
+
+// LatLng represents a geographic coordinate pair (WGS-84).
+message LatLng {
+  // Latitude in decimal degrees. Valid range: [-90.0, 90.0].
+  double latitude = 1;
+
+  // Longitude in decimal degrees. Valid range: [-180.0, 180.0].
+  double longitude = 2;
+}
+
+// TimeWindow defines a delivery or pickup time constraint for a stop.
+message TimeWindow {
+  // Earliest acceptable arrival time.
+  google.protobuf.Timestamp earliest = 1;
+
+  // Latest acceptable arrival time. Arriving after this breaches SLA.
+  google.protobuf.Timestamp latest = 2;
+}
+
+// ─────────────────────────────────────────────
+//  Driver Domain Messages
+// ─────────────────────────────────────────────
+
+// DriverInfo carries the full operational snapshot of a single driver.
+message DriverInfo {
+  // Unique driver identifier (UUID).
+  string driver_id = 1;
+
+  // Globally unique tenant identifier that owns this driver record.
+  string tenant_id = 2;
+
+  // Driver's display name.
+  string name = 3;
+
+  // Contactable phone number (E.164 format, e.g., +639171234567).
+  string phone_number = 4;
+
+  // Current real-time status of the driver.
+  DriverStatus status = 5;
+
+  // Last known GPS position as reported by the driver app.
+  LatLng current_location = 6;
+
+  // Timestamp when current_location was last updated.
+  google.protobuf.Timestamp location_updated_at = 7;
+
+  // Type of vehicle this driver is operating.
+  VehicleType vehicle_type = 8;
+
+  // License plate of the driver's current vehicle.
+  string vehicle_plate = 9;
+
+  // Maximum weight capacity this driver can carry, in kilograms.
+  double capacity_kg = 10;
+
+  // Maximum volumetric capacity, in cubic centimetres.
+  double capacity_cm3 = 11;
+
+  // Number of stops currently assigned in the driver's active route.
+  int32 active_stop_count = 12;
+
+  // Identifier of the hub this driver is assigned to for today's shift.
+  string assigned_hub_id = 13;
+
+  // Average historical delivery success rate (0.0–1.0).
+  double success_rate = 14;
+
+  // Average rating given by customers (1.0–5.0).
+  double average_rating = 15;
+}
+
+// ─────────────────────────────────────────────
+//  Route & Stop Domain Messages
+// ─────────────────────────────────────────────
+
+// RouteStop describes one stop in an optimized driver route.
+message RouteStop {
+  // Sequential 1-based position in the route.
+  int32 sequence = 1;
+
+  // Shipment/order AWB number this stop fulfills.
+  string shipment_id = 2;
+
+  // Geographic location of the stop.
+  LatLng location = 3;
+
+  // Human-readable address string for driver display.
+  string address = 4;
+
+  // Consignee name at this stop.
+  string contact_name = 5;
+
+  // Contact phone number for the consignee (E.164).
+  string contact_phone = 6;
+
+  // What the driver must do at this stop.
+  StopType stop_type = 7;
+
+  // Current completion state of this stop.
+  StopStatus status = 8;
+
+  // Acceptable time window for arrival.
+  TimeWindow time_window = 9;
+
+  // AI-estimated arrival time based on current traffic and route state.
+  google.protobuf.Timestamp estimated_arrival = 10;
+
+  // Weight of the parcel(s) at this stop, in kilograms.
+  double weight_kg = 11;
+
+  // Special handling instructions visible to the driver.
+  string delivery_instructions = 12;
+
+  // Whether cash on delivery must be collected at this stop.
+  bool requires_cod = 13;
+
+  // COD amount to collect, in the tenant's configured currency.
+  double cod_amount = 14;
+
+  // Whether a proof-of-delivery photo is required.
+  bool requires_pod_photo = 15;
+
+  // Whether a recipient signature is required.
+  bool requires_signature = 16;
+}
+
+// Route represents the full ordered route assigned to one driver for one shift.
+message Route {
+  // Unique route identifier (UUID).
+  string route_id = 1;
+
+  // Driver this route is assigned to.
+  string driver_id = 2;
+
+  // Tenant that owns this route.
+  string tenant_id = 3;
+
+  // Ordered list of stops. Sequence field on each stop is authoritative.
+  repeated RouteStop stops = 4;
+
+  // Total estimated travel duration for the complete route.
+  google.protobuf.Duration estimated_total_duration = 5;
+
+  // Total route distance in metres.
+  double total_distance_metres = 6;
+
+  // Timestamp when this route was generated or last re-optimized.
+  google.protobuf.Timestamp generated_at = 7;
+
+  // Timestamp when the driver started the route.
+  google.protobuf.Timestamp started_at = 8;
+
+  // Timestamp when all stops were completed or the shift ended.
+  google.protobuf.Timestamp completed_at = 9;
+
+  // Whether this route was generated by the AI dispatch agent (true)
+  // or manually constructed by an ops manager (false).
+  bool ai_optimized = 10;
+
+  // Polyline-encoded route geometry for map rendering (Google Polyline format).
+  string polyline_encoded = 11;
+}
+
+// ─────────────────────────────────────────────
+//  AssignDriver RPC Messages
+// ─────────────────────────────────────────────
+
+// AssignDriverRequest is sent by the Dispatch Agent or Ops Portal to assign
+// a driver to a set of shipments, with optional VRP optimization.
+message AssignDriverRequest {
+  // Tenant making the request.
+  string tenant_id = 1;
+
+  // Specific driver to assign. If empty, the service selects the best
+  // available driver automatically.
+  string driver_id = 2;
+
+  // List of shipment IDs to include in this assignment.
+  repeated string shipment_ids = 3;
+
+  // Hub from which the driver will depart.
+  string origin_hub_id = 4;
+
+  // If true, the service runs VRP optimization over the stop sequence.
+  // If false, stops are ordered in the sequence of shipment_ids.
+  bool optimize_route = 5;
+
+  // Objective to use if optimize_route is true.
+  OptimizationObjective objective = 6;
+
+  // Maximum route duration allowed. Zero means no constraint.
+  google.protobuf.Duration max_route_duration = 7;
+
+  // Idempotency key — re-submitting the same key returns the prior result
+  // without creating a duplicate assignment.
+  string idempotency_key = 8;
+}
+
+// AssignDriverResponse returns the result of a driver assignment operation.
+message AssignDriverResponse {
+  // The fully materialized route created for the driver.
+  Route route = 1;
+
+  // The assigned driver's information snapshot at time of assignment.
+  DriverInfo driver = 2;
+
+  // Whether this response was served from an idempotency cache
+  // (i.e., the assignment already existed).
+  bool from_cache = 3;
+
+  // Human-readable explanation of the assignment decision, generated
+  // by the AI Dispatch Agent (may be empty for manual assignments).
+  string assignment_reasoning = 4;
+}
+
+// ─────────────────────────────────────────────
+//  OptimizeRoute RPC Messages
+// ─────────────────────────────────────────────
+
+// OptimizeRouteRequest asks the service to re-sequence an existing route
+// or plan a new one, without immediately assigning it to a driver.
+message OptimizeRouteRequest {
+  // Tenant making the request.
+  string tenant_id = 1;
+
+  // Existing route to re-optimize. Mutually exclusive with shipment_ids.
+  string route_id = 2;
+
+  // Shipment IDs to plan a new route from. Mutually exclusive with route_id.
+  repeated string shipment_ids = 3;
+
+  // Geographic starting point for the route (typically a hub location).
+  LatLng origin = 4;
+
+  // Whether the driver must return to origin after the last stop.
+  bool return_to_origin = 5;
+
+  // Objective function for the optimizer.
+  OptimizationObjective objective = 6;
+
+  // Maximum allowed stops per route output.
+  int32 max_stops_per_route = 7;
+
+  // Maximum cumulative weight allowed on the route, in kilograms.
+  double max_weight_kg = 8;
+}
+
+// OptimizeRouteResponse returns one or more optimized routes. Multiple routes
+// are returned when the shipment set must be split across vehicles.
+message OptimizeRouteResponse {
+  // One or more optimized route plans. Not yet assigned to specific drivers.
+  repeated Route routes = 1;
+
+  // Total shipments successfully planned across all routes.
+  int32 planned_shipment_count = 2;
+
+  // Shipment IDs that could not be included (e.g., invalid address, overweight).
+  repeated string unplannable_shipment_ids = 3;
+
+  // Wall-clock time taken by the optimizer in milliseconds.
+  int64 optimization_duration_ms = 4;
+
+  // Solver algorithm used (e.g., "or-tools-vrptw", "greedy-nearest-neighbor").
+  string algorithm_used = 5;
+}
+
+// ─────────────────────────────────────────────
+//  GetAvailableDrivers RPC Messages
+// ─────────────────────────────────────────────
+
+// GetAvailableDriversRequest queries for drivers that can accept new tasks.
+message GetAvailableDriversRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // Filter to drivers within this hub.
+  string hub_id = 2;
+
+  // Only return drivers within this radius of the given center point, in metres.
+  // Zero means no geographic filter.
+  double radius_metres = 3;
+
+  // Center point for the radius filter.
+  LatLng center = 4;
+
+  // Filter by vehicle type. Empty list means all types.
+  repeated VehicleType vehicle_types = 5;
+
+  // Minimum remaining capacity required, in kilograms.
+  double min_remaining_capacity_kg = 6;
+
+  // Maximum number of drivers to return.
+  int32 limit = 7;
+}
+
+// GetAvailableDriversResponse returns a ranked list of available drivers.
+message GetAvailableDriversResponse {
+  // Drivers matching the query, ordered by suitability score descending.
+  repeated DriverInfo drivers = 1;
+
+  // Total matching drivers (may exceed limit).
+  int32 total_count = 2;
+}
+
+// ─────────────────────────────────────────────
+//  GetRoute RPC Messages
+// ─────────────────────────────────────────────
+
+// GetRouteRequest fetches a specific route by ID.
+message GetRouteRequest {
+  // Tenant scope — enforced for row-level security.
+  string tenant_id = 1;
+
+  // Unique identifier of the route to retrieve.
+  string route_id = 2;
+}
+
+// RouteResponse returns a single route with all stop details.
+message RouteResponse {
+  // The full route record.
+  Route route = 1;
+}
+
+// ─────────────────────────────────────────────
+//  UpdateDriverStatus RPC Messages
+// ─────────────────────────────────────────────
+
+// UpdateDriverStatusRequest is called by the Driver App or telemetry pipeline
+// to report a driver's current status and location.
+message UpdateDriverStatusRequest {
+  // Tenant scope.
+  string tenant_id = 1;
+
+  // Driver whose status is being updated.
+  string driver_id = 2;
+
+  // New status value.
+  DriverStatus status = 3;
+
+  // Current GPS position. Required when status transitions to ON_ROUTE or AVAILABLE.
+  LatLng current_location = 4;
+
+  // Client-side timestamp of this status reading (from the driver app clock).
+  google.protobuf.Timestamp recorded_at = 5;
+}
+
+// UpdateDriverStatusResponse confirms the status update was applied.
+message UpdateDriverStatusResponse {
+  // The updated status as persisted by the service.
+  DriverStatus updated_status = 1;
+
+  // Server-side timestamp when the update was recorded.
+  google.protobuf.Timestamp updated_at = 2;
+}
+
+// ─────────────────────────────────────────────
+//  DispatchService Definition
+// ─────────────────────────────────────────────
+
+// DispatchService is the authoritative gRPC interface for all dispatch and
+// routing operations. It is consumed by the AI Intelligence Layer via MCP
+// tool wrappers, by the Admin/Ops Portal, and by the Driver App backend.
+//
+// All RPCs require a valid JWT in the gRPC metadata key `authorization`
+// with the format `Bearer <token>`. Tenant isolation is enforced server-side
+// via the `tenant_id` claim in the token, cross-checked against request fields.
+service DispatchService {
+  // AssignDriver creates a new route assignment for one or more shipments,
+  // optionally running VRP optimization before persisting. Emits a
+  // `dispatch.driver.assigned` Kafka event on success.
+  rpc AssignDriver(AssignDriverRequest) returns (AssignDriverResponse);
+
+  // OptimizeRoute runs the VRP solver over a set of shipments or an existing
+  // route and returns optimized route plans without persisting or assigning them.
+  // Use this for dry-run planning before committing assignments.
+  rpc OptimizeRoute(OptimizeRouteRequest) returns (OptimizeRouteResponse);
+
+  // GetAvailableDrivers returns a ranked list of drivers ready to accept
+  // new assignments, with optional geographic and capacity filters.
+  rpc GetAvailableDrivers(GetAvailableDriversRequest) returns (GetAvailableDriversResponse);
+
+  // GetRoute retrieves a full route record including all stops, ETAs, and
+  // completion status. Used by the Driver App and Tracking service.
+  rpc GetRoute(GetRouteRequest) returns (RouteResponse);
+
+  // UpdateDriverStatus is called by the Driver App and telematics pipeline
+  // to report status changes and GPS position. Triggers downstream events
+  // consumed by the Live Tracking and ETA recalculation services.
+  rpc UpdateDriverStatus(UpdateDriverStatusRequest) returns (UpdateDriverStatusResponse);
+}

@@ -1,0 +1,398 @@
+syntax = "proto3";
+
+package logisticos.analytics.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+option go_package = "github.com/logisticos/proto/analytics/v1;analyticsv1";
+option java_multiple_files = true;
+option java_package = "com.logisticos.analytics.v1";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum GroupBy {
+  GROUP_BY_UNSPECIFIED = 0;
+  GROUP_BY_ZONE        = 1;
+  GROUP_BY_CARRIER     = 2;
+  GROUP_BY_MERCHANT    = 3;
+  GROUP_BY_DRIVER      = 4;
+  GROUP_BY_HUB         = 5;
+  GROUP_BY_HOUR        = 6;
+  GROUP_BY_DAY         = 7;
+  GROUP_BY_WEEK        = 8;
+}
+
+enum ForecastHorizon {
+  FORECAST_HORIZON_UNSPECIFIED = 0;
+  FORECAST_HORIZON_6H          = 1;
+  FORECAST_HORIZON_24H         = 2;
+  FORECAST_HORIZON_48H         = 3;
+  FORECAST_HORIZON_7D          = 4;
+  FORECAST_HORIZON_30D         = 5;
+}
+
+enum EventCategory {
+  EVENT_CATEGORY_UNSPECIFIED      = 0;
+  EVENT_CATEGORY_SHIPMENT         = 1;
+  EVENT_CATEGORY_DRIVER           = 2;
+  EVENT_CATEGORY_CUSTOMER         = 3;
+  EVENT_CATEGORY_PAYMENT          = 4;
+  EVENT_CATEGORY_MARKETING        = 5;
+  EVENT_CATEGORY_ENGAGEMENT       = 6;
+  EVENT_CATEGORY_SYSTEM           = 7;
+}
+
+enum CohortType {
+  COHORT_TYPE_UNSPECIFIED         = 0;
+  COHORT_TYPE_MERCHANT_SIGNUP     = 1;
+  COHORT_TYPE_FIRST_SHIPMENT      = 2;
+  COHORT_TYPE_CUSTOMER_FIRST_ORDER = 3;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared Structures
+// ─────────────────────────────────────────────────────────────────────────────
+
+// DateRange specifies a closed time interval for metric queries.
+message DateRange {
+  google.protobuf.Timestamp from = 1;
+  google.protobuf.Timestamp to   = 2;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Core Domain Messages
+// ─────────────────────────────────────────────────────────────────────────────
+
+// DeliveryMetrics is an aggregated summary of delivery outcomes.
+// All counts are integers; rates are fractions (0.0–1.0).
+message DeliveryMetrics {
+  // Context identifiers — populated only when metrics are grouped.
+  string tenant_id    = 1;
+  // Dimension value for the group_by axis (e.g. zone_id, driver_id).
+  string dimension_id = 2;
+  // Human-readable label for dimension_id.
+  string dimension_label = 3;
+
+  // Total shipments within the period and filters.
+  int64 total_count     = 4;
+
+  // Successfully delivered shipments.
+  int64 delivered_count = 5;
+
+  // Failed delivery attempts (all attempts, not unique shipments).
+  int64 failed_count    = 6;
+
+  // Shipments pending delivery at period end.
+  int64 pending_count   = 7;
+
+  // Shipments currently in transit.
+  int64 in_transit_count = 8;
+
+  // Shipments returned to sender.
+  int64 returned_count  = 9;
+
+  // Delivery success rate: delivered_count / (delivered_count + failed_count).
+  // Excludes pending and in-transit shipments from denominator.
+  float success_rate    = 10;
+
+  // On-time delivery rate: delivered within SLA / total delivered.
+  float on_time_rate    = 11;
+
+  // Average minutes from dispatch assignment to delivery completion.
+  float avg_delivery_minutes = 12;
+
+  // Median minutes from dispatch to delivery.
+  float median_delivery_minutes = 13;
+
+  // P95 delivery time in minutes.
+  float p95_delivery_minutes = 14;
+
+  // Average number of attempts before successful delivery.
+  float avg_attempts_per_delivery = 15;
+
+  // Total COD collected in cents.
+  int64 total_cod_cents = 16;
+
+  // Currency for COD amounts.
+  string currency = 17;
+
+  // Period these metrics cover.
+  DateRange period = 18;
+}
+
+// ZoneDemandForecast predicts shipment volume for a geographic zone.
+message ZoneDemandForecast {
+  // Owning tenant.
+  string tenant_id = 1;
+
+  // Zone identifier (references geospatial zone in the routing service).
+  string zone_id = 2;
+
+  // Human-readable zone name.
+  string zone_name = 3;
+
+  // Forecast horizon.
+  ForecastHorizon horizon = 4;
+
+  // Ordered list of forecast data points.
+  repeated ForecastDataPoint data_points = 5;
+
+  // Model confidence score (0.0–1.0) across the horizon.
+  float model_confidence = 6;
+
+  // Recommended driver headcount to meet forecasted demand.
+  int32 recommended_driver_count = 7;
+
+  // Timestamp when this forecast was computed.
+  google.protobuf.Timestamp computed_at = 8;
+
+  // Model version used to generate this forecast.
+  string model_version = 9;
+}
+
+// ForecastDataPoint is a single prediction in the time series.
+message ForecastDataPoint {
+  // Start of the forecast bucket.
+  google.protobuf.Timestamp bucket_start = 1;
+
+  // End of the forecast bucket.
+  google.protobuf.Timestamp bucket_end = 2;
+
+  // Predicted shipment volume.
+  int32 predicted_volume = 3;
+
+  // Lower bound of the 90% confidence interval.
+  int32 lower_bound = 4;
+
+  // Upper bound of the 90% confidence interval.
+  int32 upper_bound = 5;
+}
+
+// DriverPerformanceSummary is a cross-driver comparison row.
+message DriverPerformanceSummary {
+  string tenant_id       = 1;
+  string driver_id       = 2;
+  string driver_name     = 3;
+  string hub_id          = 4;
+  int64  total_deliveries = 5;
+  float  success_rate    = 6;
+  float  avg_rating      = 7;
+  float  on_time_percent = 8;
+  float  avg_task_minutes = 9;
+  // Rank within the tenant for the period (1 = best).
+  int32  rank            = 10;
+  DateRange period       = 11;
+}
+
+// AnalyticsEvent is the canonical schema for all platform events
+// flowing into ClickHouse via this service's ingestion endpoint.
+message AnalyticsEvent {
+  // Client-supplied UUID. Used for idempotency (exactly-once ingestion).
+  string event_id = 1;
+
+  // Owning tenant.
+  string tenant_id = 2;
+
+  // Event type in reverse-domain notation (e.g. "shipment.status_updated").
+  string event_type = 3;
+
+  // High-level category for partitioning and querying.
+  EventCategory category = 4;
+
+  // The primary entity this event describes (e.g. shipment_id, driver_id).
+  string entity_id = 5;
+
+  // Discriminator for entity_id (e.g. "shipment", "driver", "merchant").
+  string entity_type = 6;
+
+  // Actor who caused the event (user_id, service name, or "system").
+  string actor_id = 7;
+
+  // Event payload as structured JSON — stored in ClickHouse as JSON column.
+  google.protobuf.Struct properties = 8;
+
+  // ISO 3166-1 alpha-2 region code of event origin.
+  string region = 9;
+
+  // Originating service name (e.g. "dispatch", "driver-ops").
+  string source_service = 10;
+
+  // Event time as recorded by the source system.
+  google.protobuf.Timestamp occurred_at = 11;
+
+  // Server ingestion timestamp (set server-side; client value ignored).
+  google.protobuf.Timestamp ingested_at = 12;
+}
+
+// CohortRetentionMatrix contains retention percentages for a cohort analysis.
+message CohortRetentionMatrix {
+  string tenant_id   = 1;
+  CohortType cohort_type = 2;
+  // Rows indexed by cohort_period (e.g. "2026-01" for month granularity).
+  repeated CohortRow rows = 3;
+  // Granularity of the period axis: "week", "month".
+  string period_granularity = 4;
+  DateRange analysis_range  = 5;
+}
+
+// CohortRow is a single cohort group with its retention curve.
+message CohortRow {
+  // Cohort label (e.g. "2026-01" = merchants who signed up in Jan 2026).
+  string cohort_period = 1;
+
+  // Number of entities in this cohort.
+  int32 cohort_size = 2;
+
+  // Retention percentage at period offset n (0-indexed; index 0 = 100%).
+  // Value is 0.0–100.0.
+  repeated float retention_by_period = 3;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Request / Response Messages
+// ─────────────────────────────────────────────────────────────────────────────
+
+message GetDeliveryMetricsRequest {
+  string tenant_id = 1;
+  DateRange date_range = 2;
+  // Dimension to group results by. UNSPECIFIED returns a single aggregate row.
+  GroupBy group_by = 3;
+  // Restrict to specific dimension values (e.g. specific zone_ids). Empty = all.
+  repeated string filter_ids = 4;
+  // Optionally restrict to a specific carrier.
+  string carrier_id = 5;
+  // Optionally restrict to a specific merchant.
+  string merchant_id = 6;
+}
+
+message GetDeliveryMetricsResponse {
+  // One row per group. Single element when group_by = UNSPECIFIED.
+  repeated DeliveryMetrics metrics = 1;
+  // Aggregate totals across all groups.
+  DeliveryMetrics totals = 2;
+  // Query execution time in milliseconds (for observability).
+  int32 query_ms = 3;
+}
+
+message GetZoneDemandForecastRequest {
+  string tenant_id = 1;
+  // Zone(s) to forecast. Empty = all active zones.
+  repeated string zone_ids = 2;
+  ForecastHorizon horizon  = 3;
+  // If true, force model re-computation. Otherwise returns cached forecast
+  // if computed within the last 15 minutes.
+  bool force_refresh = 4;
+}
+
+message GetZoneDemandForecastResponse {
+  repeated ZoneDemandForecast forecasts = 1;
+  // Whether these results were served from the cache.
+  bool from_cache = 2;
+  // Timestamp of the forecast computation (cache hit = prior run).
+  google.protobuf.Timestamp computed_at = 3;
+}
+
+message GetDriverPerformanceSummaryRequest {
+  string tenant_id = 1;
+  DateRange date_range = 2;
+  // Filter to a specific hub. Empty = all hubs.
+  string hub_id = 3;
+  // Minimum deliveries threshold — exclude drivers below this count.
+  int32 min_deliveries = 4;
+  // Sort field: "success_rate", "avg_rating", "on_time_percent", "total_deliveries".
+  string sort_by = 5;
+  // Descending sort (default true).
+  bool sort_desc = 6;
+  // Maximum rows to return (default 50, max 500).
+  int32 limit = 7;
+}
+
+message GetDriverPerformanceSummaryResponse {
+  repeated DriverPerformanceSummary drivers = 1;
+  int32 total_drivers = 2;
+  int32 query_ms      = 3;
+}
+
+message RecordEventRequest {
+  // Events to ingest. Supports batch ingestion (1–100 events per call).
+  repeated AnalyticsEvent events = 1;
+}
+
+message RecordEventResponse {
+  // Number of events successfully accepted for ingestion.
+  int32 accepted_count = 1;
+  // Events that were rejected (e.g. duplicate event_id or validation error).
+  repeated EventRejection rejections = 2;
+}
+
+message EventRejection {
+  string event_id = 1;
+  string reason   = 2;
+}
+
+message GetCohortRetentionRequest {
+  string tenant_id         = 1;
+  CohortType cohort_type   = 2;
+  DateRange analysis_range = 3;
+  // "week" or "month". Defaults to "month".
+  string period_granularity = 4;
+  // Number of retention periods to include. Defaults to 12.
+  int32 max_periods         = 5;
+}
+
+message GetCohortRetentionResponse {
+  CohortRetentionMatrix matrix = 1;
+  int32 query_ms = 2;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Service Definition
+// ─────────────────────────────────────────────────────────────────────────────
+
+// AnalyticsService provides read and write access to the LogisticOS analytics
+// warehouse backed by ClickHouse.
+//
+// Read RPCs fan out to ClickHouse OLAP replicas. P99 query latency targets:
+//   - GetDeliveryMetrics (single row): < 200ms
+//   - GetDeliveryMetrics (grouped, 30 days): < 2s
+//   - GetZoneDemandForecast (cached): < 100ms
+//   - GetCohortRetention: < 5s
+//
+// Write RPCs (RecordEvent) are async — events are written to a Kafka topic
+// first, then batch-ingested into ClickHouse via the Kafka table engine.
+// This provides durable exactly-once ingestion using the event_id as the
+// deduplication key in ClickHouse's ReplacingMergeTree engine.
+//
+// All RPCs require a tenant-scoped JWT. Analytics-read role required for
+// read RPCs. Event ingestion accepts service-to-service tokens.
+service AnalyticsService {
+  // GetDeliveryMetrics returns aggregated delivery outcome metrics for a
+  // tenant, optionally grouped by zone, carrier, merchant, or driver.
+  // Backed by ClickHouse materialized views for sub-second response at scale.
+  rpc GetDeliveryMetrics(GetDeliveryMetricsRequest) returns (GetDeliveryMetricsResponse);
+
+  // GetZoneDemandForecast returns ML-generated shipment volume predictions
+  // for geographic zones over a specified time horizon. Predictions are
+  // computed by the AI Intelligence Layer and cached in Redis.
+  rpc GetZoneDemandForecast(GetZoneDemandForecastRequest) returns (GetZoneDemandForecastResponse);
+
+  // GetDriverPerformanceSummary returns a ranked comparison of drivers within
+  // a tenant for a given time period. Used by the Admin Portal fleet view
+  // and the dispatch engine's driver-scoring algorithm.
+  rpc GetDriverPerformanceSummary(GetDriverPerformanceSummaryRequest) returns (GetDriverPerformanceSummaryResponse);
+
+  // RecordEvent ingests analytics events from any platform service. Supports
+  // batch ingestion (1–100 events per RPC). Idempotent — duplicate event_ids
+  // within a 24-hour window are deduplicated server-side. Events are
+  // first written to Kafka and asynchronously committed to ClickHouse;
+  // the response acknowledges Kafka acceptance, not warehouse persistence.
+  rpc RecordEvent(RecordEventRequest) returns (RecordEventResponse);
+
+  // GetCohortRetention computes a retention matrix for a cohort type over
+  // the analysis range. Uses ClickHouse window functions against the events
+  // table. Useful for measuring merchant and customer lifecycle health.
+  rpc GetCohortRetention(GetCohortRetentionRequest) returns (GetCohortRetentionResponse);
+}

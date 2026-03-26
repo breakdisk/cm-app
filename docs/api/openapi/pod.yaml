@@ -1,0 +1,441 @@
+openapi: "3.1.0"
+info:
+  title: LogisticOS Proof of Delivery API
+  version: "1.0.0"
+  description: |
+    Captures and manages Proof of Delivery (POD) records for completed shipments.
+    POD includes: signature capture, photo evidence, GPS geofence verification,
+    OTP verification for COD collection, and driver identity binding.
+
+    **POD lifecycle:**
+    1. `POST /v1/pod/initiate` — driver begins delivery (geofence check)
+    2. `POST /v1/pod/:id/signature` OR upload photos (optional depending on service type)
+    3. `POST /v1/pod/:id/otp` — generate OTP for COD (if COD shipment)
+    4. `POST /v1/pod/:id/submit` — finalise POD, emit `delivery.completed` event
+
+    All endpoints require JWT. The `driver_id` is extracted from the JWT claims.
+  contact:
+    name: LogisticOS Engineering
+    email: engineering@logisticos.io
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.logisticos.io/v1
+    description: Production
+  - url: https://staging-api.logisticos.io/v1
+    description: Staging
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: POD
+    description: Proof of Delivery lifecycle
+
+paths:
+  /pod/initiate:
+    post:
+      operationId: initiatePoD
+      tags: [POD]
+      summary: Initiate POD for a delivery
+      description: |
+        Called when a driver arrives at the delivery address. Verifies that the
+        driver is within the configured geofence radius (default 500m) of the
+        delivery address. Returns a `pod_id` for subsequent evidence uploads.
+
+        **Idempotent**: if a POD already exists for this shipment + driver, the
+        existing record is returned.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                shipment_id:
+                  type: string
+                  format: uuid
+                delivery_lat:
+                  type: number
+                  format: double
+                  description: Driver's current GPS latitude
+                  example: 10.3157
+                delivery_lng:
+                  type: number
+                  format: double
+                  description: Driver's current GPS longitude
+                  example: 123.8854
+              required: [shipment_id, delivery_lat, delivery_lng]
+      responses:
+        "201":
+          description: POD initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      pod_id:
+                        type: string
+                        format: uuid
+                      geofence_verified:
+                        type: boolean
+                        description: Whether the driver is within the delivery geofence
+                      status:
+                        type: string
+                        example: draft
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          description: Driver outside geofence radius
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Driver is 1.2km from delivery address — outside 500m geofence"
+
+  /pod/{id}/signature:
+    post:
+      operationId: attachSignature
+      tags: [POD]
+      summary: Attach recipient signature to POD
+      description: |
+        Attaches a base64-encoded signature image to the POD record. Maximum size 500KB.
+        The signature is stored in object storage (S3-compatible).
+      parameters:
+        - $ref: "#/components/parameters/PodId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                signature_data:
+                  type: string
+                  description: Base64-encoded PNG signature image (max 500KB)
+                  example: "iVBORw0KGgoAAAANSUhEUgAA..."
+              required: [signature_data]
+      responses:
+        "204":
+          description: Signature attached
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Signature data too large or invalid base64
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /pod/{id}/photo-upload-url:
+    get:
+      operationId: getPhotoUploadUrl
+      tags: [POD]
+      summary: Get pre-signed URL for photo upload
+      description: |
+        Returns a pre-signed S3 URL for uploading a delivery photo directly from the
+        driver app. After uploading to the pre-signed URL, call `POST /v1/pod/:id/photo`
+        to register the photo in the POD record.
+      parameters:
+        - $ref: "#/components/parameters/PodId"
+        - name: content_type
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [image/jpeg, image/png, image/webp]
+          description: MIME type of the photo to upload
+          example: image/jpeg
+      responses:
+        "200":
+          description: Pre-signed upload URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  upload_url:
+                    type: string
+                    description: Pre-signed URL (valid for 5 minutes)
+                  photo_key:
+                    type: string
+                    description: Storage key to use in the attach-photo call
+                    example: "pods/a1b2c3d4/photos/ph_001.jpg"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Invalid content type or max photos reached (5 per POD)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /pod/{id}/photo:
+    post:
+      operationId: attachPhoto
+      tags: [POD]
+      summary: Register an uploaded photo in the POD record
+      description: |
+        After uploading a photo to the pre-signed URL, call this endpoint to register
+        the photo key in the POD record. Maximum 5 photos per POD.
+      parameters:
+        - $ref: "#/components/parameters/PodId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                photo_key:
+                  type: string
+                  description: The storage key returned by the photo-upload-url endpoint
+                  example: "pods/a1b2c3d4/photos/ph_001.jpg"
+                size_bytes:
+                  type: integer
+                  description: File size in bytes (max 5MB)
+                  example: 245789
+              required: [photo_key, size_bytes]
+      responses:
+        "204":
+          description: Photo registered
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Photo too large or max photos exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /pod/{id}/submit:
+    post:
+      operationId: submitPoD
+      tags: [POD]
+      summary: Submit and finalise the POD
+      description: |
+        Finalises the POD record. Validates that required evidence is present (at least
+        one of: signature or photo). Emits `delivery.completed` to Kafka. For COD shipments,
+        records the collected amount.
+
+        **Driver ownership check**: only the driver who initiated the POD can submit it.
+      parameters:
+        - $ref: "#/components/parameters/PodId"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cod_collected_php:
+                  type: number
+                  format: float
+                  nullable: true
+                  description: Cash collected for COD shipments (in PHP)
+                  example: 1500.00
+                otp_verified:
+                  type: boolean
+                  description: Whether OTP was verified for COD collection
+                  default: false
+                notes:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: POD submitted successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PodRecord"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Only the initiating driver can submit this POD
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: No evidence attached (signature or photo required)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "POD requires at least one piece of evidence (signature or photo)"
+
+  /pod/{id}/otp:
+    post:
+      operationId: generateOtp
+      tags: [POD]
+      summary: Generate and send OTP for COD collection
+      description: |
+        Generates a 6-digit OTP and sends it to the recipient's phone via SMS.
+        Used to verify the recipient's identity before collecting COD payment.
+        OTP expires in 10 minutes.
+      parameters:
+        - $ref: "#/components/parameters/PodId"
+      responses:
+        "200":
+          description: OTP sent to recipient
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  otp_id:
+                    type: string
+                    format: uuid
+                    description: OTP record ID for verification
+                  expires_at:
+                    type: string
+                    format: date-time
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /pod/{id}:
+    get:
+      operationId: getPoD
+      tags: [POD]
+      summary: Get POD record
+      description: Returns the full POD record including evidence URLs and status.
+      parameters:
+        - $ref: "#/components/parameters/PodId"
+      responses:
+        "200":
+          description: POD record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PodRecord"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    PodId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: POD record UUID
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid JWT
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: POD not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    UnprocessableEntity:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    PodStatus:
+      type: string
+      enum: [draft, evidence_collected, submitted]
+
+    PodRecord:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        shipment_id:
+          type: string
+          format: uuid
+        driver_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/PodStatus"
+        geofence_verified:
+          type: boolean
+        delivery_lat:
+          type: number
+          format: double
+          nullable: true
+        delivery_lng:
+          type: number
+          format: double
+          nullable: true
+        signature_url:
+          type: string
+          nullable: true
+          description: Pre-signed URL to view signature image
+        photo_urls:
+          type: array
+          items:
+            type: string
+          description: Pre-signed URLs for delivery photos
+        cod_collected_php:
+          type: number
+          format: float
+          nullable: true
+        otp_verified:
+          type: boolean
+        notes:
+          type: string
+          nullable: true
+        submitted_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+      required:
+        - id
+        - shipment_id
+        - driver_id
+        - tenant_id
+        - status
+        - geofence_verified
+        - photo_urls
+        - otp_verified
+        - created_at
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]

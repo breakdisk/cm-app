@@ -1,0 +1,25 @@
+[package]
+name        = "logisticos-auth"
+description = "JWT creation/validation, RBAC middleware, tenant context extractor"
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+rust-version.workspace = true
+
+[dependencies]
+logisticos-errors.workspace = true
+logisticos-types.workspace  = true
+serde.workspace             = true
+serde_json.workspace        = true
+thiserror.workspace         = true
+anyhow.workspace            = true
+uuid.workspace              = true
+chrono.workspace            = true
+tracing.workspace           = true
+jsonwebtoken.workspace      = true
+argon2.workspace            = true
+rand.workspace              = true
+axum.workspace              = true
+tower.workspace             = true
+tokio.workspace             = true
+async-trait                 = "0.1"

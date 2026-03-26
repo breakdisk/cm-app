@@ -1,0 +1,97 @@
+# Helm values override for the Warehouse & Hub Operations service.
+# Manages parcel sorting, dock scheduling, inbound/outbound manifests,
+# hub capacity, and cross-docking operations.
+# Ref: services/hub-ops — Rust + PostgreSQL
+
+image:
+  repository: ghcr.io/logisticos/hub-ops
+  pullPolicy: IfNotPresent
+  tag: ""
+
+replicaCount: 2
+
+service:
+  type: ClusterIP
+  port: 8009
+  grpcPort: 9009
+
+env:
+  - name: SERVICE_NAME
+    value: hub-ops
+  - name: SERVICE_PORT
+    value: "8009"
+  - name: GRPC_PORT
+    value: "9009"
+  - name: LOG_LEVEL
+    value: info
+  - name: RUST_LOG
+    value: "hub_ops=info,tower_http=info,sqlx=warn"
+  # Barcode scanner ingest endpoint buffer size.
+  - name: SCAN_BUFFER_SIZE
+    value: "1000"
+  # Hub capacity utilisation alert threshold (percentage).
+  - name: CAPACITY_ALERT_THRESHOLD_PCT
+    value: "85"
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 15
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8009
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8009
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  failureThreshold: 3
+
+podAnnotations:
+  vault.hashicorp.com/agent-inject: "true"
+  vault.hashicorp.com/role: "hub-ops"
+  vault.hashicorp.com/agent-inject-secret-config: "secret/data/logisticos/hub-ops"
+  vault.hashicorp.com/agent-inject-template-config: |
+    {{- with secret "secret/data/logisticos/hub-ops" -}}
+    export DATABASE_URL="{{ .Data.data.database_url }}"
+    export KAFKA_BROKERS="{{ .Data.data.kafka_brokers }}"
+    export REDIS_URL="{{ .Data.data.redis_url }}"
+    {{- end -}}
+
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    path: /metrics
+    interval: 15s
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app: hub-ops
+          topologyKey: kubernetes.io/hostname
