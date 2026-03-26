@@ -37,13 +37,13 @@ pub async fn run() -> anyhow::Result<()> {
     );
 
     // Shutdown watch channel — broadcast to all background consumers.
-    let (shutdown_tx, _) = watch::channel(false);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     // Spawn TASK_ASSIGNED consumer — creates driver_ops.tasks rows on dispatch.
     let pool_for_tasks    = pool.clone();
     let brokers_for_tasks = cfg.kafka.brokers.clone();
     let group_for_tasks   = cfg.kafka.group_id.clone();
-    let shutdown_rx_tasks = shutdown_tx.subscribe();
+    let shutdown_rx_tasks = shutdown_rx.clone();
     tokio::spawn(async move {
         if let Err(e) = start_task_consumer(
             &brokers_for_tasks,

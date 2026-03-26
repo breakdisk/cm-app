@@ -59,10 +59,20 @@ async fn handle_task_assigned(payload: &[u8], pool: &PgPool) -> anyhow::Result<(
     let event: Event<TaskAssigned> = serde_json::from_slice(payload)?;
     let t = event.data;
 
-    // Insert the task row.
-    // The driver row must already exist in driver_ops.drivers (created when the driver
-    // user was registered). The FK will fail if the driver is unknown, which is logged
-    // as a warning and skipped — Kafka offset is still committed so we don't loop forever.
+    // Ensure driver row exists before inserting the task.
+    // TASK_ASSIGNED may arrive before the driver has ever logged in (driver_ops.drivers is
+    // populated on first app login). This guard creates a stub row so the FK doesn't fail.
+    // id = user_id = t.driver_id (both are the identity user UUID, matching dispatch's key).
+    sqlx::query(
+        r#"INSERT INTO driver_ops.drivers (id, user_id, tenant_id, first_name, last_name, phone, status)
+           VALUES ($1, $1, $2, 'Driver', '', '', 'offline')
+           ON CONFLICT (id) DO NOTHING"#,
+    )
+    .bind(t.driver_id)
+    .bind(t.tenant_id)
+    .execute(pool)
+    .await?;
+
     sqlx::query(
         r#"
         INSERT INTO driver_ops.tasks (
