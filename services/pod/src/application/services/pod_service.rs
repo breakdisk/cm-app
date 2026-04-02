@@ -279,6 +279,29 @@ impl PodService {
         self.load_pod(pod_id).await
     }
 
+    /// Standalone OTP verification — driver can pre-verify before submitting POD.
+    /// Returns otp_id on success.
+    pub async fn verify_otp_standalone(
+        &self,
+        cmd: VerifyOtpCommand,
+    ) -> AppResult<Uuid> {
+        let otp = self.otp_repo
+            .find_active_by_shipment(cmd.shipment_id).await
+            .map_err(AppError::Internal)?
+            .ok_or_else(|| AppError::BusinessRule("No active OTP found for this shipment".into()))?;
+
+        if !otp.is_valid() {
+            return Err(AppError::BusinessRule("OTP has expired. Request a new one.".into()));
+        }
+
+        if !verify_otp(&cmd.code, &otp.code_hash) {
+            return Err(AppError::BusinessRule("Invalid OTP code".into()));
+        }
+
+        tracing::info!(shipment_id = %cmd.shipment_id, "OTP pre-verified");
+        Ok(otp.id)
+    }
+
     async fn load_pod(&self, pod_id: Uuid) -> AppResult<ProofOfDelivery> {
         self.pod_repo.find_by_id(pod_id).await.map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound { resource: "POD", id: pod_id.to_string() })

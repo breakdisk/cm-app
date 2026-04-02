@@ -33,5 +33,6 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/pods/:id",                      get(pod::get_pod))
         // OTP management
         .route("/otps/generate",                 post(pod::generate_otp))
+        .route("/otps/verify",                   post(pod::verify_otp))
         .layer(auth_layer)
 }
