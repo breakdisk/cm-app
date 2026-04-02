@@ -708,6 +708,45 @@ services:
       retries: 5
       start_period: 10s
 
+  # ── 18. Compliance (port 8017) ────────────────────────────
+  compliance:
+    build:
+      context: ./services/compliance
+      dockerfile: Dockerfile
+    container_name: logisticos-compliance
+    restart: unless-stopped
+    ports:
+      - "8017:8017"
+    environment:
+      APP__HOST: "0.0.0.0"
+      APP__PORT: "8017"
+      APP__ENV: development
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__MAX_CONNECTIONS: "5"
+      KAFKA__BROKERS: kafka:29092
+      KAFKA__CONSUMER_GROUP: compliance-dev
+      STORAGE__ENDPOINT: http://minio:9000
+      STORAGE__BUCKET: compliance
+      STORAGE__ACCESS_KEY: minioadmin
+      STORAGE__SECRET_KEY: minioadmin
+      AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
+      RUST_LOG: info,sqlx=warn
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      minio:
+        condition: service_started
+    networks:
+      - logisticos
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8017/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   # ── Optional developer tools (docker compose --profile tools up) ──
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
