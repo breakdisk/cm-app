@@ -40,7 +40,9 @@ pub fn hash_otp(code: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Verify an OTP code against its stored hash.
+/// Verify an OTP code against its stored hash using constant-time comparison.
 pub fn verify_otp(code: &str, stored_hash: &str) -> bool {
-    hash_otp(code) == stored_hash
+    use subtle::ConstantTimeEq;
+    let a = hash_otp(code);
+    a.as_bytes().ct_eq(stored_hash.as_bytes()).into()
 }

@@ -11,6 +11,6 @@ pub trait PodRepository: Send + Sync {
 
 #[async_trait]
 pub trait OtpRepository: Send + Sync {
-    async fn find_active_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<OtpCode>>;
+    async fn find_active_by_shipment(&self, shipment_id: Uuid, tenant_id: Uuid) -> anyhow::Result<Option<OtpCode>>;
     async fn save(&self, otp: &OtpCode) -> anyhow::Result<()>;
 }

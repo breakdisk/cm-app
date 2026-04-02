@@ -82,33 +82,31 @@ impl From<PodRow> for ProofOfDelivery {
 #[async_trait]
 impl PodRepository for PgPodRepository {
     async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<ProofOfDelivery>> {
-        let row = sqlx::query_as!(
-            PodRow,
+        let row = sqlx::query_as::<_, PodRow>(
             r#"SELECT id, tenant_id, shipment_id, task_id, driver_id, status,
                       signature_data, recipient_name, photos,
                       capture_lat, capture_lng, geofence_verified,
                       otp_verified, otp_id, cod_collected_cents,
                       captured_at, created_at
-               FROM pod.proofs WHERE id = $1"#,
-            id
+               FROM pod.proofs WHERE id = $1"#
         )
+        .bind(id)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(ProofOfDelivery::from))
     }
 
     async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfDelivery>> {
-        let row = sqlx::query_as!(
-            PodRow,
+        let row = sqlx::query_as::<_, PodRow>(
             r#"SELECT id, tenant_id, shipment_id, task_id, driver_id, status,
                       signature_data, recipient_name, photos,
                       capture_lat, capture_lng, geofence_verified,
                       otp_verified, otp_id, cod_collected_cents,
                       captured_at, created_at
                FROM pod.proofs WHERE shipment_id = $1
-               ORDER BY created_at DESC LIMIT 1"#,
-            shipment_id
+               ORDER BY created_at DESC LIMIT 1"#
         )
+        .bind(shipment_id)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(ProofOfDelivery::from))
@@ -117,7 +115,7 @@ impl PodRepository for PgPodRepository {
     async fn save(&self, pod: &ProofOfDelivery) -> anyhow::Result<()> {
         let status = status_str(pod.status);
         let photos = serde_json::to_value(&pod.photos)?;
-        sqlx::query!(
+        sqlx::query(
             r#"INSERT INTO pod.proofs
                    (id, tenant_id, shipment_id, task_id, driver_id, status,
                     signature_data, recipient_name, photos,
@@ -131,13 +129,25 @@ impl PodRepository for PgPodRepository {
                    photos              = EXCLUDED.photos,
                    otp_verified        = EXCLUDED.otp_verified,
                    otp_id              = EXCLUDED.otp_id,
-                   cod_collected_cents = EXCLUDED.cod_collected_cents"#,
-            pod.id, pod.tenant_id, pod.shipment_id, pod.task_id, pod.driver_id,
-            status, pod.signature_data, pod.recipient_name, photos,
-            pod.capture_lat, pod.capture_lng, pod.geofence_verified,
-            pod.otp_verified, pod.otp_id, pod.cod_collected_cents,
-            pod.captured_at, pod.created_at,
+                   cod_collected_cents = EXCLUDED.cod_collected_cents"#
         )
+        .bind(pod.id)
+        .bind(pod.tenant_id)
+        .bind(pod.shipment_id)
+        .bind(pod.task_id)
+        .bind(pod.driver_id)
+        .bind(status)
+        .bind(&pod.signature_data)
+        .bind(&pod.recipient_name)
+        .bind(photos)
+        .bind(pod.capture_lat)
+        .bind(pod.capture_lng)
+        .bind(pod.geofence_verified)
+        .bind(pod.otp_verified)
+        .bind(pod.otp_id)
+        .bind(pod.cod_collected_cents)
+        .bind(pod.captured_at)
+        .bind(pod.created_at)
         .execute(&self.pool)
         .await?;
         Ok(())

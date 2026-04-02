@@ -40,33 +40,40 @@ impl From<OtpRow> for OtpCode {
 
 #[async_trait]
 impl OtpRepository for PgOtpRepository {
-    async fn find_active_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<OtpCode>> {
-        let row = sqlx::query_as!(
-            OtpRow,
+    async fn find_active_by_shipment(&self, shipment_id: Uuid, tenant_id: Uuid) -> anyhow::Result<Option<OtpCode>> {
+        let row = sqlx::query_as::<_, OtpRow>(
             r#"SELECT id, tenant_id, shipment_id, phone, code_hash, is_used, expires_at, created_at
                FROM pod.otp_codes
                WHERE shipment_id = $1
+                 AND tenant_id = $2
                  AND is_used = false
                  AND expires_at > NOW()
                ORDER BY created_at DESC
                LIMIT 1"#,
-            shipment_id
         )
+        .bind(shipment_id)
+        .bind(tenant_id)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(OtpCode::from))
     }
 
     async fn save(&self, otp: &OtpCode) -> anyhow::Result<()> {
-        sqlx::query!(
+        sqlx::query(
             r#"INSERT INTO pod.otp_codes
                    (id, tenant_id, shipment_id, phone, code_hash, is_used, expires_at, created_at)
                VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
                ON CONFLICT (id) DO UPDATE SET
                    is_used = EXCLUDED.is_used"#,
-            otp.id, otp.tenant_id, otp.shipment_id, otp.phone,
-            otp.code_hash, otp.is_used, otp.expires_at, otp.created_at,
         )
+        .bind(otp.id)
+        .bind(otp.tenant_id)
+        .bind(otp.shipment_id)
+        .bind(&otp.phone)
+        .bind(&otp.code_hash)
+        .bind(otp.is_used)
+        .bind(otp.expires_at)
+        .bind(otp.created_at)
         .execute(&self.pool)
         .await?;
         Ok(())

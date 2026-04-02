@@ -13,10 +13,12 @@ use logisticos_events::producer::KafkaProducer;
 pub async fn run() -> anyhow::Result<()> {
     let cfg = Config::load().context("Failed to load pod config")?;
 
+    let otlp = std::env::var("OTLP_ENDPOINT").ok();
     logisticos_tracing::init(logisticos_tracing::TracingConfig {
-        service_name: "pod".to_string(),
-        env: cfg.app.env.clone(),
-        otlp_endpoint: std::env::var("OTLP_ENDPOINT").ok(),
+        service_name: "pod",
+        env: &cfg.app.env,
+        otlp_endpoint: otlp.as_deref(),
+        log_level: None,
     })?;
 
     tracing::info!(env = %cfg.app.env, "pod service starting");
@@ -24,6 +26,12 @@ pub async fn run() -> anyhow::Result<()> {
     let pool = PgPoolOptions::new()
         .max_connections(cfg.database.max_connections)
         .acquire_timeout(std::time::Duration::from_secs(5))
+        .after_connect(|conn, _meta| Box::pin(async move {
+            sqlx::query("SET search_path TO pod, public")
+                .execute(&mut *conn)
+                .await?;
+            Ok(())
+        }))
         .connect(&cfg.database.url)
         .await
         .context("Failed to connect to PostgreSQL")?;
@@ -36,7 +44,7 @@ pub async fn run() -> anyhow::Result<()> {
     );
 
     let jwt_secret = std::env::var("AUTH__JWT_SECRET").context("AUTH__JWT_SECRET not set")?;
-    let jwt = Arc::new(JwtService::new(jwt_secret, 3600, 86400));
+    let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
 
     // S3/MinIO storage adapter
     let s3_bucket  = std::env::var("S3_BUCKET").unwrap_or_else(|_| "logisticos-pod".to_string());

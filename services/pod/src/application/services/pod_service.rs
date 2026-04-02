@@ -183,7 +183,7 @@ impl PodService {
         // OTP verification — validate if code provided
         if let Some(otp_code) = cmd.otp_code {
             let otp = self.otp_repo
-                .find_active_by_shipment(pod.shipment_id).await
+                .find_active_by_shipment(pod.shipment_id, tenant_id.inner()).await
                 .map_err(AppError::Internal)?;
 
             match otp {
@@ -283,10 +283,11 @@ impl PodService {
     /// Returns otp_id on success.
     pub async fn verify_otp_standalone(
         &self,
+        tenant_id: Uuid,
         cmd: VerifyOtpCommand,
     ) -> AppResult<Uuid> {
         let otp = self.otp_repo
-            .find_active_by_shipment(cmd.shipment_id).await
+            .find_active_by_shipment(cmd.shipment_id, tenant_id).await
             .map_err(AppError::Internal)?
             .ok_or_else(|| AppError::BusinessRule("No active OTP found for this shipment".into()))?;
 

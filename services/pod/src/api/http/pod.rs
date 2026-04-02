@@ -109,10 +109,10 @@ pub async fn generate_otp(
 }
 
 pub async fn verify_otp(
-    AuthClaims(_claims): AuthClaims,
+    AuthClaims(claims): AuthClaims,
     State(state): State<Arc<AppState>>,
     Json(cmd): Json<VerifyOtpCommand>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let otp_id = state.pod_service.verify_otp_standalone(cmd).await?;
+    let otp_id = state.pod_service.verify_otp_standalone(claims.tenant_id, cmd).await?;
     Ok(Json(serde_json::json!({ "data": { "otp_id": otp_id, "verified": true } })))
 }

@@ -1,4 +1,4 @@
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    pod::bootstrap::run().await
+    logisticos_pod::bootstrap::run().await
 }
