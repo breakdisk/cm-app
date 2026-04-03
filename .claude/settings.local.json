@@ -4,7 +4,9 @@
       "Bash(find /c/Users/Admin/.cargo/registry/src -name *.toml)",
       "Bash(xargs grep:*)",
       "Bash(xargs wc:*)",
-      "Bash(find d:/LogisticOS/services/api-gateway/src -name *.rs)"
+      "Bash(find d:/LogisticOS/services/api-gateway/src -name *.rs)",
+      "Bash(grep -n \"CREATE SCHEMA.*tracking\" scripts/db/init.sql services/*/migrations/*.sql)",
+      "Bash(git -C \"D:/LogisticOS\" show a85202e --stat)"
     ]
   }
 }
