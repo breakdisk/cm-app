@@ -47,21 +47,20 @@ impl ApiKeyRepository for PgApiKeyRepository {
     /// Look up an API key by its SHA-256 hash — the only way keys are authenticated.
     /// The raw key is never stored; callers hash before calling this.
     async fn find_by_hash(&self, key_hash: &str) -> anyhow::Result<Option<ApiKey>> {
-        let row = sqlx::query_as!(
-            ApiKeyRow,
+        let row = sqlx::query_as::<_, ApiKeyRow>(
             r#"SELECT id, tenant_id, name, key_hash, key_prefix, scopes,
                       is_active, expires_at, last_used_at, created_at
                FROM identity.api_keys
-               WHERE key_hash = $1 AND is_active = true"#,
-            key_hash
+               WHERE key_hash = $1 AND is_active = true"#
         )
+        .bind(key_hash)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(ApiKey::from))
     }
 
     async fn save(&self, key: &ApiKey) -> anyhow::Result<()> {
-        sqlx::query!(
+        sqlx::query(
             r#"INSERT INTO identity.api_keys
                    (id, tenant_id, name, key_hash, key_prefix, scopes,
                     is_active, expires_at, last_used_at, created_at)
@@ -71,33 +70,32 @@ impl ApiKeyRepository for PgApiKeyRepository {
                    scopes       = EXCLUDED.scopes,
                    is_active    = EXCLUDED.is_active,
                    expires_at   = EXCLUDED.expires_at,
-                   last_used_at = EXCLUDED.last_used_at"#,
-            key.id.inner(),
-            key.tenant_id.inner(),
-            key.name,
-            key.key_hash,
-            key.key_prefix,
-            &key.scopes,
-            key.is_active,
-            key.expires_at,
-            key.last_used_at,
-            key.created_at,
+                   last_used_at = EXCLUDED.last_used_at"#
         )
+        .bind(key.id.inner())
+        .bind(key.tenant_id.inner())
+        .bind(&key.name)
+        .bind(&key.key_hash)
+        .bind(&key.key_prefix)
+        .bind(&key.scopes)
+        .bind(key.is_active)
+        .bind(key.expires_at)
+        .bind(key.last_used_at)
+        .bind(key.created_at)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
     async fn list_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<ApiKey>> {
-        let rows = sqlx::query_as!(
-            ApiKeyRow,
+        let rows = sqlx::query_as::<_, ApiKeyRow>(
             r#"SELECT id, tenant_id, name, key_hash, key_prefix, scopes,
                       is_active, expires_at, last_used_at, created_at
                FROM identity.api_keys
                WHERE tenant_id = $1
-               ORDER BY created_at DESC"#,
-            tenant_id.inner()
+               ORDER BY created_at DESC"#
         )
+        .bind(tenant_id.inner())
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(ApiKey::from).collect())
@@ -106,12 +104,10 @@ impl ApiKeyRepository for PgApiKeyRepository {
     /// Hard revoke: set is_active = false immediately.
     /// The key remains in the table for audit purposes.
     async fn revoke(&self, id: &ApiKeyId) -> anyhow::Result<()> {
-        sqlx::query!(
-            "UPDATE identity.api_keys SET is_active = false WHERE id = $1",
-            id.inner()
-        )
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("UPDATE identity.api_keys SET is_active = false WHERE id = $1")
+            .bind(id.inner())
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 }

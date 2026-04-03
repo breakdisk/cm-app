@@ -4,10 +4,10 @@
 
 DO $$
 BEGIN
-  INSERT INTO identity.tenants (id, name, slug, subscription_tier, is_active)
+  INSERT INTO identity.tenants (id, name, slug, subscription_tier, is_active, owner_email)
   VALUES (
     '00000000-0000-0000-0000-000000000001',
-    'Demo Logistics Co', 'demo', 'business', true
+    'Demo Logistics Co', 'demo', 'business', true, 'admin@demo.com'
   ) ON CONFLICT DO NOTHING;
 
   INSERT INTO identity.users (id, tenant_id, email, password_hash, first_name, last_name, roles, email_verified, is_active)
@@ -17,7 +17,7 @@ BEGIN
     'admin@demo.com',
     '$argon2id$v=19$m=19456,t=2,p=1$sfbU/HB5EcNJtunKwP9QNQ$C51lutFAxk/U43haIN+U+FOCZrkIWGMkd48q/IVdVxY',
     'Admin', 'User',
-    ARRAY['tenant_admin'], true, true
+    ARRAY['admin'], true, true
   ) ON CONFLICT DO NOTHING;
 
   INSERT INTO identity.users (id, tenant_id, email, password_hash, first_name, last_name, roles, email_verified, is_active)

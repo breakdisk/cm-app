@@ -87,3 +87,14 @@ pub struct SendVerificationEmailCommand {
 pub struct VerifyEmailCommand {
     pub token: String,
 }
+
+#[derive(Debug, Deserialize, Validate)]
+pub struct RegisterCommand {
+    pub tenant_slug: String,
+    #[validate(email)]
+    pub email: String,
+    #[validate(length(min = 8))]
+    pub password: String,
+    pub first_name: String,
+    pub last_name: String,
+}

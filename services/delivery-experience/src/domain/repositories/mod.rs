@@ -28,4 +28,12 @@ pub trait TrackingRepository: Send + Sync {
         preferred_time_slot: Option<&str>,
         reason: &str,
     ) -> anyhow::Result<()>;
+
+    async fn save_feedback(
+        &self,
+        tracking_number: &str,
+        rating: i16,
+        tags: &[String],
+        comments: Option<&str>,
+    ) -> anyhow::Result<()>;
 }

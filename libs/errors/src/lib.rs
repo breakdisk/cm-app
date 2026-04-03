@@ -55,6 +55,11 @@ pub enum AppError {
 }
 
 impl AppError {
+    /// Convenience constructor for use as a function pointer in `.map_err(AppError::internal)`.
+    pub fn internal(e: anyhow::Error) -> Self {
+        AppError::Internal(e)
+    }
+
     pub fn status_code(&self) -> StatusCode {
         match self {
             AppError::Unauthorized(_)              => StatusCode::UNAUTHORIZED,

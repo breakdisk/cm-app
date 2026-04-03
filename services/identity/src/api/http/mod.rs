@@ -26,6 +26,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         // Auth (public — no JWT required)
         .route("/v1/auth/login",                    post(auth::login))
         .route("/v1/auth/refresh",                  post(auth::refresh))
+        .route("/v1/auth/register",                 post(auth::register))
         .route("/v1/auth/forgot-password",          post(auth::forgot_password))
         .route("/v1/auth/reset-password",           post(auth::reset_password))
         .route("/v1/auth/send-verification-email",  post(auth::send_verification_email))

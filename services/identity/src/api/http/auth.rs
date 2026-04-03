@@ -2,7 +2,7 @@ use axum::{extract::State, Json};
 use std::sync::Arc;
 use crate::{
     api::http::AppState,
-    application::commands::{LoginCommand, RefreshTokenCommand, ForgotPasswordCommand, ResetPasswordCommand, SendVerificationEmailCommand, VerifyEmailCommand},
+    application::commands::{LoginCommand, RefreshTokenCommand, ForgotPasswordCommand, ResetPasswordCommand, RegisterCommand, SendVerificationEmailCommand, VerifyEmailCommand},
 };
 use logisticos_errors::AppError;
 
@@ -52,4 +52,14 @@ pub async fn verify_email(
 ) -> Result<Json<serde_json::Value>, AppError> {
     state.auth_service.verify_email(cmd).await?;
     Ok(Json(serde_json::json!({ "data": { "message": "Email verified successfully." } })))
+}
+
+pub async fn register(
+    State(state): State<Arc<AppState>>,
+    Json(cmd): Json<RegisterCommand>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    state.auth_service.register(cmd).await?;
+    Ok(Json(serde_json::json!({
+        "data": { "message": "Registration successful. Please verify your email." }
+    })))
 }

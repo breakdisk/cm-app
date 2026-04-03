@@ -268,4 +268,25 @@ impl TrackingRepository for PgTrackingRepository {
 
         Ok(())
     }
+
+    async fn save_feedback(
+        &self,
+        tracking_number: &str,
+        rating: i16,
+        tags: &[String],
+        comments: Option<&str>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"INSERT INTO delivery_experience.feedback
+                   (tracking_number, rating, tags, comments)
+               VALUES ($1, $2, $3, $4)"#,
+        )
+        .bind(tracking_number)
+        .bind(rating)
+        .bind(tags)
+        .bind(comments)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }

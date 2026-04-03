@@ -2,6 +2,7 @@ use axum::{extract::{Path, State}, Json};
 use std::sync::Arc;
 use uuid::Uuid;
 use logisticos_auth::middleware::AuthClaims;
+use logisticos_auth::require_permission;
 use logisticos_errors::AppError;
 use crate::{api::http::AppState, application::commands::InviteUserCommand};
 

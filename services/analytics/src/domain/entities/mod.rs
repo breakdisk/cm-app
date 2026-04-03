@@ -55,6 +55,47 @@ pub struct DriverPerformance {
     pub cod_collected_cents: i64,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DashboardMetrics {
+    pub shipments_today:         i64,
+    pub shipments_today_trend:   f64,
+    pub delivery_rate:           f64,
+    pub delivery_rate_trend:     f64,
+    pub avg_delivery_days:       f64,
+    pub avg_delivery_days_trend: f64,
+    pub revenue_mtd:             i64,
+    pub revenue_mtd_trend:       f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WeeklyVolumeDay {
+    pub day:       String,
+    pub delivered: i64,
+    pub failed:    i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SlaBreakdown {
+    pub name:  String,
+    pub value: f64,
+    pub fill:  String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ZonePerformance {
+    pub zone:         String,
+    pub deliveries:   i64,
+    pub success_rate: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DashboardData {
+    pub metrics:          DashboardMetrics,
+    pub weekly_volume:    Vec<WeeklyVolumeDay>,
+    pub sla_breakdown:    Vec<SlaBreakdown>,
+    pub zone_performance: Vec<ZonePerformance>,
+}
+
 /// Aggregate event row stored in the analytics schema (append-only).
 /// Written by Kafka handlers on every relevant event.
 #[derive(Debug, Clone, Serialize, Deserialize)]

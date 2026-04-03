@@ -96,4 +96,21 @@ impl TrackingService {
             .await
             .map_err(|e| AppError::Internal(e))
     }
+
+    pub async fn submit_feedback(
+        &self,
+        tracking_number: &str,
+        rating: i16,
+        tags: Vec<String>,
+        comments: Option<String>,
+    ) -> AppResult<()> {
+        // Validate rating
+        if !(1..=5).contains(&rating) {
+            return Err(AppError::Validation("Rating must be between 1 and 5".to_owned()));
+        }
+        self.repo
+            .save_feedback(tracking_number, rating, &tags, comments.as_deref())
+            .await
+            .map_err(|e| AppError::Internal(e))
+    }
 }

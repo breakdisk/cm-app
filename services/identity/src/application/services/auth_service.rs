@@ -208,6 +208,45 @@ impl AuthService {
         Ok(())
     }
 
+    pub async fn register(&self, cmd: crate::application::commands::RegisterCommand) -> AppResult<()> {
+        use validator::Validate;
+        cmd.validate().map_err(|e| AppError::Validation(e.to_string()))?;
+
+        let tenant = self.tenant_repo.find_by_slug(&cmd.tenant_slug).await
+            .map_err(AppError::Internal)?
+            .ok_or_else(|| AppError::NotFound { resource: "Tenant", id: cmd.tenant_slug.clone() })?;
+
+        // Check if email already registered for this tenant.
+        let existing = self.user_repo.find_by_email(&tenant.id, &cmd.email).await
+            .map_err(AppError::Internal)?;
+        if existing.is_some() {
+            return Err(AppError::Conflict("Email already registered".into()));
+        }
+
+        let password_hash = logisticos_auth::password::hash_password(&cmd.password)
+            .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
+
+        let user = crate::domain::entities::User::new(
+            tenant.id.clone(),
+            cmd.email.clone(),
+            password_hash,
+            cmd.first_name,
+            cmd.last_name,
+            vec!["driver".to_owned()],
+        );
+
+        self.user_repo.save(&user).await.map_err(AppError::Internal)?;
+
+        // Send verification email.
+        self.send_verification_email(crate::application::commands::SendVerificationEmailCommand {
+            tenant_slug: cmd.tenant_slug,
+            email: cmd.email,
+        }).await?;
+
+        tracing::info!(user_id = %user.id, tenant_id = %tenant.id, "User registered");
+        Ok(())
+    }
+
     pub async fn verify_email(&self, cmd: crate::application::commands::VerifyEmailCommand) -> AppResult<()> {
         let token_hash = sha2_hash(cmd.token.as_bytes());
 
