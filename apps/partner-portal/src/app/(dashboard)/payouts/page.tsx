@@ -3,6 +3,7 @@
  * Partner Portal — Payouts Page
  * Carrier payout history, pending remittances, COD reconciliation.
  */
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
@@ -13,14 +14,40 @@ import {
 } from "recharts";
 import { CreditCard, Download, CheckCircle2, Clock, AlertCircle } from "lucide-react";
 
-// ── Mock data ──────────────────────────────────────────────────────────────────
+// ── API helpers ────────────────────────────────────────────────────────────────
 
-const KPI = [
-  { label: "Payout MTD",       value: 421000, trend: +14.2, color: "green"  as const, format: "currency" as const },
-  { label: "COD Remitted",     value: 284000, trend: +9.8,  color: "amber"  as const, format: "currency" as const },
-  { label: "Pending Payout",   value: 62000,  trend: -4.1,  color: "cyan"   as const, format: "currency" as const },
-  { label: "Deliveries Billed",value: 8420,   trend: +14.2, color: "purple" as const, format: "number"  as const },
-];
+const PAYMENTS_URL = process.env.NEXT_PUBLIC_PAYMENTS_URL ?? "http://localhost:8008";
+
+function getToken()  { return typeof window !== "undefined" ? localStorage.getItem("access_token") ?? "" : ""; }
+function getTenant() { return typeof window !== "undefined" ? localStorage.getItem("tenant_slug")  ?? "demo" : "demo"; }
+
+async function fetchInvoices() {
+  try {
+    const res = await fetch(`${PAYMENTS_URL}/v1/invoices`, {
+      headers: { Authorization: `Bearer ${getToken()}`, "X-Tenant": getTenant() },
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json.data ?? json.invoices ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchWallet() {
+  try {
+    const res = await fetch(`${PAYMENTS_URL}/v1/wallet`, {
+      headers: { Authorization: `Bearer ${getToken()}`, "X-Tenant": getTenant() },
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json.data ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// ── Mock data ──────────────────────────────────────────────────────────────────
 
 const MONTHLY_PAYOUTS = [
   { month: "Oct", base: 310000, cod: 190000, bonus: 12000 },
@@ -45,7 +72,7 @@ interface PayoutRecord {
   paid_date?: string;
 }
 
-const PAYOUT_HISTORY: PayoutRecord[] = [
+const PAYOUT_HISTORY_DEFAULT: PayoutRecord[] = [
   { id: "P-2026-03", period: "March 2026 (MTD)", deliveries: 8420, base_rate: 280000, cod_remittance: 284000, bonus: 22000, total: 421000, status: "processing" },
   { id: "P-2026-02", period: "February 2026",     deliveries: 7840, base_rate: 241000, cod_remittance: 241000, bonus: 14000, total: 362000, status: "paid",       paid_date: "Mar 5, 2026" },
   { id: "P-2026-01", period: "January 2026",       deliveries: 7120, base_rate: 218000, cod_remittance: 218000, bonus: 8000,  total: 335000, status: "paid",       paid_date: "Feb 5, 2026" },
@@ -61,6 +88,47 @@ const STATUS_CONFIG: Record<PayoutStatus, { label: string; variant: "green" | "c
 };
 
 export default function PayoutsPage() {
+  const [payoutHistory, setPayoutHistory] = useState<PayoutRecord[]>(PAYOUT_HISTORY_DEFAULT);
+  const [pendingPayout, setPendingPayout] = useState<number>(62000);
+
+  useEffect(() => {
+    async function loadData() {
+      const [invoices, wallet] = await Promise.all([fetchInvoices(), fetchWallet()]);
+
+      if (invoices && Array.isArray(invoices) && invoices.length > 0) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const mapped: PayoutRecord[] = invoices.map((inv: any) => ({
+          id:             inv.id,
+          period:         inv.period ?? inv.billing_period ?? "—",
+          deliveries:     inv.deliveries_count ?? inv.deliveries ?? 0,
+          base_rate:      inv.base_amount ?? inv.base_rate ?? 0,
+          cod_remittance: inv.cod_amount ?? 0,
+          bonus:          inv.bonus_amount ?? inv.bonus ?? 0,
+          total:          inv.total_amount ?? inv.total ?? 0,
+          status:         inv.status ?? "pending",
+          paid_date:      inv.paid_date ?? inv.paid_at ?? undefined,
+        }));
+        setPayoutHistory(mapped);
+      }
+
+      if (wallet) {
+        const balance = wallet.pending_balance ?? wallet.balance ?? wallet.pending_payout ?? null;
+        if (balance !== null) {
+          setPendingPayout(Number(balance));
+        }
+      }
+    }
+
+    loadData();
+  }, []);
+
+  const KPI = [
+    { label: "Payout MTD",        value: 421000,        trend: +14.2, color: "green"  as const, format: "currency" as const },
+    { label: "COD Remitted",      value: 284000,        trend: +9.8,  color: "amber"  as const, format: "currency" as const },
+    { label: "Pending Payout",    value: pendingPayout, trend: -4.1,  color: "cyan"   as const, format: "currency" as const },
+    { label: "Deliveries Billed", value: 8420,          trend: +14.2, color: "purple" as const, format: "number"  as const },
+  ];
+
   return (
     <motion.div
       variants={variants.staggerContainer}
@@ -140,8 +208,9 @@ export default function PayoutsPage() {
             ))}
           </div>
 
-          {PAYOUT_HISTORY.map((p) => {
-            const { label, variant, icon } = STATUS_CONFIG[p.status];
+          {payoutHistory.map((p) => {
+            const cfg = STATUS_CONFIG[p.status] ?? STATUS_CONFIG["pending"];
+            const { label, variant, icon } = cfg;
             return (
               <div key={p.id} className="grid grid-cols-[2fr_80px_100px_100px_80px_100px_100px] gap-3 items-center px-5 py-4 border-b border-glass-border/50 hover:bg-glass-100 transition-colors">
                 <div>

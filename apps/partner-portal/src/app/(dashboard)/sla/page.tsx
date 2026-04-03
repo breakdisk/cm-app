@@ -3,6 +3,7 @@
  * Partner Portal — SLA Dashboard
  * Real-time SLA compliance tracking per zone, shipment type, and time window.
  */
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
@@ -14,14 +15,49 @@ import {
 } from "recharts";
 import { Star, AlertTriangle, CheckCircle2, Clock } from "lucide-react";
 
-// ── Mock data ──────────────────────────────────────────────────────────────────
+// ── API helpers ────────────────────────────────────────────────────────────────
 
-const KPI = [
-  { label: "Overall SLA",       value: 94.8, trend: +1.2,  color: "green"  as const, format: "percent" as const },
-  { label: "On-Time Deliveries",value: 8412, trend: +8.4,  color: "cyan"   as const, format: "number"  as const },
-  { label: "SLA Breaches MTD",  value: 462,  trend: -18.2, color: "red"    as const, format: "number"  as const },
-  { label: "Avg Days to Deliver",value: 1.8, trend: -0.2,  color: "purple" as const, format: "number"  as const },
-];
+const ANALYTICS_URL = process.env.NEXT_PUBLIC_ANALYTICS_URL ?? "http://localhost:8013";
+
+function getToken()  { return typeof window !== "undefined" ? localStorage.getItem("access_token") ?? "" : ""; }
+function getTenant() { return typeof window !== "undefined" ? localStorage.getItem("tenant_slug")  ?? "demo" : "demo"; }
+
+function todayStr()     { return new Date().toISOString().slice(0, 10); }
+function daysAgoStr(n: number) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+async function fetchKpis() {
+  try {
+    const res = await fetch(
+      `${ANALYTICS_URL}/v1/analytics/kpis?from=${daysAgoStr(30)}&to=${todayStr()}`,
+      { headers: { Authorization: `Bearer ${getToken()}`, "X-Tenant": getTenant() } },
+    );
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json.data ?? json;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchTimeseries() {
+  try {
+    const res = await fetch(
+      `${ANALYTICS_URL}/v1/analytics/timeseries?from=${daysAgoStr(30)}&to=${todayStr()}`,
+      { headers: { Authorization: `Bearer ${getToken()}`, "X-Tenant": getTenant() } },
+    );
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json.data?.buckets ?? json.data ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// ── Mock data ──────────────────────────────────────────────────────────────────
 
 const ZONE_SLA = [
   { zone: "Metro Manila",    d1: 82.4, d2: 96.2, d3: 99.1, breach: 18,  target: 95 },
@@ -30,20 +66,20 @@ const ZONE_SLA = [
   { zone: "Mindanao",        d1: 21.4, d2: 61.3, d3: 88.4, breach: 112, target: 85 },
 ];
 
-const DAILY_SLA_TREND = [
-  { date: "Mar 1",  rate: 93.2 }, { date: "Mar 3",  rate: 94.1 },
-  { date: "Mar 5",  rate: 92.8 }, { date: "Mar 7",  rate: 95.4 },
-  { date: "Mar 9",  rate: 93.7 }, { date: "Mar 11", rate: 94.8 },
-  { date: "Mar 13", rate: 96.1 }, { date: "Mar 15", rate: 95.2 },
-  { date: "Mar 17", rate: 94.8 },
-];
-
 const BREACH_REASONS = [
   { reason: "Traffic / Road closure", count: 184 },
   { reason: "Customer unavailable",   count: 142 },
   { reason: "Wrong address",          count: 76  },
   { reason: "Vehicle breakdown",      count: 38  },
   { reason: "Weather",                count: 22  },
+];
+
+const DAILY_SLA_TREND_DEFAULT = [
+  { date: "Mar 1",  rate: 93.2 }, { date: "Mar 3",  rate: 94.1 },
+  { date: "Mar 5",  rate: 92.8 }, { date: "Mar 7",  rate: 95.4 },
+  { date: "Mar 9",  rate: 93.7 }, { date: "Mar 11", rate: 94.8 },
+  { date: "Mar 13", rate: 96.1 }, { date: "Mar 15", rate: 95.2 },
+  { date: "Mar 17", rate: 94.8 },
 ];
 
 type SlaGrade = "Excellent" | "Good" | "Fair" | "At Risk";
@@ -64,6 +100,43 @@ function gradeVariant(grade: SlaGrade): "green" | "cyan" | "amber" | "red" {
 }
 
 export default function SLADashboardPage() {
+  const [overallSla, setOverallSla]       = useState<number>(94.8);
+  const [onTimeCount, setOnTimeCount]     = useState<number>(8412);
+  const [breachCount, setBreachCount]     = useState<number>(462);
+  const [avgDays, setAvgDays]             = useState<number>(1.8);
+  const [trendData, setTrendData]         = useState(DAILY_SLA_TREND_DEFAULT);
+
+  useEffect(() => {
+    async function loadData() {
+      const [kpis, timeseries] = await Promise.all([fetchKpis(), fetchTimeseries()]);
+
+      if (kpis) {
+        if (kpis.delivery_success_rate != null)  setOverallSla(Number(kpis.delivery_success_rate));
+        if (kpis.delivered != null)              setOnTimeCount(Number(kpis.delivered));
+        if (kpis.failed != null)                 setBreachCount(Number(kpis.failed));
+        if (kpis.avg_delivery_hours != null)     setAvgDays(Number(kpis.avg_delivery_hours) / 24);
+      }
+
+      if (timeseries && Array.isArray(timeseries) && timeseries.length > 0) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const trend = timeseries.map((b: any) => ({
+          date: b.date,
+          rate: b.delivered > 0 ? Math.round((b.delivered / (b.delivered + b.failed)) * 100) : 100,
+        }));
+        setTrendData(trend);
+      }
+    }
+
+    loadData();
+  }, []);
+
+  const KPI = [
+    { label: "Overall SLA",        value: overallSla,  trend: +1.2,  color: "green"  as const, format: "percent" as const },
+    { label: "On-Time Deliveries", value: onTimeCount, trend: +8.4,  color: "cyan"   as const, format: "number"  as const },
+    { label: "SLA Breaches MTD",   value: breachCount, trend: -18.2, color: "red"    as const, format: "number"  as const },
+    { label: "Avg Days to Deliver",value: avgDays,     trend: -0.2,  color: "purple" as const, format: "number"  as const },
+  ];
+
   return (
     <motion.div
       variants={variants.staggerContainer}
@@ -103,7 +176,7 @@ export default function SLADashboardPage() {
             <CheckCircle2 size={15} className="text-green-signal" />
           </div>
           <ResponsiveContainer width="100%" height={180}>
-            <LineChart data={DAILY_SLA_TREND} margin={{ top: 10, right: 10, bottom: 0, left: -24 }}>
+            <LineChart data={trendData} margin={{ top: 10, right: 10, bottom: 0, left: -24 }}>
               <CartesianGrid stroke="rgba(255,255,255,0.04)" strokeDasharray="4 4" vertical={false} />
               <XAxis dataKey="date" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
               <YAxis domain={[85, 100]} tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
@@ -169,7 +242,7 @@ export default function SLADashboardPage() {
           <div className="flex items-center justify-between mb-5">
             <div>
               <h2 className="font-heading text-sm font-semibold text-white">SLA Breach Root Causes</h2>
-              <p className="text-2xs font-mono text-white/30">462 breaches MTD</p>
+              <p className="text-2xs font-mono text-white/30">{breachCount} breaches MTD</p>
             </div>
             <Clock size={14} className="text-red-signal" />
           </div>
