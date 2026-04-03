@@ -17,10 +17,12 @@ use logisticos_events::producer::KafkaProducer;
 pub async fn run() -> anyhow::Result<()> {
     let cfg = Config::load().context("Failed to load dispatch config")?;
 
+    let otlp = std::env::var("OTLP_ENDPOINT").ok();
     logisticos_tracing::init(logisticos_tracing::TracingConfig {
-        service_name: "dispatch".to_string(),
-        env: cfg.app.env.clone(),
-        otlp_endpoint: std::env::var("OTLP_ENDPOINT").ok(),
+        service_name: "dispatch",
+        env: &cfg.app.env,
+        otlp_endpoint: otlp.as_deref(),
+        log_level: None,
     })?;
 
     tracing::info!(env = %cfg.app.env, "dispatch service starting");
@@ -28,6 +30,12 @@ pub async fn run() -> anyhow::Result<()> {
     let pool = PgPoolOptions::new()
         .max_connections(cfg.database.max_connections)
         .acquire_timeout(std::time::Duration::from_secs(5))
+        .after_connect(|conn, _meta| Box::pin(async move {
+            sqlx::query("SET search_path TO dispatch, public")
+                .execute(&mut *conn)
+                .await?;
+            Ok(())
+        }))
         .connect(&cfg.database.url)
         .await
         .context("Failed to connect to PostgreSQL")?;
@@ -42,7 +50,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     let jwt_secret = std::env::var("AUTH__JWT_SECRET")
         .context("AUTH__JWT_SECRET env var not set")?;
-    let jwt = Arc::new(JwtService::new(jwt_secret, 3600, 86400));
+    let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
 
     // Redis — compliance status cache
     let redis_manager = redis::aio::ConnectionManager::new(
@@ -116,7 +124,26 @@ pub async fn run() -> anyhow::Result<()> {
         queue_repo,
         drivers_repo,
     });
-    let app = router(state);
+    use tower_http::cors::CorsLayer;
+    use axum::http::{HeaderName, HeaderValue, Method};
+
+    let cors = CorsLayer::new()
+        .allow_origin([
+            "http://localhost:3001".parse::<HeaderValue>().unwrap(),
+            "http://localhost:3002".parse::<HeaderValue>().unwrap(),
+            "http://localhost:3003".parse::<HeaderValue>().unwrap(),
+            "http://localhost:8083".parse::<HeaderValue>().unwrap(),
+        ])
+        .allow_methods([
+            Method::GET, Method::POST, Method::PUT,
+            Method::PATCH, Method::DELETE, Method::OPTIONS,
+        ])
+        .allow_headers([
+            HeaderName::from_static("content-type"),
+            HeaderName::from_static("authorization"),
+        ]);
+
+    let app = router(state).layer(cors);
 
     let addr = format!("{}:{}", cfg.app.host, cfg.app.port);
     let listener = tokio::net::TcpListener::bind(&addr)

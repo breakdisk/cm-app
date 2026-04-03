@@ -1,6 +1,8 @@
 use std::{net::SocketAddr, sync::Arc};
 
+use anyhow::Context;
 use sqlx::postgres::PgPoolOptions;
+use logisticos_auth::jwt::JwtService;
 
 use crate::{
     api::http::{AppState, router},
@@ -28,6 +30,12 @@ pub async fn run() -> anyhow::Result<()> {
     // Database
     let pool = PgPoolOptions::new()
         .max_connections(cfg.database.max_connections)
+        .after_connect(|conn, _meta| Box::pin(async move {
+            sqlx::query("SET search_path TO order_intake, public")
+                .execute(&mut *conn)
+                .await?;
+            Ok(())
+        }))
         .connect(&cfg.database.url)
         .await?;
 
@@ -54,14 +62,37 @@ pub async fn run() -> anyhow::Result<()> {
         }
     });
 
+    let jwt_secret = std::env::var("AUTH__JWT_SECRET").context("AUTH__JWT_SECRET not set")?;
+    let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
+
     // Application services
     let svc   = Arc::new(ShipmentService::new(repo.clone(), publisher, normalizer));
     let query = Arc::new(ShipmentQueryService::new(repo.clone()));
 
     // Axum router
-    let state = AppState { svc, query };
-    let app   = router(state)
-        .layer(tower_http::trace::TraceLayer::new_for_http());
+    use tower_http::cors::CorsLayer;
+    use axum::http::{HeaderName, HeaderValue, Method};
+
+    let cors = CorsLayer::new()
+        .allow_origin([
+            "http://localhost:3001".parse::<HeaderValue>().unwrap(),
+            "http://localhost:3002".parse::<HeaderValue>().unwrap(),
+            "http://localhost:3003".parse::<HeaderValue>().unwrap(),
+            "http://localhost:8083".parse::<HeaderValue>().unwrap(),
+        ])
+        .allow_methods([
+            Method::GET, Method::POST, Method::PUT,
+            Method::PATCH, Method::DELETE, Method::OPTIONS,
+        ])
+        .allow_headers([
+            HeaderName::from_static("content-type"),
+            HeaderName::from_static("authorization"),
+        ]);
+
+    let state = AppState { svc, query, jwt };
+    let app = router(state)
+        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(cors);
 
     let addr: SocketAddr = format!("{}:{}", cfg.app.host, cfg.app.port).parse()?;
     tracing::info!(addr = %addr, "order-intake service listening");

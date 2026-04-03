@@ -52,8 +52,28 @@ pub async fn run() -> anyhow::Result<()> {
 
     let state = AppState { query_svc };
 
+    use tower_http::cors::CorsLayer;
+    use axum::http::{HeaderName, HeaderValue, Method};
+
+    let cors = CorsLayer::new()
+        .allow_origin([
+            "http://localhost:3001".parse::<HeaderValue>().unwrap(),
+            "http://localhost:3002".parse::<HeaderValue>().unwrap(),
+            "http://localhost:3003".parse::<HeaderValue>().unwrap(),
+            "http://localhost:8083".parse::<HeaderValue>().unwrap(),
+        ])
+        .allow_methods([
+            Method::GET, Method::POST, Method::PUT,
+            Method::PATCH, Method::DELETE, Method::OPTIONS,
+        ])
+        .allow_headers([
+            HeaderName::from_static("content-type"),
+            HeaderName::from_static("authorization"),
+        ]);
+
     let app = http::router()
         .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(cors)
         .with_state(state);
 
     let addr: SocketAddr = format!("{}:{}", cfg.app.host, cfg.app.port).parse()?;

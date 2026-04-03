@@ -98,7 +98,26 @@ pub async fn run() -> anyhow::Result<()> {
         email_verification_token_repo,
     });
 
-    let app = router(state);
+    use tower_http::cors::CorsLayer;
+    use axum::http::{HeaderName, HeaderValue, Method};
+
+    let cors = CorsLayer::new()
+        .allow_origin([
+            "http://localhost:3001".parse::<HeaderValue>().unwrap(),
+            "http://localhost:3002".parse::<HeaderValue>().unwrap(),
+            "http://localhost:3003".parse::<HeaderValue>().unwrap(),
+            "http://localhost:8083".parse::<HeaderValue>().unwrap(),
+        ])
+        .allow_methods([
+            Method::GET, Method::POST, Method::PUT,
+            Method::PATCH, Method::DELETE, Method::OPTIONS,
+        ])
+        .allow_headers([
+            HeaderName::from_static("content-type"),
+            HeaderName::from_static("authorization"),
+        ]);
+
+    let app = router(state).layer(cors);
 
     // 10. Bind and serve
     let addr = format!("{}:{}", cfg.app.host, cfg.app.port);
