@@ -13,7 +13,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use rdkafka::{
     consumer::{CommitMode, Consumer, StreamConsumer},
-    message::BorrowedMessage,
+    message::{BorrowedMessage, Headers},
     Message,
 };
 use serde::Deserialize;
@@ -234,7 +234,7 @@ fn extract_tenant_header(msg: &BorrowedMessage<'_>) -> anyhow::Result<TenantId> 
                 let h = headers.get(i);
                 if h.key == "tenant_id" {
                     h.value
-                        .and_then(|v| std::str::from_utf8(v).ok())
+                        .and_then(|v: &[u8]| std::str::from_utf8(v).ok())
                         .and_then(|s| s.parse::<Uuid>().ok())
                         .map(TenantId::from_uuid)
                 } else {

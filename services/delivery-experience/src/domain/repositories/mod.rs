@@ -20,4 +20,11 @@ pub trait TrackingRepository: Send + Sync {
     ) -> anyhow::Result<Vec<TrackingRecord>>;
 
     async fn save(&self, record: &TrackingRecord) -> anyhow::Result<()>;
+
+    async fn reschedule(
+        &self,
+        tracking_number: &str,
+        preferred_date: chrono::NaiveDate,
+        reason: &str,
+    ) -> anyhow::Result<()>;
 }

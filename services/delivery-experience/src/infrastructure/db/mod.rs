@@ -6,6 +6,7 @@ use logisticos_types::TenantId;
 
 use crate::domain::{entities::TrackingRecord, repositories::TrackingRepository};
 
+#[derive(sqlx::FromRow)]
 struct TrackingRow {
     shipment_id:         Uuid,
     tenant_id:           Uuid,
@@ -24,6 +25,7 @@ struct TrackingRow {
     recipient_name:      Option<String>,
     attempt_number:      i16,
     next_attempt_at:     Option<chrono::DateTime<chrono::Utc>>,
+    reschedule_count:    i32,
     created_at:          chrono::DateTime<chrono::Utc>,
     updated_at:          chrono::DateTime<chrono::Utc>,
 }
@@ -55,6 +57,7 @@ impl TryFrom<TrackingRow> for TrackingRecord {
             recipient_name:      r.recipient_name,
             attempt_number:      r.attempt_number as u8,
             next_attempt_at:     r.next_attempt_at,
+            reschedule_count:    r.reschedule_count,
             created_at:          r.created_at,
             updated_at:          r.updated_at,
         })
@@ -72,40 +75,38 @@ impl PgTrackingRepository {
 #[async_trait]
 impl TrackingRepository for PgTrackingRepository {
     async fn find_by_shipment_id(&self, shipment_id: Uuid) -> anyhow::Result<Option<TrackingRecord>> {
-        let row = sqlx::query_as!(
-            TrackingRow,
+        let row = sqlx::query_as::<_, TrackingRow>(
             r#"
             SELECT shipment_id, tenant_id, tracking_number, current_status,
                    status_history, origin_address, destination_address,
                    driver_id, driver_name, driver_phone,
                    driver_position, estimated_delivery, delivered_at,
                    pod_id, recipient_name, attempt_number, next_attempt_at,
-                   created_at, updated_at
+                   reschedule_count, created_at, updated_at
             FROM tracking.shipment_tracking
             WHERE shipment_id = $1
-            "#,
-            shipment_id
+            "#
         )
+        .bind(shipment_id)
         .fetch_optional(&self.pool)
         .await?;
         row.map(TrackingRecord::try_from).transpose()
     }
 
     async fn find_by_tracking_number(&self, tracking_number: &str) -> anyhow::Result<Option<TrackingRecord>> {
-        let row = sqlx::query_as!(
-            TrackingRow,
+        let row = sqlx::query_as::<_, TrackingRow>(
             r#"
             SELECT shipment_id, tenant_id, tracking_number, current_status,
                    status_history, origin_address, destination_address,
                    driver_id, driver_name, driver_phone,
                    driver_position, estimated_delivery, delivered_at,
                    pod_id, recipient_name, attempt_number, next_attempt_at,
-                   created_at, updated_at
+                   reschedule_count, created_at, updated_at
             FROM tracking.shipment_tracking
             WHERE tracking_number = $1
-            "#,
-            tracking_number
+            "#
         )
+        .bind(tracking_number)
         .fetch_optional(&self.pool)
         .await?;
         row.map(TrackingRecord::try_from).transpose()
@@ -117,24 +118,23 @@ impl TrackingRepository for PgTrackingRepository {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<TrackingRecord>> {
-        let rows = sqlx::query_as!(
-            TrackingRow,
+        let rows = sqlx::query_as::<_, TrackingRow>(
             r#"
             SELECT shipment_id, tenant_id, tracking_number, current_status,
                    status_history, origin_address, destination_address,
                    driver_id, driver_name, driver_phone,
                    driver_position, estimated_delivery, delivered_at,
                    pod_id, recipient_name, attempt_number, next_attempt_at,
-                   created_at, updated_at
+                   reschedule_count, created_at, updated_at
             FROM tracking.shipment_tracking
             WHERE tenant_id = $1
             ORDER BY created_at DESC
             LIMIT $2 OFFSET $3
-            "#,
-            tenant_id.inner(),
-            limit,
-            offset
+            "#
         )
+        .bind(tenant_id.inner())
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(TrackingRecord::try_from).collect()
@@ -149,7 +149,7 @@ impl TrackingRepository for PgTrackingRepository {
             .map(serde_json::to_value)
             .transpose()?;
 
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO tracking.shipment_tracking (
                 shipment_id, tenant_id, tracking_number, current_status,
@@ -157,14 +157,14 @@ impl TrackingRepository for PgTrackingRepository {
                 driver_id, driver_name, driver_phone,
                 driver_position, estimated_delivery, delivered_at,
                 pod_id, recipient_name, attempt_number, next_attempt_at,
-                created_at, updated_at
+                reschedule_count, created_at, updated_at
             ) VALUES (
                 $1, $2, $3, $4,
                 $5, $6, $7,
                 $8, $9, $10,
                 $11, $12, $13,
                 $14, $15, $16, $17,
-                $18, $19
+                $18, $19, $20
             )
             ON CONFLICT (shipment_id) DO UPDATE SET
                 current_status     = EXCLUDED.current_status,
@@ -179,30 +179,88 @@ impl TrackingRepository for PgTrackingRepository {
                 recipient_name     = EXCLUDED.recipient_name,
                 attempt_number     = EXCLUDED.attempt_number,
                 next_attempt_at    = EXCLUDED.next_attempt_at,
+                reschedule_count   = EXCLUDED.reschedule_count,
                 updated_at         = EXCLUDED.updated_at
-            "#,
-            r.shipment_id,
-            r.tenant_id.inner(),
-            r.tracking_number,
-            status_str,
-            history_json,
-            r.origin_address,
-            r.destination_address,
-            r.driver_id,
-            r.driver_name,
-            r.driver_phone,
-            position_json,
-            r.estimated_delivery,
-            r.delivered_at,
-            r.pod_id,
-            r.recipient_name,
-            r.attempt_number as i16,
-            r.next_attempt_at,
-            r.created_at,
-            r.updated_at,
+            "#
         )
+        .bind(r.shipment_id)
+        .bind(r.tenant_id.inner())
+        .bind(&r.tracking_number)
+        .bind(&status_str)
+        .bind(history_json)
+        .bind(&r.origin_address)
+        .bind(&r.destination_address)
+        .bind(r.driver_id)
+        .bind(&r.driver_name)
+        .bind(&r.driver_phone)
+        .bind(position_json)
+        .bind(r.estimated_delivery)
+        .bind(r.delivered_at)
+        .bind(r.pod_id)
+        .bind(&r.recipient_name)
+        .bind(r.attempt_number as i16)
+        .bind(r.next_attempt_at)
+        .bind(r.reschedule_count)
+        .bind(r.created_at)
+        .bind(r.updated_at)
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    async fn reschedule(
+        &self,
+        tracking_number: &str,
+        preferred_date: chrono::NaiveDate,
+        reason: &str,
+    ) -> anyhow::Result<()> {
+        let next_attempt = preferred_date
+            .and_hms_opt(9, 0, 0)
+            .map(|dt| chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc));
+        let now = chrono::Utc::now();
+
+        sqlx::query(
+            r#"
+            UPDATE tracking.shipment_tracking
+            SET reschedule_count = reschedule_count + 1,
+                next_attempt_at  = $1,
+                updated_at       = $2
+            WHERE tracking_number = $3
+            "#
+        )
+        .bind(next_attempt)
+        .bind(now)
+        .bind(tracking_number)
+        .execute(&self.pool)
+        .await?;
+
+        // Look up shipment_id and tenant_id for the event insert.
+        let ids = sqlx::query_as::<_, (Uuid, Uuid)>(
+            "SELECT shipment_id, tenant_id FROM tracking.shipment_tracking WHERE tracking_number = $1"
+        )
+        .bind(tracking_number)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some((shipment_id, tenant_id)) = ids {
+            sqlx::query(
+                r#"
+                INSERT INTO delivery_experience.tracking_events
+                    (id, tenant_id, shipment_id, tracking_number, event_type, description, occurred_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                "#
+            )
+            .bind(Uuid::new_v4())
+            .bind(tenant_id)
+            .bind(shipment_id)
+            .bind(tracking_number)
+            .bind("reschedule_requested")
+            .bind(format!("Delivery rescheduled: {reason}"))
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
+        }
+
         Ok(())
     }
 }

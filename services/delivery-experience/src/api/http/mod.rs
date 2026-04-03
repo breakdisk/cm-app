@@ -2,7 +2,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use serde::Deserialize;
@@ -11,16 +11,19 @@ use uuid::Uuid;
 use logisticos_auth::middleware::AuthClaims;
 use logisticos_auth::rbac::permissions;
 use logisticos_errors::AppError;
+use logisticos_types::TenantId;
 
 use crate::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
         // Public — no auth required
-        .route("/track/:tracking_number",         get(public_track))
+        .route("/track/:tracking_number",                          get(public_track))
+        .route("/track/:tracking_number/reschedule",               post(reschedule_delivery))
+        .route("/v1/tracking/:tracking_number/reschedule",         post(reschedule_delivery))
         // Authenticated — merchant/ops
-        .route("/v1/tracking/:shipment_id",       get(get_by_shipment_id))
-        .route("/v1/tracking",                    get(list_shipments))
+        .route("/v1/tracking/:shipment_id",                        get(get_by_shipment_id))
+        .route("/v1/tracking",                                     get(list_shipments))
 }
 
 // ---------------------------------------------------------------------------
@@ -44,6 +47,7 @@ async fn public_track(
                 "delivered_at":       record.delivered_at,
                 "attempt_number":     record.attempt_number,
                 "next_attempt_at":    record.next_attempt_at,
+                "reschedule_count":   record.reschedule_count,
                 "recipient_name":     record.recipient_name,
                 "history":            record.status_history,
                 // Show driver position only for active deliveries
@@ -56,7 +60,7 @@ async fn public_track(
             });
             (StatusCode::OK, Json(public)).into_response()
         }
-        Err(AppError::NotFound(_)) => (
+        Err(AppError::NotFound { .. }) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "Tracking number not found"})),
         ).into_response(),
@@ -81,8 +85,8 @@ async fn get_by_shipment_id(
     let record = state.tracking_svc.get_by_shipment_id(shipment_id).await?;
 
     // Tenants can only see their own shipments.
-    if record.tenant_id != claims.tenant_id {
-        return Err(AppError::Forbidden("Access denied".into()));
+    if record.tenant_id != TenantId::from_uuid(claims.tenant_id) {
+        return Err(AppError::Forbidden { resource: "shipment".to_owned() });
     }
 
     Ok::<_, AppError>((StatusCode::OK, Json(record)))
@@ -107,11 +111,49 @@ async fn list_shipments(
 
     let records = state
         .tracking_svc
-        .list(&claims.tenant_id, q.limit.unwrap_or(50), q.offset.unwrap_or(0))
+        .list(&TenantId::from_uuid(claims.tenant_id), q.limit.unwrap_or(50), q.offset.unwrap_or(0))
         .await?;
 
+    let count = records.len();
     Ok::<_, AppError>((
         StatusCode::OK,
-        Json(serde_json::json!({"shipments": records, "count": records.len()})),
+        Json(serde_json::json!({"shipments": records, "count": count})),
     ))
+}
+
+// ---------------------------------------------------------------------------
+// POST /track/:tracking_number/reschedule
+// POST /v1/tracking/:tracking_number/reschedule
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Deserialize)]
+struct RescheduleBody {
+    preferred_date: chrono::NaiveDate,
+    reason: String,
+}
+
+async fn reschedule_delivery(
+    State(state): State<AppState>,
+    Path(tracking_number): Path<String>,
+    Json(body): Json<RescheduleBody>,
+) -> impl IntoResponse {
+    match state.tracking_svc.reschedule(&tracking_number, body.preferred_date, &body.reason).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "data": {
+                    "rescheduled": true,
+                    "tracking_number": tracking_number,
+                }
+            })),
+        ).into_response(),
+        Err(AppError::NotFound { .. }) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Tracking number not found"})),
+        ).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ).into_response(),
+    }
 }

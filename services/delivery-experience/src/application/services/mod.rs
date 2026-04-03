@@ -21,8 +21,11 @@ impl TrackingService {
         self.repo
             .find_by_tracking_number(tracking_number)
             .await
-            .map_err(AppError::internal)?
-            .ok_or_else(|| AppError::NotFound(format!("Tracking number '{}' not found", tracking_number)))
+            .map_err(|e| AppError::Internal(e))?
+            .ok_or_else(|| AppError::NotFound {
+                resource: "tracking",
+                id: tracking_number.to_owned(),
+            })
     }
 
     /// Authenticated merchant lookup by shipment id.
@@ -30,8 +33,11 @@ impl TrackingService {
         self.repo
             .find_by_shipment_id(shipment_id)
             .await
-            .map_err(AppError::internal)?
-            .ok_or_else(|| AppError::NotFound("Shipment not found".into()))
+            .map_err(|e| AppError::Internal(e))?
+            .ok_or_else(|| AppError::NotFound {
+                resource: "shipment",
+                id: shipment_id.to_string(),
+            })
     }
 
     /// List shipments for a tenant (authenticated, paginated).
@@ -41,6 +47,29 @@ impl TrackingService {
         self.repo
             .list_by_tenant(tenant_id, limit, offset)
             .await
-            .map_err(AppError::internal)
+            .map_err(|e| AppError::Internal(e))
+    }
+
+    /// Customer-initiated reschedule — verifies the tracking number exists, then delegates.
+    pub async fn reschedule(
+        &self,
+        tracking_number: &str,
+        preferred_date: chrono::NaiveDate,
+        reason: &str,
+    ) -> AppResult<()> {
+        // Verify the tracking record exists first.
+        self.repo
+            .find_by_tracking_number(tracking_number)
+            .await
+            .map_err(|e| AppError::Internal(e))?
+            .ok_or_else(|| AppError::NotFound {
+                resource: "tracking",
+                id: tracking_number.to_owned(),
+            })?;
+
+        self.repo
+            .reschedule(tracking_number, preferred_date, reason)
+            .await
+            .map_err(|e| AppError::Internal(e))
     }
 }

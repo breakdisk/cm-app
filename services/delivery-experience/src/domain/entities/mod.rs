@@ -102,6 +102,7 @@ pub struct TrackingRecord {
     // Attempt tracking
     pub attempt_number:       u8,
     pub next_attempt_at:      Option<DateTime<Utc>>,
+    pub reschedule_count:     i32,
 
     pub created_at:           DateTime<Utc>,
     pub updated_at:           DateTime<Utc>,
@@ -140,6 +141,7 @@ impl TrackingRecord {
             recipient_name:      None,
             attempt_number:      0,
             next_attempt_at:     None,
+            reschedule_count:    0,
             created_at:          now,
             updated_at:          now,
         }
@@ -185,11 +187,12 @@ impl TrackingRecord {
 
     pub fn mark_delivered(&mut self, pod_id: Uuid, recipient_name: String, delivered_at: DateTime<Utc>) {
         self.pod_id = Some(pod_id);
-        self.recipient_name = Some(recipient_name);
         self.delivered_at = Some(delivered_at);
+        let description = format!("Package delivered. Received by: {}", recipient_name);
+        self.recipient_name = Some(recipient_name);
         self.transition(
             TrackingStatus::Delivered,
-            format!("Package delivered. Received by: {}", recipient_name),
+            description,
             None,
         );
     }
