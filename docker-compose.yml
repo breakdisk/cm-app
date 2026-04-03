@@ -199,8 +199,8 @@ services:
   # ── 1. API Gateway (port 8000) ─────────────────────────────
   api-gateway:
     build:
-      context: ./services/api-gateway
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/api-gateway/Dockerfile
     container_name: logisticos-api-gateway
     restart: unless-stopped
     ports:
@@ -228,8 +228,8 @@ services:
   # ── 2. Identity & Tenant Management (port 8001) ───────────
   identity:
     build:
-      context: ./services/identity
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/identity/Dockerfile
     container_name: logisticos-identity
     restart: unless-stopped
     ports:
@@ -258,8 +258,8 @@ services:
   # ── 3. Customer Data Platform (port 8002) ─────────────────
   cdp:
     build:
-      context: ./services/cdp
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/cdp/Dockerfile
     container_name: logisticos-cdp
     restart: unless-stopped
     ports:
@@ -287,8 +287,8 @@ services:
   # ── 4. Unified Engagement Engine (port 8003) ──────────────
   engagement:
     build:
-      context: ./services/engagement
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/engagement/Dockerfile
     container_name: logisticos-engagement
     restart: unless-stopped
     ports:
@@ -317,8 +317,8 @@ services:
   # ── 5. Order & Shipment Intake (port 8004) ────────────────
   order-intake:
     build:
-      context: ./services/order-intake
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/order-intake/Dockerfile
     container_name: logisticos-order-intake
     restart: unless-stopped
     ports:
@@ -346,8 +346,8 @@ services:
   # ── 6. Dispatch & Routing (port 8005) ─────────────────────
   dispatch:
     build:
-      context: ./services/dispatch
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/dispatch/Dockerfile
     container_name: logisticos-dispatch
     restart: unless-stopped
     ports:
@@ -375,8 +375,8 @@ services:
   # ── 7. Driver Operations (port 8006) ──────────────────────
   driver-ops:
     build:
-      context: ./services/driver-ops
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/driver-ops/Dockerfile
     container_name: logisticos-driver-ops
     restart: unless-stopped
     ports:
@@ -404,8 +404,8 @@ services:
   # ── 8. Customer Delivery Experience (port 8007) ───────────
   delivery-experience:
     build:
-      context: ./services/delivery-experience
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/delivery-experience/Dockerfile
     container_name: logisticos-delivery-experience
     restart: unless-stopped
     ports:
@@ -433,8 +433,8 @@ services:
   # ── 9. Fleet Management (port 8008) ───────────────────────
   fleet:
     build:
-      context: ./services/fleet
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/fleet/Dockerfile
     container_name: logisticos-fleet
     restart: unless-stopped
     ports:
@@ -462,8 +462,8 @@ services:
   # ── 10. Warehouse & Hub Operations (port 8009) ────────────
   hub-ops:
     build:
-      context: ./services/hub-ops
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/hub-ops/Dockerfile
     container_name: logisticos-hub-ops
     restart: unless-stopped
     ports:
@@ -491,8 +491,8 @@ services:
   # ── 11. Carrier & Partner Management (port 8010) ──────────
   carrier:
     build:
-      context: ./services/carrier
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/carrier/Dockerfile
     container_name: logisticos-carrier
     restart: unless-stopped
     ports:
@@ -520,8 +520,8 @@ services:
   # ── 12. Proof of Delivery (port 8011) ─────────────────────
   pod:
     build:
-      context: ./services/pod
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/pod/Dockerfile
     container_name: logisticos-pod
     restart: unless-stopped
     ports:
@@ -553,8 +553,8 @@ services:
   # ── 13. Payments & Billing (port 8012) ────────────────────
   payments:
     build:
-      context: ./services/payments
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/payments/Dockerfile
     container_name: logisticos-payments
     restart: unless-stopped
     ports:
@@ -582,8 +582,8 @@ services:
   # ── 14. Analytics & BI (port 8013) ────────────────────────
   analytics:
     build:
-      context: ./services/analytics
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/analytics/Dockerfile
     container_name: logisticos-analytics
     restart: unless-stopped
     ports:
@@ -614,8 +614,8 @@ services:
   # ── 15. Marketing Automation Engine (port 8014) ───────────
   marketing:
     build:
-      context: ./services/marketing
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/marketing/Dockerfile
     container_name: logisticos-marketing
     restart: unless-stopped
     ports:
@@ -643,8 +643,8 @@ services:
   # ── 16. Business Logic & Automation Engine (port 8015) ────
   business-logic:
     build:
-      context: ./services/business-logic
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/business-logic/Dockerfile
     container_name: logisticos-business-logic
     restart: unless-stopped
     ports:
@@ -672,8 +672,8 @@ services:
   # ── 17. AI Intelligence Layer (port 8016) ─────────────────
   ai-layer:
     build:
-      context: ./services/ai-layer
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/ai-layer/Dockerfile
     container_name: logisticos-ai-layer
     restart: unless-stopped
     ports:
@@ -711,8 +711,8 @@ services:
   # ── 18. Compliance (port 8017) ────────────────────────────
   compliance:
     build:
-      context: ./services/compliance
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/compliance/Dockerfile
     container_name: logisticos-compliance
     restart: unless-stopped
     ports:
