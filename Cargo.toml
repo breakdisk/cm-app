@@ -133,3 +133,12 @@ strip         = true
 opt-level       = 0
 debug           = true
 split-debuginfo = "off"
+
+# Lightweight release profile for Docker builds — avoids OOM on parallel service builds
+[profile.docker]
+inherits      = "release"
+opt-level     = 2
+lto           = "off"
+codegen-units = 4
+strip         = true
+debug         = false

@@ -4,11 +4,11 @@ COPY Cargo.toml Cargo.lock ./
 COPY libs/ libs/
 COPY services/ services/
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
-RUN cargo build --release --bin carrier
+RUN cargo build --profile docker -j4 --bin carrier
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY --from=builder /app/target/release/carrier /app/carrier
+COPY --from=builder /app/target/docker/carrier /app/carrier
 EXPOSE 8010
 ENTRYPOINT ["/app/carrier"]

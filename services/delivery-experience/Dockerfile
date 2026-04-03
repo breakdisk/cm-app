@@ -4,11 +4,11 @@ COPY Cargo.toml Cargo.lock ./
 COPY libs/ libs/
 COPY services/ services/
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
-RUN cargo build --release --bin delivery_experience
+RUN cargo build --profile docker -j4 --bin delivery_experience
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY --from=builder /app/target/release/delivery_experience /app/delivery_experience
+COPY --from=builder /app/target/docker/delivery_experience /app/delivery_experience
 EXPOSE 8007
 ENTRYPOINT ["/app/delivery_experience"]

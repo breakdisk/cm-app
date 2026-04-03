@@ -4,11 +4,11 @@ COPY Cargo.toml Cargo.lock ./
 COPY libs/ libs/
 COPY services/ services/
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
-RUN cargo build --release --bin order_intake
+RUN cargo build --profile docker -j4 --bin order_intake
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY --from=builder /app/target/release/order_intake /app/order_intake
+COPY --from=builder /app/target/docker/order_intake /app/order_intake
 EXPOSE 8004
 ENTRYPOINT ["/app/order_intake"]

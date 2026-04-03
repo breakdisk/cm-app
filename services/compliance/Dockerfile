@@ -4,11 +4,11 @@ COPY Cargo.toml Cargo.lock ./
 COPY libs/ libs/
 COPY services/ services/
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
-RUN cargo build --release --bin compliance
+RUN cargo build --profile docker -j4 --bin compliance
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-COPY --from=builder /app/target/release/compliance /app/compliance
+COPY --from=builder /app/target/docker/compliance /app/compliance
 EXPOSE 8017
 ENTRYPOINT ["/app/compliance"]
