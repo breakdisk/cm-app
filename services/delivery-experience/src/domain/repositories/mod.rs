@@ -25,6 +25,7 @@ pub trait TrackingRepository: Send + Sync {
         &self,
         tracking_number: &str,
         preferred_date: chrono::NaiveDate,
+        preferred_time_slot: Option<&str>,
         reason: &str,
     ) -> anyhow::Result<()>;
 }

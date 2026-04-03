@@ -50,11 +50,12 @@ impl TrackingService {
             .map_err(|e| AppError::Internal(e))
     }
 
-    /// Customer-initiated reschedule — verifies the tracking number exists, then delegates.
+    /// Customer-initiated reschedule — verifies the tracking number exists, validates inputs, then delegates.
     pub async fn reschedule(
         &self,
         tracking_number: &str,
         preferred_date: chrono::NaiveDate,
+        preferred_time_slot: Option<&str>,
         reason: &str,
     ) -> AppResult<()> {
         // Verify the tracking record exists first.
@@ -67,8 +68,31 @@ impl TrackingService {
                 id: tracking_number.to_owned(),
             })?;
 
+        // Validate preferred_date: must be >= today (UTC).
+        let today = chrono::Utc::now().date_naive();
+        if preferred_date < today {
+            return Err(AppError::Validation(
+                "Preferred date must be in the future".to_owned(),
+            ));
+        }
+
+        // Validate preferred_date: must be <= today + 90 days.
+        let max_date = today + chrono::Duration::days(90);
+        if preferred_date > max_date {
+            return Err(AppError::Validation(
+                "Preferred date cannot be more than 90 days in the future".to_owned(),
+            ));
+        }
+
+        // Validate reason length if provided.
+        if reason.len() > 500 {
+            return Err(AppError::Validation(
+                "Reason cannot exceed 500 characters".to_owned(),
+            ));
+        }
+
         self.repo
-            .reschedule(tracking_number, preferred_date, reason)
+            .reschedule(tracking_number, preferred_date, preferred_time_slot, reason)
             .await
             .map_err(|e| AppError::Internal(e))
     }

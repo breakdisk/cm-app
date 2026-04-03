@@ -212,10 +212,15 @@ impl TrackingRepository for PgTrackingRepository {
         &self,
         tracking_number: &str,
         preferred_date: chrono::NaiveDate,
+        preferred_time_slot: Option<&str>,
         reason: &str,
     ) -> anyhow::Result<()> {
+        let hour: u32 = match preferred_time_slot {
+            Some("afternoon") => 13,
+            _ => 9, // "morning", "anytime", or None → 09:00 UTC
+        };
         let next_attempt = preferred_date
-            .and_hms_opt(9, 0, 0)
+            .and_hms_opt(hour, 0, 0)
             .map(|dt| chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc));
         let now = chrono::Utc::now();
 

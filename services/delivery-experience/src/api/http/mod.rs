@@ -129,7 +129,10 @@ async fn list_shipments(
 #[derive(Debug, serde::Deserialize)]
 struct RescheduleBody {
     preferred_date: chrono::NaiveDate,
-    reason: String,
+    #[serde(default)]
+    preferred_time_slot: Option<String>, // "morning" | "afternoon" | "anytime"
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 async fn reschedule_delivery(
@@ -137,7 +140,13 @@ async fn reschedule_delivery(
     Path(tracking_number): Path<String>,
     Json(body): Json<RescheduleBody>,
 ) -> impl IntoResponse {
-    match state.tracking_svc.reschedule(&tracking_number, body.preferred_date, &body.reason).await {
+    let reason_str = body.reason.as_deref().unwrap_or("Customer reschedule request");
+    match state.tracking_svc.reschedule(
+        &tracking_number,
+        body.preferred_date,
+        body.preferred_time_slot.as_deref(),
+        reason_str,
+    ).await {
         Ok(()) => (
             StatusCode::OK,
             Json(serde_json::json!({
