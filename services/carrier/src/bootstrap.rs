@@ -4,7 +4,13 @@ use crate::{api::http, application::services::CarrierService, config::Config, in
 
 pub async fn run() -> anyhow::Result<()> {
     let cfg = Config::load()?;
-    logisticos_tracing::init(&cfg.app.env, "carrier")?;
+    let otlp = std::env::var("OTLP_ENDPOINT").ok();
+    logisticos_tracing::init(logisticos_tracing::TracingConfig {
+        service_name: "carrier",
+        env: &cfg.app.env,
+        otlp_endpoint: otlp.as_deref(),
+        log_level: None,
+    })?;
 
     let pool = PgPoolOptions::new()
         .max_connections(cfg.database.max_connections)

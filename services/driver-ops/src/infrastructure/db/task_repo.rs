@@ -29,7 +29,7 @@ struct TaskRow {
     city:                 String,
     province:             String,
     postal_code:          String,
-    country:              String,
+    country_code:         String,
     lat:                  Option<f64>,
     lng:                  Option<f64>,
     customer_name:        String,
@@ -70,7 +70,7 @@ impl From<TaskRow> for DriverTask {
             route_id: r.route_id,
             shipment_id: r.shipment_id,
             task_type: if r.task_type == "pickup" { TaskType::Pickup } else { TaskType::Delivery },
-            sequence: r.sequence as u32,
+            sequence: r.sequence,
             status: parse_task_status(&r.status),
             address: Address {
                 line1: r.address_line1,
@@ -78,7 +78,8 @@ impl From<TaskRow> for DriverTask {
                 city: r.city,
                 province: r.province,
                 postal_code: r.postal_code,
-                country: r.country,
+                country_code: r.country_code,
+                barangay: None,
                 coordinates: match (r.lat, r.lng) {
                     (Some(lat), Some(lng)) => Some(Coordinates { lat, lng }),
                     _ => None,
@@ -99,49 +100,46 @@ impl From<TaskRow> for DriverTask {
 #[async_trait]
 impl TaskRepository for PgTaskRepository {
     async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<DriverTask>> {
-        let row = sqlx::query_as!(
-            TaskRow,
+        let row = sqlx::query_as::<_, TaskRow>(
             r#"SELECT id, driver_id, route_id, shipment_id, task_type, sequence, status,
-                      address_line1, address_line2, city, province, postal_code, country,
+                      address_line1, address_line2, city, province, postal_code, country AS country_code,
                       lat, lng, customer_name, customer_phone, cod_amount_cents,
                       special_instructions, pod_id, started_at, completed_at, failed_reason
-               FROM driver_ops.tasks WHERE id = $1"#,
-            id
+               FROM driver_ops.tasks WHERE id = $1"#
         )
+        .bind(id)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(DriverTask::from))
     }
 
     async fn list_by_driver(&self, driver_id: &DriverId) -> anyhow::Result<Vec<DriverTask>> {
-        let rows = sqlx::query_as!(
-            TaskRow,
+        let rows = sqlx::query_as::<_, TaskRow>(
             r#"SELECT id, driver_id, route_id, shipment_id, task_type, sequence, status,
-                      address_line1, address_line2, city, province, postal_code, country,
+                      address_line1, address_line2, city, province, postal_code, country AS country_code,
                       lat, lng, customer_name, customer_phone, cod_amount_cents,
                       special_instructions, pod_id, started_at, completed_at, failed_reason
                FROM driver_ops.tasks
                WHERE driver_id = $1
-               ORDER BY sequence ASC"#,
-            driver_id.inner()
+               ORDER BY sequence ASC"#
         )
+        .bind(driver_id.inner())
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(DriverTask::from).collect())
     }
 
     async fn list_by_route(&self, route_id: Uuid) -> anyhow::Result<Vec<DriverTask>> {
-        let rows = sqlx::query_as!(
-            TaskRow,
+        let rows = sqlx::query_as::<_, TaskRow>(
             r#"SELECT id, driver_id, route_id, shipment_id, task_type, sequence, status,
-                      address_line1, address_line2, city, province, postal_code, country,
+                      address_line1, address_line2, city, province, postal_code, country AS country_code,
                       lat, lng, customer_name, customer_phone, cod_amount_cents,
                       special_instructions, pod_id, started_at, completed_at, failed_reason
                FROM driver_ops.tasks
                WHERE route_id = $1
-               ORDER BY sequence ASC"#,
-            route_id
+               ORDER BY sequence ASC"#
         )
+        .bind(route_id)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(DriverTask::from).collect())
@@ -150,7 +148,7 @@ impl TaskRepository for PgTaskRepository {
     async fn save(&self, t: &DriverTask) -> anyhow::Result<()> {
         let status = status_str(t.status);
         let task_type = if matches!(t.task_type, TaskType::Pickup) { "pickup" } else { "delivery" };
-        sqlx::query!(
+        sqlx::query(
             r#"INSERT INTO driver_ops.tasks
                    (id, driver_id, route_id, shipment_id, task_type, sequence, status,
                     address_line1, address_line2, city, province, postal_code, country,
@@ -162,18 +160,31 @@ impl TaskRepository for PgTaskRepository {
                    pod_id        = EXCLUDED.pod_id,
                    started_at    = EXCLUDED.started_at,
                    completed_at  = EXCLUDED.completed_at,
-                   failed_reason = EXCLUDED.failed_reason"#,
-            t.id, t.driver_id.inner(), t.route_id, t.shipment_id,
-            task_type, t.sequence as i32, status,
-            t.address.line1, t.address.line2,
-            t.address.city, t.address.province, t.address.postal_code, t.address.country,
-            t.address.coordinates.map(|c| c.lat),
-            t.address.coordinates.map(|c| c.lng),
-            t.customer_name, t.customer_phone,
-            t.cod_amount_cents,
-            t.special_instructions,
-            t.pod_id, t.started_at, t.completed_at, t.failed_reason,
+                   failed_reason = EXCLUDED.failed_reason"#
         )
+        .bind(t.id)
+        .bind(t.driver_id.inner())
+        .bind(t.route_id)
+        .bind(t.shipment_id)
+        .bind(task_type)
+        .bind(t.sequence)
+        .bind(status)
+        .bind(&t.address.line1)
+        .bind(&t.address.line2)
+        .bind(&t.address.city)
+        .bind(&t.address.province)
+        .bind(&t.address.postal_code)
+        .bind(&t.address.country_code)
+        .bind(t.address.coordinates.map(|c| c.lat))
+        .bind(t.address.coordinates.map(|c| c.lng))
+        .bind(&t.customer_name)
+        .bind(&t.customer_phone)
+        .bind(t.cod_amount_cents)
+        .bind(&t.special_instructions)
+        .bind(t.pod_id)
+        .bind(t.started_at)
+        .bind(t.completed_at)
+        .bind(&t.failed_reason)
         .execute(&self.pool)
         .await?;
         Ok(())

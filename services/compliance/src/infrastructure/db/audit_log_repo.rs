@@ -1,36 +1,19 @@
 use async_trait::async_trait;
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use uuid::Uuid;
 use crate::domain::{entities::ComplianceAuditLog, repositories::AuditLogRepository};
 
-#[derive(sqlx::FromRow)]
-struct AuditLogRow {
-    id:                    Uuid,
-    tenant_id:             Uuid,
-    compliance_profile_id: Uuid,
-    document_id:           Option<Uuid>,
-    event_type:            String,
-    actor_id:              Uuid,
-    actor_type:            String,
-    notes:                 Option<String>,
-    created_at:            chrono::DateTime<chrono::Utc>,
-}
-
-impl TryFrom<AuditLogRow> for ComplianceAuditLog {
-    type Error = anyhow::Error;
-
-    fn try_from(r: AuditLogRow) -> anyhow::Result<Self> {
-        Ok(Self {
-            id:                    r.id,
-            tenant_id:             r.tenant_id,
-            compliance_profile_id: r.compliance_profile_id,
-            document_id:           r.document_id,
-            event_type:            r.event_type,
-            actor_id:              r.actor_id,
-            actor_type:            r.actor_type,
-            notes:                 r.notes,
-            created_at:            r.created_at,
-        })
+fn map_log(r: &sqlx::postgres::PgRow) -> ComplianceAuditLog {
+    ComplianceAuditLog {
+        id:                    r.get("id"),
+        tenant_id:             r.get("tenant_id"),
+        compliance_profile_id: r.get("compliance_profile_id"),
+        document_id:           r.get("document_id"),
+        event_type:            r.get("event_type"),
+        actor_id:              r.get("actor_id"),
+        actor_type:            r.get("actor_type"),
+        notes:                 r.get("notes"),
+        created_at:            r.get("created_at"),
     }
 }
 
@@ -43,14 +26,20 @@ impl PgAuditLogRepository {
 #[async_trait]
 impl AuditLogRepository for PgAuditLogRepository {
     async fn append(&self, entry: &ComplianceAuditLog) -> anyhow::Result<()> {
-        sqlx::query!(
+        sqlx::query(
             r#"INSERT INTO compliance.compliance_audit_log
                (id, tenant_id, compliance_profile_id, document_id, event_type, actor_id, actor_type, notes, created_at)
                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)"#,
-            entry.id, entry.tenant_id, entry.compliance_profile_id, entry.document_id,
-            &entry.event_type, entry.actor_id, &entry.actor_type,
-            entry.notes, entry.created_at
         )
+        .bind(entry.id)
+        .bind(entry.tenant_id)
+        .bind(entry.compliance_profile_id)
+        .bind(entry.document_id)
+        .bind(&entry.event_type)
+        .bind(entry.actor_id)
+        .bind(&entry.actor_type)
+        .bind(entry.notes.as_deref())
+        .bind(entry.created_at)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -62,20 +51,19 @@ impl AuditLogRepository for PgAuditLogRepository {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<ComplianceAuditLog>> {
-        let rows = sqlx::query_as!(
-            AuditLogRow,
+        let rows = sqlx::query(
             r#"SELECT id, tenant_id, compliance_profile_id, document_id, event_type,
                       actor_id, actor_type, notes, created_at
                FROM compliance.compliance_audit_log
                WHERE compliance_profile_id = $1
                ORDER BY created_at DESC
                LIMIT $2 OFFSET $3"#,
-            profile_id, limit, offset
         )
+        .bind(profile_id)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
-        rows.into_iter()
-            .map(ComplianceAuditLog::try_from)
-            .collect::<anyhow::Result<Vec<_>>>()
+        Ok(rows.iter().map(map_log).collect())
     }
 }

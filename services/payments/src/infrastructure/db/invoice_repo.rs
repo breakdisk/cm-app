@@ -65,22 +65,18 @@ impl From<InvoiceRow> for Invoice {
 #[async_trait]
 impl InvoiceRepository for PgInvoiceRepository {
     async fn find_by_id(&self, id: &InvoiceId) -> anyhow::Result<Option<Invoice>> {
-        let row = sqlx::query_as!(
-            InvoiceRow,
+        let row = sqlx::query_as::<_, InvoiceRow>(
             "SELECT id, tenant_id, merchant_id, status, line_items, currency, issued_at, due_at, paid_at
-             FROM payments.invoices WHERE id = $1",
-            id.inner()
-        ).fetch_optional(&self.pool).await?;
+             FROM payments.invoices WHERE id = $1"
+        ).bind(id.inner()).fetch_optional(&self.pool).await?;
         Ok(row.map(Invoice::from))
     }
 
     async fn list_by_merchant(&self, merchant_id: &MerchantId) -> anyhow::Result<Vec<Invoice>> {
-        let rows = sqlx::query_as!(
-            InvoiceRow,
+        let rows = sqlx::query_as::<_, InvoiceRow>(
             "SELECT id, tenant_id, merchant_id, status, line_items, currency, issued_at, due_at, paid_at
-             FROM payments.invoices WHERE merchant_id = $1 ORDER BY issued_at DESC",
-            merchant_id.inner()
-        ).fetch_all(&self.pool).await?;
+             FROM payments.invoices WHERE merchant_id = $1 ORDER BY issued_at DESC"
+        ).bind(merchant_id.inner()).fetch_all(&self.pool).await?;
         Ok(rows.into_iter().map(Invoice::from).collect())
     }
 
@@ -90,15 +86,16 @@ impl InvoiceRepository for PgInvoiceRepository {
         let line_items = serde_json::to_value(&inv.line_items)?;
         // Extract tenant_id from merchant_id (same UUID in this 1:1 setup)
         let tenant_id = inv.merchant_id.inner();
-        sqlx::query!(
+        sqlx::query(
             r#"INSERT INTO payments.invoices
                    (id, tenant_id, merchant_id, status, line_items, currency, issued_at, due_at, paid_at)
                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
                ON CONFLICT (id) DO UPDATE SET
-                   status = EXCLUDED.status, paid_at = EXCLUDED.paid_at"#,
-            inv.id.inner(), tenant_id, inv.merchant_id.inner(),
-            status, line_items, currency, inv.issued_at, inv.due_at, inv.paid_at,
-        ).execute(&self.pool).await?;
+                   status = EXCLUDED.status, paid_at = EXCLUDED.paid_at"#
+        )
+        .bind(inv.id.inner()).bind(tenant_id).bind(inv.merchant_id.inner())
+        .bind(status).bind(line_items).bind(currency).bind(inv.issued_at).bind(inv.due_at).bind(inv.paid_at)
+        .execute(&self.pool).await?;
         Ok(())
     }
 }

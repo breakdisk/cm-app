@@ -186,10 +186,10 @@ async fn handle_message(
 }
 
 fn extract_tenant_header(msg: &BorrowedMessage<'_>) -> anyhow::Result<TenantId> {
+    use rdkafka::message::Headers;
     msg.headers()
         .and_then(|headers| {
-            (0..headers.count()).find_map(|i| {
-                let h = headers.get(i);
+            headers.iter().find_map(|h| {
                 if h.key == "tenant_id" {
                     h.value
                         .and_then(|v| std::str::from_utf8(v).ok())

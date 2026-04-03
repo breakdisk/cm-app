@@ -145,14 +145,14 @@ async fn handle_trigger(
 }
 
 fn extract_tenant_id(msg: &BorrowedMessage<'_>) -> anyhow::Result<TenantId> {
+    use rdkafka::message::Headers;
     msg.headers()
         .and_then(|h| {
-            (0..h.count()).find_map(|i| {
-                let e = h.get(i);
-                if e.key == "tenant_id" {
-                    e.value
+            h.iter().find_map(|header| {
+                if header.key == "tenant_id" {
+                    header.value
                         .and_then(|v| std::str::from_utf8(v).ok())
-                        .and_then(|s| s.parse::<Uuid>().ok())
+                        .and_then(|s: &str| s.parse::<Uuid>().ok())
                         .map(TenantId::from_uuid)
                 } else { None }
             })

@@ -47,7 +47,7 @@ pub async fn check_rate_limit(
     let count: u64 = redis.incr(&key, 1u64).await?;
     if count == 1 {
         // New window — set TTL
-        redis.expire(&key, WINDOW_SECONDS as i64).await?;
+        let _: () = redis.expire(&key, WINDOW_SECONDS as i64).await?;
     }
 
     let ttl: i64 = redis.ttl(&key).await.unwrap_or(WINDOW_SECONDS as i64);

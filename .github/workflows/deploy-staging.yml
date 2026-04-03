@@ -4,11 +4,48 @@ on:
   push:
     branches: [develop]
 
+concurrency:
+  group: deploy-staging-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_ORG: ${{ github.repository_owner }}
+  HELM_CHART_PATH: infra/kubernetes/helm/charts
+  K8S_NAMESPACE: logisticos-staging
+
 jobs:
-  deploy:
-    name: Deploy Staging
+  build-and-deploy:
+    name: Build & Deploy (${{ matrix.service }})
     runs-on: ubuntu-latest
     environment: staging
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - api-gateway
+          - identity
+          - cdp
+          - engagement
+          - order-intake
+          - dispatch
+          - driver-ops
+          - delivery-experience
+          - fleet
+          - hub-ops
+          - carrier
+          - pod
+          - payments
+          - analytics
+          - marketing
+          - business-logic
+          - ai-layer
+          - compliance
 
     steps:
       - uses: actions/checkout@v4
@@ -20,26 +57,67 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ap-southeast-1
 
-      - name: Update kubeconfig (EKS)
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push ${{ matrix.service }} image
+        uses: docker/build-push-action@v5
+        with:
+          context: services/${{ matrix.service }}
+          push: true
+          tags: |
+            ghcr.io/${{ env.IMAGE_ORG }}/logisticos-${{ matrix.service }}:${{ github.sha }}
+            ghcr.io/${{ env.IMAGE_ORG }}/logisticos-${{ matrix.service }}:staging-latest
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+      - name: Update kubeconfig (EKS staging)
         run: aws eks update-kubeconfig --name logisticos-staging --region ap-southeast-1
 
-      - name: Set image tags in Helm values
+      - name: Deploy ${{ matrix.service }} via Helm
         run: |
-          for svc in identity api-gateway order-intake dispatch driver-ops engagement payments; do
-            helm upgrade --install logisticos-${svc} \
-              infra/kubernetes/helm/charts/${svc} \
-              --namespace logisticos-staging \
-              --set image.tag=${{ github.sha }} \
-              --set image.repository=ghcr.io/${{ github.repository_owner }}/logisticos-${svc} \
-              --wait \
-              --timeout 5m
-          done
+          helm upgrade --install logisticos-${{ matrix.service }} \
+            ${{ env.HELM_CHART_PATH }}/${{ matrix.service }} \
+            --namespace ${{ env.K8S_NAMESPACE }} \
+            --create-namespace \
+            --values ${{ env.HELM_CHART_PATH }}/${{ matrix.service }}/values.yaml \
+            --set image.repository=ghcr.io/${{ env.IMAGE_ORG }}/logisticos-${{ matrix.service }} \
+            --set image.tag=${{ github.sha }} \
+            --wait \
+            --timeout 5m \
+            --atomic
 
-      - name: Run smoke tests
+  smoke-test:
+    name: Smoke Tests
+    runs-on: ubuntu-latest
+    needs: build-and-deploy
+    environment: staging
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ap-southeast-1
+
+      - name: Run smoke tests against staging
         run: |
           GATEWAY=https://api.staging.logisticos.app
-          curl -f "${GATEWAY}/health" || exit 1
-          echo "Staging smoke test passed"
+          echo "Testing API gateway health..."
+          curl -f --retry 5 --retry-delay 3 "${GATEWAY}/health" || exit 1
+          echo "Testing identity service (via gateway)..."
+          curl -f "${GATEWAY}/identity/health" || exit 1
+          echo "Testing order-intake service..."
+          curl -f "${GATEWAY}/orders/health" || exit 1
+          echo "Staging smoke tests passed."
 
       - name: Notify team (Slack)
         if: always()
@@ -47,7 +125,16 @@ jobs:
         with:
           payload: |
             {
-              "text": "Staging deploy ${{ job.status }}: ${{ github.sha }} by ${{ github.actor }}"
+              "text": "Staging deploy ${{ job.status }}: ${{ github.sha }} by ${{ github.actor }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Staging Deploy* `${{ job.status }}`\n*Commit:* `${{ github.sha }}`\n*Author:* ${{ github.actor }}\n*Branch:* `${{ github.ref_name }}`"
+                  }
+                }
+              ]
             }
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

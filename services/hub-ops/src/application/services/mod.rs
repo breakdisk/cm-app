@@ -96,7 +96,7 @@ impl HubService {
             .find_by_id(&hub_id)
             .await
             .map_err(AppError::internal)?
-            .ok_or_else(|| AppError::NotFound("Hub not found".into()))?;
+            .ok_or_else(|| AppError::NotFound { resource: "Hub", id: cmd.hub_id.to_string() })?;
 
         // Check for duplicate induction.
         if let Some(existing) = self.induction_repo.find_by_shipment(cmd.shipment_id).await.map_err(AppError::internal)? {
@@ -124,7 +124,7 @@ impl HubService {
             .find_by_id(&InductionId::from_uuid(cmd.induction_id))
             .await
             .map_err(AppError::internal)?
-            .ok_or_else(|| AppError::NotFound("Induction record not found".into()))?;
+            .ok_or_else(|| AppError::NotFound { resource: "Induction", id: cmd.induction_id.to_string() })?;
 
         induction.sort_to(cmd.zone, cmd.bay);
         self.induction_repo.save(&induction).await.map_err(AppError::internal)?;
@@ -136,13 +136,13 @@ impl HubService {
             .find_by_id(&InductionId::from_uuid(induction_id))
             .await
             .map_err(AppError::internal)?
-            .ok_or_else(|| AppError::NotFound("Induction record not found".into()))?;
+            .ok_or_else(|| AppError::NotFound { resource: "Induction", id: induction_id.to_string() })?;
 
         let mut hub = self.hub_repo
             .find_by_id(&induction.hub_id)
             .await
             .map_err(AppError::internal)?
-            .ok_or_else(|| AppError::NotFound("Hub not found".into()))?;
+            .ok_or_else(|| AppError::NotFound { resource: "Hub", id: induction.hub_id.inner().to_string() })?;
 
         induction.dispatch();
         hub.dispatch_parcel();

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use rdkafka::{
     consumer::{CommitMode, Consumer, StreamConsumer},
-    message::BorrowedMessage,
+    message::{BorrowedMessage, Headers},
     Message,
 };
 use serde::Deserialize;
@@ -172,12 +172,11 @@ async fn handle_message(msg: &BorrowedMessage<'_>, db: &Arc<AnalyticsDb>) -> any
 fn extract_tenant_id(msg: &BorrowedMessage<'_>) -> anyhow::Result<Uuid> {
     msg.headers()
         .and_then(|h| {
-            (0..h.count()).find_map(|i| {
-                let entry = h.get(i);
-                if entry.key == "tenant_id" {
-                    entry.value
+            h.iter().find_map(|header| {
+                if header.key == "tenant_id" {
+                    header.value
                         .and_then(|v| std::str::from_utf8(v).ok())
-                        .and_then(|s| s.parse::<Uuid>().ok())
+                        .and_then(|s: &str| s.parse::<Uuid>().ok())
                 } else {
                     None
                 }

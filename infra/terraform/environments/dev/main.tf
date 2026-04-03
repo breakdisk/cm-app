@@ -189,6 +189,68 @@ module "rds" {
 }
 
 ###############################################################################
+# ClickHouse Module — Analytics warehouse (self-managed on EKS)
+###############################################################################
+
+module "clickhouse" {
+  source = "../../modules/clickhouse"
+
+  environment   = "dev"
+  namespace     = "logisticos-infra"
+  storage_class = "gp2"
+  storage_size  = "20Gi"
+
+  shard_count   = 1
+  replica_count = 1
+
+  cpu_request    = "250m"
+  memory_request = "512Mi"
+  cpu_limit      = "1"
+  memory_limit   = "2Gi"
+
+  clickhouse_version = "24.3"
+
+  tags = {
+    Environment = "dev"
+  }
+}
+
+###############################################################################
+# TimescaleDB Module — Time-series data (GPS telemetry, fleet, metrics)
+###############################################################################
+
+module "timescaledb" {
+  source = "../../modules/timescaledb"
+
+  identifier     = "logisticos-timescale-dev"
+  environment    = "dev"
+  engine_version = "15.4"
+  instance_class = "db.t3.medium"
+
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnet_ids
+
+  allowed_security_group_ids = [
+    module.eks.cluster_security_group_id,
+  ]
+
+  db_name         = "logisticos_timeseries"
+  master_username = "logisticos_ts_admin"
+
+  multi_az              = false
+  backup_retention_days = 7
+  deletion_protection   = false
+  skip_final_snapshot   = true
+
+  allocated_storage     = 20
+  max_allocated_storage = 100
+
+  tags = {
+    Environment = "dev"
+  }
+}
+
+###############################################################################
 # Outputs
 ###############################################################################
 
@@ -216,6 +278,22 @@ output "rds_endpoint" {
 output "rds_master_password_secret_arn" {
   description = "ARN of the Secrets Manager secret containing the RDS master password."
   value       = module.rds.master_password_secret_arn
+}
+
+output "clickhouse_http_endpoint" {
+  description = "ClickHouse HTTP endpoint (analytics service)."
+  value       = module.clickhouse.clickhouse_http_endpoint
+}
+
+output "timescaledb_endpoint" {
+  description = "TimescaleDB RDS endpoint."
+  value       = module.timescaledb.endpoint
+  sensitive   = true
+}
+
+output "timescaledb_master_password_secret_arn" {
+  description = "ARN of the Secrets Manager secret for TimescaleDB master credentials."
+  value       = module.timescaledb.master_password_secret_arn
 }
 
 output "account_id" {

@@ -14,7 +14,13 @@ use crate::{
 
 pub async fn run() -> anyhow::Result<()> {
     let cfg = Config::load()?;
-    logisticos_tracing::init(&cfg.app.env, "cdp")?;
+    let otlp = std::env::var("OTLP_ENDPOINT").ok();
+    logisticos_tracing::init(logisticos_tracing::TracingConfig {
+        service_name: "cdp",
+        env: &cfg.app.env,
+        otlp_endpoint: otlp.as_deref(),
+        log_level: None,
+    })?;
 
     // Database pool
     let pool = PgPoolOptions::new()

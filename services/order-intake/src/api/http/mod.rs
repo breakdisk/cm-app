@@ -28,6 +28,7 @@ use crate::application::{
 pub struct AppState {
     pub svc:    Arc<ShipmentService>,
     pub query:  Arc<ShipmentQueryService>,
+    pub jwt:    Arc<logisticos_auth::jwt::JwtService>,
 }
 
 // ---------------------------------------------------------------------------
@@ -85,11 +86,19 @@ async fn cancel_shipment(
 // ---------------------------------------------------------------------------
 
 pub fn router(state: AppState) -> Router {
+    let auth_layer = axum::middleware::from_fn_with_state(
+        Arc::clone(&state.jwt),
+        logisticos_auth::middleware::require_auth,
+    );
     Router::new()
-        .route("/v1/shipments",        post(create_shipment).get(list_shipments))
-        .route("/v1/shipments/bulk",   post(bulk_create_shipments))
-        .route("/v1/shipments/:id",    get(get_shipment))
-        .route("/v1/shipments/:id/cancel", post(cancel_shipment))
+        .route("/health", get(|| async { axum::Json(serde_json::json!({"status":"ok","service":"order-intake"})) }))
+        .nest("/v1", Router::new()
+            .route("/shipments",        post(create_shipment).get(list_shipments))
+            .route("/shipments/bulk",   post(bulk_create_shipments))
+            .route("/shipments/:id",    get(get_shipment))
+            .route("/shipments/:id/cancel", post(cancel_shipment))
+            .layer(auth_layer)
+        )
         .with_state(state)
 }
 

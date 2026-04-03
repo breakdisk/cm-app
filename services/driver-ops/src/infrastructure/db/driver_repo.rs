@@ -83,44 +83,41 @@ impl From<DriverRow> for Driver {
 #[async_trait]
 impl DriverRepository for PgDriverRepository {
     async fn find_by_id(&self, id: &DriverId) -> anyhow::Result<Option<Driver>> {
-        let row = sqlx::query_as!(
-            DriverRow,
+        let row = sqlx::query_as::<_, DriverRow>(
             r#"SELECT id, tenant_id, user_id, first_name, last_name, phone, status,
                       lat, lng, last_location_at, vehicle_id, active_route_id,
                       is_active, created_at, updated_at
-               FROM driver_ops.drivers WHERE id = $1"#,
-            id.inner()
+               FROM driver_ops.drivers WHERE id = $1"#
         )
+        .bind(id.inner())
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(Driver::from))
     }
 
     async fn find_by_user_id(&self, user_id: Uuid) -> anyhow::Result<Option<Driver>> {
-        let row = sqlx::query_as!(
-            DriverRow,
+        let row = sqlx::query_as::<_, DriverRow>(
             r#"SELECT id, tenant_id, user_id, first_name, last_name, phone, status,
                       lat, lng, last_location_at, vehicle_id, active_route_id,
                       is_active, created_at, updated_at
-               FROM driver_ops.drivers WHERE user_id = $1"#,
-            user_id
+               FROM driver_ops.drivers WHERE user_id = $1"#
         )
+        .bind(user_id)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(Driver::from))
     }
 
     async fn list_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<Driver>> {
-        let rows = sqlx::query_as!(
-            DriverRow,
+        let rows = sqlx::query_as::<_, DriverRow>(
             r#"SELECT id, tenant_id, user_id, first_name, last_name, phone, status,
                       lat, lng, last_location_at, vehicle_id, active_route_id,
                       is_active, created_at, updated_at
                FROM driver_ops.drivers
                WHERE tenant_id = $1
-               ORDER BY first_name, last_name"#,
-            tenant_id.inner()
+               ORDER BY first_name, last_name"#
         )
+        .bind(tenant_id.inner())
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(Driver::from).collect())
@@ -128,7 +125,7 @@ impl DriverRepository for PgDriverRepository {
 
     async fn save(&self, d: &Driver) -> anyhow::Result<()> {
         let status = status_str(d.status);
-        sqlx::query!(
+        sqlx::query(
             r#"INSERT INTO driver_ops.drivers
                    (id, tenant_id, user_id, first_name, last_name, phone, status,
                     lat, lng, last_location_at, vehicle_id, active_route_id,
@@ -142,23 +139,23 @@ impl DriverRepository for PgDriverRepository {
                    vehicle_id       = EXCLUDED.vehicle_id,
                    active_route_id  = EXCLUDED.active_route_id,
                    is_active        = EXCLUDED.is_active,
-                   updated_at       = EXCLUDED.updated_at"#,
-            d.id.inner(),
-            d.tenant_id.inner(),
-            d.user_id,
-            d.first_name,
-            d.last_name,
-            d.phone,
-            status,
-            d.current_location.map(|c| c.lat),
-            d.current_location.map(|c| c.lng),
-            d.last_location_at,
-            d.vehicle_id,
-            d.active_route_id,
-            d.is_active,
-            d.created_at,
-            d.updated_at,
+                   updated_at       = EXCLUDED.updated_at"#
         )
+        .bind(d.id.inner())
+        .bind(d.tenant_id.inner())
+        .bind(d.user_id)
+        .bind(&d.first_name)
+        .bind(&d.last_name)
+        .bind(&d.phone)
+        .bind(status)
+        .bind(d.current_location.map(|c| c.lat))
+        .bind(d.current_location.map(|c| c.lng))
+        .bind(d.last_location_at)
+        .bind(d.vehicle_id)
+        .bind(d.active_route_id)
+        .bind(d.is_active)
+        .bind(d.created_at)
+        .bind(d.updated_at)
         .execute(&self.pool)
         .await?;
         Ok(())

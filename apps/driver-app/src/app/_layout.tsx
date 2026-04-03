@@ -6,6 +6,7 @@ import { useEffect } from "react";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Provider } from "react-redux";
+import { router } from "expo-router";
 import { store } from "../store";
 import { deliveryQueue } from "../services/storage/delivery_queue";
 import { offlineSync } from "../services/sync/offline-sync";
@@ -26,7 +27,10 @@ export default function RootLayout() {
         await deliveryQueue.open();
         offlineSync.start(() => tokenRef.current);
         started = true;
-        tokenStore.getAccessToken().then((t) => { tokenRef.current = t; });
+        tokenStore.getAccessToken().then((t) => {
+          tokenRef.current = t;
+          if (!t) router.replace("/(auth)/login");
+        });
       } catch {
         // Native-only services (SQLite, SecureStore) are unavailable on web — skip.
       }
@@ -52,6 +56,7 @@ export default function RootLayout() {
           animation:            "slide_from_right",
         }}
       >
+        <Stack.Screen name="(auth)"    options={{ headerShown: false }} />
         <Stack.Screen name="(tabs)"   options={{ headerShown: false }} />
         <Stack.Screen name="task/[id]" options={{ title: "Delivery Task", presentation: "modal" }} />
         <Stack.Screen name="pod/[id]"  options={{ title: "Proof of Delivery", presentation: "fullScreenModal" }} />

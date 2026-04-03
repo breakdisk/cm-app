@@ -75,7 +75,8 @@ export default function AnalyticsPage() {
         { label: "Revenue MTD",       value: m.revenue_mtd,       trend: m.revenue_mtd_trend,       color: "amber"  as const, format: "currency" as const },
       ]);
       if (res.data.weekly_volume?.length) setWeeklyVolume(res.data.weekly_volume);
-      if (res.data.zone_performance?.length) setZonePerformance(res.data.zone_performance);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if (res.data.zone_performance?.length) setZonePerformance(res.data.zone_performance as any);
     }).catch(() => { /* retain mock on error */ });
   }, []);
 

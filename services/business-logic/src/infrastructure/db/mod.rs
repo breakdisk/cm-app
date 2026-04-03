@@ -12,6 +12,21 @@ use crate::domain::entities::rule::{
     AutomationRule, RuleAction, RuleCondition, RuleTrigger,
 };
 
+/// Internal row type for reading rules from the database.
+#[derive(sqlx::FromRow)]
+struct RuleRow {
+    id:          Uuid,
+    tenant_id:   Uuid,
+    name:        String,
+    description: Option<String>,  // nullable in DB; mapped to String via unwrap_or_default
+    is_active:   bool,
+    trigger_def: serde_json::Value,
+    conditions:  serde_json::Value,
+    actions:     serde_json::Value,
+    priority:    i32,
+    created_at:  DateTime<Utc>,
+}
+
 pub struct PgRuleRepository {
     pool: PgPool,
 }
@@ -23,7 +38,7 @@ impl PgRuleRepository {
 
     /// Load all active rules for a tenant (and nil-UUID platform rules).
     pub async fn load_for_tenant(&self, tenant_id: Uuid) -> anyhow::Result<Vec<AutomationRule>> {
-        let rows = sqlx::query!(
+        let rows = sqlx::query_as::<_, RuleRow>(
             r#"
             SELECT id, tenant_id, name, description, is_active,
                    trigger_def, conditions, actions, priority, created_at
@@ -31,9 +46,9 @@ impl PgRuleRepository {
             WHERE (tenant_id = $1 OR tenant_id = '00000000-0000-0000-0000-000000000000')
               AND is_active = true
             ORDER BY priority ASC
-            "#,
-            tenant_id,
+            "#
         )
+        .bind(tenant_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -46,7 +61,7 @@ impl PgRuleRepository {
                 id: row.id,
                 tenant_id: row.tenant_id,
                 name: row.name,
-                description: row.description,
+                description: row.description.unwrap_or_default(),
                 is_active: row.is_active,
                 trigger,
                 conditions,
@@ -60,13 +75,13 @@ impl PgRuleRepository {
 
     /// Load ALL active rules (platform + all tenants) for initial seeding.
     pub async fn load_all(&self) -> anyhow::Result<Vec<AutomationRule>> {
-        let rows = sqlx::query!(
+        let rows = sqlx::query_as::<_, RuleRow>(
             r#"
             SELECT id, tenant_id, name, description, is_active,
                    trigger_def, conditions, actions, priority, created_at
             FROM business_logic.rules
             ORDER BY priority ASC
-            "#,
+            "#
         )
         .fetch_all(&self.pool)
         .await?;
@@ -80,7 +95,7 @@ impl PgRuleRepository {
                 id: row.id,
                 tenant_id: row.tenant_id,
                 name: row.name,
-                description: row.description,
+                description: row.description.unwrap_or_default(),
                 is_active: row.is_active,
                 trigger,
                 conditions,
@@ -93,15 +108,15 @@ impl PgRuleRepository {
     }
 
     pub async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<AutomationRule>> {
-        let row = sqlx::query!(
+        let row = sqlx::query_as::<_, RuleRow>(
             r#"
             SELECT id, tenant_id, name, description, is_active,
                    trigger_def, conditions, actions, priority, created_at
             FROM business_logic.rules
             WHERE id = $1
-            "#,
-            id,
+            "#
         )
+        .bind(id)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -113,7 +128,7 @@ impl PgRuleRepository {
                 id: row.id,
                 tenant_id: row.tenant_id,
                 name: row.name,
-                description: row.description,
+                description: row.description.unwrap_or_default(),
                 is_active: row.is_active,
                 trigger,
                 conditions,
@@ -127,31 +142,31 @@ impl PgRuleRepository {
     }
 
     pub async fn create(&self, rule: &AutomationRule) -> anyhow::Result<()> {
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO business_logic.rules
                 (id, tenant_id, name, description, is_active,
                  trigger_def, conditions, actions, priority, created_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-            "#,
-            rule.id,
-            rule.tenant_id,
-            rule.name,
-            rule.description,
-            rule.is_active,
-            serde_json::to_value(&rule.trigger)?,
-            serde_json::to_value(&rule.conditions)?,
-            serde_json::to_value(&rule.actions)?,
-            rule.priority as i32,
-            rule.created_at,
+            "#
         )
+        .bind(rule.id)
+        .bind(rule.tenant_id)
+        .bind(&rule.name)
+        .bind(&rule.description)
+        .bind(rule.is_active)
+        .bind(serde_json::to_value(&rule.trigger)?)
+        .bind(serde_json::to_value(&rule.conditions)?)
+        .bind(serde_json::to_value(&rule.actions)?)
+        .bind(rule.priority as i32)
+        .bind(rule.created_at)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
     pub async fn update(&self, rule: &AutomationRule) -> anyhow::Result<bool> {
-        let result = sqlx::query!(
+        let result = sqlx::query(
             r#"
             UPDATE business_logic.rules
             SET name        = $1,
@@ -162,37 +177,37 @@ impl PgRuleRepository {
                 actions     = $6,
                 priority    = $7
             WHERE id = $8 AND tenant_id = $9
-            "#,
-            rule.name,
-            rule.description,
-            rule.is_active,
-            serde_json::to_value(&rule.trigger)?,
-            serde_json::to_value(&rule.conditions)?,
-            serde_json::to_value(&rule.actions)?,
-            rule.priority as i32,
-            rule.id,
-            rule.tenant_id,
+            "#
         )
+        .bind(&rule.name)
+        .bind(&rule.description)
+        .bind(rule.is_active)
+        .bind(serde_json::to_value(&rule.trigger)?)
+        .bind(serde_json::to_value(&rule.conditions)?)
+        .bind(serde_json::to_value(&rule.actions)?)
+        .bind(rule.priority as i32)
+        .bind(rule.id)
+        .bind(rule.tenant_id)
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() > 0)
     }
 
     pub async fn set_active(&self, id: Uuid, tenant_id: Uuid, is_active: bool) -> anyhow::Result<bool> {
-        let result = sqlx::query!(
-            "UPDATE business_logic.rules SET is_active = $1 WHERE id = $2 AND tenant_id = $3",
-            is_active, id, tenant_id,
+        let result = sqlx::query(
+            "UPDATE business_logic.rules SET is_active = $1 WHERE id = $2 AND tenant_id = $3"
         )
+        .bind(is_active).bind(id).bind(tenant_id)
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() > 0)
     }
 
     pub async fn delete(&self, id: Uuid, tenant_id: Uuid) -> anyhow::Result<bool> {
-        let result = sqlx::query!(
-            "DELETE FROM business_logic.rules WHERE id = $1 AND tenant_id = $2",
-            id, tenant_id,
+        let result = sqlx::query(
+            "DELETE FROM business_logic.rules WHERE id = $1 AND tenant_id = $2"
         )
+        .bind(id).bind(tenant_id)
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() > 0)
@@ -211,24 +226,24 @@ impl PgRuleRepository {
         error_message: Option<&str>,
         fired_at: DateTime<Utc>,
     ) -> anyhow::Result<()> {
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO business_logic.rule_executions
                 (id, rule_id, tenant_id, kafka_topic, shipment_id,
                  conditions_passed, actions_executed, outcome, error_message, fired_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-            "#,
-            Uuid::new_v4(),
-            rule_id,
-            tenant_id,
-            kafka_topic,
-            shipment_id,
-            conditions_passed,
-            &serde_json::to_value(actions_executed).unwrap_or_default(),
-            outcome,
-            error_message,
-            fired_at,
+            "#
         )
+        .bind(Uuid::new_v4())
+        .bind(rule_id)
+        .bind(tenant_id)
+        .bind(kafka_topic)
+        .bind(shipment_id)
+        .bind(conditions_passed)
+        .bind(serde_json::to_value(actions_executed).unwrap_or_default())
+        .bind(outcome)
+        .bind(error_message)
+        .bind(fired_at)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -241,8 +256,7 @@ impl PgRuleRepository {
         cursor_fired_at: Option<DateTime<Utc>>,
     ) -> anyhow::Result<Vec<RuleExecutionRow>> {
         let rows = if let Some(cursor) = cursor_fired_at {
-            sqlx::query_as!(
-                RuleExecutionRow,
+            sqlx::query_as::<_, RuleExecutionRow>(
                 r#"
                 SELECT id, rule_id, tenant_id, kafka_topic, shipment_id,
                        conditions_passed, actions_executed, outcome, error_message, fired_at
@@ -250,14 +264,13 @@ impl PgRuleRepository {
                 WHERE rule_id = $1 AND fired_at < $2
                 ORDER BY fired_at DESC
                 LIMIT $3
-                "#,
-                rule_id, cursor, limit,
+                "#
             )
+            .bind(rule_id).bind(cursor).bind(limit)
             .fetch_all(&self.pool)
             .await?
         } else {
-            sqlx::query_as!(
-                RuleExecutionRow,
+            sqlx::query_as::<_, RuleExecutionRow>(
                 r#"
                 SELECT id, rule_id, tenant_id, kafka_topic, shipment_id,
                        conditions_passed, actions_executed, outcome, error_message, fired_at
@@ -265,9 +278,9 @@ impl PgRuleRepository {
                 WHERE rule_id = $1
                 ORDER BY fired_at DESC
                 LIMIT $2
-                "#,
-                rule_id, limit,
+                "#
             )
+            .bind(rule_id).bind(limit)
             .fetch_all(&self.pool)
             .await?
         };
@@ -275,7 +288,7 @@ impl PgRuleRepository {
     }
 }
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug, serde::Serialize, sqlx::FromRow)]
 pub struct RuleExecutionRow {
     pub id: Uuid,
     pub rule_id: Uuid,

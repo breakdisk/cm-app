@@ -1,0 +1,105 @@
+# ============================================================
+# LogisticOS — cargo-deny configuration
+# Enforces license policy, bans, and security advisories for
+# all workspace crates.
+# ============================================================
+
+[graph]
+# Evaluate all target triples we ship
+targets = [
+  { triple = "x86_64-unknown-linux-gnu" },
+  { triple = "aarch64-unknown-linux-gnu" },
+]
+
+# ─────────────────────────────────────────────────────────────
+# [advisories] — RustSec advisory database
+# ─────────────────────────────────────────────────────────────
+[advisories]
+version = 2
+# Fail on any unignored vulnerability
+deny = ["warnings"]
+# Reject unmaintained crates
+unmaintained = "deny"
+# Reject yanked crates
+yanked = "deny"
+# Reject unsound code
+unsound = "deny"
+
+# ─────────────────────────────────────────────────────────────
+# [licenses] — Approved license list
+# Only FOSS-compatible licenses allowed. No GPL/AGPL in deps.
+# ─────────────────────────────────────────────────────────────
+[licenses]
+version = 2
+# Require confidence threshold for license detection
+confidence-threshold = 0.8
+# Explicitly allowed licenses
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-DFS-2016",
+  "Unicode-3.0",
+  "Zlib",
+  "CC0-1.0",
+  "OpenSSL",
+]
+# GPL variants are blocked (copyleft incompatible with SaaS)
+deny = [
+  "GPL-1.0",
+  "GPL-2.0",
+  "GPL-3.0",
+  "AGPL-1.0",
+  "AGPL-3.0",
+  "LGPL-2.0",
+  "LGPL-2.1",
+  "LGPL-3.0",
+  "EUPL-1.1",
+  "EUPL-1.2",
+]
+
+# ─────────────────────────────────────────────────────────────
+# [bans] — Banned crates and duplicate detection
+# ─────────────────────────────────────────────────────────────
+[bans]
+# Deny multiple versions of the same crate (forces dep resolution hygiene)
+multiple-versions = "warn"
+# Deny wildcard dependencies in workspace crates
+wildcards = "deny"
+# Deny workspace crates depending on themselves
+workspace-default-features = "allow"
+external-default-features = "allow"
+
+# Explicitly banned crates — security or maintenance reasons
+deny = [
+  # Replaced by rustls for TLS
+  { name = "native-tls", reason = "Use rustls instead for consistent TLS stack" },
+  # Unsafe/unmaintained
+  { name = "openssl", reason = "Use rustls; openssl adds large C dependency and attack surface" },
+  # Old unmaintained crates
+  { name = "failure", reason = "Use thiserror/anyhow instead; failure is unmaintained" },
+  { name = "error-chain", reason = "Use thiserror/anyhow instead; error-chain is unmaintained" },
+  { name = "term", reason = "Unmaintained; use termcolor or similar" },
+]
+
+# Allow known necessary duplicates
+skip = [
+  # tower-http and axum may pin different versions during upgrade cycles
+  { name = "tower", reason = "Multiple versions allowed during axum upgrade cycles" },
+  # reqwest 0.11 (http 0.2) and axum (http 1.x) dual-stack bridge
+  { name = "http", reason = "reqwest 0.11 bridges http 0.2 and http 1.x; known dual-version" },
+  { name = "http-body", reason = "Dual-version from reqwest/axum http 0.2/1.x bridge" },
+  { name = "hyper", reason = "Dual-version from reqwest/axum http 0.2/1.x bridge" },
+]
+
+# ─────────────────────────────────────────────────────────────
+# [sources] — Allowed crate sources
+# ─────────────────────────────────────────────────────────────
+[sources]
+# Only allow crates from crates.io and our own git (no unknown sources)
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

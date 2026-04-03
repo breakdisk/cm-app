@@ -32,6 +32,7 @@ pub struct StartTaskCommand {
 
 #[derive(Debug, Deserialize)]
 pub struct CompleteTaskCommand {
+    #[serde(default)]
     pub task_id: Uuid,
     pub pod_id: Option<Uuid>,       // Required for delivery tasks
     pub cod_collected_cents: Option<i64>,
@@ -39,6 +40,7 @@ pub struct CompleteTaskCommand {
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct FailTaskCommand {
+    #[serde(default)]
     pub task_id: Uuid,
     #[validate(length(min = 3, max = 500))]
     pub reason: String,

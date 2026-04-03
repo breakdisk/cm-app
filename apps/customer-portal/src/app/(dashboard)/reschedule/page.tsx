@@ -3,6 +3,7 @@
  * Customer Portal — Reschedule Delivery
  * Customer self-serve: pick a new delivery date and time window after a failed attempt.
  */
+import { Suspense } from "react";
 import { useState, useTransition } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
@@ -37,7 +38,7 @@ const TIME_WINDOWS = [
 const DAY_ABBR = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
-export default function ReschedulePage() {
+function RescheduleContent() {
   const searchParams = useSearchParams();
   const AWB = (searchParams.get("tn") ?? "").toUpperCase();
 
@@ -276,5 +277,13 @@ export default function ReschedulePage() {
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+export default function ReschedulePage() {
+  return (
+    <Suspense>
+      <RescheduleContent />
+    </Suspense>
   );
 }

@@ -48,38 +48,37 @@ impl From<LocationRow> for DriverLocation {
 impl LocationRepository for PgLocationRepository {
     async fn record(&self, loc: &DriverLocation) -> anyhow::Result<()> {
         // INSERT only — TimescaleDB hypertable, never update location history.
-        sqlx::query!(
+        sqlx::query(
             r#"INSERT INTO driver_ops.driver_locations
                    (driver_id, tenant_id, lat, lng, accuracy_m, speed_kmh, heading,
                     battery_pct, recorded_at, received_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"#,
-            loc.driver_id,
-            loc.tenant_id,
-            loc.lat,
-            loc.lng,
-            loc.accuracy_m,
-            loc.speed_kmh,
-            loc.heading,
-            loc.battery_pct.map(|b| b as i16),
-            loc.recorded_at,
-            loc.received_at,
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"#
         )
+        .bind(loc.driver_id)
+        .bind(loc.tenant_id)
+        .bind(loc.lat)
+        .bind(loc.lng)
+        .bind(loc.accuracy_m)
+        .bind(loc.speed_kmh)
+        .bind(loc.heading)
+        .bind(loc.battery_pct.map(|b| b as i16))
+        .bind(loc.recorded_at)
+        .bind(loc.received_at)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
     async fn latest(&self, driver_id: &DriverId) -> anyhow::Result<Option<DriverLocation>> {
-        let row = sqlx::query_as!(
-            LocationRow,
+        let row = sqlx::query_as::<_, LocationRow>(
             r#"SELECT driver_id, tenant_id, lat, lng, accuracy_m, speed_kmh, heading,
                       battery_pct, recorded_at, received_at
                FROM driver_ops.driver_locations
                WHERE driver_id = $1
                ORDER BY recorded_at DESC
-               LIMIT 1"#,
-            driver_id.inner()
+               LIMIT 1"#
         )
+        .bind(driver_id.inner())
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(DriverLocation::from))
@@ -91,18 +90,17 @@ impl LocationRepository for PgLocationRepository {
         from: chrono::DateTime<chrono::Utc>,
         to: chrono::DateTime<chrono::Utc>,
     ) -> anyhow::Result<Vec<DriverLocation>> {
-        let rows = sqlx::query_as!(
-            LocationRow,
+        let rows = sqlx::query_as::<_, LocationRow>(
             r#"SELECT driver_id, tenant_id, lat, lng, accuracy_m, speed_kmh, heading,
                       battery_pct, recorded_at, received_at
                FROM driver_ops.driver_locations
                WHERE driver_id = $1
                  AND recorded_at BETWEEN $2 AND $3
-               ORDER BY recorded_at ASC"#,
-            driver_id.inner(),
-            from,
-            to,
+               ORDER BY recorded_at ASC"#
         )
+        .bind(driver_id.inner())
+        .bind(from)
+        .bind(to)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(DriverLocation::from).collect())

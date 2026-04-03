@@ -28,7 +28,7 @@ CREATE INDEX IF NOT EXISTS idx_drivers_status    ON driver_ops.drivers(tenant_id
 -- PostGIS spatial index for proximity queries (used by dispatch's find_available_near)
 CREATE INDEX IF NOT EXISTS idx_drivers_location
     ON driver_ops.drivers USING GIST (
-        ST_SetSRID(ST_MakePoint(lng, lat), 4326)::geography
+        geography(ST_SetSRID(ST_MakePoint(lng, lat), 4326))
     )
     WHERE lat IS NOT NULL AND lng IS NOT NULL;
 

@@ -9,6 +9,7 @@ use crate::domain::{
     repositories::CarrierRepository,
 };
 
+#[derive(sqlx::FromRow)]
 struct CarrierRow {
     id:                Uuid,
     tenant_id:         Uuid,
@@ -65,45 +66,41 @@ impl PgCarrierRepository {
 #[async_trait]
 impl CarrierRepository for PgCarrierRepository {
     async fn find_by_id(&self, id: &CarrierId) -> anyhow::Result<Option<Carrier>> {
-        let row = sqlx::query_as!(CarrierRow,
+        let row = sqlx::query_as::<_, CarrierRow>(
             "SELECT id, tenant_id, name, code, contact_email, contact_phone, api_endpoint, api_key_hash, \
              status, sla, rate_cards, total_shipments, on_time_count, failed_count, performance_grade, \
-             onboarded_at, updated_at FROM carrier.carriers WHERE id = $1",
-            id.inner()
-        ).fetch_optional(&self.pool).await?;
+             onboarded_at, updated_at FROM carrier.carriers WHERE id = $1"
+        ).bind(id.inner()).fetch_optional(&self.pool).await?;
         row.map(Carrier::try_from).transpose()
     }
 
     async fn find_by_code(&self, tenant_id: &TenantId, code: &str) -> anyhow::Result<Option<Carrier>> {
-        let row = sqlx::query_as!(CarrierRow,
+        let row = sqlx::query_as::<_, CarrierRow>(
             "SELECT id, tenant_id, name, code, contact_email, contact_phone, api_endpoint, api_key_hash, \
              status, sla, rate_cards, total_shipments, on_time_count, failed_count, performance_grade, \
-             onboarded_at, updated_at FROM carrier.carriers WHERE tenant_id = $1 AND code = $2",
-            tenant_id.inner(), code
-        ).fetch_optional(&self.pool).await?;
+             onboarded_at, updated_at FROM carrier.carriers WHERE tenant_id = $1 AND code = $2"
+        ).bind(tenant_id.inner()).bind(code).fetch_optional(&self.pool).await?;
         row.map(Carrier::try_from).transpose()
     }
 
     async fn list(&self, tenant_id: &TenantId, limit: i64, offset: i64) -> anyhow::Result<Vec<Carrier>> {
-        let rows = sqlx::query_as!(CarrierRow,
+        let rows = sqlx::query_as::<_, CarrierRow>(
             "SELECT id, tenant_id, name, code, contact_email, contact_phone, api_endpoint, api_key_hash, \
              status, sla, rate_cards, total_shipments, on_time_count, failed_count, performance_grade, \
              onboarded_at, updated_at FROM carrier.carriers \
              WHERE tenant_id = $1 AND status != 'deactivated' \
-             ORDER BY name ASC LIMIT $2 OFFSET $3",
-            tenant_id.inner(), limit, offset
-        ).fetch_all(&self.pool).await?;
+             ORDER BY name ASC LIMIT $2 OFFSET $3"
+        ).bind(tenant_id.inner()).bind(limit).bind(offset).fetch_all(&self.pool).await?;
         rows.into_iter().map(Carrier::try_from).collect()
     }
 
     async fn list_active(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<Carrier>> {
-        let rows = sqlx::query_as!(CarrierRow,
+        let rows = sqlx::query_as::<_, CarrierRow>(
             "SELECT id, tenant_id, name, code, contact_email, contact_phone, api_endpoint, api_key_hash, \
              status, sla, rate_cards, total_shipments, on_time_count, failed_count, performance_grade, \
              onboarded_at, updated_at FROM carrier.carriers \
-             WHERE tenant_id = $1 AND status = 'active'",
-            tenant_id.inner()
-        ).fetch_all(&self.pool).await?;
+             WHERE tenant_id = $1 AND status = 'active'"
+        ).bind(tenant_id.inner()).fetch_all(&self.pool).await?;
         rows.into_iter().map(Carrier::try_from).collect()
     }
 
@@ -113,7 +110,7 @@ impl CarrierRepository for PgCarrierRepository {
         let sla       = serde_json::to_value(&c.sla)?;
         let rate_cards = serde_json::to_value(&c.rate_cards)?;
 
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO carrier.carriers (
                 id, tenant_id, name, code, contact_email, contact_phone,
@@ -129,12 +126,13 @@ impl CarrierRepository for PgCarrierRepository {
                 total_shipments = EXCLUDED.total_shipments, on_time_count = EXCLUDED.on_time_count,
                 failed_count = EXCLUDED.failed_count, performance_grade = EXCLUDED.performance_grade,
                 updated_at = EXCLUDED.updated_at
-            "#,
-            c.id.inner(), c.tenant_id.inner(), c.name, c.code, c.contact_email, c.contact_phone,
-            c.api_endpoint, c.api_key_hash, status, sla, rate_cards,
-            c.total_shipments, c.on_time_count, c.failed_count, grade,
-            c.onboarded_at, c.updated_at,
-        ).execute(&self.pool).await?;
+            "#
+        )
+        .bind(c.id.inner()).bind(c.tenant_id.inner()).bind(&c.name).bind(&c.code).bind(&c.contact_email).bind(&c.contact_phone)
+        .bind(&c.api_endpoint).bind(&c.api_key_hash).bind(status).bind(sla).bind(rate_cards)
+        .bind(c.total_shipments).bind(c.on_time_count).bind(c.failed_count).bind(grade)
+        .bind(c.onboarded_at).bind(c.updated_at)
+        .execute(&self.pool).await?;
         Ok(())
     }
 }

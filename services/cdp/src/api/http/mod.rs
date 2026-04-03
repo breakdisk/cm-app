@@ -12,7 +12,8 @@ use logisticos_auth::middleware::AuthClaims;
 use logisticos_auth::rbac::permissions;
 use logisticos_errors::AppError;
 
-use crate::application::services::{ProfileFilter, ProfileService, UpsertProfileCommand};
+use crate::application::services::{ProfileService, UpsertProfileCommand};
+use crate::domain::repositories::ProfileFilter;
 use crate::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -42,6 +43,7 @@ async fn list_profiles(
     claims: AuthClaims,
     Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
+    use logisticos_types::TenantId;
     claims.require_permission(permissions::CUSTOMERS_VIEW)?;
 
     let filter = ProfileFilter {
@@ -53,12 +55,13 @@ async fn list_profiles(
         offset:        q.offset.unwrap_or(0).max(0),
     };
 
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let profiles = state
         .profile_svc
-        .list(&claims.tenant_id, filter)
+        .list(&tenant_id, filter)
         .await?;
-
-    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"profiles": profiles, "count": profiles.len()}))))
+    let count = profiles.len();
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"profiles": profiles, "count": count}))))
 }
 
 // ---------------------------------------------------------------------------
@@ -75,11 +78,13 @@ async fn top_by_clv(
     claims: AuthClaims,
     Query(q): Query<TopQuery>,
 ) -> impl IntoResponse {
+    use logisticos_types::TenantId;
     claims.require_permission(permissions::CUSTOMERS_VIEW)?;
 
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let profiles = state
         .profile_svc
-        .top_by_clv(&claims.tenant_id, q.limit.unwrap_or(20))
+        .top_by_clv(&tenant_id, q.limit.unwrap_or(20))
         .await?;
 
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"profiles": profiles}))))
@@ -94,11 +99,13 @@ async fn get_profile(
     claims: AuthClaims,
     Path(external_id): Path<Uuid>,
 ) -> impl IntoResponse {
+    use logisticos_types::TenantId;
     claims.require_permission(permissions::CUSTOMERS_VIEW)?;
 
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let profile = state
         .profile_svc
-        .get_by_external_id(&claims.tenant_id, external_id)
+        .get_by_external_id(&tenant_id, external_id)
         .await?;
 
     Ok::<_, AppError>((StatusCode::OK, Json(profile)))
@@ -121,12 +128,14 @@ async fn upsert_profile(
     Path(external_id): Path<Uuid>,
     Json(body): Json<UpsertBody>,
 ) -> impl IntoResponse {
+    use logisticos_types::TenantId;
     claims.require_permission(permissions::CUSTOMERS_MANAGE)?;
 
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let summary = state
         .profile_svc
         .upsert(
-            &claims.tenant_id,
+            &tenant_id,
             UpsertProfileCommand {
                 external_customer_id: external_id,
                 name:                 body.name,
@@ -148,11 +157,13 @@ async fn get_events(
     claims: AuthClaims,
     Path(external_id): Path<Uuid>,
 ) -> impl IntoResponse {
+    use logisticos_types::TenantId;
     claims.require_permission(permissions::CUSTOMERS_VIEW)?;
 
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let profile = state
         .profile_svc
-        .get_by_external_id(&claims.tenant_id, external_id)
+        .get_by_external_id(&tenant_id, external_id)
         .await?;
 
     Ok::<_, AppError>((

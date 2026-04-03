@@ -66,7 +66,7 @@ async fn list_rules(
     let per_page = q.per_page.unwrap_or(20).clamp(1, 100);
 
     let mut rules = state.pg_repo
-        .load_for_tenant(claims.tenant_id.inner())
+        .load_for_tenant(claims.tenant_id)
         .await
         .map_err(AppError::internal)?;
 
@@ -113,7 +113,7 @@ async fn create_rule(
 
     let rule = AutomationRule {
         id:          Uuid::new_v4(),
-        tenant_id:   claims.tenant_id.inner(),
+        tenant_id:   claims.tenant_id,
         name:        body.name,
         description: body.description.unwrap_or_default(),
         is_active:   true,
@@ -143,10 +143,10 @@ async fn get_rule(
         .find_by_id(id)
         .await
         .map_err(AppError::internal)?
-        .ok_or_else(|| AppError::NotFound("Rule not found".into()))?;
+        .ok_or_else(|| AppError::NotFound { resource: "Rule", id: id.to_string() })?;
 
-    if rule.tenant_id != claims.tenant_id.inner() && rule.tenant_id != Uuid::nil() {
-        return Err(AppError::Forbidden("Access denied".into()));
+    if rule.tenant_id != claims.tenant_id && rule.tenant_id != Uuid::nil() {
+        return Err(AppError::Forbidden { resource: "rule".to_owned() });
     }
 
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"data": rule}))))
@@ -174,10 +174,10 @@ async fn update_rule(
         .find_by_id(id)
         .await
         .map_err(AppError::internal)?
-        .ok_or_else(|| AppError::NotFound("Rule not found".into()))?;
+        .ok_or_else(|| AppError::NotFound { resource: "Rule", id: id.to_string() })?;
 
-    if rule.tenant_id != claims.tenant_id.inner() {
-        return Err(AppError::Forbidden("Access denied".into()));
+    if rule.tenant_id != claims.tenant_id {
+        return Err(AppError::Forbidden { resource: "rule".to_owned() });
     }
 
     rule.name        = body.name;
@@ -189,7 +189,7 @@ async fn update_rule(
 
     let updated = state.pg_repo.update(&rule).await.map_err(AppError::internal)?;
     if !updated {
-        return Err(AppError::NotFound("Rule not found".into()));
+        return Err(AppError::NotFound { resource: "Rule", id: id.to_string() });
     }
 
     reload_from_db(&state).await?;
@@ -205,12 +205,12 @@ async fn delete_rule(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     let deleted = state.pg_repo
-        .delete(id, claims.tenant_id.inner())
+        .delete(id, claims.tenant_id)
         .await
         .map_err(AppError::internal)?;
 
     if !deleted {
-        return Err(AppError::NotFound("Rule not found or access denied".into()));
+        return Err(AppError::NotFound { resource: "Rule", id: id.to_string() });
     }
 
     reload_from_db(&state).await?;
@@ -232,12 +232,12 @@ async fn toggle_rule(
     Json(body): Json<ToggleBody>,
 ) -> impl IntoResponse {
     let updated = state.pg_repo
-        .set_active(id, claims.tenant_id.inner(), body.is_active)
+        .set_active(id, claims.tenant_id, body.is_active)
         .await
         .map_err(AppError::internal)?;
 
     if !updated {
-        return Err(AppError::NotFound("Rule not found or access denied".into()));
+        return Err(AppError::NotFound { resource: "Rule", id: id.to_string() });
     }
 
     reload_from_db(&state).await?;
@@ -246,7 +246,7 @@ async fn toggle_rule(
         .find_by_id(id)
         .await
         .map_err(AppError::internal)?
-        .ok_or_else(|| AppError::NotFound("Rule not found".into()))?;
+        .ok_or_else(|| AppError::NotFound { resource: "Rule", id: id.to_string() })?;
 
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"data": rule}))))
 }
@@ -280,10 +280,10 @@ async fn list_executions(
         .find_by_id(id)
         .await
         .map_err(AppError::internal)?
-        .ok_or_else(|| AppError::NotFound("Rule not found".into()))?;
+        .ok_or_else(|| AppError::NotFound { resource: "Rule", id: id.to_string() })?;
 
-    if rule.tenant_id != claims.tenant_id.inner() && rule.tenant_id != Uuid::nil() {
-        return Err(AppError::Forbidden("Access denied".into()));
+    if rule.tenant_id != claims.tenant_id && rule.tenant_id != Uuid::nil() {
+        return Err(AppError::Forbidden { resource: "rule".to_owned() });
     }
 
     let limit = q.limit.unwrap_or(50).clamp(1, 200);

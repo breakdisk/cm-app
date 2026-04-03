@@ -9,6 +9,7 @@ use crate::domain::{
     repositories::VehicleRepository,
 };
 
+#[derive(sqlx::FromRow)]
 struct VehicleRow {
     id:                   Uuid,
     tenant_id:            Uuid,
@@ -66,42 +67,39 @@ impl PgVehicleRepository {
 #[async_trait]
 impl VehicleRepository for PgVehicleRepository {
     async fn find_by_id(&self, id: &VehicleId) -> anyhow::Result<Option<Vehicle>> {
-        let row = sqlx::query_as!(
-            VehicleRow,
+        let row = sqlx::query_as::<_, VehicleRow>(
             r#"
             SELECT id, tenant_id, plate_number, vehicle_type, make, model, year, color,
                    status, assigned_driver_id, odometer_km, maintenance_history,
                    next_maintenance_due, created_at, updated_at
             FROM fleet.vehicles WHERE id = $1
-            "#,
-            id.inner()
+            "#
         )
+        .bind(id.inner())
         .fetch_optional(&self.pool)
         .await?;
         row.map(Vehicle::try_from).transpose()
     }
 
     async fn find_by_driver(&self, tenant_id: &TenantId, driver_id: Uuid) -> anyhow::Result<Option<Vehicle>> {
-        let row = sqlx::query_as!(
-            VehicleRow,
+        let row = sqlx::query_as::<_, VehicleRow>(
             r#"
             SELECT id, tenant_id, plate_number, vehicle_type, make, model, year, color,
                    status, assigned_driver_id, odometer_km, maintenance_history,
                    next_maintenance_due, created_at, updated_at
             FROM fleet.vehicles
             WHERE tenant_id = $1 AND assigned_driver_id = $2
-            "#,
-            tenant_id.inner(),
-            driver_id
+            "#
         )
+        .bind(tenant_id.inner())
+        .bind(driver_id)
         .fetch_optional(&self.pool)
         .await?;
         row.map(Vehicle::try_from).transpose()
     }
 
     async fn list(&self, tenant_id: &TenantId, limit: i64, offset: i64) -> anyhow::Result<Vec<Vehicle>> {
-        let rows = sqlx::query_as!(
-            VehicleRow,
+        let rows = sqlx::query_as::<_, VehicleRow>(
             r#"
             SELECT id, tenant_id, plate_number, vehicle_type, make, model, year, color,
                    status, assigned_driver_id, odometer_km, maintenance_history,
@@ -110,19 +108,18 @@ impl VehicleRepository for PgVehicleRepository {
             WHERE tenant_id = $1 AND status != 'decommissioned'
             ORDER BY created_at DESC
             LIMIT $2 OFFSET $3
-            "#,
-            tenant_id.inner(),
-            limit,
-            offset
+            "#
         )
+        .bind(tenant_id.inner())
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(Vehicle::try_from).collect()
     }
 
     async fn list_maintenance_due(&self, tenant_id: &TenantId, within_days: i64) -> anyhow::Result<Vec<Vehicle>> {
-        let rows = sqlx::query_as!(
-            VehicleRow,
+        let rows = sqlx::query_as::<_, VehicleRow>(
             r#"
             SELECT id, tenant_id, plate_number, vehicle_type, make, model, year, color,
                    status, assigned_driver_id, odometer_km, maintenance_history,
@@ -132,10 +129,10 @@ impl VehicleRepository for PgVehicleRepository {
               AND next_maintenance_due IS NOT NULL
               AND next_maintenance_due <= CURRENT_DATE + ($2 || ' days')::INTERVAL
             ORDER BY next_maintenance_due ASC
-            "#,
-            tenant_id.inner(),
-            within_days.to_string()
+            "#
         )
+        .bind(tenant_id.inner())
+        .bind(within_days.to_string())
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(Vehicle::try_from).collect()
@@ -148,7 +145,7 @@ impl VehicleRepository for PgVehicleRepository {
             .as_str().unwrap_or("active").to_owned();
         let maintenance_json = serde_json::to_value(&v.maintenance_history)?;
 
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO fleet.vehicles (
                 id, tenant_id, plate_number, vehicle_type, make, model, year, color,
@@ -168,35 +165,35 @@ impl VehicleRepository for PgVehicleRepository {
                 maintenance_history  = EXCLUDED.maintenance_history,
                 next_maintenance_due = EXCLUDED.next_maintenance_due,
                 updated_at           = EXCLUDED.updated_at
-            "#,
-            v.id.inner(),
-            v.tenant_id.inner(),
-            v.plate_number,
-            vehicle_type,
-            v.make,
-            v.model,
-            v.year as i16,
-            v.color,
-            status,
-            v.assigned_driver_id,
-            v.odometer_km,
-            maintenance_json,
-            v.next_maintenance_due,
-            v.created_at,
-            v.updated_at,
+            "#
         )
+        .bind(v.id.inner())
+        .bind(v.tenant_id.inner())
+        .bind(&v.plate_number)
+        .bind(vehicle_type)
+        .bind(&v.make)
+        .bind(&v.model)
+        .bind(v.year as i16)
+        .bind(&v.color)
+        .bind(status)
+        .bind(v.assigned_driver_id)
+        .bind(v.odometer_km)
+        .bind(maintenance_json)
+        .bind(v.next_maintenance_due)
+        .bind(v.created_at)
+        .bind(v.updated_at)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
     async fn count(&self, tenant_id: &TenantId) -> anyhow::Result<i64> {
-        let row = sqlx::query!(
-            "SELECT COUNT(*) AS cnt FROM fleet.vehicles WHERE tenant_id = $1 AND status != 'decommissioned'",
-            tenant_id.inner()
+        let row: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM fleet.vehicles WHERE tenant_id = $1 AND status != 'decommissioned'"
         )
+        .bind(tenant_id.inner())
         .fetch_one(&self.pool)
         .await?;
-        Ok(row.cnt.unwrap_or(0))
+        Ok(row.0)
     }
 }

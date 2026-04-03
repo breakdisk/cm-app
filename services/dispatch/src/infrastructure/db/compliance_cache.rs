@@ -2,7 +2,7 @@ use redis::AsyncCommands;
 use uuid::Uuid;
 
 const KEY_PREFIX: &str = "compliance:status:";
-const TTL_SECONDS: usize = 300; // 5 min — refreshed on every compliance.status_changed event
+const TTL_SECONDS: u64 = 300; // 5 min — refreshed on every compliance.status_changed event
 
 pub struct ComplianceCache {
     redis: redis::aio::ConnectionManager,

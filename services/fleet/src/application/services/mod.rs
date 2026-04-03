@@ -60,7 +60,7 @@ impl FleetService {
             .find_by_id(&VehicleId::from_uuid(id))
             .await
             .map_err(AppError::internal)?
-            .ok_or_else(|| AppError::NotFound("Vehicle not found".into()))
+            .ok_or_else(|| AppError::NotFound { resource: "Vehicle", id: id.to_string() })
     }
 
     pub async fn list(&self, tenant_id: &TenantId, limit: i64, offset: i64) -> AppResult<Vec<Vehicle>> {

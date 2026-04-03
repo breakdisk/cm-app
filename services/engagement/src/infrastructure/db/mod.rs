@@ -22,6 +22,7 @@ use crate::domain::entities::{
 // Converted to domain types in `from_row` methods.
 // ---------------------------------------------------------------------------
 
+#[derive(sqlx::FromRow)]
 struct NotificationRow {
     id:                  Uuid,
     tenant_id:           Uuid,
@@ -83,6 +84,7 @@ impl NotificationRow {
     }
 }
 
+#[derive(sqlx::FromRow)]
 struct TemplateRow {
     id:          Uuid,
     tenant_id:   Option<Uuid>,
@@ -145,6 +147,23 @@ fn channel_str(c: &NotificationChannel) -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
+// Campaign row type for the read-only campaigns projection
+// ---------------------------------------------------------------------------
+
+#[derive(sqlx::FromRow)]
+struct CampaignRow {
+    id:              Uuid,
+    name:            String,
+    channel:         String,
+    status:          String,
+    scheduled_at:    Option<chrono::DateTime<chrono::Utc>>,
+    total_sent:      i64,
+    total_delivered: i64,
+    total_failed:    i64,
+    created_at:      chrono::DateTime<chrono::Utc>,
+}
+
+// ---------------------------------------------------------------------------
 // Repository struct
 // ---------------------------------------------------------------------------
 
@@ -167,7 +186,7 @@ impl NotificationDb {
     /// idempotent retries from the Kafka consumer do not create duplicates when
     /// the same message is re-delivered.
     pub async fn insert_notification(&self, n: &Notification) -> anyhow::Result<()> {
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO engagement.notifications (
                 id, tenant_id, customer_id, channel, recipient,
@@ -183,24 +202,24 @@ impl NotificationDb {
                 $13, $14, $15, $16
             )
             ON CONFLICT (id) DO NOTHING
-            "#,
-            n.id,
-            n.tenant_id,
-            n.customer_id,
-            channel_str(&n.channel),
-            n.recipient,
-            n.template_id,
-            n.rendered_body,
-            n.subject,
-            status_str(&n.status),
-            priority_str(&n.priority),
-            n.provider_message_id,
-            n.error_message,
-            n.queued_at,
-            n.sent_at,
-            n.delivered_at,
-            n.retry_count as i32,
+            "#
         )
+        .bind(n.id)
+        .bind(n.tenant_id)
+        .bind(n.customer_id)
+        .bind(channel_str(&n.channel))
+        .bind(&n.recipient)
+        .bind(&n.template_id)
+        .bind(&n.rendered_body)
+        .bind(&n.subject)
+        .bind(status_str(&n.status))
+        .bind(priority_str(&n.priority))
+        .bind(&n.provider_message_id)
+        .bind(&n.error_message)
+        .bind(n.queued_at)
+        .bind(n.sent_at)
+        .bind(n.delivered_at)
+        .bind(n.retry_count as i32)
         .execute(&self.pool)
         .await?;
 
@@ -209,8 +228,7 @@ impl NotificationDb {
 
     /// Look up a single notification by primary key.
     pub async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<Notification>> {
-        let row = sqlx::query_as!(
-            NotificationRow,
+        let row = sqlx::query_as::<_, NotificationRow>(
             r#"
             SELECT id, tenant_id, customer_id, channel, recipient,
                    template_id, rendered_body, subject,
@@ -219,9 +237,9 @@ impl NotificationDb {
                    queued_at, sent_at, delivered_at, retry_count
             FROM engagement.notifications
             WHERE id = $1
-            "#,
-            id
+            "#
         )
+        .bind(id)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -237,8 +255,7 @@ impl NotificationDb {
         limit:       i64,
         offset:      i64,
     ) -> anyhow::Result<Vec<Notification>> {
-        let rows = sqlx::query_as!(
-            NotificationRow,
+        let rows = sqlx::query_as::<_, NotificationRow>(
             r#"
             SELECT id, tenant_id, customer_id, channel, recipient,
                    template_id, rendered_body, subject,
@@ -251,12 +268,12 @@ impl NotificationDb {
             ORDER BY queued_at DESC
             LIMIT  $3
             OFFSET $4
-            "#,
-            customer_id,
-            tenant_id,
-            limit,
-            offset,
+            "#
         )
+        .bind(customer_id)
+        .bind(tenant_id)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
 
@@ -272,8 +289,7 @@ impl NotificationDb {
         limit:     i64,
         offset:    i64,
     ) -> anyhow::Result<Vec<Notification>> {
-        let rows = sqlx::query_as!(
-            NotificationRow,
+        let rows = sqlx::query_as::<_, NotificationRow>(
             r#"
             SELECT id, tenant_id, customer_id, channel, recipient,
                    template_id, rendered_body, subject,
@@ -286,12 +302,12 @@ impl NotificationDb {
             ORDER BY queued_at DESC
             LIMIT  $3
             OFFSET $4
-            "#,
-            tenant_id,
-            status,
-            limit,
-            offset,
+            "#
         )
+        .bind(tenant_id)
+        .bind(status)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
 
@@ -306,7 +322,7 @@ impl NotificationDb {
         status:              NotificationStatus,
         provider_message_id: Option<String>,
     ) -> anyhow::Result<()> {
-        sqlx::query!(
+        sqlx::query(
             r#"
             UPDATE engagement.notifications
                SET status              = $2,
@@ -314,11 +330,11 @@ impl NotificationDb {
                    sent_at             = CASE WHEN $2 = 'sent' THEN NOW() ELSE sent_at END,
                    delivered_at        = CASE WHEN $2 = 'delivered' THEN NOW() ELSE delivered_at END
              WHERE id = $1
-            "#,
-            id,
-            status_str(&status),
-            provider_message_id,
+            "#
         )
+        .bind(id)
+        .bind(status_str(&status))
+        .bind(provider_message_id)
         .execute(&self.pool)
         .await?;
 
@@ -332,7 +348,7 @@ impl NotificationDb {
     /// Insert a new notification template.  Conflict on `(tenant_id, template_id)`
     /// is treated as an error — callers should use `update_template` for updates.
     pub async fn insert_template(&self, t: &NotificationTemplate) -> anyhow::Result<()> {
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO engagement.templates (
                 id, tenant_id, template_id, channel, language,
@@ -341,17 +357,17 @@ impl NotificationDb {
                 $1, $2, $3, $4, $5,
                 $6, $7, $8, $9
             )
-            "#,
-            t.id,
-            t.tenant_id,
-            t.template_id,
-            channel_str(&t.channel),
-            t.language,
-            t.subject,
-            t.body,
-            &t.variables,
-            t.is_active,
+            "#
         )
+        .bind(t.id)
+        .bind(t.tenant_id)
+        .bind(&t.template_id)
+        .bind(channel_str(&t.channel))
+        .bind(&t.language)
+        .bind(&t.subject)
+        .bind(&t.body)
+        .bind(&t.variables)
+        .bind(t.is_active)
         .execute(&self.pool)
         .await?;
 
@@ -365,18 +381,17 @@ impl NotificationDb {
         id:        Uuid,
         tenant_id: Uuid,
     ) -> anyhow::Result<Option<NotificationTemplate>> {
-        let row = sqlx::query_as!(
-            TemplateRow,
+        let row = sqlx::query_as::<_, TemplateRow>(
             r#"
             SELECT id, tenant_id, template_id, channel, language,
                    subject, body, variables, is_active
             FROM engagement.templates
             WHERE id = $1
               AND (tenant_id = $2 OR tenant_id IS NULL)
-            "#,
-            id,
-            tenant_id,
+            "#
         )
+        .bind(id)
+        .bind(tenant_id)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -389,17 +404,16 @@ impl NotificationDb {
         &self,
         tenant_id: Uuid,
     ) -> anyhow::Result<Vec<NotificationTemplate>> {
-        let rows = sqlx::query_as!(
-            TemplateRow,
+        let rows = sqlx::query_as::<_, TemplateRow>(
             r#"
             SELECT id, tenant_id, template_id, channel, language,
                    subject, body, variables, is_active
             FROM engagement.templates
             WHERE tenant_id = $1 OR tenant_id IS NULL
             ORDER BY template_id ASC
-            "#,
-            tenant_id,
+            "#
         )
+        .bind(tenant_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -409,7 +423,7 @@ impl NotificationDb {
     /// Overwrite a template's mutable fields. The `id` and `tenant_id` columns
     /// are immutable after creation.
     pub async fn update_template(&self, t: &NotificationTemplate) -> anyhow::Result<()> {
-        sqlx::query!(
+        sqlx::query(
             r#"
             UPDATE engagement.templates
                SET template_id = $2,
@@ -420,16 +434,16 @@ impl NotificationDb {
                    variables   = $7,
                    is_active   = $8
              WHERE id = $1
-            "#,
-            t.id,
-            t.template_id,
-            channel_str(&t.channel),
-            t.language,
-            t.subject,
-            t.body,
-            &t.variables,
-            t.is_active,
+            "#
         )
+        .bind(t.id)
+        .bind(&t.template_id)
+        .bind(channel_str(&t.channel))
+        .bind(&t.language)
+        .bind(&t.subject)
+        .bind(&t.body)
+        .bind(&t.variables)
+        .bind(t.is_active)
         .execute(&self.pool)
         .await?;
 
@@ -449,7 +463,7 @@ impl NotificationDb {
         limit:     i64,
         offset:    i64,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
-        let rows = sqlx::query!(
+        let rows = sqlx::query_as::<_, CampaignRow>(
             r#"
             SELECT id, name, channel, status, scheduled_at, total_sent, total_delivered, total_failed, created_at
             FROM engagement.campaigns
@@ -457,11 +471,11 @@ impl NotificationDb {
             ORDER BY created_at DESC
             LIMIT  $2
             OFFSET $3
-            "#,
-            tenant_id,
-            limit,
-            offset,
+            "#
         )
+        .bind(tenant_id)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
 
@@ -491,16 +505,16 @@ impl NotificationDb {
         id:        Uuid,
         tenant_id: Uuid,
     ) -> anyhow::Result<Option<serde_json::Value>> {
-        let row = sqlx::query!(
+        let row = sqlx::query_as::<_, CampaignRow>(
             r#"
             SELECT id, name, channel, status, scheduled_at, total_sent, total_delivered, total_failed, created_at
             FROM engagement.campaigns
             WHERE id = $1
               AND tenant_id = $2
-            "#,
-            id,
-            tenant_id,
+            "#
         )
+        .bind(id)
+        .bind(tenant_id)
         .fetch_optional(&self.pool)
         .await?;
 

@@ -124,14 +124,21 @@ export default function MerchantLoginPage() {
     e.preventDefault();
     setError(null);
     setLoading(true);
-
-    // Mock auth — replace with real auth call
-    await new Promise((r) => setTimeout(r, 1400));
-
-    if (email && password) {
+    try {
+      const IDENTITY_URL = process.env.NEXT_PUBLIC_IDENTITY_URL ?? "http://localhost:8001";
+      const res = await fetch(`${IDENTITY_URL}/v1/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password, tenant_slug: "demo" }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.data?.access_token) {
+        throw new Error(json.error?.message ?? "Invalid credentials");
+      }
+      localStorage.setItem("access_token", json.data.access_token);
       router.push("/");
-    } else {
-      setError("Invalid email or password.");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Login failed");
       setLoading(false);
     }
   }

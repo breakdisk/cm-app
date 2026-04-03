@@ -3,7 +3,9 @@ use validator::Validate;
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct CreateShipmentCommand {
+    #[serde(default)]
     pub tenant_id: uuid::Uuid,
+    #[serde(default)]
     pub merchant_id: uuid::Uuid,
 
     #[validate(length(min = 1, max = 200))]

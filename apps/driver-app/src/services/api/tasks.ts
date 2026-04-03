@@ -1,4 +1,4 @@
-import { apiRequest } from "./client";
+import { apiRequest, DRIVER_OPS_URL } from "./client";
 
 export interface DriverTask {
   id: string;
@@ -38,17 +38,18 @@ export interface FailTaskPayload {
 export const tasksApi = {
   /** Get the driver's current task list (today's route) */
   list: (token: string) =>
-    apiRequest<{ data: DriverTask[]; total: number }>("/v1/tasks", { token }),
+    apiRequest<{ data: DriverTask[]; total: number }>("/v1/tasks", { token, baseUrl: DRIVER_OPS_URL }),
 
   /** Get a single task */
   get: (taskId: string, token: string) =>
-    apiRequest<{ data: DriverTask }>(`/v1/tasks/${taskId}`, { token }),
+    apiRequest<{ data: DriverTask }>(`/v1/tasks/${taskId}`, { token, baseUrl: DRIVER_OPS_URL }),
 
   /** Mark a task as in-progress (driver arrived at location) */
   start: (taskId: string, token: string) =>
     apiRequest<{ data: DriverTask }>(`/v1/tasks/${taskId}/start`, {
       method: "PUT",
       token,
+      baseUrl: DRIVER_OPS_URL,
     }),
 
   /** Complete a task (delivery or pickup done) */
@@ -57,6 +58,7 @@ export const tasksApi = {
       method: "PUT",
       body: payload,
       token,
+      baseUrl: DRIVER_OPS_URL,
     }),
 
   /** Fail a task (delivery attempted but unsuccessful) */
@@ -65,5 +67,6 @@ export const tasksApi = {
       method: "PUT",
       body: payload,
       token,
+      baseUrl: DRIVER_OPS_URL,
     }),
 };

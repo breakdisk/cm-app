@@ -92,28 +92,28 @@ impl From<TxRow> for WalletTransaction {
 #[async_trait]
 impl WalletRepository for PgWalletRepository {
     async fn find_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Option<Wallet>> {
-        let row = sqlx::query_as!(WalletRow,
+        let row = sqlx::query_as::<_, WalletRow>(
             "SELECT id, tenant_id, balance_cents, currency, version, created_at, updated_at
-             FROM payments.wallets WHERE tenant_id = $1",
-            tenant_id.inner()
-        ).fetch_optional(&self.pool).await?;
+             FROM payments.wallets WHERE tenant_id = $1"
+        ).bind(tenant_id.inner()).fetch_optional(&self.pool).await?;
         Ok(row.map(Wallet::from))
     }
 
     async fn save_wallet(&self, w: &Wallet) -> anyhow::Result<()> {
         let currency = format!("{:?}", w.currency);
         // Optimistic concurrency: the WHERE version check prevents double-credit
-        let rows = sqlx::query!(
+        let rows = sqlx::query(
             r#"INSERT INTO payments.wallets (id, tenant_id, balance_cents, currency, version, created_at, updated_at)
                VALUES ($1,$2,$3,$4,$5,$6,$7)
                ON CONFLICT (tenant_id) DO UPDATE SET
                    balance_cents = EXCLUDED.balance_cents,
                    version       = EXCLUDED.version,
                    updated_at    = EXCLUDED.updated_at
-               WHERE payments.wallets.version = $5 - 1"#,
-            w.id, w.tenant_id.inner(), w.balance.amount, currency,
-            w.version, w.created_at, w.updated_at,
-        ).execute(&self.pool).await?;
+               WHERE payments.wallets.version = $5 - 1"#
+        )
+        .bind(w.id).bind(w.tenant_id.inner()).bind(w.balance.amount).bind(currency)
+        .bind(w.version).bind(w.created_at).bind(w.updated_at)
+        .execute(&self.pool).await?;
 
         if rows.rows_affected() == 0 {
             anyhow::bail!("Wallet optimistic lock conflict — concurrent modification detected");
@@ -124,27 +124,27 @@ impl WalletRepository for PgWalletRepository {
     async fn record_transaction(&self, tx: &WalletTransaction) -> anyhow::Result<()> {
         let tx_type = tx_type_str(tx.transaction_type);
         let currency = format!("{:?}", tx.amount.currency);
-        sqlx::query!(
+        sqlx::query(
             "INSERT INTO payments.wallet_transactions
                  (id, wallet_id, tenant_id, transaction_type, amount_cents, currency,
                   reference_id, description, created_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-            tx.id, tx.wallet_id, tx.tenant_id.inner(), tx_type,
-            tx.amount.amount, currency, tx.reference_id, tx.description, tx.created_at,
-        ).execute(&self.pool).await?;
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)"
+        )
+        .bind(tx.id).bind(tx.wallet_id).bind(tx.tenant_id.inner()).bind(tx_type)
+        .bind(tx.amount.amount).bind(currency).bind(tx.reference_id).bind(&tx.description).bind(tx.created_at)
+        .execute(&self.pool).await?;
         Ok(())
     }
 
     async fn list_transactions(&self, wallet_id: Uuid, limit: u32) -> anyhow::Result<Vec<WalletTransaction>> {
-        let rows = sqlx::query_as!(TxRow,
+        let rows = sqlx::query_as::<_, TxRow>(
             "SELECT id, wallet_id, tenant_id, transaction_type, amount_cents, currency,
                     reference_id, description, created_at
              FROM payments.wallet_transactions
              WHERE wallet_id = $1
              ORDER BY created_at DESC
-             LIMIT $2",
-            wallet_id, limit as i64
-        ).fetch_all(&self.pool).await?;
+             LIMIT $2"
+        ).bind(wallet_id).bind(limit as i64).fetch_all(&self.pool).await?;
         Ok(rows.into_iter().map(WalletTransaction::from).collect())
     }
 }

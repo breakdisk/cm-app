@@ -32,9 +32,12 @@ async fn list_campaigns(
     claims: AuthClaims,
     Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
+    use logisticos_types::TenantId;
     claims.require_permission(permissions::CAMPAIGNS_CREATE)?;
-    let campaigns = state.campaign_svc.list(&claims.tenant_id, q.limit.unwrap_or(50), q.offset.unwrap_or(0)).await?;
-    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"campaigns": campaigns, "count": campaigns.len()}))))
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let campaigns = state.campaign_svc.list(&tenant_id, q.limit.unwrap_or(50), q.offset.unwrap_or(0)).await?;
+    let count = campaigns.len();
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"campaigns": campaigns, "count": count}))))
 }
 
 async fn create_campaign(
@@ -42,8 +45,10 @@ async fn create_campaign(
     claims: AuthClaims,
     Json(cmd): Json<CreateCampaignCommand>,
 ) -> impl IntoResponse {
+    use logisticos_types::TenantId;
     claims.require_permission(permissions::CAMPAIGNS_CREATE)?;
-    let campaign = state.campaign_svc.create(&claims.tenant_id, claims.user_id, cmd).await?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let campaign = state.campaign_svc.create(&tenant_id, claims.user_id, cmd).await?;
     Ok::<_, AppError>((StatusCode::CREATED, Json(campaign)))
 }
 
@@ -52,10 +57,11 @@ async fn get_campaign(
     claims: AuthClaims,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
+    use logisticos_types::TenantId;
     claims.require_permission(permissions::CAMPAIGNS_CREATE)?;
     let campaign = state.campaign_svc.get(id).await?;
-    if campaign.tenant_id != claims.tenant_id {
-        return Err(AppError::Forbidden("Access denied".into()));
+    if campaign.tenant_id != TenantId::from_uuid(claims.tenant_id) {
+        return Err(AppError::Forbidden { resource: "campaign".to_owned() });
     }
     Ok::<_, AppError>((StatusCode::OK, Json(campaign)))
 }

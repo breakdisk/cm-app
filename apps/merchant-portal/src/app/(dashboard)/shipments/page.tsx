@@ -4,7 +4,7 @@
  * Full shipment list with filters, status badges, bulk actions.
  * Includes New Shipment modal with Local / International (Balikbayan) toggle.
  */
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
@@ -72,6 +72,14 @@ const STATS = [
   { label: "Delivered",value: 392,  color: "green"  as const },
   { label: "Failed",   value: 45,   color: "red"    as const },
 ];
+
+// ── API helpers ───────────────────────────────────────────────────────────────
+
+const ORDER_INTAKE_URL = process.env.NEXT_PUBLIC_ORDER_INTAKE_URL ?? "http://localhost:8004";
+
+function getToken() {
+  return typeof window !== "undefined" ? localStorage.getItem("access_token") ?? "" : "";
+}
 
 // ── New Shipment Modal ────────────────────────────────────────────────────────
 
@@ -267,7 +275,7 @@ function CountrySelect({ value, onChange }: { value: string; onChange: (code: st
   );
 }
 
-function NewShipmentModal({ onClose }: { onClose: () => void }) {
+function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked?: () => void }) {
   const [mode,        setMode]        = useState<ShipmentMode>("local");
   const [step,        setStep]        = useState(1);
 
@@ -295,6 +303,9 @@ function NewShipmentModal({ onClose }: { onClose: () => void }) {
   const [contents,      setContents]      = useState("");
   const [freightMode,   setFreightMode]   = useState<FreightMode>("sea");
 
+  const [booking,  setBooking]  = useState(false);
+  const [bookError,setBookError]= useState<string | null>(null);
+
   const isIntl = mode === "international";
 
   function calcTotal() {
@@ -305,10 +316,48 @@ function NewShipmentModal({ onClose }: { onClose: () => void }) {
     return base + surcharge + airPremium;
   }
 
-  function handleBook() {
-    const awb = "LS-" + Math.random().toString(36).slice(2,10).toUpperCase();
-    alert(`Shipment booked!\nTracking: ${awb}`);
-    onClose();
+  async function handleBook() {
+    const token = getToken();
+    if (!token) { setBookError("Not authenticated"); return; }
+    setBooking(true);
+    setBookError(null);
+    try {
+      const weightGrams = Math.round(parseFloat(weight || "0") * 1000);
+      const body = {
+        customer_name:  receiverName,
+        customer_phone: "09000000000",
+        origin: {
+          line1: senderAddress, city: senderCity,
+          province: senderCity, postal_code: senderZip, country_code: "PH",
+        },
+        destination: {
+          line1: receiverAddress, city: receiverCity,
+          province: receiverCity, postal_code: receiverZip,
+          country_code: isIntl ? destCountry : "PH",
+        },
+        service_type: isIntl ? "balikbayan" : "standard",
+        weight_grams: weightGrams > 0 ? weightGrams : 500,
+        ...(isIntl && boxL ? { length_cm: parseInt(boxL), width_cm: parseInt(boxW), height_cm: parseInt(boxH) } : {}),
+        ...(declaredValue ? { declared_value_cents: Math.round(parseFloat(declaredValue) * 100) } : {}),
+        ...(codAmount ? { cod_amount_cents: Math.round(parseFloat(codAmount) * 100) } : {}),
+        ...(description || contents ? { special_instructions: description || contents } : {}),
+      };
+      const res = await fetch(`${ORDER_INTAKE_URL}/v1/shipments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error?.message ?? "Booking failed");
+      const awb = json.tracking_number ?? json.data?.tracking_number ?? "created";
+      alert(`Shipment booked!\nTracking: ${awb}`);
+      onBooked?.();
+      onClose();
+    } catch (err: unknown) {
+      setBookError(err instanceof Error ? err.message : "Booking failed");
+    } finally {
+      setBooking(false);
+    }
   }
 
   const step1Valid =
@@ -586,6 +635,11 @@ function NewShipmentModal({ onClose }: { onClose: () => void }) {
           )}
 
           {/* Navigation buttons */}
+          {bookError && (
+            <div className="rounded-lg border border-red-signal/30 bg-red-surface px-3 py-2 text-xs text-red-signal font-mono">
+              {bookError}
+            </div>
+          )}
           <div className="flex gap-3 pt-2">
             {step > 1 && (
               <button onClick={() => setStep(s => s - 1)}
@@ -606,14 +660,14 @@ function NewShipmentModal({ onClose }: { onClose: () => void }) {
                 Next →
               </button>
             ) : (
-              <button onClick={handleBook}
+              <button onClick={handleBook} disabled={booking}
                 className={cn(
-                  "flex-1 rounded-xl py-2.5 text-sm font-semibold text-canvas transition-all",
+                  "flex-1 rounded-xl py-2.5 text-sm font-semibold text-canvas transition-all disabled:opacity-50",
                   isIntl
                     ? "bg-gradient-to-r from-purple-plasma to-[#6B21D8] hover:opacity-90"
                     : "bg-gradient-to-r from-green-signal to-cyan-neon hover:opacity-90"
                 )}>
-                {isIntl ? "Book Balikbayan Box" : "Confirm Booking"}
+                {booking ? "Booking…" : isIntl ? "Book Balikbayan Box" : "Confirm Booking"}
               </button>
             )}
           </div>
@@ -630,8 +684,41 @@ export default function ShipmentsPage() {
   const [statusFilter,setStatusFilter]= useState<ShipmentStatus | "all">("all");
   const [selected,    setSelected]    = useState<Set<string>>(new Set());
   const [showNewShipment, setShowNewShipment] = useState(false);
+  const [shipments,   setShipments]   = useState<Shipment[]>(MOCK_SHIPMENTS);
 
-  const filtered = MOCK_SHIPMENTS.filter((s) => {
+  const fetchShipments = useCallback(async () => {
+    const token = getToken();
+    if (!token) return;
+    try {
+      const res = await fetch(`${ORDER_INTAKE_URL}/v1/shipments`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const json = await res.json();
+      const rows = (json.shipments ?? []).map((s: {
+        id: string;
+        tracking_number: string;
+        customer_name: string;
+        destination?: { city?: string };
+        status: string;
+        cod_amount_cents?: number | null;
+        created_at: string;
+      }) => ({
+        id:               s.id,
+        tracking_number:  s.tracking_number,
+        recipient_name:   s.customer_name,
+        destination:      s.destination?.city ?? "",
+        status:           s.status as ShipmentStatus,
+        cod_amount:       s.cod_amount_cents ? s.cod_amount_cents / 100 : undefined,
+        created_at:       s.created_at,
+      }));
+      if (rows.length > 0) setShipments(rows);
+    } catch { /* retain current data */ }
+  }, []);
+
+  useEffect(() => { fetchShipments(); }, [fetchShipments]);
+
+  const filtered = shipments.filter((s) => {
     const matchStatus = statusFilter === "all" || s.status === statusFilter;
     const matchSearch = !search ||
       s.tracking_number.toLowerCase().includes(search.toLowerCase()) ||
@@ -805,7 +892,7 @@ export default function ShipmentsPage() {
     {/* New Shipment Modal */}
     <AnimatePresence>
       {showNewShipment && (
-        <NewShipmentModal onClose={() => setShowNewShipment(false)} />
+        <NewShipmentModal onClose={() => setShowNewShipment(false)} onBooked={fetchShipments} />
       )}
     </AnimatePresence>
     </>

@@ -60,47 +60,48 @@ impl From<CodRow> for CodCollection {
 #[async_trait]
 impl CodRepository for PgCodRepository {
     async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<CodCollection>> {
-        let row = sqlx::query_as!(CodRow,
+        let row = sqlx::query_as::<_, CodRow>(
             "SELECT id, tenant_id, shipment_id, driver_id, pod_id, amount_cents, currency,
                     status, collected_at, remitted_at, batch_id
-             FROM payments.cod_collections WHERE id = $1", id
-        ).fetch_optional(&self.pool).await?;
+             FROM payments.cod_collections WHERE id = $1"
+        ).bind(id).fetch_optional(&self.pool).await?;
         Ok(row.map(CodCollection::from))
     }
 
     async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<CodCollection>> {
-        let row = sqlx::query_as!(CodRow,
+        let row = sqlx::query_as::<_, CodRow>(
             "SELECT id, tenant_id, shipment_id, driver_id, pod_id, amount_cents, currency,
                     status, collected_at, remitted_at, batch_id
-             FROM payments.cod_collections WHERE shipment_id = $1", shipment_id
-        ).fetch_optional(&self.pool).await?;
+             FROM payments.cod_collections WHERE shipment_id = $1"
+        ).bind(shipment_id).fetch_optional(&self.pool).await?;
         Ok(row.map(CodCollection::from))
     }
 
     async fn list_pending_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<CodCollection>> {
-        let rows = sqlx::query_as!(CodRow,
+        let rows = sqlx::query_as::<_, CodRow>(
             "SELECT id, tenant_id, shipment_id, driver_id, pod_id, amount_cents, currency,
                     status, collected_at, remitted_at, batch_id
              FROM payments.cod_collections
              WHERE tenant_id = $1 AND status = 'collected'
-             ORDER BY collected_at ASC", tenant_id.inner()
-        ).fetch_all(&self.pool).await?;
+             ORDER BY collected_at ASC"
+        ).bind(tenant_id.inner()).fetch_all(&self.pool).await?;
         Ok(rows.into_iter().map(CodCollection::from).collect())
     }
 
     async fn save(&self, c: &CodCollection) -> anyhow::Result<()> {
         let status = status_str(c.status);
         let currency = format!("{:?}", c.amount.currency);
-        sqlx::query!(
+        sqlx::query(
             r#"INSERT INTO payments.cod_collections
                    (id, tenant_id, shipment_id, driver_id, pod_id, amount_cents, currency,
                     status, collected_at, remitted_at, batch_id)
                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
                ON CONFLICT (shipment_id) DO UPDATE SET
-                   status = EXCLUDED.status, remitted_at = EXCLUDED.remitted_at, batch_id = EXCLUDED.batch_id"#,
-            c.id, c.tenant_id.inner(), c.shipment_id, c.driver_id, c.pod_id,
-            c.amount.amount, currency, status, c.collected_at, c.remitted_at, c.batch_id,
-        ).execute(&self.pool).await?;
+                   status = EXCLUDED.status, remitted_at = EXCLUDED.remitted_at, batch_id = EXCLUDED.batch_id"#
+        )
+        .bind(c.id).bind(c.tenant_id.inner()).bind(c.shipment_id).bind(c.driver_id).bind(c.pod_id)
+        .bind(c.amount.amount).bind(currency).bind(status).bind(c.collected_at).bind(c.remitted_at).bind(c.batch_id)
+        .execute(&self.pool).await?;
         Ok(())
     }
 }

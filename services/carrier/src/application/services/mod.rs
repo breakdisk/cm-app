@@ -72,7 +72,7 @@ impl CarrierService {
             .find_by_id(&CarrierId::from_uuid(id))
             .await
             .map_err(AppError::internal)?
-            .ok_or_else(|| AppError::NotFound("Carrier not found".into()))
+            .ok_or_else(|| AppError::NotFound { resource: "Carrier", id: id.to_string() })
     }
 
     pub async fn list(&self, tenant_id: &TenantId, limit: i64, offset: i64) -> AppResult<Vec<Carrier>> {

@@ -36,7 +36,7 @@ impl TaskService {
             .map(|t| TaskSummary {
                 task_id: t.id,
                 shipment_id: t.shipment_id,
-                sequence: t.sequence,
+                sequence: t.sequence as u32,
                 status: format!("{:?}", t.status).to_lowercase(),
                 task_type: format!("{:?}", t.task_type).to_lowercase(),
                 customer_name: t.customer_name.clone(),

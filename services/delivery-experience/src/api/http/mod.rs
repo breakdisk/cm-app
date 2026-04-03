@@ -19,6 +19,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         // Public — no auth required
         .route("/track/:tracking_number",                          get(public_track))
+        .route("/v1/tracking/public/:tracking_number",             get(public_track))
         .route("/track/:tracking_number/reschedule",               post(reschedule_delivery))
         .route("/v1/tracking/:tracking_number/reschedule",         post(reschedule_delivery))
         .route("/track/:tracking_number/feedback",                 post(submit_feedback))

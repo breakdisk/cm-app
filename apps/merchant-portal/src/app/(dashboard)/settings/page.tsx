@@ -105,7 +105,7 @@ export default function MerchantSettingsPage() {
                 <div key={row.label} className="flex justify-between items-center py-2 border-b border-white/[0.06]">
                   <span className="text-xs text-white/40 uppercase tracking-widest font-mono">{row.label}</span>
                   {row.badge ? (
-                    <NeonBadge color={row.badge as any}>{row.value}</NeonBadge>
+                    <NeonBadge variant={row.badge as any}>{row.value}</NeonBadge>
                   ) : (
                     <span className="text-sm text-white font-medium">{row.value}</span>
                   )}
@@ -130,7 +130,7 @@ export default function MerchantSettingsPage() {
                 <div>
                   <div className="flex items-center gap-3 mb-1">
                     <span className="text-white font-semibold">{addr.label}</span>
-                    {addr.default && <NeonBadge color="cyan">Default</NeonBadge>}
+                    {addr.default && <NeonBadge variant="cyan">Default</NeonBadge>}
                   </div>
                   <p className="text-sm text-white/50">{addr.address}</p>
                 </div>

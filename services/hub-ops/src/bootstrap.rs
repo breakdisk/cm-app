@@ -29,91 +29,83 @@ use crate::{
 struct PgHubRepository { pool: sqlx::PgPool }
 struct PgInductionRepository { pool: sqlx::PgPool }
 
-fn row_to_induction(
+#[derive(sqlx::FromRow)]
+struct HubRow {
+    id: Uuid, tenant_id: Uuid, name: String, address: String,
+    lat: f64, lng: f64, capacity: i32, current_load: i32,
+    serving_zones: Vec<String>, is_active: bool,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(sqlx::FromRow)]
+struct InductionRow {
     id: Uuid, hub_id: Uuid, tenant_id: Uuid, shipment_id: Uuid,
     tracking_number: String, status: String,
     zone: Option<String>, bay: Option<String>, inducted_by: Option<Uuid>,
     inducted_at: chrono::DateTime<chrono::Utc>,
     sorted_at: Option<chrono::DateTime<chrono::Utc>>,
     dispatched_at: Option<chrono::DateTime<chrono::Utc>>,
-) -> crate::domain::entities::ParcelInduction {
+}
+
+fn row_to_hub(r: HubRow) -> crate::domain::entities::Hub {
+    use crate::domain::entities::{Hub, HubId};
+    use logisticos_types::TenantId;
+    Hub {
+        id: HubId::from_uuid(r.id), tenant_id: TenantId::from_uuid(r.tenant_id),
+        name: r.name, address: r.address, lat: r.lat, lng: r.lng,
+        capacity: r.capacity as u32, current_load: r.current_load as u32,
+        serving_zones: r.serving_zones, is_active: r.is_active,
+        created_at: r.created_at, updated_at: r.updated_at,
+    }
+}
+
+fn row_to_induction(r: InductionRow) -> crate::domain::entities::ParcelInduction {
     use crate::domain::entities::{HubId, InductionId, InductionStatus, ParcelInduction};
     use logisticos_types::TenantId;
-    let status = match status.as_str() {
+    let status = match r.status.as_str() {
         "sorted"     => InductionStatus::Sorted,
         "dispatched" => InductionStatus::Dispatched,
         "returned"   => InductionStatus::Returned,
         _            => InductionStatus::Inducted,
     };
     ParcelInduction {
-        id: InductionId::from_uuid(id),
-        hub_id: HubId::from_uuid(hub_id),
-        tenant_id: TenantId::from_uuid(tenant_id),
-        shipment_id,
-        tracking_number,
+        id: InductionId::from_uuid(r.id),
+        hub_id: HubId::from_uuid(r.hub_id),
+        tenant_id: TenantId::from_uuid(r.tenant_id),
+        shipment_id: r.shipment_id,
+        tracking_number: r.tracking_number,
         status,
-        zone,
-        bay,
-        inducted_by,
-        inducted_at,
-        sorted_at,
-        dispatched_at,
+        zone: r.zone,
+        bay: r.bay,
+        inducted_by: r.inducted_by,
+        inducted_at: r.inducted_at,
+        sorted_at: r.sorted_at,
+        dispatched_at: r.dispatched_at,
     }
 }
 
 #[async_trait::async_trait]
 impl HubRepository for PgHubRepository {
     async fn find_by_id(&self, id: &crate::domain::entities::HubId) -> anyhow::Result<Option<crate::domain::entities::Hub>> {
-        use crate::domain::entities::{Hub, HubId};
-        use logisticos_types::TenantId;
-        struct HubRow {
-            id: Uuid, tenant_id: Uuid, name: String, address: String,
-            lat: f64, lng: f64, capacity: i32, current_load: i32,
-            serving_zones: Vec<String>, is_active: bool,
-            created_at: chrono::DateTime<chrono::Utc>,
-            updated_at: chrono::DateTime<chrono::Utc>,
-        }
-        let row = sqlx::query_as!(HubRow,
+        let row = sqlx::query_as::<_, HubRow>(
             r#"SELECT id, tenant_id, name, address, lat, lng, capacity, current_load,
                       serving_zones, is_active, created_at, updated_at
-               FROM hub_ops.hubs WHERE id = $1"#,
-            id.inner()
-        ).fetch_optional(&self.pool).await?;
-        Ok(row.map(|r| Hub {
-            id: HubId::from_uuid(r.id), tenant_id: TenantId::from_uuid(r.tenant_id),
-            name: r.name, address: r.address, lat: r.lat, lng: r.lng,
-            capacity: r.capacity as u32, current_load: r.current_load as u32,
-            serving_zones: r.serving_zones, is_active: r.is_active,
-            created_at: r.created_at, updated_at: r.updated_at,
-        }))
+               FROM hub_ops.hubs WHERE id = $1"#
+        ).bind(id.inner()).fetch_optional(&self.pool).await?;
+        Ok(row.map(row_to_hub))
     }
     async fn list(&self, tenant_id: &logisticos_types::TenantId) -> anyhow::Result<Vec<crate::domain::entities::Hub>> {
-        use crate::domain::entities::{Hub, HubId};
-        use logisticos_types::TenantId;
-        struct HubRow {
-            id: Uuid, tenant_id: Uuid, name: String, address: String,
-            lat: f64, lng: f64, capacity: i32, current_load: i32,
-            serving_zones: Vec<String>, is_active: bool,
-            created_at: chrono::DateTime<chrono::Utc>,
-            updated_at: chrono::DateTime<chrono::Utc>,
-        }
-        let rows = sqlx::query_as!(HubRow,
+        let rows = sqlx::query_as::<_, HubRow>(
             r#"SELECT id, tenant_id, name, address, lat, lng, capacity, current_load,
                       serving_zones, is_active, created_at, updated_at
                FROM hub_ops.hubs WHERE tenant_id = $1 AND is_active = true
-               ORDER BY name"#,
-            tenant_id.inner()
-        ).fetch_all(&self.pool).await?;
-        Ok(rows.into_iter().map(|r| Hub {
-            id: HubId::from_uuid(r.id), tenant_id: TenantId::from_uuid(r.tenant_id),
-            name: r.name, address: r.address, lat: r.lat, lng: r.lng,
-            capacity: r.capacity as u32, current_load: r.current_load as u32,
-            serving_zones: r.serving_zones, is_active: r.is_active,
-            created_at: r.created_at, updated_at: r.updated_at,
-        }).collect())
+               ORDER BY name"#
+        ).bind(tenant_id.inner()).fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(row_to_hub).collect())
     }
     async fn save(&self, hub: &crate::domain::entities::Hub) -> anyhow::Result<()> {
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO hub_ops.hubs (
                 id, tenant_id, name, address, lat, lng, capacity, current_load,
@@ -124,11 +116,12 @@ impl HubRepository for PgHubRepository {
                 serving_zones = EXCLUDED.serving_zones,
                 is_active = EXCLUDED.is_active,
                 updated_at = EXCLUDED.updated_at
-            "#,
-            hub.id.inner(), hub.tenant_id.inner(), hub.name, hub.address,
-            hub.lat, hub.lng, hub.capacity as i32, hub.current_load as i32,
-            &hub.serving_zones, hub.is_active, hub.created_at, hub.updated_at,
-        ).execute(&self.pool).await?;
+            "#
+        )
+        .bind(hub.id.inner()).bind(hub.tenant_id.inner()).bind(&hub.name).bind(&hub.address)
+        .bind(hub.lat).bind(hub.lng).bind(hub.capacity as i32).bind(hub.current_load as i32)
+        .bind(&hub.serving_zones).bind(hub.is_active).bind(hub.created_at).bind(hub.updated_at)
+        .execute(&self.pool).await?;
         Ok(())
     }
 }
@@ -136,44 +129,35 @@ impl HubRepository for PgHubRepository {
 #[async_trait::async_trait]
 impl InductionRepository for PgInductionRepository {
     async fn find_by_id(&self, id: &crate::domain::entities::InductionId) -> anyhow::Result<Option<crate::domain::entities::ParcelInduction>> {
-        let row = sqlx::query!(
+        let row = sqlx::query_as::<_, InductionRow>(
             r#"SELECT id, hub_id, tenant_id, shipment_id, tracking_number, status,
                       zone, bay, inducted_by, inducted_at, sorted_at, dispatched_at
-               FROM hub_ops.parcel_inductions WHERE id = $1"#,
-            id.inner()
-        ).fetch_optional(&self.pool).await?;
-        Ok(row.map(|r| row_to_induction(r.id, r.hub_id, r.tenant_id, r.shipment_id,
-            r.tracking_number, r.status, r.zone, r.bay, r.inducted_by, r.inducted_at,
-            r.sorted_at, r.dispatched_at)))
+               FROM hub_ops.parcel_inductions WHERE id = $1"#
+        ).bind(id.inner()).fetch_optional(&self.pool).await?;
+        Ok(row.map(row_to_induction))
     }
     async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<crate::domain::entities::ParcelInduction>> {
-        let row = sqlx::query!(
+        let row = sqlx::query_as::<_, InductionRow>(
             r#"SELECT id, hub_id, tenant_id, shipment_id, tracking_number, status,
                       zone, bay, inducted_by, inducted_at, sorted_at, dispatched_at
                FROM hub_ops.parcel_inductions WHERE shipment_id = $1
-               LIMIT 1"#,
-            shipment_id
-        ).fetch_optional(&self.pool).await?;
-        Ok(row.map(|r| row_to_induction(r.id, r.hub_id, r.tenant_id, r.shipment_id,
-            r.tracking_number, r.status, r.zone, r.bay, r.inducted_by, r.inducted_at,
-            r.sorted_at, r.dispatched_at)))
+               LIMIT 1"#
+        ).bind(shipment_id).fetch_optional(&self.pool).await?;
+        Ok(row.map(row_to_induction))
     }
     async fn list_active(&self, hub_id: &crate::domain::entities::HubId) -> anyhow::Result<Vec<crate::domain::entities::ParcelInduction>> {
-        let rows = sqlx::query!(
+        let rows = sqlx::query_as::<_, InductionRow>(
             r#"SELECT id, hub_id, tenant_id, shipment_id, tracking_number, status,
                       zone, bay, inducted_by, inducted_at, sorted_at, dispatched_at
                FROM hub_ops.parcel_inductions
                WHERE hub_id = $1 AND status IN ('inducted', 'sorted')
-               ORDER BY inducted_at DESC"#,
-            hub_id.inner()
-        ).fetch_all(&self.pool).await?;
-        Ok(rows.into_iter().map(|r| row_to_induction(r.id, r.hub_id, r.tenant_id,
-            r.shipment_id, r.tracking_number, r.status, r.zone, r.bay, r.inducted_by,
-            r.inducted_at, r.sorted_at, r.dispatched_at)).collect())
+               ORDER BY inducted_at DESC"#
+        ).bind(hub_id.inner()).fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(row_to_induction).collect())
     }
     async fn save(&self, i: &crate::domain::entities::ParcelInduction) -> anyhow::Result<()> {
         let status = serde_json::to_value(&i.status)?.as_str().unwrap_or("inducted").to_owned();
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO hub_ops.parcel_inductions (
                 id, hub_id, tenant_id, shipment_id, tracking_number, status,
@@ -182,11 +166,12 @@ impl InductionRepository for PgInductionRepository {
             ON CONFLICT (id) DO UPDATE SET
                 status = EXCLUDED.status, zone = EXCLUDED.zone, bay = EXCLUDED.bay,
                 sorted_at = EXCLUDED.sorted_at, dispatched_at = EXCLUDED.dispatched_at
-            "#,
-            i.id.inner(), i.hub_id.inner(), i.tenant_id.inner(), i.shipment_id,
-            i.tracking_number, status, i.zone, i.bay, i.inducted_by,
-            i.inducted_at, i.sorted_at, i.dispatched_at,
-        ).execute(&self.pool).await?;
+            "#
+        )
+        .bind(i.id.inner()).bind(i.hub_id.inner()).bind(i.tenant_id.inner()).bind(i.shipment_id)
+        .bind(&i.tracking_number).bind(status).bind(&i.zone).bind(&i.bay).bind(i.inducted_by)
+        .bind(i.inducted_at).bind(i.sorted_at).bind(i.dispatched_at)
+        .execute(&self.pool).await?;
         Ok(())
     }
 }
@@ -203,14 +188,18 @@ struct AppState { svc: Arc<HubService> }
 // ---------------------------------------------------------------------------
 
 async fn create_hub(State(s): State<AppState>, claims: AuthClaims, Json(cmd): Json<CreateHubCommand>) -> impl IntoResponse {
+    use logisticos_types::TenantId;
     claims.require_permission(permissions::FLEET_MANAGE)?;
-    let hub = s.svc.create_hub(&claims.tenant_id, cmd).await?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let hub = s.svc.create_hub(&tenant_id, cmd).await?;
     Ok::<_, AppError>((StatusCode::CREATED, Json(hub)))
 }
 
 async fn list_hubs(State(s): State<AppState>, claims: AuthClaims) -> impl IntoResponse {
+    use logisticos_types::TenantId;
     claims.require_permission(permissions::FLEET_READ)?;
-    let hubs = s.svc.list_hubs(&claims.tenant_id).await?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let hubs = s.svc.list_hubs(&tenant_id).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"hubs": hubs}))))
 }
 
@@ -235,7 +224,8 @@ async fn dispatch(State(s): State<AppState>, claims: AuthClaims, Path(id): Path<
 async fn manifest(State(s): State<AppState>, claims: AuthClaims, Path(hub_id): Path<Uuid>) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
     let parcels = s.svc.hub_manifest(hub_id).await?;
-    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"parcels": parcels, "count": parcels.len()}))))
+    let count = parcels.len();
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"parcels": parcels, "count": count}))))
 }
 
 // ---------------------------------------------------------------------------
@@ -244,7 +234,13 @@ async fn manifest(State(s): State<AppState>, claims: AuthClaims, Path(hub_id): P
 
 pub async fn run() -> anyhow::Result<()> {
     let cfg = Config::load()?;
-    logisticos_tracing::init(&cfg.app.env, "hub-ops")?;
+    let otlp = std::env::var("OTLP_ENDPOINT").ok();
+    logisticos_tracing::init(logisticos_tracing::TracingConfig {
+        service_name: "hub-ops",
+        env: &cfg.app.env,
+        otlp_endpoint: otlp.as_deref(),
+        log_level: None,
+    })?;
 
     let pool = PgPoolOptions::new()
         .max_connections(cfg.database.max_connections)

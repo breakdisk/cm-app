@@ -15,8 +15,9 @@ use logisticos_errors::{AppError, AppResult};
 use logisticos_types::TenantId;
 
 use crate::domain::entities::{
-    AgentAction, AgentMessage, AgentSession, AgentType, ContentBlock, MessageRole, SessionStatus,
+    AgentAction, AgentMessage, AgentSession, AgentType, MessageRole, SessionStatus,
 };
+use crate::infrastructure::claude::ContentBlock;
 use crate::infrastructure::{
     claude::{ClaudeClient, ContentBlock as ClaudeContent},
     db::SessionRepository,

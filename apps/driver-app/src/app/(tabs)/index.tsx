@@ -3,9 +3,9 @@
  * Shows today's assigned deliveries sorted by route sequence.
  * Supports swipe-to-navigate gesture on each task card.
  */
-import { useEffect, useCallback } from "react";
+import { useEffect, useCallback, useState } from "react";
 import {
-  View, Text, StyleSheet, RefreshControl, Pressable, Alert,
+  View, Text, StyleSheet, RefreshControl, Pressable, ActivityIndicator,
 } from "react-native";
 import { FlashList } from "@shopify/flash-list";
 import { useDispatch, useSelector } from "react-redux";
@@ -15,6 +15,8 @@ import * as Haptics from "expo-haptics";
 
 import type { RootState, AppDispatch } from "../../store";
 import { taskActions, earningsActions, type DeliveryTask } from "../../store";
+import { tasksApi } from "../../services/api/tasks";
+import { tokenRef } from "../_layout";
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
 const CANVAS  = "#050810";
@@ -26,53 +28,46 @@ const PURPLE  = "#A855F7";
 const GLASS   = "rgba(255,255,255,0.04)";
 const BORDER  = "rgba(255,255,255,0.08)";
 
-// ── Mock data (replace with RTK Query / SWR fetch) ────────────────────────────
-const MOCK_TASKS: DeliveryTask[] = [
-  // Pickup tasks (first-mile collections)
-  {
-    id: "p1", shipment_id: "sp1", tracking_number: "LS-Q7R8S9T0",
-    sequence: 0, status: "awaiting_pickup", task_type: "pickup",
-    recipient_name: "", recipient_phone: "",
-    address_line1: "88 Ayala Ave", address_city: "Makati City",
-    lat: 14.5553, lng: 121.0177, attempt_count: 0,
-    sender_name: "Ahmad Al Rashid", sender_phone: "+971501234567",
-    package_desc: "Balikbayan Box — Clothes & food items",
-    package_weight: "22 kg",
-    eta_minutes: 8,
-  },
-  // Delivery tasks
-  {
-    id: "t1", shipment_id: "s1", tracking_number: "LS-A1B2C3D4",
-    sequence: 1, status: "assigned", task_type: "delivery",
-    recipient_name: "Maria Santos", recipient_phone: "09171234567",
-    address_line1: "123 Ayala Ave", address_city: "Makati City",
-    lat: 14.5547, lng: 121.0244, cod_amount: 1500, attempt_count: 0,
-    eta_minutes: 12,
-  },
-  {
-    id: "t2", shipment_id: "s2", tracking_number: "LS-E5F6G7H8",
-    sequence: 2, status: "assigned", task_type: "delivery",
-    recipient_name: "Juan Dela Cruz", recipient_phone: "09281234567",
-    address_line1: "456 Gil Puyat Ave", address_city: "Makati City",
-    lat: 14.5595, lng: 120.9842, attempt_count: 0,
-    eta_minutes: 28,
-  },
-  {
-    id: "t3", shipment_id: "s3", tracking_number: "LS-I9J0K1L2",
-    sequence: 3, status: "completed", task_type: "delivery",
-    recipient_name: "Ana Reyes", recipient_phone: "09091234567",
-    address_line1: "789 EDSA", address_city: "Pasig City",
-    lat: 14.5875, lng: 121.0607, cod_amount: 3200, attempt_count: 1,
-  },
-  {
-    id: "t4", shipment_id: "s4", tracking_number: "LS-M3N4O5P6",
-    sequence: 4, status: "failed", task_type: "delivery",
-    recipient_name: "Pedro Garcia", recipient_phone: "09551234567",
-    address_line1: "22 Taguig St", address_city: "Taguig City",
-    lat: 14.5247, lng: 121.0775, attempt_count: 2,
-    special_notes: "Call before delivery. Gate is locked.",
-  },
-];
+// ── API task → store DeliveryTask mapper ──────────────────────────────────────
+
+interface ApiTask {
+  task_id:          string;
+  shipment_id:      string;
+  sequence:         number;
+  status:           string;   // "pending" | "inprogress" | "completed" | "failed"
+  task_type:        string;
+  customer_name:    string;
+  address:          string;   // "line1, city"
+  cod_amount_cents?: number | null;
+}
+
+function mapApiTask(t: ApiTask): DeliveryTask {
+  const statusMap: Record<string, DeliveryTask["status"]> = {
+    pending:    "assigned",
+    inprogress: "navigating",
+    completed:  "completed",
+    failed:     "failed",
+  };
+  const parts       = t.address.split(", ");
+  const address_line1 = parts[0] ?? t.address;
+  const address_city  = parts.slice(1).join(", ") || address_line1;
+  return {
+    id:              t.task_id,
+    shipment_id:     t.shipment_id,
+    tracking_number: t.shipment_id.slice(0, 8).toUpperCase(),
+    sequence:        t.sequence,
+    status:          statusMap[t.status] ?? "assigned",
+    task_type:       (t.task_type === "pickup" ? "pickup" : "delivery") as DeliveryTask["task_type"],
+    recipient_name:  t.customer_name,
+    recipient_phone: "",
+    address_line1,
+    address_city,
+    lat:             0,
+    lng:             0,
+    cod_amount:      t.cod_amount_cents ? Math.round(t.cod_amount_cents / 100) : undefined,
+    attempt_count:   0,
+  };
+}
 
 // ── Task status config ────────────────────────────────────────────────────────
 
@@ -225,43 +220,35 @@ function SummaryHeader({ tasks }: { tasks: DeliveryTask[] }) {
 // ── Screen ────────────────────────────────────────────────────────────────────
 
 export default function TaskListScreen() {
-  const dispatch = useDispatch<AppDispatch>();
-  const tasks    = useSelector((s: RootState) => s.tasks.tasks);
+  const dispatch  = useDispatch<AppDispatch>();
+  const tasks     = useSelector((s: RootState) => s.tasks.tasks);
+  const [fetching, setFetching] = useState(false);
 
-  // Initial load — seed tasks + driver earnings config + demo history
+  async function fetchTasks() {
+    const token = tokenRef.current;
+    if (!token) return;
+    setFetching(true);
+    try {
+      const res = await tasksApi.list(token);
+      const mapped = (res.data ?? []).map(mapApiTask as (t: unknown) => DeliveryTask);
+      dispatch(taskActions.setTasks(mapped));
+    } catch {
+      // Silently fall back — offline or not yet logged in
+    } finally {
+      setFetching(false);
+    }
+  }
+
   useEffect(() => {
-    dispatch(taskActions.setTasks(MOCK_TASKS));
-
-    // Set driver commission config (part-time: ₱85/delivery + 2% COD bonus)
+    fetchTasks();
     dispatch(earningsActions.setDriverConfig({
       driverType:        "part_time",
       commissionRate:    85,
       codCommissionRate: 0.02,
     }));
-
-    // Seed some past delivery earnings for demo
-    const today = new Date().toISOString().slice(0, 10);
-    dispatch(earningsActions.recordDeliveryEarning({
-      taskId: "t3", shipmentId: "s3",
-      completedAt: `${today}T08:45:00.000Z`,
-      baseAmount: 85, codBonus: 64, total: 149,
-    }));
-    dispatch(earningsActions.recordDeliveryEarning({
-      taskId: "demo-a", shipmentId: "s-demo-a",
-      completedAt: `${today}T07:22:00.000Z`,
-      baseAmount: 85, codBonus: 0, total: 85,
-    }));
-    dispatch(earningsActions.recordDeliveryEarning({
-      taskId: "demo-b", shipmentId: "s-demo-b",
-      completedAt: `${today}T06:10:00.000Z`,
-      baseAmount: 85, codBonus: 0, total: 85,
-    }));
   }, []);
 
-  const onRefresh = useCallback(() => {
-    // In production: trigger re-fetch from API
-    dispatch(taskActions.setTasks(MOCK_TASKS));
-  }, [dispatch]);
+  const onRefresh = useCallback(() => { fetchTasks(); }, []);
 
   const pickupTasks    = tasks.filter((t) => t.task_type === "pickup");
   const activeTasks    = tasks.filter((t) => t.task_type === "delivery" && t.status !== "completed" && t.status !== "failed");
@@ -290,6 +277,9 @@ export default function TaskListScreen() {
 
   return (
     <View style={styles.container}>
+      {fetching && tasks.length === 0 && (
+        <ActivityIndicator color={CYAN} style={{ marginTop: 40 }} />
+      )}
       <FlashList
         data={allItems}
         estimatedItemSize={120}
@@ -309,7 +299,7 @@ export default function TaskListScreen() {
         }
         refreshControl={
           <RefreshControl
-            refreshing={false}
+            refreshing={fetching}
             onRefresh={onRefresh}
             tintColor={CYAN}
             colors={[CYAN]}

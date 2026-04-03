@@ -3,6 +3,7 @@
  * Customer Portal — Delivery Feedback
  * Post-delivery NPS / CSAT: rate experience, report issues, leave a review.
  */
+import { Suspense } from "react";
 import { useState, useTransition } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
@@ -55,7 +56,7 @@ function StarRating({ value, onChange, size = 28 }: { value: number; onChange: (
   );
 }
 
-export default function FeedbackPage() {
+function FeedbackContent() {
   const searchParams = useSearchParams();
   const AWB = (searchParams.get("tn") ?? "").toUpperCase();
 
@@ -290,5 +291,13 @@ export default function FeedbackPage() {
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+export default function FeedbackPage() {
+  return (
+    <Suspense>
+      <FeedbackContent />
+    </Suspense>
   );
 }

@@ -16,7 +16,7 @@ impl AnalyticsDb {
     // ------------------------------------------------------------------
 
     pub async fn insert_event(&self, e: &ShipmentEvent) -> anyhow::Result<()> {
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO analytics.shipment_events (
                 id, tenant_id, shipment_id, event_type, driver_id,
@@ -24,32 +24,32 @@ impl AnalyticsDb {
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             ON CONFLICT (id) DO NOTHING
             "#,
-            e.id,
-            e.tenant_id,
-            e.shipment_id,
-            e.event_type,
-            e.driver_id,
-            e.service_type,
-            e.cod_amount_cents,
-            e.on_time,
-            e.delivery_hours,
-            e.occurred_at,
         )
+        .bind(e.id)
+        .bind(e.tenant_id)
+        .bind(e.shipment_id)
+        .bind(&e.event_type)
+        .bind(e.driver_id)
+        .bind(&e.service_type)
+        .bind(e.cod_amount_cents)
+        .bind(e.on_time)
+        .bind(e.delivery_hours)
+        .bind(e.occurred_at)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
     pub async fn update_cod_amount(&self, shipment_id: Uuid, amount_cents: i64) -> anyhow::Result<()> {
-        sqlx::query!(
+        sqlx::query(
             r#"
             UPDATE analytics.shipment_events
             SET cod_amount_cents = $1
             WHERE shipment_id = $2 AND event_type = 'delivered'
             "#,
-            amount_cents,
-            shipment_id,
         )
+        .bind(amount_cents)
+        .bind(shipment_id)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -65,6 +65,7 @@ impl AnalyticsDb {
         from: NaiveDate,
         to: NaiveDate,
     ) -> anyhow::Result<DeliveryKpis> {
+        #[derive(sqlx::FromRow)]
         struct Row {
             total_shipments: Option<i64>,
             delivered:       Option<i64>,
@@ -76,8 +77,7 @@ impl AnalyticsDb {
             cod_shipments:   Option<i64>,
             cod_collected:   Option<i64>,
         }
-        let row = sqlx::query_as!(
-            Row,
+        let row = sqlx::query_as::<_, Row>(
             r#"
             SELECT
                 COUNT(*) FILTER (WHERE event_type = 'created')   AS total_shipments,
@@ -94,10 +94,10 @@ impl AnalyticsDb {
               AND occurred_at >= $2::date::timestamptz
               AND occurred_at <  $3::date::timestamptz + INTERVAL '1 day'
             "#,
-            tenant_id,
-            from,
-            to,
         )
+        .bind(tenant_id)
+        .bind(from)
+        .bind(to)
         .fetch_one(&self.pool)
         .await?;
 
@@ -146,15 +146,15 @@ impl AnalyticsDb {
         from: NaiveDate,
         to: NaiveDate,
     ) -> anyhow::Result<Vec<DailyBucket>> {
+        #[derive(sqlx::FromRow)]
         struct Row {
-            date:              Option<NaiveDate>,
-            shipments:         Option<i64>,
-            delivered:         Option<i64>,
-            failed:            Option<i64>,
-            cod_collected:     Option<i64>,
+            date:          Option<NaiveDate>,
+            shipments:     Option<i64>,
+            delivered:     Option<i64>,
+            failed:        Option<i64>,
+            cod_collected: Option<i64>,
         }
-        let rows = sqlx::query_as!(
-            Row,
+        let rows = sqlx::query_as::<_, Row>(
             r#"
             SELECT
                 DATE(occurred_at AT TIME ZONE 'Asia/Manila') AS date,
@@ -169,10 +169,10 @@ impl AnalyticsDb {
             GROUP BY DATE(occurred_at AT TIME ZONE 'Asia/Manila')
             ORDER BY date ASC
             "#,
-            tenant_id,
-            from,
-            to,
         )
+        .bind(tenant_id)
+        .bind(from)
+        .bind(to)
         .fetch_all(&self.pool)
         .await?;
 
@@ -202,6 +202,7 @@ impl AnalyticsDb {
         to: NaiveDate,
         limit: i64,
     ) -> anyhow::Result<Vec<DriverPerformance>> {
+        #[derive(sqlx::FromRow)]
         struct Row {
             driver_id:        Option<Uuid>,
             total_deliveries: Option<i64>,
@@ -210,8 +211,7 @@ impl AnalyticsDb {
             avg_hours:        Option<f64>,
             cod_collected:    Option<i64>,
         }
-        let rows = sqlx::query_as!(
-            Row,
+        let rows = sqlx::query_as::<_, Row>(
             r#"
             SELECT
                 driver_id,
@@ -229,8 +229,11 @@ impl AnalyticsDb {
             ORDER BY successful DESC
             LIMIT $4
             "#,
-            tenant_id, from, to, limit,
         )
+        .bind(tenant_id)
+        .bind(from)
+        .bind(to)
+        .bind(limit)
         .fetch_all(&self.pool)
         .await?;
 

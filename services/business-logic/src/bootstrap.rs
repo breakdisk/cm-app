@@ -89,7 +89,13 @@ impl ActionExecutor for HttpActionExecutor {
 
 pub async fn run() -> anyhow::Result<()> {
     let cfg = Config::load()?;
-    logisticos_tracing::init(&cfg.app.env, "business-logic")?;
+    let otlp = std::env::var("OTLP_ENDPOINT").ok();
+    logisticos_tracing::init(logisticos_tracing::TracingConfig {
+        service_name: "business-logic",
+        env: &cfg.app.env,
+        otlp_endpoint: otlp.as_deref(),
+        log_level: None,
+    })?;
 
     // Database pool — used for rule persistence.
     let pool = PgPoolOptions::new()
@@ -110,9 +116,11 @@ pub async fn run() -> anyhow::Result<()> {
     }
     let rule_repo = Arc::new(RuleRepository::new(initial_rules));
 
+    let jwt_secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "change-me-in-production".into());
     let jwt = Arc::new(logisticos_auth::jwt::JwtService::new(
-        std::env::var("JWT_SECRET").unwrap_or_else(|_| "change-me-in-production".into()),
+        &jwt_secret,
         3600,
+        86400,
     ));
 
     let producer: FutureProducer = ClientConfig::new()
@@ -225,11 +233,14 @@ async fn run_consumer(
 }
 
 fn extract_tenant_id(msg: &rdkafka::message::BorrowedMessage<'_>) -> Option<Uuid> {
-    msg.headers()?.headers_iter().find_map(|h| {
-        if h.key == "tenant_id" {
-            h.value.and_then(|v| std::str::from_utf8(v).ok()).and_then(|s| s.parse().ok())
-        } else {
-            None
-        }
+    use rdkafka::message::Headers;
+    msg.headers().and_then(|headers| {
+        headers.iter().find_map(|h| {
+            if h.key == "tenant_id" {
+                h.value.and_then(|v| std::str::from_utf8(v).ok()).and_then(|s| s.parse().ok())
+            } else {
+                None
+            }
+        })
     })
 }

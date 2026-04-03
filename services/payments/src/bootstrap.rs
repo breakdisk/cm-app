@@ -11,10 +11,12 @@ use logisticos_events::producer::KafkaProducer;
 pub async fn run() -> anyhow::Result<()> {
     let cfg = Config::load().context("Failed to load payments config")?;
 
+    let otlp = std::env::var("OTLP_ENDPOINT").ok();
     logisticos_tracing::init(logisticos_tracing::TracingConfig {
-        service_name: "payments".to_string(),
-        env: cfg.app.env.clone(),
-        otlp_endpoint: std::env::var("OTLP_ENDPOINT").ok(),
+        service_name: "payments",
+        env: &cfg.app.env,
+        otlp_endpoint: otlp.as_deref(),
+        log_level: None,
     })?;
 
     tracing::info!(env = %cfg.app.env, "payments service starting");
@@ -34,7 +36,7 @@ pub async fn run() -> anyhow::Result<()> {
     );
 
     let jwt_secret = std::env::var("AUTH__JWT_SECRET").context("AUTH__JWT_SECRET not set")?;
-    let jwt = Arc::new(JwtService::new(jwt_secret, 3600, 86400));
+    let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
 
     let invoice_repo = Arc::new(PgInvoiceRepository::new(pool.clone()));
     let cod_repo     = Arc::new(PgCodRepository::new(pool.clone()));

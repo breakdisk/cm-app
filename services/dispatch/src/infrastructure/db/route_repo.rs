@@ -37,7 +37,7 @@ struct StopRow {
     city:                 String,
     province:             String,
     postal_code:          String,
-    country:              String,
+    country_code:         String,
     lat:                  Option<f64>,
     lng:                  Option<f64>,
     stop_type:            String,
@@ -76,7 +76,8 @@ impl From<StopRow> for DeliveryStop {
                 city: r.city,
                 province: r.province,
                 postal_code: r.postal_code,
-                country: r.country,
+                country_code: r.country_code,
+                barangay: None,
                 coordinates: match (r.lat, r.lng) {
                     (Some(lat), Some(lng)) => Some(Coordinates { lat, lng }),
                     _ => None,
@@ -97,14 +98,13 @@ impl From<StopRow> for DeliveryStop {
 #[async_trait]
 impl RouteRepository for PgRouteRepository {
     async fn find_by_id(&self, id: &RouteId) -> anyhow::Result<Option<Route>> {
-        let row = sqlx::query_as!(
-            RouteRow,
+        let row = sqlx::query_as::<_, RouteRow>(
             r#"SELECT id, tenant_id, driver_id, vehicle_id, status,
                       total_distance_km, estimated_duration_minutes,
                       created_at, started_at, completed_at
-               FROM dispatch.routes WHERE id = $1"#,
-            id.inner()
+               FROM dispatch.routes WHERE id = $1"#
         )
+        .bind(id.inner())
         .fetch_optional(&self.pool)
         .await?;
 
@@ -114,17 +114,16 @@ impl RouteRepository for PgRouteRepository {
     }
 
     async fn find_active_by_driver(&self, driver_id: &DriverId) -> anyhow::Result<Option<Route>> {
-        let row = sqlx::query_as!(
-            RouteRow,
+        let row = sqlx::query_as::<_, RouteRow>(
             r#"SELECT id, tenant_id, driver_id, vehicle_id, status,
                       total_distance_km, estimated_duration_minutes,
                       created_at, started_at, completed_at
                FROM dispatch.routes
                WHERE driver_id = $1 AND status IN ('planned', 'in_progress')
                ORDER BY created_at DESC
-               LIMIT 1"#,
-            driver_id.inner()
+               LIMIT 1"#
         )
+        .bind(driver_id.inner())
         .fetch_optional(&self.pool)
         .await?;
 
@@ -134,16 +133,15 @@ impl RouteRepository for PgRouteRepository {
     }
 
     async fn list_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<Route>> {
-        let rows = sqlx::query_as!(
-            RouteRow,
+        let rows = sqlx::query_as::<_, RouteRow>(
             r#"SELECT id, tenant_id, driver_id, vehicle_id, status,
                       total_distance_km, estimated_duration_minutes,
                       created_at, started_at, completed_at
                FROM dispatch.routes
                WHERE tenant_id = $1
-               ORDER BY created_at DESC"#,
-            tenant_id.inner()
+               ORDER BY created_at DESC"#
         )
+        .bind(tenant_id.inner())
         .fetch_all(&self.pool)
         .await?;
 
@@ -157,7 +155,7 @@ impl RouteRepository for PgRouteRepository {
 
     async fn save(&self, route: &Route) -> anyhow::Result<()> {
         let status = status_str(route.status);
-        sqlx::query!(
+        sqlx::query(
             r#"INSERT INTO dispatch.routes
                    (id, tenant_id, driver_id, vehicle_id, status,
                     total_distance_km, estimated_duration_minutes,
@@ -168,23 +166,24 @@ impl RouteRepository for PgRouteRepository {
                    total_distance_km         = EXCLUDED.total_distance_km,
                    estimated_duration_minutes = EXCLUDED.estimated_duration_minutes,
                    started_at               = EXCLUDED.started_at,
-                   completed_at             = EXCLUDED.completed_at"#,
-            route.id.inner(),
-            route.tenant_id.inner(),
-            route.driver_id.inner(),
-            route.vehicle_id.inner(),
-            status,
-            route.total_distance_km,
-            route.estimated_duration_minutes as i32,
-            route.created_at,
-            route.started_at,
-            route.completed_at,
+                   completed_at             = EXCLUDED.completed_at"#
         )
+        .bind(route.id.inner())
+        .bind(route.tenant_id.inner())
+        .bind(route.driver_id.inner())
+        .bind(route.vehicle_id.inner())
+        .bind(status)
+        .bind(route.total_distance_km)
+        .bind(route.estimated_duration_minutes as i32)
+        .bind(route.created_at)
+        .bind(route.started_at)
+        .bind(route.completed_at)
         .execute(&self.pool)
         .await?;
 
         // Upsert stops — delete-and-reinsert for simplicity (stops rarely change after creation)
-        sqlx::query!("DELETE FROM dispatch.route_stops WHERE route_id = $1", route.id.inner())
+        sqlx::query("DELETE FROM dispatch.route_stops WHERE route_id = $1")
+            .bind(route.id.inner())
             .execute(&self.pool)
             .await?;
 
@@ -193,30 +192,30 @@ impl RouteRepository for PgRouteRepository {
                 StopType::Pickup   => "pickup",
                 StopType::Delivery => "delivery",
             };
-            sqlx::query!(
+            sqlx::query(
                 r#"INSERT INTO dispatch.route_stops
                        (route_id, sequence, shipment_id,
-                        address_line1, address_line2, city, province, postal_code, country,
+                        address_line1, address_line2, city, province, postal_code, country_code,
                         lat, lng, stop_type,
                         time_window_start, time_window_end, estimated_arrival, actual_arrival)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)"#,
-                route.id.inner(),
-                stop.sequence as i32,
-                stop.shipment_id,
-                stop.address.line1,
-                stop.address.line2,
-                stop.address.city,
-                stop.address.province,
-                stop.address.postal_code,
-                stop.address.country,
-                stop.address.coordinates.map(|c| c.lat),
-                stop.address.coordinates.map(|c| c.lng),
-                stop_type,
-                stop.time_window_start,
-                stop.time_window_end,
-                stop.estimated_arrival,
-                stop.actual_arrival,
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)"#
             )
+            .bind(route.id.inner())
+            .bind(stop.sequence as i32)
+            .bind(stop.shipment_id)
+            .bind(&stop.address.line1)
+            .bind(&stop.address.line2)
+            .bind(&stop.address.city)
+            .bind(&stop.address.province)
+            .bind(&stop.address.postal_code)
+            .bind(&stop.address.country_code)
+            .bind(stop.address.coordinates.map(|c| c.lat))
+            .bind(stop.address.coordinates.map(|c| c.lng))
+            .bind(stop_type)
+            .bind(stop.time_window_start)
+            .bind(stop.time_window_end)
+            .bind(stop.estimated_arrival)
+            .bind(stop.actual_arrival)
             .execute(&self.pool)
             .await?;
         }
@@ -227,17 +226,16 @@ impl RouteRepository for PgRouteRepository {
 
 impl PgRouteRepository {
     async fn load_stops(&self, route_id: uuid::Uuid) -> anyhow::Result<Vec<DeliveryStop>> {
-        let rows = sqlx::query_as!(
-            StopRow,
+        let rows = sqlx::query_as::<_, StopRow>(
             r#"SELECT sequence, shipment_id,
                       address_line1, address_line2, city, province, postal_code, country,
                       lat, lng, stop_type,
                       time_window_start, time_window_end, estimated_arrival, actual_arrival
                FROM dispatch.route_stops
                WHERE route_id = $1
-               ORDER BY sequence ASC"#,
-            route_id
+               ORDER BY sequence ASC"#
         )
+        .bind(route_id)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(DeliveryStop::from).collect())

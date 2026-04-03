@@ -35,3 +35,4 @@ dotenvy.workspace    = true
 validator.workspace  = true
 rdkafka.workspace    = true
 tracing.workspace    = true
+async-trait.workspace = true

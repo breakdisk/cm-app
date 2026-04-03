@@ -39,9 +39,12 @@ async fn list_vehicles(
     claims: AuthClaims,
     Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
+    use logisticos_types::TenantId;
     claims.require_permission(permissions::FLEET_READ)?;
-    let vehicles = state.fleet_svc.list(&claims.tenant_id, q.limit.unwrap_or(50), q.offset.unwrap_or(0)).await?;
-    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"vehicles": vehicles, "count": vehicles.len()}))))
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let vehicles = state.fleet_svc.list(&tenant_id, q.limit.unwrap_or(50), q.offset.unwrap_or(0)).await?;
+    let count = vehicles.len();
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"vehicles": vehicles, "count": count}))))
 }
 
 async fn create_vehicle(
@@ -49,8 +52,10 @@ async fn create_vehicle(
     claims: AuthClaims,
     Json(cmd): Json<CreateVehicleCommand>,
 ) -> impl IntoResponse {
+    use logisticos_types::TenantId;
     claims.require_permission(permissions::FLEET_MANAGE)?;
-    let vehicle = state.fleet_svc.create(&claims.tenant_id, cmd).await?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let vehicle = state.fleet_svc.create(&tenant_id, cmd).await?;
     Ok::<_, AppError>((StatusCode::CREATED, Json(vehicle)))
 }
 
@@ -59,10 +64,11 @@ async fn get_vehicle(
     claims: AuthClaims,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
+    use logisticos_types::TenantId;
     claims.require_permission(permissions::FLEET_READ)?;
     let vehicle = state.fleet_svc.get(id).await?;
-    if vehicle.tenant_id != claims.tenant_id {
-        return Err(AppError::Forbidden("Access denied".into()));
+    if vehicle.tenant_id != TenantId::from_uuid(claims.tenant_id) {
+        return Err(AppError::Forbidden { resource: "vehicle".to_owned() });
     }
     Ok::<_, AppError>((StatusCode::OK, Json(vehicle)))
 }
@@ -131,7 +137,10 @@ async fn maintenance_alerts(
     claims: AuthClaims,
     Query(q): Query<AlertsQuery>,
 ) -> impl IntoResponse {
+    use logisticos_types::TenantId;
     claims.require_permission(permissions::FLEET_READ)?;
-    let vehicles = state.fleet_svc.maintenance_due_alerts(&claims.tenant_id, q.within_days.unwrap_or(7)).await?;
-    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"alerts": vehicles, "count": vehicles.len()}))))
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let vehicles = state.fleet_svc.maintenance_due_alerts(&tenant_id, q.within_days.unwrap_or(7)).await?;
+    let count = vehicles.len();
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"alerts": vehicles, "count": count}))))
 }

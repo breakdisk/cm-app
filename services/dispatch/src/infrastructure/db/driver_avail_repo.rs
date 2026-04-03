@@ -37,8 +37,7 @@ impl DriverAvailabilityRepository for PgDriverAvailabilityRepository {
         // Uses PostGIS ST_DWithin for spatial proximity filtering.
         // Joins with dispatch.driver_assignments to exclude drivers with active routes.
         // stop_count comes from dispatch.route_stops for loaded-driver awareness.
-        let rows = sqlx::query_as!(
-            AvailableDriverRow,
+        let rows = sqlx::query_as::<_, AvailableDriverRow>(
             r#"
             SELECT
                 d.id                    AS driver_id,
@@ -79,12 +78,12 @@ impl DriverAvailabilityRepository for PgDriverAvailabilityRepository {
               -- Only use fresh location data (< 10 minutes old)
               AND dl.recorded_at > NOW() - INTERVAL '10 minutes'
             ORDER BY distance_meters ASC
-            "#,
-            tenant_id.inner(),
-            coords.lng,  // ST_MakePoint(lng, lat) — PostGIS convention
-            coords.lat,
-            radius_km * 1000.0,  // Convert km to meters for ST_DWithin geography
+            "#
         )
+        .bind(tenant_id.inner())
+        .bind(coords.lng)  // ST_MakePoint(lng, lat) — PostGIS convention
+        .bind(coords.lat)
+        .bind(radius_km * 1000.0)  // Convert km to meters for ST_DWithin geography
         .fetch_all(&self.pool)
         .await?;
 

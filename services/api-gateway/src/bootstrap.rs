@@ -8,10 +8,8 @@ use axum::{
     routing::get,
     Router,
 };
-use redis::aio::MultiplexedConnection;
 use redis::AsyncCommands;
 use serde_json::json;
-use tokio::sync::Mutex;
 use tower_http::trace::TraceLayer;
 
 use logisticos_auth::jwt::JwtService;
@@ -34,13 +32,19 @@ pub struct AppState {
 
 pub async fn run() -> anyhow::Result<()> {
     let cfg = Config::load()?;
-    logisticos_tracing::init(&cfg.app.env, "api-gateway")?;
+    logisticos_tracing::init(logisticos_tracing::TracingConfig {
+        service_name: "api-gateway",
+        env: &cfg.app.env,
+        otlp_endpoint: None,
+        log_level: None,
+    })?;
 
     let redis_client = redis::Client::open(cfg.redis.url.clone())?;
     let proxy_client = Arc::new(ProxyClient::new(cfg.services.clone()));
     let jwt_service = Arc::new(JwtService::new(
-        cfg.auth.jwt_secret.clone(),
+        &cfg.auth.jwt_secret,
         cfg.auth.jwt_expiry_seconds,
+        cfg.auth.refresh_token_expiry_seconds,
     ));
 
     let mut registry = McpRegistry::new();
@@ -106,8 +110,11 @@ async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) -> Res
                     .into_response();
             }
         };
-        match state.jwt.verify(&token) {
-            Ok(claims) => (claims.tenant_id.to_string(), claims.subscription_tier.clone()),
+        match state.jwt.validate_access_token(&token) {
+            Ok(token_data) => {
+                let claims = token_data.claims;
+                (claims.tenant_id.to_string(), claims.subscription_tier.clone())
+            },
             Err(_) => {
                 return (
                     StatusCode::UNAUTHORIZED,
@@ -169,7 +176,7 @@ async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) -> Res
         }
     };
 
-    let mut upstream_req = state
+    let mut upstream_req: reqwest::RequestBuilder = state
         .proxy
         .client
         .request(map_method(&method), &upstream_url)
@@ -180,7 +187,9 @@ async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) -> Res
         if is_hop_by_hop(name) {
             continue;
         }
-        upstream_req = upstream_req.header(name, value);
+        if let Ok(v) = value.to_str() {
+            upstream_req = upstream_req.header(name.as_str(), v);
+        }
     }
     upstream_req = upstream_req.header("X-Tenant-Id", &tenant_id);
 
@@ -210,8 +219,14 @@ async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) -> Res
     let mut response = Response::builder().status(status);
     let resp_headers = response.headers_mut().unwrap();
     for (name, value) in upstream_headers.iter() {
-        if !is_hop_by_hop(name) {
-            resp_headers.insert(name, value.clone());
+        if let Ok(name_str) = std::str::from_utf8(name.as_str().as_bytes()) {
+            if !is_hop_by_hop_str(name_str) {
+                if let Ok(header_name) = axum::http::HeaderName::from_bytes(name_str.as_bytes()) {
+                    if let Ok(header_value) = axum::http::HeaderValue::from_bytes(value.as_bytes()) {
+                        resp_headers.insert(header_name, header_value);
+                    }
+                }
+            }
         }
     }
     insert_rate_limit_headers(
@@ -285,21 +300,17 @@ fn build_upstream_url(base: &str, uri: &axum::http::Uri) -> String {
 }
 
 fn map_method(m: &Method) -> reqwest::Method {
-    match *m {
-        Method::GET     => reqwest::Method::GET,
-        Method::POST    => reqwest::Method::POST,
-        Method::PUT     => reqwest::Method::PUT,
-        Method::PATCH   => reqwest::Method::PATCH,
-        Method::DELETE  => reqwest::Method::DELETE,
-        Method::HEAD    => reqwest::Method::HEAD,
-        Method::OPTIONS => reqwest::Method::OPTIONS,
-        _               => reqwest::Method::GET,
-    }
+    reqwest::Method::from_bytes(m.as_str().as_bytes())
+        .unwrap_or(reqwest::Method::GET)
 }
 
 fn is_hop_by_hop(name: &HeaderName) -> bool {
+    is_hop_by_hop_str(name.as_str())
+}
+
+fn is_hop_by_hop_str(name: &str) -> bool {
     matches!(
-        name.as_str(),
+        name,
         "connection" | "keep-alive" | "proxy-authenticate" | "proxy-authorization"
         | "te" | "trailers" | "transfer-encoding" | "upgrade"
     )

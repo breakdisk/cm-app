@@ -2339,7 +2339,7 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 - Modify: `apps/merchant-portal/src/app/shipments/...` pages
 - Modify: `apps/customer-portal/src/app/track/[tracking_number]/page.tsx` (or equivalent)
 
-- [ ] **Step 1: Merchant portal — wire shipment creation**
+- [x] **Step 1: Merchant portal — wire shipment creation**
 
 > **Auth token — discovery required first:** Same pattern as Task 11 Step 2. Check how the merchant portal handles auth:
 > ```bash
@@ -2368,11 +2368,11 @@ const res = await fetch(`${process.env.ORDER_INTAKE_URL}/v1/shipments`, {
 });
 ```
 
-- [ ] **Step 2: Merchant portal — wire shipment list**
+- [x] **Step 2: Merchant portal — wire shipment list**
 
 Wire the shipment list page to `GET /v1/shipments?limit=50&offset=0` from order-intake. Show `tracking_number`, `status`, `destination.city`, `created_at`.
 
-- [ ] **Step 3: Customer portal — wire tracking page**
+- [x] **Step 3: Customer portal — wire tracking page**
 
 Find or create `apps/customer-portal/src/app/track/[tracking_number]/page.tsx`.
 
@@ -2387,7 +2387,7 @@ const tracking = await res.json();
 
 Display: status label, origin, destination, estimated delivery, status history timeline.
 
-- [ ] **Step 4: Test end-to-end via portals**
+- [x] **Step 4: Test end-to-end via portals**
 
 1. Open merchant portal → create a shipment → copy tracking number
 2. Open admin portal → see shipment in dispatch queue → click Dispatch

@@ -1,4 +1,6 @@
+use logisticos_payments::bootstrap;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    payments::bootstrap::run().await
+    bootstrap::run().await
 }

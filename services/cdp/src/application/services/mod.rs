@@ -139,7 +139,7 @@ impl ProfileService {
             .find_by_id(&CustomerId::from_uuid(id))
             .await
             .map_err(AppError::internal)?
-            .ok_or_else(|| AppError::NotFound("Customer profile not found".into()))
+            .ok_or_else(|| AppError::NotFound { resource: "CustomerProfile", id: id.to_string() })
     }
 
     /// Get profile by external customer id.
@@ -152,7 +152,7 @@ impl ProfileService {
             .find_by_external_id(tenant_id, external_id)
             .await
             .map_err(AppError::internal)?
-            .ok_or_else(|| AppError::NotFound("Customer profile not found".into()))
+            .ok_or_else(|| AppError::NotFound { resource: "CustomerProfile", id: external_id.to_string() })
     }
 
     /// List profiles for a tenant.

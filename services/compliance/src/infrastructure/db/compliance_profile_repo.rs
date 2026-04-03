@@ -1,51 +1,34 @@
 use async_trait::async_trait;
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use uuid::Uuid;
 use crate::domain::{
     entities::{ComplianceProfile, ComplianceStatus},
     repositories::ComplianceProfileRepository,
 };
 
-#[derive(sqlx::FromRow)]
-struct ComplianceProfileRow {
-    id:               Uuid,
-    tenant_id:        Uuid,
-    entity_type:      String,
-    entity_id:        Uuid,
-    overall_status:   String,
-    jurisdiction:     String,
-    last_reviewed_at: Option<chrono::DateTime<chrono::Utc>>,
-    reviewed_by:      Option<Uuid>,
-    suspended_at:     Option<chrono::DateTime<chrono::Utc>>,
-    created_at:       chrono::DateTime<chrono::Utc>,
-    updated_at:       chrono::DateTime<chrono::Utc>,
-}
-
-impl TryFrom<ComplianceProfileRow> for ComplianceProfile {
-    type Error = anyhow::Error;
-
-    fn try_from(r: ComplianceProfileRow) -> anyhow::Result<Self> {
-        Ok(Self {
-            id:               r.id,
-            tenant_id:        r.tenant_id,
-            entity_type:      r.entity_type,
-            entity_id:        r.entity_id,
-            overall_status:   ComplianceStatus::from_str(&r.overall_status)?,
-            jurisdiction:     r.jurisdiction,
-            last_reviewed_at: r.last_reviewed_at,
-            reviewed_by:      r.reviewed_by,
-            suspended_at:     r.suspended_at,
-            created_at:       r.created_at,
-            updated_at:       r.updated_at,
-        })
-    }
+fn map_profile(r: &sqlx::postgres::PgRow) -> anyhow::Result<ComplianceProfile> {
+    let id: Uuid               = r.get("id");
+    let tenant_id: Uuid        = r.get("tenant_id");
+    let entity_type: String    = r.get("entity_type");
+    let entity_id: Uuid        = r.get("entity_id");
+    let overall_status: String = r.get("overall_status");
+    let jurisdiction: String   = r.get("jurisdiction");
+    let last_reviewed_at: Option<chrono::DateTime<chrono::Utc>> = r.get("last_reviewed_at");
+    let reviewed_by: Option<Uuid>   = r.get("reviewed_by");
+    let suspended_at: Option<chrono::DateTime<chrono::Utc>> = r.get("suspended_at");
+    let created_at: chrono::DateTime<chrono::Utc> = r.get("created_at");
+    let updated_at: chrono::DateTime<chrono::Utc> = r.get("updated_at");
+    Ok(ComplianceProfile {
+        id, tenant_id, entity_type, entity_id,
+        overall_status: ComplianceStatus::from_str(&overall_status)?,
+        jurisdiction, last_reviewed_at, reviewed_by, suspended_at, created_at, updated_at,
+    })
 }
 
 pub struct PgComplianceProfileRepository { pool: PgPool }
 
 impl PgComplianceProfileRepository {
     pub fn new(pool: PgPool) -> Self { Self { pool } }
-    /// Exposes pool for health check.
     pub fn pool(&self) -> &PgPool { &self.pool }
 }
 
@@ -54,30 +37,30 @@ impl ComplianceProfileRepository for PgComplianceProfileRepository {
     async fn find_by_entity(&self, tenant_id: Uuid, entity_type: &str, entity_id: Uuid)
         -> anyhow::Result<Option<ComplianceProfile>>
     {
-        let row = sqlx::query_as!(
-            ComplianceProfileRow,
+        let row = sqlx::query(
             r#"SELECT id, tenant_id, entity_type, entity_id, overall_status, jurisdiction,
                       last_reviewed_at, reviewed_by, suspended_at, created_at, updated_at
                FROM compliance.compliance_profiles
                WHERE tenant_id = $1 AND entity_type = $2 AND entity_id = $3"#,
-            tenant_id, entity_type, entity_id
         )
+        .bind(tenant_id)
+        .bind(entity_type)
+        .bind(entity_id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(ComplianceProfile::try_from).transpose()?)
+        row.map(|r| map_profile(&r)).transpose()
     }
 
     async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<ComplianceProfile>> {
-        let row = sqlx::query_as!(
-            ComplianceProfileRow,
+        let row = sqlx::query(
             r#"SELECT id, tenant_id, entity_type, entity_id, overall_status, jurisdiction,
                       last_reviewed_at, reviewed_by, suspended_at, created_at, updated_at
                FROM compliance.compliance_profiles WHERE id = $1"#,
-            id
         )
+        .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(ComplianceProfile::try_from).transpose()?)
+        row.map(|r| map_profile(&r)).transpose()
     }
 
     async fn list_by_tenant(
@@ -88,8 +71,7 @@ impl ComplianceProfileRepository for PgComplianceProfileRepository {
         offset: i64,
     ) -> anyhow::Result<Vec<ComplianceProfile>>
     {
-        let rows = sqlx::query_as!(
-            ComplianceProfileRow,
+        let rows = sqlx::query(
             r#"SELECT id, tenant_id, entity_type, entity_id, overall_status, jurisdiction,
                       last_reviewed_at, reviewed_by, suspended_at, created_at, updated_at
                FROM compliance.compliance_profiles
@@ -97,17 +79,18 @@ impl ComplianceProfileRepository for PgComplianceProfileRepository {
                  AND ($2::text IS NULL OR overall_status = $2)
                ORDER BY created_at DESC
                LIMIT $3 OFFSET $4"#,
-            tenant_id, status_filter, limit, offset
         )
+        .bind(tenant_id)
+        .bind(status_filter)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
-        rows.into_iter()
-            .map(ComplianceProfile::try_from)
-            .collect::<anyhow::Result<Vec<_>>>()
+        rows.iter().map(map_profile).collect()
     }
 
     async fn save(&self, p: &ComplianceProfile) -> anyhow::Result<()> {
-        sqlx::query!(
+        sqlx::query(
             r#"INSERT INTO compliance.compliance_profiles
                (id, tenant_id, entity_type, entity_id, overall_status, jurisdiction,
                 last_reviewed_at, reviewed_by, suspended_at, created_at, updated_at)
@@ -118,11 +101,18 @@ impl ComplianceProfileRepository for PgComplianceProfileRepository {
                  reviewed_by      = EXCLUDED.reviewed_by,
                  suspended_at     = EXCLUDED.suspended_at,
                  updated_at       = EXCLUDED.updated_at"#,
-            p.id, p.tenant_id, &p.entity_type, p.entity_id,
-            p.overall_status.as_str(), &p.jurisdiction,
-            p.last_reviewed_at, p.reviewed_by, p.suspended_at,
-            p.created_at, p.updated_at
         )
+        .bind(p.id)
+        .bind(p.tenant_id)
+        .bind(&p.entity_type)
+        .bind(p.entity_id)
+        .bind(p.overall_status.as_str())
+        .bind(&p.jurisdiction)
+        .bind(p.last_reviewed_at)
+        .bind(p.reviewed_by)
+        .bind(p.suspended_at)
+        .bind(p.created_at)
+        .bind(p.updated_at)
         .execute(&self.pool)
         .await?;
         Ok(())

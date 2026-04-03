@@ -1,6 +1,7 @@
 use axum::{extract::State, Json};
 use std::sync::Arc;
 use logisticos_auth::middleware::AuthClaims;
+use logisticos_auth::require_permission;
 use logisticos_errors::AppError;
 use crate::api::http::AppState;
 

@@ -140,7 +140,7 @@ export default function SettingsPage() {
               ].map((f) => (
                 <div key={f.flag} className="flex items-center justify-between p-3 bg-white/[0.03] border border-white/[0.06] rounded-lg">
                   <span className="text-xs text-white/70">{f.flag}</span>
-                  <NeonBadge color={f.enabled ? "green" : "red"}>{f.enabled ? "ON" : "OFF"}</NeonBadge>
+                  <NeonBadge variant={f.enabled ? "green" : "red"}>{f.enabled ? "ON" : "OFF"}</NeonBadge>
                 </div>
               ))}
             </div>
@@ -209,7 +209,7 @@ export default function SettingsPage() {
                 <div className="flex items-start justify-between gap-4">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-3 mb-2">
-                      <NeonBadge color={wh.status === "active" ? "green" : "red"}>{wh.status}</NeonBadge>
+                      <NeonBadge variant={wh.status === "active" ? "green" : "red"}>{wh.status}</NeonBadge>
                       <span className="font-mono text-sm text-white truncate">{wh.url}</span>
                     </div>
                     <div className="flex flex-wrap gap-1 mb-2">
@@ -286,7 +286,7 @@ export default function SettingsPage() {
                     <td className="px-4 py-3 font-mono text-xs text-white/40">{entry.ts}</td>
                     <td className="px-4 py-3 text-xs text-[#00E5FF] font-mono">{entry.actor}</td>
                     <td className="px-4 py-3">
-                      <NeonBadge color={ACTION_COLOR[entry.action] as any ?? "cyan"}>
+                      <NeonBadge variant={ACTION_COLOR[entry.action] as any ?? "cyan"}>
                         {entry.action}
                       </NeonBadge>
                     </td>

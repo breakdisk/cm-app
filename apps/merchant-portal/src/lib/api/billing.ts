@@ -84,13 +84,13 @@ export const billingApi = {
     token: string
   ) =>
     createApiClient(token)
-      .get<PaginatedApiResponse<Invoice>>("/v1/billing/invoices", { params })
+      .get<PaginatedApiResponse<Invoice>>("/v1/invoices", { params })
       .then((r) => r.data),
 
   /** Get a single invoice */
   getInvoice: (invoiceId: string, token: string) =>
     createApiClient(token)
-      .get<ApiResponse<Invoice>>(`/v1/billing/invoices/${invoiceId}`)
+      .get<ApiResponse<Invoice>>(`/v1/invoices/${invoiceId}`)
       .then((r) => r.data.data),
 
   /** Generate invoice for a billing period */
@@ -103,13 +103,13 @@ export const billingApi = {
     token: string
   ) =>
     createApiClient(token)
-      .post<ApiResponse<Invoice>>("/v1/billing/invoices/generate", payload)
+      .post<ApiResponse<Invoice>>("/v1/invoices/generate", payload)
       .then((r) => r.data.data),
 
   /** Download invoice as PDF */
   downloadInvoicePdf: (invoiceId: string, token: string) =>
     createApiClient(token)
-      .get<Blob>(`/v1/billing/invoices/${invoiceId}/pdf`, {
+      .get<Blob>(`/v1/invoices/${invoiceId}/pdf`, {
         responseType: "blob",
       })
       .then((r) => r.data),
@@ -119,7 +119,7 @@ export const billingApi = {
   /** Get COD balance for a merchant */
   getCodBalance: (merchantId: string, token: string) =>
     createApiClient(token)
-      .get<ApiResponse<CodBalance>>(`/v1/billing/cod/balance/${merchantId}`)
+      .get<ApiResponse<CodBalance>>(`/v1/cod/balance/${merchantId}`)
       .then((r) => r.data.data),
 
   /** List COD remittances */
@@ -133,7 +133,7 @@ export const billingApi = {
     token: string
   ) =>
     createApiClient(token)
-      .get<PaginatedApiResponse<CodRemittance>>("/v1/billing/cod/remittances", {
+      .get<PaginatedApiResponse<CodRemittance>>("/v1/cod/remittances", {
         params,
       })
       .then((r) => r.data),
@@ -142,7 +142,7 @@ export const billingApi = {
   reconcileCod: (merchantId: string, token: string) =>
     createApiClient(token)
       .post<ApiResponse<CodRemittance>>(
-        `/v1/billing/cod/reconcile/${merchantId}`
+        `/v1/cod/reconcile/${merchantId}`
       )
       .then((r) => r.data.data),
 
@@ -151,7 +151,7 @@ export const billingApi = {
   /** Get tenant wallet balance */
   getWallet: (token: string) =>
     createApiClient(token)
-      .get<ApiResponse<Wallet>>("/v1/billing/wallet")
+      .get<ApiResponse<Wallet>>("/v1/wallet")
       .then((r) => r.data.data),
 
   /** Get wallet transaction history */
@@ -161,7 +161,7 @@ export const billingApi = {
   ) =>
     createApiClient(token)
       .get<{ data: WalletTransaction[]; next_cursor: string | null }>(
-        "/v1/billing/wallet/transactions",
+        "/v1/wallet/transactions",
         { params }
       )
       .then((r) => r.data),

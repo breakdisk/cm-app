@@ -66,7 +66,7 @@ impl CampaignService {
             .find_by_id(&CampaignId::from_uuid(id))
             .await
             .map_err(AppError::internal)?
-            .ok_or_else(|| AppError::NotFound("Campaign not found".into()))
+            .ok_or_else(|| AppError::NotFound { resource: "Campaign", id: id.to_string() })
     }
 
     pub async fn list(&self, tenant_id: &TenantId, limit: i64, offset: i64) -> AppResult<Vec<Campaign>> {

@@ -1,0 +1,100 @@
+# Helm values override for the Compliance & Document Management service.
+# Merged on top of the base-service chart defaults at deploy time.
+# Ref: services/compliance — Rust + PostgreSQL + S3, driver document management, audit logging
+
+image:
+  repository: ghcr.io/logisticos/compliance
+  pullPolicy: IfNotPresent
+  tag: ""
+
+replicaCount: 2
+
+service:
+  type: ClusterIP
+  port: 8017
+  grpcPort: 9017
+
+env:
+  - name: SERVICE_NAME
+    value: compliance
+  - name: SERVICE_PORT
+    value: "8017"
+  - name: GRPC_PORT
+    value: "9017"
+  - name: LOG_LEVEL
+    value: info
+  - name: RUST_LOG
+    value: "compliance=info,tower_http=info"
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8017
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8017
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  failureThreshold: 3
+
+# Vault agent sidecar injects DATABASE_URL, S3 credentials, JWT_SECRET.
+podAnnotations:
+  vault.hashicorp.com/agent-inject: "true"
+  vault.hashicorp.com/role: "compliance"
+  vault.hashicorp.com/agent-inject-secret-config: "secret/data/logisticos/compliance"
+  vault.hashicorp.com/agent-inject-template-config: |
+    {{- with secret "secret/data/logisticos/compliance" -}}
+    export DATABASE_URL="{{ .Data.data.database_url }}"
+    export JWT_SECRET="{{ .Data.data.jwt_secret }}"
+    export STORAGE__ACCESS_KEY="{{ .Data.data.s3_access_key }}"
+    export STORAGE__SECRET_KEY="{{ .Data.data.s3_secret_key }}"
+    {{- end -}}
+
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    path: /metrics
+    interval: 15s
+
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        app: compliance
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app: compliance
+          topologyKey: kubernetes.io/hostname

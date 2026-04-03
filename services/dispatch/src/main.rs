@@ -1,4 +1,6 @@
+use logisticos_dispatch::bootstrap;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    dispatch::bootstrap::run().await
+    bootstrap::run().await
 }

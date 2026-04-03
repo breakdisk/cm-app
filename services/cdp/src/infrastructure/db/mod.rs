@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use sqlx::{PgPool, Row};
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use logisticos_types::TenantId;
@@ -13,6 +13,7 @@ use crate::domain::{
 // Row type — maps PostgreSQL columns to a flat struct, then convert to domain.
 // ---------------------------------------------------------------------------
 
+#[derive(sqlx::FromRow)]
 struct ProfileRow {
     id:                          Uuid,
     tenant_id:                   Uuid,
@@ -81,8 +82,7 @@ impl PgCustomerProfileRepository {
 #[async_trait]
 impl CustomerProfileRepository for PgCustomerProfileRepository {
     async fn find_by_id(&self, id: &CustomerId) -> anyhow::Result<Option<CustomerProfile>> {
-        let row = sqlx::query_as!(
-            ProfileRow,
+        let row = sqlx::query_as::<_, ProfileRow>(
             r#"
             SELECT
                 id, tenant_id, external_customer_id,
@@ -95,9 +95,9 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
                 created_at, updated_at
             FROM cdp.customer_profiles
             WHERE id = $1
-            "#,
-            id.inner()
+            "#
         )
+        .bind(id.inner())
         .fetch_optional(&self.pool)
         .await?;
 
@@ -109,8 +109,7 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
         tenant_id: &TenantId,
         external_id: Uuid,
     ) -> anyhow::Result<Option<CustomerProfile>> {
-        let row = sqlx::query_as!(
-            ProfileRow,
+        let row = sqlx::query_as::<_, ProfileRow>(
             r#"
             SELECT
                 id, tenant_id, external_customer_id,
@@ -123,10 +122,10 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
                 created_at, updated_at
             FROM cdp.customer_profiles
             WHERE tenant_id = $1 AND external_customer_id = $2
-            "#,
-            tenant_id.inner(),
-            external_id
+            "#
         )
+        .bind(tenant_id.inner())
+        .bind(external_id)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -138,8 +137,7 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
         tenant_id: &TenantId,
         email: &str,
     ) -> anyhow::Result<Option<CustomerProfile>> {
-        let row = sqlx::query_as!(
-            ProfileRow,
+        let row = sqlx::query_as::<_, ProfileRow>(
             r#"
             SELECT
                 id, tenant_id, external_customer_id,
@@ -152,10 +150,10 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
                 created_at, updated_at
             FROM cdp.customer_profiles
             WHERE tenant_id = $1 AND email = $2
-            "#,
-            tenant_id.inner(),
-            email
+            "#
         )
+        .bind(tenant_id.inner())
+        .bind(email)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -166,7 +164,7 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
         let address_json = serde_json::to_value(&p.address_history)?;
         let events_json  = serde_json::to_value(&p.recent_events)?;
 
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO cdp.customer_profiles (
                 id, tenant_id, external_customer_id,
@@ -201,26 +199,26 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
                 clv_score                 = EXCLUDED.clv_score,
                 engagement_score          = EXCLUDED.engagement_score,
                 updated_at                = EXCLUDED.updated_at
-            "#,
-            p.id.inner(),
-            p.tenant_id.inner(),
-            p.external_customer_id,
-            p.name,
-            p.email,
-            p.phone,
-            p.total_shipments as i32,
-            p.successful_deliveries as i32,
-            p.failed_deliveries as i32,
-            p.first_shipment_at,
-            p.last_shipment_at,
-            p.total_cod_collected_cents,
-            address_json,
-            events_json,
-            p.clv_score,
-            p.engagement_score,
-            p.created_at,
-            p.updated_at,
+            "#
         )
+        .bind(p.id.inner())
+        .bind(p.tenant_id.inner())
+        .bind(p.external_customer_id)
+        .bind(&p.name)
+        .bind(&p.email)
+        .bind(&p.phone)
+        .bind(p.total_shipments as i32)
+        .bind(p.successful_deliveries as i32)
+        .bind(p.failed_deliveries as i32)
+        .bind(p.first_shipment_at)
+        .bind(p.last_shipment_at)
+        .bind(p.total_cod_collected_cents)
+        .bind(address_json)
+        .bind(events_json)
+        .bind(p.clv_score)
+        .bind(p.engagement_score)
+        .bind(p.created_at)
+        .bind(p.updated_at)
         .execute(&self.pool)
         .await?;
 
@@ -237,8 +235,7 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
         let name_pattern = filter.name_contains.as_deref()
             .map(|n| format!("%{}%", n.replace('%', "\\%")));
 
-        let rows = sqlx::query_as!(
-            ProfileRow,
+        let rows = sqlx::query_as::<_, ProfileRow>(
             r#"
             SELECT
                 id, tenant_id, external_customer_id,
@@ -257,15 +254,15 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
               AND ($5::float4 IS NULL OR clv_score >= $5)
             ORDER BY last_shipment_at DESC NULLS LAST
             LIMIT $6 OFFSET $7
-            "#,
-            tenant_id.inner(),
-            name_pattern,
-            filter.email,
-            filter.phone,
-            filter.min_clv,
-            filter.limit,
-            filter.offset,
+            "#
         )
+        .bind(tenant_id.inner())
+        .bind(name_pattern)
+        .bind(&filter.email)
+        .bind(&filter.phone)
+        .bind(filter.min_clv)
+        .bind(filter.limit)
+        .bind(filter.offset)
         .fetch_all(&self.pool)
         .await?;
 
@@ -279,8 +276,7 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
         tenant_id: &TenantId,
         limit: i64,
     ) -> anyhow::Result<Vec<CustomerProfile>> {
-        let rows = sqlx::query_as!(
-            ProfileRow,
+        let rows = sqlx::query_as::<_, ProfileRow>(
             r#"
             SELECT
                 id, tenant_id, external_customer_id,
@@ -295,10 +291,10 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
             WHERE tenant_id = $1
             ORDER BY clv_score DESC
             LIMIT $2
-            "#,
-            tenant_id.inner(),
-            limit,
+            "#
         )
+        .bind(tenant_id.inner())
+        .bind(limit)
         .fetch_all(&self.pool)
         .await?;
 
@@ -308,12 +304,12 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
     }
 
     async fn count(&self, tenant_id: &TenantId) -> anyhow::Result<i64> {
-        let row = sqlx::query!(
-            "SELECT COUNT(*) AS cnt FROM cdp.customer_profiles WHERE tenant_id = $1",
-            tenant_id.inner()
+        let row: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM cdp.customer_profiles WHERE tenant_id = $1"
         )
+        .bind(tenant_id.inner())
         .fetch_one(&self.pool)
         .await?;
-        Ok(row.cnt.unwrap_or(0))
+        Ok(row.0)
     }
 }

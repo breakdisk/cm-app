@@ -2,6 +2,7 @@ use axum::{extract::{State, Query}, Json};
 use std::sync::Arc;
 use serde::Deserialize;
 use logisticos_auth::middleware::AuthClaims;
+use logisticos_auth::require_permission;
 use logisticos_errors::AppError;
 use logisticos_types::TenantId;
 use crate::{api::http::AppState, application::commands::{ReconcileCodCommand, RequestWithdrawalCommand}};

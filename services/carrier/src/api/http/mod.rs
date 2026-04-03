@@ -32,9 +32,12 @@ async fn list_carriers(
     claims: AuthClaims,
     Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
+    use logisticos_types::TenantId;
     claims.require_permission(permissions::CARRIERS_READ)?;
-    let carriers = state.carrier_svc.list(&claims.tenant_id, q.limit.unwrap_or(50), q.offset.unwrap_or(0)).await?;
-    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"carriers": carriers, "count": carriers.len()}))))
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let carriers = state.carrier_svc.list(&tenant_id, q.limit.unwrap_or(50), q.offset.unwrap_or(0)).await?;
+    let count = carriers.len();
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"carriers": carriers, "count": count}))))
 }
 
 async fn onboard_carrier(
@@ -42,8 +45,10 @@ async fn onboard_carrier(
     claims: AuthClaims,
     Json(cmd): Json<OnboardCarrierCommand>,
 ) -> impl IntoResponse {
+    use logisticos_types::TenantId;
     claims.require_permission(permissions::CARRIERS_MANAGE)?;
-    let carrier = state.carrier_svc.onboard(&claims.tenant_id, cmd).await?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let carrier = state.carrier_svc.onboard(&tenant_id, cmd).await?;
     Ok::<_, AppError>((StatusCode::CREATED, Json(carrier)))
 }
 
@@ -92,7 +97,9 @@ async fn rate_shop(
     claims: AuthClaims,
     Query(q): Query<RateShopQuery>,
 ) -> impl IntoResponse {
+    use logisticos_types::TenantId;
     claims.require_permission(permissions::CARRIERS_READ)?;
-    let quotes = state.carrier_svc.shop_rates(&claims.tenant_id, &q.service_type, q.weight_kg).await?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let quotes = state.carrier_svc.shop_rates(&tenant_id, &q.service_type, q.weight_kg).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"quotes": quotes}))))
 }

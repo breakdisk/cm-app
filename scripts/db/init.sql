@@ -23,6 +23,8 @@ CREATE SCHEMA IF NOT EXISTS marketing;
 CREATE SCHEMA IF NOT EXISTS engagement;
 CREATE SCHEMA IF NOT EXISTS business_logic;
 CREATE SCHEMA IF NOT EXISTS tracking;
+CREATE SCHEMA IF NOT EXISTS compliance;
+CREATE SCHEMA IF NOT EXISTS ai_layer;
 
 -- ── Service-specific DB users (principle of least privilege) ──
 CREATE ROLE identity_svc LOGIN PASSWORD 'change-in-vault';

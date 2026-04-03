@@ -27,6 +27,7 @@ use crate::{
 // Row types
 // ---------------------------------------------------------------------------
 
+#[derive(sqlx::FromRow)]
 struct HubRow {
     id:            Uuid,
     tenant_id:     Uuid,
@@ -61,6 +62,7 @@ impl From<HubRow> for Hub {
     }
 }
 
+#[derive(sqlx::FromRow)]
 struct InductionRow {
     id:              Uuid,
     hub_id:          Uuid,
@@ -133,17 +135,16 @@ impl PgHubRepository {
 impl HubRepository for PgHubRepository {
     /// Look up a single hub by its UUID primary key.
     async fn find_by_id(&self, id: &HubId) -> anyhow::Result<Option<Hub>> {
-        let row = sqlx::query_as!(
-            HubRow,
+        let row = sqlx::query_as::<_, HubRow>(
             r#"
             SELECT id, tenant_id, name, address,
                    lat, lng, capacity, current_load,
                    serving_zones, is_active, created_at, updated_at
             FROM hub_ops.hubs
             WHERE id = $1
-            "#,
-            id.inner()
+            "#
         )
+        .bind(id.inner())
         .fetch_optional(&self.pool)
         .await?;
 
@@ -152,8 +153,7 @@ impl HubRepository for PgHubRepository {
 
     /// Return all active hubs for a tenant, ordered by name.
     async fn list(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<Hub>> {
-        let rows = sqlx::query_as!(
-            HubRow,
+        let rows = sqlx::query_as::<_, HubRow>(
             r#"
             SELECT id, tenant_id, name, address,
                    lat, lng, capacity, current_load,
@@ -162,9 +162,9 @@ impl HubRepository for PgHubRepository {
             WHERE tenant_id = $1
               AND is_active = true
             ORDER BY name ASC
-            "#,
-            tenant_id.inner()
+            "#
         )
+        .bind(tenant_id.inner())
         .fetch_all(&self.pool)
         .await?;
 
@@ -176,7 +176,7 @@ impl HubRepository for PgHubRepository {
     /// are intentionally excluded from the UPDATE to protect against accidental
     /// overwrite of configuration data.
     async fn save(&self, hub: &Hub) -> anyhow::Result<()> {
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO hub_ops.hubs (
                 id, tenant_id, name, address,
@@ -192,20 +192,20 @@ impl HubRepository for PgHubRepository {
                 serving_zones = EXCLUDED.serving_zones,
                 is_active     = EXCLUDED.is_active,
                 updated_at    = EXCLUDED.updated_at
-            "#,
-            hub.id.inner(),
-            hub.tenant_id.inner(),
-            hub.name,
-            hub.address,
-            hub.lat,
-            hub.lng,
-            hub.capacity as i32,
-            hub.current_load as i32,
-            &hub.serving_zones,
-            hub.is_active,
-            hub.created_at,
-            hub.updated_at,
+            "#
         )
+        .bind(hub.id.inner())
+        .bind(hub.tenant_id.inner())
+        .bind(&hub.name)
+        .bind(&hub.address)
+        .bind(hub.lat)
+        .bind(hub.lng)
+        .bind(hub.capacity as i32)
+        .bind(hub.current_load as i32)
+        .bind(&hub.serving_zones)
+        .bind(hub.is_active)
+        .bind(hub.created_at)
+        .bind(hub.updated_at)
         .execute(&self.pool)
         .await?;
 
@@ -232,17 +232,16 @@ impl PgInductionRepository {
 impl InductionRepository for PgInductionRepository {
     /// Look up a single parcel induction by primary key.
     async fn find_by_id(&self, id: &InductionId) -> anyhow::Result<Option<ParcelInduction>> {
-        let row = sqlx::query_as!(
-            InductionRow,
+        let row = sqlx::query_as::<_, InductionRow>(
             r#"
             SELECT id, hub_id, tenant_id, shipment_id, tracking_number,
                    status, zone, bay, inducted_by,
                    inducted_at, sorted_at, dispatched_at
             FROM hub_ops.parcel_inductions
             WHERE id = $1
-            "#,
-            id.inner()
+            "#
         )
+        .bind(id.inner())
         .fetch_optional(&self.pool)
         .await?;
 
@@ -253,8 +252,7 @@ impl InductionRepository for PgInductionRepository {
     /// of which hub it was inducted into.  Returns the first row (LIMIT 1)
     /// ordered by `inducted_at DESC` so newer records take precedence.
     async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<ParcelInduction>> {
-        let row = sqlx::query_as!(
-            InductionRow,
+        let row = sqlx::query_as::<_, InductionRow>(
             r#"
             SELECT id, hub_id, tenant_id, shipment_id, tracking_number,
                    status, zone, bay, inducted_by,
@@ -263,9 +261,9 @@ impl InductionRepository for PgInductionRepository {
             WHERE shipment_id = $1
             ORDER BY inducted_at DESC
             LIMIT 1
-            "#,
-            shipment_id
+            "#
         )
+        .bind(shipment_id)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -275,8 +273,7 @@ impl InductionRepository for PgInductionRepository {
     /// Return all active (inducted or sorted) induction records for a hub,
     /// ordered with most recently inducted parcels first.
     async fn list_active(&self, hub_id: &HubId) -> anyhow::Result<Vec<ParcelInduction>> {
-        let rows = sqlx::query_as!(
-            InductionRow,
+        let rows = sqlx::query_as::<_, InductionRow>(
             r#"
             SELECT id, hub_id, tenant_id, shipment_id, tracking_number,
                    status, zone, bay, inducted_by,
@@ -285,9 +282,9 @@ impl InductionRepository for PgInductionRepository {
             WHERE hub_id = $1
               AND status IN ('inducted', 'sorted')
             ORDER BY inducted_at DESC
-            "#,
-            hub_id.inner()
+            "#
         )
+        .bind(hub_id.inner())
         .fetch_all(&self.pool)
         .await?;
 
@@ -302,7 +299,7 @@ impl InductionRepository for PgInductionRepository {
     async fn save(&self, i: &ParcelInduction) -> anyhow::Result<()> {
         let status = induction_status_str(&i.status);
 
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO hub_ops.parcel_inductions (
                 id, hub_id, tenant_id, shipment_id, tracking_number,
@@ -319,20 +316,20 @@ impl InductionRepository for PgInductionRepository {
                 bay           = EXCLUDED.bay,
                 sorted_at     = EXCLUDED.sorted_at,
                 dispatched_at = EXCLUDED.dispatched_at
-            "#,
-            i.id.inner(),
-            i.hub_id.inner(),
-            i.tenant_id.inner(),
-            i.shipment_id,
-            i.tracking_number,
-            status,
-            i.zone,
-            i.bay,
-            i.inducted_by,
-            i.inducted_at,
-            i.sorted_at,
-            i.dispatched_at,
+            "#
         )
+        .bind(i.id.inner())
+        .bind(i.hub_id.inner())
+        .bind(i.tenant_id.inner())
+        .bind(i.shipment_id)
+        .bind(&i.tracking_number)
+        .bind(status)
+        .bind(&i.zone)
+        .bind(&i.bay)
+        .bind(i.inducted_by)
+        .bind(i.inducted_at)
+        .bind(i.sorted_at)
+        .bind(i.dispatched_at)
         .execute(&self.pool)
         .await?;
 

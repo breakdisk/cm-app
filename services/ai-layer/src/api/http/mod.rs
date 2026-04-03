@@ -55,12 +55,12 @@ async fn run_agent(
 ) -> impl IntoResponse {
     // Any authenticated user can trigger an on-demand agent.
     // Specific agents (Dispatch, Recovery) are triggered automatically.
-    let trigger = req.context.unwrap_or(serde_json::json!({"tenant_id": claims.tenant_id.inner()}));
+    let trigger = req.context.unwrap_or(serde_json::json!({"tenant_id": claims.tenant_id.to_string()}));
 
     let session = state
         .runner
         .run(
-            claims.tenant_id.clone(),
+            logisticos_types::TenantId::from_uuid(claims.tenant_id),
             AgentType::OnDemand,
             trigger,
             req.prompt,
@@ -95,7 +95,7 @@ async fn list_sessions(
     let sessions = state
         .session_repo
         .list_by_tenant(
-            claims.tenant_id.inner(),
+            claims.tenant_id,
             q.limit.unwrap_or(50).clamp(1, 200),
             q.offset.unwrap_or(0).max(0),
         )
@@ -128,7 +128,7 @@ async fn list_escalated(
 ) -> impl IntoResponse {
     let sessions = state
         .session_repo
-        .list_escalated(claims.tenant_id.inner())
+        .list_escalated(claims.tenant_id)
         .await
         .map_err(AppError::internal)?;
 
@@ -149,11 +149,11 @@ async fn get_session(
         .find_by_id(id)
         .await
         .map_err(AppError::internal)?
-        .ok_or_else(|| AppError::NotFound("Agent session not found".into()))?;
+        .ok_or_else(|| AppError::NotFound { resource: "agent_session", id: id.to_string() })?;
 
     // Tenant isolation.
-    if session.tenant_id != claims.tenant_id {
-        return Err(AppError::Forbidden("Access denied".into()));
+    if session.tenant_id.inner() != claims.tenant_id {
+        return Err(AppError::Forbidden { resource: "agent_session".into() });
     }
 
     Ok::<_, AppError>((StatusCode::OK, Json(session)))
@@ -179,10 +179,10 @@ async fn resolve_escalation(
         .find_by_id(id)
         .await
         .map_err(AppError::internal)?
-        .ok_or_else(|| AppError::NotFound("Agent session not found".into()))?;
+        .ok_or_else(|| AppError::NotFound { resource: "agent_session", id: id.to_string() })?;
 
-    if session.tenant_id != claims.tenant_id {
-        return Err(AppError::Forbidden("Access denied".into()));
+    if session.tenant_id.inner() != claims.tenant_id {
+        return Err(AppError::Forbidden { resource: "agent_session".into() });
     }
 
     if session.status != crate::domain::entities::SessionStatus::HumanEscalated {

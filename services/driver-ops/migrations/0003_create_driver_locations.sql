@@ -13,13 +13,18 @@ CREATE TABLE IF NOT EXISTS driver_ops.driver_locations (
     received_at  TIMESTAMPTZ      NOT NULL DEFAULT NOW()
 );
 
--- Convert to TimescaleDB hypertable (partitioned by time, 1-day chunks)
-SELECT create_hypertable(
-    'driver_ops.driver_locations',
-    'recorded_at',
-    chunk_time_interval => INTERVAL '1 day',
-    if_not_exists => TRUE
-);
+-- Convert to TimescaleDB hypertable if available (partitioned by time, 1-day chunks)
+DO $$ BEGIN
+    PERFORM create_hypertable(
+        'driver_ops.driver_locations',
+        'recorded_at',
+        chunk_time_interval => INTERVAL '1 day',
+        if_not_exists => TRUE
+    );
+EXCEPTION WHEN undefined_function THEN
+    -- TimescaleDB not installed; running as a regular PostgreSQL table
+    NULL;
+END $$;
 
 -- Composite index for per-driver time-ordered queries
 CREATE INDEX IF NOT EXISTS idx_driver_locations_driver_time
@@ -29,13 +34,19 @@ CREATE INDEX IF NOT EXISTS idx_driver_locations_driver_time
 -- This is the authoritative location table; drivers table caches last-known position.
 CREATE INDEX IF NOT EXISTS idx_driver_locations_spatial
     ON driver_ops.driver_locations
-    USING GIST (ST_SetSRID(ST_MakePoint(lng, lat), 4326)::geography);
+    USING GIST (geography(ST_SetSRID(ST_MakePoint(lng, lat), 4326)));
 
--- Compression policy: compress chunks older than 7 days (significant storage saving)
-SELECT add_compression_policy('driver_ops.driver_locations', INTERVAL '7 days', if_not_exists => TRUE);
+-- Compression policy: compress chunks older than 7 days (TimescaleDB only)
+DO $$ BEGIN
+    PERFORM add_compression_policy('driver_ops.driver_locations', INTERVAL '7 days', if_not_exists => TRUE);
+EXCEPTION WHEN undefined_function THEN NULL;
+END $$;
 
--- Retention policy: automatically drop data older than 90 days
-SELECT add_retention_policy('driver_ops.driver_locations', INTERVAL '90 days', if_not_exists => TRUE);
+-- Retention policy: automatically drop data older than 90 days (TimescaleDB only)
+DO $$ BEGIN
+    PERFORM add_retention_policy('driver_ops.driver_locations', INTERVAL '90 days', if_not_exists => TRUE);
+EXCEPTION WHEN undefined_function THEN NULL;
+END $$;
 
 -- This is the view dispatch uses for the live driver ping (replaces the ad-hoc subquery)
 CREATE OR REPLACE VIEW driver_ops.driver_latest_locations AS

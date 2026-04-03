@@ -17,7 +17,12 @@ use crate::{
 
 pub async fn run() -> anyhow::Result<()> {
     let cfg = Config::load()?;
-    logisticos_tracing::init(&cfg.app.env, "ai-layer")?;
+    logisticos_tracing::init(logisticos_tracing::TracingConfig {
+        service_name: "ai-layer",
+        env: &cfg.app.env,
+        otlp_endpoint: None,
+        log_level: None,
+    })?;
 
     let pool = PgPoolOptions::new()
         .max_connections(cfg.database.max_connections)
@@ -48,7 +53,7 @@ pub async fn run() -> anyhow::Result<()> {
     // Agent runner
     let runner = Arc::new(AgentRunner::new(
         claude,
-        tools,
+        tools.clone(),
         session_repo.clone(),
     ));
 

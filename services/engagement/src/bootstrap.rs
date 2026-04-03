@@ -18,7 +18,13 @@ use crate::{
 
 pub async fn run() -> anyhow::Result<()> {
     let cfg = Config::load()?;
-    logisticos_tracing::init(&cfg.app.env, "engagement")?;
+    let otlp = std::env::var("OTLP_ENDPOINT").ok();
+    logisticos_tracing::init(logisticos_tracing::TracingConfig {
+        service_name: "engagement",
+        env: &cfg.app.env,
+        otlp_endpoint: otlp.as_deref(),
+        log_level: None,
+    })?;
 
     // Channel adapters — credentials from environment.
     let whatsapp: Arc<dyn ChannelAdapter> = Arc::new(TwilioWhatsAppAdapter::new(

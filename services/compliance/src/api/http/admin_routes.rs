@@ -2,7 +2,7 @@ use axum::{extract::{Path, State, Query}, Json};
 use std::sync::Arc;
 use uuid::Uuid;
 use serde::Deserialize;
-use logisticos_auth::{middleware::AuthClaims, rbac::permissions};
+use logisticos_auth::{middleware::AuthClaims, rbac::permissions, require_permission};
 use logisticos_errors::AppError;
 use crate::api::http::AppState;
 
@@ -14,7 +14,7 @@ pub async fn review_queue(
     Query(params): Query<QueueParams>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    claims.require_permission(permissions::COMPLIANCE_REVIEW)?;
+    require_permission!(claims, permissions::COMPLIANCE_REVIEW);
     let docs = state.compliance.documents
         .list_pending_review(Some(claims.tenant_id), params.limit.unwrap_or(50), params.offset.unwrap_or(0))
         .await?;
@@ -26,7 +26,7 @@ pub async fn list_profiles(
     Query(params): Query<QueueParams>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    claims.require_permission(permissions::COMPLIANCE_REVIEW)?;
+    require_permission!(claims, permissions::COMPLIANCE_REVIEW);
     let profiles = state.compliance.profiles
         .list_by_tenant(claims.tenant_id, None, params.limit.unwrap_or(100), params.offset.unwrap_or(0))
         .await?;
@@ -38,7 +38,7 @@ pub async fn get_profile(
     Path(profile_id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    claims.require_permission(permissions::COMPLIANCE_REVIEW)?;
+    require_permission!(claims, permissions::COMPLIANCE_REVIEW);
     let profile = state.compliance.profiles.find_by_id(profile_id).await?
         .ok_or(AppError::NotFound { resource: "ComplianceProfile", id: profile_id.to_string() })?;
     if profile.tenant_id != claims.tenant_id {
@@ -57,7 +57,7 @@ pub async fn approve_document(
     Path(doc_id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    claims.require_permission(permissions::COMPLIANCE_REVIEW)?;
+    require_permission!(claims, permissions::COMPLIANCE_REVIEW);
     // Verify document belongs to caller's tenant
     let doc = state.compliance.documents.find_by_id(doc_id).await?
         .ok_or(AppError::NotFound { resource: "DriverDocument", id: doc_id.to_string() })?;
@@ -76,7 +76,7 @@ pub async fn reject_document(
     State(state): State<Arc<AppState>>,
     Json(req): Json<RejectRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    claims.require_permission(permissions::COMPLIANCE_REVIEW)?;
+    require_permission!(claims, permissions::COMPLIANCE_REVIEW);
     // Verify document belongs to caller's tenant
     let doc = state.compliance.documents.find_by_id(doc_id).await?
         .ok_or(AppError::NotFound { resource: "DriverDocument", id: doc_id.to_string() })?;
@@ -98,7 +98,7 @@ pub async fn suspend_profile(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SuspendRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    claims.require_permission(permissions::COMPLIANCE_ADMIN)?;
+    require_permission!(claims, permissions::COMPLIANCE_ADMIN);
     state.compliance.suspend(profile_id, claims.user_id, req.reason).await?;
     Ok(Json(serde_json::json!({ "data": { "ok": true } })))
 }
@@ -108,7 +108,7 @@ pub async fn reinstate_profile(
     Path(profile_id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    claims.require_permission(permissions::COMPLIANCE_ADMIN)?;
+    require_permission!(claims, permissions::COMPLIANCE_ADMIN);
     state.compliance.reinstate(profile_id, claims.user_id, None).await?;
     Ok(Json(serde_json::json!({ "data": { "ok": true } })))
 }

@@ -44,15 +44,5 @@ export function createAnalyticsApi(token: string) {
       client
         .get<ApiResponse<AnalyticsDashboard>>("/v1/analytics/dashboard", { params })
         .then((r) => r.data),
-
-    getWeeklyVolume: (params?: { weeks?: number }) =>
-      client
-        .get<ApiResponse<{ data: DailyVolume[] }>>("/v1/analytics/volume/weekly", { params })
-        .then((r) => r.data),
-
-    getZonePerformance: () =>
-      client
-        .get<ApiResponse<{ data: ZonePerformance[] }>>("/v1/analytics/zones/performance")
-        .then((r) => r.data),
   };
 }
