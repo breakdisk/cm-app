@@ -843,6 +843,25 @@ services:
       retries: 3
       start_period: 20s
 
+  landing:
+    build:
+      context: ./apps/landing
+      dockerfile: Dockerfile
+    container_name: logisticos-landing
+    restart: unless-stopped
+    ports:
+      - "3004:3004"
+    environment:
+      NEXT_PUBLIC_APP_ENV: production
+    networks:
+      - logisticos
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3004 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
   # ── Optional developer tools (docker compose --profile tools up) ──
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
