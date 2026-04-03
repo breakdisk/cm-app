@@ -48,7 +48,7 @@ export default function PartnerSettingsPage() {
                 <div key={row.label} className="flex justify-between items-center py-2 border-b border-white/[0.06]">
                   <span className="text-xs text-white/40 uppercase tracking-widest font-mono">{row.label}</span>
                   {row.badge ? (
-                    <NeonBadge color={row.badge as any}>{row.value}</NeonBadge>
+                    <NeonBadge variant={row.badge as any}>{row.value}</NeonBadge>
                   ) : (
                     <span className={`text-sm font-medium ${row.mono ? "font-mono text-[#00E5FF]" : "text-white"}`}>{row.value}</span>
                   )}
@@ -73,7 +73,7 @@ export default function PartnerSettingsPage() {
                     <p className="text-sm text-white font-medium">{s.zone}</p>
                     <p className="text-xs text-white/40">{s.commitment} — Target: {s.target}</p>
                   </div>
-                  <NeonBadge color={s.ok ? "green" : "amber"}>{s.current}</NeonBadge>
+                  <NeonBadge variant={s.ok ? "green" : "amber"}>{s.current}</NeonBadge>
                 </div>
               ))}
             </div>

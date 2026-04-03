@@ -3,7 +3,7 @@
  * Partner Portal — Drivers Management Page
  * Set driver type (part-time / full-time) and commission rates per driver.
  */
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
@@ -11,6 +11,13 @@ import { NeonBadge } from "@/components/ui/neon-badge";
 import { Users, Clock, Briefcase, Search, ChevronDown, Check, Pencil, X } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 import { ComplianceBadge, canAssign } from "@/components/compliance/compliance-badge";
+
+// ── API helpers ────────────────────────────────────────────────────────────────
+
+const DRIVER_OPS_URL = process.env.NEXT_PUBLIC_DRIVER_OPS_URL ?? "http://localhost:8006";
+
+function getToken()  { return typeof window !== "undefined" ? localStorage.getItem("access_token") ?? "" : ""; }
+function getTenant() { return typeof window !== "undefined" ? localStorage.getItem("tenant_slug")  ?? "demo" : "demo"; }
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -30,6 +37,37 @@ interface Driver {
   status:             "active" | "offline" | "on_delivery";
   compliance_status:  "compliant" | "expiring_soon" | "expired" | "suspended" | "under_review" | "pending_submission" | "rejected";
   compliance_detail?: string;   // e.g. "License · 18d left"
+}
+
+// ── API fetch ──────────────────────────────────────────────────────────────────
+
+async function fetchDriversFromApi(): Promise<Driver[] | null> {
+  try {
+    const res = await fetch(`${DRIVER_OPS_URL}/v1/drivers`, {
+      headers: { Authorization: `Bearer ${getToken()}`, "X-Tenant": getTenant() },
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    const items = json.data ?? json.drivers ?? [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return items.map((d: any): Driver => ({
+      id:               d.id,
+      name:             d.name ?? `${d.first_name ?? ""} ${d.last_name ?? ""}`.trim(),
+      phone:            d.phone ?? "—",
+      zone:             d.zone ?? d.current_zone ?? "—",
+      driverType:       d.driver_type === "full_time" ? "full_time" : "part_time",
+      commissionRate:   d.per_delivery_rate ?? d.commission_rate ?? 0,
+      codCommissionRate: d.cod_commission_rate ?? 0,
+      deliveriesToday:  d.deliveries_today  ?? 0,
+      deliveriesWeek:   d.deliveries_week   ?? 0,
+      earningsToday:    d.earnings_today    ?? 0,
+      status:           d.is_online ? "active" : "offline",
+      compliance_status: d.compliance_status ?? "compliant",
+      compliance_detail: d.compliance_detail ?? undefined,
+    }));
+  } catch {
+    return null;
+  }
 }
 
 // ── Mock data ──────────────────────────────────────────────────────────────────
@@ -323,6 +361,12 @@ export default function DriversPage() {
   const [search, setSearch]         = useState("");
   const [filter, setFilter]         = useState<"all" | DriverType>("all");
 
+  useEffect(() => {
+    fetchDriversFromApi().then((data) => {
+      if (data && data.length > 0) setDrivers(data);
+    });
+  }, []);
+
   const partTimeCount = drivers.filter((d) => d.driverType === "part_time").length;
   const fullTimeCount = drivers.filter((d) => d.driverType === "full_time").length;
   const activeCount   = drivers.filter((d) => d.status !== "offline").length;
@@ -361,7 +405,6 @@ export default function DriversPage() {
         ].map(({ label, value, color, icon }, i) => (
           <motion.div key={label} variants={variants.fadeInUp}>
             <GlassCard
-              glowColor={color as "cyan" | "green" | "amber"}
               className="flex items-center gap-4 p-4"
             >
               <div

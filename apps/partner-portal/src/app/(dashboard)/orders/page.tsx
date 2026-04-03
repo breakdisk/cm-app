@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Package, Globe, MapPin, Clock, Zap, User, Truck,
@@ -12,6 +12,14 @@ import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
 import { variants } from "@/lib/design-system/tokens";
 import { cn } from "@/lib/design-system/cn";
+
+// ── API helpers ───────────────────────────────────────────────────────────────
+
+const ORDER_INTAKE_URL = process.env.NEXT_PUBLIC_ORDER_INTAKE_URL ?? "http://localhost:8004";
+const DISPATCH_URL     = process.env.NEXT_PUBLIC_DISPATCH_URL     ?? "http://localhost:8005";
+
+function getToken()  { return typeof window !== "undefined" ? localStorage.getItem("access_token") ?? "" : ""; }
+function getTenant() { return typeof window !== "undefined" ? localStorage.getItem("tenant_slug")  ?? "demo" : "demo"; }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -161,6 +169,86 @@ const MOCK_DRIVERS: Driver[] = [
   },
 ];
 
+// ── API fetch functions ───────────────────────────────────────────────────────
+
+async function fetchOrders(): Promise<IncomingOrder[]> {
+  try {
+    const res = await fetch(`${ORDER_INTAKE_URL}/v1/shipments`, {
+      headers: { Authorization: `Bearer ${getToken()}`, "X-Tenant": getTenant() },
+    });
+    if (!res.ok) return MOCK_ORDERS;
+    const json = await res.json();
+    const items = json.data?.items ?? json.data ?? [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return items.map((s: any) => ({
+      id:           s.id,
+      awb:          s.awb ?? s.tracking_number ?? s.id,
+      type:         s.shipment_type === "international" ? "balikbayan" : "local",
+      freightMode:  s.freight_mode ?? undefined,
+      status:       s.status === "pending" ? "unassigned" : s.status,
+      assignedTo:   s.assigned_driver_name ?? undefined,
+      senderName:   s.sender_name ?? s.sender?.name ?? "—",
+      pickupAddr:   s.pickup_address?.line1 ?? s.pickup_address ?? "—",
+      pickupCity:   s.pickup_address?.city  ?? "—",
+      receiverName: s.recipient_name ?? s.recipient?.name ?? "—",
+      destAddr:     s.delivery_address?.line1 ?? s.delivery_address ?? "—",
+      destCity:     s.delivery_address?.city  ?? "—",
+      destCountry:  s.delivery_address?.country ?? undefined,
+      description:  s.description ?? "—",
+      weight:       String(s.weight_kg ?? s.weight ?? "—"),
+      isCOD:        !!s.cod_amount,
+      codAmount:    s.cod_amount ?? undefined,
+      totalFee:     s.total_fee ?? s.base_rate ?? 0,
+      bookedAt:     s.created_at ? new Date(s.created_at).toLocaleString() : "—",
+    }));
+  } catch {
+    return MOCK_ORDERS;
+  }
+}
+
+async function fetchAvailableDrivers(): Promise<Driver[]> {
+  try {
+    const res = await fetch(`${DISPATCH_URL}/v1/drivers`, {
+      headers: { Authorization: `Bearer ${getToken()}`, "X-Tenant": getTenant() },
+    });
+    if (!res.ok) return MOCK_DRIVERS;
+    const json = await res.json();
+    const items = json.data ?? json.drivers ?? [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return items.map((d: any) => ({
+      id:           d.id,
+      name:         d.name ?? `${d.first_name ?? ""} ${d.last_name ?? ""}`.trim(),
+      phone:        d.phone ?? "—",
+      vehicle:      d.vehicle_plate ?? d.vehicle ?? "—",
+      vehicleClass: d.vehicle_type ?? "motorcycle",
+      status:       d.is_available ? "available" : "on_route",
+      tasksToday:   d.tasks_today ?? 0,
+      distanceKm:   d.distance_km ?? 0,
+      etaMinutes:   d.eta_minutes ?? 0,
+      isAiPick:     false,
+    }));
+  } catch {
+    return MOCK_DRIVERS;
+  }
+}
+
+async function dispatchOrder(shipmentId: string, driverId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${DISPATCH_URL}/v1/queue/${shipmentId}/dispatch`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${getToken()}`,
+        "X-Tenant": getTenant(),
+      },
+      body: JSON.stringify({ driver_id: driverId }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 // ── Vehicle class helpers ──────────────────────────────────────────────────────
 
 const VEHICLE_CLASS_CONFIG: Record<VehicleClass, {
@@ -210,18 +298,20 @@ const KPIS = [
 
 function AssignModal({
   order,
+  drivers,
   onClose,
   onAssign,
 }: {
   order: IncomingOrder;
+  drivers: Driver[];
   onClose: () => void;
   onAssign: (orderId: string, driverId: string, driverName: string) => void;
 }) {
   const required = recommendVehicle(order);
-  const bestDriver = MOCK_DRIVERS
+  const bestDriver = drivers
     .filter(d => d.status === "available" && vehicleSuitability(d.vehicleClass, required) !== "mismatch")
     .sort((a, b) => a.distanceKm - b.distanceKm)[0];
-  const [selected, setSelected] = useState<string | null>(bestDriver?.id ?? MOCK_DRIVERS[0].id);
+  const [selected, setSelected] = useState<string | null>(bestDriver?.id ?? drivers[0]?.id ?? null);
   const isIntl = order.type === "balikbayan";
 
   return (
@@ -277,7 +367,7 @@ function AssignModal({
         {(() => {
           const required = recommendVehicle(order);
           const vc = VEHICLE_CLASS_CONFIG[required];
-          const bestMatch = MOCK_DRIVERS
+          const bestMatch = drivers
             .filter(d => d.status === "available" && vehicleSuitability(d.vehicleClass, required) !== "mismatch")
             .sort((a, b) => a.distanceKm - b.distanceKm)[0];
           return (
@@ -306,7 +396,7 @@ function AssignModal({
         <div className="mt-3 max-h-64 overflow-y-auto px-5 space-y-2">
           {(() => {
             const required = recommendVehicle(order);
-            return MOCK_DRIVERS
+            return drivers
               .slice()
               .sort((a, b) => {
                 const sa = vehicleSuitability(a.vehicleClass, required);
@@ -395,7 +485,7 @@ function AssignModal({
           </button>
           <button
             onClick={() => {
-              const driver = MOCK_DRIVERS.find(d => d.id === selected);
+              const driver = drivers.find(d => d.id === selected);
               if (driver) onAssign(order.id, driver.id, driver.name);
             }}
             disabled={!selected}
@@ -551,8 +641,17 @@ function OrderRow({
 
 export default function OrdersPage() {
   const [orders,       setOrders]       = useState<IncomingOrder[]>(MOCK_ORDERS);
+  const [drivers,      setDrivers]      = useState<Driver[]>(MOCK_DRIVERS);
   const [assignTarget, setAssignTarget] = useState<IncomingOrder | null>(null);
   const [filter,       setFilter]       = useState<"all" | "unassigned" | "assigned" | "picked_up">("all");
+
+  const loadData = useCallback(async () => {
+    const [apiOrders, apiDrivers] = await Promise.all([fetchOrders(), fetchAvailableDrivers()]);
+    setOrders(apiOrders);
+    setDrivers(apiDrivers);
+  }, []);
+
+  useEffect(() => { loadData(); }, [loadData]);
 
   const unassignedCount = orders.filter(o => o.status === "unassigned").length;
   const assigningCount  = orders.filter(o => o.status === "assigning").length;
@@ -569,11 +668,12 @@ export default function OrdersPage() {
     }, 2000);
   }
 
-  function handleManualAssign(orderId: string, _driverId: string, driverName: string) {
+  function handleManualAssign(orderId: string, driverId: string, driverName: string) {
     setOrders(prev => prev.map(o =>
       o.id === orderId ? { ...o, status: "assigned", assignedTo: driverName, etaPickup: "~12 min" } : o
     ));
     setAssignTarget(null);
+    dispatchOrder(orderId, driverId);
   }
 
   const filtered = orders.filter(o => {
@@ -742,6 +842,7 @@ export default function OrdersPage() {
         {assignTarget && (
           <AssignModal
             order={assignTarget}
+            drivers={drivers}
             onClose={() => setAssignTarget(null)}
             onAssign={handleManualAssign}
           />

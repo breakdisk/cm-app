@@ -6,6 +6,10 @@ import { motion } from "framer-motion";
 import { Eye, EyeOff, LogIn, Loader2, Zap } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 
+// ─── API config ───────────────────────────────────────────────────────────────
+
+const IDENTITY_URL = process.env.NEXT_PUBLIC_IDENTITY_URL ?? "http://localhost:8001";
+
 // ─── Portal config ────────────────────────────────────────────────────────────
 
 const PORTAL_NAME  = "Partner Portal";
@@ -145,13 +149,21 @@ export default function PartnerLoginPage() {
     e.preventDefault();
     setError(null);
     setLoading(true);
-
-    await new Promise((r) => setTimeout(r, 1400));
-
-    if (email && password) {
+    try {
+      const res = await fetch(`${IDENTITY_URL}/v1/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password, tenant_slug: "demo" }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.data?.access_token) {
+        throw new Error(json.error?.message ?? json.message ?? "Invalid credentials");
+      }
+      localStorage.setItem("access_token", json.data.access_token);
+      localStorage.setItem("tenant_slug", "demo");
       router.push("/");
-    } else {
-      setError("Invalid email or password.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Login failed");
       setLoading(false);
     }
   }
