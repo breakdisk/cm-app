@@ -155,6 +155,24 @@ impl PgPasswordResetTokenRepository {
             .bind(token_hash).execute(&self.pool).await?;
         Ok(())
     }
+
+    /// Atomically claims the token: marks it used in a single UPDATE RETURNING.
+    /// Returns (user_id, tenant_id) if the token was valid and not yet used.
+    /// Returns None if token was already used, expired, or not found.
+    pub async fn claim_token(&self, token_hash: &str) -> anyhow::Result<Option<(uuid::Uuid, uuid::Uuid)>> {
+        let row = sqlx::query(
+            r#"UPDATE identity.password_reset_tokens
+               SET used = true
+               WHERE token_hash = $1
+                 AND used = false
+                 AND expires_at > NOW()
+               RETURNING user_id, tenant_id"#,
+        )
+        .bind(token_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| (r.get::<uuid::Uuid, _>("user_id"), r.get::<uuid::Uuid, _>("tenant_id"))))
+    }
 }
 
 // ── Email verification token repository ──────────────────────────────────────
@@ -191,5 +209,23 @@ impl PgEmailVerificationTokenRepository {
         sqlx::query("UPDATE identity.email_verification_tokens SET used = true WHERE token_hash = $1")
             .bind(token_hash).execute(&self.pool).await?;
         Ok(())
+    }
+
+    /// Atomically claims the token: marks it used in a single UPDATE RETURNING.
+    /// Returns (user_id, tenant_id) if the token was valid and not yet used.
+    /// Returns None if token was already used, expired, or not found.
+    pub async fn claim_token(&self, token_hash: &str) -> anyhow::Result<Option<(uuid::Uuid, uuid::Uuid)>> {
+        let row = sqlx::query(
+            r#"UPDATE identity.email_verification_tokens
+               SET used = true
+               WHERE token_hash = $1
+                 AND used = false
+                 AND expires_at > NOW()
+               RETURNING user_id, tenant_id"#,
+        )
+        .bind(token_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| (r.get::<uuid::Uuid, _>("user_id"), r.get::<uuid::Uuid, _>("tenant_id"))))
     }
 }

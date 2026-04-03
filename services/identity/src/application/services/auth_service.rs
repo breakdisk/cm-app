@@ -116,9 +116,15 @@ impl AuthService {
     }
 
     pub async fn forgot_password(&self, cmd: crate::application::commands::ForgotPasswordCommand) -> AppResult<()> {
-        let tenant = self.tenant_repo.find_by_slug(&cmd.tenant_slug).await
+        use validator::Validate;
+        cmd.validate().map_err(|e| AppError::Validation(e.to_string()))?;
+
+        let tenant = match self.tenant_repo.find_by_slug(&cmd.tenant_slug).await
             .map_err(AppError::Internal)?
-            .ok_or_else(|| AppError::NotFound { resource: "Tenant", id: cmd.tenant_slug.clone() })?;
+        {
+            Some(t) => t,
+            None => return Ok(()),  // Don't reveal tenant existence
+        };
 
         let user = self.user_repo.find_by_email(&tenant.id, &cmd.email).await
             .map_err(AppError::Internal)?;
@@ -142,10 +148,13 @@ impl AuthService {
     }
 
     pub async fn reset_password(&self, cmd: crate::application::commands::ResetPasswordCommand) -> AppResult<()> {
+        use validator::Validate;
+        cmd.validate().map_err(|e| AppError::Validation(e.to_string()))?;
+
         let token_hash = sha2_hash(cmd.token.as_bytes());
 
         let (user_id, _tenant_id) = self.reset_token_repo
-            .find_valid_by_token(&token_hash).await
+            .claim_token(&token_hash).await
             .map_err(AppError::Internal)?
             .ok_or_else(|| AppError::Unauthorized("Invalid or expired reset token".into()))?;
 
@@ -160,15 +169,20 @@ impl AuthService {
         user.updated_at = chrono::Utc::now();
         self.user_repo.save(&user).await.map_err(AppError::Internal)?;
 
-        self.reset_token_repo.mark_used(&token_hash).await.map_err(AppError::Internal)?;
         tracing::info!(user_id = %user_id, "Password reset completed");
         Ok(())
     }
 
     pub async fn send_verification_email(&self, cmd: crate::application::commands::SendVerificationEmailCommand) -> AppResult<()> {
-        let tenant = self.tenant_repo.find_by_slug(&cmd.tenant_slug).await
+        use validator::Validate;
+        cmd.validate().map_err(|e| AppError::Validation(e.to_string()))?;
+
+        let tenant = match self.tenant_repo.find_by_slug(&cmd.tenant_slug).await
             .map_err(AppError::Internal)?
-            .ok_or_else(|| AppError::NotFound { resource: "Tenant", id: cmd.tenant_slug.clone() })?;
+        {
+            Some(t) => t,
+            None => return Ok(()),  // Don't reveal tenant existence
+        };
 
         let user = self.user_repo.find_by_email(&tenant.id, &cmd.email).await
             .map_err(AppError::Internal)?;
@@ -198,7 +212,7 @@ impl AuthService {
         let token_hash = sha2_hash(cmd.token.as_bytes());
 
         let (user_id, _tenant_id) = self.email_verification_token_repo
-            .find_valid(&token_hash).await
+            .claim_token(&token_hash).await
             .map_err(AppError::Internal)?
             .ok_or_else(|| AppError::Unauthorized("Invalid or expired verification token".into()))?;
 
@@ -211,7 +225,6 @@ impl AuthService {
         user.updated_at = chrono::Utc::now();
         self.user_repo.save(&user).await.map_err(AppError::Internal)?;
 
-        self.email_verification_token_repo.mark_used(&token_hash).await.map_err(AppError::Internal)?;
         tracing::info!(user_id = %user_id, "Email verified");
         Ok(())
     }
