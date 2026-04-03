@@ -2,7 +2,7 @@ FROM rust:1.78-slim-bookworm AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY libs/ libs/
-COPY services/delivery-experience/ services/delivery-experience/
+COPY services/ services/
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 RUN cargo build --release --bin delivery_experience
 
