@@ -3,7 +3,7 @@ use sqlx::postgres::PgPoolOptions;
 use anyhow::Context;
 use crate::config::Config;
 use crate::application::services::{AuthService, TenantService, ApiKeyService};
-use crate::infrastructure::db::{PgTenantRepository, PgUserRepository, PgApiKeyRepository};
+use crate::infrastructure::db::{PgTenantRepository, PgUserRepository, PgApiKeyRepository, PgPasswordResetTokenRepository, PgEmailVerificationTokenRepository};
 use crate::api::http::{router, AppState};
 use logisticos_auth::jwt::JwtService;
 use logisticos_events::producer::KafkaProducer;
@@ -13,10 +13,12 @@ pub async fn run() -> anyhow::Result<()> {
     let cfg = Config::load().context("Failed to load config")?;
 
     // 2. Init structured tracing (JSON in prod, pretty in dev)
+    let otlp = std::env::var("OTLP_ENDPOINT").ok();
     logisticos_tracing::init(logisticos_tracing::TracingConfig {
-        service_name: "identity".to_string(),
-        env: cfg.app.env.clone(),
-        otlp_endpoint: std::env::var("OTLP_ENDPOINT").ok(),
+        service_name: "identity",
+        env: &cfg.app.env,
+        otlp_endpoint: otlp.as_deref(),
+        log_level: None,
     })?;
 
     tracing::info!(env = %cfg.app.env, "identity service starting");
@@ -25,6 +27,12 @@ pub async fn run() -> anyhow::Result<()> {
     let pool = PgPoolOptions::new()
         .max_connections(cfg.database.max_connections)
         .acquire_timeout(std::time::Duration::from_secs(5))
+        .after_connect(|conn, _meta| Box::pin(async move {
+            sqlx::query("SET search_path TO identity, public")
+                .execute(&mut *conn)
+                .await?;
+            Ok(())
+        }))
         .connect(&cfg.database.url)
         .await
         .context("Failed to connect to PostgreSQL")?;
@@ -49,21 +57,25 @@ pub async fn run() -> anyhow::Result<()> {
 
     // 6. JWT service — shared across auth service and middleware
     let jwt = Arc::new(JwtService::new(
-        cfg.auth.jwt_secret.clone(),
-        cfg.auth.jwt_expiry_seconds,
-        cfg.auth.refresh_token_expiry_seconds,
+        &cfg.auth.jwt_secret,
+        cfg.auth.jwt_expiry_seconds as i64,
+        cfg.auth.refresh_token_expiry_seconds as i64,
     ));
 
     // 7. Repositories — injected as trait objects (hexagonal architecture)
     let tenant_repo = Arc::new(PgTenantRepository::new(pool.clone()));
     let user_repo   = Arc::new(PgUserRepository::new(pool.clone()));
     let api_key_repo = Arc::new(PgApiKeyRepository::new(pool.clone()));
+    let reset_token_repo = Arc::new(PgPasswordResetTokenRepository::new(pool.clone()));
+    let email_verification_token_repo = Arc::new(PgEmailVerificationTokenRepository::new(pool.clone()));
 
     // 8. Application services — depend only on repository traits, not DB types
     let auth_service = Arc::new(AuthService::new(
         Arc::clone(&tenant_repo) as _,
         Arc::clone(&user_repo) as _,
         Arc::clone(&jwt),
+        Arc::clone(&reset_token_repo),
+        Arc::clone(&email_verification_token_repo),
     ));
 
     let tenant_service = Arc::new(TenantService::new(
@@ -82,6 +94,8 @@ pub async fn run() -> anyhow::Result<()> {
         tenant_service,
         api_key_service,
         jwt: Arc::clone(&jwt),
+        reset_token_repo,
+        email_verification_token_repo,
     });
 
     let app = router(state);

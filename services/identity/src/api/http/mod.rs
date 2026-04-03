@@ -13,6 +13,8 @@ pub struct AppState {
     pub tenant_service: Arc<TenantService>,
     pub api_key_service: Arc<ApiKeyService>,
     pub jwt: Arc<logisticos_auth::jwt::JwtService>,
+    pub reset_token_repo: Arc<crate::infrastructure::db::user_repo::PgPasswordResetTokenRepository>,
+    pub email_verification_token_repo: Arc<crate::infrastructure::db::user_repo::PgEmailVerificationTokenRepository>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -22,8 +24,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/ready",  get(health::ready))
         .route("/metrics", get(health::metrics))
         // Auth (public — no JWT required)
-        .route("/v1/auth/login",   post(auth::login))
-        .route("/v1/auth/refresh", post(auth::refresh))
+        .route("/v1/auth/login",                    post(auth::login))
+        .route("/v1/auth/refresh",                  post(auth::refresh))
+        .route("/v1/auth/forgot-password",          post(auth::forgot_password))
+        .route("/v1/auth/reset-password",           post(auth::reset_password))
+        .route("/v1/auth/send-verification-email",  post(auth::send_verification_email))
+        .route("/v1/auth/verify-email",             post(auth::verify_email))
         // Tenant onboarding (public)
         .route("/v1/tenants", post(tenants::create_tenant))
         // Protected routes

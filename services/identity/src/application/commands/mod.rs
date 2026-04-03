@@ -61,3 +61,29 @@ pub struct CreateApiKeyResult {
     pub scopes: Vec<String>,
     pub expires_at: Option<String>,
 }
+
+#[derive(Debug, Deserialize, Validate)]
+pub struct ForgotPasswordCommand {
+    pub tenant_slug: String,
+    #[validate(email)]
+    pub email: String,
+}
+
+#[derive(Debug, Deserialize, Validate)]
+pub struct ResetPasswordCommand {
+    pub token: String,
+    #[validate(length(min = 8))]
+    pub new_password: String,
+}
+
+#[derive(Debug, Deserialize, Validate)]
+pub struct SendVerificationEmailCommand {
+    pub tenant_slug: String,
+    #[validate(email)]
+    pub email: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VerifyEmailCommand {
+    pub token: String,
+}
