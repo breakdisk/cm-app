@@ -39,7 +39,7 @@ version      = "0.1.0"
 edition      = "2021"
 authors      = ["LogisticOS Team"]
 license      = "UNLICENSED"
-rust-version = "1.78"
+rust-version = "1.85"
 
 [workspace.dependencies]
 # Async runtime
