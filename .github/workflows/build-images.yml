@@ -1,0 +1,114 @@
+name: Build & Push Images to GHCR
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: build-images-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  REPO: ${{ github.repository_owner }}/cm-app
+
+jobs:
+  # ── Build all 18 Rust microservices in parallel ──────────────────────────
+  build-rust:
+    name: Build ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - api-gateway
+          - identity
+          - cdp
+          - engagement
+          - order-intake
+          - dispatch
+          - driver-ops
+          - delivery-experience
+          - fleet
+          - hub-ops
+          - carrier
+          - pod
+          - payments
+          - analytics
+          - marketing
+          - business-logic
+          - ai-layer
+          - compliance
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push ${{ matrix.service }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/${{ matrix.service }}/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ env.REPO }}/service-${{ matrix.service }}:latest
+            ghcr.io/${{ env.REPO }}/service-${{ matrix.service }}:${{ github.sha }}
+          cache-from: type=gha,scope=rust-${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=rust-${{ matrix.service }}
+
+  # ── Build all 5 Next.js portals in parallel ──────────────────────────────
+  build-portals:
+    name: Build ${{ matrix.app }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        app:
+          - admin-portal
+          - merchant-portal
+          - customer-portal
+          - partner-portal
+          - landing
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push ${{ matrix.app }}
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/${{ matrix.app }}
+          file: apps/${{ matrix.app }}/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ env.REPO }}/app-${{ matrix.app }}:latest
+            ghcr.io/${{ env.REPO }}/app-${{ matrix.app }}:${{ github.sha }}
+          cache-from: type=gha,scope=portal-${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=portal-${{ matrix.app }}

@@ -198,9 +198,7 @@ services:
 
   # ── 1. API Gateway (port 8000) ─────────────────────────────
   api-gateway:
-    build:
-      context: .
-      dockerfile: services/api-gateway/Dockerfile
+    image: ghcr.io/breakdisk/cm-app/service-api-gateway:latest
     container_name: logisticos-api-gateway
     restart: unless-stopped
     ports:
@@ -227,9 +225,7 @@ services:
 
   # ── 2. Identity & Tenant Management (port 8001) ───────────
   identity:
-    build:
-      context: .
-      dockerfile: services/identity/Dockerfile
+    image: ghcr.io/breakdisk/cm-app/service-identity:latest
     container_name: logisticos-identity
     restart: unless-stopped
     ports:
@@ -257,9 +253,7 @@ services:
 
   # ── 3. Customer Data Platform (port 8002) ─────────────────
   cdp:
-    build:
-      context: .
-      dockerfile: services/cdp/Dockerfile
+    image: ghcr.io/breakdisk/cm-app/service-cdp:latest
     container_name: logisticos-cdp
     restart: unless-stopped
     ports:
@@ -286,9 +280,7 @@ services:
 
   # ── 4. Unified Engagement Engine (port 8003) ──────────────
   engagement:
-    build:
-      context: .
-      dockerfile: services/engagement/Dockerfile
+    image: ghcr.io/breakdisk/cm-app/service-engagement:latest
     container_name: logisticos-engagement
     restart: unless-stopped
     ports:
@@ -316,9 +308,7 @@ services:
 
   # ── 5. Order & Shipment Intake (port 8004) ────────────────
   order-intake:
-    build:
-      context: .
-      dockerfile: services/order-intake/Dockerfile
+    image: ghcr.io/breakdisk/cm-app/service-order-intake:latest
     container_name: logisticos-order-intake
     restart: unless-stopped
     ports:
@@ -345,9 +335,7 @@ services:
 
   # ── 6. Dispatch & Routing (port 8005) ─────────────────────
   dispatch:
-    build:
-      context: .
-      dockerfile: services/dispatch/Dockerfile
+    image: ghcr.io/breakdisk/cm-app/service-dispatch:latest
     container_name: logisticos-dispatch
     restart: unless-stopped
     ports:
@@ -374,9 +362,7 @@ services:
 
   # ── 7. Driver Operations (port 8006) ──────────────────────
   driver-ops:
-    build:
-      context: .
-      dockerfile: services/driver-ops/Dockerfile
+    image: ghcr.io/breakdisk/cm-app/service-driver-ops:latest
     container_name: logisticos-driver-ops
     restart: unless-stopped
     ports:
@@ -403,9 +389,7 @@ services:
 
   # ── 8. Customer Delivery Experience (port 8007) ───────────
   delivery-experience:
-    build:
-      context: .
-      dockerfile: services/delivery-experience/Dockerfile
+    image: ghcr.io/breakdisk/cm-app/service-delivery-experience:latest
     container_name: logisticos-delivery-experience
     restart: unless-stopped
     ports:
@@ -432,9 +416,7 @@ services:
 
   # ── 9. Fleet Management (port 8008) ───────────────────────
   fleet:
-    build:
-      context: .
-      dockerfile: services/fleet/Dockerfile
+    image: ghcr.io/breakdisk/cm-app/service-fleet:latest
     container_name: logisticos-fleet
     restart: unless-stopped
     ports:
@@ -461,9 +443,7 @@ services:
 
   # ── 10. Warehouse & Hub Operations (port 8009) ────────────
   hub-ops:
-    build:
-      context: .
-      dockerfile: services/hub-ops/Dockerfile
+    image: ghcr.io/breakdisk/cm-app/service-hub-ops:latest
     container_name: logisticos-hub-ops
     restart: unless-stopped
     ports:
@@ -490,9 +470,7 @@ services:
 
   # ── 11. Carrier & Partner Management (port 8010) ──────────
   carrier:
-    build:
-      context: .
-      dockerfile: services/carrier/Dockerfile
+    image: ghcr.io/breakdisk/cm-app/service-carrier:latest
     container_name: logisticos-carrier
     restart: unless-stopped
     ports:
@@ -519,9 +497,7 @@ services:
 
   # ── 12. Proof of Delivery (port 8011) ─────────────────────
   pod:
-    build:
-      context: .
-      dockerfile: services/pod/Dockerfile
+    image: ghcr.io/breakdisk/cm-app/service-pod:latest
     container_name: logisticos-pod
     restart: unless-stopped
     ports:
@@ -552,9 +528,7 @@ services:
 
   # ── 13. Payments & Billing (port 8012) ────────────────────
   payments:
-    build:
-      context: .
-      dockerfile: services/payments/Dockerfile
+    image: ghcr.io/breakdisk/cm-app/service-payments:latest
     container_name: logisticos-payments
     restart: unless-stopped
     ports:
@@ -581,9 +555,7 @@ services:
 
   # ── 14. Analytics & BI (port 8013) ────────────────────────
   analytics:
-    build:
-      context: .
-      dockerfile: services/analytics/Dockerfile
+    image: ghcr.io/breakdisk/cm-app/service-analytics:latest
     container_name: logisticos-analytics
     restart: unless-stopped
     ports:
@@ -613,9 +585,7 @@ services:
 
   # ── 15. Marketing Automation Engine (port 8014) ───────────
   marketing:
-    build:
-      context: .
-      dockerfile: services/marketing/Dockerfile
+    image: ghcr.io/breakdisk/cm-app/service-marketing:latest
     container_name: logisticos-marketing
     restart: unless-stopped
     ports:
@@ -642,9 +612,7 @@ services:
 
   # ── 16. Business Logic & Automation Engine (port 8015) ────
   business-logic:
-    build:
-      context: .
-      dockerfile: services/business-logic/Dockerfile
+    image: ghcr.io/breakdisk/cm-app/service-business-logic:latest
     container_name: logisticos-business-logic
     restart: unless-stopped
     ports:
@@ -671,9 +639,7 @@ services:
 
   # ── 17. AI Intelligence Layer (port 8016) ─────────────────
   ai-layer:
-    build:
-      context: .
-      dockerfile: services/ai-layer/Dockerfile
+    image: ghcr.io/breakdisk/cm-app/service-ai-layer:latest
     container_name: logisticos-ai-layer
     restart: unless-stopped
     ports:
@@ -710,9 +676,7 @@ services:
 
   # ── 18. Compliance (port 8017) ────────────────────────────
   compliance:
-    build:
-      context: .
-      dockerfile: services/compliance/Dockerfile
+    image: ghcr.io/breakdisk/cm-app/service-compliance:latest
     container_name: logisticos-compliance
     restart: unless-stopped
     ports:
@@ -753,9 +717,7 @@ services:
 
   # ── Admin / Ops Portal (port 3001) ────────────────────────
   admin-portal:
-    build:
-      context: ./apps/admin-portal
-      dockerfile: Dockerfile
+    image: ghcr.io/breakdisk/cm-app/app-admin-portal:latest
     container_name: logisticos-admin-portal
     restart: unless-stopped
     ports:
@@ -776,9 +738,7 @@ services:
 
   # ── Merchant Portal (port 3000) ───────────────────────────
   merchant-portal:
-    build:
-      context: ./apps/merchant-portal
-      dockerfile: Dockerfile
+    image: ghcr.io/breakdisk/cm-app/app-merchant-portal:latest
     container_name: logisticos-merchant-portal
     restart: unless-stopped
     ports:
@@ -799,9 +759,7 @@ services:
 
   # ── Customer Portal (port 3002) ───────────────────────────
   customer-portal:
-    build:
-      context: ./apps/customer-portal
-      dockerfile: Dockerfile
+    image: ghcr.io/breakdisk/cm-app/app-customer-portal:latest
     container_name: logisticos-customer-portal
     restart: unless-stopped
     ports:
@@ -822,9 +780,7 @@ services:
 
   # ── Partner Portal (port 3003) ────────────────────────────
   partner-portal:
-    build:
-      context: ./apps/partner-portal
-      dockerfile: Dockerfile
+    image: ghcr.io/breakdisk/cm-app/app-partner-portal:latest
     container_name: logisticos-partner-portal
     restart: unless-stopped
     ports:
@@ -844,9 +800,7 @@ services:
       start_period: 20s
 
   landing:
-    build:
-      context: ./apps/landing
-      dockerfile: Dockerfile
+    image: ghcr.io/breakdisk/cm-app/app-landing:latest
     container_name: logisticos-landing
     restart: unless-stopped
     ports:
