@@ -1,25 +1,16 @@
 version: "3.9"
-
-# ============================================================
-# LogisticOS — Local Development Stack
-# ============================================================
-
 networks:
   logisticos:
     driver: bridge
-
+  dokploy-network:
+    external: true
 volumes:
-  postgres_data:
-  redis_data:
-  kafka_data:
-  clickhouse_data:
-  grafana_data:
-
+  postgres_data: null
+  redis_data: null
+  kafka_data: null
+  clickhouse_data: null
+  grafana_data: null
 services:
-
-  # ──────────────────────────────────────────────────────────
-  # PostgreSQL — Primary relational DB (all services)
-  # ──────────────────────────────────────────────────────────
   postgres:
     image: postgis/postgis:16-3.4
     container_name: logisticos-postgres
@@ -29,40 +20,37 @@ services:
       POSTGRES_PASSWORD: password
       POSTGRES_DB: logisticos
     ports:
-      - "5432:5432"
+      - 5432:5432
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/db/init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U logisticos"]
+      test:
+        - CMD-SHELL
+        - pg_isready -U logisticos
       interval: 10s
       timeout: 5s
       retries: 5
-
-  # ──────────────────────────────────────────────────────────
-  # Redis — Cache, sessions, pub/sub, rate limiting
-  # ──────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     container_name: logisticos-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - 6379:6379
     volumes:
       - redis_data:/data
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test:
+        - CMD
+        - redis-cli
+        - ping
       interval: 10s
       timeout: 5s
       retries: 5
-
-  # ──────────────────────────────────────────────────────────
-  # Zookeeper (Kafka dependency)
-  # ──────────────────────────────────────────────────────────
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.0
     container_name: logisticos-zookeeper
@@ -71,10 +59,6 @@ services:
       ZOOKEEPER_TICK_TIME: 2000
     networks:
       - logisticos
-
-  # ──────────────────────────────────────────────────────────
-  # Kafka — Event streaming
-  # ──────────────────────────────────────────────────────────
   kafka:
     image: confluentinc/cp-kafka:7.6.0
     container_name: logisticos-kafka
@@ -82,7 +66,7 @@ services:
     depends_on:
       - zookeeper
     ports:
-      - "9092:9092"
+      - 9092:9092
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
@@ -95,17 +79,13 @@ services:
       - kafka_data:/var/lib/kafka/data
     networks:
       - logisticos
-
-  # ──────────────────────────────────────────────────────────
-  # ClickHouse — Analytics warehouse
-  # ──────────────────────────────────────────────────────────
   clickhouse:
     image: clickhouse/clickhouse-server:24.3
     container_name: logisticos-clickhouse
     restart: unless-stopped
     ports:
-      - "8123:8123"
-      - "9000:9000"
+      - 8123:8123
+      - 9000:9000
     volumes:
       - clickhouse_data:/var/lib/clickhouse
     networks:
@@ -114,30 +94,22 @@ services:
       nofile:
         soft: 262144
         hard: 262144
-
-  # ──────────────────────────────────────────────────────────
-  # Prometheus — Metrics scraping
-  # ──────────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:v2.51.0
     container_name: logisticos-prometheus
     restart: unless-stopped
     ports:
-      - "9090:9090"
+      - 9090:9090
     volumes:
       - ./infra/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
     networks:
       - logisticos
-
-  # ──────────────────────────────────────────────────────────
-  # Grafana — Dashboards
-  # ──────────────────────────────────────────────────────────
   grafana:
     image: grafana/grafana:10.4.0
     container_name: logisticos-grafana
     restart: unless-stopped
     ports:
-      - "3100:3000"
+      - 3100:3000
     environment:
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_USERS_ALLOW_SIGN_UP: "false"
@@ -146,63 +118,45 @@ services:
       - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning
     networks:
       - logisticos
-
-  # ──────────────────────────────────────────────────────────
-  # Jaeger — Distributed tracing (OpenTelemetry)
-  # ──────────────────────────────────────────────────────────
   jaeger:
     image: jaegertracing/all-in-one:1.56
     container_name: logisticos-jaeger
     restart: unless-stopped
     ports:
-      - "16686:16686"
-      - "4317:4317"
-      - "4318:4318"
+      - 16686:16686
+      - 4317:4317
+      - 4318:4318
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
     networks:
       - logisticos
-
-  # ──────────────────────────────────────────────────────────
-  # Mailhog — Local email testing
-  # ──────────────────────────────────────────────────────────
   mailhog:
     image: mailhog/mailhog:latest
     container_name: logisticos-mailhog
     ports:
-      - "1025:1025"
-      - "8025:8025"
+      - 1025:1025
+      - 8025:8025
     networks:
       - logisticos
-
-  # ──────────────────────────────────────────────────────────
-  # MinIO — Local S3-compatible object storage
-  # ──────────────────────────────────────────────────────────
   minio:
     image: minio/minio:latest
     container_name: logisticos-minio
     restart: unless-stopped
     ports:
-      - "9001:9001"
-      - "9002:9002"
+      - 9001:9001
+      - 9002:9002
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     command: server /data --console-address ":9002"
     networks:
       - logisticos
-
-  # ══════════════════════════════════════════════════════════════
-  # MICROSERVICES — 18 LogisticOS services
-  # ══════════════════════════════════════════════════════════════
-
-  # ── 1. API Gateway (port 8000) ─────────────────────────────
   api-gateway:
     image: ghcr.io/breakdisk/logisticos-service-api-gateway:latest
     container_name: logisticos-api-gateway
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - 8000:8000
     environment:
       DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
       REDIS_URL: redis://redis:6379
@@ -217,19 +171,19 @@ services:
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:8000/health || exit 1
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  # ── 2. Identity & Tenant Management (port 8001) ───────────
   identity:
     image: ghcr.io/breakdisk/logisticos-service-identity:latest
     container_name: logisticos-identity
     restart: unless-stopped
     ports:
-      - "8001:8001"
+      - 8001:8001
     environment:
       DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
       REDIS_URL: redis://redis:6379
@@ -245,19 +199,19 @@ services:
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8001/health || exit 1"]
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:8001/health || exit 1
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  # ── 3. Customer Data Platform (port 8002) ─────────────────
   cdp:
     image: ghcr.io/breakdisk/logisticos-service-cdp:latest
     container_name: logisticos-cdp
     restart: unless-stopped
     ports:
-      - "8002:8002"
+      - 8002:8002
     environment:
       DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
       REDIS_URL: redis://redis:6379
@@ -272,19 +226,19 @@ services:
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8002/health || exit 1"]
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:8002/health || exit 1
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  # ── 4. Unified Engagement Engine (port 8003) ──────────────
   engagement:
     image: ghcr.io/breakdisk/logisticos-service-engagement:latest
     container_name: logisticos-engagement
     restart: unless-stopped
     ports:
-      - "8003:8003"
+      - 8003:8003
     environment:
       DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
       REDIS_URL: redis://redis:6379
@@ -300,19 +254,19 @@ services:
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8003/health || exit 1"]
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:8003/health || exit 1
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  # ── 5. Order & Shipment Intake (port 8004) ────────────────
   order-intake:
     image: ghcr.io/breakdisk/logisticos-service-order-intake:latest
     container_name: logisticos-order-intake
     restart: unless-stopped
     ports:
-      - "8004:8004"
+      - 8004:8004
     environment:
       DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
       REDIS_URL: redis://redis:6379
@@ -327,19 +281,19 @@ services:
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8004/health || exit 1"]
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:8004/health || exit 1
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  # ── 6. Dispatch & Routing (port 8005) ─────────────────────
   dispatch:
     image: ghcr.io/breakdisk/logisticos-service-dispatch:latest
     container_name: logisticos-dispatch
     restart: unless-stopped
     ports:
-      - "8005:8005"
+      - 8005:8005
     environment:
       DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
       REDIS_URL: redis://redis:6379
@@ -354,19 +308,19 @@ services:
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8005/health || exit 1"]
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:8005/health || exit 1
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  # ── 7. Driver Operations (port 8006) ──────────────────────
   driver-ops:
     image: ghcr.io/breakdisk/logisticos-service-driver-ops:latest
     container_name: logisticos-driver-ops
     restart: unless-stopped
     ports:
-      - "8006:8006"
+      - 8006:8006
     environment:
       DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
       REDIS_URL: redis://redis:6379
@@ -381,19 +335,19 @@ services:
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8006/health || exit 1"]
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:8006/health || exit 1
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  # ── 8. Customer Delivery Experience (port 8007) ───────────
   delivery-experience:
     image: ghcr.io/breakdisk/logisticos-service-delivery-experience:latest
     container_name: logisticos-delivery-experience
     restart: unless-stopped
     ports:
-      - "8007:8007"
+      - 8007:8007
     environment:
       DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
       REDIS_URL: redis://redis:6379
@@ -408,19 +362,19 @@ services:
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8007/health || exit 1"]
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:8007/health || exit 1
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  # ── 9. Fleet Management (port 8008) ───────────────────────
   fleet:
     image: ghcr.io/breakdisk/logisticos-service-fleet:latest
     container_name: logisticos-fleet
     restart: unless-stopped
     ports:
-      - "8008:8008"
+      - 8008:8008
     environment:
       DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
       REDIS_URL: redis://redis:6379
@@ -435,19 +389,19 @@ services:
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8008/health || exit 1"]
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:8008/health || exit 1
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  # ── 10. Warehouse & Hub Operations (port 8009) ────────────
   hub-ops:
     image: ghcr.io/breakdisk/logisticos-service-hub-ops:latest
     container_name: logisticos-hub-ops
     restart: unless-stopped
     ports:
-      - "8009:8009"
+      - 8009:8009
     environment:
       DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
       REDIS_URL: redis://redis:6379
@@ -462,19 +416,19 @@ services:
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8009/health || exit 1"]
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:8009/health || exit 1
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  # ── 11. Carrier & Partner Management (port 8010) ──────────
   carrier:
     image: ghcr.io/breakdisk/logisticos-service-carrier:latest
     container_name: logisticos-carrier
     restart: unless-stopped
     ports:
-      - "8010:8010"
+      - 8010:8010
     environment:
       DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
       REDIS_URL: redis://redis:6379
@@ -489,19 +443,19 @@ services:
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8010/health || exit 1"]
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:8010/health || exit 1
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  # ── 12. Proof of Delivery (port 8011) ─────────────────────
   pod:
     image: ghcr.io/breakdisk/logisticos-service-pod:latest
     container_name: logisticos-pod
     restart: unless-stopped
     ports:
-      - "8011:8011"
+      - 8011:8011
     environment:
       DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
       REDIS_URL: redis://redis:6379
@@ -520,19 +474,19 @@ services:
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8011/health || exit 1"]
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:8011/health || exit 1
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  # ── 13. Payments & Billing (port 8012) ────────────────────
   payments:
     image: ghcr.io/breakdisk/logisticos-service-payments:latest
     container_name: logisticos-payments
     restart: unless-stopped
     ports:
-      - "8012:8012"
+      - 8012:8012
     environment:
       DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
       REDIS_URL: redis://redis:6379
@@ -547,19 +501,19 @@ services:
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8012/health || exit 1"]
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:8012/health || exit 1
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  # ── 14. Analytics & BI (port 8013) ────────────────────────
   analytics:
     image: ghcr.io/breakdisk/logisticos-service-analytics:latest
     container_name: logisticos-analytics
     restart: unless-stopped
     ports:
-      - "8013:8013"
+      - 8013:8013
     environment:
       DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
       CLICKHOUSE_URL: http://clickhouse:8123
@@ -577,19 +531,19 @@ services:
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8013/health || exit 1"]
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:8013/health || exit 1
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  # ── 15. Marketing Automation Engine (port 8014) ───────────
   marketing:
     image: ghcr.io/breakdisk/logisticos-service-marketing:latest
     container_name: logisticos-marketing
     restart: unless-stopped
     ports:
-      - "8014:8014"
+      - 8014:8014
     environment:
       DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
       REDIS_URL: redis://redis:6379
@@ -604,19 +558,19 @@ services:
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8014/health || exit 1"]
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:8014/health || exit 1
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  # ── 16. Business Logic & Automation Engine (port 8015) ────
   business-logic:
     image: ghcr.io/breakdisk/logisticos-service-business-logic:latest
     container_name: logisticos-business-logic
     restart: unless-stopped
     ports:
-      - "8015:8015"
+      - 8015:8015
     environment:
       DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
       REDIS_URL: redis://redis:6379
@@ -631,19 +585,19 @@ services:
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8015/health || exit 1"]
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:8015/health || exit 1
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  # ── 17. AI Intelligence Layer (port 8016) ─────────────────
   ai-layer:
     image: ghcr.io/breakdisk/logisticos-service-ai-layer:latest
     container_name: logisticos-ai-layer
     restart: unless-stopped
     ports:
-      - "8016:8016"
+      - 8016:8016
     environment:
       DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
       REDIS_URL: redis://redis:6379
@@ -668,21 +622,21 @@ services:
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8016/health || exit 1"]
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:8016/health || exit 1
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  # ── 18. Compliance (port 8017) ────────────────────────────
   compliance:
     image: ghcr.io/breakdisk/logisticos-service-compliance:latest
     container_name: logisticos-compliance
     restart: unless-stopped
     ports:
-      - "8017:8017"
+      - 8017:8017
     environment:
-      APP__HOST: "0.0.0.0"
+      APP__HOST: 0.0.0.0
       APP__PORT: "8017"
       APP__ENV: development
       DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
@@ -705,23 +659,19 @@ services:
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8017/health || exit 1"]
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:8017/health || exit 1
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  # ══════════════════════════════════════════════════════════════
-  # FRONTEND PORTALS — 4 Next.js apps
-  # ══════════════════════════════════════════════════════════════
-
-  # ── Admin / Ops Portal (port 3001) ────────────────────────
   admin-portal:
     image: ghcr.io/breakdisk/logisticos-app-admin-portal:latest
     container_name: logisticos-admin-portal
     restart: unless-stopped
     ports:
-      - "3001:3001"
+      - 3001:3001
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8000
       NEXT_PUBLIC_APP_ENV: production
@@ -730,19 +680,19 @@ services:
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:3001 || exit 1"]
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:3001 || exit 1
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 20s
-
-  # ── Merchant Portal (port 3000) ───────────────────────────
   merchant-portal:
     image: ghcr.io/breakdisk/logisticos-app-merchant-portal:latest
     container_name: logisticos-merchant-portal
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - 3000:3000
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8000
       NEXT_PUBLIC_APP_ENV: production
@@ -751,19 +701,19 @@ services:
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:3000 || exit 1"]
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:3000 || exit 1
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 20s
-
-  # ── Customer Portal (port 3002) ───────────────────────────
   customer-portal:
     image: ghcr.io/breakdisk/logisticos-app-customer-portal:latest
     container_name: logisticos-customer-portal
     restart: unless-stopped
     ports:
-      - "3002:3002"
+      - 3002:3002
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8000
       NEXT_PUBLIC_APP_ENV: production
@@ -772,19 +722,19 @@ services:
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:3002 || exit 1"]
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:3002 || exit 1
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 20s
-
-  # ── Partner Portal (port 3003) ────────────────────────────
   partner-portal:
     image: ghcr.io/breakdisk/logisticos-app-partner-portal:latest
     container_name: logisticos-partner-portal
     restart: unless-stopped
     ports:
-      - "3003:3003"
+      - 3003:3003
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8000
       NEXT_PUBLIC_APP_ENV: production
@@ -793,61 +743,88 @@ services:
     networks:
       - logisticos
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:3003 || exit 1"]
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:3003 || exit 1
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 20s
-
   landing:
     image: ghcr.io/breakdisk/logisticos-app-landing:latest
     container_name: logisticos-landing
     restart: unless-stopped
     ports:
-      - "3004:3004"
+      - 3004:3004
     environment:
       NEXT_PUBLIC_APP_ENV: production
     networks:
       - logisticos
+      - dokploy-network
+      - default
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:3004 || exit 1"]
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:3004 || exit 1
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 20s
-
-  # ── Optional developer tools (docker compose --profile tools up) ──
+    labels:
+      - traefik.http.routers.cmapp-cmapp-hisisg-12-web.rule=Host(`www.go.cargomarket.net`)
+      - traefik.http.routers.cmapp-cmapp-hisisg-12-web.entrypoints=web
+      - traefik.http.services.cmapp-cmapp-hisisg-12-web.loadbalancer.server.port=3000
+      - traefik.http.routers.cmapp-cmapp-hisisg-12-web.service=cmapp-cmapp-hisisg-12-web
+      - traefik.http.routers.cmapp-cmapp-hisisg-12-web.middlewares=redirect-to-https@file
+      - traefik.http.routers.cmapp-cmapp-hisisg-12-websecure.rule=Host(`www.go.cargomarket.net`)
+      - traefik.http.routers.cmapp-cmapp-hisisg-12-websecure.entrypoints=websecure
+      - traefik.http.services.cmapp-cmapp-hisisg-12-websecure.loadbalancer.server.port=3000
+      - traefik.http.routers.cmapp-cmapp-hisisg-12-websecure.service=cmapp-cmapp-hisisg-12-websecure
+      - traefik.http.routers.cmapp-cmapp-hisisg-12-websecure.tls.certresolver=letsencrypt
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.cmapp-cmapp-hisisg-11-web.rule=Host(`go.cargomarket.net`)
+      - traefik.http.routers.cmapp-cmapp-hisisg-11-web.entrypoints=web
+      - traefik.http.services.cmapp-cmapp-hisisg-11-web.loadbalancer.server.port=3000
+      - traefik.http.routers.cmapp-cmapp-hisisg-11-web.service=cmapp-cmapp-hisisg-11-web
+      - traefik.http.routers.cmapp-cmapp-hisisg-11-web.middlewares=redirect-to-https@file
+      - traefik.http.routers.cmapp-cmapp-hisisg-11-websecure.rule=Host(`go.cargomarket.net`)
+      - traefik.http.routers.cmapp-cmapp-hisisg-11-websecure.entrypoints=websecure
+      - traefik.http.services.cmapp-cmapp-hisisg-11-websecure.loadbalancer.server.port=3000
+      - traefik.http.routers.cmapp-cmapp-hisisg-11-websecure.service=cmapp-cmapp-hisisg-11-websecure
+      - traefik.http.routers.cmapp-cmapp-hisisg-11-websecure.tls.certresolver=letsencrypt
+      - traefik.enable=true
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: logisticos-kafka-ui
-    profiles: [tools]
+    profiles:
+      - tools
     depends_on:
       - kafka
     ports:
-      - "9093:8080"
+      - 9093:8080
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
     networks:
       - logisticos
-
   pgadmin:
     image: dpage/pgadmin4:8.5
     container_name: logisticos-pgadmin
-    profiles: [tools]
+    profiles:
+      - tools
     ports:
-      - "5050:80"
+      - 5050:80
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@logisticos.dev
       PGADMIN_DEFAULT_PASSWORD: admin
     networks:
       - logisticos
-
   redis-insight:
     image: redislabs/redisinsight:latest
     container_name: logisticos-redis-insight
-    profiles: [tools]
+    profiles:
+      - tools
     ports:
-      - "5540:5540"
+      - 5540:5540
     networks:
       - logisticos
