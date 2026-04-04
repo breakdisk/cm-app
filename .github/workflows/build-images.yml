@@ -11,7 +11,7 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  REPO: ${{ github.repository_owner }}/cm-app
+  OWNER: ${{ github.repository_owner }}
 
 jobs:
   # ── Build all 18 Rust microservices in parallel ──────────────────────────
@@ -65,8 +65,8 @@ jobs:
           file: services/${{ matrix.service }}/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ env.REPO }}/service-${{ matrix.service }}:latest
-            ghcr.io/${{ env.REPO }}/service-${{ matrix.service }}:${{ github.sha }}
+            ghcr.io/${{ env.OWNER }}/logisticos-service-${{ matrix.service }}:latest
+            ghcr.io/${{ env.OWNER }}/logisticos-service-${{ matrix.service }}:${{ github.sha }}
           cache-from: type=gha,scope=rust-${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=rust-${{ matrix.service }}
 
@@ -108,7 +108,7 @@ jobs:
           file: apps/${{ matrix.app }}/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ env.REPO }}/app-${{ matrix.app }}:latest
-            ghcr.io/${{ env.REPO }}/app-${{ matrix.app }}:${{ github.sha }}
+            ghcr.io/${{ env.OWNER }}/logisticos-app-${{ matrix.app }}:latest
+            ghcr.io/${{ env.OWNER }}/logisticos-app-${{ matrix.app }}:${{ github.sha }}
           cache-from: type=gha,scope=portal-${{ matrix.app }}
           cache-to: type=gha,mode=max,scope=portal-${{ matrix.app }}
