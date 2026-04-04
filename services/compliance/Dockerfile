@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 FROM rust:1.91-slim-bookworm AS chef
-RUN apt-get update && apt-get install -y     pkg-config libssl-dev zlib1g-dev cmake build-essential     && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y     pkg-config libssl-dev zlib1g-dev cmake build-essential     libsasl2-dev libcurl4-openssl-dev     && rm -rf /var/lib/apt/lists/*
 RUN cargo install cargo-chef --locked
 WORKDIR /app
 
@@ -10,7 +10,6 @@ COPY libs/ libs/
 COPY services/ services/
 RUN cargo chef prepare --recipe-path recipe.json
 
-# cacher: recipe + full cargo registry so native build scripts have C sources
 FROM chef AS cacher
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --profile docker --locked -j4 --recipe-path recipe.json
@@ -24,7 +23,7 @@ COPY --from=cacher /usr/local/cargo /usr/local/cargo
 RUN cargo build --profile docker --locked -j4 --bin compliance
 
 FROM debian:bookworm-slim AS runtime
-RUN apt-get update && apt-get install -y     ca-certificates libssl3 zlib1g     && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y     ca-certificates libssl3 zlib1g libsasl2-2     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /app/target/docker/compliance /app/compliance
 EXPOSE 8017
