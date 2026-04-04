@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 FROM rust:1.91-slim-bookworm AS chef
-RUN apt-get update && apt-get install -y pkg-config libssl-dev librdkafka-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y     pkg-config libssl-dev librdkafka-dev zlib1g-dev cmake     && rm -rf /var/lib/apt/lists/*
 RUN cargo install cargo-chef --locked
 WORKDIR /app
 
@@ -23,7 +23,7 @@ COPY --from=cacher /usr/local/cargo /usr/local/cargo
 RUN cargo build --profile docker --locked -j4 --bin ai_layer
 
 FROM debian:bookworm-slim AS runtime
-RUN apt-get update && apt-get install -y ca-certificates libssl3 librdkafka1 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y     ca-certificates libssl3 librdkafka1 zlib1g     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /app/target/docker/ai_layer /app/ai_layer
 EXPOSE 8016
