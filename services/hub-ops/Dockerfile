@@ -4,7 +4,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY libs/ libs/
 COPY services/ services/
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
-RUN cargo build --profile docker -j4 --bin hub_ops
+RUN cargo build --profile docker --locked -j4 --bin hub_ops
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
