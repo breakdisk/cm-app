@@ -20,6 +20,6 @@ module.exports = {
     '^.+\\.(ts|tsx)$': 'babel-jest',
   },
   transformIgnorePatterns: [
-    'node_modules/(?!(react-redux|redux|@redux|expo-modules-core|react-native|@react-native|expo|expo-asset|expo-constants|expo-font|expo-linear-gradient|@expo|react-native-reanimated|expo-image-picker|expo-modules)/)',
+    'node_modules/(?!(react-redux|redux|@redux|expo-modules-core|react-native|@react-native|expo|expo-asset|expo-constants|expo-font|expo-linear-gradient|@expo|react-native-reanimated|expo-image-picker|expo-sqlite|expo-modules)/)',
   ],
 };
