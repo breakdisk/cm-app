@@ -13,6 +13,7 @@ import { useSelector } from "react-redux";
 import type { RootState } from "../../store";
 import type { ShipmentRecord, ShipmentStatus } from "../../store";
 import { AwbQRCode } from "../../components/AwbQRCode";
+import { useShipments } from "../../hooks/useShipments";
 
 const CANVAS = "#050810";
 const CYAN   = "#00E5FF";
@@ -142,8 +143,13 @@ function ShipmentCard({ item, onShowQR }: { item: ShipmentRecord; onShowQR: (awb
 }
 
 export function HistoryScreen() {
+  const { list: hookShipments, loading } = useShipments();
   const reduxShipments = useSelector((s: RootState) => s.shipments.list);
-  const shipments      = reduxShipments.length > 0 ? reduxShipments : DEMO_SHIPMENTS;
+
+  // Use hook shipments if available, otherwise fall back to Redux, otherwise use demo data
+  const shipments = hookShipments.length > 0
+    ? hookShipments as ShipmentRecord[]
+    : (reduxShipments.length > 0 ? reduxShipments : DEMO_SHIPMENTS);
 
   const [filter,  setFilter]  = useState<FilterTab>("all");
   const [qrAwb,   setQrAwb]   = useState<string | null>(null);
@@ -158,6 +164,16 @@ export function HistoryScreen() {
   const doneCount   = shipments.filter(s => DONE_STATUSES.includes(s.status)).length;
 
   const qrShipment = qrAwb ? shipments.find(s => s.awb === qrAwb) : null;
+
+  // Show loading state if hook is loading
+  if (loading && hookShipments.length === 0) {
+    return (
+      <View style={{ flex: 1, backgroundColor: CANVAS, justifyContent: "center", alignItems: "center" }}>
+        <Ionicons name="cube-outline" size={44} color="rgba(255,255,255,0.1)" />
+        <Text style={{ color: "rgba(255,255,255,0.5)", marginTop: 16, fontSize: 14, fontFamily: "SpaceGrotesk-SemiBold" }}>Loading shipments...</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={{ flex: 1, backgroundColor: CANVAS }}>

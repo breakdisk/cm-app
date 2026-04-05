@@ -13,6 +13,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { useDispatch, useSelector } from "react-redux";
 import { trackingActions } from "../../store";
 import type { RootState } from "../../store";
+import { useTracking } from "../../hooks/useTracking";
+import { useRoute } from "@react-navigation/native";
 
 const CANVAS = "#050810";
 const CYAN   = "#00E5FF";
@@ -98,33 +100,42 @@ const STATUS_ORDER: ShipmentStatus[] = [
 
 export function TrackingScreen() {
   const dispatch    = useDispatch();
+  const route = useRoute();
   const recentSearches = useSelector((s: RootState) => s.tracking.history);
 
   const [query,   setQuery]   = useState("");
   const [result,  setResult]  = useState<TrackingResult | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState("");
+  const [localLoading, setLocalLoading] = useState(false);
+  const [localError,   setLocalError]   = useState("");
+  const [currentAwb, setCurrentAwb] = useState<string>("");
+
+  // Use the tracking hook for the current AWB
+  const { data: trackingData, loading: hookLoading, error: hookError } = useTracking(
+    currentAwb,
+    { autoload: !!currentAwb }
+  );
 
   function handleSearch() {
     const awb = query.trim().toUpperCase();
     if (!awb) return;
-    setLoading(true);
-    setError("");
+    setLocalLoading(true);
+    setLocalError("");
     setResult(null);
-    // Simulate network delay
+    // Simulate network delay for search
     setTimeout(() => {
       const found = MOCK_RESULTS[awb];
       if (found) {
         setResult(found);
+        setCurrentAwb(awb); // Trigger the hook to load real tracking data
         dispatch(trackingActions.addToHistory({
           tracking_number: awb,
           status: found.status,
           searched_at: new Date().toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" }),
         }));
       } else {
-        setError("No shipment found for that tracking number. Check and try again.");
+        setLocalError("No shipment found for that tracking number. Check and try again.");
       }
-      setLoading(false);
+      setLocalLoading(false);
     }, 800);
   }
 
@@ -153,18 +164,18 @@ export function TrackingScreen() {
             onSubmitEditing={handleSearch}
           />
           {query.length > 0 && (
-            <Pressable onPress={() => { setQuery(""); setResult(null); setError(""); }}>
+            <Pressable onPress={() => { setQuery(""); setResult(null); setLocalError(""); setCurrentAwb(""); }}>
               <Ionicons name="close-circle" size={16} color="rgba(255,255,255,0.3)" />
             </Pressable>
           )}
         </View>
         <Pressable
           onPress={handleSearch}
-          disabled={!query.trim() || loading}
+          disabled={!query.trim() || localLoading}
           style={({ pressed }) => [s.searchBtn, { opacity: pressed || !query.trim() ? 0.6 : 1 }]}
         >
           <LinearGradient colors={[CYAN, PURPLE]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.searchBtnGrad}>
-            {loading ? (
+            {localLoading ? (
               <ActivityIndicator size="small" color={CANVAS} />
             ) : (
               <Text style={s.searchBtnText}>Track</Text>
@@ -174,10 +185,20 @@ export function TrackingScreen() {
       </Animated.View>
 
       {/* Error */}
-      {error !== "" && (
+      {(localError || hookError) && (
         <Animated.View entering={FadeInDown.springify()} style={s.errorCard}>
           <Ionicons name="alert-circle-outline" size={16} color={RED} />
-          <Text style={s.errorText}>{error}</Text>
+          <Text style={s.errorText}>{localError || hookError}</Text>
+        </Animated.View>
+      )}
+
+      {/* Loading hook data */}
+      {hookLoading && currentAwb && (
+        <Animated.View entering={FadeInDown.springify()} style={s.resultCard}>
+          <View style={{ alignItems: "center", paddingVertical: 40 }}>
+            <ActivityIndicator size="large" color={CYAN} />
+            <Text style={{ color: "rgba(255,255,255,0.5)", marginTop: 16, fontSize: 14 }}>Fetching tracking details...</Text>
+          </View>
         </Animated.View>
       )}
 
