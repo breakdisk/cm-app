@@ -10,7 +10,9 @@ export interface TrackingEvent {
 
 export interface TrackingInfo {
   awb: string;
-  currentStatus: string;
+  currentStatus?: string;
+  status?: string;
+  tracking_number?: string;
   eta?: string;
   driverName?: string;
   driverPhone?: string;
@@ -23,6 +25,7 @@ export interface TrackingState {
   loading: Record<string, boolean>;
   error: Record<string, string | null>;
   lastUpdated: Record<string, number>;
+  history?: TrackingInfo[];
 }
 
 const initialState: TrackingState = {
@@ -30,6 +33,7 @@ const initialState: TrackingState = {
   loading: {},
   error: {},
   lastUpdated: {},
+  history: [],
 };
 
 const trackingSlice = createSlice({
@@ -46,8 +50,20 @@ const trackingSlice = createSlice({
     setTrackingError: (state, action: PayloadAction<{ awb: string; error: string | null }>) => {
       state.error[action.payload.awb] = action.payload.error;
     },
+    addToHistory: (state, action: PayloadAction<TrackingInfo>) => {
+      if (!state.history) state.history = [];
+      state.history.push(action.payload);
+    },
   },
 });
 
-export const { setTrackingLoading, setTrackingData, setTrackingError } = trackingSlice.actions;
+export const { setTrackingLoading, setTrackingData, setTrackingError, addToHistory } = trackingSlice.actions;
+
+export const trackingActions = {
+  setTrackingLoading,
+  setTrackingData,
+  setTrackingError,
+  addToHistory,
+};
+
 export default trackingSlice.reducer;

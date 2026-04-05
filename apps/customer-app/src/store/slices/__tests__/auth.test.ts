@@ -8,9 +8,12 @@ const initialState: AuthState = {
   name: null,
   phone: null,
   email: null,
-  kycStatus: 'pending',
+  kycStatus: 'none',
   onboardingStep: 'phone',
   loyaltyPoints: 0,
+  loyaltyPts: 0,
+  isGuest: true,
+  verificationTier: 'none',
 };
 
 describe('Auth Slice', () => {
