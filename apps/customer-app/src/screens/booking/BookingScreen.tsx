@@ -16,12 +16,14 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { useDispatch, useSelector } from "react-redux";
+import { useNetInfo } from "@react-native-community/netinfo";
 import { shipmentsActions, authActions } from "../../store";
 import type { AppDispatch, RootState } from "../../store";
 import { AwbQRCode } from "../../components/AwbQRCode";
 import Toast from "../../components/Toast";
 import * as shipmentsService from "../../services/api/shipments";
 import { getStoredCustomerId } from "../../services/api/auth";
+import { savePendingShipment } from "../../db/sync";
 
 const CANVAS  = "#050810";
 const CYAN    = "#00E5FF";
@@ -187,6 +189,7 @@ function CountryPickerRN({
 export function BookingScreen() {
   const dispatch     = useDispatch<AppDispatch>();
   const customerId   = useSelector((s: RootState) => s.auth.customerId);
+  const { isConnected } = useNetInfo();
 
   const [mode,        setMode]        = useState<ShipmentMode>("local");
   const [step,        setStep]        = useState(1);
@@ -283,6 +286,29 @@ export function BookingScreen() {
       const origin = `${senderAddress}, ${senderCity} ${senderZip}`;
       const destination = `${receiverAddress}, ${receiverCity} ${receiverZip}${isIntl ? ` · ${DEST_COUNTRIES.find(c => c.code === destCountry)?.label || destCountry}` : ""}`;
 
+      // Check if device is online
+      if (!isConnected) {
+        // Offline: save to local SQLite database
+        const shipmentId = await savePendingShipment(storedCustomerId, {
+          origin,
+          destination,
+          recipientName: receiverName,
+          recipientPhone: "",
+          weight: parseFloat(weight) || 1,
+          type: isIntl ? "international" : "local",
+          fee: calcTotal(),
+          currency: "PHP",
+          codAmount: isCOD && !isIntl ? parseInt(codAmount) : undefined,
+        });
+
+        // Generate temporary AWB for offline booking
+        const tempAwb = `OFFLINE-${Math.random().toString(36).substr(2, 8).toUpperCase()}`;
+        setConfirmedAwb(tempAwb);
+        showToast("Saved offline. Will sync when online.", "info");
+        return;
+      }
+
+      // Online: call API directly
       const response = await shipmentsService.createShipment(storedCustomerId, {
         origin,
         destination,
