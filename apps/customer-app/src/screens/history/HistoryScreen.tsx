@@ -13,6 +13,7 @@ import { useSelector } from "react-redux";
 import type { RootState } from "../../store";
 import type { ShipmentRecord, ShipmentStatus } from "../../store";
 import { AwbQRCode } from "../../components/AwbQRCode";
+import SkeletonLoader from "../../components/SkeletonLoader";
 import { useShipments } from "../../hooks/useShipments";
 
 const CANVAS = "#050810";
@@ -165,12 +166,28 @@ export function HistoryScreen() {
 
   const qrShipment = qrAwb ? shipments.find(s => s.awb === qrAwb) : null;
 
-  // Show loading state if hook is loading
+  // Show loading state with skeleton loaders if hook is loading
   if (loading && hookShipments.length === 0) {
     return (
-      <View style={{ flex: 1, backgroundColor: CANVAS, justifyContent: "center", alignItems: "center" }}>
-        <Ionicons name="cube-outline" size={44} color="rgba(255,255,255,0.1)" />
-        <Text style={{ color: "rgba(255,255,255,0.5)", marginTop: 16, fontSize: 14, fontFamily: "SpaceGrotesk-SemiBold" }}>Loading shipments...</Text>
+      <View style={{ flex: 1, backgroundColor: CANVAS }}>
+        <ScrollView style={s.container} contentContainerStyle={{ paddingBottom: 40 }}>
+          {/* Hero */}
+          <LinearGradient colors={["rgba(168,85,247,0.10)", "transparent"]} style={s.hero}>
+            <Animated.View entering={FadeInDown.springify()}>
+              <Text style={s.heroTitle}>My Shipments</Text>
+              <Text style={s.heroSub}>Loading shipments...</Text>
+            </Animated.View>
+          </LinearGradient>
+
+          {/* Skeleton loaders */}
+          <View style={{ paddingHorizontal: 16 }}>
+            {[1, 2, 3, 4].map(i => (
+              <View key={i} style={{ marginBottom: 12 }}>
+                <SkeletonLoader width="100%" height={120} borderRadius={16} />
+              </View>
+            ))}
+          </View>
+        </ScrollView>
       </View>
     );
   }
