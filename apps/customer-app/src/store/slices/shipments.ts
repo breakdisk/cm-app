@@ -1,17 +1,27 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
 
+export type ShipmentStatusType = 'pending' | 'processing' | 'picked' | 'in_transit' | 'delivered' | 'failed' | 'cancelled' | 'confirmed' | 'picked_up' | 'out_for_delivery' | 'delivery_attempted' | 'returned';
+
 export interface Shipment {
   awb: string;
-  status: 'pending' | 'processing' | 'picked' | 'in_transit' | 'delivered' | 'failed' | 'cancelled';
+  status: ShipmentStatusType;
   origin: string;
   destination: string;
-  date: string;
-  fee: number;
-  currency: 'PHP' | 'USD';
-  codAmount?: number;
+  date?: string;
+  fee?: number;
+  totalFee?: number;
+  currency?: 'PHP' | 'USD';
+  codAmount?: string | number;
+  isCOD?: boolean;
   type: 'local' | 'international';
-  recipientName: string;
-  recipientPhone: string;
+  recipientName?: string;
+  recipientPhone?: string;
+  description?: string;
+  weight?: string | number;
+  bookedAt?: string;
+  estimatedDelivery?: string;
+  destCountry?: string;
+  freightMode?: 'sea' | 'air';
 }
 
 export interface ShipmentsState {
@@ -68,4 +78,17 @@ const shipmentsSlice = createSlice({
 });
 
 export const { setLoading, setShipments, addShipment, updateShipment, setError, setPagination } = shipmentsSlice.actions;
+
+export type ShipmentRecord = Shipment;
+export type ShipmentStatus = Shipment['status'];
+
+export const shipmentsActions = {
+  setLoading,
+  setShipments,
+  addShipment,
+  updateShipment,
+  setError,
+  setPagination,
+};
+
 export default shipmentsSlice.reducer;

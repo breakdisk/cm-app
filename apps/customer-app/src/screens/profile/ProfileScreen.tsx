@@ -369,8 +369,8 @@ export function ProfileScreen() {
       <Animated.View entering={FadeInUp.delay(180).springify()} style={s.section}>
         <Text style={s.sectionTitle}>Notifications</Text>
         {([
-          { label: "Delivery updates", sub: "Status changes, ETA alerts", value: notifDelivery, action: (v: boolean) => dispatch(prefsActions.setNotifDelivery(v)) },
-          { label: "Promotions & offers", sub: "Discount codes, loyalty rewards", value: notifPromos, action: (v: boolean) => dispatch(prefsActions.setNotifPromos(v)) },
+          { label: "Delivery updates", sub: "Status changes, ETA alerts", value: notifDelivery, action: (v: boolean) => { dispatch(prefsActions.setNotifDelivery(v)); } },
+          { label: "Promotions & offers", sub: "Discount codes, loyalty rewards", value: notifPromos, action: (v: boolean) => { dispatch(prefsActions.setNotifPromos(v)); } },
         ] as const).map((n) => (
           <View key={n.label} style={s.toggleRow}>
             <View style={{ flex: 1 }}>
