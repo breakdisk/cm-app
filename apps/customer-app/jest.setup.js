@@ -32,15 +32,38 @@ jest.mock('react-redux', () => {
   return {
     Provider: View,
     useDispatch: () => jest.fn(),
-    useSelector: () => ({
-      auth: {
-        name: 'Test User',
-        loyaltyPoints: 1000,
-      },
-      shipments: {
-        list: [],
-      },
+    useSelector: jest.fn((selector) => {
+      const mockState = {
+        auth: {
+          name: 'Test User',
+          loyaltyPoints: 1000,
+        },
+        shipments: {
+          list: [],
+          byAwb: {},
+          loading: false,
+          error: null,
+          pagination: { skip: 0, limit: 20, total: 0 },
+        },
+        tracking: {
+          byAwb: {},
+          loading: {},
+          error: {},
+          lastUpdated: {},
+          history: [],
+        },
+        prefs: {},
+        addresses: [],
+      };
+      return selector(mockState);
     }),
     connect: () => (Component) => Component,
   };
 });
+
+// Mock expo-secure-store
+jest.mock('expo-secure-store', () => ({
+  getItemAsync: jest.fn().mockResolvedValue(null),
+  setItemAsync: jest.fn().mockResolvedValue(undefined),
+  deleteItemAsync: jest.fn().mockResolvedValue(undefined),
+}));
