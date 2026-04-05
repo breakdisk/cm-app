@@ -11,19 +11,20 @@ jest.mock('@expo/vector-icons', () => ({
   Ionicons: () => null,
 }));
 
-jest.mock('react-native-reanimated', () => ({
-  Animated: {
-    View: require('react-native').View,
-  },
-  FadeInDown: {
-    springify: () => ({}),
-  },
-  FadeInUp: {
-    delay: () => ({
-      springify: () => ({}),
-    }),
-  },
-}));
+jest.mock('react-native-reanimated', () => {
+  const mockAnimation = {
+    delay: (ms) => mockAnimation,
+    springify: () => mockAnimation,
+  };
+  return {
+    Animated: {
+      View: require('react-native').View,
+    },
+    FadeInDown: mockAnimation,
+    FadeInUp: mockAnimation,
+    FadeIn: mockAnimation,
+  };
+});
 
 // Mock react-redux for testing
 jest.mock('react-redux', () => {
