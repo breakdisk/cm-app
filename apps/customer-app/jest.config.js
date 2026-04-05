@@ -1,6 +1,6 @@
 module.exports = {
   preset: 'jest-expo',
-  testPathIgnorePatterns: ['/node_modules/', '/dist/'],
+  testPathIgnorePatterns: ['/node_modules/', '/dist/', '/.expo/'],
   moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json'],
   setupFilesAfterEnv: ['<rootDir>/jest.setup.js'],
   collectCoverageFrom: [
@@ -13,5 +13,9 @@ module.exports = {
   ],
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/src/$1',
+    '\\.(css|less|scss|sass)$': 'identity-obj-proxy',
   },
+  transformIgnorePatterns: [
+    'node_modules/(?!(react-redux|redux|@redux|expo-modules-core|react-native)/)',
+  ],
 };
