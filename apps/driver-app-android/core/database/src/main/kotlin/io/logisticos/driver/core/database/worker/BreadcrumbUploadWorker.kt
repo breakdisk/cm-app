@@ -32,31 +32,37 @@ class BreadcrumbUploadWorker @AssistedInject constructor(
         val unsynced = breadcrumbDao.getUnsynced()
         if (unsynced.isEmpty()) return Result.success()
 
-        trackingApi.uploadBreadcrumbs(
-            BreadcrumbBatchRequest(
-                shiftId = shift.id,
-                points = unsynced.map { crumb ->
-                    BreadcrumbPoint(
-                        lat = crumb.lat,
-                        lng = crumb.lng,
-                        accuracy = crumb.accuracy,
-                        speedMps = crumb.speedMps,
-                        bearing = crumb.bearing,
-                        timestamp = crumb.timestamp
-                    )
-                }
+        return try {
+            val response = trackingApi.uploadBreadcrumbs(
+                BreadcrumbBatchRequest(
+                    shiftId = shift.id,
+                    points = unsynced.map { crumb ->
+                        BreadcrumbPoint(
+                            lat = crumb.lat,
+                            lng = crumb.lng,
+                            accuracy = crumb.accuracy,
+                            speedMps = crumb.speedMps,
+                            bearing = crumb.bearing,
+                            timestamp = crumb.timestamp
+                        )
+                    }
+                )
             )
-        )
-        breadcrumbDao.markSynced(unsynced.map { it.id })
-        breadcrumbDao.pruneOld(System.currentTimeMillis() - 24 * 60 * 60 * 1000L)
-        return Result.success()
+            if (response.isSuccessful) {
+                breadcrumbDao.markSynced(unsynced.map { it.id })
+                breadcrumbDao.pruneOld(System.currentTimeMillis() - 24 * 60 * 60 * 1000L)
+            }
+            Result.success()
+        } catch (e: Exception) {
+            Result.success() // Periodic worker — will retry next period
+        }
     }
 
     companion object {
         const val WORK_NAME = "breadcrumb_upload"
 
         fun schedule(context: Context) {
-            val request = PeriodicWorkRequestBuilder<BreadcrumbUploadWorker>(30, TimeUnit.SECONDS)
+            val request = PeriodicWorkRequestBuilder<BreadcrumbUploadWorker>(15, TimeUnit.MINUTES)
                 .setConstraints(
                     Constraints.Builder()
                         .setRequiredNetworkType(NetworkType.CONNECTED)

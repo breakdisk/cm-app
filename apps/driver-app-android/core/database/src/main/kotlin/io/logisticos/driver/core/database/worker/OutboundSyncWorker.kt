@@ -19,12 +19,14 @@ import io.logisticos.driver.core.network.service.DriverOpsApiService
 import io.logisticos.driver.core.network.service.PodApiService
 import io.logisticos.driver.core.network.service.TaskStatusRequest
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import retrofit2.HttpException
 import java.io.File
 import java.util.concurrent.TimeUnit
 
@@ -45,7 +47,7 @@ class OutboundSyncWorker @AssistedInject constructor(
                 processItem(item)
                 syncQueueDao.remove(item.id)
             } catch (e: Exception) {
-                val backoffMs = minOf(1000L * (1 shl item.retryCount), 300_000L)
+                val backoffMs = minOf(1000L shl minOf(item.retryCount, 8), 300_000L)
                 syncQueueDao.markFailed(item.id, e.message ?: "unknown", System.currentTimeMillis() + backoffMs)
             }
         }
@@ -53,15 +55,22 @@ class OutboundSyncWorker @AssistedInject constructor(
     }
 
     private suspend fun processItem(item: SyncQueueEntity) {
-        val payload = Json.parseToJsonElement(item.payloadJson).jsonObject
+        val payload = runCatching { Json.parseToJsonElement(item.payloadJson).jsonObject }.getOrNull()
+        if (payload == null) {
+            syncQueueDao.remove(item.id) // malformed JSON — discard permanently
+            return
+        }
         when (item.action) {
             SyncAction.TASK_STATUS_UPDATE -> {
-                val taskId = payload["taskId"]!!.jsonPrimitive.content
-                val status = payload["status"]!!.jsonPrimitive.content
+                val taskId = payload["taskId"]?.jsonPrimitive?.contentOrNull
+                    ?: run { syncQueueDao.remove(item.id); return }
+                val status = payload["status"]?.jsonPrimitive?.contentOrNull
+                    ?: run { syncQueueDao.remove(item.id); return }
                 driverOpsApi.updateTaskStatus(taskId, TaskStatusRequest(status = status))
             }
             SyncAction.POD_SUBMIT -> {
-                val taskId = payload["taskId"]!!.jsonPrimitive.content
+                val taskId = payload["taskId"]?.jsonPrimitive?.contentOrNull
+                    ?: run { syncQueueDao.remove(item.id); return }
                 val pod = podDao.getForTask(taskId) ?: return
                 val photoBody = pod.photoPath?.let { path ->
                     val file = File(path)
@@ -81,13 +90,21 @@ class OutboundSyncWorker @AssistedInject constructor(
                         )
                     } else null
                 }
-                podApi.submitPod(
+                val response = podApi.submitPod(
                     taskId = taskId.toRequestBody("text/plain".toMediaType()),
                     photo = photoBody,
                     signature = sigBody,
                     otpToken = pod.otpToken?.toRequestBody("text/plain".toMediaType())
                 )
-                podDao.markSynced(taskId)
+                if (response.isSuccessful) {
+                    podDao.markSynced(taskId)
+                } else if (response.code() in 400..499 && response.code() != 429) {
+                    // Unrecoverable client error — discard queue item permanently
+                    syncQueueDao.remove(item.id)
+                    return
+                }
+                // On 5xx or 429, throw to trigger retry with backoff
+                if (!response.isSuccessful) throw HttpException(response)
             }
             else -> Unit
         }
@@ -97,7 +114,7 @@ class OutboundSyncWorker @AssistedInject constructor(
         const val WORK_NAME = "outbound_sync"
 
         fun schedule(context: Context) {
-            val request = PeriodicWorkRequestBuilder<OutboundSyncWorker>(60, TimeUnit.SECONDS)
+            val request = PeriodicWorkRequestBuilder<OutboundSyncWorker>(15, TimeUnit.MINUTES)
                 .setConstraints(
                     Constraints.Builder()
                         .setRequiredNetworkType(NetworkType.CONNECTED)

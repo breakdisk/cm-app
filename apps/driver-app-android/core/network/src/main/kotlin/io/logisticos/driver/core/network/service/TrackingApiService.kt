@@ -2,6 +2,7 @@ package io.logisticos.driver.core.network.service
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.POST
 
@@ -23,5 +24,5 @@ data class BreadcrumbBatchRequest(
 
 interface TrackingApiService {
     @POST("location/batch")
-    suspend fun uploadBreadcrumbs(@Body request: BreadcrumbBatchRequest)
+    suspend fun uploadBreadcrumbs(@Body request: BreadcrumbBatchRequest): Response<Unit>
 }
