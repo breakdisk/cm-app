@@ -46,7 +46,7 @@ class ScannerViewModel @Inject constructor(
             it.copy(
                 scannedAwbs = newScanned,
                 lastValidation = validation,
-                allScanned = newScanned.containsAll(state.expectedAwbs),
+                allScanned = state.expectedAwbs.isNotEmpty() && newScanned.containsAll(state.expectedAwbs),
                 hasUnresolvedWarnings = validation is ScanValidationResult.Unexpected
             )
         }

@@ -32,7 +32,7 @@ class HardwareScannerManager @Inject constructor(
             addAction("com.symbol.datawedge.api.RESULT_ACTION")
             addAction("com.honeywell.aidc.action.ACTION_AIDC_DATA")
         }
-        context.registerReceiver(receiver, filter)
+        context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
     }
 
     override fun stopScan() {

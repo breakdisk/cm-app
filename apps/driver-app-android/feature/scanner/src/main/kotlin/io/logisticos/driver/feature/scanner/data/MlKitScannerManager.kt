@@ -37,7 +37,7 @@ class MlKitScannerManager @Inject constructor(
         scanner.process(image)
             .addOnSuccessListener { barcodes ->
                 barcodes.firstOrNull()?.rawValue?.let { value ->
-                    val format = barcodes.first().format.name
+                    val format = barcodes.first().format.toString()
                     onResult(ScanResult(rawValue = value, format = format))
                 }
             }
@@ -46,5 +46,6 @@ class MlKitScannerManager @Inject constructor(
 
     override fun stopScan() {
         analysisUseCase = null
+        scanner.close()
     }
 }

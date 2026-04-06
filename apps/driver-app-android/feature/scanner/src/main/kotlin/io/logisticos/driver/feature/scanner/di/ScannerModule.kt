@@ -19,10 +19,12 @@ object ScannerModule {
         mlKit: MlKitScannerManager,
         hardware: HardwareScannerManager
     ): ScannerManager {
-        val isZebra = context.packageManager.getInstalledPackages(0)
-            .any { it.packageName == "com.symbol.datawedge" }
-        val isHoneywell = context.packageManager.getInstalledPackages(0)
-            .any { it.packageName == "com.honeywell.aidc" }
+        val pm = context.packageManager
+        fun isInstalled(packageName: String): Boolean = runCatching {
+            pm.getPackageInfo(packageName, 0)
+        }.isSuccess
+        val isZebra = isInstalled("com.symbol.datawedge")
+        val isHoneywell = isInstalled("com.honeywell.aidc")
         return if (isZebra || isHoneywell) hardware else mlKit
     }
 }

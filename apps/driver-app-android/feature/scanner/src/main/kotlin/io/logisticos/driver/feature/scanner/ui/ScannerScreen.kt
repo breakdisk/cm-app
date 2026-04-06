@@ -47,7 +47,7 @@ fun ScannerScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
 
-    LaunchedEffect(expectedAwbs) { viewModel.setExpectedAwbs(expectedAwbs) }
+    LaunchedEffect(Unit) { viewModel.setExpectedAwbs(expectedAwbs) }
 
     Column(
         modifier = Modifier
