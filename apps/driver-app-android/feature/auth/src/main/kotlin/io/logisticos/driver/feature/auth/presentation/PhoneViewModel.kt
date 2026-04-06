@@ -39,7 +39,7 @@ class PhoneViewModel @Inject constructor(
             _uiState.update { it.copy(isLoading = true, error = null) }
             repo.sendOtp(phone)
                 .onSuccess { _uiState.update { it.copy(isLoading = false, otpSent = true) } }
-                .onFailure { e -> _uiState.update { it.copy(isLoading = false, error = e.message) } }
+                .onFailure { e -> _uiState.update { it.copy(isLoading = false, error = e.message ?: "Something went wrong") } }
         }
     }
 }

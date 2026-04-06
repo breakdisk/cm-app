@@ -63,6 +63,18 @@ class OtpViewModelTest {
     }
 
     @Test
+    fun `verifyOtp uses default error message when exception has no message`() = runTest {
+        coEvery { repo.verifyOtp(any(), any()) } returns Result.failure(RuntimeException())
+        vm.uiState.test {
+            awaitItem()
+            vm.verifyOtp(phone = "+639123456789", otp = "000000")
+            awaitItem() // loading
+            val error = awaitItem()
+            assertEquals("Invalid OTP", error.error)
+        }
+    }
+
+    @Test
     fun `onOtpChanged ignores input longer than 6 chars`() = runTest {
         vm.onOtpChanged("1234567")
         vm.uiState.test {
