@@ -18,6 +18,7 @@ android {
 
 dependencies {
     implementation(project(":core:database"))
+    implementation(project(":core:common"))
     implementation(libs.play.services.location)
     implementation(libs.hilt.android)
     implementation(libs.workmanager.ktx)
