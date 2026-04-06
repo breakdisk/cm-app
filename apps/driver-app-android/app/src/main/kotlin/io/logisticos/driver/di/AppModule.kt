@@ -5,6 +5,7 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import io.logisticos.driver.BuildConfig
+import okhttp3.logging.HttpLoggingInterceptor
 import javax.inject.Named
 import javax.inject.Singleton
 
@@ -16,4 +17,10 @@ object AppModule {
     @Singleton
     @Named("base_url")
     fun provideBaseUrl(): String = BuildConfig.BASE_URL
+
+    @Provides
+    @Named("log_level")
+    fun provideLogLevel(): HttpLoggingInterceptor.Level =
+        if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BODY
+        else HttpLoggingInterceptor.Level.NONE
 }

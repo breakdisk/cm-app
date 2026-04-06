@@ -10,6 +10,6 @@ data class RefreshRequest(
 
 @Serializable
 data class TokenResponse(
-    val jwt: String,
+    @SerialName("access_token") val jwt: String,
     @SerialName("refresh_token") val refreshToken: String
 )

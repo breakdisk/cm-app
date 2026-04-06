@@ -13,6 +13,10 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Assertions.*
 
+// Note: SessionManager.getTenantId() delegates directly to tokenStorage without caching,
+// so stubs set inside each test body are applied before the method is invoked.
+// Compare with AuthInterceptorTest where JWT is seeded via saveTokens() due to the
+// in-memory JWT cache in SessionManager being populated during construction.
 class TenantInterceptorTest {
     private val server = MockWebServer()
     private val tokenStorage: TokenStorage = mockk()
