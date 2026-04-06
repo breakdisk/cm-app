@@ -33,6 +33,9 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+private val SignatureCyan = Color(0xFF00E5FF)
+private val SignatureGlass = Color(0x0AFFFFFF)
+
 @Composable
 fun SignatureCanvas(
     onSigned: (Bitmap) -> Unit,
@@ -42,15 +45,12 @@ fun SignatureCanvas(
     var currentPath by remember { mutableStateOf(listOf<Offset>()) }
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
 
-    val cyan = Color(0xFF00E5FF)
-    val glass = Color(0x0AFFFFFF)
-
     Column(modifier = modifier) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(240.dp)
-                .background(glass)
+                .background(SignatureGlass)
         ) {
             Canvas(
                 modifier = Modifier
@@ -74,7 +74,7 @@ fun SignatureCanvas(
                         path.drop(1).forEach { p.lineTo(it.x, it.y) }
                         drawPath(
                             p,
-                            color = cyan,
+                            color = SignatureCyan,
                             style = Stroke(width = 3f, cap = StrokeCap.Round, join = StrokeJoin.Round)
                         )
                     }
@@ -85,7 +85,7 @@ fun SignatureCanvas(
                     currentPath.drop(1).forEach { p.lineTo(it.x, it.y) }
                     drawPath(
                         p,
-                        color = cyan,
+                        color = SignatureCyan,
                         style = Stroke(width = 3f, cap = StrokeCap.Round, join = StrokeJoin.Round)
                     )
                 }
@@ -124,10 +124,27 @@ fun SignatureCanvas(
                         canvasSize.height.coerceAtLeast(1),
                         Bitmap.Config.ARGB_8888
                     )
+                    val androidCanvas = android.graphics.Canvas(bmp)
+                    val paint = android.graphics.Paint().apply {
+                        isAntiAlias = true
+                        color = android.graphics.Color.parseColor("#00E5FF")
+                        style = android.graphics.Paint.Style.STROKE
+                        strokeWidth = 6f
+                        strokeCap = android.graphics.Paint.Cap.ROUND
+                        strokeJoin = android.graphics.Paint.Join.ROUND
+                    }
+                    paths.forEach { path ->
+                        if (path.size > 1) {
+                            val androidPath = android.graphics.Path()
+                            androidPath.moveTo(path.first().x, path.first().y)
+                            path.drop(1).forEach { point -> androidPath.lineTo(point.x, point.y) }
+                            androidCanvas.drawPath(androidPath, paint)
+                        }
+                    }
                     onSigned(bmp)
                 },
                 enabled = paths.isNotEmpty(),
-                colors = ButtonDefaults.buttonColors(containerColor = cyan),
+                colors = ButtonDefaults.buttonColors(containerColor = SignatureCyan),
                 modifier = Modifier.weight(1f)
             ) {
                 Text("Confirm", color = Color(0xFF050810))

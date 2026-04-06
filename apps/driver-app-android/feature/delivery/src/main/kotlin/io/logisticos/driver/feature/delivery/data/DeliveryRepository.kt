@@ -11,7 +11,6 @@ import io.logisticos.driver.core.database.entity.TaskEntity
 import io.logisticos.driver.core.database.entity.TaskStatus
 import io.logisticos.driver.feature.delivery.domain.TaskStateMachine
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
@@ -22,9 +21,7 @@ class DeliveryRepository @Inject constructor(
     private val shiftDao: ShiftDao,
     private val syncQueueDao: SyncQueueDao
 ) {
-    fun observeTask(taskId: String): Flow<TaskEntity?> = flow {
-        emit(taskDao.getById(taskId))
-    }
+    fun observeTask(taskId: String): Flow<TaskEntity?> = taskDao.getByIdAsFlow(taskId)
 
     suspend fun transitionTask(taskId: String, newStatus: TaskStatus) {
         val task = taskDao.getById(taskId) ?: return
@@ -40,7 +37,7 @@ class DeliveryRepository @Inject constructor(
         val shift = shiftDao.getActiveShiftOnce() ?: return
         when (newStatus) {
             TaskStatus.COMPLETED -> shiftDao.incrementCompleted(shift.id)
-            TaskStatus.FAILED -> shiftDao.incrementFailed(shift.id)
+            TaskStatus.FAILED, TaskStatus.RETURNED -> shiftDao.incrementFailed(shift.id)
             else -> Unit
         }
     }

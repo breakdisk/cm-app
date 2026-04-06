@@ -33,4 +33,7 @@ interface TaskDao {
 
     @Query("SELECT * FROM tasks WHERE shiftId = :shiftId")
     suspend fun getTasksForShiftOnce(shiftId: String): List<TaskEntity>
+
+    @Query("SELECT * FROM tasks WHERE id = :taskId LIMIT 1")
+    fun getByIdAsFlow(taskId: String): Flow<TaskEntity?>
 }

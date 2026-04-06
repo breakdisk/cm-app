@@ -65,4 +65,11 @@ class TaskStateMachineTest {
     fun `FAILED can transition to RETURNED`() {
         assertTrue(TaskStateMachine.canTransition(TaskStatus.FAILED, TaskStatus.RETURNED))
     }
+
+    @Test
+    fun `RETURNED cannot transition to any other status`() {
+        TaskStatus.entries.forEach { target ->
+            assertFalse(TaskStateMachine.canTransition(TaskStatus.RETURNED, target))
+        }
+    }
 }
