@@ -6,11 +6,13 @@ import dagger.assisted.Assisted
 import dagger.assisted.AssistedFactory
 import dagger.assisted.AssistedInject
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.logisticos.driver.core.database.dao.ShiftDao
 import io.logisticos.driver.core.database.entity.TaskEntity
 import io.logisticos.driver.core.database.entity.TaskStatus
 import io.logisticos.driver.feature.route.data.RouteRepository
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 
 data class RouteUiState(
     val activeTasks: List<TaskEntity> = emptyList(),
@@ -21,6 +23,7 @@ data class RouteUiState(
 @HiltViewModel(assistedFactory = RouteViewModel.Factory::class)
 class RouteViewModel @AssistedInject constructor(
     private val repo: RouteRepository,
+    private val shiftDao: ShiftDao,
     @Assisted private val shiftId: String
 ) : ViewModel() {
 
@@ -32,12 +35,18 @@ class RouteViewModel @AssistedInject constructor(
     private val _uiState = MutableStateFlow(RouteUiState())
     val uiState: StateFlow<RouteUiState> = _uiState.asStateFlow()
 
-    private var isReordering = false
+    private val isReordering = AtomicBoolean(false)
     private var reorderedActive = mutableListOf<TaskEntity>()
 
     init {
         viewModelScope.launch {
-            repo.observeTasks(shiftId).collect { tasks ->
+            // If shiftId is empty, resolve to active shift first
+            val resolvedShiftId = if (shiftId.isEmpty()) {
+                shiftDao.getActiveShiftOnce()?.id ?: ""
+            } else {
+                shiftId
+            }
+            repo.observeTasks(resolvedShiftId).collect { tasks ->
                 val active = tasks.filter {
                     it.status !in listOf(
                         TaskStatus.COMPLETED,
@@ -46,11 +55,11 @@ class RouteViewModel @AssistedInject constructor(
                     )
                 }
                 val completed = tasks.filter { it.status == TaskStatus.COMPLETED }
-                if (!isReordering) {
+                if (!isReordering.get()) {
                     reorderedActive = active.toMutableList()
                 }
                 _uiState.update { state ->
-                    if (!isReordering) {
+                    if (!isReordering.get()) {
                         state.copy(activeTasks = active, completedTasks = completed)
                     } else {
                         state.copy(completedTasks = completed)
@@ -67,12 +76,12 @@ class RouteViewModel @AssistedInject constructor(
         list.add(toIndex, item)
         reorderedActive = list
         _uiState.update { it.copy(activeTasks = list) }
-        isReordering = true
+        isReordering.set(true)
         viewModelScope.launch {
             list.forEachIndexed { index, task ->
                 repo.updateStopOrder(task.id, index + 1)
             }
-            isReordering = false
+            isReordering.set(false)
         }
     }
 }

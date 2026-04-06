@@ -26,6 +26,7 @@ import io.logisticos.driver.feature.notifications.ui.NotificationsScreen
 import io.logisticos.driver.feature.pod.ui.PodScreen
 import io.logisticos.driver.feature.profile.presentation.ProfileViewModel
 import io.logisticos.driver.feature.profile.ui.ProfileScreen
+import io.logisticos.driver.feature.delivery.presentation.ArrivalViewModel
 import io.logisticos.driver.feature.route.ui.RouteScreen
 import io.logisticos.driver.feature.scanner.ui.ScannerScreen
 
@@ -129,13 +130,15 @@ fun ShiftScaffold(rootNavController: NavHostController) {
 
             composable(ARRIVAL_ROUTE) { backStack ->
                 val taskId = backStack.arguments?.getString("taskId") ?: ""
-                // ArrivalScreen is not yet implemented — placeholder routes straight to POD.
+                val vm: ArrivalViewModel = hiltViewModel()
+                // Transition ARRIVED → IN_PROGRESS before entering POD so the state machine
+                // allows the subsequent COMPLETED transition when POD is submitted.
                 ArrivalPlaceholder(
                     taskId = taskId,
-                    onContinueToPod = {
-                        shiftNavController.navigate(
-                            "pod/$taskId/true/true/false"
-                        )
+                    onStartDelivery = {
+                        vm.startDelivery(taskId) {
+                            shiftNavController.navigate("pod/$taskId/true/true/false")
+                        }
                     },
                 )
             }
@@ -167,14 +170,14 @@ fun ShiftScaffold(rootNavController: NavHostController) {
  * Shows a brief confirmation UI and routes immediately to POD capture.
  */
 @Composable
-private fun ArrivalPlaceholder(taskId: String, onContinueToPod: () -> Unit) {
+private fun ArrivalPlaceholder(taskId: String, onStartDelivery: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFF050810)),
         contentAlignment = Alignment.Center,
     ) {
-        androidx.compose.material3.Button(onClick = onContinueToPod) {
+        androidx.compose.material3.Button(onClick = onStartDelivery) {
             Text("Arrived — Start POD Capture", color = Color(0xFF050810))
         }
     }
