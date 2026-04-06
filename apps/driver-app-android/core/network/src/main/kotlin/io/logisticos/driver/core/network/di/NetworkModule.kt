@@ -11,6 +11,8 @@ import io.logisticos.driver.core.network.interceptor.TenantInterceptor
 import io.logisticos.driver.core.network.service.DirectionsApiService
 import io.logisticos.driver.core.network.service.DriverOpsApiService
 import io.logisticos.driver.core.network.service.IdentityApiService
+import io.logisticos.driver.core.network.service.PodApiService
+import io.logisticos.driver.core.network.service.TrackingApiService
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -70,4 +72,12 @@ object NetworkModule {
     @Provides @Singleton
     fun provideDirectionsApiService(retrofit: Retrofit): DirectionsApiService =
         retrofit.create(DirectionsApiService::class.java)
+
+    @Provides @Singleton
+    fun providePodApiService(retrofit: Retrofit): PodApiService =
+        retrofit.create(PodApiService::class.java)
+
+    @Provides @Singleton
+    fun provideTrackingApiService(retrofit: Retrofit): TrackingApiService =
+        retrofit.create(TrackingApiService::class.java)
 }
