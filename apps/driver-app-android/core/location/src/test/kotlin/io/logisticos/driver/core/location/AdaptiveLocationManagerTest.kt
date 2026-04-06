@@ -27,4 +27,10 @@ class AdaptiveLocationManagerTest {
     fun `stationary threshold is 2 minutes`() {
         assertEquals(120_000L, AdaptiveLocationManager.STATIONARY_THRESHOLD_MS)
     }
+
+    @Test
+    fun `returns 15000ms interval when speed is exactly at threshold`() {
+        val interval = AdaptiveLocationManager.intervalForSpeed(speedMps = 1.39f)
+        assertEquals(15_000L, interval)
+    }
 }

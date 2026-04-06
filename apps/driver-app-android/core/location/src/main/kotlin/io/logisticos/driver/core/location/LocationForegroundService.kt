@@ -44,6 +44,10 @@ class LocationForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         currentShiftId = intent?.getStringExtra(EXTRA_SHIFT_ID) ?: ""
+        if (currentShiftId.isEmpty()) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         startForeground(NOTIFICATION_ID, buildNotification("Shift active"))
         startLocationUpdates()
         return START_STICKY
@@ -64,10 +68,11 @@ class LocationForegroundService : Service() {
                     else
                         AdaptiveLocationManager.intervalForSpeed(speed)
 
+                    val shiftId = currentShiftId
                     scope.launch {
                         breadcrumbDao.insert(
                             LocationBreadcrumbEntity(
-                                shiftId = currentShiftId,
+                                shiftId = shiftId,
                                 lat = location.latitude,
                                 lng = location.longitude,
                                 accuracy = location.accuracy,
