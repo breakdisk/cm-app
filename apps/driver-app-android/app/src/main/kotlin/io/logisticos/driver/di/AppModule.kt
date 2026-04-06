@@ -23,4 +23,8 @@ object AppModule {
     fun provideLogLevel(): HttpLoggingInterceptor.Level =
         if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BODY
         else HttpLoggingInterceptor.Level.NONE
+
+    @Provides
+    @Named("maps_api_key")
+    fun provideMapsApiKey(): String = BuildConfig.MAPS_API_KEY
 }

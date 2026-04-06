@@ -14,7 +14,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -35,10 +34,6 @@ fun NavigationScreen(
         creationCallback = { factory: NavigationViewModel.Factory -> factory.create(taskId) }
     )
     val state by viewModel.uiState.collectAsState()
-
-    LaunchedEffect(state.isArrived) {
-        if (state.isArrived) onArrived()
-    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         MapboxMapView(
@@ -114,17 +109,19 @@ fun NavigationScreen(
                             fontSize = 13.sp
                         )
                     }
+                    val buttonText = if (state.isArrived) "Confirm Arrival" else "I've Arrived"
+                    val buttonColor = if (state.isArrived) Color(0xFF00FF88) else Color(0xFF00E5FF)
                     Button(
                         onClick = onArrived,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(48.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF00E5FF)
+                            containerColor = buttonColor
                         )
                     ) {
                         Text(
-                            "I've Arrived",
+                            buttonText,
                             color = Color(0xFF050810),
                             fontWeight = FontWeight.Bold
                         )

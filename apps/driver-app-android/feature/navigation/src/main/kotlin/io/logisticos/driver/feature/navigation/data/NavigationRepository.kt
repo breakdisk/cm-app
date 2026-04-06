@@ -4,7 +4,6 @@ import io.logisticos.driver.core.database.dao.RouteDao
 import io.logisticos.driver.core.database.entity.RouteEntity
 import io.logisticos.driver.core.network.service.DirectionsApiService
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
@@ -16,12 +15,10 @@ class NavigationRepository @Inject constructor(
     @Named("maps_api_key") private val mapsApiKey: String
 ) {
     /**
-     * Emits the cached route for [taskId] from Room on collection.
-     * RouteDao.getForTask is a suspend query (not a Flow), so we wrap it.
+     * Observes the cached route for [taskId] from Room as a reactive Flow.
+     * Room re-emits automatically whenever the routes table is updated for this taskId.
      */
-    fun observeRoute(taskId: String): Flow<RouteEntity?> = flow {
-        emit(routeDao.getForTask(taskId))
-    }
+    fun observeRoute(taskId: String): Flow<RouteEntity?> = routeDao.getByTaskId(taskId)
 
     suspend fun fetchRoute(
         taskId: String,

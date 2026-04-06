@@ -9,12 +9,15 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import io.logisticos.driver.core.database.dao.TaskDao
 import io.logisticos.driver.core.database.entity.RouteEntity
 import io.logisticos.driver.core.database.entity.TaskEntity
+import io.logisticos.driver.core.network.service.DirectionsStep
 import io.logisticos.driver.feature.navigation.data.NavigationRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.decodeFromString
 
 data class NavigationUiState(
     val task: TaskEntity? = null,
@@ -58,6 +61,20 @@ class NavigationViewModel @AssistedInject constructor(
     fun updateLocation(lat: Double, lng: Double, bearing: Float) {
         _uiState.update { it.copy(currentLat = lat, currentLng = lng, currentBearing = bearing) }
         checkArrival(lat, lng)
+        updateNextInstruction(lat, lng)
+    }
+
+    private fun updateNextInstruction(lat: Double, lng: Double) {
+        val stepsJson = _uiState.value.route?.stepsJson ?: return
+        runCatching {
+            val steps = Json.decodeFromString<List<DirectionsStep>>(stepsJson)
+            val nextStep = steps.minByOrNull { step ->
+                haversineMeters(lat, lng, step.endLocation.lat, step.endLocation.lng)
+            } ?: return
+            val distanceM = haversineMeters(lat, lng, nextStep.endLocation.lat, nextStep.endLocation.lng).toInt()
+            val instruction = nextStep.htmlInstructions.replace(Regex("<[^>]+>"), "")
+            _uiState.update { it.copy(nextInstruction = instruction, distanceToNextM = distanceM) }
+        }
     }
 
     private fun checkArrival(lat: Double, lng: Double) {
