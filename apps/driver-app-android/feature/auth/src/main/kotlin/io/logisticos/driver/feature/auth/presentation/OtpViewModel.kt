@@ -29,6 +29,14 @@ class OtpViewModel @Inject constructor(
         if (value.length <= 6) _uiState.update { it.copy(otp = value, error = null) }
     }
 
+    fun resendOtp(phone: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(error = null) }
+            repo.sendOtp(phone)
+                .onFailure { e -> _uiState.update { it.copy(error = e.message ?: "Failed to resend OTP") } }
+        }
+    }
+
     fun verifyOtp(phone: String, otp: String) {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }

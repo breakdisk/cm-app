@@ -29,8 +29,10 @@ fun OtpScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     var resendSeconds by remember { mutableIntStateOf(60) }
+    var resendTrigger by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(resendTrigger) {
+        resendSeconds = 60
         while (resendSeconds > 0) {
             delay(1000)
             resendSeconds--
@@ -99,7 +101,7 @@ fun OtpScreen(
             }
 
             TextButton(
-                onClick = { /* TODO: re-send OTP via viewModel */ },
+                onClick = { resendTrigger++; viewModel.resendOtp(phone) },
                 enabled = resendSeconds == 0
             ) {
                 Text(
