@@ -1,14 +1,15 @@
 package io.logisticos.driver.core.network.service
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import retrofit2.http.*
 
 @Serializable
 data class ShiftResponse(
     val id: String,
-    val driverId: String,
-    val tenantId: String,
-    val totalStops: Int,
+    @SerialName("driver_id") val driverId: String,
+    @SerialName("tenant_id") val tenantId: String,
+    @SerialName("total_stops") val totalStops: Int,
     val tasks: List<TaskResponse>
 )
 
@@ -16,17 +17,17 @@ data class ShiftResponse(
 data class TaskResponse(
     val id: String,
     val awb: String,
-    val recipientName: String,
-    val recipientPhone: String,
+    @SerialName("recipient_name") val recipientName: String,
+    @SerialName("recipient_phone") val recipientPhone: String,
     val address: String,
     val lat: Double,
     val lng: Double,
-    val stopOrder: Int,
-    val requiresPhoto: Boolean,
-    val requiresSignature: Boolean,
-    val requiresOtp: Boolean,
-    val isCod: Boolean,
-    val codAmount: Double,
+    @SerialName("stop_order") val stopOrder: Int,
+    @SerialName("requires_photo") val requiresPhoto: Boolean,
+    @SerialName("requires_signature") val requiresSignature: Boolean,
+    @SerialName("requires_otp") val requiresOtp: Boolean,
+    @SerialName("is_cod") val isCod: Boolean,
+    @SerialName("cod_amount") val codAmount: Double,
     val notes: String? = null
 )
 

@@ -30,4 +30,7 @@ interface TaskDao {
 
     @Query("DELETE FROM tasks WHERE shiftId = :shiftId")
     suspend fun deleteForShift(shiftId: String)
+
+    @Query("SELECT * FROM tasks WHERE shiftId = :shiftId")
+    suspend fun getTasksForShiftOnce(shiftId: String): List<TaskEntity>
 }

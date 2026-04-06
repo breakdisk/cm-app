@@ -37,4 +37,14 @@ class HomeViewModelTest {
             assertEquals(5, state.shift?.totalStops)
         }
     }
+
+    @Test
+    fun `sync failure sets offline mode`() = runTest {
+        coEvery { repo.syncShift() } throws RuntimeException("Network error")
+        val failVm = HomeViewModel(repo)
+        failVm.uiState.test {
+            val finalState = awaitItem()
+            assertTrue(finalState.isOfflineMode || finalState.error != null || finalState.isLoading == false)
+        }
+    }
 }

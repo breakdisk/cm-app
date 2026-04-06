@@ -18,22 +18,31 @@ class ShiftRepository @Inject constructor(
 
     suspend fun syncShift() {
         val response = api.getActiveShift()
+
+        // Preserve existing shift timestamps and counters
+        val existingShift = shiftDao.getShiftById(response.id)
         shiftDao.insert(
             ShiftEntity(
                 id = response.id,
                 driverId = response.driverId,
                 tenantId = response.tenantId,
-                startedAt = null,
-                endedAt = null,
+                startedAt = existingShift?.startedAt,
+                endedAt = existingShift?.endedAt,
                 isActive = true,
                 totalStops = response.totalStops,
-                completedStops = 0,
-                failedStops = 0,
-                totalCodCollected = 0.0,
+                completedStops = existingShift?.completedStops ?: 0,
+                failedStops = existingShift?.failedStops ?: 0,
+                totalCodCollected = existingShift?.totalCodCollected ?: 0.0,
                 syncedAt = System.currentTimeMillis()
             )
         )
+
+        // Preserve existing task statuses so locally-modified states are not overwritten
+        val existingTasks = taskDao.getTasksForShiftOnce(response.id)
+        val existingStatusMap = existingTasks.associateBy { it.id }
+
         val tasks = response.tasks.map { t ->
+            val existingTask = existingStatusMap[t.id]
             TaskEntity(
                 id = t.id,
                 shiftId = response.id,
@@ -43,8 +52,8 @@ class ShiftRepository @Inject constructor(
                 address = t.address,
                 lat = t.lat,
                 lng = t.lng,
-                status = TaskStatus.ASSIGNED,
-                stopOrder = t.stopOrder,
+                status = existingTask?.status ?: TaskStatus.ASSIGNED,
+                stopOrder = existingTask?.stopOrder ?: t.stopOrder,
                 requiresPhoto = t.requiresPhoto,
                 requiresSignature = t.requiresSignature,
                 requiresOtp = t.requiresOtp,

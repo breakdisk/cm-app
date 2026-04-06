@@ -26,4 +26,7 @@ interface ShiftDao {
 
     @Query("UPDATE shifts SET totalCodCollected = totalCodCollected + :amount WHERE id = :shiftId")
     suspend fun addCodCollected(shiftId: String, amount: Double)
+
+    @Query("SELECT * FROM shifts WHERE id = :shiftId LIMIT 1")
+    suspend fun getShiftById(shiftId: String): ShiftEntity?
 }

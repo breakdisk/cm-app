@@ -22,7 +22,10 @@ class ShiftRepositoryTest {
             id = "shift-1", driverId = "d-1", tenantId = "t-1",
             totalStops = 5, tasks = emptyList()
         )
+        coEvery { shiftDao.getShiftById("shift-1") } returns null
+        coEvery { taskDao.getTasksForShiftOnce("shift-1") } returns emptyList()
         repo.syncShift()
         coVerify { shiftDao.insert(any()) }
+        coVerify { taskDao.insertAll(any()) }
     }
 }

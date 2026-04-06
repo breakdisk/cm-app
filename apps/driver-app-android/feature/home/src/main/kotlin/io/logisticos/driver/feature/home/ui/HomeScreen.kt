@@ -15,12 +15,12 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import io.logisticos.driver.feature.home.presentation.HomeViewModel
 
-val Canvas = Color(0xFF050810)
-val Cyan = Color(0xFF00E5FF)
-val Amber = Color(0xFFFFAB00)
-val Green = Color(0xFF00FF88)
-val Glass = Color(0x0AFFFFFF)
-val Border = Color(0x14FFFFFF)
+private val Canvas = Color(0xFF050810)
+private val Cyan = Color(0xFF00E5FF)
+private val Amber = Color(0xFFFFAB00)
+private val Green = Color(0xFF00FF88)
+private val Glass = Color(0x0AFFFFFF)
+private val Border = Color(0x14FFFFFF)
 
 @Composable
 fun HomeScreen(
