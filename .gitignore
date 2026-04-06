@@ -54,3 +54,6 @@ docker-compose.override.yml
 # Generated
 libs/sdk/generated/
 libs/proto/src/generated/
+
+# Android
+apps/driver-app-android/local.properties
