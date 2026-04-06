@@ -3,6 +3,7 @@ package io.logisticos.driver.feature.pod.presentation
 import app.cash.turbine.test
 import io.logisticos.driver.feature.delivery.data.DeliveryRepository
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -60,5 +61,6 @@ class PodViewModelTest {
         vm.onPhotoCaptured("/path/photo.jpg")
         vm.onSignatureSaved("/path/sig.png")
         vm.submit()
+        coVerify { repo.savePod("t1", any(), any(), any()) }
     }
 }

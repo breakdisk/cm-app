@@ -20,6 +20,7 @@ data class PodUiState(
     val photoPath: String? = null,
     val signaturePath: String? = null,
     val otpToken: String? = null,
+    val otpSent: Boolean = false,
     val isSubmitting: Boolean = false,
     val isSubmitted: Boolean = false,
     val error: String? = null

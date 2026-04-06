@@ -40,7 +40,7 @@ class DeliveryRepository @Inject constructor(
         val shift = shiftDao.getActiveShiftOnce() ?: return
         when (newStatus) {
             TaskStatus.COMPLETED -> shiftDao.incrementCompleted(shift.id)
-            TaskStatus.FAILED, TaskStatus.RETURNED -> shiftDao.incrementFailed(shift.id)
+            TaskStatus.FAILED -> shiftDao.incrementFailed(shift.id)
             else -> Unit
         }
     }

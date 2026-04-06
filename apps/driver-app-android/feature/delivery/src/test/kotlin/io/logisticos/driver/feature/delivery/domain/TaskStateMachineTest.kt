@@ -45,4 +45,24 @@ class TaskStateMachineTest {
     fun `ASSIGNED cannot skip to COMPLETED`() {
         assertFalse(TaskStateMachine.canTransition(TaskStatus.ASSIGNED, TaskStatus.COMPLETED))
     }
+
+    @Test
+    fun `IN_PROGRESS can transition to FAILED`() {
+        assertTrue(TaskStateMachine.canTransition(TaskStatus.IN_PROGRESS, TaskStatus.FAILED))
+    }
+
+    @Test
+    fun `ATTEMPTED can transition to IN_PROGRESS`() {
+        assertTrue(TaskStateMachine.canTransition(TaskStatus.ATTEMPTED, TaskStatus.IN_PROGRESS))
+    }
+
+    @Test
+    fun `ATTEMPTED can transition to RETURNED`() {
+        assertTrue(TaskStateMachine.canTransition(TaskStatus.ATTEMPTED, TaskStatus.RETURNED))
+    }
+
+    @Test
+    fun `FAILED can transition to RETURNED`() {
+        assertTrue(TaskStateMachine.canTransition(TaskStatus.FAILED, TaskStatus.RETURNED))
+    }
 }
