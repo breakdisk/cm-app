@@ -8,6 +8,7 @@ import dagger.hilt.components.SingletonComponent
 import io.logisticos.driver.core.network.authenticator.TokenAuthenticator
 import io.logisticos.driver.core.network.interceptor.AuthInterceptor
 import io.logisticos.driver.core.network.interceptor.TenantInterceptor
+import io.logisticos.driver.core.network.service.DriverOpsApiService
 import io.logisticos.driver.core.network.service.IdentityApiService
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
@@ -60,4 +61,8 @@ object NetworkModule {
     @Provides @Singleton
     fun provideIdentityApiService(retrofit: Retrofit): IdentityApiService =
         retrofit.create(IdentityApiService::class.java)
+
+    @Provides @Singleton
+    fun provideDriverOpsApiService(retrofit: Retrofit): DriverOpsApiService =
+        retrofit.create(DriverOpsApiService::class.java)
 }
