@@ -16,6 +16,7 @@ private val ProfileCanvas = Color(0xFF050810)
 private val ProfileRed = Color(0xFFFF3B5C)
 private val ProfileGlass = Color(0x0AFFFFFF)
 private val ProfileBorder = Color(0x14FFFFFF)
+private val ProfileAmber = Color(0xFFFFAB00)
 
 @Composable
 fun ProfileScreen(
@@ -55,13 +56,13 @@ fun ProfileScreen(
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
-                    containerColor = Color(0xFFFFAB00).copy(alpha = 0.1f)
+                    containerColor = ProfileAmber.copy(alpha = 0.1f)
                 ),
-                border = BorderStroke(1.dp, Color(0xFFFFAB00).copy(alpha = 0.3f))
+                border = BorderStroke(1.dp, ProfileAmber.copy(alpha = 0.3f))
             ) {
                 Text(
                     "Offline Mode Active — profile changes disabled",
-                    color = Color(0xFFFFAB00),
+                    color = ProfileAmber,
                     fontSize = 13.sp,
                     modifier = Modifier.padding(16.dp)
                 )

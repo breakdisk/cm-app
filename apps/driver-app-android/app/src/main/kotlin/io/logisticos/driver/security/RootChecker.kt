@@ -1,15 +1,16 @@
 package io.logisticos.driver.security
 
 import android.content.Context
+import androidx.annotation.VisibleForTesting
 import com.scottyab.rootbeer.RootBeer
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 
 class RootChecker @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context?
 ) {
-    // Secondary constructor for testing — bypasses RootBeer entirely
-    internal constructor(isRooted: Boolean) : this(context = android.app.Application()) {
+    @VisibleForTesting
+    internal constructor(isRooted: Boolean) : this(null) {
         this._isRootedOverride = isRooted
     }
 
@@ -17,8 +18,9 @@ class RootChecker @Inject constructor(
 
     fun check(): Boolean {
         _isRootedOverride?.let { return it }
+        val ctx = context ?: return false
         return try {
-            RootBeer(context).isRooted
+            RootBeer(ctx).isRooted
         } catch (e: Exception) {
             false
         }
