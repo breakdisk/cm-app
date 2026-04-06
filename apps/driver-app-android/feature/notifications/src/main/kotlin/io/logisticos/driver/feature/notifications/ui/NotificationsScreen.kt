@@ -27,7 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.logisticos.driver.feature.notifications.data.DriverNotification
-import io.logisticos.driver.feature.notifications.data.NotificationRepository
+import io.logisticos.driver.feature.notifications.presentation.NotificationsViewModel
 
 private val NotifCanvas = Color(0xFF050810)
 private val NotifCyan = Color(0xFF00E5FF)
@@ -36,11 +36,11 @@ private val NotifBorder = Color(0x14FFFFFF)
 
 @Composable
 fun NotificationsScreen(
-    notificationRepository: NotificationRepository
+    viewModel: NotificationsViewModel
 ) {
-    val notifications by notificationRepository.notifications.collectAsState()
+    val notifications by viewModel.notifications.collectAsState()
 
-    LaunchedEffect(Unit) { notificationRepository.markAllRead() }
+    LaunchedEffect(Unit) { viewModel.markAllRead() }
 
     Column(modifier = Modifier.fillMaxSize().background(NotifCanvas)) {
         Text(

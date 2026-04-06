@@ -51,14 +51,14 @@ fun ShiftScaffold(rootNavController: NavHostController) {
     // Observe unread count from the NotificationsViewModel at scaffold level so the badge
     // updates in real-time without recomposing the full nav host.
     val notifVm: NotificationsViewModel = hiltViewModel()
-    val unreadCount by notifVm.repository.notifications.collectAsState()
+    val unreadCount by notifVm.unreadCount.collectAsState()
 
     Scaffold(
         containerColor = NavCanvas,
         bottomBar = {
             BottomNavBar(
                 navController = shiftNavController,
-                unreadCount = unreadCount.count { !it.isRead },
+                unreadCount = unreadCount,
             )
         },
     ) { innerPadding ->
@@ -88,6 +88,7 @@ fun ShiftScaffold(rootNavController: NavHostController) {
             }
 
             composable(SCAN_ROUTE) {
+                // Scan tab: launched without task context; AWBs passed as nav args when launched from a specific task stop
                 ScannerScreen(
                     expectedAwbs = emptyList(),
                     onAllScanned = {
@@ -98,7 +99,7 @@ fun ShiftScaffold(rootNavController: NavHostController) {
 
             composable(NOTIFICATIONS_ROUTE) {
                 val vm: NotificationsViewModel = hiltViewModel()
-                NotificationsScreen(notificationRepository = vm.repository)
+                NotificationsScreen(viewModel = vm)
             }
 
             composable(PROFILE_ROUTE) {

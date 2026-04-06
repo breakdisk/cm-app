@@ -1,8 +1,14 @@
 package io.logisticos.driver.feature.notifications.presentation
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.logisticos.driver.feature.notifications.data.DriverNotification
 import io.logisticos.driver.feature.notifications.data.NotificationRepository
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import javax.inject.Inject
 
 /**
@@ -12,5 +18,13 @@ import javax.inject.Inject
  */
 @HiltViewModel
 class NotificationsViewModel @Inject constructor(
-    val repository: NotificationRepository
-) : ViewModel()
+    private val repository: NotificationRepository
+) : ViewModel() {
+    val notifications: StateFlow<List<DriverNotification>> = repository.notifications
+
+    val unreadCount: StateFlow<Int> = repository.notifications
+        .map { list -> list.count { !it.isRead } }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
+
+    fun markAllRead() = repository.markAllRead()
+}

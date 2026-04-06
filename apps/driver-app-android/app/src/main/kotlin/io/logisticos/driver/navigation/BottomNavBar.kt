@@ -32,7 +32,7 @@ sealed class BottomTab(val route: String, val label: String, val icon: ImageVect
     object Profile : BottomTab("profile", "Profile", Icons.Default.Person)
 }
 
-val bottomTabs = listOf(
+private val bottomTabs = listOf(
     BottomTab.Home,
     BottomTab.Route,
     BottomTab.Scan,
