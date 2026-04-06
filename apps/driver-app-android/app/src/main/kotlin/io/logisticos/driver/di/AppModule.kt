@@ -5,6 +5,9 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import io.logisticos.driver.BuildConfig
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import okhttp3.logging.HttpLoggingInterceptor
 import javax.inject.Named
 import javax.inject.Singleton
@@ -27,4 +30,9 @@ object AppModule {
     @Provides
     @Named("maps_api_key")
     fun provideMapsApiKey(): String = BuildConfig.MAPS_API_KEY
+
+    @Provides
+    @Singleton
+    @Named("application_scope")
+    fun provideApplicationScope(): CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 }

@@ -1,13 +1,13 @@
 package io.logisticos.driver.feature.notifications.data
 
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import javax.inject.Named
 import javax.inject.Singleton
 
 data class DriverNotification(
@@ -20,11 +20,11 @@ data class DriverNotification(
 )
 
 @Singleton
-class NotificationRepository @Inject constructor() {
+class NotificationRepository @Inject constructor(
+    @Named("application_scope") private val scope: CoroutineScope
+) {
     private val _notifications = MutableStateFlow<List<DriverNotification>>(emptyList())
     val notifications: StateFlow<List<DriverNotification>> = _notifications.asStateFlow()
-
-    private val scope = CoroutineScope(Dispatchers.IO)
 
     fun saveNotification(type: String, title: String, body: String) {
         val notification = DriverNotification(

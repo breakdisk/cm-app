@@ -10,10 +10,15 @@ import com.google.firebase.messaging.RemoteMessage
 import dagger.hilt.android.AndroidEntryPoint
 import io.logisticos.driver.MainActivity
 import io.logisticos.driver.feature.notifications.data.NotificationRepository
+import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 
 @AndroidEntryPoint
 class DriverMessagingService : FirebaseMessagingService() {
+
+    companion object {
+        private val notificationIdCounter = AtomicInteger(1)
+    }
 
     @Inject lateinit var notificationRepo: NotificationRepository
 
@@ -58,6 +63,6 @@ class DriverMessagingService : FirebaseMessagingService() {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
 
-        notificationManager.notify(System.currentTimeMillis().toInt(), notification)
+        notificationManager.notify(notificationIdCounter.getAndIncrement(), notification)
     }
 }
