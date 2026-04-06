@@ -30,7 +30,6 @@ private val Border = Color(0x14FFFFFF)
 fun RouteScreen(
     shiftId: String,
     onNavigateToStop: (taskId: String) -> Unit,
-    viewModelFactory: RouteViewModel.Factory,
 ) {
     val viewModel: RouteViewModel = hiltViewModel(
         creationCallback = { factory: RouteViewModel.Factory -> factory.create(shiftId) }

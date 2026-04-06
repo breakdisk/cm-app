@@ -32,6 +32,7 @@ class RouteViewModel @AssistedInject constructor(
     private val _uiState = MutableStateFlow(RouteUiState())
     val uiState: StateFlow<RouteUiState> = _uiState.asStateFlow()
 
+    private var isReordering = false
     private var reorderedActive = mutableListOf<TaskEntity>()
 
     init {
@@ -45,8 +46,16 @@ class RouteViewModel @AssistedInject constructor(
                     )
                 }
                 val completed = tasks.filter { it.status == TaskStatus.COMPLETED }
-                reorderedActive = active.toMutableList()
-                _uiState.update { it.copy(activeTasks = active, completedTasks = completed) }
+                if (!isReordering) {
+                    reorderedActive = active.toMutableList()
+                }
+                _uiState.update { state ->
+                    if (!isReordering) {
+                        state.copy(activeTasks = active, completedTasks = completed)
+                    } else {
+                        state.copy(completedTasks = completed)
+                    }
+                }
             }
         }
     }
@@ -58,10 +67,12 @@ class RouteViewModel @AssistedInject constructor(
         list.add(toIndex, item)
         reorderedActive = list
         _uiState.update { it.copy(activeTasks = list) }
+        isReordering = true
         viewModelScope.launch {
             list.forEachIndexed { index, task ->
                 repo.updateStopOrder(task.id, index + 1)
             }
+            isReordering = false
         }
     }
 }
