@@ -1,8 +1,8 @@
 package io.logisticos.driver.feature.auth.data
 
 import io.logisticos.driver.core.network.auth.SessionManager
-import io.logisticos.driver.core.network.auth.TokenStorage
 import io.logisticos.driver.core.network.service.IdentityApiService
+import io.logisticos.driver.core.network.service.OtpSendResponse
 import io.logisticos.driver.core.network.service.OtpVerifyResponse
 import io.mockk.coEvery
 import io.mockk.mockk
@@ -13,8 +13,7 @@ import org.junit.jupiter.api.Assertions.*
 
 class AuthRepositoryTest {
     private val apiService: IdentityApiService = mockk()
-    private val tokenStorage: TokenStorage = mockk(relaxed = true)
-    private val sessionManager = SessionManager(tokenStorage)
+    private val sessionManager: SessionManager = mockk(relaxed = true)
     private val repo = AuthRepository(apiService, sessionManager)
 
     @Test
@@ -25,9 +24,8 @@ class AuthRepositoryTest {
         )
         val result = repo.verifyOtp(phone = "+639123456789", otp = "123456")
         assertTrue(result.isSuccess)
-        verify { tokenStorage.saveJwt("new.jwt") }
-        verify { tokenStorage.saveRefreshToken("new.refresh") }
-        verify { tokenStorage.saveTenantId("t-1") }
+        verify { sessionManager.saveTokens("new.jwt", "new.refresh") }
+        verify { sessionManager.saveTenantId("t-1") }
     }
 
     @Test
@@ -39,7 +37,7 @@ class AuthRepositoryTest {
 
     @Test
     fun `sendOtp returns success on API success`() = runTest {
-        coEvery { apiService.sendOtp(any()) } returns io.logisticos.driver.core.network.service.OtpSendResponse("OTP sent")
+        coEvery { apiService.sendOtp(any()) } returns OtpSendResponse("OTP sent")
         val result = repo.sendOtp("+639123456789")
         assertTrue(result.isSuccess)
     }
