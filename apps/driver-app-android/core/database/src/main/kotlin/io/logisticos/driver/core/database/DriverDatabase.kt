@@ -2,9 +2,11 @@ package io.logisticos.driver.core.database
 
 import androidx.room.Database
 import androidx.room.RoomDatabase
+import androidx.room.TypeConverters
 import io.logisticos.driver.core.database.dao.*
 import io.logisticos.driver.core.database.entity.*
 
+@TypeConverters(Converters::class)
 @Database(
     entities = [
         ShiftEntity::class,

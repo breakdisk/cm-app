@@ -10,7 +10,7 @@ interface SyncQueueDao {
     suspend fun enqueue(item: SyncQueueEntity): Long
 
     @Query("SELECT * FROM sync_queue WHERE nextRetryAt <= :now ORDER BY createdAt ASC LIMIT 50")
-    suspend fun getPendingItems(now: Long = System.currentTimeMillis()): List<SyncQueueEntity>
+    suspend fun getPendingItems(now: Long): List<SyncQueueEntity>
 
     @Query("DELETE FROM sync_queue WHERE id = :id")
     suspend fun remove(id: Long)

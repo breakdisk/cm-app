@@ -8,6 +8,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import io.logisticos.driver.core.database.DriverDatabase
+import io.logisticos.driver.core.database.dao.*
 import javax.inject.Singleton
 
 @Module
@@ -20,11 +21,11 @@ object DatabaseModule {
             .fallbackToDestructiveMigration()
             .build()
 
-    @Provides fun provideShiftDao(db: DriverDatabase) = db.shiftDao()
-    @Provides fun provideTaskDao(db: DriverDatabase) = db.taskDao()
-    @Provides fun provideRouteDao(db: DriverDatabase) = db.routeDao()
-    @Provides fun providePodDao(db: DriverDatabase) = db.podDao()
-    @Provides fun provideLocationBreadcrumbDao(db: DriverDatabase) = db.locationBreadcrumbDao()
-    @Provides fun provideScanEventDao(db: DriverDatabase) = db.scanEventDao()
-    @Provides fun provideSyncQueueDao(db: DriverDatabase) = db.syncQueueDao()
+    @Provides fun provideShiftDao(db: DriverDatabase): ShiftDao = db.shiftDao()
+    @Provides fun provideTaskDao(db: DriverDatabase): TaskDao = db.taskDao()
+    @Provides fun provideRouteDao(db: DriverDatabase): RouteDao = db.routeDao()
+    @Provides fun providePodDao(db: DriverDatabase): PodDao = db.podDao()
+    @Provides fun provideLocationBreadcrumbDao(db: DriverDatabase): LocationBreadcrumbDao = db.locationBreadcrumbDao()
+    @Provides fun provideScanEventDao(db: DriverDatabase): ScanEventDao = db.scanEventDao()
+    @Provides fun provideSyncQueueDao(db: DriverDatabase): SyncQueueDao = db.syncQueueDao()
 }
