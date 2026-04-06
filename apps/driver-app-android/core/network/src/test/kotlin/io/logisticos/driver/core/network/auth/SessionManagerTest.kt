@@ -31,7 +31,7 @@ class SessionManagerTest {
     }
 
     @Test
-    fun `clearSession removes both tokens`() {
+    fun `clearSession invokes clearAll on storage`() {
         sessionManager.clearSession()
         verify { tokenStorage.clearAll() }
     }
