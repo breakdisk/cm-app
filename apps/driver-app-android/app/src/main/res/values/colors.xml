@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="cyan">#00E5FF</color>
+    <color name="purple">#A855F7</color>
+    <color name="green">#00FF88</color>
+    <color name="amber">#FFAB00</color>
+    <color name="canvas">#050810</color>
+</resources>
