@@ -19,6 +19,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":feature:delivery"))
     implementation(project(":core:network"))
     implementation(project(":core:database"))
     implementation(project(":core:common"))
