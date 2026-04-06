@@ -1,5 +1,55 @@
-import { apiRequest } from "./client";
+import { getTrackingClient, ApiError } from './client';
 
+export interface TrackingEventData {
+  timestamp: string;
+  status: string;
+  description: string;
+  location?: string;
+  coordinates?: { lat: number; lng: number };
+}
+
+export interface TrackingResponse {
+  awb: string;
+  currentStatus: string;
+  eta?: string;
+  driverName?: string;
+  driverPhone?: string;
+  currentLocation?: { lat: number; lng: number };
+  events: TrackingEventData[];
+  lastUpdate: string;
+}
+
+export async function getTracking(awb: string): Promise<TrackingResponse> {
+  try {
+    const trackingClient = getTrackingClient();
+    const response = await trackingClient.get<TrackingResponse>(`/v1/tracking/${awb}`);
+    return response.data;
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw new Error(error.message);
+    }
+    throw error;
+  }
+}
+
+export async function subscribeToTrackingUpdates(
+  awb: string,
+  callback: (data: TrackingResponse) => void
+): Promise<() => void> {
+  // Polling-based subscription implementation
+  const interval = setInterval(async () => {
+    try {
+      const data = await getTracking(awb);
+      callback(data);
+    } catch (error) {
+      console.error('Error fetching tracking update:', error);
+    }
+  }, 30000); // Poll every 30 seconds
+
+  return () => clearInterval(interval);
+}
+
+// Legacy API for backward compatibility
 export interface TrackingEvent {
   status: string;
   description: string;
@@ -29,31 +79,31 @@ export interface LiveTrackingData extends PublicTrackingData {
 
 export const trackingApi = {
   /** Track a shipment by tracking number (no auth — public) */
-  getByTrackingNumber: (trackingNumber: string) =>
-    apiRequest<{ data: PublicTrackingData }>(
+  getByTrackingNumber: (trackingNumber: string) => {
+    const trackingClient = getTrackingClient();
+    return trackingClient.get<{ data: PublicTrackingData }>(
       `/v1/tracking/public/${trackingNumber}`
-    ),
+    );
+  },
 
   /** Get live tracking with driver location (requires auth) */
-  getLive: (shipmentId: string, token: string) =>
-    apiRequest<{ data: LiveTrackingData }>(`/v1/tracking/${shipmentId}`, {
-      token,
-    }),
+  getLive: (shipmentId: string, token: string) => {
+    const trackingClient = getTrackingClient();
+    return trackingClient.get<{ data: LiveTrackingData }>(`/v1/tracking/${shipmentId}`);
+  },
 
   /** Request delivery reschedule */
   requestReschedule: (
     shipmentId: string,
     preferredDate: string,
     token: string
-  ) =>
-    apiRequest<{ rescheduled: boolean; new_eta?: string }>(
+  ) => {
+    const trackingClient = getTrackingClient();
+    return trackingClient.post<{ rescheduled: boolean; new_eta?: string }>(
       `/v1/tracking/${shipmentId}/reschedule`,
-      {
-        method: "POST",
-        body: { preferred_date: preferredDate },
-        token,
-      }
-    ),
+      { preferred_date: preferredDate }
+    );
+  },
 
   /** Submit delivery feedback after successful delivery */
   submitFeedback: (
@@ -61,10 +111,11 @@ export const trackingApi = {
     rating: number,
     comment: string | undefined,
     token: string
-  ) =>
-    apiRequest<void>(`/v1/tracking/${shipmentId}/feedback`, {
-      method: "POST",
-      body: { rating, comment },
-      token,
-    }),
+  ) => {
+    const trackingClient = getTrackingClient();
+    return trackingClient.post<void>(`/v1/tracking/${shipmentId}/feedback`, {
+      rating,
+      comment,
+    });
+  },
 };

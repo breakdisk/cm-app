@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">LogisticOS Driver</string>
+    <string name="notification_channel_location">Location Tracking</string>
+    <string name="notification_channel_delivery">Delivery Updates</string>
+    <string name="location_notification_title">Location Active</string>
+    <string name="location_notification_text">Tracking your location for deliveries</string>
+</resources>

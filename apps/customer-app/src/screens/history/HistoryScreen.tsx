@@ -13,6 +13,8 @@ import { useSelector } from "react-redux";
 import type { RootState } from "../../store";
 import type { ShipmentRecord, ShipmentStatus } from "../../store";
 import { AwbQRCode } from "../../components/AwbQRCode";
+import SkeletonLoader from "../../components/SkeletonLoader";
+import { useShipments } from "../../hooks/useShipments";
 
 const CANVAS = "#050810";
 const CYAN   = "#00E5FF";
@@ -142,8 +144,13 @@ function ShipmentCard({ item, onShowQR }: { item: ShipmentRecord; onShowQR: (awb
 }
 
 export function HistoryScreen() {
+  const { list: hookShipments, loading } = useShipments();
   const reduxShipments = useSelector((s: RootState) => s.shipments.list);
-  const shipments      = reduxShipments.length > 0 ? reduxShipments : DEMO_SHIPMENTS;
+
+  // Use hook shipments if available, otherwise fall back to Redux, otherwise use demo data
+  const shipments = hookShipments.length > 0
+    ? hookShipments as ShipmentRecord[]
+    : (reduxShipments.length > 0 ? reduxShipments : DEMO_SHIPMENTS);
 
   const [filter,  setFilter]  = useState<FilterTab>("all");
   const [qrAwb,   setQrAwb]   = useState<string | null>(null);
@@ -158,6 +165,32 @@ export function HistoryScreen() {
   const doneCount   = shipments.filter(s => DONE_STATUSES.includes(s.status)).length;
 
   const qrShipment = qrAwb ? shipments.find(s => s.awb === qrAwb) : null;
+
+  // Show loading state with skeleton loaders if hook is loading
+  if (loading && hookShipments.length === 0) {
+    return (
+      <View style={{ flex: 1, backgroundColor: CANVAS }}>
+        <ScrollView style={s.container} contentContainerStyle={{ paddingBottom: 40 }}>
+          {/* Hero */}
+          <LinearGradient colors={["rgba(168,85,247,0.10)", "transparent"]} style={s.hero}>
+            <Animated.View entering={FadeInDown.springify()}>
+              <Text style={s.heroTitle}>My Shipments</Text>
+              <Text style={s.heroSub}>Loading shipments...</Text>
+            </Animated.View>
+          </LinearGradient>
+
+          {/* Skeleton loaders */}
+          <View style={{ paddingHorizontal: 16 }}>
+            {[1, 2, 3, 4].map(i => (
+              <View key={i} style={{ marginBottom: 12 }}>
+                <SkeletonLoader width="100%" height={120} borderRadius={16} />
+              </View>
+            ))}
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
 
   return (
     <View style={{ flex: 1, backgroundColor: CANVAS }}>

@@ -2,7 +2,7 @@
  * Customer App — Tracking Screen
  * Search by AWB, live status timeline, driver ETA card.
  */
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   View, Text, StyleSheet, ScrollView, TextInput,
   Pressable, ActivityIndicator,
@@ -13,6 +13,11 @@ import { Ionicons } from "@expo/vector-icons";
 import { useDispatch, useSelector } from "react-redux";
 import { trackingActions } from "../../store";
 import type { RootState } from "../../store";
+import { useTracking } from "../../hooks/useTracking";
+import { useRoute } from "@react-navigation/native";
+import { useNetInfo } from "@react-native-community/netinfo";
+import { getDatabase } from "../../db/sqlite";
+import OfflineIndicator from "../../components/OfflineIndicator";
 
 const CANVAS = "#050810";
 const CYAN   = "#00E5FF";
@@ -98,40 +103,92 @@ const STATUS_ORDER: ShipmentStatus[] = [
 
 export function TrackingScreen() {
   const dispatch    = useDispatch();
+  const route = useRoute();
+  const { isConnected } = useNetInfo();
   const recentSearches = useSelector((s: RootState) => s.tracking.history);
 
   const [query,   setQuery]   = useState("");
   const [result,  setResult]  = useState<TrackingResult | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState("");
+  const [localLoading, setLocalLoading] = useState(false);
+  const [localError,   setLocalError]   = useState("");
+  const [currentAwb, setCurrentAwb] = useState<string>("");
+  const [offlineData, setOfflineData] = useState<any>(null);
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+
+  // Use the tracking hook for the current AWB
+  const { data: trackingData, loading: hookLoading, error: hookError, refetch } = useTracking(
+    currentAwb,
+    { autoload: !!currentAwb && !!isConnected }
+  );
+
+  // Load offline tracking data when offline
+  useEffect(() => {
+    const loadOfflineTracking = async () => {
+      if (!isConnected && currentAwb) {
+        try {
+          const db = await getDatabase();
+          const tracking = await db.getFirstAsync(
+            `SELECT * FROM tracking_history WHERE awb = ?`,
+            [currentAwb]
+          );
+          if (tracking) {
+            setOfflineData(JSON.parse(tracking.events));
+            setLastUpdated(new Date(tracking.lastUpdated).getTime());
+          }
+        } catch (err) {
+          console.error('Failed to load offline tracking:', err);
+        }
+      } else {
+        setOfflineData(null);
+        setLastUpdated(null);
+      }
+    };
+
+    loadOfflineTracking();
+  }, [isConnected, currentAwb]);
 
   function handleSearch() {
     const awb = query.trim().toUpperCase();
     if (!awb) return;
-    setLoading(true);
-    setError("");
+    setLocalLoading(true);
+    setLocalError("");
     setResult(null);
-    // Simulate network delay
+    // Simulate network delay for search
     setTimeout(() => {
       const found = MOCK_RESULTS[awb];
       if (found) {
         setResult(found);
+        setCurrentAwb(awb); // Trigger the hook to load real tracking data
         dispatch(trackingActions.addToHistory({
           tracking_number: awb,
           status: found.status,
           searched_at: new Date().toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" }),
         }));
       } else {
-        setError("No shipment found for that tracking number. Check and try again.");
+        setLocalError("No shipment found for that tracking number. Check and try again.");
       }
-      setLoading(false);
+      setLocalLoading(false);
     }, 800);
   }
 
   const cfg = result ? STATUS_CONFIG[result.status] : null;
 
+  // Use online data if connected, else use offline data
+  const displayResult = isConnected ? result : (offlineData ? result : null);
+  const displayLoading = isConnected ? (localLoading || hookLoading) : false;
+  const displayError = isConnected ? (localError || hookError) : null;
+
+  const handleRefresh = async () => {
+    if (isConnected && currentAwb) {
+      await refetch();
+    }
+  };
+
   return (
     <ScrollView style={s.container} contentContainerStyle={{ paddingBottom: 40 }} keyboardShouldPersistTaps="handled">
+      {/* Offline indicator */}
+      {!isConnected && <OfflineIndicator isOffline={true} lastUpdated={lastUpdated || undefined} />}
+
       {/* Hero */}
       <LinearGradient colors={["rgba(0,229,255,0.10)", "transparent"]} style={s.hero}>
         <Text style={s.heroTitle}>Track Shipment</Text>
@@ -153,18 +210,18 @@ export function TrackingScreen() {
             onSubmitEditing={handleSearch}
           />
           {query.length > 0 && (
-            <Pressable onPress={() => { setQuery(""); setResult(null); setError(""); }}>
+            <Pressable onPress={() => { setQuery(""); setResult(null); setLocalError(""); setCurrentAwb(""); }}>
               <Ionicons name="close-circle" size={16} color="rgba(255,255,255,0.3)" />
             </Pressable>
           )}
         </View>
         <Pressable
           onPress={handleSearch}
-          disabled={!query.trim() || loading}
+          disabled={!query.trim() || localLoading}
           style={({ pressed }) => [s.searchBtn, { opacity: pressed || !query.trim() ? 0.6 : 1 }]}
         >
           <LinearGradient colors={[CYAN, PURPLE]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.searchBtnGrad}>
-            {loading ? (
+            {localLoading ? (
               <ActivityIndicator size="small" color={CANVAS} />
             ) : (
               <Text style={s.searchBtnText}>Track</Text>
@@ -174,21 +231,50 @@ export function TrackingScreen() {
       </Animated.View>
 
       {/* Error */}
-      {error !== "" && (
+      {displayError && (
         <Animated.View entering={FadeInDown.springify()} style={s.errorCard}>
           <Ionicons name="alert-circle-outline" size={16} color={RED} />
-          <Text style={s.errorText}>{error}</Text>
+          <Text style={s.errorText}>{displayError}</Text>
         </Animated.View>
       )}
 
+      {/* Loading hook data */}
+      {displayLoading && currentAwb && (
+        <Animated.View entering={FadeInDown.springify()} style={s.resultCard}>
+          <View style={{ alignItems: "center", paddingVertical: 40 }}>
+            <ActivityIndicator size="large" color={CYAN} />
+            <Text style={{ color: "rgba(255,255,255,0.5)", marginTop: 16, fontSize: 14 }}>Fetching tracking details...</Text>
+          </View>
+        </Animated.View>
+      )}
+
+      {/* Refresh button (online only) */}
+      {isConnected && currentAwb && displayResult && (
+        <View style={{ paddingHorizontal: 16, paddingVertical: 12, gap: 8 }}>
+          <Pressable
+            onPress={handleRefresh}
+            disabled={displayLoading}
+            style={({ pressed }) => [
+              s.refreshBtn,
+              { opacity: pressed || displayLoading ? 0.6 : 1 },
+            ]}
+          >
+            <Ionicons name="refresh-outline" size={16} color={CYAN} />
+            <Text style={{ color: CYAN, fontSize: 13, fontWeight: "600", marginLeft: 6 }}>
+              {displayLoading ? "Refreshing..." : "Refresh"}
+            </Text>
+          </Pressable>
+        </View>
+      )}
+
       {/* Result */}
-      {result && cfg && (
+      {displayResult && cfg && (
         <Animated.View entering={FadeInUp.springify()} style={s.resultCard}>
           {/* AWB header */}
           <View style={s.awbRow}>
             <View>
               <Text style={s.awbLabel}>Tracking Number</Text>
-              <Text style={s.awb}>{result.awb}</Text>
+              <Text style={s.awb}>{displayResult.awb}</Text>
             </View>
             <View style={[s.statusChip, { backgroundColor: cfg.color + "20", borderColor: cfg.color + "40" }]}>
               <Ionicons name={cfg.icon as any} size={14} color={cfg.color} />
@@ -200,7 +286,7 @@ export function TrackingScreen() {
           <View style={s.routeRow}>
             <View style={s.routeCity}>
               <Ionicons name="navigate-outline" size={12} color="rgba(255,255,255,0.3)" />
-              <Text style={s.routeCityText}>{result.origin_city}</Text>
+              <Text style={s.routeCityText}>{displayResult.origin_city}</Text>
             </View>
             <View style={s.routeLine}>
               <View style={[s.routeDot, { backgroundColor: CYAN }]} />
@@ -209,30 +295,30 @@ export function TrackingScreen() {
             </View>
             <View style={s.routeCity}>
               <Ionicons name="location-outline" size={12} color="rgba(255,255,255,0.3)" />
-              <Text style={s.routeCityText}>{result.destination_city}</Text>
+              <Text style={s.routeCityText}>{displayResult.destination_city}</Text>
             </View>
           </View>
 
           {/* ETA */}
-          {result.eta && (
+          {displayResult.eta && (
             <View style={s.etaRow}>
               <Ionicons name="time-outline" size={14} color={AMBER} />
               <Text style={s.etaText}>Estimated delivery: </Text>
-              <Text style={[s.etaText, { color: AMBER, fontWeight: "600" }]}>{result.eta}</Text>
+              <Text style={[s.etaText, { color: AMBER, fontWeight: "600" }]}>{displayResult.eta}</Text>
             </View>
           )}
 
           {/* Driver card */}
-          {result.driver_name && (
+          {displayResult.driver_name && (
             <View style={s.driverCard}>
               <View style={s.driverAvatar}>
                 <Ionicons name="person-outline" size={18} color={CYAN} />
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={s.driverLabel}>Your Driver</Text>
-                <Text style={s.driverName}>{result.driver_name}</Text>
+                <Text style={s.driverName}>{displayResult.driver_name}</Text>
               </View>
-              {result.driver_phone && (
+              {displayResult.driver_phone && (
                 <Pressable style={s.callBtn}>
                   <Ionicons name="call-outline" size={16} color={GREEN} />
                 </Pressable>
@@ -242,16 +328,16 @@ export function TrackingScreen() {
 
           {/* Timeline */}
           <Text style={s.sectionLabel}>Timeline</Text>
-          {result.timeline.map((event, i) => {
+          {displayResult.timeline.map((event: any, i: number) => {
             const eCfg = STATUS_CONFIG[event.status];
-            const isLast = i === result.timeline.length - 1;
+            const isLast = i === displayResult.timeline.length - 1;
             return (
               <View key={i} style={s.timelineRow}>
                 <View style={s.timelineLeft}>
                   <View style={[s.timelineDot, { backgroundColor: isLast ? eCfg.color : "rgba(255,255,255,0.15)" }]}>
                     {isLast && <Ionicons name={eCfg.icon as any} size={10} color={CANVAS} />}
                   </View>
-                  {i < result.timeline.length - 1 && <View style={s.timelineLine} />}
+                  {i < displayResult.timeline.length - 1 && <View style={s.timelineLine} />}
                 </View>
                 <View style={[s.timelineContent, isLast && { opacity: 1 }, !isLast && { opacity: 0.5 }]}>
                   <Text style={[s.timelineStatus, { color: isLast ? eCfg.color : "rgba(255,255,255,0.7)" }]}>{eCfg.label}</Text>
@@ -266,7 +352,7 @@ export function TrackingScreen() {
       )}
 
       {/* Recent searches or sample numbers */}
-      {!result && !loading && (
+      {!displayResult && !displayLoading && (
         <Animated.View entering={FadeInDown.delay(100).springify()} style={s.hintCard}>
           {recentSearches.length > 0 ? (
             <>
@@ -314,6 +400,8 @@ const s = StyleSheet.create({
   searchBtn:      { borderRadius: 12, overflow: "hidden" },
   searchBtnGrad:  { paddingHorizontal: 18, paddingVertical: 14, alignItems: "center", justifyContent: "center", minWidth: 72 },
   searchBtnText:  { fontSize: 13, fontWeight: "700", color: CANVAS },
+
+  refreshBtn:     { flexDirection: "row", alignItems: "center", justifyContent: "center", paddingVertical: 10, paddingHorizontal: 14, backgroundColor: GLASS, borderWidth: 1, borderColor: BORDER, borderRadius: 12 },
 
   errorCard:      { flexDirection: "row", alignItems: "center", gap: 8, marginHorizontal: 16, padding: 12, backgroundColor: RED + "10", borderWidth: 1, borderColor: RED + "30", borderRadius: 12, marginBottom: 16 },
   errorText:      { flex: 1, fontSize: 13, color: "rgba(255,255,255,0.6)" },

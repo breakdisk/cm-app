@@ -171,11 +171,30 @@ services:
     ports:
       - 8000:8000
     environment:
-      DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
-      REDIS_URL: redis://redis:6379
-      KAFKA_BROKERS: kafka:29092
+      APP__HOST: "0.0.0.0"
+      APP__PORT: "8000"
+      APP__ENV: development
+      AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
+      AUTH__JWT_EXPIRY_SECONDS: "3600"
+      AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
+      REDIS__URL: redis://redis:6379
+      SERVICES__IDENTITY_URL: http://identity:8001
+      SERVICES__CDP_URL: http://cdp:8002
+      SERVICES__ENGAGEMENT_URL: http://engagement:8003
+      SERVICES__ORDER_INTAKE_URL: http://order-intake:8004
+      SERVICES__DISPATCH_URL: http://dispatch:8005
+      SERVICES__DRIVER_OPS_URL: http://driver-ops:8006
+      SERVICES__DELIVERY_EXPERIENCE_URL: http://delivery-experience:8007
+      SERVICES__FLEET_URL: http://fleet:8008
+      SERVICES__HUB_OPS_URL: http://hub-ops:8009
+      SERVICES__CARRIER_URL: http://carrier:8010
+      SERVICES__POD_URL: http://pod:8011
+      SERVICES__PAYMENTS_URL: http://payments:8012
+      SERVICES__ANALYTICS_URL: http://analytics:8013
+      SERVICES__MARKETING_URL: http://marketing:8014
+      SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
+      SERVICES__AI_LAYER_URL: http://ai-layer:8016
       RUST_LOG: info
-      SERVICE_PORT: "8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -199,12 +218,30 @@ services:
     ports:
       - 8001:8001
     environment:
-      DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
-      REDIS_URL: redis://redis:6379
-      KAFKA_BROKERS: kafka:29092
+      APP__HOST: "0.0.0.0"
+      APP__PORT: "8001"
+      APP__ENV: development
+      AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
+      AUTH__JWT_EXPIRY_SECONDS: "3600"
+      AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
+      REDIS__URL: redis://redis:6379
+      SERVICES__IDENTITY_URL: http://identity:8001
+      SERVICES__CDP_URL: http://cdp:8002
+      SERVICES__ENGAGEMENT_URL: http://engagement:8003
+      SERVICES__ORDER_INTAKE_URL: http://order-intake:8004
+      SERVICES__DISPATCH_URL: http://dispatch:8005
+      SERVICES__DRIVER_OPS_URL: http://driver-ops:8006
+      SERVICES__DELIVERY_EXPERIENCE_URL: http://delivery-experience:8007
+      SERVICES__FLEET_URL: http://fleet:8008
+      SERVICES__HUB_OPS_URL: http://hub-ops:8009
+      SERVICES__CARRIER_URL: http://carrier:8010
+      SERVICES__POD_URL: http://pod:8011
+      SERVICES__PAYMENTS_URL: http://payments:8012
+      SERVICES__ANALYTICS_URL: http://analytics:8013
+      SERVICES__MARKETING_URL: http://marketing:8014
+      SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
+      SERVICES__AI_LAYER_URL: http://ai-layer:8016
       RUST_LOG: info
-      SERVICE_PORT: "8001"
-      JWT_SECRET: dev-jwt-secret-change-in-production
     depends_on:
       postgres:
         condition: service_healthy
@@ -228,11 +265,30 @@ services:
     ports:
       - 8002:8002
     environment:
-      DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
-      REDIS_URL: redis://redis:6379
-      KAFKA_BROKERS: kafka:29092
+      APP__HOST: "0.0.0.0"
+      APP__PORT: "8002"
+      APP__ENV: development
+      AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
+      AUTH__JWT_EXPIRY_SECONDS: "3600"
+      AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
+      REDIS__URL: redis://redis:6379
+      SERVICES__IDENTITY_URL: http://identity:8001
+      SERVICES__CDP_URL: http://cdp:8002
+      SERVICES__ENGAGEMENT_URL: http://engagement:8003
+      SERVICES__ORDER_INTAKE_URL: http://order-intake:8004
+      SERVICES__DISPATCH_URL: http://dispatch:8005
+      SERVICES__DRIVER_OPS_URL: http://driver-ops:8006
+      SERVICES__DELIVERY_EXPERIENCE_URL: http://delivery-experience:8007
+      SERVICES__FLEET_URL: http://fleet:8008
+      SERVICES__HUB_OPS_URL: http://hub-ops:8009
+      SERVICES__CARRIER_URL: http://carrier:8010
+      SERVICES__POD_URL: http://pod:8011
+      SERVICES__PAYMENTS_URL: http://payments:8012
+      SERVICES__ANALYTICS_URL: http://analytics:8013
+      SERVICES__MARKETING_URL: http://marketing:8014
+      SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
+      SERVICES__AI_LAYER_URL: http://ai-layer:8016
       RUST_LOG: info
-      SERVICE_PORT: "8002"
     depends_on:
       postgres:
         condition: service_healthy
@@ -256,12 +312,31 @@ services:
     ports:
       - 8003:8003
     environment:
-      DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
-      REDIS_URL: redis://redis:6379
-      KAFKA_BROKERS: kafka:29092
-      RUST_LOG: info
-      SERVICE_PORT: "8003"
+      APP__HOST: "0.0.0.0"
+      APP__PORT: "8003"
+      APP__ENV: development
+      AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
+      AUTH__JWT_EXPIRY_SECONDS: "3600"
+      AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
+      REDIS__URL: redis://redis:6379
+      SERVICES__IDENTITY_URL: http://identity:8001
+      SERVICES__CDP_URL: http://cdp:8002
+      SERVICES__ENGAGEMENT_URL: http://engagement:8003
+      SERVICES__ORDER_INTAKE_URL: http://order-intake:8004
+      SERVICES__DISPATCH_URL: http://dispatch:8005
+      SERVICES__DRIVER_OPS_URL: http://driver-ops:8006
+      SERVICES__DELIVERY_EXPERIENCE_URL: http://delivery-experience:8007
+      SERVICES__FLEET_URL: http://fleet:8008
+      SERVICES__HUB_OPS_URL: http://hub-ops:8009
+      SERVICES__CARRIER_URL: http://carrier:8010
+      SERVICES__POD_URL: http://pod:8011
+      SERVICES__PAYMENTS_URL: http://payments:8012
+      SERVICES__ANALYTICS_URL: http://analytics:8013
+      SERVICES__MARKETING_URL: http://marketing:8014
+      SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
+      SERVICES__AI_LAYER_URL: http://ai-layer:8016
       MAILHOG_SMTP: mailhog:1025
+      RUST_LOG: info
     depends_on:
       postgres:
         condition: service_healthy
@@ -285,11 +360,30 @@ services:
     ports:
       - 8004:8004
     environment:
-      DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
-      REDIS_URL: redis://redis:6379
-      KAFKA_BROKERS: kafka:29092
+      APP__HOST: "0.0.0.0"
+      APP__PORT: "8004"
+      APP__ENV: development
+      AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
+      AUTH__JWT_EXPIRY_SECONDS: "3600"
+      AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
+      REDIS__URL: redis://redis:6379
+      SERVICES__IDENTITY_URL: http://identity:8001
+      SERVICES__CDP_URL: http://cdp:8002
+      SERVICES__ENGAGEMENT_URL: http://engagement:8003
+      SERVICES__ORDER_INTAKE_URL: http://order-intake:8004
+      SERVICES__DISPATCH_URL: http://dispatch:8005
+      SERVICES__DRIVER_OPS_URL: http://driver-ops:8006
+      SERVICES__DELIVERY_EXPERIENCE_URL: http://delivery-experience:8007
+      SERVICES__FLEET_URL: http://fleet:8008
+      SERVICES__HUB_OPS_URL: http://hub-ops:8009
+      SERVICES__CARRIER_URL: http://carrier:8010
+      SERVICES__POD_URL: http://pod:8011
+      SERVICES__PAYMENTS_URL: http://payments:8012
+      SERVICES__ANALYTICS_URL: http://analytics:8013
+      SERVICES__MARKETING_URL: http://marketing:8014
+      SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
+      SERVICES__AI_LAYER_URL: http://ai-layer:8016
       RUST_LOG: info
-      SERVICE_PORT: "8004"
     depends_on:
       postgres:
         condition: service_healthy
@@ -313,11 +407,30 @@ services:
     ports:
       - 8005:8005
     environment:
-      DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
-      REDIS_URL: redis://redis:6379
-      KAFKA_BROKERS: kafka:29092
+      APP__HOST: "0.0.0.0"
+      APP__PORT: "8005"
+      APP__ENV: development
+      AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
+      AUTH__JWT_EXPIRY_SECONDS: "3600"
+      AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
+      REDIS__URL: redis://redis:6379
+      SERVICES__IDENTITY_URL: http://identity:8001
+      SERVICES__CDP_URL: http://cdp:8002
+      SERVICES__ENGAGEMENT_URL: http://engagement:8003
+      SERVICES__ORDER_INTAKE_URL: http://order-intake:8004
+      SERVICES__DISPATCH_URL: http://dispatch:8005
+      SERVICES__DRIVER_OPS_URL: http://driver-ops:8006
+      SERVICES__DELIVERY_EXPERIENCE_URL: http://delivery-experience:8007
+      SERVICES__FLEET_URL: http://fleet:8008
+      SERVICES__HUB_OPS_URL: http://hub-ops:8009
+      SERVICES__CARRIER_URL: http://carrier:8010
+      SERVICES__POD_URL: http://pod:8011
+      SERVICES__PAYMENTS_URL: http://payments:8012
+      SERVICES__ANALYTICS_URL: http://analytics:8013
+      SERVICES__MARKETING_URL: http://marketing:8014
+      SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
+      SERVICES__AI_LAYER_URL: http://ai-layer:8016
       RUST_LOG: info
-      SERVICE_PORT: "8005"
     depends_on:
       postgres:
         condition: service_healthy
@@ -341,11 +454,30 @@ services:
     ports:
       - 8006:8006
     environment:
-      DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
-      REDIS_URL: redis://redis:6379
-      KAFKA_BROKERS: kafka:29092
+      APP__HOST: "0.0.0.0"
+      APP__PORT: "8006"
+      APP__ENV: development
+      AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
+      AUTH__JWT_EXPIRY_SECONDS: "3600"
+      AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
+      REDIS__URL: redis://redis:6379
+      SERVICES__IDENTITY_URL: http://identity:8001
+      SERVICES__CDP_URL: http://cdp:8002
+      SERVICES__ENGAGEMENT_URL: http://engagement:8003
+      SERVICES__ORDER_INTAKE_URL: http://order-intake:8004
+      SERVICES__DISPATCH_URL: http://dispatch:8005
+      SERVICES__DRIVER_OPS_URL: http://driver-ops:8006
+      SERVICES__DELIVERY_EXPERIENCE_URL: http://delivery-experience:8007
+      SERVICES__FLEET_URL: http://fleet:8008
+      SERVICES__HUB_OPS_URL: http://hub-ops:8009
+      SERVICES__CARRIER_URL: http://carrier:8010
+      SERVICES__POD_URL: http://pod:8011
+      SERVICES__PAYMENTS_URL: http://payments:8012
+      SERVICES__ANALYTICS_URL: http://analytics:8013
+      SERVICES__MARKETING_URL: http://marketing:8014
+      SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
+      SERVICES__AI_LAYER_URL: http://ai-layer:8016
       RUST_LOG: info
-      SERVICE_PORT: "8006"
     depends_on:
       postgres:
         condition: service_healthy
@@ -369,11 +501,30 @@ services:
     ports:
       - 8007:8007
     environment:
-      DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
-      REDIS_URL: redis://redis:6379
-      KAFKA_BROKERS: kafka:29092
+      APP__HOST: "0.0.0.0"
+      APP__PORT: "8007"
+      APP__ENV: development
+      AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
+      AUTH__JWT_EXPIRY_SECONDS: "3600"
+      AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
+      REDIS__URL: redis://redis:6379
+      SERVICES__IDENTITY_URL: http://identity:8001
+      SERVICES__CDP_URL: http://cdp:8002
+      SERVICES__ENGAGEMENT_URL: http://engagement:8003
+      SERVICES__ORDER_INTAKE_URL: http://order-intake:8004
+      SERVICES__DISPATCH_URL: http://dispatch:8005
+      SERVICES__DRIVER_OPS_URL: http://driver-ops:8006
+      SERVICES__DELIVERY_EXPERIENCE_URL: http://delivery-experience:8007
+      SERVICES__FLEET_URL: http://fleet:8008
+      SERVICES__HUB_OPS_URL: http://hub-ops:8009
+      SERVICES__CARRIER_URL: http://carrier:8010
+      SERVICES__POD_URL: http://pod:8011
+      SERVICES__PAYMENTS_URL: http://payments:8012
+      SERVICES__ANALYTICS_URL: http://analytics:8013
+      SERVICES__MARKETING_URL: http://marketing:8014
+      SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
+      SERVICES__AI_LAYER_URL: http://ai-layer:8016
       RUST_LOG: info
-      SERVICE_PORT: "8007"
     depends_on:
       postgres:
         condition: service_healthy
@@ -397,11 +548,30 @@ services:
     ports:
       - 8008:8008
     environment:
-      DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
-      REDIS_URL: redis://redis:6379
-      KAFKA_BROKERS: kafka:29092
+      APP__HOST: "0.0.0.0"
+      APP__PORT: "8008"
+      APP__ENV: development
+      AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
+      AUTH__JWT_EXPIRY_SECONDS: "3600"
+      AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
+      REDIS__URL: redis://redis:6379
+      SERVICES__IDENTITY_URL: http://identity:8001
+      SERVICES__CDP_URL: http://cdp:8002
+      SERVICES__ENGAGEMENT_URL: http://engagement:8003
+      SERVICES__ORDER_INTAKE_URL: http://order-intake:8004
+      SERVICES__DISPATCH_URL: http://dispatch:8005
+      SERVICES__DRIVER_OPS_URL: http://driver-ops:8006
+      SERVICES__DELIVERY_EXPERIENCE_URL: http://delivery-experience:8007
+      SERVICES__FLEET_URL: http://fleet:8008
+      SERVICES__HUB_OPS_URL: http://hub-ops:8009
+      SERVICES__CARRIER_URL: http://carrier:8010
+      SERVICES__POD_URL: http://pod:8011
+      SERVICES__PAYMENTS_URL: http://payments:8012
+      SERVICES__ANALYTICS_URL: http://analytics:8013
+      SERVICES__MARKETING_URL: http://marketing:8014
+      SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
+      SERVICES__AI_LAYER_URL: http://ai-layer:8016
       RUST_LOG: info
-      SERVICE_PORT: "8008"
     depends_on:
       postgres:
         condition: service_healthy
@@ -425,11 +595,30 @@ services:
     ports:
       - 8009:8009
     environment:
-      DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
-      REDIS_URL: redis://redis:6379
-      KAFKA_BROKERS: kafka:29092
+      APP__HOST: "0.0.0.0"
+      APP__PORT: "8009"
+      APP__ENV: development
+      AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
+      AUTH__JWT_EXPIRY_SECONDS: "3600"
+      AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
+      REDIS__URL: redis://redis:6379
+      SERVICES__IDENTITY_URL: http://identity:8001
+      SERVICES__CDP_URL: http://cdp:8002
+      SERVICES__ENGAGEMENT_URL: http://engagement:8003
+      SERVICES__ORDER_INTAKE_URL: http://order-intake:8004
+      SERVICES__DISPATCH_URL: http://dispatch:8005
+      SERVICES__DRIVER_OPS_URL: http://driver-ops:8006
+      SERVICES__DELIVERY_EXPERIENCE_URL: http://delivery-experience:8007
+      SERVICES__FLEET_URL: http://fleet:8008
+      SERVICES__HUB_OPS_URL: http://hub-ops:8009
+      SERVICES__CARRIER_URL: http://carrier:8010
+      SERVICES__POD_URL: http://pod:8011
+      SERVICES__PAYMENTS_URL: http://payments:8012
+      SERVICES__ANALYTICS_URL: http://analytics:8013
+      SERVICES__MARKETING_URL: http://marketing:8014
+      SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
+      SERVICES__AI_LAYER_URL: http://ai-layer:8016
       RUST_LOG: info
-      SERVICE_PORT: "8009"
     depends_on:
       postgres:
         condition: service_healthy
@@ -453,11 +642,30 @@ services:
     ports:
       - 8010:8010
     environment:
-      DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
-      REDIS_URL: redis://redis:6379
-      KAFKA_BROKERS: kafka:29092
+      APP__HOST: "0.0.0.0"
+      APP__PORT: "8010"
+      APP__ENV: development
+      AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
+      AUTH__JWT_EXPIRY_SECONDS: "3600"
+      AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
+      REDIS__URL: redis://redis:6379
+      SERVICES__IDENTITY_URL: http://identity:8001
+      SERVICES__CDP_URL: http://cdp:8002
+      SERVICES__ENGAGEMENT_URL: http://engagement:8003
+      SERVICES__ORDER_INTAKE_URL: http://order-intake:8004
+      SERVICES__DISPATCH_URL: http://dispatch:8005
+      SERVICES__DRIVER_OPS_URL: http://driver-ops:8006
+      SERVICES__DELIVERY_EXPERIENCE_URL: http://delivery-experience:8007
+      SERVICES__FLEET_URL: http://fleet:8008
+      SERVICES__HUB_OPS_URL: http://hub-ops:8009
+      SERVICES__CARRIER_URL: http://carrier:8010
+      SERVICES__POD_URL: http://pod:8011
+      SERVICES__PAYMENTS_URL: http://payments:8012
+      SERVICES__ANALYTICS_URL: http://analytics:8013
+      SERVICES__MARKETING_URL: http://marketing:8014
+      SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
+      SERVICES__AI_LAYER_URL: http://ai-layer:8016
       RUST_LOG: info
-      SERVICE_PORT: "8010"
     depends_on:
       postgres:
         condition: service_healthy
@@ -481,15 +689,34 @@ services:
     ports:
       - 8011:8011
     environment:
-      DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
-      REDIS_URL: redis://redis:6379
-      KAFKA_BROKERS: kafka:29092
+      APP__HOST: "0.0.0.0"
+      APP__PORT: "8011"
+      APP__ENV: development
+      AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
+      AUTH__JWT_EXPIRY_SECONDS: "3600"
+      AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
+      REDIS__URL: redis://redis:6379
+      SERVICES__IDENTITY_URL: http://identity:8001
+      SERVICES__CDP_URL: http://cdp:8002
+      SERVICES__ENGAGEMENT_URL: http://engagement:8003
+      SERVICES__ORDER_INTAKE_URL: http://order-intake:8004
+      SERVICES__DISPATCH_URL: http://dispatch:8005
+      SERVICES__DRIVER_OPS_URL: http://driver-ops:8006
+      SERVICES__DELIVERY_EXPERIENCE_URL: http://delivery-experience:8007
+      SERVICES__FLEET_URL: http://fleet:8008
+      SERVICES__HUB_OPS_URL: http://hub-ops:8009
+      SERVICES__CARRIER_URL: http://carrier:8010
+      SERVICES__POD_URL: http://pod:8011
+      SERVICES__PAYMENTS_URL: http://payments:8012
+      SERVICES__ANALYTICS_URL: http://analytics:8013
+      SERVICES__MARKETING_URL: http://marketing:8014
+      SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
+      SERVICES__AI_LAYER_URL: http://ai-layer:8016
       S3_ENDPOINT: http://minio:9001
       S3_BUCKET: pod-evidence
       S3_ACCESS_KEY: minioadmin
       S3_SECRET_KEY: minioadmin
       RUST_LOG: info
-      SERVICE_PORT: "8011"
     depends_on:
       postgres:
         condition: service_healthy
@@ -513,11 +740,30 @@ services:
     ports:
       - 8012:8012
     environment:
-      DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
-      REDIS_URL: redis://redis:6379
-      KAFKA_BROKERS: kafka:29092
+      APP__HOST: "0.0.0.0"
+      APP__PORT: "8012"
+      APP__ENV: development
+      AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
+      AUTH__JWT_EXPIRY_SECONDS: "3600"
+      AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
+      REDIS__URL: redis://redis:6379
+      SERVICES__IDENTITY_URL: http://identity:8001
+      SERVICES__CDP_URL: http://cdp:8002
+      SERVICES__ENGAGEMENT_URL: http://engagement:8003
+      SERVICES__ORDER_INTAKE_URL: http://order-intake:8004
+      SERVICES__DISPATCH_URL: http://dispatch:8005
+      SERVICES__DRIVER_OPS_URL: http://driver-ops:8006
+      SERVICES__DELIVERY_EXPERIENCE_URL: http://delivery-experience:8007
+      SERVICES__FLEET_URL: http://fleet:8008
+      SERVICES__HUB_OPS_URL: http://hub-ops:8009
+      SERVICES__CARRIER_URL: http://carrier:8010
+      SERVICES__POD_URL: http://pod:8011
+      SERVICES__PAYMENTS_URL: http://payments:8012
+      SERVICES__ANALYTICS_URL: http://analytics:8013
+      SERVICES__MARKETING_URL: http://marketing:8014
+      SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
+      SERVICES__AI_LAYER_URL: http://ai-layer:8016
       RUST_LOG: info
-      SERVICE_PORT: "8012"
     depends_on:
       postgres:
         condition: service_healthy
@@ -541,14 +787,34 @@ services:
     ports:
       - 8013:8013
     environment:
-      DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
+      APP__HOST: "0.0.0.0"
+      APP__PORT: "8013"
+      APP__ENV: development
+      AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
+      AUTH__JWT_EXPIRY_SECONDS: "3600"
+      AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
+      REDIS__URL: redis://redis:6379
+      SERVICES__IDENTITY_URL: http://identity:8001
+      SERVICES__CDP_URL: http://cdp:8002
+      SERVICES__ENGAGEMENT_URL: http://engagement:8003
+      SERVICES__ORDER_INTAKE_URL: http://order-intake:8004
+      SERVICES__DISPATCH_URL: http://dispatch:8005
+      SERVICES__DRIVER_OPS_URL: http://driver-ops:8006
+      SERVICES__DELIVERY_EXPERIENCE_URL: http://delivery-experience:8007
+      SERVICES__FLEET_URL: http://fleet:8008
+      SERVICES__HUB_OPS_URL: http://hub-ops:8009
+      SERVICES__CARRIER_URL: http://carrier:8010
+      SERVICES__POD_URL: http://pod:8011
+      SERVICES__PAYMENTS_URL: http://payments:8012
+      SERVICES__ANALYTICS_URL: http://analytics:8013
+      SERVICES__MARKETING_URL: http://marketing:8014
+      SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
+      SERVICES__AI_LAYER_URL: http://ai-layer:8016
       CLICKHOUSE_URL: http://clickhouse:8123
       CLICKHOUSE_DB: logisticos
       CLICKHOUSE_USER: default
       CLICKHOUSE_PASSWORD: ""
-      KAFKA_BROKERS: kafka:29092
       RUST_LOG: info
-      SERVICE_PORT: "8013"
     depends_on:
       postgres:
         condition: service_healthy
@@ -572,11 +838,30 @@ services:
     ports:
       - 8014:8014
     environment:
-      DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
-      REDIS_URL: redis://redis:6379
-      KAFKA_BROKERS: kafka:29092
+      APP__HOST: "0.0.0.0"
+      APP__PORT: "8014"
+      APP__ENV: development
+      AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
+      AUTH__JWT_EXPIRY_SECONDS: "3600"
+      AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
+      REDIS__URL: redis://redis:6379
+      SERVICES__IDENTITY_URL: http://identity:8001
+      SERVICES__CDP_URL: http://cdp:8002
+      SERVICES__ENGAGEMENT_URL: http://engagement:8003
+      SERVICES__ORDER_INTAKE_URL: http://order-intake:8004
+      SERVICES__DISPATCH_URL: http://dispatch:8005
+      SERVICES__DRIVER_OPS_URL: http://driver-ops:8006
+      SERVICES__DELIVERY_EXPERIENCE_URL: http://delivery-experience:8007
+      SERVICES__FLEET_URL: http://fleet:8008
+      SERVICES__HUB_OPS_URL: http://hub-ops:8009
+      SERVICES__CARRIER_URL: http://carrier:8010
+      SERVICES__POD_URL: http://pod:8011
+      SERVICES__PAYMENTS_URL: http://payments:8012
+      SERVICES__ANALYTICS_URL: http://analytics:8013
+      SERVICES__MARKETING_URL: http://marketing:8014
+      SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
+      SERVICES__AI_LAYER_URL: http://ai-layer:8016
       RUST_LOG: info
-      SERVICE_PORT: "8014"
     depends_on:
       postgres:
         condition: service_healthy
@@ -600,11 +885,30 @@ services:
     ports:
       - 8015:8015
     environment:
-      DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
-      REDIS_URL: redis://redis:6379
-      KAFKA_BROKERS: kafka:29092
+      APP__HOST: "0.0.0.0"
+      APP__PORT: "8015"
+      APP__ENV: development
+      AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
+      AUTH__JWT_EXPIRY_SECONDS: "3600"
+      AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
+      REDIS__URL: redis://redis:6379
+      SERVICES__IDENTITY_URL: http://identity:8001
+      SERVICES__CDP_URL: http://cdp:8002
+      SERVICES__ENGAGEMENT_URL: http://engagement:8003
+      SERVICES__ORDER_INTAKE_URL: http://order-intake:8004
+      SERVICES__DISPATCH_URL: http://dispatch:8005
+      SERVICES__DRIVER_OPS_URL: http://driver-ops:8006
+      SERVICES__DELIVERY_EXPERIENCE_URL: http://delivery-experience:8007
+      SERVICES__FLEET_URL: http://fleet:8008
+      SERVICES__HUB_OPS_URL: http://hub-ops:8009
+      SERVICES__CARRIER_URL: http://carrier:8010
+      SERVICES__POD_URL: http://pod:8011
+      SERVICES__PAYMENTS_URL: http://payments:8012
+      SERVICES__ANALYTICS_URL: http://analytics:8013
+      SERVICES__MARKETING_URL: http://marketing:8014
+      SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
+      SERVICES__AI_LAYER_URL: http://ai-layer:8016
       RUST_LOG: info
-      SERVICE_PORT: "8015"
     depends_on:
       postgres:
         condition: service_healthy
@@ -628,9 +932,29 @@ services:
     ports:
       - 8016:8016
     environment:
-      DATABASE_URL: postgres://logisticos:password@postgres:5432/logisticos
-      REDIS_URL: redis://redis:6379
-      KAFKA_BROKERS: kafka:29092
+      APP__HOST: "0.0.0.0"
+      APP__PORT: "8016"
+      APP__ENV: development
+      AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
+      AUTH__JWT_EXPIRY_SECONDS: "3600"
+      AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
+      REDIS__URL: redis://redis:6379
+      SERVICES__IDENTITY_URL: http://identity:8001
+      SERVICES__CDP_URL: http://cdp:8002
+      SERVICES__ENGAGEMENT_URL: http://engagement:8003
+      SERVICES__ORDER_INTAKE_URL: http://order-intake:8004
+      SERVICES__DISPATCH_URL: http://dispatch:8005
+      SERVICES__DRIVER_OPS_URL: http://driver-ops:8006
+      SERVICES__DELIVERY_EXPERIENCE_URL: http://delivery-experience:8007
+      SERVICES__FLEET_URL: http://fleet:8008
+      SERVICES__HUB_OPS_URL: http://hub-ops:8009
+      SERVICES__CARRIER_URL: http://carrier:8010
+      SERVICES__POD_URL: http://pod:8011
+      SERVICES__PAYMENTS_URL: http://payments:8012
+      SERVICES__ANALYTICS_URL: http://analytics:8013
+      SERVICES__MARKETING_URL: http://marketing:8014
+      SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
+      SERVICES__AI_LAYER_URL: http://ai-layer:8016
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       MCP_DISPATCH_URL: http://dispatch:8005/mcp
       MCP_ORDER_URL: http://order-intake:8004/mcp
@@ -642,7 +966,6 @@ services:
       MCP_HUB_URL: http://hub-ops:8009/mcp
       MCP_FLEET_URL: http://fleet:8008/mcp
       RUST_LOG: info
-      SERVICE_PORT: "8016"
     depends_on:
       postgres:
         condition: service_healthy

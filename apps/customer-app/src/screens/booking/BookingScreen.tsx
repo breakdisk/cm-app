@@ -16,9 +16,14 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import { useDispatch, useSelector } from "react-redux";
+import { useNetInfo } from "@react-native-community/netinfo";
 import { shipmentsActions, authActions } from "../../store";
 import type { AppDispatch, RootState } from "../../store";
 import { AwbQRCode } from "../../components/AwbQRCode";
+import Toast from "../../components/Toast";
+import * as shipmentsService from "../../services/api/shipments";
+import { getStoredCustomerId } from "../../services/api/auth";
+import { savePendingShipment } from "../../db/sync";
 
 const CANVAS  = "#050810";
 const CYAN    = "#00E5FF";
@@ -184,10 +189,23 @@ function CountryPickerRN({
 export function BookingScreen() {
   const dispatch     = useDispatch<AppDispatch>();
   const customerId   = useSelector((s: RootState) => s.auth.customerId);
+  const { isConnected } = useNetInfo();
 
   const [mode,        setMode]        = useState<ShipmentMode>("local");
   const [step,        setStep]        = useState(1);
   const [confirmedAwb, setConfirmedAwb] = useState<string | null>(null);
+
+  // Toast & loading states
+  const [toastMessage, setToastMessage] = useState("");
+  const [toastType, setToastType] = useState<"success" | "error" | "info">("info");
+  const [toastVisible, setToastVisible] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+
+  const showToast = (message: string, type: "success" | "error" | "info") => {
+    setToastMessage(message);
+    setToastType(type);
+    setToastVisible(true);
+  };
 
   // Step 1 — Sender
   const [senderName,    setSenderName]    = useState("");
@@ -256,35 +274,89 @@ export function BookingScreen() {
     return base + weightSurcharge + fragileAdd + airPremium;
   }
 
-  function handleBook() {
-    const awb = "LS-" + Math.random().toString(36).slice(2, 10).toUpperCase();
-    const now = new Date();
-    const bookedAt = now.toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" });
-    const eta = isIntl
-      ? (freightMode === "sea" ? "30–45 days" : "5–10 days")
-      : now.toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" });
+  async function handleBook() {
+    setIsLoading(true);
+    try {
+      const storedCustomerId = await getStoredCustomerId();
+      if (!storedCustomerId) {
+        showToast("Not authenticated. Please log in again.", "error");
+        return;
+      }
 
-    const origin      = `${senderName} · ${senderAddress}, ${senderCity} ${senderZip}`;
-    const destination = `${receiverName} · ${receiverAddress}, ${receiverCity} ${receiverZip}`;
+      const origin = `${senderAddress}, ${senderCity} ${senderZip}`;
+      const destination = `${receiverAddress}, ${receiverCity} ${receiverZip}${isIntl ? ` · ${DEST_COUNTRIES.find(c => c.code === destCountry)?.label || destCountry}` : ""}`;
 
-    dispatch(shipmentsActions.addShipment({
-      awb,
-      type:         isIntl ? "international" : "local",
-      status:       "confirmed",
-      origin,
-      destination,
-      destCountry:  isIntl ? destCountry : undefined,
-      description:  isIntl ? (contents || "Balikbayan Box") : (description || "Parcel"),
-      weight:       weight || undefined,
-      isCOD:        isCOD && !isIntl,
-      codAmount:    isCOD && !isIntl ? codAmount : undefined,
-      freightMode:  isIntl ? freightMode : undefined,
-      bookedAt,
-      estimatedDelivery: eta,
-      totalFee:     calcTotal(),
-    }));
-    dispatch(authActions.addLoyaltyPts(isIntl ? 150 : 50));
-    setConfirmedAwb(awb);
+      // Check if device is online
+      if (!isConnected) {
+        // Offline: save to local SQLite database
+        const shipmentId = await savePendingShipment(storedCustomerId, {
+          origin,
+          destination,
+          recipientName: receiverName,
+          recipientPhone: "",
+          weight: parseFloat(weight) || 1,
+          type: isIntl ? "international" : "local",
+          fee: calcTotal(),
+          currency: "PHP",
+          codAmount: isCOD && !isIntl ? parseInt(codAmount) : undefined,
+        });
+
+        // Generate temporary AWB for offline booking
+        const tempAwb = `OFFLINE-${Math.random().toString(36).substr(2, 8).toUpperCase()}`;
+        setConfirmedAwb(tempAwb);
+        showToast("Saved offline. Will sync when online.", "info");
+        return;
+      }
+
+      // Online: call API directly
+      const response = await shipmentsService.createShipment(storedCustomerId, {
+        origin,
+        destination,
+        recipientName: receiverName,
+        recipientPhone: "", // TODO: add phone field to booking form
+        recipientEmail: undefined,
+        weight: parseFloat(weight) || 1,
+        description: isIntl ? (contents || "Balikbayan Box") : (description || "Parcel"),
+        cargoType: isIntl ? "mixed" : "general",
+        type: isIntl ? "international" : "local",
+        serviceType: isIntl ? (freightMode === "sea" ? "sea" : "air") : "standard",
+        codAmount: isCOD && !isIntl ? parseInt(codAmount) : undefined,
+      });
+
+      // Update Redux store with the API response
+      const now = new Date();
+      const bookedAt = now.toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" });
+      const eta = isIntl
+        ? (freightMode === "sea" ? "30–45 days" : "5–10 days")
+        : now.toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" });
+
+      dispatch(shipmentsActions.addShipment({
+        awb: response.awb,
+        type: isIntl ? "international" : "local",
+        status: "confirmed",
+        origin,
+        destination,
+        destCountry: isIntl ? destCountry : undefined,
+        description: isIntl ? (contents || "Balikbayan Box") : (description || "Parcel"),
+        weight: weight || undefined,
+        isCOD: isCOD && !isIntl,
+        codAmount: isCOD && !isIntl ? codAmount : undefined,
+        freightMode: isIntl ? freightMode : undefined,
+        bookedAt,
+        estimatedDelivery: eta,
+        totalFee: calcTotal(),
+      }));
+
+      dispatch(authActions.addLoyaltyPts(isIntl ? 150 : 50));
+      setConfirmedAwb(response.awb);
+      showToast("Shipment booked successfully!", "success");
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Failed to book shipment. Please try again.";
+      showToast(errorMessage, "error");
+      console.error("Booking error:", error);
+    } finally {
+      setIsLoading(false);
+    }
   }
 
   function handleBookAnother() {
@@ -798,7 +870,8 @@ export function BookingScreen() {
               </Pressable>
               <Pressable
                 onPress={handleBook}
-                style={({ pressed }) => [s.btn, { flex: 1, opacity: pressed ? 0.7 : 1 }]}
+                disabled={isLoading}
+                style={({ pressed }) => [s.btn, { flex: 1, opacity: pressed || isLoading ? 0.5 : 1 }]}
               >
                 <LinearGradient
                   colors={isIntl ? [PURPLE, "#6B21D8"] : [GREEN, CYAN]}
@@ -806,7 +879,7 @@ export function BookingScreen() {
                   style={s.btnGradient}
                 >
                   <Text style={s.btnText}>
-                    {isIntl ? "Book Balikbayan Box" : "Confirm Booking"}
+                    {isLoading ? "Booking..." : (isIntl ? "Book Balikbayan Box" : "Confirm Booking")}
                   </Text>
                 </LinearGradient>
               </Pressable>
@@ -865,6 +938,12 @@ export function BookingScreen() {
           </Animated.View>
         )}
 
+        <Toast
+          message={toastMessage}
+          type={toastType}
+          visible={toastVisible}
+          onHide={() => setToastVisible(false)}
+        />
       </ScrollView>
     </KeyboardAvoidingView>
   );
