@@ -14,6 +14,7 @@ import io.logisticos.driver.core.network.service.IdentityApiService
 import io.logisticos.driver.core.network.service.PodApiService
 import io.logisticos.driver.core.network.service.TrackingApiService
 import kotlinx.serialization.json.Json
+import okhttp3.CertificatePinner
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -48,6 +49,12 @@ object NetworkModule {
         .addInterceptor(tenantInterceptor)
         .addInterceptor(loggingInterceptor)
         .authenticator(tokenAuthenticator)
+        .certificatePinner(
+            CertificatePinner.Builder()
+                .add("api.logisticos.io", "sha256/REPLACE_WITH_ACTUAL_PIN_1=")
+                .add("api.logisticos.io", "sha256/REPLACE_WITH_ACTUAL_PIN_2=")
+                .build()
+        )
         .build()
 
     @Provides @Singleton
