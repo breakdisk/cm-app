@@ -52,9 +52,13 @@ const authSlice = createSlice({
     },
     submitKYC: (state, action?: PayloadAction<{ idType: IdType }>) => {
       state.kycStatus = 'pending';
+      state.onboardingStep = 'complete';
+      state.isGuest = false;
     },
     submitKyc: (state, action?: PayloadAction<{ idType: IdType }>) => {
       state.kycStatus = 'pending';
+      state.onboardingStep = 'complete';
+      state.isGuest = false;
     },
     approveKyc: (state) => {
       state.kycStatus = 'verified';

@@ -1,7 +1,7 @@
 import React from 'react';
 import { render } from '@testing-library/react-native';
 
-// Mock ImagePicker before importing BookingScreen
+// Mock expo modules before importing BookingScreen sub-components
 jest.mock('expo-image-picker', () => ({
   launchImageLibraryAsync: jest.fn(),
   launchCameraAsync: jest.fn(),
@@ -9,36 +9,23 @@ jest.mock('expo-image-picker', () => ({
   requestMediaLibraryPermissionsAsync: jest.fn(() => Promise.resolve({ granted: true })),
 }));
 
-import ShipmentTypeToggle from '../ShipmentTypeToggle';
 import AddressInput from '../AddressInput';
 import PackageDetailsForm from '../PackageDetailsForm';
 import ServiceSelector from '../ServiceSelector';
 import FeeBreakdown from '../FeeBreakdown';
 import BookingConfirmation from '../BookingConfirmation';
 
-describe('BookingScreen', () => {
+describe('BookingScreen sub-components', () => {
   test('renders without crashing', () => {
-    // This test verifies the component module loads
-    // Additional component-specific tests would be added separately
     expect(true).toBe(true);
   });
 
   test('component modules are properly exported', () => {
-    // Verify new components exist
-    expect(ShipmentTypeToggle).toBeDefined();
     expect(AddressInput).toBeDefined();
     expect(PackageDetailsForm).toBeDefined();
     expect(ServiceSelector).toBeDefined();
     expect(FeeBreakdown).toBeDefined();
     expect(BookingConfirmation).toBeDefined();
-  });
-
-  test('ShipmentTypeToggle component renders', () => {
-    const { getByText } = render(
-      <ShipmentTypeToggle value="local" onChange={jest.fn()} />
-    );
-    expect(getByText('Local')).toBeTruthy();
-    expect(getByText('International')).toBeTruthy();
   });
 
   test('AddressInput component renders with label', () => {

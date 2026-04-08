@@ -3,10 +3,11 @@
  * Lists all booked shipments from Redux, grouped by active / delivered / other.
  */
 import React, { useState } from "react";
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { FadeInView } from '../../components/FadeInView';
 import {
   View, Text, StyleSheet, ScrollView, Pressable,
 } from "react-native";
-import Animated, { FadeInDown, FadeInUp } from "react-native-reanimated";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useSelector } from "react-redux";
@@ -25,14 +26,17 @@ const RED    = "#FF3B5C";
 const GLASS  = "rgba(255,255,255,0.04)";
 const BORDER = "rgba(255,255,255,0.08)";
 
-const STATUS_CONFIG: Record<ShipmentStatus, { label: string; color: string; icon: string }> = {
+const STATUS_CONFIG: Partial<Record<ShipmentStatus, { label: string; color: string; icon: string }>> = {
   pending:            { label: "Processing",         color: AMBER,  icon: "time-outline"             },
+  processing:         { label: "Processing",         color: AMBER,  icon: "time-outline"             },
   confirmed:          { label: "Confirmed",          color: CYAN,   icon: "checkmark-circle-outline" },
+  picked:             { label: "Picked Up",          color: CYAN,   icon: "archive-outline"          },
   picked_up:          { label: "Picked Up",          color: CYAN,   icon: "archive-outline"          },
   in_transit:         { label: "In Transit",         color: PURPLE, icon: "car-outline"              },
   out_for_delivery:   { label: "Out for Delivery",   color: GREEN,  icon: "bicycle-outline"          },
   delivery_attempted: { label: "Attempt Failed",     color: AMBER,  icon: "alert-circle-outline"     },
   delivered:          { label: "Delivered",          color: GREEN,  icon: "checkmark-done-outline"   },
+  failed:             { label: "Failed",             color: RED,    icon: "close-circle-outline"     },
   returned:           { label: "Returned",           color: RED,    icon: "return-down-back-outline" },
   cancelled:          { label: "Cancelled",          color: RED,    icon: "close-circle-outline"     },
 };
@@ -69,13 +73,13 @@ const DEMO_SHIPMENTS: ShipmentRecord[] = [
 const PICKUP_STATUSES: ShipmentStatus[] = ["pending", "confirmed"];
 
 function ShipmentCard({ item, onShowQR }: { item: ShipmentRecord; onShowQR: (awb: string) => void }) {
-  const cfg       = STATUS_CONFIG[item.status];
+  const cfg       = STATUS_CONFIG[item.status] ?? { label: item.status, color: AMBER, icon: "time-outline" };
   const isIntl    = item.type === "international";
   const showQRBtn = PICKUP_STATUSES.includes(item.status);
   const accent    = isIntl ? PURPLE : CYAN;
 
   return (
-    <Animated.View entering={FadeInUp.springify()} style={s.card}>
+    <FadeInView fromY={16} style={s.card}>
       {/* Header */}
       <View style={s.cardHeader}>
         <View style={{ flex: 1 }}>
@@ -139,7 +143,7 @@ function ShipmentCard({ item, onShowQR }: { item: ShipmentRecord; onShowQR: (awb
           <Ionicons name="chevron-forward" size={12} color={accent + "80"} />
         </Pressable>
       )}
-    </Animated.View>
+    </FadeInView>
   );
 }
 
@@ -173,10 +177,10 @@ export function HistoryScreen() {
         <ScrollView style={s.container} contentContainerStyle={{ paddingBottom: 40 }}>
           {/* Hero */}
           <LinearGradient colors={["rgba(168,85,247,0.10)", "transparent"]} style={s.hero}>
-            <Animated.View entering={FadeInDown.springify()}>
+            <FadeInView fromY={-16}>
               <Text style={s.heroTitle}>My Shipments</Text>
               <Text style={s.heroSub}>Loading shipments...</Text>
-            </Animated.View>
+            </FadeInView>
           </LinearGradient>
 
           {/* Skeleton loaders */}
@@ -197,14 +201,14 @@ export function HistoryScreen() {
     <ScrollView style={s.container} contentContainerStyle={{ paddingBottom: 40 }}>
       {/* Hero */}
       <LinearGradient colors={["rgba(168,85,247,0.10)", "transparent"]} style={s.hero}>
-        <Animated.View entering={FadeInDown.springify()}>
+        <FadeInView fromY={-16}>
           <Text style={s.heroTitle}>My Shipments</Text>
           <Text style={s.heroSub}>{shipments.length} total · {activeCount} active</Text>
-        </Animated.View>
+        </FadeInView>
       </LinearGradient>
 
       {/* Filter tabs */}
-      <Animated.View entering={FadeInDown.delay(60).springify()} style={s.filterRow}>
+      <FadeInView delay={60} fromY={-16} style={s.filterRow}>
         {([
           { key: "all",    label: `All (${shipments.length})`  },
           { key: "active", label: `Active (${activeCount})`    },
@@ -218,15 +222,15 @@ export function HistoryScreen() {
             <Text style={[s.filterTabText, filter === tab.key && { color: CYAN }]}>{tab.label}</Text>
           </Pressable>
         ))}
-      </Animated.View>
+      </FadeInView>
 
       {/* List */}
       {filtered.length === 0 ? (
-        <Animated.View entering={FadeInUp.springify()} style={s.emptyCard}>
+        <FadeInView fromY={16} style={s.emptyCard}>
           <Ionicons name="cube-outline" size={36} color="rgba(255,255,255,0.1)" />
           <Text style={s.emptyText}>No shipments yet</Text>
           <Text style={s.emptySub}>Book your first shipment from the Book tab</Text>
-        </Animated.View>
+        </FadeInView>
       ) : (
         <View style={s.list}>
           {filtered.map((item) => (

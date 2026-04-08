@@ -4,11 +4,11 @@
  * Uses dark glassmorphism design with neon status colors.
  */
 import React, { useState } from "react";
+import { FadeInView } from '../components/FadeInView';
 import {
   View, Text, StyleSheet, ScrollView, TextInput, Pressable,
   ActivityIndicator, Linking,
 } from "react-native";
-import Animated, { FadeInDown, FadeInUp } from "react-native-reanimated";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 
@@ -142,10 +142,10 @@ export default function TrackingScreen() {
         colors={["rgba(0,229,255,0.12)", "transparent"]}
         style={styles.hero}
       >
-        <Animated.View entering={FadeInDown.springify()}>
+        <FadeInView fromY={-16}>
           <Text style={styles.heroTitle}>Track Package</Text>
           <Text style={styles.heroSub}>Enter your tracking number below</Text>
-        </Animated.View>
+        </FadeInView>
       </LinearGradient>
 
       {/* Search input */}
@@ -177,16 +177,16 @@ export default function TrackingScreen() {
 
       {/* Not found */}
       {notFound && (
-        <Animated.View entering={FadeInUp.springify()} style={styles.notFound}>
+        <FadeInView fromY={16} style={styles.notFound}>
           <Ionicons name="search-outline" size={28} color="rgba(255,59,92,0.5)" />
           <Text style={styles.notFoundTitle}>Tracking number not found</Text>
           <Text style={styles.notFoundSub}>Check the number and try again</Text>
-        </Animated.View>
+        </FadeInView>
       )}
 
       {/* Result */}
       {result && cfg && (
-        <Animated.View entering={FadeInUp.springify()} style={styles.resultCard}>
+        <FadeInView fromY={16} style={styles.resultCard}>
           {/* Status header */}
           <LinearGradient
             colors={[`${cfg.color}1A`, "transparent"]}
@@ -244,7 +244,7 @@ export default function TrackingScreen() {
               <Text style={styles.ctaBtnText}>Get Help</Text>
             </Pressable>
           </View>
-        </Animated.View>
+        </FadeInView>
       )}
     </ScrollView>
   );
@@ -261,7 +261,7 @@ const styles = StyleSheet.create({
   searchInput:       { flex: 1, flexDirection: "row", alignItems: "center", gap: 8, borderRadius: 12, backgroundColor: GLASS, borderWidth: 1, borderColor: BORDER, paddingHorizontal: 14, paddingVertical: 12 },
   searchInputActive: { borderColor: "rgba(0,229,255,0.4)" },
   searchText:        { flex: 1, fontSize: 14, fontFamily: "JetBrainsMono-Regular", color: "#FFFFFF", letterSpacing: 0.5 },
-  searchBtn:         { borderRadius: 12, paddingHorizontal: 20, paddingVertical: 12, alignItems: "center", justifyContent: "center", minWidth: 64, background: "linear-gradient(135deg, #00E5FF, #A855F7)" },
+  searchBtn:         { borderRadius: 12, paddingHorizontal: 20, paddingVertical: 12, alignItems: "center", justifyContent: "center", minWidth: 64, backgroundColor: CYAN },
   searchBtnText:     { fontSize: 14, fontWeight: "600", color: CANVAS },
   notFound:          { alignItems: "center", padding: 32, gap: 8 },
   notFoundTitle:     { fontSize: 16, fontWeight: "600", color: "#FFFFFF", fontFamily: "SpaceGrotesk-SemiBold" },

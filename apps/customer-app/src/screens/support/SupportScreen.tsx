@@ -3,11 +3,12 @@
  * FAQ accordion + simulated AI chat widget.
  */
 import React, { useState, useRef } from "react";
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { FadeInView } from '../../components/FadeInView';
 import {
   View, Text, StyleSheet, ScrollView, Pressable,
   TextInput, KeyboardAvoidingView, Platform,
 } from "react-native";
-import Animated, { FadeInDown, FadeInUp, FadeIn } from "react-native-reanimated";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useSelector } from "react-redux";
@@ -119,9 +120,9 @@ function FaqCard({ item }: { item: FaqItem }) {
         <Ionicons name={open ? "chevron-up" : "chevron-down"} size={14} color="rgba(255,255,255,0.3)" />
       </View>
       {open && (
-        <Animated.View entering={FadeIn.duration(200)} style={s.faqBody}>
+        <FadeInView duration={200} style={s.faqBody}>
           <Text style={s.faqA}>{item.a}</Text>
-        </Animated.View>
+        </FadeInView>
       )}
     </Pressable>
   );
@@ -170,14 +171,14 @@ export function SupportScreen() {
     >
       {/* Hero */}
       <LinearGradient colors={["rgba(255,171,0,0.09)", "transparent"]} style={s.hero}>
-        <Animated.View entering={FadeInDown.springify()}>
+        <FadeInView fromY={-16}>
           <Text style={s.heroTitle}>Help & Support</Text>
           <Text style={s.heroSub}>FAQ or chat with our AI agent</Text>
-        </Animated.View>
+        </FadeInView>
       </LinearGradient>
 
       {/* Tab switcher */}
-      <Animated.View entering={FadeInDown.delay(60).springify()} style={s.tabRow}>
+      <FadeInView delay={60} fromY={-16} style={s.tabRow}>
         <Pressable onPress={() => setTab("faq")} style={[s.tabBtn, tab === "faq" && s.tabBtnActive]}>
           <Ionicons name="help-circle-outline" size={15} color={tab === "faq" ? AMBER : "rgba(255,255,255,0.35)"} />
           <Text style={[s.tabBtnText, { color: tab === "faq" ? AMBER : "rgba(255,255,255,0.35)" }]}>FAQ</Text>
@@ -187,13 +188,13 @@ export function SupportScreen() {
           <Text style={[s.tabBtnText, { color: tab === "chat" ? CYAN : "rgba(255,255,255,0.35)" }]}>AI Chat</Text>
           <View style={s.aiBadge}><Text style={s.aiBadgeText}>AI</Text></View>
         </Pressable>
-      </Animated.View>
+      </FadeInView>
 
       {/* ── FAQ ── */}
       {tab === "faq" && (
         <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 40, gap: 8 }}>
           {/* Quick links */}
-          <Animated.View entering={FadeInUp.delay(80).springify()} style={s.quickLinks}>
+          <FadeInView delay={80} fromY={16} style={s.quickLinks}>
             {[
               { icon: "cube-outline",      label: "Track Parcel",      color: CYAN   },
               { icon: "alert-circle-outline", label: "Report Issue",   color: RED    },
@@ -207,17 +208,17 @@ export function SupportScreen() {
                 <Text style={s.quickLinkText}>{q.label}</Text>
               </Pressable>
             ))}
-          </Animated.View>
+          </FadeInView>
 
           <Text style={s.sectionLabel}>Frequently Asked Questions</Text>
           {FAQS.map((faq, i) => (
-            <Animated.View key={i} entering={FadeInUp.delay(i * 30).springify()}>
+            <FadeInView key={i} delay={i * 30} fromY={16}>
               <FaqCard item={faq} />
-            </Animated.View>
+            </FadeInView>
           ))}
 
           {/* Contact strip */}
-          <Animated.View entering={FadeInUp.delay(200).springify()} style={s.contactRow}>
+          <FadeInView delay={200} fromY={16} style={s.contactRow}>
             <View style={s.contactItem}>
               <Ionicons name="chatbubble-outline" size={18} color={CYAN} />
               <Text style={s.contactLabel}>Live Chat</Text>
@@ -229,7 +230,7 @@ export function SupportScreen() {
               <Text style={s.contactLabel}>Email</Text>
               <Text style={s.contactSub}>support@logisticos.ph</Text>
             </View>
-          </Animated.View>
+          </FadeInView>
         </ScrollView>
       )}
 
@@ -242,11 +243,7 @@ export function SupportScreen() {
             onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
           >
             {msgs.map((m, i) => (
-              <Animated.View
-                key={i}
-                entering={FadeIn.duration(250)}
-                style={[s.msgRow, m.role === "user" ? s.msgRowUser : s.msgRowAi]}
-              >
+              <FadeInView key={i} style={[s.msgRow, m.role === "user" ? s.msgRowUser : s.msgRowAi]}>
                 {m.role === "ai" && (
                   <View style={s.aiBubbleIcon}>
                     <Ionicons name="logo-electron" size={14} color={CYAN} />
@@ -261,17 +258,17 @@ export function SupportScreen() {
                     <Text style={s.bubbleText}>{m.text}</Text>
                   </View>
                 )}
-              </Animated.View>
+              </FadeInView>
             ))}
             {typing && (
-              <Animated.View entering={FadeIn.duration(200)} style={[s.msgRow, s.msgRowAi]}>
+              <FadeInView duration={200} style={[s.msgRow, s.msgRowAi]}>
                 <View style={s.aiBubbleIcon}>
                   <Ionicons name="logo-electron" size={14} color={CYAN} />
                 </View>
                 <View style={[s.bubble, s.bubbleAi]}>
                   <Text style={s.typingDots}>• • •</Text>
                 </View>
-              </Animated.View>
+              </FadeInView>
             )}
           </ScrollView>
 

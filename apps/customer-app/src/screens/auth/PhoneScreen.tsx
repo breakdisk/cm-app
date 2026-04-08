@@ -3,11 +3,12 @@
  * Step 1 of onboarding: enter mobile number → verify OTP.
  */
 import React, { useState, useRef, useEffect } from "react";
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { FadeInView } from '../../components/FadeInView';
 import {
   View, Text, StyleSheet, TextInput, Pressable,
   KeyboardAvoidingView, Platform, ScrollView,
 } from "react-native";
-import Animated, { FadeInDown, FadeInUp } from "react-native-reanimated";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useDispatch } from "react-redux";
@@ -126,7 +127,7 @@ export function PhoneScreen() {
     >
       <ScrollView contentContainerStyle={{ flexGrow: 1 }} keyboardShouldPersistTaps="handled">
         <LinearGradient colors={["rgba(0,229,255,0.10)", "transparent"]} style={s.hero}>
-          <Animated.View entering={FadeInDown.springify()}>
+          <FadeInView fromY={-16}>
             <View style={s.logoRow}>
               <View style={s.logoDot} />
               <Text style={s.logoText}>LogisticOS</Text>
@@ -139,10 +140,10 @@ export function PhoneScreen() {
                 ? "Enter your mobile number to get started"
                 : `We sent a 6-digit code to\n${fullPhone}`}
             </Text>
-          </Animated.View>
+          </FadeInView>
         </LinearGradient>
 
-        <Animated.View entering={FadeInUp.delay(100).springify()} style={s.card}>
+        <FadeInView delay={100} fromY={16} style={s.card}>
 
           {stage === "phone" ? (
             <>
@@ -164,7 +165,7 @@ export function PhoneScreen() {
               </View>
 
               {showPicker && (
-                <Animated.View entering={FadeInDown.duration(150)} style={s.countryList}>
+                <FadeInView fromY={-16} style={s.countryList}>
                   {COUNTRY_CODES.map((c) => (
                     <Pressable
                       key={c.code}
@@ -177,7 +178,7 @@ export function PhoneScreen() {
                       {countryCode.code === c.code && <Ionicons name="checkmark" size={14} color={CYAN} />}
                     </Pressable>
                   ))}
-                </Animated.View>
+                </FadeInView>
               )}
 
               {/* Phone input */}
@@ -255,7 +256,7 @@ export function PhoneScreen() {
               </Pressable>
             </>
           )}
-        </Animated.View>
+        </FadeInView>
       </ScrollView>
     </KeyboardAvoidingView>
   );

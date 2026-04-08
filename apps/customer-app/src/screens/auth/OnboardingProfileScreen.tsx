@@ -3,11 +3,12 @@
  * Step 2 of onboarding: name and email.
  */
 import React, { useState } from "react";
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { FadeInView } from '../../components/FadeInView';
 import {
   View, Text, StyleSheet, TextInput, Pressable,
   KeyboardAvoidingView, Platform, ScrollView,
 } from "react-native";
-import Animated, { FadeInDown, FadeInUp } from "react-native-reanimated";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useDispatch, useSelector } from "react-redux";
@@ -46,7 +47,7 @@ export function OnboardingProfileScreen() {
       <ScrollView contentContainerStyle={{ flexGrow: 1 }} keyboardShouldPersistTaps="handled">
 
         <LinearGradient colors={["rgba(168,85,247,0.10)", "transparent"]} style={s.hero}>
-          <Animated.View entering={FadeInDown.springify()}>
+          <FadeInView fromY={-16}>
             {/* Progress */}
             <View style={s.progressRow}>
               {[1, 2, 3].map((n) => (
@@ -55,10 +56,10 @@ export function OnboardingProfileScreen() {
             </View>
             <Text style={s.heroTitle}>Your Profile</Text>
             <Text style={s.heroSub}>Verified number: {phone}</Text>
-          </Animated.View>
+          </FadeInView>
         </LinearGradient>
 
-        <Animated.View entering={FadeInUp.delay(100).springify()} style={s.card}>
+        <FadeInView delay={100} fromY={16} style={s.card}>
 
           <Text style={s.label}>Full Name <Text style={s.required}>*</Text></Text>
           <View style={s.inputWrap}>
@@ -106,7 +107,7 @@ export function OnboardingProfileScreen() {
             </LinearGradient>
           </Pressable>
 
-        </Animated.View>
+        </FadeInView>
       </ScrollView>
     </KeyboardAvoidingView>
   );

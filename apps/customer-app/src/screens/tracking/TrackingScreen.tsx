@@ -3,11 +3,12 @@
  * Search by AWB, live status timeline, driver ETA card.
  */
 import React, { useState, useEffect } from "react";
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { FadeInView } from '../../components/FadeInView';
 import {
   View, Text, StyleSheet, ScrollView, TextInput,
   Pressable, ActivityIndicator,
 } from "react-native";
-import Animated, { FadeInDown, FadeInUp } from "react-native-reanimated";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useDispatch, useSelector } from "react-redux";
@@ -132,8 +133,9 @@ export function TrackingScreen() {
             [currentAwb]
           );
           if (tracking) {
-            setOfflineData(JSON.parse(tracking.events));
-            setLastUpdated(new Date(tracking.lastUpdated).getTime());
+            const row = tracking as { events: string; lastUpdated: string };
+            setOfflineData(JSON.parse(row.events));
+            setLastUpdated(new Date(row.lastUpdated).getTime());
           }
         } catch (err) {
           console.error('Failed to load offline tracking:', err);
@@ -160,9 +162,9 @@ export function TrackingScreen() {
         setResult(found);
         setCurrentAwb(awb); // Trigger the hook to load real tracking data
         dispatch(trackingActions.addToHistory({
-          tracking_number: awb,
+          awb,
           status: found.status,
-          searched_at: new Date().toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" }),
+          events: [],
         }));
       } else {
         setLocalError("No shipment found for that tracking number. Check and try again.");
@@ -196,7 +198,7 @@ export function TrackingScreen() {
       </LinearGradient>
 
       {/* Search */}
-      <Animated.View entering={FadeInDown.springify()} style={s.searchRow}>
+      <FadeInView fromY={-16} style={s.searchRow}>
         <View style={s.inputWrap}>
           <Ionicons name="search-outline" size={16} color="rgba(255,255,255,0.3)" />
           <TextInput
@@ -228,24 +230,24 @@ export function TrackingScreen() {
             )}
           </LinearGradient>
         </Pressable>
-      </Animated.View>
+      </FadeInView>
 
       {/* Error */}
       {displayError && (
-        <Animated.View entering={FadeInDown.springify()} style={s.errorCard}>
+        <FadeInView fromY={-16} style={s.errorCard}>
           <Ionicons name="alert-circle-outline" size={16} color={RED} />
           <Text style={s.errorText}>{displayError}</Text>
-        </Animated.View>
+        </FadeInView>
       )}
 
       {/* Loading hook data */}
       {displayLoading && currentAwb && (
-        <Animated.View entering={FadeInDown.springify()} style={s.resultCard}>
+        <FadeInView fromY={-16} style={s.resultCard}>
           <View style={{ alignItems: "center", paddingVertical: 40 }}>
             <ActivityIndicator size="large" color={CYAN} />
             <Text style={{ color: "rgba(255,255,255,0.5)", marginTop: 16, fontSize: 14 }}>Fetching tracking details...</Text>
           </View>
-        </Animated.View>
+        </FadeInView>
       )}
 
       {/* Refresh button (online only) */}
@@ -269,7 +271,7 @@ export function TrackingScreen() {
 
       {/* Result */}
       {displayResult && cfg && (
-        <Animated.View entering={FadeInUp.springify()} style={s.resultCard}>
+        <FadeInView fromY={16} style={s.resultCard}>
           {/* AWB header */}
           <View style={s.awbRow}>
             <View>
@@ -348,12 +350,12 @@ export function TrackingScreen() {
               </View>
             );
           })}
-        </Animated.View>
+        </FadeInView>
       )}
 
       {/* Recent searches or sample numbers */}
       {!displayResult && !displayLoading && (
-        <Animated.View entering={FadeInDown.delay(100).springify()} style={s.hintCard}>
+        <FadeInView delay={100} fromY={-16} style={s.hintCard}>
           {recentSearches.length > 0 ? (
             <>
               <Text style={s.hintTitle}>Recent Searches</Text>
@@ -382,7 +384,7 @@ export function TrackingScreen() {
               ))}
             </>
           )}
-        </Animated.View>
+        </FadeInView>
       )}
     </ScrollView>
   );

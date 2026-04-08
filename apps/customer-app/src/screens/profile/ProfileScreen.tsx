@@ -3,10 +3,11 @@
  * Wired to Redux: auth, shipments, tracking history, notification prefs.
  */
 import React, { useState } from "react";
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { FadeInView } from '../../components/FadeInView';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, Switch, Alert,
 } from "react-native";
-import Animated, { FadeInDown, FadeInUp } from "react-native-reanimated";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useSelector, useDispatch } from "react-redux";
@@ -14,6 +15,7 @@ import { useNavigation } from "@react-navigation/native";
 import type { RootState, AppDispatch } from "../../store";
 import { authActions, prefsActions } from "../../store";
 import type { KycStatus } from "../../store";
+import { getTier, getNextTier, ptsToNextTier, tierProgress, ptsToPhp, REDEMPTION_MIN } from "../../utils/loyalty";
 
 const CANVAS  = "#050810";
 const CYAN    = "#00E5FF";
@@ -23,24 +25,6 @@ const AMBER   = "#FFAB00";
 const RED     = "#FF3B5C";
 const GLASS   = "rgba(255,255,255,0.04)";
 const BORDER  = "rgba(255,255,255,0.08)";
-
-// ── Loyalty tier logic ─────────────────────────────────────────────────────────
-
-const TIERS = [
-  { label: "Bronze",   min: 0,    max: 199,  color: "#CD7F32", icon: "ribbon-outline"    },
-  { label: "Silver",   min: 200,  max: 499,  color: "#C0C0C0", icon: "ribbon-outline"    },
-  { label: "Gold",     min: 500,  max: 999,  color: AMBER,     icon: "star-outline"      },
-  { label: "Platinum", min: 1000, max: null, color: CYAN,      icon: "diamond-outline"   },
-];
-
-function getTier(pts: number) {
-  return TIERS.find(t => pts >= t.min && (t.max === null || pts <= t.max)) ?? TIERS[0];
-}
-
-function getNextTier(pts: number) {
-  const idx = TIERS.findIndex(t => pts >= t.min && (t.max === null || pts <= t.max));
-  return idx < TIERS.length - 1 ? TIERS[idx + 1] : null;
-}
 
 // ── KYC badge ─────────────────────────────────────────────────────────────────
 
@@ -218,9 +202,8 @@ export function ProfileScreen() {
 
   const tier     = getTier(loyaltyPts);
   const nextTier = getNextTier(loyaltyPts);
-  const progress = nextTier
-    ? Math.min(((loyaltyPts - tier.min) / (nextTier.min - tier.min)) * 100, 100)
-    : 100;
+  const progress = Math.round(tierProgress(loyaltyPts) * 100);
+  const toNext   = ptsToNextTier(loyaltyPts);
 
   const activeShipments = shipments.filter(
     s => !["delivered", "returned", "cancelled"].includes(s.status)
@@ -248,7 +231,7 @@ export function ProfileScreen() {
 
       {/* Hero / Avatar */}
       <LinearGradient colors={["rgba(168,85,247,0.12)", "transparent"]} style={s.hero}>
-        <Animated.View entering={FadeInDown.springify()} style={s.avatarRow}>
+        <FadeInView fromY={-16} style={s.avatarRow}>
           <LinearGradient colors={[PURPLE, CYAN]} style={s.avatar}>
             <Text style={s.avatarInitial}>{name ? name[0].toUpperCase() : "?"}</Text>
           </LinearGradient>
@@ -262,43 +245,69 @@ export function ProfileScreen() {
             <Ionicons name={kycCfg.icon as any} size={11} color={kycCfg.color} />
             <Text style={[s.kycBadgeText, { color: kycCfg.color }]}>{kycCfg.label}</Text>
           </View>
-        </Animated.View>
+        </FadeInView>
       </LinearGradient>
 
       {/* Loyalty card */}
       {!isGuest && (
-        <Animated.View entering={FadeInUp.delay(80).springify()} style={s.loyaltyCard}>
+        <FadeInView delay={80} fromY={16} style={s.loyaltyCard}>
           <LinearGradient colors={[PURPLE + "20", tier.color + "15"]} style={s.loyaltyGrad}>
+            {/* Header row */}
             <View style={s.loyaltyRow}>
               <View>
                 <Text style={s.loyaltyLabel}>Loyalty Points</Text>
                 <Text style={s.loyaltyPts}>{loyaltyPts.toLocaleString()} pts</Text>
+                <Text style={[s.loyaltyPhpValue, { color: tier.color + "99" }]}>
+                  ≈ {ptsToPhp(loyaltyPts)} redeemable value
+                </Text>
               </View>
               <View style={[s.tierBadge, { backgroundColor: tier.color + "25" }]}>
                 <Ionicons name={tier.icon as any} size={13} color={tier.color} />
                 <Text style={[s.tierText, { color: tier.color }]}>{tier.label}</Text>
               </View>
             </View>
+
+            {/* Progress bar */}
             {nextTier && (
               <>
                 <View style={s.progressBar}>
                   <View style={[s.progressFill, { width: `${progress}%` as any, backgroundColor: tier.color }]} />
                 </View>
                 <Text style={s.progressLabel}>
-                  {nextTier.min - loyaltyPts} pts to {nextTier.label}
+                  {toNext} pts to {nextTier.label} · {nextTier.discount}% discount
                 </Text>
               </>
             )}
             {!nextTier && (
-              <Text style={[s.progressLabel, { color: CYAN }]}>Maximum tier reached!</Text>
+              <Text style={[s.progressLabel, { color: CYAN }]}>Maximum tier reached · All perks unlocked</Text>
+            )}
+
+            {/* Tier perks */}
+            <View style={s.perksRow}>
+              {tier.perks.slice(0, 3).map((perk) => (
+                <View key={perk} style={s.perkPill}>
+                  <Ionicons name="checkmark-circle-outline" size={10} color={tier.color} />
+                  <Text style={[s.perkText, { color: tier.color + "CC" }]}>{perk}</Text>
+                </View>
+              ))}
+            </View>
+
+            {/* Redemption availability */}
+            {loyaltyPts >= REDEMPTION_MIN && (
+              <View style={s.redeemNote}>
+                <Ionicons name="gift-outline" size={12} color={GREEN} />
+                <Text style={s.redeemNoteText}>
+                  Points available to redeem · Use at checkout for {ptsToPhp(loyaltyPts)} off
+                </Text>
+              </View>
             )}
           </LinearGradient>
-        </Animated.View>
+        </FadeInView>
       )}
 
       {/* Stats row */}
       {!isGuest && (
-        <Animated.View entering={FadeInUp.delay(120).springify()} style={s.statsRow}>
+        <FadeInView delay={120} fromY={16} style={s.statsRow}>
           {[
             { value: shipments.length,   label: "Shipments",  color: CYAN   },
             { value: activeShipments,    label: "Active",     color: GREEN  },
@@ -309,12 +318,12 @@ export function ProfileScreen() {
               <Text style={s.statLabel}>{st.label}</Text>
             </View>
           ))}
-        </Animated.View>
+        </FadeInView>
       )}
 
       {/* Personal Info */}
       {!isGuest && (
-        <Animated.View entering={FadeInUp.delay(140).springify()} style={s.section}>
+        <FadeInView delay={140} fromY={16} style={s.section}>
           <Pressable onPress={() => setShowPersonalInfo(v => !v)} style={s.menuRow}>
             <View style={[s.menuIcon, { backgroundColor: CYAN + "20" }]}>
               <Ionicons name="person-outline" size={16} color={CYAN} />
@@ -323,7 +332,7 @@ export function ProfileScreen() {
             <Ionicons name={showPersonalInfo ? "chevron-up" : "chevron-down"} size={14} color="rgba(255,255,255,0.25)" />
           </Pressable>
           {showPersonalInfo && (
-            <Animated.View entering={FadeInDown.duration(180)} style={s.infoBlock}>
+            <FadeInView fromY={-16} style={s.infoBlock}>
               {[
                 { label: "Name",        value: name       ?? "—" },
                 { label: "Phone",       value: phone      ?? "—" },
@@ -336,14 +345,14 @@ export function ProfileScreen() {
                   <Text style={s.infoValue}>{row.value}</Text>
                 </View>
               ))}
-            </Animated.View>
+            </FadeInView>
           )}
-        </Animated.View>
+        </FadeInView>
       )}
 
       {/* KYC / Identity */}
       {!isGuest && (
-        <Animated.View entering={FadeInUp.delay(160).springify()} style={s.section}>
+        <FadeInView delay={160} fromY={16} style={s.section}>
           <Pressable
             onPress={kycStatus === "pending" ? handleDemoKycApprove : undefined}
             style={[s.menuRow, { borderColor: kycCfg.color + "30" }]}
@@ -362,11 +371,11 @@ export function ProfileScreen() {
             )}
             {kycStatus === "verified" && <Ionicons name="checkmark-circle" size={18} color={GREEN} />}
           </Pressable>
-        </Animated.View>
+        </FadeInView>
       )}
 
       {/* Notifications */}
-      <Animated.View entering={FadeInUp.delay(180).springify()} style={s.section}>
+      <FadeInView delay={180} fromY={16} style={s.section}>
         <Text style={s.sectionTitle}>Notifications</Text>
         {([
           { label: "Delivery updates", sub: "Status changes, ETA alerts", value: notifDelivery, action: (v: boolean) => { dispatch(prefsActions.setNotifDelivery(v)); } },
@@ -385,10 +394,10 @@ export function ProfileScreen() {
             />
           </View>
         ))}
-      </Animated.View>
+      </FadeInView>
 
       {/* Account links */}
-      <Animated.View entering={FadeInUp.delay(200).springify()} style={s.section}>
+      <FadeInView delay={200} fromY={16} style={s.section}>
         <Text style={s.sectionTitle}>Account</Text>
         {[
           { icon: "card-outline",         label: "Saved Addresses",  sub: `${shipments.length} locations used`,   color: PURPLE },
@@ -406,10 +415,10 @@ export function ProfileScreen() {
             <Ionicons name="chevron-forward" size={14} color="rgba(255,255,255,0.2)" />
           </Pressable>
         ))}
-      </Animated.View>
+      </FadeInView>
 
       {/* Support & App */}
-      <Animated.View entering={FadeInUp.delay(220).springify()} style={s.section}>
+      <FadeInView delay={220} fromY={16} style={s.section}>
         <Text style={s.sectionTitle}>Help & App</Text>
         {[
           {
@@ -436,7 +445,7 @@ export function ProfileScreen() {
             <Ionicons name="chevron-forward" size={14} color="rgba(255,255,255,0.2)" />
           </Pressable>
         ))}
-      </Animated.View>
+      </FadeInView>
 
       {/* Sign out */}
       <View style={s.section}>
@@ -469,11 +478,17 @@ const s = StyleSheet.create({
   loyaltyRow:     { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start" },
   loyaltyLabel:   { fontSize: 10, color: "rgba(255,255,255,0.4)", fontFamily: "JetBrainsMono-Regular", textTransform: "uppercase", letterSpacing: 1, marginBottom: 2 },
   loyaltyPts:     { fontSize: 26, fontWeight: "700", color: "#FFF", fontFamily: "SpaceGrotesk-Bold" },
+  loyaltyPhpValue:{ fontSize: 10, fontFamily: "JetBrainsMono-Regular", marginTop: 2 },
   tierBadge:      { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20 },
   tierText:       { fontSize: 12, fontWeight: "600" },
   progressBar:    { height: 4, borderRadius: 2, backgroundColor: "rgba(255,255,255,0.08)" },
   progressFill:   { height: "100%", borderRadius: 2 },
   progressLabel:  { fontSize: 10, color: "rgba(255,255,255,0.3)", fontFamily: "JetBrainsMono-Regular" },
+  perksRow:       { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 2 },
+  perkPill:       { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: "rgba(255,255,255,0.05)", borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3 },
+  perkText:       { fontSize: 9, fontFamily: "JetBrainsMono-Regular" },
+  redeemNote:     { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "rgba(0,255,136,0.07)", borderWidth: 1, borderColor: "rgba(0,255,136,0.15)", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7 },
+  redeemNoteText: { flex: 1, fontSize: 10, fontFamily: "JetBrainsMono-Regular", color: "rgba(0,255,136,0.7)" },
 
   statsRow:       { flexDirection: "row", marginHorizontal: 16, marginBottom: 12, gap: 8 },
   statCard:       { flex: 1, backgroundColor: GLASS, borderWidth: 1, borderColor: BORDER, borderRadius: 12, padding: 12, alignItems: "center", gap: 4 },

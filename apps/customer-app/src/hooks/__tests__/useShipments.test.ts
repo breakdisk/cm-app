@@ -14,7 +14,7 @@ const mockShipmentsService = shipmentsService as jest.Mocked<typeof shipmentsSer
 const mockAuthService = authService as jest.Mocked<typeof authService>;
 
 const wrapper = ({ children }: { children: React.ReactNode }) =>
-  React.createElement(Provider, { store }, children);
+  React.createElement(Provider, { store, children });
 
 describe('useShipments', () => {
   beforeEach(() => {

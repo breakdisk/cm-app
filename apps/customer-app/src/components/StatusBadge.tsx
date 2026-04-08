@@ -1,9 +1,10 @@
 import React, { useMemo } from 'react';
-import { View, Text, Animated } from 'react-native';
+import { Text, Animated } from 'react-native';
 import { COLORS } from '../utils/colors';
 import { usePulse } from '../hooks/useAnimation';
+import { ShipmentStatusType } from '../store/slices/shipments';
 
-type Status = 'pending' | 'processing' | 'picked' | 'in_transit' | 'delivered' | 'failed' | 'cancelled';
+type Status = ShipmentStatusType;
 
 interface StatusBadgeProps {
   status: Status;
@@ -13,16 +14,21 @@ interface StatusBadgeProps {
 export default function StatusBadge({ status, size = 'md' }: StatusBadgeProps) {
   const { scale } = usePulse();
   const { label, bgColor, textColor } = useMemo(() => {
-    const config: Record<Status, { label: string; bgColor: string; textColor: string }> = {
+    const config: Partial<Record<Status, { label: string; bgColor: string; textColor: string }>> = {
       pending: { label: 'Pending', bgColor: COLORS.AMBER, textColor: COLORS.CANVAS },
       processing: { label: 'Processing', bgColor: COLORS.AMBER, textColor: COLORS.CANVAS },
+      confirmed: { label: 'Confirmed', bgColor: COLORS.CYAN, textColor: COLORS.CANVAS },
       picked: { label: 'Picked Up', bgColor: COLORS.CYAN, textColor: COLORS.CANVAS },
+      picked_up: { label: 'Picked Up', bgColor: COLORS.CYAN, textColor: COLORS.CANVAS },
       in_transit: { label: 'In Transit', bgColor: COLORS.PURPLE, textColor: COLORS.TEXT_PRIMARY },
+      out_for_delivery: { label: 'Out for Delivery', bgColor: COLORS.PURPLE, textColor: COLORS.TEXT_PRIMARY },
+      delivery_attempted: { label: 'Attempted', bgColor: COLORS.AMBER, textColor: COLORS.CANVAS },
       delivered: { label: 'Delivered', bgColor: COLORS.GREEN, textColor: COLORS.CANVAS },
       failed: { label: 'Failed', bgColor: COLORS.RED, textColor: COLORS.TEXT_PRIMARY },
       cancelled: { label: 'Cancelled', bgColor: COLORS.TEXT_TERTIARY, textColor: COLORS.TEXT_PRIMARY },
+      returned: { label: 'Returned', bgColor: COLORS.RED, textColor: COLORS.TEXT_PRIMARY },
     };
-    return config[status] || config.pending;
+    return config[status] || { label: status, bgColor: COLORS.AMBER, textColor: COLORS.CANVAS };
   }, [status]);
 
   const padding = size === 'sm' ? { paddingVertical: 4, paddingHorizontal: 8 } : { paddingVertical: 6, paddingHorizontal: 12 };

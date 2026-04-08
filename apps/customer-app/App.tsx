@@ -4,6 +4,7 @@
  */
 import { useEffect } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import { Provider } from "react-redux";
 import { useNetInfo } from "@react-native-community/netinfo";
 import * as TaskManager from "expo-task-manager";
@@ -84,9 +85,11 @@ function AppContent() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <Provider store={store}>
-        <AppNavigator />
-      </Provider>
+      <SafeAreaProvider>
+        <Provider store={store}>
+          <AppNavigator />
+        </Provider>
+      </SafeAreaProvider>
     </GestureHandlerRootView>
   );
 }

@@ -10,7 +10,7 @@ jest.mock('../../services/api/tracking');
 const mockTrackingService = trackingService as jest.Mocked<typeof trackingService>;
 
 const wrapper = ({ children }: { children: React.ReactNode }) =>
-  React.createElement(Provider, { store }, children);
+  React.createElement(Provider, { store, children });
 
 describe('useTracking', () => {
   beforeEach(() => {

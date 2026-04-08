@@ -83,8 +83,7 @@ function getToken() {
 
 // ── New Shipment Modal ────────────────────────────────────────────────────────
 
-type ShipmentMode = "local" | "international";
-type FreightMode  = "sea" | "air";
+type FreightMode = "sea" | "air";
 
 interface Country { code: string; label: string; flag: string; popular?: boolean; }
 
@@ -275,38 +274,55 @@ function CountrySelect({ value, onChange }: { value: string; onChange: (code: st
   );
 }
 
+/**
+ * NewShipmentModal — simplified booking form.
+ *
+ * - No manual Local/International toggle.
+ * - Sender (Step 1) and Receiver (Step 2) each have: Name, Phone, Address, City, ZIP, Country.
+ * - isIntl = senderCountry !== receiverCountry (auto-derived).
+ * - Step 3: Package (weight, description, COD for local; box dims + declared value + freight for intl).
+ * - Step 4 (intl only): freight mode selection surfaced here for clarity on web.
+ * - Step 5 (local=4, intl=5): Review & Confirm.
+ */
 function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked?: () => void }) {
-  const [mode,        setMode]        = useState<ShipmentMode>("local");
-  const [step,        setStep]        = useState(1);
+  const [step, setStep] = useState(1);
 
   // Step 1 — Sender
   const [senderName,    setSenderName]    = useState("");
+  const [senderPhone,   setSenderPhone]   = useState("");
   const [senderAddress, setSenderAddress] = useState("");
   const [senderCity,    setSenderCity]    = useState("");
   const [senderZip,     setSenderZip]     = useState("");
+  const [senderCountry, setSenderCountry] = useState("PH");
 
-  // Step 1 — Receiver
+  // Step 2 — Receiver
   const [receiverName,    setReceiverName]    = useState("");
+  const [receiverPhone,   setReceiverPhone]   = useState("");
   const [receiverAddress, setReceiverAddress] = useState("");
   const [receiverCity,    setReceiverCity]    = useState("");
   const [receiverZip,     setReceiverZip]     = useState("");
-  const [destCountry,     setDestCountry]     = useState("PH");
+  const [receiverCountry, setReceiverCountry] = useState("PH");
 
-  // Step 2 — local
-  const [weight,       setWeight]       = useState("");
-  const [description,  setDescription]  = useState("");
-  const [codAmount,    setCodAmount]    = useState("");
-
-  // Step 2 — international
+  // Step 3 — Package (shared)
+  const [weight,        setWeight]        = useState("");
+  const [description,   setDescription]   = useState("");
+  const [codAmount,     setCodAmount]      = useState("");
+  // International extras
   const [boxL, setBoxL] = useState(""); const [boxW, setBoxW] = useState(""); const [boxH, setBoxH] = useState("");
   const [declaredValue, setDeclaredValue] = useState("");
   const [contents,      setContents]      = useState("");
   const [freightMode,   setFreightMode]   = useState<FreightMode>("sea");
 
-  const [booking,  setBooking]  = useState(false);
-  const [bookError,setBookError]= useState<string | null>(null);
+  const [booking,   setBooking]   = useState(false);
+  const [bookError, setBookError] = useState<string | null>(null);
 
-  const isIntl = mode === "international";
+  // Auto-detect shipment type from countries
+  const isIntl     = senderCountry !== receiverCountry;
+  const totalSteps = isIntl ? 4 : 3;
+  const reviewStep = totalSteps;
+
+  const senderCountryInfo   = DEST_COUNTRIES.find(c => c.code === senderCountry);
+  const receiverCountryInfo = DEST_COUNTRIES.find(c => c.code === receiverCountry);
 
   function calcTotal() {
     const w = parseFloat(weight || "0");
@@ -319,21 +335,21 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
   async function handleBook() {
     const token = getToken();
     if (!token) { setBookError("Not authenticated"); return; }
-    setBooking(true);
-    setBookError(null);
+    setBooking(true); setBookError(null);
     try {
       const weightGrams = Math.round(parseFloat(weight || "0") * 1000);
       const body = {
         customer_name:  receiverName,
-        customer_phone: "09000000000",
+        customer_phone: receiverPhone,
         origin: {
           line1: senderAddress, city: senderCity,
-          province: senderCity, postal_code: senderZip, country_code: "PH",
+          province: senderCity, postal_code: senderZip,
+          country_code: senderCountry,
         },
         destination: {
           line1: receiverAddress, city: receiverCity,
           province: receiverCity, postal_code: receiverZip,
-          country_code: isIntl ? destCountry : "PH",
+          country_code: receiverCountry,
         },
         service_type: isIntl ? "balikbayan" : "standard",
         weight_grams: weightGrams > 0 ? weightGrams : 500,
@@ -341,6 +357,7 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
         ...(declaredValue ? { declared_value_cents: Math.round(parseFloat(declaredValue) * 100) } : {}),
         ...(codAmount ? { cod_amount_cents: Math.round(parseFloat(codAmount) * 100) } : {}),
         ...(description || contents ? { special_instructions: description || contents } : {}),
+        ...(isIntl ? { freight_mode: freightMode } : {}),
       };
       const res = await fetch(`${ORDER_INTAKE_URL}/v1/shipments`, {
         method: "POST",
@@ -360,13 +377,18 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
     }
   }
 
-  const step1Valid =
-    senderName.trim() && senderAddress.trim() && senderCity.trim() && senderZip.trim() &&
-    receiverName.trim() && receiverAddress.trim() && receiverCity.trim() && receiverZip.trim();
-
-  const step2Valid = isIntl
+  const canStep1 = senderName.trim() && senderPhone.trim() && senderAddress.trim() && senderCity.trim() && senderZip.trim();
+  const canStep2 = receiverName.trim() && receiverPhone.trim() && receiverAddress.trim() && receiverCity.trim() && receiverZip.trim();
+  const canStep3 = isIntl
     ? boxL && boxW && boxH && weight && declaredValue
     : weight.trim();
+
+  const inputCls = (accent: "cyan" | "purple" | "green" = "cyan") => cn(
+    "w-full rounded-xl border bg-glass-100 px-4 py-2.5 text-sm text-white placeholder-white/25 font-mono focus:outline-none transition-all",
+    accent === "cyan"   ? "border-glass-border focus:border-cyan-signal/40"   :
+    accent === "purple" ? "border-glass-border focus:border-purple-plasma/40" :
+                          "border-glass-border focus:border-green-signal/40"
+  );
 
   return (
     <div
@@ -381,146 +403,116 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
         className="w-full max-w-xl rounded-2xl border border-glass-border bg-canvas shadow-2xl overflow-hidden"
         style={{ boxShadow: "0 0 60px rgba(0,229,255,0.08), 0 32px 64px rgba(0,0,0,0.7)" }}
       >
-        {/* Modal header */}
+        {/* Header */}
         <div className={cn(
           "flex items-center justify-between px-6 py-4 border-b border-glass-border",
           isIntl ? "bg-purple-plasma/5" : "bg-cyan-signal/5"
         )}>
           <div>
             <h2 className="font-heading text-base font-semibold text-white">New Shipment</h2>
-            <p className="text-xs text-white/40 font-mono mt-0.5">Step {step} of 3</p>
+            <p className="text-xs text-white/40 font-mono mt-0.5">Step {step} of {totalSteps}</p>
           </div>
-          <button onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg border border-glass-border text-white/40 hover:text-white/80 hover:bg-glass-200 transition-all">
-            <X className="h-3.5 w-3.5" />
-          </button>
+          <div className="flex items-center gap-3">
+            {/* Auto-detected type badge */}
+            <div className={cn(
+              "hidden sm:flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium",
+              isIntl ? "border-purple-plasma/30 bg-purple-plasma/10 text-purple-plasma" : "border-green-signal/30 bg-green-signal/10 text-green-signal"
+            )}>
+              {isIntl ? <Globe className="h-3 w-3" /> : <Home className="h-3 w-3" />}
+              {isIntl
+                ? `${senderCountryInfo?.flag ?? "🌐"} → ${receiverCountryInfo?.flag ?? "🌐"} International`
+                : "Local Delivery"}
+            </div>
+            <button onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg border border-glass-border text-white/40 hover:text-white/80 hover:bg-glass-200 transition-all">
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
 
         {/* Step progress */}
         <div className="flex gap-1 px-6 pt-4">
-          {[1,2,3].map((n) => (
+          {Array.from({ length: totalSteps }, (_, i) => i + 1).map((n) => (
             <div key={n} className="h-0.5 flex-1 rounded-full transition-all duration-300"
               style={{ backgroundColor: n < step ? (isIntl ? "#A855F7" : "#00FF88") : n === step ? (isIntl ? "#A855F7" : "#00E5FF") : "rgba(255,255,255,0.08)" }} />
           ))}
         </div>
 
-        <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+        <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
 
-          {/* Local / International toggle — always visible */}
-          <div className="flex rounded-xl border border-glass-border bg-glass-100 p-1 gap-1">
-            {([
-              { val: "local" as ShipmentMode,         label: "Local Delivery",      icon: <Home className="h-3.5 w-3.5" />,  activeColor: "text-green-signal bg-green-signal/10 border-green-signal/30" },
-              { val: "international" as ShipmentMode, label: "International · Balikbayan", icon: <Globe className="h-3.5 w-3.5" />, activeColor: "text-purple-plasma bg-purple-plasma/10 border-purple-plasma/30" },
-            ] as const).map((opt) => (
-              <button
-                key={opt.val}
-                onClick={() => { setMode(opt.val); setStep(1); }}
-                className={cn(
-                  "flex flex-1 items-center justify-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium transition-all",
-                  mode === opt.val ? opt.activeColor : "border-transparent text-white/40 hover:text-white/60"
-                )}
-              >
-                {opt.icon} {opt.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Balikbayan info */}
-          {isIntl && (
-            <div className="rounded-xl border border-purple-plasma/20 bg-purple-plasma/6 px-4 py-3 flex gap-3">
-              <Globe className="h-4 w-4 text-purple-plasma/70 flex-shrink-0 mt-0.5" />
-              <div>
-                <p className="text-xs font-semibold text-purple-plasma">Balikbayan Box — International Freight</p>
-                <p className="text-xs text-purple-plasma/55 mt-0.5">Base rate ₱500 · AI selects optimal carrier · Customs docs auto-generated · Sea (30-45d) or Air (5-10d)</p>
-              </div>
-            </div>
-          )}
-
-          {/* ── Step 1 — Sender & Receiver ── */}
+          {/* ── Step 1 — Sender ── */}
           {step === 1 && (
-            <div className="space-y-4">
-
-              {/* Sender */}
-              <div>
-                <p className="text-xs font-semibold text-cyan-signal mb-2 flex items-center gap-1.5">
-                  <Home className="h-3.5 w-3.5" /> Sender Details
-                </p>
-                <div className="space-y-2">
-                  <input value={senderName} onChange={(e) => setSenderName(e.target.value)}
-                    placeholder="Sender's Full Name"
-                    className="w-full rounded-xl border border-glass-border bg-glass-100 px-4 py-2.5 text-sm text-white placeholder-white/25 font-mono focus:outline-none focus:border-cyan-signal/40 transition-all" />
-                  <input value={senderAddress} onChange={(e) => setSenderAddress(e.target.value)}
-                    placeholder="Street Address"
-                    className="w-full rounded-xl border border-glass-border bg-glass-100 px-4 py-2.5 text-sm text-white placeholder-white/25 font-mono focus:outline-none focus:border-cyan-signal/40 transition-all" />
-                  <div className="grid grid-cols-2 gap-2">
-                    <input value={senderCity} onChange={(e) => setSenderCity(e.target.value)}
-                      placeholder="City"
-                      className="rounded-xl border border-glass-border bg-glass-100 px-4 py-2.5 text-sm text-white placeholder-white/25 font-mono focus:outline-none focus:border-cyan-signal/40 transition-all" />
-                    <input value={senderZip} onChange={(e) => setSenderZip(e.target.value)}
-                      placeholder="ZIP Code" maxLength={10}
-                      className="rounded-xl border border-glass-border bg-glass-100 px-4 py-2.5 text-sm text-white placeholder-white/25 font-mono focus:outline-none focus:border-cyan-signal/40 transition-all" />
-                  </div>
-                </div>
+            <div className="space-y-3">
+              <p className="text-xs font-semibold text-cyan-signal flex items-center gap-1.5">
+                <ArrowUpDown className="h-3.5 w-3.5" /> Sender / Pickup
+              </p>
+              <input value={senderName} onChange={(e) => setSenderName(e.target.value)}
+                placeholder="Sender's Full Name *" className={inputCls("cyan")} />
+              <input value={senderPhone} onChange={(e) => setSenderPhone(e.target.value)}
+                placeholder="Sender's Phone Number *" type="tel" className={inputCls("cyan")} />
+              <input value={senderAddress} onChange={(e) => setSenderAddress(e.target.value)}
+                placeholder="Street Address *" className={inputCls("cyan")} />
+              <div className="grid grid-cols-2 gap-2">
+                <input value={senderCity} onChange={(e) => setSenderCity(e.target.value)}
+                  placeholder="City *" className={inputCls("cyan")} />
+                <input value={senderZip} onChange={(e) => setSenderZip(e.target.value)}
+                  placeholder="ZIP Code *" maxLength={10} className={inputCls("cyan")} />
               </div>
-
-              <div className="border-t border-glass-border" />
-
-              {/* Receiver */}
               <div>
-                <p className={cn(
-                  "text-xs font-semibold mb-2 flex items-center gap-1.5",
-                  isIntl ? "text-purple-plasma" : "text-green-signal"
-                )}>
-                  {isIntl ? <Globe className="h-3.5 w-3.5" /> : <Home className="h-3.5 w-3.5" />}
-                  Receiver Details
-                </p>
-                <div className="space-y-2">
-                  <input value={receiverName} onChange={(e) => setReceiverName(e.target.value)}
-                    placeholder="Receiver's Full Name"
-                    className={cn(
-                      "w-full rounded-xl border bg-glass-100 px-4 py-2.5 text-sm text-white placeholder-white/25 font-mono focus:outline-none transition-all",
-                      isIntl ? "border-glass-border focus:border-purple-plasma/40" : "border-glass-border focus:border-green-signal/40"
-                    )} />
-                  <input value={receiverAddress} onChange={(e) => setReceiverAddress(e.target.value)}
-                    placeholder="Street Address"
-                    className={cn(
-                      "w-full rounded-xl border bg-glass-100 px-4 py-2.5 text-sm text-white placeholder-white/25 font-mono focus:outline-none transition-all",
-                      isIntl ? "border-glass-border focus:border-purple-plasma/40" : "border-glass-border focus:border-green-signal/40"
-                    )} />
-                  <div className="grid grid-cols-2 gap-2">
-                    <input value={receiverCity} onChange={(e) => setReceiverCity(e.target.value)}
-                      placeholder="City"
-                      className={cn(
-                        "rounded-xl border bg-glass-100 px-4 py-2.5 text-sm text-white placeholder-white/25 font-mono focus:outline-none transition-all",
-                        isIntl ? "border-glass-border focus:border-purple-plasma/40" : "border-glass-border focus:border-green-signal/40"
-                      )} />
-                    <input value={receiverZip} onChange={(e) => setReceiverZip(e.target.value)}
-                      placeholder="ZIP Code" maxLength={10}
-                      className={cn(
-                        "rounded-xl border bg-glass-100 px-4 py-2.5 text-sm text-white placeholder-white/25 font-mono focus:outline-none transition-all",
-                        isIntl ? "border-glass-border focus:border-purple-plasma/40" : "border-glass-border focus:border-green-signal/40"
-                      )} />
-                  </div>
-                  {isIntl && (
-                    <CountrySelect value={destCountry} onChange={setDestCountry} />
-                  )}
-                </div>
+                <label className="block text-2xs font-mono text-white/40 uppercase tracking-wider mb-1.5">Country</label>
+                <CountrySelect value={senderCountry} onChange={setSenderCountry} />
               </div>
-
             </div>
           )}
 
-          {/* ── Step 2 — Local ── */}
-          {step === 2 && !isIntl && (
+          {/* ── Step 2 — Receiver ── */}
+          {step === 2 && (
             <div className="space-y-3">
+              <p className={cn("text-xs font-semibold flex items-center gap-1.5", isIntl ? "text-purple-plasma" : "text-green-signal")}>
+                {isIntl ? <Globe className="h-3.5 w-3.5" /> : <Home className="h-3.5 w-3.5" />}
+                Receiver / Delivery
+              </p>
+              <input value={receiverName} onChange={(e) => setReceiverName(e.target.value)}
+                placeholder="Receiver's Full Name *" className={inputCls(isIntl ? "purple" : "green")} />
+              <input value={receiverPhone} onChange={(e) => setReceiverPhone(e.target.value)}
+                placeholder="Receiver's Phone Number *" type="tel" className={inputCls(isIntl ? "purple" : "green")} />
+              <input value={receiverAddress} onChange={(e) => setReceiverAddress(e.target.value)}
+                placeholder="Street Address *" className={inputCls(isIntl ? "purple" : "green")} />
+              <div className="grid grid-cols-2 gap-2">
+                <input value={receiverCity} onChange={(e) => setReceiverCity(e.target.value)}
+                  placeholder="City *" className={inputCls(isIntl ? "purple" : "green")} />
+                <input value={receiverZip} onChange={(e) => setReceiverZip(e.target.value)}
+                  placeholder="ZIP Code *" maxLength={10} className={inputCls(isIntl ? "purple" : "green")} />
+              </div>
+              <div>
+                <label className="block text-2xs font-mono text-white/40 uppercase tracking-wider mb-1.5">Country</label>
+                <CountrySelect value={receiverCountry} onChange={setReceiverCountry} />
+              </div>
+              {/* International auto-detect hint */}
+              {isIntl && (
+                <div className="rounded-xl border border-purple-plasma/20 bg-purple-plasma/6 px-4 py-3 flex gap-3">
+                  <Globe className="h-4 w-4 text-purple-plasma/70 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-xs font-semibold text-purple-plasma">International Shipment Detected</p>
+                    <p className="text-xs text-purple-plasma/55 mt-0.5">
+                      {senderCountryInfo?.flag} {senderCountryInfo?.label} → {receiverCountryInfo?.flag} {receiverCountryInfo?.label} · AI selects optimal carrier · Customs docs auto-generated
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Step 3 — Package (local) ── */}
+          {step === 3 && !isIntl && (
+            <div className="space-y-3">
+              <p className="text-xs font-semibold text-cyan-signal">Package Details</p>
               <div>
                 <label className="block text-2xs font-mono text-white/40 uppercase tracking-wider mb-1.5">Weight (kg)</label>
-                <input value={weight} onChange={(e) => setWeight(e.target.value)} type="number" min="0" step="0.1" placeholder="e.g. 1.5"
-                  className="w-full rounded-xl border border-glass-border bg-glass-100 px-4 py-2.5 text-sm text-white placeholder-white/20 font-mono focus:outline-none focus:border-cyan-signal/40 transition-all" />
+                <input value={weight} onChange={(e) => setWeight(e.target.value)} type="number" min="0" step="0.1" placeholder="e.g. 1.5" className={inputCls("cyan")} />
               </div>
               <div>
                 <label className="block text-2xs font-mono text-white/40 uppercase tracking-wider mb-1.5">Package Description</label>
-                <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="e.g. Electronics, Clothes"
-                  className="w-full rounded-xl border border-glass-border bg-glass-100 px-4 py-2.5 text-sm text-white placeholder-white/20 font-mono focus:outline-none focus:border-cyan-signal/40 transition-all" />
+                <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="e.g. Electronics, Clothes" className={inputCls("cyan")} />
               </div>
               <div>
                 <label className="block text-2xs font-mono text-white/40 uppercase tracking-wider mb-1.5">COD Amount (leave blank if prepaid)</label>
@@ -533,13 +525,14 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
             </div>
           )}
 
-          {/* ── Step 2 — International ── */}
-          {step === 2 && isIntl && (
+          {/* ── Step 3 — Package (international) ── */}
+          {step === 3 && isIntl && (
             <div className="space-y-3">
+              <p className="text-xs font-semibold text-purple-plasma">Box Details</p>
               <div>
                 <label className="block text-2xs font-mono text-white/40 uppercase tracking-wider mb-1.5">Box Dimensions (cm) — L × W × H</label>
                 <div className="grid grid-cols-3 gap-2">
-                  {[{v:boxL,s:setBoxL,p:"Length"},{v:boxW,s:setBoxW,p:"Width"},{v:boxH,s:setBoxH,p:"Height"}].map(({v,s,p}) => (
+                  {([{v:boxL,s:setBoxL,p:"Length"},{v:boxW,s:setBoxW,p:"Width"},{v:boxH,s:setBoxH,p:"Height"}] as const).map(({v,s,p}) => (
                     <input key={p} value={v} onChange={(e) => s(e.target.value)} type="number" min="0" placeholder={p}
                       className="rounded-xl border border-glass-border bg-glass-100 px-3 py-2.5 text-sm text-center text-white placeholder-white/20 font-mono focus:outline-none focus:border-purple-plasma/40 transition-all" />
                   ))}
@@ -547,13 +540,11 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
               </div>
               <div>
                 <label className="block text-2xs font-mono text-white/40 uppercase tracking-wider mb-1.5">Actual Weight (kg)</label>
-                <input value={weight} onChange={(e) => setWeight(e.target.value)} type="number" min="0" step="0.5" placeholder="e.g. 20.5"
-                  className="w-full rounded-xl border border-glass-border bg-glass-100 px-4 py-2.5 text-sm text-white placeholder-white/20 font-mono focus:outline-none focus:border-purple-plasma/40 transition-all" />
+                <input value={weight} onChange={(e) => setWeight(e.target.value)} type="number" min="0" step="0.5" placeholder="e.g. 20.5" className={inputCls("purple")} />
               </div>
               <div>
                 <label className="block text-2xs font-mono text-white/40 uppercase tracking-wider mb-1.5">Contents</label>
-                <input value={contents} onChange={(e) => setContents(e.target.value)} placeholder="e.g. Clothes, canned goods, electronics"
-                  className="w-full rounded-xl border border-glass-border bg-glass-100 px-4 py-2.5 text-sm text-white placeholder-white/20 font-mono focus:outline-none focus:border-purple-plasma/40 transition-all" />
+                <input value={contents} onChange={(e) => setContents(e.target.value)} placeholder="e.g. Clothes, canned goods, electronics" className={inputCls("purple")} />
               </div>
               <div>
                 <label className="block text-2xs font-mono text-white/40 uppercase tracking-wider mb-1.5">Declared Value (PHP) — for customs</label>
@@ -568,7 +559,7 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
                 <div className="grid grid-cols-2 gap-2">
                   {([
                     { val: "sea" as FreightMode, label: "Sea Freight", sub: "30–45 days · Most economical", icon: <Ship className="h-4 w-4" /> },
-                    { val: "air" as FreightMode, label: "Air Freight",  sub: "5–10 days · +₱800 premium",  icon: <PlaneTakeoff className="h-4 w-4" /> },
+                    { val: "air" as FreightMode, label: "Air Freight",  sub: "5–10 days · +₱800 premium",   icon: <PlaneTakeoff className="h-4 w-4" /> },
                   ] as const).map((opt) => (
                     <button key={opt.val} onClick={() => setFreightMode(opt.val)}
                       className={cn(
@@ -590,35 +581,40 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
             </div>
           )}
 
-          {/* ── Step 3 — Review ── */}
-          {step === 3 && (
+          {/* ── Review step ── */}
+          {step === reviewStep && (
             <div className="space-y-1">
               <div className={cn(
                 "inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold mb-3",
                 isIntl ? "border-purple-plasma/30 bg-purple-plasma/10 text-purple-plasma" : "border-green-signal/30 bg-green-signal/10 text-green-signal"
               )}>
                 {isIntl ? <Globe className="h-3 w-3" /> : <Home className="h-3 w-3" />}
-                {isIntl ? `Balikbayan Box · ${freightMode === "sea" ? "Sea Freight (30-45d)" : "Air Freight (5-10d)"}` : "Local Delivery"}
+                {isIntl
+                  ? `${senderCountryInfo?.flag} → ${receiverCountryInfo?.flag} · ${freightMode === "sea" ? "Sea Freight (30-45d)" : "Air Freight (5-10d)"}`
+                  : "Local Delivery"}
               </div>
               {(isIntl ? [
-                ["Sender",         `${senderName}`],
-                ["Sender Address", `${senderAddress}, ${senderCity} ${senderZip}`],
-                ["Receiver",       `${receiverName}`],
-                ["Receiver Address",`${receiverAddress}, ${receiverCity} ${receiverZip}`],
-                ["Country",        `${DEST_COUNTRIES.find(c=>c.code===destCountry)?.flag ?? ""} ${DEST_COUNTRIES.find(c=>c.code===destCountry)?.label ?? destCountry}`],
-                ["Box Dims",       `${boxL} × ${boxW} × ${boxH} cm`],
-                ["Weight",         `${weight} kg`],
-                ["Contents",       contents || "—"],
-                ["Declared Value", `₱${declaredValue}`],
-                ["Freight",        freightMode === "sea" ? "Sea Freight (30-45 days)" : "Air Freight (5-10 days)"],
+                ["Sender",          `${senderName}`],
+                ["Sender Phone",    senderPhone],
+                ["Sender Address",  `${senderAddress}, ${senderCity} ${senderZip}, ${senderCountryInfo?.flag} ${senderCountryInfo?.label ?? senderCountry}`],
+                ["Receiver",        `${receiverName}`],
+                ["Receiver Phone",  receiverPhone],
+                ["Receiver Address",`${receiverAddress}, ${receiverCity} ${receiverZip}, ${receiverCountryInfo?.flag} ${receiverCountryInfo?.label ?? receiverCountry}`],
+                ["Box Dims",        `${boxL} × ${boxW} × ${boxH} cm`],
+                ["Weight",          `${weight} kg`],
+                ["Contents",        contents || "—"],
+                ["Declared Value",  `₱${declaredValue}`],
+                ["Freight",         freightMode === "sea" ? "Sea Freight (30-45 days)" : "Air Freight (5-10 days)"],
               ] : [
-                ["Sender",         `${senderName}`],
-                ["Sender Address", `${senderAddress}, ${senderCity} ${senderZip}`],
-                ["Receiver",       `${receiverName}`],
+                ["Sender",          `${senderName}`],
+                ["Sender Phone",    senderPhone],
+                ["Sender Address",  `${senderAddress}, ${senderCity} ${senderZip}, ${senderCountryInfo?.flag} ${senderCountryInfo?.label ?? senderCountry}`],
+                ["Receiver",        `${receiverName}`],
+                ["Receiver Phone",  receiverPhone],
                 ["Receiver Address",`${receiverAddress}, ${receiverCity} ${receiverZip}`],
-                ["Weight",         `${weight} kg`],
-                ["Description",    description || "—"],
-                ["COD",            codAmount ? `₱${codAmount}` : "Prepaid"],
+                ["Weight",          `${weight} kg`],
+                ["Description",     description || "—"],
+                ["COD",             codAmount ? `₱${codAmount}` : "Prepaid"],
               ]).map(([label, value]) => (
                 <div key={label} className="flex justify-between py-2 border-b border-glass-border">
                   <span className="text-xs text-white/40 font-mono">{label}</span>
@@ -634,7 +630,7 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
             </div>
           )}
 
-          {/* Navigation buttons */}
+          {/* Error + Nav */}
           {bookError && (
             <div className="rounded-lg border border-red-signal/30 bg-red-surface px-3 py-2 text-xs text-red-signal font-mono">
               {bookError}
@@ -647,10 +643,10 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
                 ← Back
               </button>
             )}
-            {step < 3 ? (
+            {step < reviewStep ? (
               <button
                 onClick={() => setStep(s => s + 1)}
-                disabled={step === 1 ? !step1Valid : !step2Valid}
+                disabled={step === 1 ? !canStep1 : step === 2 ? !canStep2 : !canStep3}
                 className={cn(
                   "flex-1 rounded-xl py-2.5 text-sm font-semibold text-canvas transition-all",
                   isIntl

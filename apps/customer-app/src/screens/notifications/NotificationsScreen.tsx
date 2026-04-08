@@ -3,8 +3,9 @@
  * Push notification history: delivery alerts, promos, loyalty events.
  */
 import React from "react";
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { FadeInView } from '../../components/FadeInView';
 import { View, Text, StyleSheet, FlatList, Pressable } from "react-native";
-import Animated, { FadeInDown } from "react-native-reanimated";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 
@@ -51,7 +52,7 @@ export function NotificationsScreen() {
   function renderItem({ item, index }: { item: Notif; index: number }) {
     const { icon, color } = TYPE_CONFIG[item.type];
     return (
-      <Animated.View entering={FadeInDown.delay(index * 40).springify()}>
+      <FadeInView fromY={-16}>
         <Pressable style={({ pressed }) => [s.row, !item.read && s.rowUnread, { opacity: pressed ? 0.8 : 1 }]}>
           <View style={[s.iconWrap, { backgroundColor: color + "20" }]}>
             <Ionicons name={icon as any} size={18} color={color} />
@@ -63,7 +64,7 @@ export function NotificationsScreen() {
             <Text style={s.time}>{item.time}</Text>
           </View>
         </Pressable>
-      </Animated.View>
+      </FadeInView>
     );
   }
 

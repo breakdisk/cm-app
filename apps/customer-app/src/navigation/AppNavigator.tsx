@@ -7,6 +7,8 @@ import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { Ionicons } from "@expo/vector-icons";
 import { useSelector } from "react-redux";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { StatusBar } from "expo-status-bar";
 import type { RootState } from "../store";
 
 import { HomeScreen }             from "../screens/home/HomeScreen";
@@ -32,6 +34,9 @@ const Stack = createNativeStackNavigator();
 // ── Tab navigator (authenticated) ──────────────────────────────────────────────
 
 function TabNavigator() {
+  const insets = useSafeAreaInsets();
+  const tabBarHeight = 56 + insets.bottom;
+
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
@@ -40,8 +45,8 @@ function TabNavigator() {
           backgroundColor: CANVAS,
           borderTopColor:  BORDER,
           borderTopWidth:  1,
-          paddingBottom:   6,
-          height:          62,
+          height:          tabBarHeight,
+          paddingBottom:   insets.bottom,
         },
         tabBarActiveTintColor:   CYAN,
         tabBarInactiveTintColor: "rgba(255,255,255,0.35)",
@@ -99,14 +104,17 @@ export function AppNavigator() {
   const showOnboarding = isGuest || onboardingStep !== "complete";
 
   return (
-    <NavigationContainer>
-      <Stack.Navigator screenOptions={{ headerShown: false, contentStyle: { backgroundColor: CANVAS }, animation: "fade" }}>
-        {showOnboarding ? (
-          <Stack.Screen name="Onboarding" component={OnboardingNavigator} />
-        ) : (
-          <Stack.Screen name="Main" component={TabNavigator} />
-        )}
-      </Stack.Navigator>
-    </NavigationContainer>
+    <SafeAreaView style={{ flex: 1, backgroundColor: CANVAS }} edges={["left", "right"]}>
+      <StatusBar style="light" backgroundColor={CANVAS} />
+      <NavigationContainer>
+        <Stack.Navigator screenOptions={{ headerShown: false, contentStyle: { backgroundColor: CANVAS }, animation: "fade" }}>
+          {showOnboarding ? (
+            <Stack.Screen name="Onboarding" component={OnboardingNavigator} />
+          ) : (
+            <Stack.Screen name="Main" component={TabNavigator} />
+          )}
+        </Stack.Navigator>
+      </NavigationContainer>
+    </SafeAreaView>
   );
 }

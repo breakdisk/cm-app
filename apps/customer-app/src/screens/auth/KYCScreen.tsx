@@ -6,11 +6,12 @@
  * International shipments: Passport only (customs requirement).
  */
 import React, { useState } from "react";
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { FadeInView } from '../../components/FadeInView';
 import {
   View, Text, StyleSheet, Pressable, Image,
   ScrollView, Platform, Alert,
 } from "react-native";
-import Animated, { FadeInDown, FadeInUp, FadeIn } from "react-native-reanimated";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
@@ -62,45 +63,61 @@ export function KYCScreen() {
 
   async function pickImage() {
     if (Platform.OS === "web") {
-      // Web fallback — simulate a picked image
       setImageUri("https://via.placeholder.com/400x240/0A0F1E/00E5FF?text=ID+Document");
       return;
     }
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) {
-      Alert.alert("Permission needed", "Allow photo access to upload your ID.");
-      return;
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert("Permission needed", "Go to Settings and allow photo library access.");
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'] as any,
+        quality: 0.85,
+        allowsEditing: true,
+        aspect: [4, 3],
+      });
+      if (!result.canceled && result.assets.length > 0) {
+        setImageUri(result.assets[0].uri);
+      }
+    } catch (err) {
+      Alert.alert("Error", "Could not open photo library. Please try again.");
     }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality:    0.85,
-      allowsEditing: true,
-      aspect:     [4, 3],
-    });
-    if (!result.canceled) setImageUri(result.assets[0].uri);
   }
 
   async function takePhoto() {
     if (Platform.OS === "web") { pickImage(); return; }
-    const permission = await ImagePicker.requestCameraPermissionsAsync();
-    if (!permission.granted) {
-      Alert.alert("Permission needed", "Allow camera access to photograph your ID.");
-      return;
+    try {
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert("Permission needed", "Go to Settings and allow camera access.");
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({
+        quality: 0.85,
+        allowsEditing: true,
+        aspect: [4, 3],
+      });
+      if (!result.canceled && result.assets.length > 0) {
+        setImageUri(result.assets[0].uri);
+      }
+    } catch (err) {
+      Alert.alert("Error", "Could not open camera. Please try again.");
     }
-    const result = await ImagePicker.launchCameraAsync({
-      quality:    0.85,
-      allowsEditing: true,
-      aspect:     [4, 3],
-    });
-    if (!result.canceled) setImageUri(result.assets[0].uri);
   }
 
-  function handleSubmit() {
+  async function handleSubmit() {
     if (!selectedId || !imageUri) return;
     setSubmitting(true);
-    setTimeout(() => {
+    try {
+      // Simulate upload delay (replace with real API call)
+      await new Promise(resolve => setTimeout(resolve, 1500));
       dispatch(authActions.submitKyc({ idType: selectedId }));
-    }, 1200);
+    } catch (err) {
+      Alert.alert("Upload failed", "Please check your connection and try again.");
+      setSubmitting(false);
+    }
   }
 
   const canSubmit = !!selectedId && !!imageUri;
@@ -109,7 +126,7 @@ export function KYCScreen() {
     <ScrollView style={{ flex: 1, backgroundColor: CANVAS }} contentContainerStyle={{ paddingBottom: 48 }}>
 
       <LinearGradient colors={["rgba(0,255,136,0.08)", "transparent"]} style={s.hero}>
-        <Animated.View entering={FadeInDown.springify()}>
+        <FadeInView fromY={-16}>
           {/* Progress */}
           <View style={s.progressRow}>
             {[1, 2, 3].map((n) => (
@@ -120,11 +137,11 @@ export function KYCScreen() {
           <Text style={s.heroSub}>
             Hi {name?.split(" ")[0] ?? "there"}, one last step before you can book shipments.
           </Text>
-        </Animated.View>
+        </FadeInView>
       </LinearGradient>
 
       {/* ID type selector */}
-      <Animated.View entering={FadeInUp.delay(80).springify()} style={s.section}>
+      <FadeInView delay={80} fromY={16} style={s.section}>
         <Text style={s.sectionLabel}>Select ID Type</Text>
         <View style={s.idOptions}>
           {ID_OPTIONS.map((opt) => (
@@ -150,11 +167,11 @@ export function KYCScreen() {
             </Pressable>
           ))}
         </View>
-      </Animated.View>
+      </FadeInView>
 
       {/* Upload section */}
       {selectedId && (
-        <Animated.View entering={FadeIn.duration(300)} style={s.section}>
+        <FadeInView duration={300} style={s.section}>
           <Text style={s.sectionLabel}>
             Upload {selectedId === "passport" ? "Passport Bio-data Page" : "Emirates ID (Front)"}
           </Text>
@@ -176,7 +193,7 @@ export function KYCScreen() {
 
           {/* Image preview or upload zone */}
           {imageUri ? (
-            <Animated.View entering={FadeIn.duration(200)} style={s.previewWrap}>
+            <FadeInView duration={200} style={s.previewWrap}>
               <Image source={{ uri: imageUri }} style={s.previewImage} resizeMode="cover" />
               <Pressable onPress={() => setImageUri(null)} style={s.removeBtn}>
                 <Ionicons name="close-circle" size={22} color="#FF3B5C" />
@@ -185,7 +202,7 @@ export function KYCScreen() {
                 <Ionicons name="checkmark-circle" size={18} color={GREEN} />
                 <Text style={s.previewCheckText}>Document uploaded</Text>
               </View>
-            </Animated.View>
+            </FadeInView>
           ) : (
             <View style={s.uploadZone}>
               <Ionicons name="cloud-upload-outline" size={32} color="rgba(255,255,255,0.2)" />
@@ -203,19 +220,19 @@ export function KYCScreen() {
               </View>
             </View>
           )}
-        </Animated.View>
+        </FadeInView>
       )}
 
       {/* Emirates ID note */}
       {selectedId === "emirates_id" && (
-        <Animated.View entering={FadeIn.duration(200)} style={[s.section, { paddingTop: 0 }]}>
+        <FadeInView duration={200} style={[s.section, { paddingTop: 0 }]}>
           <View style={s.noteBox}>
             <Ionicons name="information-circle-outline" size={15} color={AMBER} />
             <Text style={s.noteText}>
               Emirates ID is accepted for local (domestic) shipments only. For international or Balikbayan Box shipping, a valid Passport is required.
             </Text>
           </View>
-        </Animated.View>
+        </FadeInView>
       )}
 
       {/* Skip / Submit */}

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ScrollView, View, Text, Animated } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppSelector } from '../../store/hooks';
 import { COLORS } from '../../utils/colors';
 import { useFadeInUp } from '../../hooks/useAnimation';
@@ -8,6 +9,7 @@ import RecentShipmentCard from './RecentShipmentCard';
 import LoyaltyBanner from './LoyaltyBanner';
 
 export function HomeScreen({ navigation }: any) {
+  const insets = useSafeAreaInsets();
   const auth = useAppSelector(state => state.auth);
   const shipments = useAppSelector(state => state.shipments.list);
   const recentShipments = shipments.slice(0, 3);
