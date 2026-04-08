@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { getFirebaseApp } from "@/lib/firebase/client";
@@ -71,7 +71,7 @@ function GoogleIcon() {
   );
 }
 
-export default function LoginPage() {
+function LoginPageInner() {
   const router       = useRouter();
   const searchParams = useSearchParams();
   const [selectedRole, setSelectedRole] = useState<RoleId | null>(
@@ -301,5 +301,13 @@ export default function LoginPage() {
         </div>
       </motion.div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense>
+      <LoginPageInner />
+    </Suspense>
   );
 }
