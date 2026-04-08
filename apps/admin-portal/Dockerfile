@@ -1,8 +1,8 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
-COPY package.json package-lock.json* ./
+COPY apps/admin-portal/package.json apps/admin-portal/package-lock.json* ./
 RUN npm install --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000
-COPY . .
+COPY apps/admin-portal/ .
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
