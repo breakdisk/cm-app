@@ -1,5 +1,3 @@
-rootProject.name = "DriverApp"
-
 pluginManagement {
     repositories {
         google()
@@ -16,6 +14,8 @@ dependencyResolutionManagement {
         maven { url = uri("https://api.mapbox.com/downloads/v2/releases/maven") }
     }
 }
+
+rootProject.name = "DriverApp"
 
 include(":app")
 include(":core:network")
