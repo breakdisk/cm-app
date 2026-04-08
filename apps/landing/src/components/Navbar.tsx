@@ -9,6 +9,7 @@ const navLinks = [
   { label: "How It Works", href: "#how-it-works" },
   { label: "AI Engine", href: "#ai" },
   { label: "Pricing", href: "#pricing" },
+  { label: "Track", href: "/track" },
 ];
 
 export default function Navbar() {
@@ -62,7 +63,7 @@ export default function Navbar() {
           {/* CTA */}
           <div className="hidden lg:flex items-center gap-3">
             <a
-              href="#"
+              href="/login"
               className="px-4 py-2 text-sm text-slate-300 hover:text-white transition-colors duration-200"
             >
               Sign in
@@ -98,6 +99,13 @@ export default function Navbar() {
               {link.label}
             </a>
           ))}
+          <a
+            href="/login"
+            onClick={() => setOpen(false)}
+            className="py-3 text-sm text-slate-300 hover:text-cyan-neon border-b border-white/[0.04] transition-colors"
+          >
+            Sign in
+          </a>
           <a
             href="#pricing"
             className="mt-3 py-3 text-center rounded-xl text-sm font-semibold bg-gradient-to-r from-cyan-neon to-purple-plasma text-[#050810]"
