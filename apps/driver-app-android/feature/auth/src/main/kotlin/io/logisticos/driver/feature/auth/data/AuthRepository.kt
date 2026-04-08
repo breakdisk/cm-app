@@ -1,0 +1,29 @@
+package io.logisticos.driver.feature.auth.data
+
+import io.logisticos.driver.core.network.auth.SessionManager
+import io.logisticos.driver.core.network.service.IdentityApiService
+import io.logisticos.driver.core.network.service.OtpSendRequest
+import io.logisticos.driver.core.network.service.OtpVerifyRequest
+import javax.inject.Inject
+import javax.inject.Singleton
+
+@Singleton
+class AuthRepository @Inject constructor(
+    private val apiService: IdentityApiService,
+    private val sessionManager: SessionManager
+) {
+    suspend fun sendOtp(phone: String): Result<Unit> = runCatching {
+        apiService.sendOtp(OtpSendRequest(phone = phone))
+        Unit
+    }
+
+    suspend fun verifyOtp(phone: String, otp: String): Result<Unit> = runCatching {
+        val response = apiService.verifyOtp(OtpVerifyRequest(phone = phone, otp = otp))
+        sessionManager.saveTokens(jwt = response.jwt, refreshToken = response.refreshToken)
+        sessionManager.saveTenantId(response.tenantId)
+    }
+
+    fun isLoggedIn(): Boolean = sessionManager.isLoggedIn()
+    fun isOfflineModeActive(): Boolean = sessionManager.isOfflineModeActive()
+    fun logout() = sessionManager.clearSession()
+}
