@@ -28,6 +28,10 @@ object AppModule {
         else HttpLoggingInterceptor.Level.NONE
 
     @Provides
+    @Named("is_debug")
+    fun provideIsDebug(): Boolean = BuildConfig.DEBUG
+
+    @Provides
     @Named("maps_api_key")
     fun provideMapsApiKey(): String = BuildConfig.MAPS_API_KEY
 

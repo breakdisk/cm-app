@@ -41,6 +41,12 @@ impl KafkaProducer {
         self.publish_raw(topic, &key, &payload).await
     }
 
+    /// Publish a `serde_json::Value` payload. Uses an empty string key.
+    pub async fn publish_json(&self, topic: &str, payload: &serde_json::Value) -> anyhow::Result<()> {
+        let body = serde_json::to_string(payload)?;
+        self.publish_raw(topic, "", &body).await
+    }
+
     /// Publish a raw JSON payload. Prefer `publish_event` for typed events.
     pub async fn publish_raw(&self, topic: &str, key: &str, payload: &str) -> anyhow::Result<()> {
         self.inner

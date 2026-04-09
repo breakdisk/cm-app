@@ -26,6 +26,8 @@ dependencies {
     implementation(libs.workmanager.ktx)
     implementation(libs.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.okhttp.core)
+    implementation(libs.retrofit.core)
     ksp(libs.room.compiler)
     ksp(libs.hilt.compiler)
     ksp(libs.hilt.work.compiler)

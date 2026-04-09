@@ -133,9 +133,9 @@ export function TrackingScreen() {
             [currentAwb]
           );
           if (tracking) {
-            const row = tracking as { events: string; lastUpdated: string };
-            setOfflineData(JSON.parse(row.events));
-            setLastUpdated(new Date(row.lastUpdated).getTime());
+            const row = tracking as Record<string, string>;
+            setOfflineData(JSON.parse(row['events'] ?? '{}'));
+            setLastUpdated(new Date(row['lastUpdated'] ?? Date.now()).getTime());
           }
         } catch (err) {
           console.error('Failed to load offline tracking:', err);
@@ -163,7 +163,7 @@ export function TrackingScreen() {
         setCurrentAwb(awb); // Trigger the hook to load real tracking data
         dispatch(trackingActions.addToHistory({
           awb,
-          status: found.status,
+          currentStatus: found.status,
           events: [],
         }));
       } else {
@@ -360,12 +360,12 @@ export function TrackingScreen() {
             <>
               <Text style={s.hintTitle}>Recent Searches</Text>
               {recentSearches.slice(0, 5).map((item) => {
-                const cfg = STATUS_CONFIG[item.status as ShipmentStatus] ?? STATUS_CONFIG["pending"];
+                const cfg = STATUS_CONFIG[item.awb as ShipmentStatus] ?? STATUS_CONFIG["pending"];
                 return (
-                  <Pressable key={item.tracking_number} onPress={() => setQuery(item.tracking_number)} style={({ pressed }) => [s.hintRow, { opacity: pressed ? 0.7 : 1 }]}>
+                  <Pressable key={item.awb} onPress={() => setQuery(item.awb)} style={({ pressed }) => [s.hintRow, { opacity: pressed ? 0.7 : 1 }]}>
                     <Ionicons name="time-outline" size={14} color="rgba(255,255,255,0.3)" />
-                    <Text style={s.hintAWB}>{item.tracking_number}</Text>
-                    <Text style={[s.hintStatus, { color: cfg.color }]}>{cfg.label}</Text>
+                    <Text style={s.hintAWB}>{item.awb}</Text>
+                    <Text style={[s.hintStatus, { color: cfg?.color ?? AMBER }]}>{cfg?.label ?? item.awb}</Text>
                   </Pressable>
                 );
               })}

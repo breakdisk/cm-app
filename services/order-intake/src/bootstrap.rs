@@ -1,55 +1,67 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::Context;
-use sqlx::postgres::PgPoolOptions;
 use logisticos_auth::jwt::JwtService;
+use sqlx::postgres::PgPoolOptions;
 
 use crate::{
-    api::http::{AppState, router},
-    application::{
-        queries::ShipmentQueryService,
-        services::shipment_service::ShipmentService,
-    },
+    api::http::{router, AppState},
+    application::{queries::ShipmentQueryService, services::shipment_service::ShipmentService},
     config::Config,
     infrastructure::{
+        awb::{FallbackAwbGenerator, PostgresAwbGenerator, RedisAwbGenerator},
         db::PgShipmentRepository,
         external::PassthroughNormalizer,
-        messaging::{KafkaEventPublisher, status_consumer::start_status_consumer},
+        messaging::{status_consumer::start_status_consumer, KafkaEventPublisher},
     },
 };
 
 pub async fn run() -> anyhow::Result<()> {
     let cfg = Config::load()?;
     logisticos_tracing::init(logisticos_tracing::TracingConfig {
-        service_name:  "order-intake",
-        env:           &cfg.app.env,
+        service_name: "order-intake",
+        env: &cfg.app.env,
         otlp_endpoint: None,
-        log_level:     None,
+        log_level: None,
     })?;
 
     // Database
     let pool = PgPoolOptions::new()
         .max_connections(cfg.database.max_connections)
-        .after_connect(|conn, _meta| Box::pin(async move {
-            sqlx::query("SET search_path TO order_intake, public")
-                .execute(&mut *conn)
-                .await?;
-            Ok(())
-        }))
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                sqlx::query("SET search_path TO order_intake, public")
+                    .execute(&mut *conn)
+                    .await?;
+                Ok(())
+            })
+        })
         .connect(&cfg.database.url)
         .await?;
 
     sqlx::migrate!("./migrations").run(&pool).await?;
 
     // Infrastructure adapters
-    let repo       = Arc::new(PgShipmentRepository { pool: pool.clone() });
-    let publisher  = Arc::new(KafkaEventPublisher::new(&cfg.kafka.brokers)?);
+    let repo = Arc::new(PgShipmentRepository { pool: pool.clone() });
+    let publisher = Arc::new(KafkaEventPublisher::new(&cfg.kafka.brokers)?);
     let normalizer = Arc::new(PassthroughNormalizer);
 
+    // AWB generator: Redis primary with PostgreSQL fallback
+    let redis_conn = redis::Client::open(cfg.redis.url.as_str())
+        .context("Invalid Redis URL")?
+        .get_connection_manager()
+        .await
+        .context("Failed to connect to Redis")?;
+    let awb_generator: Arc<dyn crate::domain::value_objects::AwbGenerator> =
+        Arc::new(FallbackAwbGenerator::new(
+            Arc::new(RedisAwbGenerator::new(redis_conn)),
+            Arc::new(PostgresAwbGenerator::new(pool.clone())),
+        ));
+
     // Spawn Kafka status consumer in background
-    let pool_for_consumer   = pool.clone();
+    let pool_for_consumer = pool.clone();
     let brokers_for_consumer = cfg.kafka.brokers.clone();
-    let group_for_consumer   = cfg.kafka.group_id.clone();
+    let group_for_consumer = cfg.kafka.group_id.clone();
     tokio::spawn(async move {
         if let Err(e) = start_status_consumer(
             &brokers_for_consumer,
@@ -66,12 +78,17 @@ pub async fn run() -> anyhow::Result<()> {
     let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
 
     // Application services
-    let svc   = Arc::new(ShipmentService::new(repo.clone(), publisher, normalizer));
+    let svc = Arc::new(ShipmentService::new(
+        repo.clone(),
+        publisher,
+        normalizer,
+        awb_generator,
+    ));
     let query = Arc::new(ShipmentQueryService::new(repo.clone()));
 
     // Axum router
-    use tower_http::cors::CorsLayer;
     use axum::http::{HeaderName, HeaderValue, Method};
+    use tower_http::cors::CorsLayer;
 
     let cors = CorsLayer::new()
         .allow_origin([
@@ -81,8 +98,12 @@ pub async fn run() -> anyhow::Result<()> {
             "http://localhost:8083".parse::<HeaderValue>().unwrap(),
         ])
         .allow_methods([
-            Method::GET, Method::POST, Method::PUT,
-            Method::PATCH, Method::DELETE, Method::OPTIONS,
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
         ])
         .allow_headers([
             HeaderName::from_static("content-type"),

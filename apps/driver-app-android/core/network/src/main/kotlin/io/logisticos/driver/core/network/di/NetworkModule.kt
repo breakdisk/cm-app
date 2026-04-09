@@ -43,18 +43,23 @@ object NetworkModule {
         authInterceptor: AuthInterceptor,
         tenantInterceptor: TenantInterceptor,
         tokenAuthenticator: TokenAuthenticator,
-        loggingInterceptor: HttpLoggingInterceptor
+        loggingInterceptor: HttpLoggingInterceptor,
+        @Named("is_debug") isDebug: Boolean
     ): OkHttpClient = OkHttpClient.Builder()
         .addInterceptor(authInterceptor)
         .addInterceptor(tenantInterceptor)
         .addInterceptor(loggingInterceptor)
         .authenticator(tokenAuthenticator)
-        .certificatePinner(
-            CertificatePinner.Builder()
-                .add("api.logisticos.io", "sha256/REPLACE_WITH_ACTUAL_PIN_1=")
-                .add("api.logisticos.io", "sha256/REPLACE_WITH_ACTUAL_PIN_2=")
-                .build()
-        )
+        .apply {
+            if (!isDebug) {
+                certificatePinner(
+                    CertificatePinner.Builder()
+                        .add("api.logisticos.io", "sha256/REPLACE_WITH_ACTUAL_PIN_1=")
+                        .add("api.logisticos.io", "sha256/REPLACE_WITH_ACTUAL_PIN_2=")
+                        .build()
+                )
+            }
+        }
         .build()
 
     @Provides @Singleton

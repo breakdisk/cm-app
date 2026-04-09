@@ -2,17 +2,26 @@
 
 use std::sync::Arc;
 use chrono::Utc;
-use logisticos_events::{Event, payloads::ShipmentCreated, topics};
+use logisticos_events::{Event, payloads::{AwbIssued, ShipmentCreated}, topics};
 use logisticos_errors::{AppError, AppResult};
-use logisticos_types::{ShipmentId, MerchantId, CustomerId, Money, Currency, ShipmentStatus, TenantId};
+use logisticos_types::{
+    awb::ServiceCode,
+    ShipmentId, MerchantId, CustomerId, Money, Currency, ShipmentStatus, TenantId,
+};
 use crate::{
     application::commands::{
         CreateShipmentCommand, CancelShipmentCommand,
         BulkCreateShipmentCommand, BulkCreateResult, BulkRowError,
     },
     domain::{
-        entities::shipment::Shipment,
-        value_objects::{ServiceType, ShipmentWeight, ShipmentDimensions, TrackingNumber},
+        entities::{
+            shipment::Shipment,
+            piece::Piece,
+        },
+        value_objects::{
+            ServiceType, ShipmentWeight, ShipmentDimensions,
+            AwbGenerator, generate_child_awbs,
+        },
     },
 };
 
@@ -33,6 +42,11 @@ pub trait ShipmentRepository: Send + Sync {
     fn save<'a>(
         &'a self,
         shipment: &'a Shipment,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+    fn save_pieces<'a>(
+        &'a self,
+        pieces: &'a [Piece],
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
     fn list<'a>(
@@ -58,31 +72,41 @@ pub trait AddressNormalizer: Send + Sync {
 }
 
 pub struct ShipmentService {
-    pub repo:       Arc<dyn ShipmentRepository>,
-    pub publisher:  Arc<dyn EventPublisher>,
-    pub normalizer: Arc<dyn AddressNormalizer>,
+    pub repo:          Arc<dyn ShipmentRepository>,
+    pub publisher:     Arc<dyn EventPublisher>,
+    pub normalizer:    Arc<dyn AddressNormalizer>,
+    pub awb_generator: Arc<dyn AwbGenerator>,
 }
 
 impl ShipmentService {
     pub fn new(
-        repo: Arc<dyn ShipmentRepository>,
-        publisher: Arc<dyn EventPublisher>,
-        normalizer: Arc<dyn AddressNormalizer>,
+        repo:          Arc<dyn ShipmentRepository>,
+        publisher:     Arc<dyn EventPublisher>,
+        normalizer:    Arc<dyn AddressNormalizer>,
+        awb_generator: Arc<dyn AwbGenerator>,
     ) -> Self {
-        Self { repo, publisher, normalizer }
+        Self { repo, publisher, normalizer, awb_generator }
     }
 
     pub async fn create(&self, cmd: CreateShipmentCommand) -> AppResult<Shipment> {
-        // Parse service type
+        // ── Validate service type ────────────────────────────────────────────
         let service_type = match cmd.service_type.as_str() {
-            "standard"   => ServiceType::Standard,
-            "express"    => ServiceType::Express,
-            "same_day"   => ServiceType::SameDay,
-            "balikbayan" => ServiceType::Balikbayan,
+            "standard"      => ServiceType::Standard,
+            "express"       => ServiceType::Express,
+            "same_day"      => ServiceType::SameDay,
+            "balikbayan"    => ServiceType::Balikbayan,
+            "international" => ServiceType::Balikbayan, // routes via same freight flow
             other => return Err(AppError::Validation(format!("Unknown service type: {other}"))),
         };
 
-        // Business rule: same-day cutoff at 14:00
+        let service_code = match service_type {
+            ServiceType::Standard   => ServiceCode::Standard,
+            ServiceType::Express    => ServiceCode::Express,
+            ServiceType::SameDay    => ServiceCode::SameDay,
+            ServiceType::Balikbayan => ServiceCode::Balikbayan,
+        };
+
+        // ── Business rule: same-day cutoff at 14:00 ──────────────────────────
         if service_type == ServiceType::SameDay {
             let hour = Utc::now().format("%H").to_string().parse::<u32>().unwrap_or(0);
             if hour >= 14 {
@@ -92,11 +116,11 @@ impl ShipmentService {
             }
         }
 
-        // Validate weight
+        // ── Validate weight ──────────────────────────────────────────────────
         let weight = ShipmentWeight::from_grams(cmd.weight_grams);
         weight.validate().map_err(|e| AppError::Validation(e.to_string()))?;
 
-        // Business rule: COD must not exceed declared value
+        // ── Business rule: COD must not exceed declared value ────────────────
         if let (Some(cod), Some(declared)) = (cmd.cod_amount_cents, cmd.declared_value_cents) {
             if cod > declared {
                 return Err(AppError::BusinessRule(
@@ -105,11 +129,14 @@ impl ShipmentService {
             }
         }
 
-        // Normalize and geocode addresses
+        // ── Piece count validation ───────────────────────────────────────────
+        let piece_count = cmd.piece_count.unwrap_or(1).max(1).min(999);
+
+        // ── Normalize and geocode addresses ──────────────────────────────────
         let origin      = self.normalizer.normalize(&cmd.origin).await.map_err(AppError::Internal)?;
         let destination = self.normalizer.normalize(&cmd.destination).await.map_err(AppError::Internal)?;
 
-        // Billable weight = max(actual, volumetric)
+        // ── Dimensions / billable weight ─────────────────────────────────────
         let dimensions = match (cmd.length_cm, cmd.width_cm, cmd.height_cm) {
             (Some(l), Some(w), Some(h)) => Some(ShipmentDimensions { length_cm: l, width_cm: w, height_cm: h }),
             _ => None,
@@ -118,15 +145,57 @@ impl ShipmentService {
             .map(|d| d.volumetric_weight_grams().max(weight.grams))
             .unwrap_or(weight.grams);
 
+        // ── Generate master AWB ───────────────────────────────────────────────
+        let tenant_code = logisticos_types::awb::TenantCode::new(&cmd.tenant_code)
+            .map_err(|e| AppError::Validation(e.to_string()))?;
+        let master_awb = self
+            .awb_generator
+            .next_awb(&tenant_code, service_code)
+            .await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
+
+        // ── Generate child AWBs (one per piece) ───────────────────────────────
+        let child_awbs = generate_child_awbs(&master_awb, piece_count)
+            .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
+
         let now = Utc::now();
+
+        // ── Build piece records ───────────────────────────────────────────────
+        let piece_weight = ShipmentWeight::from_grams(
+            // If individual piece weights not provided, distribute evenly
+            weight.grams / piece_count as u32
+        );
+        let shipment_id = ShipmentId::new();
+
+        let pieces: Vec<Piece> = child_awbs
+            .iter()
+            .map(|child| Piece {
+                id: uuid::Uuid::new_v4(),
+                shipment_id: shipment_id.clone(),
+                piece_number: child.piece_number(),
+                piece_awb: child.clone(),
+                declared_weight: piece_weight,
+                actual_weight: None,
+                dimensions,
+                description: cmd.description.clone(),
+                status: logisticos_types::PieceStatus::Pending,
+                last_hub_id: None,
+                last_scanned_at: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .collect();
+
+        // ── Build shipment record ─────────────────────────────────────────────
         let shipment = Shipment {
-            id: ShipmentId::new(),
+            id: shipment_id.clone(),
             tenant_id: TenantId::from_uuid(cmd.tenant_id),
             merchant_id: MerchantId::from_uuid(cmd.merchant_id),
             customer_id: CustomerId::new(),
             customer_name: cmd.customer_name.clone(),
             customer_phone: cmd.customer_phone.clone(),
-            tracking_number: TrackingNumber::generate(),
+            awb: master_awb.clone(),
+            piece_count,
             status: ShipmentStatus::Pending,
             service_type,
             origin,
@@ -140,9 +209,33 @@ impl ShipmentService {
             updated_at: now,
         };
 
+        // ── Persist ───────────────────────────────────────────────────────────
         self.repo.save(&shipment).await.map_err(AppError::Internal)?;
+        self.repo.save_pieces(&pieces).await.map_err(AppError::Internal)?;
 
-        // Emit event — dispatch service subscribes
+        // ── Publish AwbIssued (fire-and-forget) ───────────────────────────────
+        let awb_event = Event::new(
+            "logisticos/order-intake",
+            "awb.issued",
+            cmd.tenant_id,
+            AwbIssued {
+                awb:          master_awb.as_str().to_string(),
+                tenant_id:    cmd.tenant_id,
+                shipment_id:  shipment.id.inner(),
+                merchant_id:  cmd.merchant_id,
+                service_code: service_code.as_str().to_string(),
+                sequence:     master_awb.sequence(),
+                piece_count,
+                issued_at:    now.to_rfc3339(),
+            },
+        );
+        if let Ok(payload) = serde_json::to_string(&awb_event) {
+            let _ = self.publisher
+                .publish(topics::AWB_ISSUED, master_awb.as_str(), &payload)
+                .await;
+        }
+
+        // ── Publish ShipmentCreated (consumed by dispatch) ────────────────────
         let event = Event::new(
             "logisticos/order-intake",
             "shipment.created",
@@ -170,7 +263,8 @@ impl ShipmentService {
 
         tracing::info!(
             shipment_id  = %shipment.id,
-            tracking     = %shipment.tracking_number,
+            awb          = %master_awb,
+            piece_count,
             service_type = service_type.as_str(),
             "Shipment created"
         );
@@ -188,7 +282,7 @@ impl ShipmentService {
             ));
         }
 
-        shipment.status   = ShipmentStatus::Cancelled;
+        shipment.status     = ShipmentStatus::Cancelled;
         shipment.updated_at = Utc::now();
         self.repo.save(&shipment).await.map_err(AppError::Internal)?;
 

@@ -103,6 +103,155 @@ pub struct UserCreated {
     pub roles:     Vec<String>,
 }
 
+// ── AWB / Piece events ────────────────────────────────────────────────────────
+
+/// Emitted by order-intake when a master AWB is issued at booking.
+/// Consumed by: analytics (audit log), dispatch (pre-register for route planning),
+/// payments (initialise billable record).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AwbIssued {
+    pub awb:          String,    // e.g. "LS-PH1-S0001234X"
+    pub tenant_id:    Uuid,
+    pub shipment_id:  Uuid,
+    pub merchant_id:  Uuid,
+    pub service_code: String,   // "standard" | "express" | "same_day" | "balikbayan" | "international"
+    pub sequence:     u32,
+    pub piece_count:  u16,       // total pieces declared at booking
+    pub issued_at:    String,    // ISO-8601
+}
+
+/// Emitted by hub-ops when an individual piece is scanned at a hub.
+/// Consumed by: delivery-experience (translate to customer-visible status),
+/// payments (trigger storage fee timer), analytics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PieceScanned {
+    pub piece_awb:    String,   // e.g. "LS-PH1-B0009012Z-002"
+    pub master_awb:   String,   // e.g. "LS-PH1-B0009012Z"
+    pub shipment_id:  Uuid,
+    pub tenant_id:    Uuid,
+    pub hub_id:       Uuid,
+    pub scan_type:    String,   // "inbound" | "outbound" | "transfer"
+    pub piece_number: u16,
+    pub piece_count:  u16,      // total pieces in this shipment
+    pub scanned_at:   String,   // ISO-8601
+    pub scanned_by:   Uuid,     // user_id of hub operator
+}
+
+/// Emitted by hub-ops when re-weighing reveals a discrepancy vs declared weight.
+/// Consumed by: payments (generate weight surcharge adjustment invoice).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeightDiscrepancyFound {
+    pub piece_awb:       String,
+    pub master_awb:      String,
+    pub shipment_id:     Uuid,
+    pub tenant_id:       Uuid,
+    pub merchant_id:     Uuid,
+    pub hub_id:          Uuid,
+    pub declared_grams:  u32,
+    pub actual_grams:    u32,
+    pub delta_grams:     i32,   // actual - declared (positive = underweight declared)
+    pub found_at:        String,
+    pub found_by:        Uuid,
+}
+
+// ── Pallet / Container events ─────────────────────────────────────────────────
+
+/// Emitted by hub-ops when a pallet is sealed (no more pieces can be added).
+/// Consumed by: fleet (include in container planning), analytics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PalletSealed {
+    pub pallet_id:        Uuid,
+    pub tenant_id:        Uuid,
+    pub hub_id:           Uuid,
+    pub destination_hub:  Option<Uuid>,
+    pub piece_count:      u16,
+    pub total_weight_kg:  f32,
+    pub sealed_at:        String,
+    pub sealed_by:        Uuid,
+}
+
+/// Emitted by fleet/hub-ops when a container departs its origin hub.
+/// Consumed by: delivery-experience (update shipment status to InTransit with ETA),
+/// analytics, carrier management.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerDeparted {
+    pub container_id:     Uuid,
+    pub tenant_id:        Uuid,
+    pub origin_hub_id:    Uuid,
+    pub destination_hub:  Uuid,
+    pub transport_mode:   String, // "road" | "sea_fcl" | "sea_lcl" | "air_uld" | "air_loose"
+    pub pallet_count:     u16,
+    pub loose_piece_count: u16,
+    pub carrier_ref:      Option<String>, // carrier's own manifest number
+    pub departed_at:      String,
+    pub eta:              Option<String>,
+    /// All master AWBs in this container (for bulk status update).
+    pub master_awbs:      Vec<String>,
+}
+
+/// Emitted by fleet/hub-ops when a container arrives at destination hub.
+/// Consumed by: delivery-experience (trigger OutForDelivery flow once unloaded),
+/// analytics, hub-ops (trigger pallet break-up workflow).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerArrived {
+    pub container_id:     Uuid,
+    pub tenant_id:        Uuid,
+    pub destination_hub:  Uuid,
+    pub arrived_at:       String,
+    pub master_awbs:      Vec<String>,
+}
+
+// ── Invoice events ────────────────────────────────────────────────────────────
+
+/// Emitted by payments when any invoice document is finalised.
+/// Consumed by: engagement (send invoice notification to merchant),
+/// analytics, merchant portal (refresh invoice list).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InvoiceFinalized {
+    pub invoice_number:  String,    // e.g. "IN-PH1-2026-04-00001"
+    pub invoice_id:      Uuid,
+    pub invoice_type:    String,    // "shipment_charges" | "cod_remittance" | etc.
+    pub tenant_id:       Uuid,
+    pub merchant_id:     Option<Uuid>,
+    pub carrier_id:      Option<Uuid>,
+    pub total_cents:     i64,
+    pub currency:        String,
+    pub due_date:        Option<String>,
+    pub finalized_at:    String,
+}
+
+/// Emitted by payments when a COD remittance is ready to be paid out.
+/// Consumed by: engagement (notify merchant of incoming funds),
+/// payments (initiate bank transfer).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodRemittanceReady {
+    pub remittance_number: String,  // e.g. "REM-PH1-2026-04-00001"
+    pub invoice_id:        Uuid,
+    pub tenant_id:         Uuid,
+    pub merchant_id:       Uuid,
+    pub net_amount_cents:  i64,
+    pub currency:          String,
+    pub shipment_count:    u16,
+    pub settlement_date:   String,
+}
+
+/// Emitted by payments when a weight discrepancy adjustment invoice is created.
+/// Consumed by: engagement (notify merchant of surcharge), analytics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeightAdjustmentInvoiced {
+    pub invoice_number:    String,   // CN or IN type
+    pub invoice_id:        Uuid,
+    pub master_awb:        String,
+    pub piece_awb:         String,
+    pub shipment_id:       Uuid,
+    pub tenant_id:         Uuid,
+    pub merchant_id:       Uuid,
+    pub surcharge_cents:   i64,
+    pub currency:          String,
+    pub declared_grams:    u32,
+    pub actual_grams:      u32,
+}
+
 /// Emitted by dispatch when a shipment is assigned to a driver.
 /// Contains all data driver-ops needs to create a DriverTask row
 /// without querying other services.

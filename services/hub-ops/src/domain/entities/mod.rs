@@ -1,3 +1,6 @@
+pub mod pallet;
+pub mod container;
+
 /// Hub Operations — sorting hub / cross-dock facility management.
 ///
 /// A hub is a physical facility where packages are received from drivers,

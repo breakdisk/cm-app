@@ -1,5 +1,5 @@
 use crate::domain::value_objects::{ServiceType, ShipmentWeight, ShipmentDimensions};
-use logisticos_types::{ShipmentId, MerchantId, CustomerId, Money, Address, ShipmentStatus, TenantId};
+use logisticos_types::{awb::Awb, ShipmentId, MerchantId, CustomerId, Money, Address, ShipmentStatus, TenantId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -11,7 +11,10 @@ pub struct Shipment {
     pub customer_id: CustomerId,
     pub customer_name: String,
     pub customer_phone: String,
-    pub tracking_number: String,
+    /// Master AWB — the structured, checksummed customer-facing tracking number.
+    pub awb: Awb,
+    /// Number of physical pieces (1..=999). Drives child AWB generation.
+    pub piece_count: u16,
     pub status: ShipmentStatus,
     pub service_type: ServiceType,
     pub origin: Address,
@@ -90,6 +93,11 @@ mod tests {
         }
     }
 
+    fn make_awb() -> Awb {
+        let tenant = logisticos_types::awb::TenantCode::new("PH1").unwrap();
+        Awb::generate(&tenant, logisticos_types::awb::ServiceCode::Standard, 1)
+    }
+
     #[test]
     fn shipment_has_customer_fields() {
         let s = Shipment {
@@ -99,7 +107,8 @@ mod tests {
             customer_id:          logisticos_types::CustomerId::new(),
             customer_name:        "Test Customer".to_string(),
             customer_phone:       "+63912345678".to_string(),
-            tracking_number:      "LS-TEST".to_string(),
+            awb:                  make_awb(),
+            piece_count:          1,
             status:               logisticos_types::ShipmentStatus::Pending,
             service_type:         crate::domain::value_objects::ServiceType::Standard,
             origin:               make_address(),
@@ -114,6 +123,7 @@ mod tests {
         };
         assert_eq!(s.customer_name,  "Test Customer");
         assert_eq!(s.customer_phone, "+63912345678");
+        assert!(s.awb.is_valid());
     }
 
     #[test]
@@ -125,7 +135,8 @@ mod tests {
             customer_id:          logisticos_types::CustomerId::new(),
             customer_name:        "Alice".to_string(),
             customer_phone:       "+63900000001".to_string(),
-            tracking_number:      "LS-FEE".to_string(),
+            awb:                  make_awb(),
+            piece_count:          1,
             status:               logisticos_types::ShipmentStatus::Pending,
             service_type:         crate::domain::value_objects::ServiceType::Standard,
             origin:               make_address(),

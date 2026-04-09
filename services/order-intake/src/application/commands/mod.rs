@@ -28,6 +28,16 @@ pub struct CreateShipmentCommand {
     pub cod_amount_cents: Option<i64>,
     pub special_instructions: Option<String>,
     pub merchant_reference: Option<String>,  // Merchant's own order ID
+    pub description: Option<String>,         // Contents description e.g. "Clothes, Electronics"
+
+    /// Number of physical pieces in this shipment (1..=999). Defaults to 1.
+    /// For Balikbayan: number of boxes. For standard: usually 1.
+    pub piece_count: Option<u16>,
+
+    /// 3-char tenant code for AWB generation (e.g. "PH1").
+    /// Populated from JWT claims in the HTTP handler.
+    #[serde(default)]
+    pub tenant_code: String,
 }
 
 #[derive(Debug, Deserialize, Validate, Serialize)]

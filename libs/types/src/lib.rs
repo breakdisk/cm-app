@@ -1,3 +1,9 @@
+pub mod awb;
+pub mod invoice;
+
+pub use awb::{Awb, ChildAwb, AwbError, ServiceCode, TenantCode};
+pub use invoice::{InvoiceNumber, InvoiceNumberError, RemittanceNumber, CreditNoteNumber};
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use uuid::Uuid;
@@ -55,6 +61,9 @@ typed_id!(HubId);
 typed_id!(ZoneId);
 typed_id!(CarrierId);
 typed_id!(ProofOfDeliveryId);
+typed_id!(PalletId);
+typed_id!(ContainerId);
+typed_id!(LineItemId);
 
 // ── Customer / Merchant types ────────────────────────────────
 typed_id!(CustomerId);
@@ -175,9 +184,89 @@ pub enum ShipmentStatus {
     OutForDelivery,
     DeliveryAttempted,
     Delivered,
+    /// Some pieces delivered, not all (multi-piece shipments only).
+    PartialDelivery,
+    /// One or more pieces flagged as damaged or missing.
+    PieceException,
+    /// Shipment held at customs (international / Balikbayan).
+    CustomsHold,
     Failed,
     Cancelled,
     Returned,
+}
+
+// ── Piece Status ─────────────────────────────────────────────
+/// Status of an individual piece within a multi-piece shipment.
+/// Tracked independently at hub scan level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PieceStatus {
+    /// Created at booking, not yet received at hub.
+    Pending,
+    /// Scanned inbound at origin hub.
+    ScannedIn,
+    /// Loaded onto pallet or container for linehaul.
+    InTransit,
+    /// Scanned outbound from hub / loaded on last-mile vehicle.
+    ScannedOut,
+    /// Delivered to consignee, POD captured.
+    Delivered,
+    /// Expected but not scanned — under investigation.
+    Missing,
+    /// Physically damaged — exception raised.
+    Damaged,
+}
+
+// ── Pallet Status ────────────────────────────────────────────
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PalletStatus {
+    /// Accepting pieces, not yet sealed.
+    Open,
+    /// Wrapped, weighed, labelled — no more pieces can be added.
+    Sealed,
+    /// Loaded into a container or vehicle.
+    Loaded,
+    InTransit,
+    /// Scanned at destination hub.
+    Arrived,
+    /// Pallet broken up at destination hub; pieces distributed for last-mile.
+    Broken,
+}
+
+// ── Container Status ─────────────────────────────────────────
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContainerStatus {
+    /// Manifest being built.
+    Planning,
+    /// Manifest finalised, awaiting physical load.
+    Manifested,
+    /// Pieces/pallets being loaded.
+    Loading,
+    /// Sealed and ready to depart.
+    Sealed,
+    InTransit,
+    /// Arrived at port/airport, awaiting customs clearance.
+    ArrivedAtPort,
+    /// Held at customs.
+    Customs,
+    /// Customs cleared, released for onward movement.
+    Released,
+    /// Arrived at destination hub, fully unloaded.
+    Delivered,
+}
+
+// ── Transport Mode ───────────────────────────────────────────
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TransportMode {
+    /// Hub-to-hub road truck.
+    Road,
+    /// Sea freight — full container load.
+    SeaFcl,
+    /// Sea freight — less than container load (consolidated).
+    SeaLcl,
+    /// Air — unit load device (airline pallet/container).
+    AirUld,
+    /// Air — loose freight not in a ULD.
+    AirLoose,
 }
 
 // ── Pagination ───────────────────────────────────────────────

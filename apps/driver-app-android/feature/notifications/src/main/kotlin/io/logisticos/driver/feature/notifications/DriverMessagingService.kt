@@ -8,7 +8,6 @@ import androidx.core.app.NotificationCompat
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import dagger.hilt.android.AndroidEntryPoint
-import io.logisticos.driver.MainActivity
 import io.logisticos.driver.feature.notifications.data.NotificationRepository
 import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
@@ -45,7 +44,8 @@ class DriverMessagingService : FirebaseMessagingService() {
             )
         }
 
-        val intent = Intent(this, MainActivity::class.java).apply {
+        val intent = Intent().apply {
+            setClassName(packageName, "$packageName.MainActivity")
             putExtra("notification_type", type)
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
         }

@@ -3,7 +3,9 @@
  * Merchant Portal — Campaigns Page
  * Marketing automation: active campaigns, performance, campaign builder CTA.
  */
-import { motion } from "framer-motion";
+import { useState, useEffect } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
+import { motion, AnimatePresence } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
@@ -11,25 +13,28 @@ import { LiveMetric } from "@/components/ui/live-metric";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
-import { Megaphone, Plus, Zap, MessageSquare, Mail, Smartphone, Play, Pause, BarChart2 } from "lucide-react";
+import {
+  Megaphone, Plus, Zap, MessageSquare, Mail, Smartphone, Play, Pause,
+  BarChart2, X, ChevronDown, CheckCircle2,
+} from "lucide-react";
 
 // ── Mock data ──────────────────────────────────────────────────────────────────
 
 const KPI_METRICS = [
-  { label: "Active Campaigns", value: 7,      trend: +2,    color: "cyan"   as const, format: "number"  as const },
-  { label: "Messages Sent MTD", value: 84200, trend: +31.4, color: "purple" as const, format: "number"  as const },
-  { label: "Avg Open Rate",    value: 38.7,   trend: +4.2,  color: "green"  as const, format: "percent" as const },
-  { label: "Conversions MTD",  value: 1840,   trend: +22.1, color: "amber"  as const, format: "number"  as const },
+  { label: "Active Campaigns",  value: 7,      trend: +2,    color: "cyan"   as const, format: "number"  as const },
+  { label: "Messages Sent MTD", value: 84200,  trend: +31.4, color: "purple" as const, format: "number"  as const },
+  { label: "Avg Open Rate",     value: 38.7,   trend: +4.2,  color: "green"  as const, format: "percent" as const },
+  { label: "Conversions MTD",   value: 1840,   trend: +22.1, color: "amber"  as const, format: "number"  as const },
 ];
 
 const SEND_TREND = [
-  { day: "Mon", whatsapp: 1400, sms: 820, email: 340 },
-  { day: "Tue", whatsapp: 1620, sms: 910, email: 410 },
-  { day: "Wed", whatsapp: 1380, sms: 780, email: 370 },
-  { day: "Thu", whatsapp: 1750, sms: 960, email: 490 },
+  { day: "Mon", whatsapp: 1400, sms: 820,  email: 340 },
+  { day: "Tue", whatsapp: 1620, sms: 910,  email: 410 },
+  { day: "Wed", whatsapp: 1380, sms: 780,  email: 370 },
+  { day: "Thu", whatsapp: 1750, sms: 960,  email: 490 },
   { day: "Fri", whatsapp: 2100, sms: 1140, email: 580 },
-  { day: "Sat", whatsapp: 1560, sms: 870, email: 310 },
-  { day: "Sun", whatsapp: 1200, sms: 640, email: 220 },
+  { day: "Sat", whatsapp: 1560, sms: 870,  email: 310 },
+  { day: "Sun", whatsapp: 1200, sms: 640,  email: 220 },
 ];
 
 type CampaignStatus = "active" | "paused" | "draft" | "completed";
@@ -46,13 +51,13 @@ interface Campaign {
 }
 
 const CAMPAIGNS: Campaign[] = [
-  { id: "1", name: "Post-Delivery Upsell",     type: "whatsapp", status: "active",    sent: 12400, open_rate: 44.2, conversions: 380, trigger: "On: delivered"      },
-  { id: "2", name: "Delivery ETA Reminder",    type: "sms",      status: "active",    sent: 8200,  open_rate: 71.3, conversions: 0,   trigger: "4h before ETA"      },
-  { id: "3", name: "Failed Delivery Rescue",   type: "whatsapp", status: "active",    sent: 1840,  open_rate: 58.4, conversions: 290, trigger: "On: failed delivery" },
-  { id: "4", name: "Win-back Lapsed Senders",  type: "email",    status: "active",    sent: 4100,  open_rate: 22.8, conversions: 64,  trigger: "30-day inactive"     },
-  { id: "5", name: "Balikbayan Box Promo",      type: "push",     status: "paused",    sent: 6300,  open_rate: 31.0, conversions: 210, trigger: "Manual / Scheduled"  },
-  { id: "6", name: "Loyalty Points Reminder",  type: "sms",      status: "draft",     sent: 0,     open_rate: 0,    conversions: 0,   trigger: "On: 500pts reached"  },
-  { id: "7", name: "Merchant Re-engagement",   type: "email",    status: "completed", sent: 3800,  open_rate: 19.4, conversions: 41,  trigger: "Manual blast"        },
+  { id: "1", name: "Post-Delivery Upsell",    type: "whatsapp", status: "active",    sent: 12400, open_rate: 44.2, conversions: 380, trigger: "On: delivered"      },
+  { id: "2", name: "Delivery ETA Reminder",   type: "sms",      status: "active",    sent: 8200,  open_rate: 71.3, conversions: 0,   trigger: "4h before ETA"      },
+  { id: "3", name: "Failed Delivery Rescue",  type: "whatsapp", status: "active",    sent: 1840,  open_rate: 58.4, conversions: 290, trigger: "On: failed delivery" },
+  { id: "4", name: "Win-back Lapsed Senders", type: "email",    status: "active",    sent: 4100,  open_rate: 22.8, conversions: 64,  trigger: "30-day inactive"     },
+  { id: "5", name: "Balikbayan Box Promo",    type: "push",     status: "paused",    sent: 6300,  open_rate: 31.0, conversions: 210, trigger: "Manual / Scheduled"  },
+  { id: "6", name: "Loyalty Points Reminder", type: "sms",      status: "draft",     sent: 0,     open_rate: 0,    conversions: 0,   trigger: "On: 500pts reached"  },
+  { id: "7", name: "Merchant Re-engagement",  type: "email",    status: "completed", sent: 3800,  open_rate: 19.4, conversions: 41,  trigger: "Manual blast"        },
 ];
 
 const CHANNEL_ICON: Record<Campaign["type"], React.ReactNode> = {
@@ -69,8 +74,202 @@ const STATUS_VARIANT: Record<CampaignStatus, "green" | "amber" | "purple" | "red
   completed: "red",
 };
 
-export default function CampaignsPage() {
+// ── NewCampaignModal ───────────────────────────────────────────────────────────
+
+const CHANNEL_OPTIONS = [
+  { value: "whatsapp", label: "WhatsApp",  icon: MessageSquare, color: "#00FF88" },
+  { value: "sms",      label: "SMS",       icon: Smartphone,    color: "#00E5FF" },
+  { value: "email",    label: "Email",     icon: Mail,          color: "#A855F7" },
+  { value: "push",     label: "Push",      icon: Zap,           color: "#FFAB00" },
+] as const;
+
+const TRIGGER_OPTIONS = [
+  "On: delivered",
+  "On: failed delivery",
+  "On: out_for_delivery",
+  "4h before ETA",
+  "30-day inactive",
+  "On: 500pts reached",
+  "Manual / Scheduled",
+];
+
+function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreated?: () => void }) {
+  const [name,    setName]    = useState("");
+  const [channel, setChannel] = useState<"whatsapp" | "sms" | "email" | "push">("whatsapp");
+  const [trigger, setTrigger] = useState(TRIGGER_OPTIONS[0]);
+  const [message, setMessage] = useState("");
+  const [saving,  setSaving]  = useState(false);
+  const [done,    setDone]    = useState(false);
+
+  const charMax = channel === "sms" ? 160 : 1000;
+
+  async function handleCreate() {
+    if (!name.trim() || !message.trim()) return;
+    setSaving(true);
+    // Wire to POST /v1/campaigns in production
+    await new Promise((r) => setTimeout(r, 1000));
+    setSaving(false);
+    setDone(true);
+    onCreated?.();
+  }
+
   return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(6px)" }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.96, y: 8 }}
+        transition={{ ease: [0.16, 1, 0.3, 1], duration: 0.3 }}
+        className="relative w-full max-w-lg rounded-2xl border border-glass-border p-6 shadow-glass"
+        style={{ background: "rgba(8,12,28,0.98)" }}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between mb-5">
+          <div>
+            <h2 className="font-heading text-lg font-bold text-white">New Campaign</h2>
+            <p className="text-xs text-white/35 mt-0.5 font-mono">Engagement Engine · AI-powered targeting</p>
+          </div>
+          <button onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg border border-glass-border text-white/40 hover:text-white/80 transition-all">
+            <X size={15} />
+          </button>
+        </div>
+
+        {!done ? (
+          <div className="flex flex-col gap-4">
+            {/* Name */}
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-white/50">Campaign Name</label>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. Post-Delivery Upsell"
+                className="w-full rounded-xl border border-glass-border bg-glass-100 px-3.5 py-2.5 text-sm text-white placeholder-white/20 outline-none focus:border-purple-plasma/50 transition-colors"
+              />
+            </div>
+
+            {/* Channel */}
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-white/50">Channel</label>
+              <div className="grid grid-cols-4 gap-2">
+                {CHANNEL_OPTIONS.map(({ value, label, icon: Icon, color }) => (
+                  <button
+                    key={value}
+                    onClick={() => setChannel(value)}
+                    className="flex flex-col items-center gap-1.5 rounded-xl border py-3 text-xs font-medium transition-all"
+                    style={{
+                      borderColor: channel === value ? `${color}40` : "rgba(255,255,255,0.08)",
+                      background:  channel === value ? `${color}0e` : "transparent",
+                      color:       channel === value ? color         : "rgba(255,255,255,0.4)",
+                    }}
+                  >
+                    <Icon size={14} />
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Trigger */}
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-white/50">Trigger</label>
+              <div className="relative">
+                <select
+                  value={trigger}
+                  onChange={(e) => setTrigger(e.target.value)}
+                  className="w-full appearance-none rounded-xl border border-glass-border bg-glass-100 px-3.5 py-2.5 pr-9 text-sm text-white outline-none focus:border-purple-plasma/50 transition-colors"
+                >
+                  {TRIGGER_OPTIONS.map((t) => (
+                    <option key={t} value={t} style={{ background: "#0d1422" }}>{t}</option>
+                  ))}
+                </select>
+                <ChevronDown size={13} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-white/30" />
+              </div>
+            </div>
+
+            {/* Message */}
+            <div>
+              <div className="mb-1.5 flex items-center justify-between">
+                <label className="text-xs font-medium text-white/50">Message</label>
+                <span className={`text-2xs font-mono ${message.length > charMax ? "text-red-signal" : "text-white/25"}`}>
+                  {message.length}/{charMax}
+                </span>
+              </div>
+              <textarea
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                rows={4}
+                placeholder={`Hi {{name}}, your order {{awb}} has been delivered! 🎉\n\nBook your next shipment and get 10% off.`}
+                className="w-full resize-none rounded-xl border border-glass-border bg-glass-100 px-3.5 py-2.5 text-sm text-white placeholder-white/15 outline-none focus:border-purple-plasma/50 transition-colors font-mono"
+              />
+              <p className="mt-1 text-2xs text-white/25">Variables: {'{{name}}'}, {'{{awb}}'}, {'{{eta}}'}, {'{{cod_amount}}'}</p>
+            </div>
+
+            {/* Footer */}
+            <div className="flex justify-end gap-2 pt-1">
+              <button onClick={onClose} className="rounded-lg border border-glass-border px-4 py-2 text-sm text-white/50 hover:text-white transition-colors">
+                Cancel
+              </button>
+              <button
+                onClick={handleCreate}
+                disabled={!name.trim() || !message.trim() || message.length > charMax || saving}
+                className="flex items-center gap-2 rounded-lg px-5 py-2 text-sm font-semibold text-white transition-all disabled:opacity-40"
+                style={{ background: "linear-gradient(135deg, #A855F7, #00E5FF)" }}
+              >
+                {saving ? (
+                  <><span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" /> Creating…</>
+                ) : (
+                  <><Plus size={14} /> Create Campaign</>
+                )}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center gap-4 py-6 text-center">
+            <div className="flex h-14 w-14 items-center justify-center rounded-2xl" style={{ background: "rgba(168,85,247,0.12)" }}>
+              <CheckCircle2 className="h-7 w-7 text-purple-plasma" />
+            </div>
+            <div>
+              <p className="font-heading text-lg font-bold text-white">Campaign Created</p>
+              <p className="text-sm text-white/40 mt-1">"{name}" is now saved as a draft.</p>
+            </div>
+            <button
+              onClick={onClose}
+              className="rounded-lg px-6 py-2 text-sm font-semibold text-white"
+              style={{ background: "linear-gradient(135deg, #A855F7, #00E5FF)" }}
+            >
+              Done
+            </button>
+          </div>
+        )}
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ── Page ───────────────────────────────────────────────────────────────────────
+
+export default function CampaignsPage() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const [showNew, setShowNew] = useState(false);
+
+  // Auto-open from dashboard CTA
+  useEffect(() => {
+    if (searchParams.get("new") === "1") {
+      setShowNew(true);
+      router.replace("/campaigns");
+    }
+  }, [searchParams, router]);
+
+  return (
+    <>
     <motion.div
       variants={variants.staggerContainer}
       initial="hidden"
@@ -86,7 +285,10 @@ export default function CampaignsPage() {
           </h1>
           <p className="text-sm text-white/40 font-mono mt-0.5">Engagement Engine · 7 active automations</p>
         </div>
-        <button className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-purple-plasma to-cyan-neon px-4 py-2 text-xs font-semibold text-white">
+        <button
+          onClick={() => setShowNew(true)}
+          className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-purple-plasma to-cyan-neon px-4 py-2 text-xs font-semibold text-white hover:opacity-90 transition-opacity"
+        >
           <Plus size={13} /> New Campaign
         </button>
       </motion.div>
@@ -149,7 +351,7 @@ export default function CampaignsPage() {
             <span className="text-2xs font-mono text-white/30">{CAMPAIGNS.length} campaigns</span>
           </div>
 
-          {/* Header */}
+          {/* Header row */}
           <div className="grid grid-cols-[2fr_80px_80px_80px_80px_1fr_80px] gap-3 px-5 py-2.5 border-b border-glass-border">
             {["Name", "Channel", "Status", "Sent", "Open %", "Trigger", ""].map((h) => (
               <span key={h} className="text-2xs font-mono text-white/30 uppercase tracking-wider">{h}</span>
@@ -189,5 +391,13 @@ export default function CampaignsPage() {
         </GlassCard>
       </motion.div>
     </motion.div>
+
+    {/* New Campaign Modal */}
+    <AnimatePresence>
+      {showNew && (
+        <NewCampaignModal onClose={() => setShowNew(false)} />
+      )}
+    </AnimatePresence>
+    </>
   );
 }

@@ -1,9 +1,10 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import {
   Package, TrendingUp, Users, Wallet, Plus, Upload, BarChart3,
-  Megaphone, CheckCircle2, Clock, AlertCircle, Truck, Brain,
+  Megaphone, CheckCircle2, Clock, AlertCircle, Truck,
   ArrowRight, MapPin, Clock3, TrendingDown, ArrowUpRight, ArrowDownRight,
   Activity, ChevronRight, Sparkles,
 } from "lucide-react";
@@ -140,6 +141,7 @@ function getSubtitle(h: number) {
 
 export default function DashboardPage() {
   const hour = new Date().getHours();
+  const router = useRouter();
 
   return (
     <motion.div
@@ -309,6 +311,7 @@ export default function DashboardPage() {
       <motion.div variants={variants.fadeInUp}>
         <div className="flex flex-wrap gap-3 items-center">
           <button
+            onClick={() => router.push("/shipments?new=1")}
             className="group relative flex items-center gap-2.5 overflow-hidden rounded-xl px-5 py-3 text-sm font-bold text-[#050810] transition-all hover:scale-[1.02] active:scale-[0.98]"
             style={{
               background: "linear-gradient(135deg, #00E5FF 0%, #A855F7 100%)",
@@ -320,12 +323,13 @@ export default function DashboardPage() {
           </button>
 
           {[
-            { label: "Bulk Upload CSV", icon: Upload,    color: "#A855F7" },
-            { label: "Analytics",       icon: BarChart3,  color: "#00FF88" },
-            { label: "New Campaign",    icon: Megaphone,  color: "#FFAB00" },
-          ].map(({ label, icon: Icon, color }) => (
+            { label: "Bulk Upload CSV", icon: Upload,   color: "#A855F7", href: "/shipments?bulk=1" },
+            { label: "Analytics",       icon: BarChart3, color: "#00FF88", href: "/analytics"        },
+            { label: "New Campaign",    icon: Megaphone, color: "#FFAB00", href: "/campaigns?new=1"  },
+          ].map(({ label, icon: Icon, color, href }) => (
             <button
               key={label}
+              onClick={() => router.push(href)}
               className="flex items-center gap-2 rounded-xl border px-4 py-3 text-sm font-medium transition-all hover:scale-[1.02] active:scale-[0.98]"
               style={{ borderColor: `${color}25`, background: `${color}07`, color }}
             >

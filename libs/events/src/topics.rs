@@ -11,6 +11,21 @@ pub const SHIPMENT_CREATED:          &str = "logisticos.order.shipment.created";
 pub const SHIPMENT_CONFIRMED:        &str = "logisticos.order.shipment.confirmed";
 pub const SHIPMENT_CANCELLED:        &str = "logisticos.order.shipment.cancelled";
 
+// AWB / Piece
+pub const AWB_ISSUED:                &str = "logisticos.order.awb.issued";
+pub const PIECE_SCANNED:             &str = "logisticos.hub.piece.scanned";
+pub const WEIGHT_DISCREPANCY_FOUND:  &str = "logisticos.hub.piece.weight_discrepancy";
+
+// Pallet / Container
+pub const PALLET_SEALED:             &str = "logisticos.hub.pallet.sealed";
+pub const CONTAINER_DEPARTED:        &str = "logisticos.fleet.container.departed";
+pub const CONTAINER_ARRIVED:         &str = "logisticos.fleet.container.arrived";
+
+// Invoice / Billing
+pub const INVOICE_FINALIZED:         &str = "logisticos.payments.invoice.finalized";
+pub const COD_REMITTANCE_READY:      &str = "logisticos.payments.cod.remittance_ready";
+pub const WEIGHT_ADJUSTMENT_INVOICED: &str = "logisticos.payments.invoice.weight_adjustment";
+
 // Dispatch
 pub const ROUTE_CREATED:             &str = "logisticos.dispatch.route.created";
 pub const DRIVER_ASSIGNED:           &str = "logisticos.dispatch.driver.assigned";
@@ -46,11 +61,14 @@ mod tests {
         let topics: &[&str] = &[
             TENANT_CREATED, USER_CREATED, USER_INVITED,
             SHIPMENT_CREATED, SHIPMENT_CONFIRMED, SHIPMENT_CANCELLED,
+            AWB_ISSUED, PIECE_SCANNED, WEIGHT_DISCREPANCY_FOUND,
+            PALLET_SEALED, CONTAINER_DEPARTED, CONTAINER_ARRIVED,
             ROUTE_CREATED, DRIVER_ASSIGNED, ROUTE_OPTIMIZED,
             PICKUP_COMPLETED, DELIVERY_ATTEMPTED, DELIVERY_COMPLETED, DELIVERY_FAILED,
             LOCATION_UPDATED, DRIVER_LOCATION_UPDATED,
             POD_CAPTURED,
-            INVOICE_GENERATED, PAYMENT_RECEIVED, COD_COLLECTED,
+            INVOICE_GENERATED, INVOICE_FINALIZED, PAYMENT_RECEIVED,
+            COD_COLLECTED, COD_REMITTANCE_READY, WEIGHT_ADJUSTMENT_INVOICED,
             NOTIFICATION_QUEUED, CAMPAIGN_TRIGGERED, CUSTOMER_SEGMENT_UPDATED,
             TASK_ASSIGNED,
         ];

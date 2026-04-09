@@ -5,13 +5,15 @@
  * Includes New Shipment modal with Local / International (Balikbayan) toggle.
  */
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge, BadgeVariant } from "@/components/ui/neon-badge";
 import {
-  Package, Search, Download, Plus, X, Globe, Home,
+  Search, Download, Plus, Upload, X, Globe, Home,
   Ship, PlaneTakeoff, ArrowUpDown, ChevronLeft, ChevronRight, Check,
+  FileText, CheckCircle2, AlertCircle,
 } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 
@@ -271,6 +273,178 @@ function CountrySelect({ value, onChange }: { value: string; onChange: (code: st
         </div>
       )}
     </div>
+  );
+}
+
+// ── BulkUploadModal ───────────────────────────────────────────────────────────
+
+type BulkRow = { row: number; tracking?: string; status: "ok" | "error"; message?: string };
+
+function BulkUploadModal({ onClose, onDone }: { onClose: () => void; onDone?: () => void }) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [file,      setFile]      = useState<File | null>(null);
+  const [rows,      setRows]      = useState<BulkRow[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [done,      setDone]      = useState(false);
+
+  function handleFile(f: File) {
+    setFile(f);
+    setRows([]);
+    setDone(false);
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target?.result as string;
+      const lines = text.split("\n").filter((l) => l.trim());
+      // Skip header row
+      const parsed: BulkRow[] = lines.slice(1).map((line, i) => {
+        const cols = line.split(",");
+        if (cols.length < 4) return { row: i + 2, status: "error" as const, message: "Too few columns" };
+        return { row: i + 2, tracking: cols[0]?.trim(), status: "ok" as const };
+      });
+      setRows(parsed);
+    };
+    reader.readAsText(f);
+  }
+
+  async function handleUpload() {
+    if (!file || rows.length === 0) return;
+    setUploading(true);
+    // Simulate upload — wire to POST /v1/shipments/bulk in production
+    await new Promise((r) => setTimeout(r, 1400));
+    setUploading(false);
+    setDone(true);
+    onDone?.();
+  }
+
+  const okCount  = rows.filter((r) => r.status === "ok").length;
+  const errCount = rows.filter((r) => r.status === "error").length;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.75)", backdropFilter: "blur(6px)" }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.96, y: 8 }}
+        transition={{ ease: [0.16, 1, 0.3, 1], duration: 0.3 }}
+        className="relative w-full max-w-lg rounded-2xl border border-glass-border p-6 shadow-glass"
+        style={{ background: "rgba(8,12,28,0.98)" }}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between mb-5">
+          <div>
+            <h2 className="font-heading text-lg font-bold text-white">Bulk Upload CSV</h2>
+            <p className="text-xs text-white/35 mt-0.5 font-mono">Upload multiple shipments at once</p>
+          </div>
+          <button onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg border border-glass-border text-white/40 hover:text-white/80 transition-all">
+            <X size={15} />
+          </button>
+        </div>
+
+        {!done ? (
+          <>
+            {/* Drop zone */}
+            <div
+              onClick={() => fileRef.current?.click()}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) handleFile(f); }}
+              className="flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed p-8 cursor-pointer transition-colors hover:border-cyan-neon/40"
+              style={{ borderColor: file ? "rgba(0,229,255,0.3)" : "rgba(255,255,255,0.08)" }}
+            >
+              <div className="flex h-12 w-12 items-center justify-center rounded-xl" style={{ background: "rgba(0,229,255,0.08)" }}>
+                <Upload className="h-5 w-5 text-cyan-neon" />
+              </div>
+              {file ? (
+                <div className="text-center">
+                  <p className="text-sm font-semibold text-white">{file.name}</p>
+                  <p className="text-xs text-white/35 mt-0.5">{(file.size / 1024).toFixed(1)} KB · {rows.length} rows detected</p>
+                </div>
+              ) : (
+                <div className="text-center">
+                  <p className="text-sm font-medium text-white/70">Drop CSV here or <span className="text-cyan-neon">browse</span></p>
+                  <p className="text-xs text-white/30 mt-1">recipient_name, phone, address, city, weight, cod_amount</p>
+                </div>
+              )}
+              <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
+            </div>
+
+            {/* Download template */}
+            <button className="mt-2 flex items-center gap-1.5 text-xs text-white/35 hover:text-cyan-neon transition-colors">
+              <FileText size={12} /> Download CSV template
+            </button>
+
+            {/* Preview */}
+            {rows.length > 0 && (
+              <div className="mt-4 rounded-xl border border-glass-border overflow-hidden">
+                <div className="flex items-center justify-between px-3 py-2 border-b border-glass-border bg-glass-100">
+                  <span className="text-xs font-mono text-white/40">{rows.length} rows</span>
+                  <div className="flex items-center gap-3">
+                    {okCount  > 0 && <span className="flex items-center gap-1 text-xs text-green-signal"><CheckCircle2 size={11} />{okCount} valid</span>}
+                    {errCount > 0 && <span className="flex items-center gap-1 text-xs text-red-signal"><AlertCircle size={11} />{errCount} errors</span>}
+                  </div>
+                </div>
+                <div className="max-h-36 overflow-y-auto divide-y divide-glass-border">
+                  {rows.slice(0, 8).map((r) => (
+                    <div key={r.row} className="flex items-center gap-2 px-3 py-1.5">
+                      <span className="text-2xs font-mono text-white/25 w-6">{r.row}</span>
+                      {r.status === "ok"
+                        ? <CheckCircle2 size={11} className="text-green-signal shrink-0" />
+                        : <AlertCircle  size={11} className="text-red-signal shrink-0" />}
+                      <span className={`text-xs truncate ${r.status === "ok" ? "text-white/60" : "text-red-signal"}`}>
+                        {r.status === "ok" ? (r.tracking ?? `Row ${r.row}`) : r.message}
+                      </span>
+                    </div>
+                  ))}
+                  {rows.length > 8 && (
+                    <div className="px-3 py-1.5 text-2xs text-white/25 font-mono">+{rows.length - 8} more rows…</div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Footer */}
+            <div className="mt-5 flex justify-end gap-2">
+              <button onClick={onClose} className="rounded-lg border border-glass-border px-4 py-2 text-sm text-white/50 hover:text-white transition-colors">Cancel</button>
+              <button
+                onClick={handleUpload}
+                disabled={!file || okCount === 0 || uploading}
+                className="flex items-center gap-2 rounded-lg px-5 py-2 text-sm font-semibold text-canvas transition-all disabled:opacity-40"
+                style={{ background: "linear-gradient(135deg, #00E5FF, #A855F7)" }}
+              >
+                {uploading ? (
+                  <><span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-canvas/30 border-t-canvas" /> Uploading…</>
+                ) : (
+                  <><Upload size={14} /> Upload {okCount > 0 ? `${okCount} shipments` : ""}</>
+                )}
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="flex flex-col items-center gap-4 py-6 text-center">
+            <div className="flex h-14 w-14 items-center justify-center rounded-2xl" style={{ background: "rgba(0,255,136,0.1)" }}>
+              <CheckCircle2 className="h-7 w-7 text-green-signal" />
+            </div>
+            <div>
+              <p className="font-heading text-lg font-bold text-white">Upload Complete</p>
+              <p className="text-sm text-white/40 mt-1">{okCount} shipments created successfully.</p>
+            </div>
+            <button
+              onClick={onClose}
+              className="rounded-lg px-6 py-2 text-sm font-semibold text-canvas"
+              style={{ background: "linear-gradient(135deg, #00E5FF, #A855F7)" }}
+            >
+              Done
+            </button>
+          </div>
+        )}
+      </motion.div>
+    </motion.div>
   );
 }
 
@@ -676,11 +850,26 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
 // ── Main page ──────────────────────────────────────────────────────────────────
 
 export default function ShipmentsPage() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
   const [search,      setSearch]      = useState("");
   const [statusFilter,setStatusFilter]= useState<ShipmentStatus | "all">("all");
   const [selected,    setSelected]    = useState<Set<string>>(new Set());
   const [showNewShipment, setShowNewShipment] = useState(false);
+  const [showBulkUpload,  setShowBulkUpload]  = useState(false);
   const [shipments,   setShipments]   = useState<Shipment[]>(MOCK_SHIPMENTS);
+
+  // Auto-open modals from dashboard CTAs
+  useEffect(() => {
+    if (searchParams.get("new") === "1") {
+      setShowNewShipment(true);
+      router.replace("/shipments");
+    }
+    if (searchParams.get("bulk") === "1") {
+      setShowBulkUpload(true);
+      router.replace("/shipments");
+    }
+  }, [searchParams, router]);
 
   const fetchShipments = useCallback(async () => {
     const token = getToken();
@@ -752,6 +941,13 @@ export default function ShipmentsPage() {
         <div className="flex items-center gap-2">
           <button className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors">
             <Download size={13} /> Export
+          </button>
+          <button
+            onClick={() => setShowBulkUpload(true)}
+            className="flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-medium transition-all hover:scale-[1.02]"
+            style={{ borderColor: "rgba(168,85,247,0.25)", background: "rgba(168,85,247,0.07)", color: "#A855F7" }}
+          >
+            <Upload size={13} /> Bulk Upload
           </button>
           <button
             onClick={() => setShowNewShipment(true)}
@@ -889,6 +1085,13 @@ export default function ShipmentsPage() {
     <AnimatePresence>
       {showNewShipment && (
         <NewShipmentModal onClose={() => setShowNewShipment(false)} onBooked={fetchShipments} />
+      )}
+    </AnimatePresence>
+
+    {/* Bulk Upload Modal */}
+    <AnimatePresence>
+      {showBulkUpload && (
+        <BulkUploadModal onClose={() => setShowBulkUpload(false)} onDone={fetchShipments} />
       )}
     </AnimatePresence>
     </>
