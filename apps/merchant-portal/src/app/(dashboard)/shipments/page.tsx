@@ -4,7 +4,7 @@
  * Full shipment list with filters, status badges, bulk actions.
  * Includes New Shipment modal with Local / International (Balikbayan) toggle.
  */
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
@@ -849,7 +849,7 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
 
 // ── Main page ──────────────────────────────────────────────────────────────────
 
-export default function ShipmentsPage() {
+function ShipmentsContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const [search,      setSearch]      = useState("");
@@ -1095,5 +1095,13 @@ export default function ShipmentsPage() {
       )}
     </AnimatePresence>
     </>
+  );
+}
+
+export default function ShipmentsPage() {
+  return (
+    <Suspense>
+      <ShipmentsContent />
+    </Suspense>
   );
 }

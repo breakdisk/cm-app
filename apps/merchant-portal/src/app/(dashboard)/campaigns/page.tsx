@@ -3,7 +3,7 @@
  * Merchant Portal — Campaigns Page
  * Marketing automation: active campaigns, performance, campaign builder CTA.
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
@@ -255,7 +255,7 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
 
 // ── Page ───────────────────────────────────────────────────────────────────────
 
-export default function CampaignsPage() {
+function CampaignsContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const [showNew, setShowNew] = useState(false);
@@ -399,5 +399,13 @@ export default function CampaignsPage() {
       )}
     </AnimatePresence>
     </>
+  );
+}
+
+export default function CampaignsPage() {
+  return (
+    <Suspense>
+      <CampaignsContent />
+    </Suspense>
   );
 }
