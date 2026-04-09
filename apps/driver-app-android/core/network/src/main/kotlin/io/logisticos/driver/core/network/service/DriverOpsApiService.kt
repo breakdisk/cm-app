@@ -16,6 +16,7 @@ data class ShiftResponse(
 @Serializable
 data class TaskResponse(
     val id: String,
+    @SerialName("task_type") val taskType: String = "DELIVERY",
     val awb: String,
     @SerialName("recipient_name") val recipientName: String,
     @SerialName("recipient_phone") val recipientPhone: String,
@@ -32,7 +33,11 @@ data class TaskResponse(
 )
 
 @Serializable
-data class TaskStatusRequest(val status: String, val reason: String? = null)
+data class TaskStatusRequest(
+    val status: String,
+    val reason: String? = null,
+    @SerialName("failure_reason") val failureReason: String? = null
+)
 
 interface DriverOpsApiService {
     @GET("shifts/active")

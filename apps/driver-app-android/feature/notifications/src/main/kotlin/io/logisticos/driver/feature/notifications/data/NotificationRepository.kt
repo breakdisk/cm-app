@@ -1,5 +1,8 @@
 package io.logisticos.driver.feature.notifications.data
 
+import io.logisticos.driver.core.network.auth.SessionManager
+import io.logisticos.driver.core.network.service.FcmTokenRequest
+import io.logisticos.driver.core.network.service.IdentityApiService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -21,7 +24,9 @@ data class DriverNotification(
 
 @Singleton
 class NotificationRepository @Inject constructor(
-    @Named("application_scope") private val scope: CoroutineScope
+    @Named("application_scope") private val scope: CoroutineScope,
+    private val identityApiService: IdentityApiService,
+    private val sessionManager: SessionManager
 ) {
     private val _notifications = MutableStateFlow<List<DriverNotification>>(emptyList())
     val notifications: StateFlow<List<DriverNotification>> = _notifications.asStateFlow()
@@ -42,10 +47,13 @@ class NotificationRepository @Inject constructor(
     }
 
     fun registerFcmToken(token: String) {
+        val driverId = sessionManager.getDriverId() ?: return // not logged in yet; token registered after auth
         scope.launch {
             runCatching {
-                // TODO: POST token to identity service when IdentityApiService exposes registerFcmToken
+                identityApiService.registerFcmToken(FcmTokenRequest(fcmToken = token, driverId = driverId))
             }
+            // Fire-and-forget: token registration failure is non-fatal.
+            // On next app start / token refresh, onNewToken fires again.
         }
     }
 

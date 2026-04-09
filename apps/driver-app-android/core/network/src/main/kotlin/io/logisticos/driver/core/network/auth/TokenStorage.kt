@@ -7,5 +7,7 @@ interface TokenStorage {
     fun getRefreshToken(): String?
     fun saveTenantId(tenantId: String)
     fun getTenantId(): String?
+    fun saveDriverId(driverId: String)
+    fun getDriverId(): String?
     fun clearAll()
 }

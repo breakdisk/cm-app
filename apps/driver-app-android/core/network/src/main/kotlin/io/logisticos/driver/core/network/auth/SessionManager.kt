@@ -25,6 +25,8 @@ class SessionManager @Inject constructor(
     fun getRefreshToken(): String? = tokenStorage.getRefreshToken()
     fun getTenantId(): String? = tokenStorage.getTenantId()
     fun saveTenantId(tenantId: String) = tokenStorage.saveTenantId(tenantId)
+    fun getDriverId(): String? = tokenStorage.getDriverId()
+    fun saveDriverId(driverId: String) = tokenStorage.saveDriverId(driverId)
 
     fun clearSession() {
         tokenStorage.clearAll()

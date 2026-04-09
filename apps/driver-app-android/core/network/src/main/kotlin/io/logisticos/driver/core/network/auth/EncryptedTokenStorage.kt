@@ -31,11 +31,14 @@ class EncryptedTokenStorage @Inject constructor(
     override fun getRefreshToken(): String? = prefs.getString(KEY_REFRESH, null)
     override fun saveTenantId(tenantId: String) = prefs.edit().putString(KEY_TENANT, tenantId).apply()
     override fun getTenantId(): String? = prefs.getString(KEY_TENANT, null)
+    override fun saveDriverId(driverId: String) = prefs.edit().putString(KEY_DRIVER, driverId).apply()
+    override fun getDriverId(): String? = prefs.getString(KEY_DRIVER, null)
     override fun clearAll() = prefs.edit().clear().apply()
 
     companion object {
         private const val KEY_JWT = "jwt"
         private const val KEY_REFRESH = "refresh_token"
         private const val KEY_TENANT = "tenant_id"
+        private const val KEY_DRIVER = "driver_id"
     }
 }

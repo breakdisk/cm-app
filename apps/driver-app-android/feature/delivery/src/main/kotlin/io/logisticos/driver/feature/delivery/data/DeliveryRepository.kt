@@ -61,6 +61,13 @@ class DeliveryRepository @Inject constructor(
         )
     }
 
+    suspend fun getActiveShiftId(): String? = shiftDao.getActiveShiftOnce()?.id
+
+    suspend fun saveFailureReason(taskId: String, reason: String) {
+        taskDao.updateFailureReason(taskId, reason)
+        taskDao.incrementAttemptCount(taskId)
+    }
+
     suspend fun confirmCod(shiftId: String, taskId: String, amount: Double) {
         shiftDao.addCodCollected(shiftId, amount)
         syncQueueDao.enqueue(

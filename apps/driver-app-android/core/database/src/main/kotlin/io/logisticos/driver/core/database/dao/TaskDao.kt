@@ -28,6 +28,9 @@ interface TaskDao {
     @Query("UPDATE tasks SET attemptCount = attemptCount + 1 WHERE id = :taskId")
     suspend fun incrementAttemptCount(taskId: String)
 
+    @Query("UPDATE tasks SET failureReason = :reason WHERE id = :taskId")
+    suspend fun updateFailureReason(taskId: String, reason: String)
+
     @Query("DELETE FROM tasks WHERE shiftId = :shiftId")
     suspend fun deleteForShift(shiftId: String)
 

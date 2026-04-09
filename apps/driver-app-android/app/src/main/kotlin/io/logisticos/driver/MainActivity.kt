@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import dagger.hilt.android.AndroidEntryPoint
+import io.logisticos.driver.core.database.worker.OutboundSyncWorker
 import io.logisticos.driver.security.RootChecker
 import io.logisticos.driver.ui.theme.DriverAppTheme
 import io.logisticos.driver.navigation.AppNavGraph
@@ -20,6 +21,7 @@ class MainActivity : ComponentActivity() {
         if (rootChecker.check()) {
             android.util.Log.w("Security", "Rooted device detected — flagging for audit")
         }
+        OutboundSyncWorker.schedule(applicationContext)
         setContent {
             DriverAppTheme {
                 AppNavGraph()

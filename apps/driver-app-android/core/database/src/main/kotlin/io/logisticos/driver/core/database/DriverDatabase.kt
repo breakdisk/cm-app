@@ -17,7 +17,7 @@ import io.logisticos.driver.core.database.entity.*
         ScanEventEntity::class,
         SyncQueueEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = true
 )
 abstract class DriverDatabase : RoomDatabase() {

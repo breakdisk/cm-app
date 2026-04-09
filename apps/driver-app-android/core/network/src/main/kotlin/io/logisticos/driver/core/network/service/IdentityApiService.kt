@@ -27,6 +27,12 @@ data class OtpVerifyResponse(
     @SerialName("tenant_id") val tenantId: String
 )
 
+@Serializable
+data class FcmTokenRequest(
+    @SerialName("fcm_token") val fcmToken: String,
+    @SerialName("driver_id") val driverId: String
+)
+
 interface IdentityApiService {
     @POST("v1/auth/otp/send")
     suspend fun sendOtp(@Body request: OtpSendRequest): OtpSendResponse
@@ -36,4 +42,7 @@ interface IdentityApiService {
 
     @POST("v1/auth/refresh")
     suspend fun refreshToken(@Body request: io.logisticos.driver.core.network.model.RefreshRequest): io.logisticos.driver.core.network.model.TokenResponse
+
+    @POST("v1/auth/fcm-token")
+    suspend fun registerFcmToken(@Body request: FcmTokenRequest): retrofit2.Response<Unit>
 }

@@ -7,10 +7,18 @@ enum class TaskStatus {
     ASSIGNED, EN_ROUTE, ARRIVED, IN_PROGRESS, COMPLETED, ATTEMPTED, FAILED, RETURNED
 }
 
+enum class TaskType {
+    PICKUP,      // First-mile: collect parcel from merchant
+    DELIVERY,    // Last-mile: deliver parcel to recipient
+    RETURN,      // Return undelivered parcel to hub
+    HUB_DROP     // Drop parcels at sorting hub
+}
+
 @Entity(tableName = "tasks")
 data class TaskEntity(
     @PrimaryKey val id: String,
     val shiftId: String,
+    val taskType: TaskType = TaskType.DELIVERY,
     val awb: String,
     val recipientName: String,
     val recipientPhone: String,
@@ -25,6 +33,7 @@ data class TaskEntity(
     val isCod: Boolean,
     val codAmount: Double,
     val attemptCount: Int = 0,
+    val failureReason: String? = null,
     val notes: String? = null,
     val syncedAt: Long?
 )

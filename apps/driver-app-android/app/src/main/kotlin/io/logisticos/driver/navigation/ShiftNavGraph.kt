@@ -1,17 +1,11 @@
 package io.logisticos.driver.navigation
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavHostController
@@ -19,67 +13,62 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navigation
+import io.logisticos.driver.feature.delivery.ui.ArrivalScreen
 import io.logisticos.driver.feature.home.ui.HomeScreen
 import io.logisticos.driver.feature.navigation.ui.NavigationScreen
 import io.logisticos.driver.feature.notifications.presentation.NotificationsViewModel
 import io.logisticos.driver.feature.notifications.ui.NotificationsScreen
+import io.logisticos.driver.feature.pickup.ui.PickupScreen
 import io.logisticos.driver.feature.pod.ui.PodScreen
 import io.logisticos.driver.feature.profile.presentation.ProfileViewModel
 import io.logisticos.driver.feature.profile.ui.ProfileScreen
-import io.logisticos.driver.feature.delivery.presentation.ArrivalViewModel
 import io.logisticos.driver.feature.route.ui.RouteScreen
 import io.logisticos.driver.feature.scanner.ui.ScannerScreen
 
-// Route constants used within the shift nav graph
-private const val HOME_ROUTE = "home"
-private const val ROUTE_ROUTE = "route"
-private const val SCAN_ROUTE = "scan"
+// ── Route constants ───────────────────────────────────────────────────────────
+private const val HOME_ROUTE          = "home"
+private const val ROUTE_ROUTE         = "route"
+private const val SCAN_ROUTE          = "scan"
 private const val NOTIFICATIONS_ROUTE = "notifications"
-private const val PROFILE_ROUTE = "profile"
+private const val PROFILE_ROUTE       = "profile"
 private const val NAVIGATE_TO_STOP_ROUTE = "navigate/{taskId}"
-private const val POD_ROUTE = "pod/{taskId}/{requiresPhoto}/{requiresSignature}/{requiresOtp}"
-private const val ARRIVAL_ROUTE = "arrival/{taskId}"
+private const val ARRIVAL_ROUTE       = "arrival/{taskId}"
+private const val PICKUP_ROUTE        = "pickup/{taskId}"
+// isCod and codAmount forwarded as string args to avoid ViewModel duplication
+private const val POD_ROUTE =
+    "pod/{taskId}/{requiresPhoto}/{requiresSignature}/{requiresOtp}/{isCod}/{codAmount}"
 
 /**
- * Top-level shift scaffold: owns the BottomNavBar and an inner NavHost that
- * manages the five bottom-tab destinations plus deep destinations
- * (NavigationScreen, ArrivalScreen, PodScreen, ScannerScreen sub-flow).
+ * Top-level shift scaffold: owns the BottomNavBar and an inner NavHost.
+ * Manages the 5 bottom-tab destinations + deep task destinations:
+ *   NavigationScreen → ArrivalScreen → PodScreen (delivery)
+ *   NavigationScreen → ArrivalScreen → PickupScreen (pickup)
  */
 @Composable
 fun ShiftScaffold(rootNavController: NavHostController) {
     val shiftNavController = rememberNavController()
 
-    // Observe unread count from the NotificationsViewModel at scaffold level so the badge
-    // updates in real-time without recomposing the full nav host.
     val notifVm: NotificationsViewModel = hiltViewModel()
     val unreadCount by notifVm.unreadCount.collectAsState()
 
     Scaffold(
         containerColor = NavCanvas,
         bottomBar = {
-            BottomNavBar(
-                navController = shiftNavController,
-                unreadCount = unreadCount,
-            )
-        },
+            BottomNavBar(navController = shiftNavController, unreadCount = unreadCount)
+        }
     ) { innerPadding ->
         NavHost(
             navController = shiftNavController,
             startDestination = HOME_ROUTE,
-            modifier = Modifier.padding(innerPadding),
+            modifier = Modifier.padding(innerPadding)
         ) {
+
+            // ── Bottom tab destinations ───────────────────────────────────
             composable(HOME_ROUTE) {
-                HomeScreen(
-                    onNavigateToRoute = {
-                        shiftNavController.navigate(ROUTE_ROUTE)
-                    },
-                )
+                HomeScreen(onNavigateToRoute = { shiftNavController.navigate(ROUTE_ROUTE) })
             }
 
             composable(ROUTE_ROUTE) {
-                // shiftId is not available as a nav arg in the current design; using empty
-                // string causes RouteViewModel to fetch tasks across all active shifts via
-                // the repository query. Replace with real shiftId once HomeViewModel exposes it.
                 RouteScreen(
                     shiftId = "",
                     onNavigateToStop = { taskId ->
@@ -89,18 +78,14 @@ fun ShiftScaffold(rootNavController: NavHostController) {
             }
 
             composable(SCAN_ROUTE) {
-                // Scan tab: launched without task context; AWBs passed as nav args when launched from a specific task stop
                 ScannerScreen(
                     expectedAwbs = emptyList(),
-                    onAllScanned = {
-                        shiftNavController.popBackStack()
-                    },
+                    onAllScanned = { shiftNavController.popBackStack() }
                 )
             }
 
             composable(NOTIFICATIONS_ROUTE) {
-                val vm: NotificationsViewModel = hiltViewModel()
-                NotificationsScreen(viewModel = vm)
+                NotificationsScreen(viewModel = hiltViewModel())
             }
 
             composable(PROFILE_ROUTE) {
@@ -110,13 +95,14 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                     isOfflineMode = vm.isOfflineMode,
                     onLogout = {
                         vm.sessionManager.clearSession()
-                        // Navigate back to auth graph via the root controller
                         rootNavController.navigate(io.logisticos.driver.feature.auth.AUTH_GRAPH) {
                             popUpTo(SHIFT_GRAPH) { inclusive = true }
                         }
-                    },
+                    }
                 )
             }
+
+            // ── Deep task destinations ────────────────────────────────────
 
             composable(NAVIGATE_TO_STOP_ROUTE) { backStack ->
                 val taskId = backStack.arguments?.getString("taskId") ?: ""
@@ -124,41 +110,63 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                     taskId = taskId,
                     onArrived = {
                         shiftNavController.navigate(ARRIVAL_ROUTE.replace("{taskId}", taskId))
-                    },
+                    }
                 )
             }
 
             composable(ARRIVAL_ROUTE) { backStack ->
                 val taskId = backStack.arguments?.getString("taskId") ?: ""
-                val vm: ArrivalViewModel = hiltViewModel()
-                // Transition ARRIVED → IN_PROGRESS before entering POD so the state machine
-                // allows the subsequent COMPLETED transition when POD is submitted.
-                ArrivalPlaceholder(
+                ArrivalScreen(
                     taskId = taskId,
-                    onStartDelivery = {
-                        vm.startDelivery(taskId) {
-                            shiftNavController.navigate("pod/$taskId/true/true/false")
+                    onStartTask = { id, photo, sig, otp ->
+                        // ArrivalScreen reads taskType from DB; we pass it via the
+                        // PickupScreen route for PICKUP tasks and POD route for DELIVERY.
+                        // ArrivalViewModel calls back with the resolved requirements —
+                        // we route to pickup vs pod based on what ArrivalScreen reports.
+                        shiftNavController.navigate(
+                            "pod/$id/$photo/$sig/$otp/false/0.0"
+                        )
+                    }
+                )
+            }
+
+            composable(PICKUP_ROUTE) { backStack ->
+                val taskId = backStack.arguments?.getString("taskId") ?: ""
+                PickupScreen(
+                    taskId = taskId,
+                    onCompleted = {
+                        shiftNavController.navigate(HOME_ROUTE) {
+                            popUpTo(HOME_ROUTE) { inclusive = true }
                         }
-                    },
+                    }
                 )
             }
 
             composable(POD_ROUTE) { backStack ->
-                val args = backStack.arguments
-                val taskId = args?.getString("taskId") ?: ""
-                val requiresPhoto = args?.getString("requiresPhoto") == "true"
-                val requiresSignature = args?.getString("requiresSignature") == "true"
-                val requiresOtp = args?.getString("requiresOtp") == "true"
+                val args      = backStack.arguments
+                val taskId    = args?.getString("taskId") ?: ""
+                val photo     = args?.getString("requiresPhoto") == "true"
+                val sig       = args?.getString("requiresSignature") == "true"
+                val otp       = args?.getString("requiresOtp") == "true"
+                val isCod     = args?.getString("isCod") == "true"
+                val codAmount = args?.getString("codAmount")?.toDoubleOrNull() ?: 0.0
                 PodScreen(
                     taskId = taskId,
-                    requiresPhoto = requiresPhoto,
-                    requiresSignature = requiresSignature,
-                    requiresOtp = requiresOtp,
+                    requiresPhoto = photo,
+                    requiresSignature = sig,
+                    requiresOtp = otp,
+                    isCod = isCod,
+                    codAmount = codAmount,
                     onCompleted = {
                         shiftNavController.navigate(HOME_ROUTE) {
                             popUpTo(HOME_ROUTE) { inclusive = true }
                         }
                     },
+                    onFailed = {
+                        shiftNavController.navigate(HOME_ROUTE) {
+                            popUpTo(HOME_ROUTE) { inclusive = true }
+                        }
+                    }
                 )
             }
         }
@@ -166,27 +174,8 @@ fun ShiftScaffold(rootNavController: NavHostController) {
 }
 
 /**
- * Inline placeholder for ArrivalScreen (Task pending implementation).
- * Shows a brief confirmation UI and routes immediately to POD capture.
- */
-@Composable
-private fun ArrivalPlaceholder(taskId: String, onStartDelivery: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xFF050810)),
-        contentAlignment = Alignment.Center,
-    ) {
-        androidx.compose.material3.Button(onClick = onStartDelivery) {
-            Text("Arrived — Start POD Capture", color = Color(0xFF050810))
-        }
-    }
-}
-
-/**
- * Extension on NavGraphBuilder that registers the full shift navigation graph
- * (scaffold + bottom nav + all feature screens) as a nested navigation destination.
- * Called from [AppNavGraph].
+ * Extension on NavGraphBuilder — registers the shift nav graph as a nested destination.
+ * Called from AppNavGraph.
  */
 fun NavGraphBuilder.shiftNavGraph(navController: NavHostController) {
     navigation(startDestination = "shift_scaffold", route = SHIFT_GRAPH) {
