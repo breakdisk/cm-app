@@ -1,11 +1,7 @@
-version: "3.9"
 networks:
   logisticos:
     driver: bridge
   dokploy-network:
-    external: true
-  cmapp-cmapp-hisisg:
-    name: cmapp-cmapp-hisisg
     external: true
 volumes:
   postgres_data: null
@@ -29,7 +25,6 @@ services:
       - ./scripts/db/init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD-SHELL
@@ -47,7 +42,6 @@ services:
       - redis_data:/data
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD
@@ -64,7 +58,6 @@ services:
       ZOOKEEPER_TICK_TIME: 2000
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
   kafka:
     image: confluentinc/cp-kafka:7.6.0
     container_name: logisticos-kafka
@@ -85,7 +78,6 @@ services:
       - kafka_data:/var/lib/kafka/data
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
   clickhouse:
     image: clickhouse/clickhouse-server:24.3
     container_name: logisticos-clickhouse
@@ -97,7 +89,6 @@ services:
       - clickhouse_data:/var/lib/clickhouse
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     ulimits:
       nofile:
         soft: 262144
@@ -112,7 +103,6 @@ services:
       - ./infra/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
   grafana:
     image: grafana/grafana:10.4.0
     container_name: logisticos-grafana
@@ -127,7 +117,6 @@ services:
       - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
   jaeger:
     image: jaegertracing/all-in-one:1.56
     container_name: logisticos-jaeger
@@ -140,7 +129,6 @@ services:
       COLLECTOR_OTLP_ENABLED: "true"
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
   mailhog:
     image: mailhog/mailhog:latest
     container_name: logisticos-mailhog
@@ -149,7 +137,6 @@ services:
       - ${MAILHOG_UI_PORT}:8025
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
   minio:
     image: minio/minio:latest
     container_name: logisticos-minio
@@ -163,7 +150,6 @@ services:
     command: server /data --console-address ":9002"
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
   api-gateway:
     image: ghcr.io/breakdisk/logisticos-service-api-gateway:latest
     container_name: logisticos-api-gateway
@@ -203,7 +189,6 @@ services:
     networks:
       - logisticos
       - dokploy-network
-      - cmapp-cmapp-hisisg
     labels:
       - traefik.enable=true
       - traefik.docker.network=dokploy-network
@@ -261,7 +246,6 @@ services:
         condition: service_healthy
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD-SHELL
@@ -308,7 +292,6 @@ services:
         condition: service_healthy
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD-SHELL
@@ -356,7 +339,6 @@ services:
         condition: service_healthy
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD-SHELL
@@ -403,7 +385,6 @@ services:
         condition: service_healthy
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD-SHELL
@@ -450,7 +431,6 @@ services:
         condition: service_healthy
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD-SHELL
@@ -497,7 +477,6 @@ services:
         condition: service_healthy
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD-SHELL
@@ -544,7 +523,6 @@ services:
         condition: service_healthy
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD-SHELL
@@ -591,7 +569,6 @@ services:
         condition: service_healthy
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD-SHELL
@@ -638,7 +615,6 @@ services:
         condition: service_healthy
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD-SHELL
@@ -685,7 +661,6 @@ services:
         condition: service_healthy
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD-SHELL
@@ -736,7 +711,6 @@ services:
         condition: service_healthy
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD-SHELL
@@ -783,7 +757,6 @@ services:
         condition: service_healthy
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD-SHELL
@@ -834,7 +807,6 @@ services:
         condition: service_started
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD-SHELL
@@ -881,7 +853,6 @@ services:
         condition: service_healthy
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD-SHELL
@@ -928,7 +899,6 @@ services:
         condition: service_healthy
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD-SHELL
@@ -985,7 +955,6 @@ services:
         condition: service_healthy
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD-SHELL
@@ -1023,7 +992,6 @@ services:
         condition: service_started
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD-SHELL
@@ -1045,7 +1013,6 @@ services:
       - api-gateway
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD-SHELL
@@ -1067,7 +1034,6 @@ services:
       - api-gateway
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD-SHELL
@@ -1089,7 +1055,6 @@ services:
       - api-gateway
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD-SHELL
@@ -1111,7 +1076,6 @@ services:
       - api-gateway
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD-SHELL
@@ -1132,7 +1096,6 @@ services:
       - logisticos
       - dokploy-network
       - default
-      - cmapp-cmapp-hisisg
     healthcheck:
       test:
         - CMD-SHELL
@@ -1166,7 +1129,6 @@ services:
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
   pgadmin:
     image: dpage/pgadmin4:8.5
     container_name: logisticos-pgadmin
@@ -1179,7 +1141,6 @@ services:
       PGADMIN_DEFAULT_PASSWORD: admin
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
   redis-insight:
     image: redislabs/redisinsight:latest
     container_name: logisticos-redis-insight
@@ -1189,4 +1150,3 @@ services:
       - 5540:5540
     networks:
       - logisticos
-      - cmapp-cmapp-hisisg
