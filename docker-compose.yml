@@ -195,6 +195,10 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8001"
       APP__ENV: development
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__MAX_CONNECTIONS: "5"
+      KAFKA__BROKERS: kafka:29092
+      KAFKA__GROUP_ID: identity-dev
       AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       AUTH__JWT_EXPIRY_SECONDS: "3600"
       AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
@@ -241,6 +245,10 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8002"
       APP__ENV: development
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__MAX_CONNECTIONS: "5"
+      KAFKA__BROKERS: kafka:29092
+      KAFKA__GROUP_ID: cdp-dev
       AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       AUTH__JWT_EXPIRY_SECONDS: "3600"
       AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
@@ -287,6 +295,10 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8003"
       APP__ENV: development
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__MAX_CONNECTIONS: "5"
+      KAFKA__BROKERS: kafka:29092
+      KAFKA__GROUP_ID: engagement-dev
       AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       AUTH__JWT_EXPIRY_SECONDS: "3600"
       AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
@@ -334,6 +346,10 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8004"
       APP__ENV: development
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__MAX_CONNECTIONS: "5"
+      KAFKA__BROKERS: kafka:29092
+      KAFKA__GROUP_ID: order-intake-dev
       AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       AUTH__JWT_EXPIRY_SECONDS: "3600"
       AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
@@ -380,6 +396,10 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8005"
       APP__ENV: development
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__MAX_CONNECTIONS: "5"
+      KAFKA__BROKERS: kafka:29092
+      KAFKA__GROUP_ID: dispatch-dev
       AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       AUTH__JWT_EXPIRY_SECONDS: "3600"
       AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
@@ -426,6 +446,10 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8006"
       APP__ENV: development
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__MAX_CONNECTIONS: "5"
+      KAFKA__BROKERS: kafka:29092
+      KAFKA__GROUP_ID: driver-ops-dev
       AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       AUTH__JWT_EXPIRY_SECONDS: "3600"
       AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
@@ -472,6 +496,10 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8007"
       APP__ENV: development
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__MAX_CONNECTIONS: "5"
+      KAFKA__BROKERS: kafka:29092
+      KAFKA__GROUP_ID: delivery-experience-dev
       AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       AUTH__JWT_EXPIRY_SECONDS: "3600"
       AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
@@ -518,6 +546,10 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8008"
       APP__ENV: development
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__MAX_CONNECTIONS: "5"
+      KAFKA__BROKERS: kafka:29092
+      KAFKA__GROUP_ID: fleet-dev
       AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       AUTH__JWT_EXPIRY_SECONDS: "3600"
       AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
@@ -564,6 +596,10 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8009"
       APP__ENV: development
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__MAX_CONNECTIONS: "5"
+      KAFKA__BROKERS: kafka:29092
+      KAFKA__GROUP_ID: hub-ops-dev
       AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       AUTH__JWT_EXPIRY_SECONDS: "3600"
       AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
@@ -610,6 +646,10 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8010"
       APP__ENV: development
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__MAX_CONNECTIONS: "5"
+      KAFKA__BROKERS: kafka:29092
+      KAFKA__GROUP_ID: carrier-dev
       AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       AUTH__JWT_EXPIRY_SECONDS: "3600"
       AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
@@ -656,6 +696,10 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8011"
       APP__ENV: development
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__MAX_CONNECTIONS: "5"
+      KAFKA__BROKERS: kafka:29092
+      KAFKA__GROUP_ID: pod-dev
       AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       AUTH__JWT_EXPIRY_SECONDS: "3600"
       AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
@@ -706,6 +750,10 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8012"
       APP__ENV: development
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__MAX_CONNECTIONS: "5"
+      KAFKA__BROKERS: kafka:29092
+      KAFKA__GROUP_ID: payments-dev
       AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       AUTH__JWT_EXPIRY_SECONDS: "3600"
       AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
@@ -752,6 +800,10 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8013"
       APP__ENV: development
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__MAX_CONNECTIONS: "5"
+      KAFKA__BROKERS: kafka:29092
+      KAFKA__GROUP_ID: analytics-dev
       AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       AUTH__JWT_EXPIRY_SECONDS: "3600"
       AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
@@ -802,6 +854,10 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8014"
       APP__ENV: development
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__MAX_CONNECTIONS: "5"
+      KAFKA__BROKERS: kafka:29092
+      KAFKA__GROUP_ID: marketing-dev
       AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       AUTH__JWT_EXPIRY_SECONDS: "3600"
       AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
@@ -848,6 +904,10 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8015"
       APP__ENV: development
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__MAX_CONNECTIONS: "5"
+      KAFKA__BROKERS: kafka:29092
+      KAFKA__GROUP_ID: business-logic-dev
       AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       AUTH__JWT_EXPIRY_SECONDS: "3600"
       AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
@@ -894,6 +954,10 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8016"
       APP__ENV: development
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__MAX_CONNECTIONS: "5"
+      KAFKA__BROKERS: kafka:29092
+      KAFKA__GROUP_ID: ai-layer-dev
       AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       AUTH__JWT_EXPIRY_SECONDS: "3600"
       AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
