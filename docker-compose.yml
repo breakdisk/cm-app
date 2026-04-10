@@ -1152,7 +1152,7 @@ services:
       - traefik.http.routers.logisticos-landing-websecure.tls.certresolver=letsencrypt
       - traefik.http.services.logisticos-landing.loadbalancer.server.port=3004
       - traefik.http.routers.logisticos-landing-websecure.service=logisticos-landing
-    kafka-ui:
+  kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: logisticos-kafka-ui
     profiles:
