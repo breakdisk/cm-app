@@ -32,6 +32,12 @@ pub async fn run() -> anyhow::Result<()> {
     let pool = PgPoolOptions::new()
         .max_connections(cfg.database.max_connections)
         .acquire_timeout(std::time::Duration::from_secs(5))
+        .after_connect(|conn, _meta| Box::pin(async move {
+            sqlx::query("SET search_path TO compliance, public")
+                .execute(&mut *conn)
+                .await?;
+            Ok(())
+        }))
         .connect(&cfg.database.url)
         .await
         .context("Failed to connect to PostgreSQL")?;

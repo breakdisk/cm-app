@@ -15,6 +15,12 @@ pub async fn run() -> anyhow::Result<()> {
 
     let pool = PgPoolOptions::new()
         .max_connections(cfg.database.max_connections)
+        .after_connect(|conn, _meta| Box::pin(async move {
+            sqlx::query("SET search_path TO fleet, public")
+                .execute(&mut *conn)
+                .await?;
+            Ok(())
+        }))
         .connect(&cfg.database.url)
         .await?;
 

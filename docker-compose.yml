@@ -985,7 +985,7 @@ services:
       SERVICES__MARKETING_URL: http://marketing:8014
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      ANTHROPIC__API_KEY: ${ANTHROPIC_API_KEY:-dev-placeholder}
       MCP_DISPATCH_URL: http://dispatch:8005/mcp
       MCP_ORDER_URL: http://order-intake:8004/mcp
       MCP_DRIVER_URL: http://driver-ops:8006/mcp

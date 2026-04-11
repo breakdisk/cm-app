@@ -5,6 +5,7 @@ use crate::config::Config;
 use crate::application::services::{InvoiceService, CodService, WalletService};
 use crate::infrastructure::db::{PgInvoiceRepository, PgCodRepository, PgWalletRepository};
 use crate::api::http::{router, AppState};
+use crate::infrastructure::messaging::PodConsumer;
 use logisticos_auth::jwt::JwtService;
 use logisticos_events::producer::KafkaProducer;
 
@@ -24,6 +25,12 @@ pub async fn run() -> anyhow::Result<()> {
     let pool = PgPoolOptions::new()
         .max_connections(cfg.database.max_connections)
         .acquire_timeout(std::time::Duration::from_secs(5))
+        .after_connect(|conn, _meta| Box::pin(async move {
+            sqlx::query("SET search_path TO payments, public")
+                .execute(&mut *conn)
+                .await?;
+            Ok(())
+        }))
         .connect(&cfg.database.url)
         .await
         .context("Failed to connect to PostgreSQL")?;
@@ -53,9 +60,18 @@ pub async fn run() -> anyhow::Result<()> {
     ));
 
     let state = Arc::new(AppState {
-        invoice_service, cod_service, wallet_service, jwt: Arc::clone(&jwt),
+        invoice_service, cod_service: Arc::clone(&cod_service), wallet_service, jwt: Arc::clone(&jwt),
     });
     let app = router(state);
+
+    // Spawn Kafka consumer for pod.captured — runs for the lifetime of the process.
+    let pod_consumer = PodConsumer::new(
+        &cfg.kafka.brokers,
+        &cfg.kafka.group_id,
+        Arc::clone(&cod_service),
+    )
+    .context("Failed to create PodConsumer")?;
+    tokio::spawn(async move { pod_consumer.run().await });
 
     let addr = format!("{}:{}", cfg.app.host, cfg.app.port);
     let listener = tokio::net::TcpListener::bind(&addr)
