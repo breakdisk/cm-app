@@ -731,6 +731,9 @@ services:
       S3_BUCKET: pod-evidence
       S3_ACCESS_KEY: minioadmin
       S3_SECRET_KEY: minioadmin
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-dev-placeholder}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-dev-placeholder}
+      TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-+15005550006}
       RUST_LOG: info
     depends_on:
       postgres:

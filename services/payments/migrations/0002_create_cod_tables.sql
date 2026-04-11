@@ -203,8 +203,7 @@ ALTER TABLE payments.wallets
     DROP CONSTRAINT IF EXISTS wallets_reserved_le_balance;
 ALTER TABLE payments.wallets
     ADD CONSTRAINT wallets_reserved_le_balance
-    CHECK (reserved_cents <= balance_cents)
-    DEFERRABLE INITIALLY DEFERRED;
+    CHECK (reserved_cents <= balance_cents);
 
 ALTER TABLE payments.wallets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payments.wallets FORCE ROW LEVEL SECURITY;
