@@ -27,19 +27,22 @@ pub async fn run() -> anyhow::Result<()> {
     })?;
 
     // Channel adapters — credentials from environment.
+    // In dev, placeholders are accepted; actual sends will fail gracefully at the channel layer.
+    let twilio_sid   = std::env::var("TWILIO_ACCOUNT_SID").unwrap_or_else(|_| "dev-placeholder".into());
+    let twilio_token = std::env::var("TWILIO_AUTH_TOKEN").unwrap_or_else(|_| "dev-placeholder".into());
     let whatsapp: Arc<dyn ChannelAdapter> = Arc::new(TwilioWhatsAppAdapter::new(
-        std::env::var("TWILIO_ACCOUNT_SID").expect("TWILIO_ACCOUNT_SID"),
-        std::env::var("TWILIO_AUTH_TOKEN").expect("TWILIO_AUTH_TOKEN"),
-        std::env::var("TWILIO_WHATSAPP_FROM").expect("TWILIO_WHATSAPP_FROM"),
+        twilio_sid.clone(),
+        twilio_token.clone(),
+        std::env::var("TWILIO_WHATSAPP_FROM").unwrap_or_else(|_| "whatsapp:+15005550006".into()),
     ));
     let sms: Arc<dyn ChannelAdapter> = Arc::new(TwilioSmsAdapter::new(
-        std::env::var("TWILIO_ACCOUNT_SID").expect("TWILIO_ACCOUNT_SID"),
-        std::env::var("TWILIO_AUTH_TOKEN").expect("TWILIO_AUTH_TOKEN"),
-        std::env::var("TWILIO_SMS_FROM").expect("TWILIO_SMS_FROM"),
+        twilio_sid,
+        twilio_token,
+        std::env::var("TWILIO_SMS_FROM").unwrap_or_else(|_| "+15005550006".into()),
     ));
     let email: Arc<dyn ChannelAdapter> = Arc::new(SendGridEmailAdapter::new(
-        std::env::var("SENDGRID_API_KEY").expect("SENDGRID_API_KEY"),
-        std::env::var("SENDGRID_FROM_EMAIL").expect("SENDGRID_FROM_EMAIL"),
+        std::env::var("SENDGRID_API_KEY").unwrap_or_else(|_| "dev-placeholder".into()),
+        std::env::var("SENDGRID_FROM_EMAIL").unwrap_or_else(|_| "noreply@logisticos.dev".into()),
         std::env::var("SENDGRID_FROM_NAME").unwrap_or_else(|_| "LogisticOS".into()),
     ));
 

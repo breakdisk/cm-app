@@ -320,6 +320,13 @@ services:
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
       MAILHOG_SMTP: mailhog:1025
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-dev-placeholder}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-dev-placeholder}
+      TWILIO_WHATSAPP_FROM: ${TWILIO_WHATSAPP_FROM:-whatsapp:+15005550006}
+      TWILIO_SMS_FROM: ${TWILIO_SMS_FROM:-+15005550006}
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-dev-placeholder}
+      SENDGRID_FROM_EMAIL: ${SENDGRID_FROM_EMAIL:-noreply@logisticos.dev}
+      SENDGRID_FROM_NAME: ${SENDGRID_FROM_NAME:-LogisticOS Dev}
       RUST_LOG: info
     depends_on:
       postgres:
