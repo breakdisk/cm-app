@@ -15,8 +15,6 @@ CREATE TABLE IF NOT EXISTS delivery_experience.tracking_events (
 CREATE INDEX IF NOT EXISTS idx_tracking_shipment ON delivery_experience.tracking_events(tenant_id, shipment_id, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tracking_number   ON delivery_experience.tracking_events(tracking_number, occurred_at DESC);
 ALTER TABLE delivery_experience.tracking_events ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_rls ON delivery_experience.tracking_events;
-DROP POLICY IF EXISTS tenant_rls ON delivery_experience.tracking_events;
 CREATE POLICY tenant_rls ON delivery_experience.tracking_events USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
 
 CREATE TABLE IF NOT EXISTS delivery_experience.delivery_preferences (
@@ -35,6 +33,4 @@ CREATE TABLE IF NOT EXISTS delivery_experience.delivery_preferences (
     UNIQUE (tenant_id, customer_id)
 );
 ALTER TABLE delivery_experience.delivery_preferences ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_rls ON delivery_experience.delivery_preferences;
-DROP POLICY IF EXISTS tenant_rls ON delivery_experience.delivery_preferences;
 CREATE POLICY tenant_rls ON delivery_experience.delivery_preferences USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid);

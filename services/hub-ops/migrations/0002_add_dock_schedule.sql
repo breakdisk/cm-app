@@ -16,7 +16,6 @@ CREATE TABLE IF NOT EXISTS hub_ops.dock_slots (
 );
 CREATE INDEX IF NOT EXISTS idx_dock_hub_time ON hub_ops.dock_slots(hub_id, scheduled_at);
 ALTER TABLE hub_ops.dock_slots ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_rls ON hub_ops.dock_slots;
 CREATE POLICY tenant_rls ON hub_ops.dock_slots USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
 
 CREATE TABLE IF NOT EXISTS hub_ops.sort_scans (
@@ -35,5 +34,4 @@ CREATE TABLE IF NOT EXISTS hub_ops.sort_scans (
 CREATE INDEX IF NOT EXISTS idx_sort_scans_hub    ON hub_ops.sort_scans(hub_id, scanned_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sort_scans_barcode ON hub_ops.sort_scans(barcode);
 ALTER TABLE hub_ops.sort_scans ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_rls ON hub_ops.sort_scans;
 CREATE POLICY tenant_rls ON hub_ops.sort_scans USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid);

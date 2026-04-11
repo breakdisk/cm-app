@@ -34,7 +34,6 @@ CREATE INDEX IF NOT EXISTS fleet_maintenance_due
 
 ALTER TABLE fleet.vehicles ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS fleet_tenant_isolation ON fleet.vehicles;
 CREATE POLICY fleet_tenant_isolation ON fleet.vehicles
     USING (tenant_id = (current_setting('app.tenant_id', true)::UUID));
 
@@ -43,7 +42,6 @@ RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN NEW.updated_at = now(); RETURN NEW; END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_fleet_vehicles_updated_at ON fleet.vehicles;
 CREATE TRIGGER trg_fleet_vehicles_updated_at
     BEFORE UPDATE ON fleet.vehicles
     FOR EACH ROW EXECUTE FUNCTION fleet.set_updated_at();

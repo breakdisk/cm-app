@@ -31,7 +31,6 @@ CREATE INDEX IF NOT EXISTS idx_pod_tenant ON pod.proofs (tenant_id);
 CREATE INDEX IF NOT EXISTS idx_pod_driver ON pod.proofs (driver_id);
 
 ALTER TABLE pod.proofs ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_isolation ON pod.proofs;
 CREATE POLICY tenant_isolation ON pod.proofs
     USING (tenant_id = current_setting('app.tenant_id', true)::UUID);
 

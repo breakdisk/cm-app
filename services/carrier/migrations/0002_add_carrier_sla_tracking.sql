@@ -17,8 +17,6 @@ CREATE TABLE IF NOT EXISTS carrier.sla_records (
 CREATE INDEX IF NOT EXISTS idx_sla_carrier_zone ON carrier.sla_records(carrier_id, zone, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sla_tenant ON carrier.sla_records(tenant_id, created_at DESC);
 ALTER TABLE carrier.sla_records ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_rls ON carrier.sla_records;
-DROP POLICY IF EXISTS tenant_rls ON carrier.sla_records;
 CREATE POLICY tenant_rls ON carrier.sla_records USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
 
 CREATE TABLE IF NOT EXISTS carrier.allocation_log (
@@ -33,6 +31,4 @@ CREATE TABLE IF NOT EXISTS carrier.allocation_log (
 );
 CREATE INDEX IF NOT EXISTS idx_alloc_tenant ON carrier.allocation_log(tenant_id, allocated_at DESC);
 ALTER TABLE carrier.allocation_log ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_rls ON carrier.allocation_log;
-DROP POLICY IF EXISTS tenant_rls ON carrier.allocation_log;
 CREATE POLICY tenant_rls ON carrier.allocation_log USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid);

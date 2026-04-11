@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS compliance.compliance_profiles (
+CREATE TABLE compliance.compliance_profiles (
     id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id        UUID        NOT NULL,
     entity_type      TEXT        NOT NULL CHECK (entity_type IN ('driver','partner','merchant')),
@@ -14,9 +14,9 @@ CREATE TABLE IF NOT EXISTS compliance.compliance_profiles (
     UNIQUE (tenant_id, entity_type, entity_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_compliance_profiles_status
+CREATE INDEX idx_compliance_profiles_status
     ON compliance.compliance_profiles (tenant_id, overall_status);
-CREATE INDEX IF NOT EXISTS idx_compliance_profiles_entity
+CREATE INDEX idx_compliance_profiles_entity
     ON compliance.compliance_profiles (entity_type, entity_id);
 
 -- Row-Level Security: isolate tenant data at DB layer (project standard)

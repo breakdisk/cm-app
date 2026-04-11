@@ -32,18 +32,16 @@ CREATE TABLE IF NOT EXISTS hub_ops.pallets (
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_pallets_hub_open
+CREATE INDEX idx_pallets_hub_open
     ON hub_ops.pallets (origin_hub_id, status)
     WHERE status = 'open';
 
-CREATE INDEX IF NOT EXISTS idx_pallets_tenant ON hub_ops.pallets (tenant_id);
+CREATE INDEX idx_pallets_tenant ON hub_ops.pallets (tenant_id);
 
 ALTER TABLE hub_ops.pallets ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS pallet_tenant ON hub_ops.pallets;
 CREATE POLICY pallet_tenant ON hub_ops.pallets
     USING (tenant_id = current_setting('app.tenant_id', true)::UUID);
 
-DROP TRIGGER IF EXISTS trg_pallets_updated_at ON hub_ops.pallets;
 CREATE TRIGGER trg_pallets_updated_at
     BEFORE UPDATE ON hub_ops.pallets
     FOR EACH ROW EXECUTE FUNCTION hub_ops.set_updated_at();
@@ -63,11 +61,10 @@ CREATE TABLE IF NOT EXISTS hub_ops.pallet_pieces (
     CONSTRAINT pallet_pieces_awb_unique UNIQUE (piece_awb)
 );
 
-CREATE INDEX IF NOT EXISTS idx_pallet_pieces_pallet ON hub_ops.pallet_pieces (pallet_id);
-CREATE INDEX IF NOT EXISTS idx_pallet_pieces_awb    ON hub_ops.pallet_pieces (piece_awb);
+CREATE INDEX idx_pallet_pieces_pallet ON hub_ops.pallet_pieces (pallet_id);
+CREATE INDEX idx_pallet_pieces_awb    ON hub_ops.pallet_pieces (piece_awb);
 
 ALTER TABLE hub_ops.pallet_pieces ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS pallet_piece_tenant ON hub_ops.pallet_pieces;
 CREATE POLICY pallet_piece_tenant ON hub_ops.pallet_pieces
     USING (tenant_id = current_setting('app.tenant_id', true)::UUID);
 
@@ -104,18 +101,16 @@ CREATE TABLE IF NOT EXISTS hub_ops.containers (
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_containers_tenant_status ON hub_ops.containers (tenant_id, status);
-CREATE INDEX IF NOT EXISTS idx_containers_origin        ON hub_ops.containers (origin_hub_id);
-CREATE INDEX IF NOT EXISTS idx_containers_destination   ON hub_ops.containers (destination_hub_id);
+CREATE INDEX idx_containers_tenant_status ON hub_ops.containers (tenant_id, status);
+CREATE INDEX idx_containers_origin        ON hub_ops.containers (origin_hub_id);
+CREATE INDEX idx_containers_destination   ON hub_ops.containers (destination_hub_id);
 -- GIN index for fast `piece_awb = ANY(master_awbs)` queries
-CREATE INDEX IF NOT EXISTS idx_containers_master_awbs   ON hub_ops.containers USING GIN (master_awbs);
+CREATE INDEX idx_containers_master_awbs   ON hub_ops.containers USING GIN (master_awbs);
 
 ALTER TABLE hub_ops.containers ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS container_tenant ON hub_ops.containers;
 CREATE POLICY container_tenant ON hub_ops.containers
     USING (tenant_id = current_setting('app.tenant_id', true)::UUID);
 
-DROP TRIGGER IF EXISTS trg_containers_updated_at ON hub_ops.containers;
 CREATE TRIGGER trg_containers_updated_at
     BEFORE UPDATE ON hub_ops.containers
     FOR EACH ROW EXECUTE FUNCTION hub_ops.set_updated_at();
@@ -133,11 +128,10 @@ CREATE TABLE IF NOT EXISTS hub_ops.container_pallets (
     CONSTRAINT container_pallets_unique UNIQUE (container_id, pallet_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_container_pallets_container ON hub_ops.container_pallets (container_id);
-CREATE INDEX IF NOT EXISTS idx_container_pallets_pallet    ON hub_ops.container_pallets (pallet_id);
+CREATE INDEX idx_container_pallets_container ON hub_ops.container_pallets (container_id);
+CREATE INDEX idx_container_pallets_pallet    ON hub_ops.container_pallets (pallet_id);
 
 ALTER TABLE hub_ops.container_pallets ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS container_pallet_tenant ON hub_ops.container_pallets;
 CREATE POLICY container_pallet_tenant ON hub_ops.container_pallets
     USING (tenant_id = current_setting('app.tenant_id', true)::UUID);
 
@@ -154,9 +148,8 @@ CREATE TABLE IF NOT EXISTS hub_ops.container_loose_pieces (
     CONSTRAINT container_loose_piece_unique UNIQUE (piece_awb)
 );
 
-CREATE INDEX IF NOT EXISTS idx_container_loose_container ON hub_ops.container_loose_pieces (container_id);
+CREATE INDEX idx_container_loose_container ON hub_ops.container_loose_pieces (container_id);
 
 ALTER TABLE hub_ops.container_loose_pieces ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS container_loose_tenant ON hub_ops.container_loose_pieces;
 CREATE POLICY container_loose_tenant ON hub_ops.container_loose_pieces
     USING (tenant_id = current_setting('app.tenant_id', true)::UUID);

@@ -225,8 +225,6 @@ CREATE INDEX IF NOT EXISTS idx_automation_rules_actions_gin
     ON business_logic.automation_rules USING GIN (actions);
 
 -- updated_at trigger
-DROP TRIGGER IF EXISTS trg_automation_rules_updated_at ON business_logic.automation_rules;
-DROP TRIGGER IF EXISTS trg_automation_rules_updated_at ON business_logic.automation_rules;
 CREATE TRIGGER trg_automation_rules_updated_at
     BEFORE UPDATE ON business_logic.automation_rules
     FOR EACH ROW

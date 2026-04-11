@@ -33,8 +33,6 @@ CREATE INDEX IF NOT EXISTS idx_drivers_location
     WHERE lat IS NOT NULL AND lng IS NOT NULL;
 
 ALTER TABLE driver_ops.drivers ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_isolation ON driver_ops.drivers;
-DROP POLICY IF EXISTS tenant_isolation ON driver_ops.drivers;
 CREATE POLICY tenant_isolation ON driver_ops.drivers
     USING (tenant_id = current_setting('app.tenant_id', true)::UUID);
 
@@ -43,8 +41,6 @@ RETURNS TRIGGER AS $$
 BEGIN NEW.updated_at = NOW(); RETURN NEW; END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS trg_drivers_updated_at ON driver_ops.drivers;
-DROP TRIGGER IF EXISTS trg_drivers_updated_at ON driver_ops.drivers;
 CREATE TRIGGER trg_drivers_updated_at
     BEFORE UPDATE ON driver_ops.drivers
     FOR EACH ROW EXECUTE FUNCTION driver_ops.set_updated_at();

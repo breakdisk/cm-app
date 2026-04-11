@@ -46,7 +46,6 @@ ALTER TABLE engagement.templates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE engagement.templates FORCE ROW LEVEL SECURITY;
 
 -- Tenants can see their own templates plus platform-level templates (tenant_id IS NULL).
-DROP POLICY IF EXISTS templates_tenant_isolation ON engagement.templates;
 CREATE POLICY templates_tenant_isolation ON engagement.templates
     USING (
         tenant_id = current_setting('app.tenant_id', true)::UUID
@@ -129,7 +128,6 @@ CREATE INDEX IF NOT EXISTS idx_campaigns_template_id
 ALTER TABLE engagement.campaigns ENABLE ROW LEVEL SECURITY;
 ALTER TABLE engagement.campaigns FORCE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS campaigns_tenant_isolation ON engagement.campaigns;
 CREATE POLICY campaigns_tenant_isolation ON engagement.campaigns
     USING (tenant_id = current_setting('app.tenant_id', true)::UUID);
 
@@ -199,7 +197,6 @@ CREATE INDEX IF NOT EXISTS idx_campaign_sends_queued
 -- We enable RLS but bypass it for the service role (which handles the joins).
 ALTER TABLE engagement.campaign_sends ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS campaign_sends_service_bypass ON engagement.campaign_sends;
 CREATE POLICY campaign_sends_service_bypass ON engagement.campaign_sends
     USING (TRUE);   -- application enforces tenant isolation via campaign_id FK
 
@@ -213,12 +210,10 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_campaigns_updated_at ON engagement.campaigns;
 CREATE TRIGGER trg_campaigns_updated_at
     BEFORE UPDATE ON engagement.campaigns
     FOR EACH ROW EXECUTE FUNCTION engagement.set_updated_at();
 
-DROP TRIGGER IF EXISTS trg_templates_updated_at ON engagement.templates;
 CREATE TRIGGER trg_templates_updated_at
     BEFORE UPDATE ON engagement.templates
     FOR EACH ROW EXECUTE FUNCTION engagement.set_updated_at();

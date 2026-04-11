@@ -49,8 +49,6 @@ CREATE INDEX IF NOT EXISTS ai_sessions_type
 -- ─── RLS ─────────────────────────────────────────────────────────────────────
 ALTER TABLE ai.agent_sessions ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS ai_sessions_tenant_isolation ON ai.agent_sessions;
-DROP POLICY IF EXISTS ai_sessions_tenant_isolation ON ai.agent_sessions;
 CREATE POLICY ai_sessions_tenant_isolation ON ai.agent_sessions
     USING (tenant_id = (current_setting('app.tenant_id', true)::UUID));
 

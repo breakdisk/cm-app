@@ -1,6 +1,6 @@
 -- Migration: 0001 — Engagement: Notifications and templates
 
-CREATE TABLE IF NOT EXISTS engagement.notification_templates (
+CREATE TABLE engagement.notification_templates (
     id            UUID    PRIMARY KEY DEFAULT uuid_generate_v4(),
     tenant_id     UUID,                   -- NULL = platform-level default
     template_id   TEXT    NOT NULL,       -- slug: "delivery_confirmed"
@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS engagement.notification_templates (
     UNIQUE (tenant_id, template_id, channel, language)
 );
 
-CREATE INDEX IF NOT EXISTS idx_templates_tenant_id ON engagement.notification_templates (tenant_id, template_id);
+CREATE INDEX idx_templates_tenant_id ON engagement.notification_templates (tenant_id, template_id);
 
 -- Seed platform-level default templates
 INSERT INTO engagement.notification_templates (template_id, channel, language, subject, body, variables) VALUES
@@ -39,7 +39,7 @@ INSERT INTO engagement.notification_templates (template_id, channel, language, s
      ARRAY['customer_name','tracking_url']);
 
 -- Notifications log
-CREATE TABLE IF NOT EXISTS engagement.notifications (
+CREATE TABLE engagement.notifications (
     id                    UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
     tenant_id             UUID        NOT NULL,
     customer_id           UUID        NOT NULL,
@@ -60,12 +60,10 @@ CREATE TABLE IF NOT EXISTS engagement.notifications (
     opened_at             TIMESTAMPTZ
 );
 
-CREATE INDEX IF NOT EXISTS idx_notifications_tenant_status ON engagement.notifications (tenant_id, status, queued_at);
-CREATE INDEX IF NOT EXISTS idx_notifications_customer      ON engagement.notifications (tenant_id, customer_id);
+CREATE INDEX idx_notifications_tenant_status ON engagement.notifications (tenant_id, status, queued_at);
+CREATE INDEX idx_notifications_customer      ON engagement.notifications (tenant_id, customer_id);
 
 ALTER TABLE engagement.notifications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE engagement.notifications FORCE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_isolation ON engagement.notifications;
-DROP POLICY IF EXISTS tenant_isolation ON engagement.notifications;
 CREATE POLICY tenant_isolation ON engagement.notifications
     USING (tenant_id = current_setting('app.tenant_id')::uuid);

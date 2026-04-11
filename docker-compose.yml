@@ -195,7 +195,7 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8001"
       APP__ENV: development
-      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_identity
       DATABASE__MAX_CONNECTIONS: "5"
       KAFKA__BROKERS: kafka:29092
       KAFKA__GROUP_ID: identity-dev
@@ -245,7 +245,7 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8002"
       APP__ENV: development
-      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_cdp
       DATABASE__MAX_CONNECTIONS: "5"
       KAFKA__BROKERS: kafka:29092
       KAFKA__GROUP_ID: cdp-dev
@@ -295,7 +295,7 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8003"
       APP__ENV: development
-      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_engagement
       DATABASE__MAX_CONNECTIONS: "5"
       KAFKA__BROKERS: kafka:29092
       KAFKA__GROUP_ID: engagement-dev
@@ -353,7 +353,7 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8004"
       APP__ENV: development
-      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_order_intake
       DATABASE__MAX_CONNECTIONS: "5"
       KAFKA__BROKERS: kafka:29092
       KAFKA__GROUP_ID: order-intake-dev
@@ -403,7 +403,7 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8005"
       APP__ENV: development
-      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_dispatch
       DATABASE__MAX_CONNECTIONS: "5"
       KAFKA__BROKERS: kafka:29092
       KAFKA__GROUP_ID: dispatch-dev
@@ -453,7 +453,7 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8006"
       APP__ENV: development
-      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_driver_ops
       DATABASE__MAX_CONNECTIONS: "5"
       KAFKA__BROKERS: kafka:29092
       KAFKA__GROUP_ID: driver-ops-dev
@@ -503,7 +503,7 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8007"
       APP__ENV: development
-      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_delivery_experience
       DATABASE__MAX_CONNECTIONS: "5"
       KAFKA__BROKERS: kafka:29092
       KAFKA__GROUP_ID: delivery-experience-dev
@@ -553,7 +553,7 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8008"
       APP__ENV: development
-      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_fleet
       DATABASE__MAX_CONNECTIONS: "5"
       KAFKA__BROKERS: kafka:29092
       KAFKA__GROUP_ID: fleet-dev
@@ -603,7 +603,7 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8009"
       APP__ENV: development
-      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_hub_ops
       DATABASE__MAX_CONNECTIONS: "5"
       KAFKA__BROKERS: kafka:29092
       KAFKA__GROUP_ID: hub-ops-dev
@@ -653,7 +653,7 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8010"
       APP__ENV: development
-      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_carrier
       DATABASE__MAX_CONNECTIONS: "5"
       KAFKA__BROKERS: kafka:29092
       KAFKA__GROUP_ID: carrier-dev
@@ -703,7 +703,7 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8011"
       APP__ENV: development
-      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_pod
       DATABASE__MAX_CONNECTIONS: "5"
       KAFKA__BROKERS: kafka:29092
       KAFKA__GROUP_ID: pod-dev
@@ -757,7 +757,7 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8012"
       APP__ENV: development
-      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_payments
       DATABASE__MAX_CONNECTIONS: "5"
       KAFKA__BROKERS: kafka:29092
       KAFKA__GROUP_ID: payments-dev
@@ -807,7 +807,7 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8013"
       APP__ENV: development
-      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_analytics
       DATABASE__MAX_CONNECTIONS: "5"
       KAFKA__BROKERS: kafka:29092
       KAFKA__GROUP_ID: analytics-dev
@@ -861,7 +861,7 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8014"
       APP__ENV: development
-      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_marketing
       DATABASE__MAX_CONNECTIONS: "5"
       KAFKA__BROKERS: kafka:29092
       KAFKA__GROUP_ID: marketing-dev
@@ -911,7 +911,7 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8015"
       APP__ENV: development
-      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_business_logic
       DATABASE__MAX_CONNECTIONS: "5"
       KAFKA__BROKERS: kafka:29092
       KAFKA__GROUP_ID: business-logic-dev
@@ -961,7 +961,7 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8016"
       APP__ENV: development
-      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_ai_layer
       DATABASE__MAX_CONNECTIONS: "5"
       KAFKA__BROKERS: kafka:29092
       KAFKA__GROUP_ID: ai-layer-dev
@@ -1021,7 +1021,7 @@ services:
       APP__HOST: 0.0.0.0
       APP__PORT: "8017"
       APP__ENV: development
-      DATABASE__URL: postgres://logisticos:password@postgres:5432/logisticos
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_compliance
       DATABASE__MAX_CONNECTIONS: "5"
       KAFKA__BROKERS: kafka:29092
       KAFKA__CONSUMER_GROUP: compliance-dev
