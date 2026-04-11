@@ -26,23 +26,20 @@ export async function syncShipments(): Promise<void> {
 
     for (const shipment of pending) {
       try {
-        const result = await shipmentsService.createShipment(customerId, {
-          origin: shipment.origin,
-          destination: shipment.destination,
-          recipientName: shipment.recipientName,
-          recipientPhone: shipment.recipientPhone,
-          weight: 0,
-          description: '',
-          cargoType: 'goods',
-          type: shipment.type,
-          serviceType: 'standard',
-          codAmount: shipment.codAmount,
+        const result = await shipmentsService.createShipment({
+          customer_name:  shipment.recipientName ?? 'Customer',
+          customer_phone: shipment.recipientPhone ?? customerId,
+          origin:         shipmentsService.parseAddress(shipment.origin),
+          destination:    shipmentsService.parseAddress(shipment.destination),
+          service_type:   'standard',
+          weight_grams:   500,
+          cod_amount_cents: shipment.codAmount ? Math.round(shipment.codAmount * 100) : undefined,
         });
 
         // Mark as synced with server-generated AWB
         await db.runAsync(
           `UPDATE shipments SET isPending = 0, syncedAt = ?, awb = ? WHERE id = ?`,
-          [new Date().toISOString(), result.awb, shipment.id]
+          [new Date().toISOString(), result.awb ?? result.tracking_number, shipment.id]
         );
 
         console.log(`Synced pending shipment: ${shipment.id}`);
@@ -52,7 +49,7 @@ export async function syncShipments(): Promise<void> {
     }
 
     // 2. Download latest shipments from API
-    const response = await shipmentsService.listShipments(customerId, { limit: 100 });
+    const response = await shipmentsService.listShipments({ limit: 100 });
 
     // Clear synced shipments and re-populate (keep pending ones)
     await db.runAsync(
@@ -61,23 +58,32 @@ export async function syncShipments(): Promise<void> {
     );
 
     for (const shipment of response.shipments) {
+      const awb = shipment.awb ?? shipment.tracking_number ?? '';
+      const originStr = typeof shipment.origin === 'object'
+        ? `${shipment.origin.line1}, ${shipment.origin.city}`
+        : String(shipment.origin ?? '');
+      const destStr = typeof shipment.destination === 'object'
+        ? `${shipment.destination.line1}, ${shipment.destination.city}`
+        : String(shipment.destination ?? '');
+      const fee = shipment.cod_amount_cents != null ? shipment.cod_amount_cents / 100 : 0;
+
       await db.runAsync(
         `INSERT OR REPLACE INTO shipments
          (id, awb, customerId, origin, destination, status, fee, currency, type, recipientName, recipientPhone, createdAt, syncedAt, isPending)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
         [
-          `${shipment.awb}-${Date.now()}`,
-          shipment.awb,
+          `${awb}-${Date.now()}`,
+          awb,
           customerId,
-          shipment.origin,
-          shipment.destination,
-          shipment.status,
-          shipment.fee,
-          shipment.currency,
+          originStr,
+          destStr,
+          shipment.status ?? 'pending',
+          fee,
+          'PHP',
           'local',
-          shipment.origin || 'unknown',
-          shipment.destination || '',
-          shipment.createdAt,
+          shipment.customer_name ?? '',
+          shipment.customer_phone ?? '',
+          shipment.created_at ?? new Date().toISOString(),
           new Date().toISOString(),
         ]
       );
@@ -111,8 +117,8 @@ export async function syncShipments(): Promise<void> {
 export async function savePendingShipment(customerId: string, shipmentData: any): Promise<string> {
   const db = await getDatabase();
 
-  const shipmentId = `pending-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  const temporaryAwb = `PENDING-${Math.random().toString(36).substr(2, 8).toUpperCase()}`;
+  const shipmentId = `pending-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  const temporaryAwb = `PENDING-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
 
   await db.runAsync(
     `INSERT INTO shipments

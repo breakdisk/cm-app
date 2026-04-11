@@ -72,7 +72,7 @@ const DEMO_SHIPMENTS: ShipmentRecord[] = [
 // Statuses where driver pickup QR is relevant
 const PICKUP_STATUSES: ShipmentStatus[] = ["pending", "confirmed"];
 
-function ShipmentCard({ item, onShowQR }: { item: ShipmentRecord; onShowQR: (awb: string) => void }) {
+function ShipmentCard({ item, onShowQR, onViewReceipt }: { item: ShipmentRecord; onShowQR: (awb: string) => void; onViewReceipt: (item: ShipmentRecord) => void }) {
   const cfg       = STATUS_CONFIG[item.status] ?? { label: item.status, color: AMBER, icon: "time-outline" };
   const isIntl    = item.type === "international";
   const showQRBtn = PICKUP_STATUSES.includes(item.status);
@@ -143,11 +143,23 @@ function ShipmentCard({ item, onShowQR }: { item: ShipmentRecord; onShowQR: (awb
           <Ionicons name="chevron-forward" size={12} color={accent + "80"} />
         </Pressable>
       )}
+
+      {/* View Receipt button — only for delivered shipments */}
+      {item.status === "delivered" && (
+        <Pressable
+          onPress={() => onViewReceipt(item)}
+          style={[s.qrBtn, { borderColor: GREEN + "40", backgroundColor: GREEN + "0C" }]}
+        >
+          <Ionicons name="receipt-outline" size={14} color={GREEN} />
+          <Text style={[s.qrBtnText, { color: GREEN }]}>View Receipt</Text>
+          <Ionicons name="chevron-forward" size={12} color={GREEN + "80"} />
+        </Pressable>
+      )}
     </FadeInView>
   );
 }
 
-export function HistoryScreen() {
+export function HistoryScreen({ navigation }: { navigation: any }) {
   const { list: hookShipments, loading } = useShipments();
   const reduxShipments = useSelector((s: RootState) => s.shipments.list);
 
@@ -158,6 +170,10 @@ export function HistoryScreen() {
 
   const [filter,  setFilter]  = useState<FilterTab>("all");
   const [qrAwb,   setQrAwb]   = useState<string | null>(null);
+
+  function handleViewReceipt(item: ShipmentRecord) {
+    navigation.navigate("Receipt", { shipment: item });
+  }
 
   const filtered = shipments.filter((s) => {
     if (filter === "active") return ACTIVE_STATUSES.includes(s.status);
@@ -234,7 +250,7 @@ export function HistoryScreen() {
       ) : (
         <View style={s.list}>
           {filtered.map((item) => (
-            <ShipmentCard key={item.awb} item={item} onShowQR={setQrAwb} />
+            <ShipmentCard key={item.awb} item={item} onShowQR={setQrAwb} onViewReceipt={handleViewReceipt} />
           ))}
         </View>
       )}

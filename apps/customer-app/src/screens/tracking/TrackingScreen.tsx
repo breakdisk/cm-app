@@ -19,6 +19,7 @@ import { useRoute } from "@react-navigation/native";
 import { useNetInfo } from "@react-native-community/netinfo";
 import { getDatabase } from "../../db/sqlite";
 import OfflineIndicator from "../../components/OfflineIndicator";
+import { trackingApi } from "../../services/api/tracking";
 
 const CANVAS = "#050810";
 const CYAN   = "#00E5FF";
@@ -52,38 +53,6 @@ interface TrackingResult {
   timeline:         TimelineEvent[];
 }
 
-// Mock data — in production fetched from GET /v1/shipments/:awb
-const MOCK_RESULTS: Record<string, TrackingResult> = {
-  "LS-A1B2C3D4": {
-    awb:              "LS-A1B2C3D4",
-    status:           "out_for_delivery",
-    origin_city:      "Pasig City",
-    destination_city: "Quezon City",
-    eta:              "Today, 2:00–4:00 PM",
-    driver_name:      "Juan Dela Cruz",
-    driver_phone:     "+639171234567",
-    timeline: [
-      { status: "pending",           description: "Shipment booked by merchant",             occurred_at: "Mar 17, 8:00 AM"  },
-      { status: "confirmed",         description: "Order confirmed and assigned to hub",      occurred_at: "Mar 17, 8:15 AM"  },
-      { status: "picked_up",         description: "Package collected from merchant",          location: "Pasig City Hub",   occurred_at: "Mar 17, 10:30 AM" },
-      { status: "in_transit",        description: "Package in transit to delivery zone",      location: "QC Sorting Hub",   occurred_at: "Mar 17, 12:00 PM" },
-      { status: "out_for_delivery",  description: "Package is out for delivery today",        occurred_at: "Mar 17, 1:30 PM"  },
-    ],
-  },
-  "LS-E5F6G7H8": {
-    awb:              "LS-E5F6G7H8",
-    status:           "in_transit",
-    origin_city:      "Makati City",
-    destination_city: "Cebu City",
-    eta:              "Mar 19, 2026",
-    timeline: [
-      { status: "pending",           description: "Shipment booked by merchant",            occurred_at: "Mar 17, 7:00 AM"  },
-      { status: "confirmed",         description: "Order confirmed",                          occurred_at: "Mar 17, 7:10 AM"  },
-      { status: "picked_up",         description: "Package collected from merchant",          location: "Makati Hub",        occurred_at: "Mar 17, 9:45 AM"  },
-      { status: "in_transit",        description: "En route to Cebu via inter-island cargo",  location: "Manila Port Area",  occurred_at: "Mar 17, 2:00 PM"  },
-    ],
-  },
-};
 
 const STATUS_CONFIG: Record<ShipmentStatus, { label: string; color: string; icon: string }> = {
   pending:            { label: "Processing",         color: AMBER,  icon: "time-outline"              },
@@ -149,28 +118,46 @@ export function TrackingScreen() {
     loadOfflineTracking();
   }, [isConnected, currentAwb]);
 
-  function handleSearch() {
+  async function handleSearch() {
     const awb = query.trim().toUpperCase();
     if (!awb) return;
     setLocalLoading(true);
     setLocalError("");
     setResult(null);
-    // Simulate network delay for search
-    setTimeout(() => {
-      const found = MOCK_RESULTS[awb];
-      if (found) {
-        setResult(found);
-        setCurrentAwb(awb); // Trigger the hook to load real tracking data
-        dispatch(trackingActions.addToHistory({
-          awb,
-          currentStatus: found.status,
-          events: [],
-        }));
-      } else {
+    try {
+      const tracking = await trackingApi.getLive(awb, "");
+      const data = (tracking.data as any)?.data ?? tracking.data as any;
+      const mapped: TrackingResult = {
+        awb: data.tracking_number ?? awb,
+        status: (data.status ?? "pending") as ShipmentStatus,
+        origin_city: data.origin_city ?? "",
+        destination_city: data.destination_city ?? "",
+        eta: data.eta,
+        driver_name: data.driver?.name,
+        driver_phone: undefined,
+        timeline: (data.events ?? []).map((e: any) => ({
+          status: (e.status ?? "pending") as ShipmentStatus,
+          description: e.description ?? "",
+          location: e.location,
+          occurred_at: e.occurred_at ?? "",
+        })),
+      };
+      setResult(mapped);
+      setCurrentAwb(awb);
+      dispatch(trackingActions.addToHistory({
+        awb,
+        currentStatus: data.status ?? "pending",
+        events: data.events ?? [],
+      } as any));
+    } catch (err: any) {
+      if (err?.status === 404) {
         setLocalError("No shipment found for that tracking number. Check and try again.");
+      } else {
+        setLocalError(err?.message ?? "Failed to fetch tracking. Please try again.");
       }
+    } finally {
       setLocalLoading(false);
-    }, 800);
+    }
   }
 
   const cfg = result ? STATUS_CONFIG[result.status] : null;
@@ -372,16 +359,10 @@ export function TrackingScreen() {
             </>
           ) : (
             <>
-              <Text style={s.hintTitle}>Try these sample numbers</Text>
-              {Object.keys(MOCK_RESULTS).map((awb) => (
-                <Pressable key={awb} onPress={() => setQuery(awb)} style={({ pressed }) => [s.hintRow, { opacity: pressed ? 0.7 : 1 }]}>
-                  <Ionicons name="cube-outline" size={14} color={CYAN} />
-                  <Text style={s.hintAWB}>{awb}</Text>
-                  <Text style={[s.hintStatus, { color: STATUS_CONFIG[MOCK_RESULTS[awb].status].color }]}>
-                    {STATUS_CONFIG[MOCK_RESULTS[awb].status].label}
-                  </Text>
-                </Pressable>
-              ))}
+              <Text style={s.hintTitle}>Enter a tracking number above</Text>
+              <Text style={{ fontSize: 12, color: "rgba(255,255,255,0.25)", fontFamily: "JetBrainsMono-Regular", marginTop: 4 }}>
+                e.g. LS-PH1-S0001234X
+              </Text>
             </>
           )}
         </FadeInView>

@@ -17,7 +17,6 @@
  *   Step 5 — Review & Confirm
  */
 import React, { useState } from "react";
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FadeInView } from '../../components/FadeInView';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, Image,
@@ -197,7 +196,6 @@ function CountryPickerRN({ value, onChange, accent = CYAN }: {
 
 export function BookingScreen() {
   const dispatch      = useDispatch<AppDispatch>();
-  const customerId    = useSelector((s: RootState) => s.auth.customerId);
   const loyaltyPoints = useSelector((s: RootState) => s.auth.loyaltyPoints);
   const shipmentCount = useSelector((s: RootState) => s.shipments.list.length);
   const { isConnected } = useNetInfo();
@@ -364,22 +362,34 @@ export function BookingScreen() {
           currency: "PHP",
           codAmount: isCOD && !isIntl ? parseInt(codAmount) : undefined,
         });
-        const tempAwb = `OFFLINE-${Math.random().toString(36).substr(2, 8).toUpperCase()}`;
+        const tempAwb = `OFFLINE-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
         setConfirmedAwb(tempAwb);
         showToast("Saved offline. Will sync when online.", "info");
         return;
       }
 
-      const response = await shipmentsService.createShipment(storedCustomerId, {
-        origin, destination,
-        recipientName: receiverName,
-        recipientPhone: receiverPhone,
-        weight: parseFloat(weight) || 1,
-        description: isIntl ? (contents || "Balikbayan Box") : (description || "Parcel"),
-        cargoType: isIntl ? "mixed" : "general",
-        type: isIntl ? "international" : "local",
-        serviceType: isIntl ? (freightMode === "sea" ? "sea" : "air") : "standard",
-        codAmount: isCOD && !isIntl ? parseInt(codAmount) : undefined,
+      const response = await shipmentsService.createShipment({
+        customer_name:  receiverName,
+        customer_phone: receiverPhone,
+        origin: {
+          line1:        senderAddress,
+          city:         senderCity,
+          province:     senderCity,
+          postal_code:  senderZip || '0000',
+          country_code: senderCountry || 'PH',
+        },
+        destination: {
+          line1:        receiverAddress,
+          city:         receiverCity,
+          province:     receiverCity,
+          postal_code:  receiverZip || '0000',
+          country_code: receiverCountry || 'PH',
+        },
+        service_type:      isIntl ? (freightMode === 'sea' ? 'balikbayan' : 'standard') : 'standard',
+        weight_grams:      Math.round((parseFloat(weight) || 1) * 1000),
+        description:       isIntl ? (contents || 'Balikbayan Box') : (description || 'Parcel'),
+        cod_amount_cents:  isCOD && !isIntl ? Math.round(parseInt(codAmount || '0') * 100) : undefined,
+        declared_value_cents: Math.round(calcTotal() * 100),
       });
 
       const now = new Date();
@@ -389,7 +399,7 @@ export function BookingScreen() {
         : now.toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" });
 
       dispatch(shipmentsActions.addShipment({
-        awb: response.awb,
+        awb: response.awb ?? response.tracking_number,
         type: isIntl ? "international" : "local",
         status: "confirmed",
         origin, destination,

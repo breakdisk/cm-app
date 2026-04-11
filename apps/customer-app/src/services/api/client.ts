@@ -65,8 +65,9 @@ export function createApiClient(baseURL: string): AxiosInstance {
         try {
           const refreshToken = await SecureStore.getItemAsync('refresh_token');
           if (refreshToken) {
-            const response = await client.post('/v1/auth/refresh', { refreshToken });
-            const { token } = response.data;
+            const response = await client.post('/v1/auth/refresh', { refresh_token: refreshToken });
+            const token = response.data?.data?.access_token ?? response.data?.access_token;
+            if (!token) throw new Error('No access token in refresh response');
             await SecureStore.setItemAsync('auth_token', token);
             config.headers.Authorization = `Bearer ${token}`;
             return client(config);
@@ -96,21 +97,21 @@ let cachedTrackingClient: AxiosInstance | null = null;
 
 export function getIdentityClient(): AxiosInstance {
   if (!cachedIdentityClient) {
-    cachedIdentityClient = createApiClient(process.env.EXPO_PUBLIC_IDENTITY_URL || 'http://localhost:8001');
+    cachedIdentityClient = createApiClient(process.env.EXPO_PUBLIC_IDENTITY_URL || process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8001');
   }
   return cachedIdentityClient;
 }
 
 export function getOrderClient(): AxiosInstance {
   if (!cachedOrderClient) {
-    cachedOrderClient = createApiClient(process.env.EXPO_PUBLIC_ORDER_URL || 'http://localhost:8004');
+    cachedOrderClient = createApiClient(process.env.EXPO_PUBLIC_ORDER_INTAKE_URL || process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8004');
   }
   return cachedOrderClient;
 }
 
 export function getTrackingClient(): AxiosInstance {
   if (!cachedTrackingClient) {
-    cachedTrackingClient = createApiClient(process.env.EXPO_PUBLIC_TRACKING_URL || 'http://localhost:8007');
+    cachedTrackingClient = createApiClient(process.env.EXPO_PUBLIC_DELIVERY_URL || process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8007');
   }
   return cachedTrackingClient;
 }

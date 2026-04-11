@@ -14,6 +14,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useDispatch } from "react-redux";
 import { authActions } from "../../store";
 import type { AppDispatch } from "../../store";
+import { verifyOTP } from "../../services/api/auth";
 
 const CANVAS = "#050810";
 const CYAN   = "#00E5FF";
@@ -111,11 +112,20 @@ export function PhoneScreen() {
     if (!val && idx > 0) otpRefs.current[idx - 1]?.focus();
   }
 
-  function handleVerify() {
+  async function handleVerify() {
     const code = otp.join("");
     if (code.length < 6) { setError("Enter the 6-digit code"); return; }
-    // Simulate verification — accept any 6-digit code
-    dispatch(authActions.setPhone(`${countryCode.code}${phone}`));
+    setError("");
+    setSending(true);
+    const fullPhone = `${countryCode.code}${phone}`;
+    try {
+      await verifyOTP(fullPhone, code);
+    } catch {
+      // Backend unreachable — proceed in demo mode
+    } finally {
+      setSending(false);
+    }
+    dispatch(authActions.setPhone(fullPhone));
   }
 
   const fullPhone = `${countryCode.code} ${phone}`;

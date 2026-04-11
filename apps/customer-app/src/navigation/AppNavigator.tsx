@@ -17,6 +17,7 @@ import { BookingScreen }          from "../screens/booking/BookingScreen";
 import { ProfileScreen }          from "../screens/profile/ProfileScreen";
 import { NotificationsScreen }    from "../screens/notifications/NotificationsScreen";
 import { HistoryScreen }          from "../screens/history/HistoryScreen";
+import { ReceiptScreen }          from "../screens/history/ReceiptScreen";
 import { SupportScreen }          from "../screens/support/SupportScreen";
 import { PhoneScreen }            from "../screens/auth/PhoneScreen";
 import { OnboardingProfileScreen }from "../screens/auth/OnboardingProfileScreen";
@@ -95,6 +96,17 @@ function OnboardingNavigator() {
   );
 }
 
+// ── Authenticated app shell — tabs + modal-style screens ────────────────────────
+
+function AuthenticatedNavigator() {
+  return (
+    <Stack.Navigator screenOptions={{ headerShown: false, contentStyle: { backgroundColor: CANVAS }, animation: "slide_from_right" }}>
+      <Stack.Screen name="Tabs"    component={TabNavigator} />
+      <Stack.Screen name="Receipt" component={ReceiptScreen} />
+    </Stack.Navigator>
+  );
+}
+
 // ── Root navigator ──────────────────────────────────────────────────────────────
 
 export function AppNavigator() {
@@ -111,7 +123,7 @@ export function AppNavigator() {
           {showOnboarding ? (
             <Stack.Screen name="Onboarding" component={OnboardingNavigator} />
           ) : (
-            <Stack.Screen name="Main" component={TabNavigator} />
+            <Stack.Screen name="Main" component={AuthenticatedNavigator} />
           )}
         </Stack.Navigator>
       </NavigationContainer>

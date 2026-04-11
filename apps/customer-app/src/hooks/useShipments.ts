@@ -2,7 +2,6 @@ import { useEffect, useCallback } from 'react';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 import { setLoading, setShipments, setError, Shipment } from '../store/slices/shipments';
 import * as shipmentsService from '../services/api/shipments';
-import { getStoredCustomerId } from '../services/api/auth';
 
 export interface UseShipmentsOptions {
   skip?: number;
@@ -26,29 +25,25 @@ export function useShipments(options: UseShipmentsOptions = {}) {
   const loadShipments = useCallback(async () => {
     dispatch(setLoading(true));
     try {
-      const customerId = await getStoredCustomerId();
-      if (!customerId) {
-        dispatch(setError('Not authenticated'));
-        return;
-      }
+      const response = await shipmentsService.listShipments({ skip, limit, status });
 
-      const response = await shipmentsService.listShipments(customerId, {
-        skip,
-        limit,
-        status,
-      });
-
-      // Convert API response to Shipment type with default values
+      // Map API response (order-intake shape) to Redux Shipment type
       const shipments: Shipment[] = response.shipments.map((ship: any) => ({
-        awb: ship.awb,
+        awb: ship.awb ?? ship.tracking_number,
         status: ship.status as any,
-        origin: ship.origin,
-        destination: ship.destination,
-        date: ship.createdAt,
-        fee: ship.fee,
-        totalFee: ship.fee,
-        currency: ship.currency as 'PHP' | 'USD',
-        type: 'local',
+        origin: typeof ship.origin === 'object'
+          ? `${ship.origin.line1}, ${ship.origin.city}`
+          : ship.origin,
+        destination: typeof ship.destination === 'object'
+          ? `${ship.destination.line1}, ${ship.destination.city}`
+          : ship.destination,
+        date: ship.created_at ?? ship.createdAt,
+        fee: ship.cod_amount_cents ? ship.cod_amount_cents / 100 : 0,
+        totalFee: ship.cod_amount_cents ? ship.cod_amount_cents / 100 : 0,
+        currency: 'PHP' as const,
+        type: (ship.destination?.country_code === 'PH' ? 'local' : 'international') as any,
+        recipientName: ship.customer_name,
+        recipientPhone: ship.customer_phone,
       }));
 
       dispatch(
