@@ -46,5 +46,7 @@ CREATE OR REPLACE RULE no_delete_shipment_events AS
 -- ─── RLS ─────────────────────────────────────────────────────────────────────
 ALTER TABLE analytics.shipment_events ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS analytics_tenant_isolation ON analytics.shipment_events;
+DROP POLICY IF EXISTS analytics_tenant_isolation ON analytics.shipment_events;
 CREATE POLICY analytics_tenant_isolation ON analytics.shipment_events
     USING (tenant_id = (current_setting('app.tenant_id', true)::UUID));

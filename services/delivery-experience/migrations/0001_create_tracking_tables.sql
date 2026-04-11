@@ -64,11 +64,15 @@ CREATE INDEX IF NOT EXISTS tracking_by_driver
 
 ALTER TABLE tracking.shipment_tracking ENABLE ROW LEVEL SECURITY;
 
+DO $$ BEGIN
+    DROP POLICY IF EXISTS tracking_tenant_isolation ON tracking.shipment_tracking;
+DROP POLICY IF EXISTS tracking_tenant_isolation ON tracking.shipment_tracking;
 CREATE POLICY tracking_tenant_isolation ON tracking.shipment_tracking
-    USING (
-        current_setting('app.tenant_id', true) = ''
-        OR tenant_id = (current_setting('app.tenant_id', true)::UUID)
-    );
+        USING (
+            current_setting('app.tenant_id', true) = ''
+            OR tenant_id = (current_setting('app.tenant_id', true)::UUID)
+        );
+EXCEPTION WHEN duplicate_object THEN NULL; END; $$;
 
 -- ─── updated_at trigger ───────────────────────────────────────────────────────
 
@@ -80,6 +84,10 @@ BEGIN
 END;
 $$;
 
+DO $$ BEGIN
+    DROP TRIGGER IF EXISTS trg_shipment_tracking_updated_at ON tracking.shipment_tracking;
+DROP TRIGGER IF EXISTS trg_shipment_tracking_updated_at ON tracking.shipment_tracking;
 CREATE TRIGGER trg_shipment_tracking_updated_at
-    BEFORE UPDATE ON tracking.shipment_tracking
-    FOR EACH ROW EXECUTE FUNCTION tracking.set_updated_at();
+        BEFORE UPDATE ON tracking.shipment_tracking
+        FOR EACH ROW EXECUTE FUNCTION tracking.set_updated_at();
+EXCEPTION WHEN duplicate_object THEN NULL; END; $$;

@@ -55,6 +55,7 @@ CREATE INDEX IF NOT EXISTS idx_cod_records_shipment
     ON payments.cod_records (shipment_id);
 
 ALTER TABLE payments.cod_records ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS cod_records_tenant_isolation ON payments.cod_records;
 CREATE POLICY cod_records_tenant_isolation ON payments.cod_records
     USING (tenant_id = current_setting('app.tenant_id', true)::UUID);
 
@@ -103,6 +104,7 @@ CREATE INDEX IF NOT EXISTS idx_cod_batches_driver
     ON payments.cod_batches (tenant_id, driver_id, batch_date DESC);
 
 ALTER TABLE payments.cod_batches ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS cod_batches_tenant_isolation ON payments.cod_batches;
 CREATE POLICY cod_batches_tenant_isolation ON payments.cod_batches
     USING (tenant_id = current_setting('app.tenant_id', true)::UUID);
 
@@ -208,6 +210,7 @@ ALTER TABLE payments.wallets
 
 ALTER TABLE payments.wallets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payments.wallets FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS wallets_tenant_isolation ON payments.wallets;
 CREATE POLICY wallets_tenant_isolation ON payments.wallets
     USING (tenant_id = current_setting('app.tenant_id', true)::UUID);
 
@@ -266,6 +269,7 @@ CREATE INDEX IF NOT EXISTS idx_wallet_txn_tenant
     ON payments.wallet_transactions (tenant_id, created_at DESC);
 
 ALTER TABLE payments.wallet_transactions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS wallet_txn_tenant_isolation ON payments.wallet_transactions;
 CREATE POLICY wallet_txn_tenant_isolation ON payments.wallet_transactions
     USING (tenant_id = current_setting('app.tenant_id', true)::UUID);
 
@@ -285,14 +289,17 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS trg_cod_records_updated_at ON payments.cod_records;
 CREATE TRIGGER trg_cod_records_updated_at
     BEFORE UPDATE ON payments.cod_records
     FOR EACH ROW EXECUTE FUNCTION payments.set_updated_at();
 
+DROP TRIGGER IF EXISTS trg_cod_batches_updated_at ON payments.cod_batches;
 CREATE TRIGGER trg_cod_batches_updated_at
     BEFORE UPDATE ON payments.cod_batches
     FOR EACH ROW EXECUTE FUNCTION payments.set_updated_at();
 
+DROP TRIGGER IF EXISTS trg_wallets_updated_at ON payments.wallets;
 CREATE TRIGGER trg_wallets_updated_at
     BEFORE UPDATE ON payments.wallets
     FOR EACH ROW EXECUTE FUNCTION payments.set_updated_at();

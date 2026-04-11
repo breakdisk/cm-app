@@ -33,6 +33,7 @@ CREATE INDEX IF NOT EXISTS marketing_campaigns_scheduled
 
 ALTER TABLE marketing.campaigns ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS marketing_tenant_isolation ON marketing.campaigns;
 CREATE POLICY marketing_tenant_isolation ON marketing.campaigns
     USING (tenant_id = (current_setting('app.tenant_id', true)::UUID));
 
@@ -41,6 +42,7 @@ RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN NEW.updated_at = now(); RETURN NEW; END;
 $$;
 
+DROP TRIGGER IF EXISTS trg_campaigns_updated_at ON marketing.campaigns;
 CREATE TRIGGER trg_campaigns_updated_at
     BEFORE UPDATE ON marketing.campaigns
     FOR EACH ROW EXECUTE FUNCTION marketing.set_updated_at();

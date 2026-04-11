@@ -33,6 +33,7 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS trg_sync_awb_to_tracking ON order_intake.shipments;
 CREATE TRIGGER trg_sync_awb_to_tracking
     BEFORE INSERT OR UPDATE OF awb ON order_intake.shipments
     FOR EACH ROW EXECUTE FUNCTION order_intake.sync_awb_to_tracking();
@@ -82,10 +83,10 @@ CREATE TABLE IF NOT EXISTS order_intake.shipment_pieces (
     CONSTRAINT pieces_shipment_seq_unique UNIQUE (shipment_id, piece_number)
 );
 
-CREATE INDEX idx_pieces_shipment   ON order_intake.shipment_pieces (shipment_id);
-CREATE INDEX idx_pieces_awb        ON order_intake.shipment_pieces (piece_awb);
-CREATE INDEX idx_pieces_status     ON order_intake.shipment_pieces (tenant_id, status);
-CREATE INDEX idx_pieces_hub        ON order_intake.shipment_pieces (last_hub_id)
+CREATE INDEX IF NOT EXISTS idx_pieces_shipment   ON order_intake.shipment_pieces (shipment_id);
+CREATE INDEX IF NOT EXISTS idx_pieces_awb        ON order_intake.shipment_pieces (piece_awb);
+CREATE INDEX IF NOT EXISTS idx_pieces_status     ON order_intake.shipment_pieces (tenant_id, status);
+CREATE INDEX IF NOT EXISTS idx_pieces_hub        ON order_intake.shipment_pieces (last_hub_id)
     WHERE last_hub_id IS NOT NULL;
 
 -- Auto-update updated_at
@@ -94,6 +95,7 @@ RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN NEW.updated_at = NOW(); RETURN NEW; END;
 $$;
 
+DROP TRIGGER IF EXISTS trg_pieces_updated_at ON order_intake.shipment_pieces;
 CREATE TRIGGER trg_pieces_updated_at
     BEFORE UPDATE ON order_intake.shipment_pieces
     FOR EACH ROW EXECUTE FUNCTION order_intake.set_piece_updated_at();
@@ -101,6 +103,7 @@ CREATE TRIGGER trg_pieces_updated_at
 -- RLS
 ALTER TABLE order_intake.shipment_pieces ENABLE ROW LEVEL SECURITY;
 ALTER TABLE order_intake.shipment_pieces FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON order_intake.shipment_pieces;
 CREATE POLICY tenant_isolation ON order_intake.shipment_pieces
     USING (tenant_id = current_setting('app.tenant_id')::uuid);
 

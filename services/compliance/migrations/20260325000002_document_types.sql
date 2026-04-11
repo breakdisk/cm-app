@@ -1,4 +1,4 @@
-CREATE TABLE compliance.document_types (
+CREATE TABLE IF NOT EXISTS compliance.document_types (
     id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     code              TEXT        NOT NULL UNIQUE,
     jurisdiction      TEXT        NOT NULL,

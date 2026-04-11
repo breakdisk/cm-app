@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS cdp.segments (
 );
 CREATE INDEX IF NOT EXISTS idx_segments_tenant ON cdp.segments(tenant_id);
 ALTER TABLE cdp.segments ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_rls ON cdp.segments;
+DROP POLICY IF EXISTS tenant_rls ON cdp.segments;
 CREATE POLICY tenant_rls ON cdp.segments USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
 
 CREATE TABLE IF NOT EXISTS cdp.segment_members (
@@ -37,6 +39,8 @@ CREATE TABLE IF NOT EXISTS cdp.consent_records (
 );
 CREATE INDEX IF NOT EXISTS idx_consent_customer ON cdp.consent_records(tenant_id, customer_id);
 ALTER TABLE cdp.consent_records ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_rls ON cdp.consent_records;
+DROP POLICY IF EXISTS tenant_rls ON cdp.consent_records;
 CREATE POLICY tenant_rls ON cdp.consent_records USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
 
 CREATE TABLE IF NOT EXISTS cdp.churn_scores (
@@ -51,4 +55,6 @@ CREATE TABLE IF NOT EXISTS cdp.churn_scores (
 );
 CREATE INDEX IF NOT EXISTS idx_churn_tenant_customer ON cdp.churn_scores(tenant_id, customer_id, computed_at DESC);
 ALTER TABLE cdp.churn_scores ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_rls ON cdp.churn_scores;
+DROP POLICY IF EXISTS tenant_rls ON cdp.churn_scores;
 CREATE POLICY tenant_rls ON cdp.churn_scores USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid);

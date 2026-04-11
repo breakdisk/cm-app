@@ -21,6 +21,7 @@ CREATE INDEX IF NOT EXISTS idx_send_log_campaign  ON marketing.send_log(tenant_i
 CREATE INDEX IF NOT EXISTS idx_send_log_customer  ON marketing.send_log(tenant_id, customer_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_send_log_status    ON marketing.send_log(tenant_id, status) WHERE status IN ('queued', 'sending');
 ALTER TABLE marketing.send_log ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_rls ON marketing.send_log;
 CREATE POLICY tenant_rls ON marketing.send_log USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
 
 CREATE TABLE IF NOT EXISTS marketing.ab_tests (
@@ -34,4 +35,5 @@ CREATE TABLE IF NOT EXISTS marketing.ab_tests (
     concluded_at    TIMESTAMPTZ
 );
 ALTER TABLE marketing.ab_tests ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_rls ON marketing.ab_tests;
 CREATE POLICY tenant_rls ON marketing.ab_tests USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid);

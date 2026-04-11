@@ -63,6 +63,8 @@ CREATE INDEX IF NOT EXISTS cdp_profiles_last_shipment
 
 ALTER TABLE cdp.customer_profiles ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS cdp_profiles_tenant_isolation ON cdp.customer_profiles;
+DROP POLICY IF EXISTS cdp_profiles_tenant_isolation ON cdp.customer_profiles;
 CREATE POLICY cdp_profiles_tenant_isolation ON cdp.customer_profiles
     USING (tenant_id = (current_setting('app.tenant_id', true)::UUID));
 
@@ -76,6 +78,8 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS trg_customer_profiles_updated_at ON cdp.customer_profiles;
+DROP TRIGGER IF EXISTS trg_customer_profiles_updated_at ON cdp.customer_profiles;
 CREATE TRIGGER trg_customer_profiles_updated_at
     BEFORE UPDATE ON cdp.customer_profiles
     FOR EACH ROW EXECUTE FUNCTION cdp.set_updated_at();

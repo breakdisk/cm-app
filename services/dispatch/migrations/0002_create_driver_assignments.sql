@@ -25,6 +25,8 @@ CREATE INDEX IF NOT EXISTS idx_assignments_route_id
 -- RLS: tenants can only see their own assignments
 ALTER TABLE dispatch.driver_assignments ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS tenant_isolation ON dispatch.driver_assignments;
+DROP POLICY IF EXISTS tenant_isolation ON dispatch.driver_assignments;
 CREATE POLICY tenant_isolation ON dispatch.driver_assignments
     USING (tenant_id = current_setting('app.tenant_id', true)::UUID);
 
@@ -41,6 +43,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trg_assignment_accepted ON dispatch.driver_assignments;
+DROP TRIGGER IF EXISTS trg_assignment_accepted ON dispatch.driver_assignments;
 CREATE TRIGGER trg_assignment_accepted
     AFTER UPDATE ON dispatch.driver_assignments
     FOR EACH ROW

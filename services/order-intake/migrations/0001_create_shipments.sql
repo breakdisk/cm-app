@@ -1,6 +1,6 @@
 -- Migration: 0001 — Order Intake: Shipments table
 
-CREATE TABLE order_intake.shipments (
+CREATE TABLE IF NOT EXISTS order_intake.shipments (
     id                      UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
     tenant_id               UUID        NOT NULL,
     merchant_id             UUID        NOT NULL,
@@ -53,12 +53,12 @@ CREATE TABLE order_intake.shipments (
 );
 
 -- Spatial indexes for dispatch clustering queries
-CREATE INDEX idx_shipments_dest_point       ON order_intake.shipments USING GIST (dest_point);
-CREATE INDEX idx_shipments_origin_point     ON order_intake.shipments USING GIST (origin_point);
-CREATE INDEX idx_shipments_tenant_status    ON order_intake.shipments (tenant_id, status);
-CREATE INDEX idx_shipments_tracking         ON order_intake.shipments (tracking_number);
-CREATE INDEX idx_shipments_merchant         ON order_intake.shipments (tenant_id, merchant_id);
-CREATE INDEX idx_shipments_created_at       ON order_intake.shipments (tenant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_shipments_dest_point       ON order_intake.shipments USING GIST (dest_point);
+CREATE INDEX IF NOT EXISTS idx_shipments_origin_point     ON order_intake.shipments USING GIST (origin_point);
+CREATE INDEX IF NOT EXISTS idx_shipments_tenant_status    ON order_intake.shipments (tenant_id, status);
+CREATE INDEX IF NOT EXISTS idx_shipments_tracking         ON order_intake.shipments (tracking_number);
+CREATE INDEX IF NOT EXISTS idx_shipments_merchant         ON order_intake.shipments (tenant_id, merchant_id);
+CREATE INDEX IF NOT EXISTS idx_shipments_created_at       ON order_intake.shipments (tenant_id, created_at DESC);
 
 -- Auto-update dest_point/origin_point from lat/lng
 CREATE OR REPLACE FUNCTION order_intake.sync_shipment_points()
@@ -75,6 +75,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS shipments_sync_points ON order_intake.shipments;
 CREATE TRIGGER shipments_sync_points
     BEFORE INSERT OR UPDATE ON order_intake.shipments
     FOR EACH ROW EXECUTE FUNCTION order_intake.sync_shipment_points();
@@ -82,5 +83,6 @@ CREATE TRIGGER shipments_sync_points
 -- RLS
 ALTER TABLE order_intake.shipments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE order_intake.shipments FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON order_intake.shipments;
 CREATE POLICY tenant_isolation ON order_intake.shipments
     USING (tenant_id = current_setting('app.tenant_id')::uuid);

@@ -18,6 +18,7 @@ CREATE INDEX IF NOT EXISTS idx_invoices_merchant ON payments.invoices(merchant_i
 CREATE INDEX IF NOT EXISTS idx_invoices_status   ON payments.invoices(tenant_id, status);
 
 ALTER TABLE payments.invoices ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON payments.invoices;
 CREATE POLICY tenant_isolation ON payments.invoices
     USING (tenant_id = current_setting('app.tenant_id', true)::UUID);
 
@@ -40,6 +41,7 @@ CREATE TABLE IF NOT EXISTS payments.cod_collections (
 CREATE INDEX IF NOT EXISTS idx_cod_tenant_status ON payments.cod_collections(tenant_id, status);
 
 ALTER TABLE payments.cod_collections ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON payments.cod_collections;
 CREATE POLICY tenant_isolation ON payments.cod_collections
     USING (tenant_id = current_setting('app.tenant_id', true)::UUID);
 
@@ -55,6 +57,7 @@ CREATE TABLE IF NOT EXISTS payments.wallets (
 );
 
 ALTER TABLE payments.wallets ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON payments.wallets;
 CREATE POLICY tenant_isolation ON payments.wallets
     USING (tenant_id = current_setting('app.tenant_id', true)::UUID);
 
@@ -74,6 +77,7 @@ CREATE TABLE IF NOT EXISTS payments.wallet_transactions (
 CREATE INDEX IF NOT EXISTS idx_wallet_txn_wallet ON payments.wallet_transactions(wallet_id, created_at DESC);
 
 ALTER TABLE payments.wallet_transactions ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON payments.wallet_transactions;
 CREATE POLICY tenant_isolation ON payments.wallet_transactions
     USING (tenant_id = current_setting('app.tenant_id', true)::UUID);
 

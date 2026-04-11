@@ -43,11 +43,14 @@ CREATE INDEX IF NOT EXISTS hub_tenant ON hub_ops.hubs (tenant_id);
 ALTER TABLE hub_ops.hubs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE hub_ops.parcel_inductions ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS hub_tenant ON hub_ops.hubs;
 CREATE POLICY hub_tenant ON hub_ops.hubs USING (tenant_id = (current_setting('app.tenant_id', true)::UUID));
+DROP POLICY IF EXISTS induction_tenant ON hub_ops.parcel_inductions;
 CREATE POLICY induction_tenant ON hub_ops.parcel_inductions USING (tenant_id = (current_setting('app.tenant_id', true)::UUID));
 
 CREATE OR REPLACE FUNCTION hub_ops.set_updated_at() RETURNS TRIGGER LANGUAGE plpgsql AS $$
 BEGIN NEW.updated_at = now(); RETURN NEW; END; $$;
 
+DROP TRIGGER IF EXISTS trg_hubs_updated_at ON hub_ops.hubs;
 CREATE TRIGGER trg_hubs_updated_at BEFORE UPDATE ON hub_ops.hubs
     FOR EACH ROW EXECUTE FUNCTION hub_ops.set_updated_at();

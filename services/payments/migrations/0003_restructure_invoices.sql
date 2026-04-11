@@ -64,12 +64,13 @@ CREATE TABLE IF NOT EXISTS payments.invoice_line_items (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_line_items_invoice   ON payments.invoice_line_items (invoice_id);
-CREATE INDEX idx_line_items_awb       ON payments.invoice_line_items (awb)
+CREATE INDEX IF NOT EXISTS idx_line_items_invoice   ON payments.invoice_line_items (invoice_id);
+CREATE INDEX IF NOT EXISTS idx_line_items_awb       ON payments.invoice_line_items (awb)
     WHERE awb IS NOT NULL;
-CREATE INDEX idx_line_items_tenant    ON payments.invoice_line_items (tenant_id, charge_type);
+CREATE INDEX IF NOT EXISTS idx_line_items_tenant    ON payments.invoice_line_items (tenant_id, charge_type);
 
 ALTER TABLE payments.invoice_line_items ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON payments.invoice_line_items;
 CREATE POLICY tenant_isolation ON payments.invoice_line_items
     USING (tenant_id = current_setting('app.tenant_id', true)::UUID);
 
@@ -124,11 +125,12 @@ CREATE TABLE IF NOT EXISTS payments.invoice_adjustments (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_adjustments_invoice ON payments.invoice_adjustments (invoice_id);
-CREATE INDEX idx_adjustments_awb     ON payments.invoice_adjustments (awb)
+CREATE INDEX IF NOT EXISTS idx_adjustments_invoice ON payments.invoice_adjustments (invoice_id);
+CREATE INDEX IF NOT EXISTS idx_adjustments_awb     ON payments.invoice_adjustments (awb)
     WHERE awb IS NOT NULL;
 
 ALTER TABLE payments.invoice_adjustments ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON payments.invoice_adjustments;
 CREATE POLICY tenant_isolation ON payments.invoice_adjustments
     USING (tenant_id = current_setting('app.tenant_id', true)::UUID);
 

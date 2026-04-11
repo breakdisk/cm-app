@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS fleet.telematics_events (
 CREATE INDEX IF NOT EXISTS idx_telematics_vehicle_time ON fleet.telematics_events(vehicle_id, recorded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_telematics_tenant_time  ON fleet.telematics_events(tenant_id, recorded_at DESC);
 ALTER TABLE fleet.telematics_events ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_rls ON fleet.telematics_events;
 CREATE POLICY tenant_rls ON fleet.telematics_events USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid);
 
 CREATE TABLE IF NOT EXISTS fleet.fuel_records (
@@ -33,4 +34,5 @@ CREATE TABLE IF NOT EXISTS fleet.fuel_records (
 );
 CREATE INDEX IF NOT EXISTS idx_fuel_vehicle ON fleet.fuel_records(tenant_id, vehicle_id, recorded_at DESC);
 ALTER TABLE fleet.fuel_records ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_rls ON fleet.fuel_records;
 CREATE POLICY tenant_rls ON fleet.fuel_records USING (tenant_id = current_setting('app.current_tenant_id', true)::uuid);

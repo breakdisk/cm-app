@@ -1,7 +1,7 @@
 -- Migration: 0001 — Identity: Tenants table
 -- Managed by sqlx-migrate
 
-CREATE TABLE identity.tenants (
+CREATE TABLE IF NOT EXISTS identity.tenants (
     id                UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
     name              TEXT        NOT NULL,
     slug              TEXT        NOT NULL UNIQUE,
@@ -13,8 +13,8 @@ CREATE TABLE identity.tenants (
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_tenants_slug     ON identity.tenants (slug);
-CREATE INDEX idx_tenants_is_active ON identity.tenants (is_active) WHERE is_active = TRUE;
+CREATE INDEX IF NOT EXISTS idx_tenants_slug     ON identity.tenants (slug);
+CREATE INDEX IF NOT EXISTS idx_tenants_is_active ON identity.tenants (is_active) WHERE is_active = TRUE;
 
 -- Auto-update updated_at on row change
 CREATE OR REPLACE FUNCTION identity.set_updated_at()
@@ -25,6 +25,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS tenants_updated_at ON identity.tenants;
 CREATE TRIGGER tenants_updated_at
     BEFORE UPDATE ON identity.tenants
     FOR EACH ROW EXECUTE FUNCTION identity.set_updated_at();

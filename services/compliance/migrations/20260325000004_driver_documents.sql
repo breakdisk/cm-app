@@ -1,4 +1,4 @@
-CREATE TABLE compliance.driver_documents (
+CREATE TABLE IF NOT EXISTS compliance.driver_documents (
     id                    UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     compliance_profile_id UUID        NOT NULL REFERENCES compliance.compliance_profiles(id),
     document_type_id      UUID        NOT NULL REFERENCES compliance.document_types(id),
@@ -14,8 +14,8 @@ CREATE TABLE compliance.driver_documents (
     updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_driver_documents_profile
+CREATE INDEX IF NOT EXISTS idx_driver_documents_profile
     ON compliance.driver_documents (compliance_profile_id);
-CREATE INDEX idx_driver_documents_expiry
+CREATE INDEX IF NOT EXISTS idx_driver_documents_expiry
     ON compliance.driver_documents (expiry_date)
     WHERE status = 'approved';

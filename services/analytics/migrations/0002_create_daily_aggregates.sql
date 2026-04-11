@@ -115,12 +115,18 @@ ALTER TABLE analytics.daily_kpis          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE analytics.driver_daily_stats  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE analytics.zone_daily_stats    ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS analytics_daily_kpis_tenant_isolation ON analytics.daily_kpis;
+DROP POLICY IF EXISTS analytics_daily_kpis_tenant_isolation ON analytics.daily_kpis;
 CREATE POLICY analytics_daily_kpis_tenant_isolation ON analytics.daily_kpis
     USING (tenant_id = (current_setting('app.tenant_id', true)::UUID));
 
+DROP POLICY IF EXISTS analytics_driver_daily_tenant_isolation ON analytics.driver_daily_stats;
+DROP POLICY IF EXISTS analytics_driver_daily_tenant_isolation ON analytics.driver_daily_stats;
 CREATE POLICY analytics_driver_daily_tenant_isolation ON analytics.driver_daily_stats
     USING (tenant_id = (current_setting('app.tenant_id', true)::UUID));
 
+DROP POLICY IF EXISTS analytics_zone_daily_tenant_isolation ON analytics.zone_daily_stats;
+DROP POLICY IF EXISTS analytics_zone_daily_tenant_isolation ON analytics.zone_daily_stats;
 CREATE POLICY analytics_zone_daily_tenant_isolation ON analytics.zone_daily_stats
     USING (tenant_id = (current_setting('app.tenant_id', true)::UUID));
 

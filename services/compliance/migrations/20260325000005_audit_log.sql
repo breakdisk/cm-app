@@ -1,4 +1,4 @@
-CREATE TABLE compliance.compliance_audit_log (
+CREATE TABLE IF NOT EXISTS compliance.compliance_audit_log (
     id                    UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id             UUID        NOT NULL,
     compliance_profile_id UUID        NOT NULL REFERENCES compliance.compliance_profiles(id),
@@ -10,7 +10,7 @@ CREATE TABLE compliance.compliance_audit_log (
     created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_audit_log_profile
+CREATE INDEX IF NOT EXISTS idx_audit_log_profile
     ON compliance.compliance_audit_log (compliance_profile_id, created_at DESC);
-CREATE INDEX idx_audit_log_tenant
+CREATE INDEX IF NOT EXISTS idx_audit_log_tenant
     ON compliance.compliance_audit_log (tenant_id, created_at DESC);
