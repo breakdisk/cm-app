@@ -20,6 +20,7 @@ struct AvailableDriverRow {
     driver_id:         uuid::Uuid,
     first_name:        String,
     last_name:         String,
+    vehicle_type:      Option<String>,
     lat:               f64,
     lng:               f64,
     distance_meters:   f64,
@@ -43,6 +44,7 @@ impl DriverAvailabilityRepository for PgDriverAvailabilityRepository {
                 d.id                    AS driver_id,
                 d.first_name,
                 d.last_name,
+                d.vehicle_type,
                 ST_Y(dl.location::geometry) AS lat,
                 ST_X(dl.location::geometry) AS lng,
                 ST_Distance(
@@ -93,6 +95,7 @@ impl DriverAvailabilityRepository for PgDriverAvailabilityRepository {
             distance_km: r.distance_meters / 1000.0,
             location: Coordinates { lat: r.lat, lng: r.lng },
             active_stop_count: r.active_stop_count as u32,
+            vehicle_type: r.vehicle_type,
         }).collect())
     }
 }
