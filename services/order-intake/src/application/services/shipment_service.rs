@@ -194,6 +194,8 @@ impl ShipmentService {
             customer_id: CustomerId::new(),
             customer_name: cmd.customer_name.clone(),
             customer_phone: cmd.customer_phone.clone(),
+            customer_email: cmd.customer_email.clone(),
+            booked_by_customer: cmd.booked_by_customer,
             awb: master_awb.clone(),
             piece_count,
             status: ShipmentStatus::Pending,
@@ -256,10 +258,13 @@ impl ShipmentService {
             },
         );
         let payload = serde_json::to_string(&event).map_err(|e| AppError::Internal(e.into()))?;
-        self.publisher
+        // Fire-and-forget — Kafka unavailability must not prevent shipment creation.
+        if let Err(e) = self.publisher
             .publish(topics::SHIPMENT_CREATED, &shipment.id.to_string(), &payload)
             .await
-            .map_err(AppError::Internal)?;
+        {
+            tracing::warn!(error = %e, shipment_id = %shipment.id, "ShipmentCreated event publish failed (non-fatal)");
+        }
 
         tracing::info!(
             shipment_id  = %shipment.id,

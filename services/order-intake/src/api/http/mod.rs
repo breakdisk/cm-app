@@ -43,6 +43,19 @@ async fn create_shipment(
     claims.require_permission(permissions::SHIPMENT_CREATE)?;
     cmd.tenant_id   = claims.tenant_id;
     cmd.merchant_id = claims.user_id; // merchant uses their user UUID as merchant_id
+    // Derive 3-char AWB tenant code from the tenant slug (first 3 alphanumeric chars, uppercased)
+    if cmd.tenant_code.is_empty() {
+        cmd.tenant_code = claims.tenant_slug
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() && *c != 'O' && *c != 'I')
+            .take(3)
+            .collect::<String>()
+            .to_uppercase();
+    }
+    // Mark as customer-booked when the JWT role is "customer" (customer app self-booking).
+    if claims.roles.contains(&"customer".to_string()) {
+        cmd.booked_by_customer = true;
+    }
     let shipment = s.svc.create(cmd).await?;
     Ok::<_, AppError>((StatusCode::CREATED, Json(shipment)))
 }
@@ -99,7 +112,36 @@ pub fn router(state: AppState) -> Router {
             .route("/shipments/:id/cancel", post(cancel_shipment))
             .layer(auth_layer)
         )
+        // Internal service-to-service endpoints — no JWT auth required (Istio mTLS enforces caller identity).
+        .nest("/v1/internal", Router::new()
+            .route("/shipments/:id/billing", get(get_shipment_billing))
+        )
         .with_state(state)
+}
+
+async fn get_shipment_billing(
+    State(s): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    let shipment = s.query.get_by_id(id).await?;
+
+    let base_freight   = shipment.compute_base_fee();
+    let fuel_surcharge = (base_freight.amount as f64 * 0.05).round() as i64; // 5% fuel levy
+    let insurance      = shipment.declared_value
+        .map(|v| (v.amount as f64 * 0.005).round() as i64) // 0.5% of declared value
+        .unwrap_or(0);
+    let total = base_freight.amount + fuel_surcharge + insurance;
+
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+        "shipment_id":          id,
+        "awb":                  shipment.awb.as_str(),
+        "merchant_id":          shipment.merchant_id.inner(),
+        "currency":             format!("{:?}", base_freight.currency),
+        "base_freight":         base_freight.amount,
+        "fuel_surcharge":       fuel_surcharge,
+        "insurance":            insurance,
+        "total":                total,
+    }))))
 }
 
 async fn list_shipments(

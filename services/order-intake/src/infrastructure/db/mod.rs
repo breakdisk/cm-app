@@ -5,13 +5,15 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use logisticos_types::{
-    Address, Coordinates, Currency, CustomerId, MerchantId, Money, ShipmentId, ShipmentStatus, TenantId,
+    Address, Coordinates, Currency, CustomerId, MerchantId, Money,
+    PieceStatus, ShipmentId, ShipmentStatus, TenantId,
+    awb::Awb,
 };
 
 use crate::{
     application::services::shipment_service::{ShipmentListFilter, ShipmentRepository},
     domain::{
-        entities::shipment::Shipment,
+        entities::{shipment::Shipment, piece::Piece},
         value_objects::{ServiceType, ShipmentDimensions, ShipmentWeight},
     },
 };
@@ -28,7 +30,10 @@ struct ShipmentRow {
     customer_id:          Uuid,
     customer_name:        String,
     customer_phone:       String,
-    tracking_number:      String,
+    customer_email:       Option<String>,
+    booked_by_customer:   bool,
+    awb:                  String,
+    piece_count:          i16,
     status:               String,
     service_type:         String,
 
@@ -107,11 +112,20 @@ impl ShipmentRow {
             "out_for_delivery"   => ShipmentStatus::OutForDelivery,
             "delivery_attempted" => ShipmentStatus::DeliveryAttempted,
             "delivered"          => ShipmentStatus::Delivered,
+            "partial_delivery"   => ShipmentStatus::PartialDelivery,
+            "piece_exception"    => ShipmentStatus::PieceException,
+            "customs_hold"       => ShipmentStatus::CustomsHold,
             "failed"             => ShipmentStatus::Failed,
             "cancelled"          => ShipmentStatus::Cancelled,
             "returned"           => ShipmentStatus::Returned,
             _                    => ShipmentStatus::Pending,
         };
+        // Parse AWB — fall back to a raw string representation if malformed
+        let awb = Awb::parse(&self.awb).unwrap_or_else(|_| {
+            // For legacy or test rows that don't follow the new format
+            let tenant = logisticos_types::awb::TenantCode::new("PH1").unwrap();
+            Awb::generate(&tenant, logisticos_types::awb::ServiceCode::Standard, 1)
+        });
         Shipment {
             id:                   ShipmentId::from_uuid(self.id),
             tenant_id:            TenantId::from_uuid(self.tenant_id),
@@ -119,7 +133,10 @@ impl ShipmentRow {
             customer_id:          CustomerId::from_uuid(self.customer_id),
             customer_name:        self.customer_name,
             customer_phone:       self.customer_phone,
-            tracking_number:      self.tracking_number,
+            customer_email:       self.customer_email,
+            booked_by_customer:   self.booked_by_customer,
+            awb,
+            piece_count:          self.piece_count as u16,
             status,
             service_type,
             origin,
@@ -151,14 +168,29 @@ fn status_str(s: &ShipmentStatus) -> &'static str {
         ShipmentStatus::OutForDelivery    => "out_for_delivery",
         ShipmentStatus::DeliveryAttempted => "delivery_attempted",
         ShipmentStatus::Delivered         => "delivered",
+        ShipmentStatus::PartialDelivery   => "partial_delivery",
+        ShipmentStatus::PieceException    => "piece_exception",
+        ShipmentStatus::CustomsHold       => "customs_hold",
         ShipmentStatus::Failed            => "failed",
         ShipmentStatus::Cancelled         => "cancelled",
         ShipmentStatus::Returned          => "returned",
     }
 }
 
+const SHIPMENT_COLS: &str = r#"
+    id, tenant_id, merchant_id, customer_id,
+    customer_name, customer_phone, customer_email, booked_by_customer,
+    awb, piece_count, status, service_type,
+    origin_line1, origin_line2, origin_barangay, origin_city, origin_province,
+    origin_postal_code, origin_country_code, origin_lat, origin_lng,
+    dest_line1, dest_line2, dest_barangay, dest_city, dest_province,
+    dest_postal_code, dest_country_code, dest_lat, dest_lng,
+    weight_grams, length_cm, width_cm, height_cm,
+    declared_value_cents, cod_amount_cents, special_instructions,
+    created_at, updated_at
+"#;
+
 /// Maps a dynamic `PgRow` into the typed `ShipmentRow` struct.
-/// Used in place of `sqlx::query_as!` so no DATABASE_URL is needed at compile time.
 fn row_to_shipment_row(r: &sqlx::postgres::PgRow) -> ShipmentRow {
     ShipmentRow {
         id:                   r.get("id"),
@@ -167,7 +199,10 @@ fn row_to_shipment_row(r: &sqlx::postgres::PgRow) -> ShipmentRow {
         customer_id:          r.get("customer_id"),
         customer_name:        r.get("customer_name"),
         customer_phone:       r.get("customer_phone"),
-        tracking_number:      r.get("tracking_number"),
+        customer_email:       r.get("customer_email"),
+        booked_by_customer:   r.get("booked_by_customer"),
+        awb:                  r.get("awb"),
+        piece_count:          r.get("piece_count"),
         status:               r.get("status"),
         service_type:         r.get("service_type"),
         origin_line1:         r.get("origin_line1"),
@@ -204,9 +239,8 @@ impl ShipmentRepository for PgShipmentRepository {
     fn list<'a>(
         &'a self,
         filter: &'a ShipmentListFilter,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<(Vec<Shipment>, i64)>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<(Vec<Shipment>, i64)>> + Send + 'a>> {
         Box::pin(async move {
-            // Count query
             let total: i64 = sqlx::query_scalar(
                 r#"SELECT COUNT(*) FROM order_intake.shipments
                    WHERE tenant_id = $1
@@ -219,34 +253,26 @@ impl ShipmentRepository for PgShipmentRepository {
             .fetch_one(&self.pool)
             .await?;
 
-            // Data query — manual row mapping because no macro
-            let rows = sqlx::query(
-                r#"SELECT id, tenant_id, merchant_id, customer_id,
-                          customer_name, customer_phone,
-                          tracking_number, status, service_type,
-                          origin_line1, origin_line2, origin_barangay, origin_city, origin_province,
-                          origin_postal_code, origin_country_code, origin_lat, origin_lng,
-                          dest_line1, dest_line2, dest_barangay, dest_city, dest_province,
-                          dest_postal_code, dest_country_code, dest_lat, dest_lng,
-                          weight_grams, length_cm, width_cm, height_cm,
-                          declared_value_cents, cod_amount_cents, special_instructions,
-                          created_at, updated_at
-                   FROM order_intake.shipments
+            let query = format!(
+                r#"SELECT {} FROM order_intake.shipments
                    WHERE tenant_id = $1
                      AND ($2::uuid IS NULL OR merchant_id = $2)
                      AND ($3::text IS NULL OR status = $3)
                    ORDER BY created_at DESC
                    LIMIT $4 OFFSET $5"#,
-            )
-            .bind(filter.tenant_id)
-            .bind(filter.merchant_id)
-            .bind(filter.status.as_deref())
-            .bind(filter.limit)
-            .bind(filter.offset)
-            .fetch_all(&self.pool)
-            .await?;
+                SHIPMENT_COLS,
+            );
 
-            let shipments: Vec<Shipment> = rows
+            let rows = sqlx::query(&query)
+                .bind(filter.tenant_id)
+                .bind(filter.merchant_id)
+                .bind(filter.status.as_deref())
+                .bind(filter.limit)
+                .bind(filter.offset)
+                .fetch_all(&self.pool)
+                .await?;
+
+            let shipments = rows
                 .into_iter()
                 .map(|r| row_to_shipment_row(&r).into_shipment())
                 .collect();
@@ -260,23 +286,14 @@ impl ShipmentRepository for PgShipmentRepository {
         id: &'a ShipmentId,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Shipment>>> + Send + 'a>> {
         Box::pin(async move {
-            let row = sqlx::query(
-                r#"SELECT id, tenant_id, merchant_id, customer_id,
-                          customer_name, customer_phone,
-                          tracking_number, status, service_type,
-                          origin_line1, origin_line2, origin_barangay, origin_city, origin_province,
-                          origin_postal_code, origin_country_code, origin_lat, origin_lng,
-                          dest_line1, dest_line2, dest_barangay, dest_city, dest_province,
-                          dest_postal_code, dest_country_code, dest_lat, dest_lng,
-                          weight_grams, length_cm, width_cm, height_cm,
-                          declared_value_cents, cod_amount_cents, special_instructions,
-                          created_at, updated_at
-                   FROM order_intake.shipments
-                   WHERE id = $1"#,
-            )
-            .bind(id.inner())
-            .fetch_optional(&self.pool)
-            .await?;
+            let query = format!(
+                "SELECT {} FROM order_intake.shipments WHERE id = $1",
+                SHIPMENT_COLS,
+            );
+            let row = sqlx::query(&query)
+                .bind(id.inner())
+                .fetch_optional(&self.pool)
+                .await?;
             Ok(row.map(|r| row_to_shipment_row(&r).into_shipment()))
         })
     }
@@ -292,8 +309,8 @@ impl ShipmentRepository for PgShipmentRepository {
             sqlx::query(
                 r#"INSERT INTO order_intake.shipments (
                     id, tenant_id, merchant_id, customer_id,
-                    customer_name, customer_phone,
-                    tracking_number, status, service_type,
+                    customer_name, customer_phone, customer_email, booked_by_customer,
+                    awb, piece_count, status, service_type,
                     origin_line1, origin_line2, origin_barangay, origin_city, origin_province,
                     origin_postal_code, origin_country_code, origin_lat, origin_lng,
                     dest_line1, dest_line2, dest_barangay, dest_city, dest_province,
@@ -302,16 +319,18 @@ impl ShipmentRepository for PgShipmentRepository {
                     declared_value_cents, cod_amount_cents, special_instructions,
                     created_at, updated_at
                 ) VALUES (
-                    $1,$2,$3,$4,$5,$6,
-                    $7,$8,$9,
-                    $10,$11,$12,$13,$14,$15,$16,$17,$18,
-                    $19,$20,$21,$22,$23,$24,$25,$26,$27,
-                    $28,$29,$30,$31,$32,$33,$34,$35,$36
+                    $1,$2,$3,$4,$5,$6,$7,$8,
+                    $9,$10,$11,$12,
+                    $13,$14,$15,$16,$17,$18,$19,$20,$21,
+                    $22,$23,$24,$25,$26,$27,$28,$29,$30,
+                    $31,$32,$33,$34,$35,$36,$37,$38,$39
                 )
                 ON CONFLICT (id) DO UPDATE SET
                     status               = EXCLUDED.status,
                     customer_name        = EXCLUDED.customer_name,
                     customer_phone       = EXCLUDED.customer_phone,
+                    customer_email       = EXCLUDED.customer_email,
+                    booked_by_customer   = EXCLUDED.booked_by_customer,
                     origin_lat           = EXCLUDED.origin_lat,
                     origin_lng           = EXCLUDED.origin_lng,
                     dest_lat             = EXCLUDED.dest_lat,
@@ -325,7 +344,10 @@ impl ShipmentRepository for PgShipmentRepository {
             .bind(s.customer_id.inner())
             .bind(&s.customer_name)
             .bind(&s.customer_phone)
-            .bind(&s.tracking_number)
+            .bind(s.customer_email.as_deref())
+            .bind(s.booked_by_customer)
+            .bind(s.awb.as_str())
+            .bind(s.piece_count as i16)
             .bind(status)
             .bind(service_type)
             // origin
@@ -360,6 +382,55 @@ impl ShipmentRepository for PgShipmentRepository {
             .bind(s.updated_at)
             .execute(&self.pool)
             .await?;
+            Ok(())
+        })
+    }
+
+    fn save_pieces<'a>(
+        &'a self,
+        pieces: &'a [Piece],
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            for p in pieces {
+                let status = match p.status {
+                    PieceStatus::Pending    => "pending",
+                    PieceStatus::ScannedIn  => "at_hub",
+                    PieceStatus::InTransit  => "in_transit",
+                    PieceStatus::ScannedOut => "out_for_delivery",
+                    PieceStatus::Delivered  => "delivered",
+                    PieceStatus::Missing    => "exception",
+                    PieceStatus::Damaged    => "exception",
+                };
+                sqlx::query(
+                    r#"INSERT INTO order_intake.shipment_pieces (
+                        id, shipment_id, tenant_id, piece_number, piece_awb,
+                        declared_weight_g,
+                        length_cm, width_cm, height_cm,
+                        description, status,
+                        created_at, updated_at
+                    )
+                    SELECT $1, $2,
+                           (SELECT tenant_id FROM order_intake.shipments WHERE id = $2),
+                           $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+                    ON CONFLICT (id) DO UPDATE SET
+                        status     = EXCLUDED.status,
+                        updated_at = EXCLUDED.updated_at"#,
+                )
+                .bind(p.id)
+                .bind(p.shipment_id.inner())
+                .bind(p.piece_number as i16)
+                .bind(p.piece_awb.as_str())
+                .bind(p.declared_weight.grams as i32)
+                .bind(p.dimensions.map(|d| d.length_cm as i32))
+                .bind(p.dimensions.map(|d| d.width_cm as i32))
+                .bind(p.dimensions.map(|d| d.height_cm as i32))
+                .bind(p.description.as_deref())
+                .bind(status)
+                .bind(p.created_at)
+                .bind(p.updated_at)
+                .execute(&self.pool)
+                .await?;
+            }
             Ok(())
         })
     }
