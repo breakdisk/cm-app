@@ -3,11 +3,20 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InvoiceGenerated {
-    pub invoice_id: Uuid,
-    pub merchant_id: Uuid,
-    pub tenant_id: Uuid,
-    pub total_cents: i64,
-    pub due_at: chrono::DateTime<chrono::Utc>,
+    pub invoice_id:     Uuid,
+    pub invoice_number: String,
+    /// "merchant" for ShipmentCharges tax invoices; "customer" for PaymentReceipt.
+    pub recipient_type: String,
+    /// Merchant UUID — populated for tax invoices; nil UUID for receipts.
+    pub merchant_id:    Uuid,
+    pub merchant_email: Option<String>,
+    /// Customer UUID — populated for payment receipts; nil UUID for tax invoices.
+    pub customer_id:    Uuid,
+    pub customer_email: Option<String>,
+    pub tenant_id:      Uuid,
+    pub total_cents:    i64,
+    pub currency:       String,
+    pub due_at:         chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

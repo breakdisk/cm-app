@@ -15,18 +15,19 @@ use logisticos_errors::{AppError, AppResult};
 use logisticos_types::{
     awb::Awb,
     invoice::{ChargeType, InvoiceNumber, InvoiceType},
-    Currency, InvoiceId, MerchantId, TenantId,
+    Currency, CustomerId, InvoiceId, MerchantId, TenantId,
 };
 use logisticos_events::{producer::KafkaProducer, topics, envelope::Event};
 
 use crate::{
     application::commands::{
-        GenerateInvoiceCommand, ApplyWeightAdjustmentCommand, InvoiceSummary,
+        GenerateInvoiceCommand, ApplyWeightAdjustmentCommand, IssuePaymentReceiptCommand,
+        InvoiceSummary,
     },
     domain::{
         entities::{BillingPeriod, Invoice, InvoiceAdjustment, InvoiceError, InvoiceLineItem},
         events::InvoiceGenerated,
-        repositories::InvoiceRepository,
+        repositories::{InvoiceRepository, ShipmentBillingSource},
         value_objects::NET_PAYMENT_TERMS_DAYS,
     },
 };
@@ -35,9 +36,9 @@ pub struct InvoiceService {
     invoice_repo:     Arc<dyn InvoiceRepository>,
     kafka:            Arc<KafkaProducer>,
     /// Redis/Postgres sequence generator for invoice numbers.
-    /// For now, sequences are fetched from the repository layer which
-    /// wraps the Redis INCR pattern described in InvoiceNumber::redis_counter_key().
     sequence_source:  Arc<dyn InvoiceSequenceSource>,
+    /// HTTP client that fetches per-shipment fee breakdown from order-intake.
+    billing_source:   Arc<dyn ShipmentBillingSource>,
 }
 
 /// Abstracts the counter used to generate the 5-digit invoice sequence.
@@ -57,8 +58,9 @@ impl InvoiceService {
         invoice_repo:    Arc<dyn InvoiceRepository>,
         kafka:           Arc<KafkaProducer>,
         sequence_source: Arc<dyn InvoiceSequenceSource>,
+        billing_source:  Arc<dyn ShipmentBillingSource>,
     ) -> Self {
-        Self { invoice_repo, kafka, sequence_source }
+        Self { invoice_repo, kafka, sequence_source, billing_source }
     }
 
     /// Generate a shipment-charges invoice for a merchant covering a billing period.
@@ -96,6 +98,7 @@ impl InvoiceService {
             InvoiceType::ShipmentCharges,
             tenant_id.clone(),
             merchant_id.clone(),
+            None,
             billing_period,
             Currency::PHP,
         );
@@ -128,17 +131,23 @@ impl InvoiceService {
 
         self.invoice_repo.save(&invoice).await.map_err(AppError::Internal)?;
 
-        // ── Publish InvoiceFinalized event ────────────────────────────────────
+        // ── Publish InvoiceGenerated event ───────────────────────────────────
         let event = Event::new(
             "payments",
-            "invoice.finalized",
+            "invoice.generated",
             tenant_id.inner(),
             InvoiceGenerated {
-                invoice_id:  invoice.id.inner(),
-                merchant_id: merchant_id.inner(),
-                tenant_id:   tenant_id.inner(),
-                total_cents: invoice.total_due().amount,
-                due_at:      invoice.due_at,
+                invoice_id:     invoice.id.inner(),
+                invoice_number: invoice.invoice_number.to_string(),
+                recipient_type: "merchant".into(),
+                merchant_id:    merchant_id.inner(),
+                merchant_email: cmd.merchant_email.clone(),
+                customer_id:    uuid::Uuid::nil(),
+                customer_email: None,
+                tenant_id:      tenant_id.inner(),
+                total_cents:    invoice.total_due().amount,
+                currency:       format!("{:?}", invoice.currency),
+                due_at:         invoice.due_at,
             },
         );
         self.kafka
@@ -165,8 +174,8 @@ impl InvoiceService {
     /// up by the next billing run.
     pub async fn apply_weight_adjustment(
         &self,
-        tenant_id: &TenantId,
-        cmd:       ApplyWeightAdjustmentCommand,
+        _tenant_id: &TenantId,
+        cmd:        ApplyWeightAdjustmentCommand,
     ) -> AppResult<Option<Invoice>> {
         let invoice_id = InvoiceId::from_uuid(cmd.invoice_id);
         let mut invoice = match self.invoice_repo.find_by_id(&invoice_id).await.map_err(AppError::Internal)? {
@@ -206,9 +215,148 @@ impl InvoiceService {
         Ok(Some(invoice))
     }
 
+    /// Issue and immediately capture a per-shipment payment receipt for a B2C customer booking.
+    ///
+    /// Called by `PodConsumer` when `pod.captured` arrives for a shipment where
+    /// `booked_by_customer == true`.  The customer's card was preauthorised at
+    /// booking time; this call records the receipt and marks it Paid in one
+    /// atomic domain transition (`Invoice::issue_and_capture`).
+    pub async fn issue_payment_receipt(
+        &self,
+        tenant_id: &TenantId,
+        cmd:       IssuePaymentReceiptCommand,
+    ) -> AppResult<Invoice> {
+        // ── Fetch fee breakdown from order-intake ─────────────────────────────
+        let billing = self.billing_source
+            .fetch(cmd.shipment_id)
+            .await
+            .map_err(AppError::Internal)?;
+
+        // ── Generate invoice number (RC-{tenant}-{YYYY}-{MM}-{NNNNN}) ─────────
+        let billing_period = BillingPeriod::single_day(cmd.delivered_on);
+        let sequence = self.sequence_source
+            .next_sequence(InvoiceType::PaymentReceipt, &cmd.tenant_code, cmd.delivered_on)
+            .await
+            .map_err(AppError::Internal)?;
+
+        let invoice_number = InvoiceNumber::generate(
+            InvoiceType::PaymentReceipt,
+            &cmd.tenant_code,
+            cmd.delivered_on,
+            sequence,
+        )
+        .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
+
+        let currency = match billing.currency.to_uppercase().as_str() {
+            "USD" => Currency::USD,
+            "SGD" => Currency::SGD,
+            "MYR" => Currency::MYR,
+            "IDR" => Currency::IDR,
+            _     => Currency::PHP,
+        };
+
+        // PaymentReceipt invoices: merchant_id = the platform tenant's own merchant UUID
+        // (nil placeholder — receipts are customer-facing, not merchant-billing).
+        let platform_merchant = MerchantId::from_uuid(uuid::Uuid::nil());
+        let customer_id       = CustomerId::from_uuid(cmd.customer_id);
+
+        let mut invoice = Invoice::new(
+            invoice_number,
+            InvoiceType::PaymentReceipt,
+            tenant_id.clone(),
+            platform_merchant,
+            Some(customer_id),
+            billing_period,
+            currency,
+        );
+
+        // ── Build line items from billing breakdown ───────────────────────────
+        let awb = Awb::parse(&billing.awb)
+            .map_err(|e| AppError::Validation(e.to_string()))?;
+
+        if billing.base_freight_cents > 0 {
+            invoice.add_line_item(InvoiceLineItem::document_level(
+                ChargeType::BaseFreight,
+                "Base freight charge".into(),
+                logisticos_types::Money::new(billing.base_freight_cents, currency),
+            )).map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
+        }
+        if billing.fuel_surcharge_cents > 0 {
+            invoice.add_line_item(InvoiceLineItem::document_level(
+                ChargeType::FuelSurcharge,
+                "Fuel surcharge".into(),
+                logisticos_types::Money::new(billing.fuel_surcharge_cents, currency),
+            )).map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
+        }
+        if billing.insurance_cents > 0 {
+            invoice.add_line_item(InvoiceLineItem::document_level(
+                ChargeType::InsuranceFee,
+                "Shipment insurance".into(),
+                logisticos_types::Money::new(billing.insurance_cents, currency),
+            )).map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
+        }
+        // Sanity check: must have at least one line item
+        if invoice.line_items.is_empty() {
+            return Err(AppError::BusinessRule(
+                format!("Shipment {} billing returned all-zero amounts", billing.awb)
+            ));
+        }
+
+        // ── Issue + capture in one step (Draft → Issued → Paid) ──────────────
+        invoice.issue_and_capture()
+            .map_err(|e| AppError::BusinessRule(e.to_string()))?;
+
+        self.invoice_repo.save(&invoice).await.map_err(AppError::Internal)?;
+
+        // ── Publish InvoiceGenerated with recipient_type = "customer" ─────────
+        let event = Event::new(
+            "payments",
+            "invoice.generated",
+            tenant_id.inner(),
+            InvoiceGenerated {
+                invoice_id:     invoice.id.inner(),
+                invoice_number: invoice.invoice_number.to_string(),
+                recipient_type: "customer".into(),
+                merchant_id:    uuid::Uuid::nil(),
+                merchant_email: None,
+                customer_id:    cmd.customer_id,
+                customer_email: cmd.customer_email.clone(),
+                tenant_id:      tenant_id.inner(),
+                total_cents:    invoice.total_due().amount,
+                currency:       format!("{:?}", currency),
+                due_at:         invoice.due_at,
+            },
+        );
+        self.kafka
+            .publish_event(topics::INVOICE_GENERATED, &event)
+            .await
+            .map_err(AppError::Internal)?;
+
+        tracing::info!(
+            invoice_id     = %invoice.id,
+            invoice_number = %invoice.invoice_number,
+            customer_id    = %cmd.customer_id,
+            shipment_id    = %cmd.shipment_id,
+            awb            = %awb,
+            total_cents    = invoice.total_due().amount,
+            "Payment receipt issued and captured"
+        );
+        Ok(invoice)
+    }
+
     pub async fn list(&self, merchant_id: &MerchantId) -> AppResult<Vec<InvoiceSummary>> {
         let invoices = self.invoice_repo
             .list_by_merchant(merchant_id)
+            .await
+            .map_err(AppError::Internal)?;
+
+        Ok(invoices.into_iter().map(invoice_to_summary).collect())
+    }
+
+    /// List PaymentReceipt invoices for a B2C customer (customer app Profile → Receipts).
+    pub async fn list_for_customer(&self, customer_id: &CustomerId) -> AppResult<Vec<InvoiceSummary>> {
+        let invoices = self.invoice_repo
+            .list_by_customer(customer_id)
             .await
             .map_err(AppError::Internal)?;
 

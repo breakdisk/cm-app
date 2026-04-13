@@ -6,6 +6,13 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub redis: RedisConfig,
     pub kafka: KafkaConfig,
+    pub order_intake: OrderIntakeConfig,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct OrderIntakeConfig {
+    /// Base URL of the order-intake service, e.g. http://order-intake:8004
+    pub url: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]

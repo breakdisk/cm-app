@@ -23,6 +23,7 @@ pub struct AwbChargeInput {
 #[derive(Debug, Deserialize)]
 pub struct GenerateInvoiceCommand {
     pub merchant_id:          Uuid,
+    pub merchant_email:       Option<String>,
     pub tenant_code:          String,    // 3-char, e.g. "PH1"
     pub billing_period_year:  i32,
     pub billing_period_month: u32,
@@ -41,6 +42,21 @@ pub struct ApplyWeightAdjustmentCommand {
     pub actual_grams:     u32,
     pub surcharge_cents:  i64,
     pub applied_by:       Uuid,
+}
+
+/// Issue a per-shipment payment receipt for a B2C self-booking once the
+/// shipment is delivered. Money was already preauthorised at booking time,
+/// so the receipt is issued and immediately marked paid.
+///
+/// Triggered by `PodConsumer` when it receives `pod.captured` for a shipment
+/// whose `booked_by_customer == true`.
+#[derive(Debug, Deserialize)]
+pub struct IssuePaymentReceiptCommand {
+    pub shipment_id:    Uuid,
+    pub tenant_code:    String,        // 3-char, e.g. "PH1"
+    pub customer_id:    Uuid,          // recipient — receipts go to customers, not merchants
+    pub customer_email: Option<String>,
+    pub delivered_on:   NaiveDate,     // used for the billing period (single-day window)
 }
 
 #[derive(Debug, Deserialize)]

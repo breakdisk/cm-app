@@ -18,7 +18,7 @@ use chrono::{DateTime, Duration, NaiveDate, Utc};
 use logisticos_types::{
     awb::Awb,
     invoice::{ChargeType, InvoiceNumber, InvoiceType},
-    Currency, InvoiceId, LineItemId, MerchantId, Money, TenantId,
+    Currency, CustomerId, InvoiceId, LineItemId, MerchantId, Money, TenantId,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -47,6 +47,11 @@ impl BillingPeriod {
         .pred_opt()
         .unwrap();
         Self { start, end }
+    }
+
+    /// Single-day billing period — used for per-shipment payment receipts.
+    pub fn single_day(date: NaiveDate) -> Self {
+        Self { start: date, end: date }
     }
 
     /// Whether a date falls within this billing period.
@@ -176,10 +181,10 @@ impl InvoiceAdjustment {
 
 // ── Invoice ───────────────────────────────────────────────────────────────────
 
-/// A billing document issued to a merchant (or payable to carrier/merchant).
+/// A billing document issued to a merchant (B2B) or to a customer (B2C PaymentReceipt).
 ///
 /// The `invoice_number` field uses the structured `InvoiceNumber` value object
-/// from `logisticos_types::invoice` — format: `IN-PH1-2026-04-00001`.
+/// from `logisticos_types::invoice` — format: `IN-PH1-2026-04-00001` / `RC-PH1-2026-04-00001`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Invoice {
     pub id:             InvoiceId,
@@ -188,6 +193,9 @@ pub struct Invoice {
     pub invoice_type:   InvoiceType,
     pub tenant_id:      TenantId,
     pub merchant_id:    MerchantId,
+    /// Set on PaymentReceipt invoices — the B2C customer who paid.
+    /// NULL on all merchant/B2B invoices.
+    pub customer_id:    Option<CustomerId>,
     /// Billing window covered by this invoice.
     pub billing_period: BillingPeriod,
     pub line_items:     Vec<InvoiceLineItem>,
@@ -208,6 +216,7 @@ impl Invoice {
         invoice_type:   InvoiceType,
         tenant_id:      TenantId,
         merchant_id:    MerchantId,
+        customer_id:    Option<CustomerId>,
         billing_period: BillingPeriod,
         currency:       Currency,
     ) -> Self {
@@ -218,6 +227,7 @@ impl Invoice {
             invoice_type,
             tenant_id,
             merchant_id,
+            customer_id,
             billing_period,
             line_items:     Vec::new(),
             adjustments:    Vec::new(),
@@ -264,6 +274,21 @@ impl Invoice {
         self.status     = InvoiceStatus::Issued;
         self.issued_at  = Utc::now();
         self.updated_at = self.issued_at;
+        Ok(())
+    }
+
+    /// One-shot Draft → Issued → Paid for receipts where money was already
+    /// captured before the document was generated (e.g. customer-app preauth
+    /// captured at POD). Restricted to PaymentReceipt — monthly invoices must
+    /// still go through the explicit `issue()` then `mark_paid()` flow.
+    pub fn issue_and_capture(&mut self) -> Result<(), InvoiceError> {
+        if self.invoice_type != InvoiceType::PaymentReceipt {
+            return Err(InvoiceError::CannotAdjust(
+                "issue_and_capture is only valid for PaymentReceipt".into(),
+            ));
+        }
+        self.issue()?;
+        self.mark_paid()?;
         Ok(())
     }
 
@@ -374,6 +399,7 @@ mod tests {
             InvoiceType::ShipmentCharges,
             TenantId::new(),
             MerchantId::new(),
+            None,
             BillingPeriod::monthly(2026, 4),
             Currency::PHP,
         )

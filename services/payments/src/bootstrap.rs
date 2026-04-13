@@ -3,7 +3,9 @@ use sqlx::postgres::PgPoolOptions;
 use anyhow::Context;
 use crate::config::Config;
 use crate::application::services::{InvoiceService, CodService, WalletService};
+use crate::infrastructure::cache::RedisSequenceSource;
 use crate::infrastructure::db::{PgInvoiceRepository, PgCodRepository, PgWalletRepository};
+use crate::infrastructure::http::OrderIntakeClient;
 use crate::api::http::{router, AppState};
 use crate::infrastructure::messaging::PodConsumer;
 use logisticos_auth::jwt::JwtService;
@@ -45,12 +47,19 @@ pub async fn run() -> anyhow::Result<()> {
     let jwt_secret = std::env::var("AUTH__JWT_SECRET").context("AUTH__JWT_SECRET not set")?;
     let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
 
-    let invoice_repo = Arc::new(PgInvoiceRepository::new(pool.clone()));
-    let cod_repo     = Arc::new(PgCodRepository::new(pool.clone()));
-    let wallet_repo  = Arc::new(PgWalletRepository::new(pool.clone()));
+    let invoice_repo    = Arc::new(PgInvoiceRepository::new(pool.clone()));
+    let cod_repo        = Arc::new(PgCodRepository::new(pool.clone()));
+    let wallet_repo     = Arc::new(PgWalletRepository::new(pool.clone()));
+    let sequence_source = Arc::new(
+        RedisSequenceSource::new(&cfg.redis.url).context("Failed to connect to Redis for sequences")?
+    );
+    let billing_source  = Arc::new(OrderIntakeClient::new(&cfg.order_intake.url));
 
     let invoice_service = Arc::new(InvoiceService::new(
-        Arc::clone(&invoice_repo) as _, Arc::clone(&kafka),
+        Arc::clone(&invoice_repo) as _,
+        Arc::clone(&kafka),
+        sequence_source as _,
+        billing_source  as _,
     ));
     let cod_service = Arc::new(CodService::new(
         Arc::clone(&cod_repo) as _, Arc::clone(&wallet_repo) as _, Arc::clone(&kafka),
@@ -60,7 +69,10 @@ pub async fn run() -> anyhow::Result<()> {
     ));
 
     let state = Arc::new(AppState {
-        invoice_service, cod_service: Arc::clone(&cod_service), wallet_service, jwt: Arc::clone(&jwt),
+        invoice_service: Arc::clone(&invoice_service),
+        cod_service:     Arc::clone(&cod_service),
+        wallet_service,
+        jwt:             Arc::clone(&jwt),
     });
     let app = router(state);
 
@@ -69,6 +81,7 @@ pub async fn run() -> anyhow::Result<()> {
         &cfg.kafka.brokers,
         &cfg.kafka.group_id,
         Arc::clone(&cod_service),
+        Arc::clone(&invoice_service),
     )
     .context("Failed to create PodConsumer")?;
     tokio::spawn(async move { pod_consumer.run().await });

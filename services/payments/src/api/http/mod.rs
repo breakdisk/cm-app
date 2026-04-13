@@ -27,11 +27,12 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         logisticos_auth::middleware::require_auth,
     );
     Router::new()
-        .route("/invoices",             get(invoices::list_invoices).post(invoices::generate_invoice))
-        .route("/invoices/:id",         get(invoices::get_invoice))
-        .route("/cod/reconcile",        post(wallet::reconcile_cod))
-        .route("/wallet",               get(wallet::get_wallet))
-        .route("/wallet/transactions",  get(wallet::list_transactions))
-        .route("/wallet/withdraw",      post(wallet::request_withdrawal))
+        .route("/invoices",                              get(invoices::list_invoices).post(invoices::generate_invoice))
+        .route("/invoices/:id",                          get(invoices::get_invoice))
+        .route("/customers/:customer_id/invoices",       get(invoices::list_customer_invoices))
+        .route("/cod/reconcile",                         post(wallet::reconcile_cod))
+        .route("/wallet",                                get(wallet::get_wallet))
+        .route("/wallet/transactions",                   get(wallet::list_transactions))
+        .route("/wallet/withdraw",                       post(wallet::request_withdrawal))
         .layer(auth_layer)
 }
