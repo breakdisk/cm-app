@@ -110,6 +110,11 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::SHIPMENT_READ, permissions::DISPATCH_VIEW,
             permissions::ANALYTICS_VIEW,
         ],
+        // End-customer: can book and track their own shipments
+        "customer" => vec![
+            permissions::SHIPMENT_CREATE, permissions::SHIPMENT_READ,
+            permissions::SHIPMENT_CANCEL,
+        ],
         _ => vec![],
     }
 }
