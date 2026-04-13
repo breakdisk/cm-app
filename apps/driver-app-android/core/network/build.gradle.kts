@@ -15,11 +15,12 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+    buildFeatures { buildConfig = true }
 }
 
 dependencies {
     implementation(project(":core:common"))
-    implementation(libs.retrofit.core)
+    api(libs.retrofit.core)
     implementation(libs.retrofit.serialization)
     implementation(libs.okhttp.core)
     implementation(libs.okhttp.logging)

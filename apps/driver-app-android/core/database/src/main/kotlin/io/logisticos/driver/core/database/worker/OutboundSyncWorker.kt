@@ -15,18 +15,19 @@ import io.logisticos.driver.core.database.dao.PodDao
 import io.logisticos.driver.core.database.dao.SyncQueueDao
 import io.logisticos.driver.core.database.entity.SyncAction
 import io.logisticos.driver.core.database.entity.SyncQueueEntity
+import android.util.Base64
+import io.logisticos.driver.core.database.dao.TaskDao
+import io.logisticos.driver.core.network.service.AttachSignatureRequest
+import io.logisticos.driver.core.network.service.CompleteTaskRequest
 import io.logisticos.driver.core.network.service.DriverOpsApiService
+import io.logisticos.driver.core.network.service.FailTaskRequest
+import io.logisticos.driver.core.network.service.InitiatePodRequest
 import io.logisticos.driver.core.network.service.PodApiService
-import io.logisticos.driver.core.network.service.TaskStatusRequest
+import io.logisticos.driver.core.network.service.SubmitPodRequest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.MultipartBody
-import okhttp3.RequestBody.Companion.asRequestBody
-import okhttp3.RequestBody.Companion.toRequestBody
-import retrofit2.HttpException
 import java.io.File
 import java.util.concurrent.TimeUnit
 
@@ -36,6 +37,7 @@ class OutboundSyncWorker @AssistedInject constructor(
     @Assisted workerParams: WorkerParameters,
     private val syncQueueDao: SyncQueueDao,
     private val podDao: PodDao,
+    private val taskDao: TaskDao,
     private val driverOpsApi: DriverOpsApiService,
     private val podApi: PodApiService
 ) : CoroutineWorker(context, workerParams) {
@@ -66,45 +68,60 @@ class OutboundSyncWorker @AssistedInject constructor(
                     ?: run { syncQueueDao.remove(item.id); return }
                 val status = payload["status"]?.jsonPrimitive?.contentOrNull
                     ?: run { syncQueueDao.remove(item.id); return }
-                driverOpsApi.updateTaskStatus(taskId, TaskStatusRequest(status = status))
+                val reason = payload["reason"]?.jsonPrimitive?.contentOrNull
+
+                when (status.uppercase()) {
+                    "IN_PROGRESS" -> driverOpsApi.startTask(taskId)
+                    "COMPLETED"   -> {
+                        val podId = payload["podId"]?.jsonPrimitive?.contentOrNull
+                        driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId))
+                    }
+                    "FAILED"      -> {
+                        driverOpsApi.failTask(taskId, FailTaskRequest(reason = reason ?: "unknown"))
+                    }
+                    else -> syncQueueDao.remove(item.id)   // unknown status — discard
+                }
             }
             SyncAction.POD_SUBMIT -> {
                 val taskId = payload["taskId"]?.jsonPrimitive?.contentOrNull
                     ?: run { syncQueueDao.remove(item.id); return }
-                val pod = podDao.getForTask(taskId) ?: return
-                val photoBody = pod.photoPath?.let { path ->
-                    val file = File(path)
-                    if (file.exists()) {
-                        MultipartBody.Part.createFormData(
-                            "photo", file.name,
-                            file.asRequestBody("image/jpeg".toMediaType())
-                        )
-                    } else null
+                val pod = podDao.getForTask(taskId) ?: run {
+                    syncQueueDao.remove(item.id); return
                 }
-                val sigBody = pod.signaturePath?.let { path ->
-                    val file = File(path)
-                    if (file.exists()) {
-                        MultipartBody.Part.createFormData(
-                            "signature", file.name,
-                            file.asRequestBody("image/png".toMediaType())
-                        )
-                    } else null
+                val task = taskDao.getById(taskId) ?: run {
+                    syncQueueDao.remove(item.id); return
                 }
-                val response = podApi.submitPod(
-                    taskId = taskId.toRequestBody("text/plain".toMediaType()),
-                    photo = photoBody,
-                    signature = sigBody,
-                    otpToken = pod.otpToken?.toRequestBody("text/plain".toMediaType())
+
+                // 1. Initiate — use task's stored destination coords as best available
+                val initiateResp = podApi.initiate(
+                    InitiatePodRequest(
+                        shipmentId = task.shipmentId,
+                        taskId = taskId,
+                        recipientName = task.recipientName,
+                        captureLat = task.lat,
+                        captureLng = task.lng,
+                        deliveryLat = task.lat,
+                        deliveryLng = task.lng
+                    )
                 )
-                if (response.isSuccessful) {
-                    podDao.markSynced(taskId)
-                } else if (response.code() in 400..499 && response.code() != 429) {
-                    // Unrecoverable client error — discard queue item permanently
-                    syncQueueDao.remove(item.id)
-                    return
+                val podId = initiateResp.data.podId
+
+                // 2. Attach signature if available
+                if (pod.signaturePath != null) {
+                    val sigFile = File(pod.signaturePath)
+                    if (sigFile.exists()) {
+                        val base64 = Base64.encodeToString(sigFile.readBytes(), Base64.NO_WRAP)
+                        podApi.attachSignature(podId, AttachSignatureRequest(base64))
+                    }
                 }
-                // On 5xx or 429, throw to trigger retry with backoff
-                if (!response.isSuccessful) throw HttpException(response)
+
+                // 3. Submit POD
+                podApi.submit(podId, SubmitPodRequest(otpCode = pod.otpToken))
+
+                // 4. Complete the task
+                driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId))
+
+                podDao.markSynced(taskId)
             }
             else -> Unit
         }

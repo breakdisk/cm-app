@@ -118,13 +118,9 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                 val taskId = backStack.arguments?.getString("taskId") ?: ""
                 ArrivalScreen(
                     taskId = taskId,
-                    onStartTask = { id, photo, sig, otp ->
-                        // ArrivalScreen reads taskType from DB; we pass it via the
-                        // PickupScreen route for PICKUP tasks and POD route for DELIVERY.
-                        // ArrivalViewModel calls back with the resolved requirements —
-                        // we route to pickup vs pod based on what ArrivalScreen reports.
+                    onStartTask = { id, photo, sig, otp, isCod, codAmount ->
                         shiftNavController.navigate(
-                            "pod/$id/$photo/$sig/$otp/false/0.0"
+                            "pod/$id/$photo/$sig/$otp/$isCod/$codAmount"
                         )
                     }
                 )

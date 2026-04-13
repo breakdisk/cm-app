@@ -21,6 +21,7 @@ class AuthRepository @Inject constructor(
         val response = apiService.verifyOtp(OtpVerifyRequest(phone = phone, otp = otp))
         sessionManager.saveTokens(jwt = response.jwt, refreshToken = response.refreshToken)
         sessionManager.saveTenantId(response.tenantId)
+        sessionManager.saveDriverId(response.driverId)
     }
 
     fun isLoggedIn(): Boolean = sessionManager.isLoggedIn()

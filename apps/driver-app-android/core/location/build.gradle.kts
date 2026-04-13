@@ -24,6 +24,7 @@ dependencies {
     implementation(libs.workmanager.ktx)
     implementation(libs.hilt.work)
     implementation(libs.coroutines.android)
+    implementation(libs.coroutines.play.services)
     ksp(libs.hilt.compiler)
     ksp(libs.hilt.work.compiler)
     testImplementation(libs.bundles.testing.unit)

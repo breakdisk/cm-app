@@ -34,7 +34,7 @@ private val Border  = Color(0x14FFFFFF)
 @Composable
 fun ArrivalScreen(
     taskId: String,
-    onStartTask: (taskId: String, requiresPhoto: Boolean, requiresSignature: Boolean, requiresOtp: Boolean) -> Unit,
+    onStartTask: (taskId: String, requiresPhoto: Boolean, requiresSignature: Boolean, requiresOtp: Boolean, isCod: Boolean, codAmount: Double) -> Unit,
     viewModel: ArrivalViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -236,7 +236,8 @@ fun ArrivalScreen(
                 }
 
                 // Notes
-                if (!task.notes.isNullOrBlank()) {
+                val notes = task.notes
+                if (!notes.isNullOrBlank()) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -247,7 +248,7 @@ fun ArrivalScreen(
                     ) {
                         Text("📝", fontSize = 14.sp)
                         Text(
-                            task.notes,
+                            notes,
                             color = Color.White.copy(alpha = 0.6f),
                             fontSize = 13.sp,
                             lineHeight = 18.sp
@@ -265,7 +266,9 @@ fun ArrivalScreen(
                                 taskId,
                                 task.requiresPhoto,
                                 task.requiresSignature,
-                                task.requiresOtp
+                                task.requiresOtp,
+                                task.isCod,
+                                task.codAmount
                             )
                         }
                     },
