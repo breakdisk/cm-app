@@ -18,11 +18,19 @@ ALTER TABLE payments.invoices
     ADD COLUMN IF NOT EXISTS created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
 -- Back-fill invoice_number for existing rows (synthetic — non-structured)
-UPDATE payments.invoices
-    SET invoice_number = 'IN-LEG-' ||
+-- Uses a CTE because PostgreSQL disallows window functions directly in UPDATE SET.
+WITH numbered AS (
+    SELECT
+        id,
         TO_CHAR(issued_at, 'YYYY-MM') || '-' ||
-        LPAD(CAST(ROW_NUMBER() OVER (ORDER BY issued_at) AS TEXT), 5, '0')
-    WHERE invoice_number IS NULL;
+            LPAD(CAST(ROW_NUMBER() OVER (ORDER BY issued_at) AS TEXT), 5, '0') AS suffix
+    FROM payments.invoices
+    WHERE invoice_number IS NULL
+)
+UPDATE payments.invoices inv
+    SET invoice_number = 'IN-LEG-' || numbered.suffix
+    FROM numbered
+    WHERE inv.id = numbered.id;
 
 ALTER TABLE payments.invoices
     ALTER COLUMN invoice_number SET NOT NULL;
