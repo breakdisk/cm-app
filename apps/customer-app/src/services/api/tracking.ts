@@ -60,11 +60,18 @@ export interface TrackingEvent {
 export interface PublicTrackingData {
   tracking_number: string;
   status: string;
-  current_status_label: string;
+  status_label?: string;
+  current_status_label?: string;
+  estimated_delivery?: string;
   eta?: string;
-  origin_city: string;
-  destination_city: string;
-  events: TrackingEvent[];
+  origin?: string;
+  origin_city?: string;
+  destination?: string;
+  destination_city?: string;
+  history?: TrackingEvent[];
+  events?: TrackingEvent[];
+  driver_location?: { lat: number; lng: number };
+  delivered_at?: string;
   pod?: { delivered_at: string };
 }
 
@@ -81,8 +88,8 @@ export const trackingApi = {
   /** Track a shipment by tracking number (no auth — public) */
   getByTrackingNumber: (trackingNumber: string) => {
     const trackingClient = getTrackingClient();
-    return trackingClient.get<{ data: PublicTrackingData }>(
-      `/v1/tracking/public/${trackingNumber}`
+    return trackingClient.get<PublicTrackingData>(
+      `/track/${trackingNumber}`
     );
   },
 

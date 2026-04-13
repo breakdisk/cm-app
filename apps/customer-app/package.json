@@ -25,6 +25,7 @@
     "expo-background-fetch": "~14.0.7",
     "expo-blur": "~15.0.7",
     "expo-camera": "~17.0.7",
+    "expo-device": "~8.0.7",
     "expo-file-system": "~19.0.14",
     "expo-haptics": "~15.0.7",
     "expo-image-picker": "~17.0.8",
@@ -46,7 +47,6 @@
     "react-native-screens": "~4.16.0",
     "react-native-signature-canvas": "^4.7.0",
     "react-native-web": "~0.21.0",
-
     "react-redux": "^9.1.0",
     "tailwindcss": "^3.4.0",
     "zod": "^3.23.0"
