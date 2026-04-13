@@ -1,43 +1,54 @@
 use async_trait::async_trait;
+use aws_sdk_sesv2::{
+    types::{Body, Content, Destination, EmailContent, Message},
+    Client as SesClient,
+};
 use super::ChannelAdapter;
 
-pub struct SendGridEmailAdapter {
-    api_key: String,
+pub struct SesEmailAdapter {
+    client: SesClient,
     from_email: String,
     from_name: String,
-    client: reqwest::Client,
 }
 
-impl SendGridEmailAdapter {
-    pub fn new(api_key: String, from_email: String, from_name: String) -> Self {
-        Self { api_key, from_email, from_name, client: reqwest::Client::new() }
+impl SesEmailAdapter {
+    pub async fn new(from_email: String, from_name: String) -> Self {
+        let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+        let client = SesClient::new(&config);
+        Self { client, from_email, from_name }
     }
 }
 
 #[async_trait]
-impl ChannelAdapter for SendGridEmailAdapter {
+impl ChannelAdapter for SesEmailAdapter {
     async fn send(&self, recipient: &str, body: &str, subject: Option<&str>) -> Result<String, String> {
-        let payload = serde_json::json!({
-            "personalizations": [{ "to": [{ "email": recipient }] }],
-            "from": { "email": self.from_email, "name": self.from_name },
-            "subject": subject.unwrap_or("LogisticOS Notification"),
-            "content": [{ "type": "text/html", "value": body }]
-        });
-        let response = self.client
-            .post("https://api.sendgrid.com/v3/mail/send")
-            .bearer_auth(&self.api_key)
-            .json(&payload)
-            .send().await
-            .map_err(|e| format!("SendGrid request failed: {e}"))?;
+        let from = format!("{} <{}>", self.from_name, self.from_email);
+        let subject_content = Content::builder()
+            .data(subject.unwrap_or("LogisticOS Notification"))
+            .charset("UTF-8")
+            .build()
+            .map_err(|e| format!("SES subject build: {e}"))?;
+        let body_content = Content::builder()
+            .data(body)
+            .charset("UTF-8")
+            .build()
+            .map_err(|e| format!("SES body build: {e}"))?;
+        let message = Message::builder()
+            .subject(subject_content)
+            .body(Body::builder().html(body_content).build())
+            .build();
+        let email_content = EmailContent::builder().simple(message).build();
+        let destination = Destination::builder().to_addresses(recipient).build();
 
-        if !response.status().is_success() {
-            return Err(format!("SendGrid error: {}", response.text().await.unwrap_or_default()));
-        }
-        let msg_id = response.headers()
-            .get("x-message-id")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("unknown")
-            .to_owned();
-        Ok(msg_id)
+        let result = self.client
+            .send_email()
+            .from_email_address(from)
+            .destination(destination)
+            .content(email_content)
+            .send()
+            .await
+            .map_err(|e| format!("SES send failed: {e}"))?;
+
+        Ok(result.message_id().unwrap_or("unknown").to_owned())
     }
 }

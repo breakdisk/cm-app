@@ -20,6 +20,7 @@ pub struct NotificationService {
     whatsapp: Arc<dyn ChannelAdapter>,
     sms:      Arc<dyn ChannelAdapter>,
     email:    Arc<dyn ChannelAdapter>,
+    push:     Arc<dyn ChannelAdapter>,
 }
 
 impl NotificationService {
@@ -27,8 +28,9 @@ impl NotificationService {
         whatsapp: Arc<dyn ChannelAdapter>,
         sms:      Arc<dyn ChannelAdapter>,
         email:    Arc<dyn ChannelAdapter>,
+        push:     Arc<dyn ChannelAdapter>,
     ) -> Self {
-        Self { whatsapp, sms, email }
+        Self { whatsapp, sms, email, push }
     }
 
     pub async fn dispatch(&self, notification: &mut Notification) -> AppResult<()> {
@@ -36,13 +38,7 @@ impl NotificationService {
             NotificationChannel::WhatsApp => self.whatsapp.as_ref(),
             NotificationChannel::Sms      => self.sms.as_ref(),
             NotificationChannel::Email    => self.email.as_ref(),
-            NotificationChannel::Push     => {
-                // Push notifications handled by FCM — separate adapter
-                return Err(AppError::ExternalService {
-                    service: "push".into(),
-                    message: "Push not yet wired".into(),
-                });
-            }
+            NotificationChannel::Push     => self.push.as_ref(),
         };
 
         match adapter.send(&notification.recipient, &notification.rendered_body, notification.subject.as_deref()).await {
