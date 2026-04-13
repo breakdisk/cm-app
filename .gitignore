@@ -57,3 +57,25 @@ libs/proto/src/generated/
 
 # Git worktrees
 .worktrees/
+.claude/worktrees/
+.claude/scheduled_tasks.lock
+.claire/
+.clone/
+.playwright-mcp/
+.cargo/
+
+# Android (driver-app-android) — build output and local tooling
+apps/driver-app-android/.gradle/
+apps/driver-app-android/build/
+apps/driver-app-android/**/build/
+apps/driver-app-android/local.properties
+apps/driver-app-android/gradle/wrapper/gradle-wrapper.jar
+apps/driver-app-android/gradlew
+apps/driver-app-android/gradlew.bat
+apps/driver-app-android/gradle/gradle-daemon-jvm.properties
+
+# Firebase / Google service account secrets
+google-services.json
+**/google-services.json
+agenticlogistic-firebase-adminsdk-*.json
+*-firebase-adminsdk-*.json
