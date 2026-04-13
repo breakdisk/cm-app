@@ -14,7 +14,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { useDispatch } from "react-redux";
 import { authActions } from "../../store";
 import type { AppDispatch } from "../../store";
-import { verifyOTP } from "../../services/api/auth";
+import { verifyOTP, verifyPhone } from "../../services/api/auth";
+import { registerForPushNotifications } from "../../services/notifications";
 
 const CANVAS = "#050810";
 const CYAN   = "#00E5FF";
@@ -91,16 +92,19 @@ export function PhoneScreen() {
 
   const otpRefs = useRef<(TextInput | null)[]>([]);
 
-  function handleSendOtp() {
+  async function handleSendOtp() {
     if (phone.trim().length < 7) { setError("Enter a valid mobile number"); return; }
     setError("");
     setSending(true);
-    // Simulate OTP send — auto-fill demo code after 1 s
-    setTimeout(() => {
-      setSending(false);
-      setOtp(DEMO_OTP.split(""));
-      setStage("otp");
-    }, 1000);
+    const fullNum = `${countryCode.code}${phone}`;
+    try {
+      await verifyPhone(fullNum);
+    } catch {
+      // Backend unreachable — proceed in demo mode
+    }
+    setSending(false);
+    setOtp(DEMO_OTP.split(""));
+    setStage("otp");
   }
 
   function handleOtpChange(val: string, idx: number) {
@@ -120,6 +124,10 @@ export function PhoneScreen() {
     const fullPhone = `${countryCode.code}${phone}`;
     try {
       await verifyOTP(fullPhone, code);
+      // Register for push notifications after successful login (non-blocking)
+      registerForPushNotifications().catch((err) =>
+        console.warn("Push registration failed:", err)
+      );
     } catch {
       // Backend unreachable — proceed in demo mode
     } finally {

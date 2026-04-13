@@ -11,6 +11,11 @@ pub struct Shipment {
     pub customer_id: CustomerId,
     pub customer_name: String,
     pub customer_phone: String,
+    /// Email for the customer or recipient — used for payment receipt delivery.
+    pub customer_email: Option<String>,
+    /// True when the shipment was self-booked via the customer app (B2C flow).
+    /// When true, a payment receipt is issued at POD instead of a merchant invoice.
+    pub booked_by_customer: bool,
     /// Master AWB — the structured, checksummed customer-facing tracking number.
     pub awb: Awb,
     /// Number of physical pieces (1..=999). Drives child AWB generation.
@@ -107,6 +112,8 @@ mod tests {
             customer_id:          logisticos_types::CustomerId::new(),
             customer_name:        "Test Customer".to_string(),
             customer_phone:       "+63912345678".to_string(),
+            customer_email:       None,
+            booked_by_customer:   false,
             awb:                  make_awb(),
             piece_count:          1,
             status:               logisticos_types::ShipmentStatus::Pending,
@@ -135,6 +142,8 @@ mod tests {
             customer_id:          logisticos_types::CustomerId::new(),
             customer_name:        "Alice".to_string(),
             customer_phone:       "+63900000001".to_string(),
+            customer_email:       None,
+            booked_by_customer:   false,
             awb:                  make_awb(),
             piece_count:          1,
             status:               logisticos_types::ShipmentStatus::Pending,

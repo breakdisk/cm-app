@@ -49,11 +49,12 @@ class NotificationRepository @Inject constructor(
     fun registerFcmToken(token: String) {
         val driverId = sessionManager.getDriverId() ?: return // not logged in yet; token registered after auth
         scope.launch {
-            runCatching {
+            try {
                 identityApiService.registerFcmToken(FcmTokenRequest(fcmToken = token, driverId = driverId))
+            } catch (_: Exception) {
+                // Fire-and-forget: token registration failure is non-fatal.
+                // On next app start / token refresh, onNewToken fires again.
             }
-            // Fire-and-forget: token registration failure is non-fatal.
-            // On next app start / token refresh, onNewToken fires again.
         }
     }
 

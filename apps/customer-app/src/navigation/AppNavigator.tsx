@@ -22,6 +22,8 @@ import { SupportScreen }          from "../screens/support/SupportScreen";
 import { PhoneScreen }            from "../screens/auth/PhoneScreen";
 import { OnboardingProfileScreen }from "../screens/auth/OnboardingProfileScreen";
 import { KYCScreen }              from "../screens/auth/KYCScreen";
+import { InvoicesScreen }         from "../screens/invoices/InvoicesScreen";
+import { InvoiceDetailScreen }    from "../screens/invoices/InvoiceDetailScreen";
 
 // ── Design tokens ───────────────────────────────────────────────────────────────
 const CANVAS = "#050810";
@@ -101,8 +103,10 @@ function OnboardingNavigator() {
 function AuthenticatedNavigator() {
   return (
     <Stack.Navigator screenOptions={{ headerShown: false, contentStyle: { backgroundColor: CANVAS }, animation: "slide_from_right" }}>
-      <Stack.Screen name="Tabs"    component={TabNavigator} />
-      <Stack.Screen name="Receipt" component={ReceiptScreen} />
+      <Stack.Screen name="Tabs"          component={TabNavigator}        />
+      <Stack.Screen name="Receipt"       component={ReceiptScreen}        />
+      <Stack.Screen name="Invoices"      component={InvoicesScreen}       />
+      <Stack.Screen name="InvoiceDetail" component={InvoiceDetailScreen}  />
     </Stack.Navigator>
   );
 }
@@ -115,10 +119,18 @@ export function AppNavigator() {
   // Show onboarding until complete
   const showOnboarding = isGuest || onboardingStep !== "complete";
 
+  // Deep-link configuration — logisticos://invoices/:invoiceId → InvoiceDetail
+  // Note: only the top-level screens of the root navigator are listed here.
+  // Nested screens (InvoiceDetail, Receipt) are navigated to programmatically
+  // from AuthenticatedNavigator via useEffect + Linking.getInitialURL.
+  const linking = {
+    prefixes: ["logisticos://"],
+  };
+
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: CANVAS }} edges={["left", "right"]}>
       <StatusBar style="light" backgroundColor={CANVAS} />
-      <NavigationContainer>
+      <NavigationContainer linking={linking}>
         <Stack.Navigator screenOptions={{ headerShown: false, contentStyle: { backgroundColor: CANVAS }, animation: "fade" }}>
           {showOnboarding ? (
             <Stack.Screen name="Onboarding" component={OnboardingNavigator} />

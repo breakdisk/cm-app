@@ -292,6 +292,19 @@ impl DriverAssignmentService {
             .ok_or_else(|| AppError::NotFound { resource: "Route", id: route_id.inner().to_string() })
     }
 
+    /// Returns available drivers near the given coordinates for MCP tool use.
+    pub async fn list_available_drivers(
+        &self,
+        tenant_id: &TenantId,
+        anchor: Coordinates,
+        radius_km: f64,
+    ) -> AppResult<Vec<crate::domain::repositories::AvailableDriver>> {
+        self.driver_avail_repo
+            .find_available_near(tenant_id, anchor, radius_km)
+            .await
+            .map_err(AppError::Internal)
+    }
+
     /// One-shot dispatch: find shipment in queue → create route → assign driver →
     /// emit TASK_ASSIGNED + DRIVER_ASSIGNED → mark queue item dispatched.
     pub async fn quick_dispatch(

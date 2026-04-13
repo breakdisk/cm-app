@@ -4,51 +4,82 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import retrofit2.http.*
 
+// ─── Response models ─────────────────────────────────────────────────────────
+
 @Serializable
-data class ShiftResponse(
-    val id: String,
-    @SerialName("driver_id") val driverId: String,
-    @SerialName("tenant_id") val tenantId: String,
-    @SerialName("total_stops") val totalStops: Int,
-    val tasks: List<TaskResponse>
+data class TaskListResponse(
+    val data: List<TaskItem>
 )
 
 @Serializable
-data class TaskResponse(
-    val id: String,
-    @SerialName("task_type") val taskType: String = "DELIVERY",
-    val awb: String,
-    @SerialName("recipient_name") val recipientName: String,
-    @SerialName("recipient_phone") val recipientPhone: String,
+data class TaskItem(
+    @SerialName("task_id")          val taskId: String,
+    @SerialName("shipment_id")      val shipmentId: String,
+    val sequence: Int,
+    val status: String,              // "pending" | "inprogress"
+    @SerialName("task_type")        val taskType: String,    // "pickup" | "delivery"
+    @SerialName("customer_name")    val customerName: String,
     val address: String,
+    @SerialName("cod_amount_cents") val codAmountCents: Long? = null
+)
+
+@Serializable
+data class CompleteTaskRequest(
+    @SerialName("pod_id")               val podId: String? = null,
+    @SerialName("cod_collected_cents")  val codCollectedCents: Long? = null
+)
+
+@Serializable
+data class FailTaskRequest(
+    val reason: String
+)
+
+@Serializable
+data class UpdateLocationRequest(
     val lat: Double,
     val lng: Double,
-    @SerialName("stop_order") val stopOrder: Int,
-    @SerialName("requires_photo") val requiresPhoto: Boolean,
-    @SerialName("requires_signature") val requiresSignature: Boolean,
-    @SerialName("requires_otp") val requiresOtp: Boolean,
-    @SerialName("is_cod") val isCod: Boolean,
-    @SerialName("cod_amount") val codAmount: Double,
-    val notes: String? = null
+    @SerialName("accuracy_m")  val accuracyM: Float? = null,
+    @SerialName("speed_kmh")   val speedKmh: Float? = null,
+    val heading: Float? = null,
+    @SerialName("battery_pct") val batteryPct: Int? = null,
+    @SerialName("recorded_at") val recordedAt: String
 )
 
-@Serializable
-data class TaskStatusRequest(
-    val status: String,
-    val reason: String? = null,
-    @SerialName("failure_reason") val failureReason: String? = null
-)
+// ─── API interface ────────────────────────────────────────────────────────────
 
 interface DriverOpsApiService {
-    @GET("shifts/active")
-    suspend fun getActiveShift(): ShiftResponse
 
-    @POST("shifts/{id}/start")
-    suspend fun startShift(@Path("id") shiftId: String): ShiftResponse
+    /** GET /v1/tasks — list pending + in-progress tasks for the authenticated driver */
+    @GET("v1/tasks")
+    suspend fun listMyTasks(): TaskListResponse
 
-    @POST("shifts/{id}/end")
-    suspend fun endShift(@Path("id") shiftId: String)
+    /** PUT /v1/tasks/{id}/start — mark task as in-progress */
+    @PUT("v1/tasks/{id}/start")
+    suspend fun startTask(@Path("id") taskId: String)
 
-    @PATCH("tasks/{id}/status")
-    suspend fun updateTaskStatus(@Path("id") taskId: String, @Body request: TaskStatusRequest)
+    /** PUT /v1/tasks/{id}/complete — complete a task (delivery requires pod_id) */
+    @PUT("v1/tasks/{id}/complete")
+    suspend fun completeTask(
+        @Path("id") taskId: String,
+        @Body body: CompleteTaskRequest
+    )
+
+    /** PUT /v1/tasks/{id}/fail — mark task as failed */
+    @PUT("v1/tasks/{id}/fail")
+    suspend fun failTask(
+        @Path("id") taskId: String,
+        @Body body: FailTaskRequest
+    )
+
+    /** POST /v1/location — update driver GPS position */
+    @POST("v1/location")
+    suspend fun updateLocation(@Body body: UpdateLocationRequest)
+
+    /** PUT /v1/drivers/me/online */
+    @PUT("v1/drivers/me/online")
+    suspend fun goOnline()
+
+    /** PUT /v1/drivers/me/offline */
+    @PUT("v1/drivers/me/offline")
+    suspend fun goOffline()
 }

@@ -1,6 +1,5 @@
 use std::{net::SocketAddr, sync::Arc};
 use rdkafka::{consumer::StreamConsumer, ClientConfig};
-use sqlx::postgres::PgPoolOptions;
 
 use crate::{
     application::services::{
@@ -9,7 +8,8 @@ use crate::{
     },
     config::Config,
     infrastructure::channels::{
-        email::SendGridEmailAdapter,
+        email::SesEmailAdapter,
+        push::ExpoPushAdapter,
         sms::TwilioSmsAdapter,
         whatsapp::TwilioWhatsAppAdapter,
         ChannelAdapter,
@@ -40,13 +40,15 @@ pub async fn run() -> anyhow::Result<()> {
         twilio_token,
         std::env::var("TWILIO_SMS_FROM").unwrap_or_else(|_| "+15005550006".into()),
     ));
-    let email: Arc<dyn ChannelAdapter> = Arc::new(SendGridEmailAdapter::new(
-        std::env::var("SENDGRID_API_KEY").unwrap_or_else(|_| "dev-placeholder".into()),
-        std::env::var("SENDGRID_FROM_EMAIL").unwrap_or_else(|_| "noreply@logisticos.dev".into()),
-        std::env::var("SENDGRID_FROM_NAME").unwrap_or_else(|_| "LogisticOS".into()),
-    ));
+    let email: Arc<dyn ChannelAdapter> = Arc::new(SesEmailAdapter::new(
+        std::env::var("SES_FROM_EMAIL").unwrap_or_else(|_| "noreply@logisticos.app".into()),
+        std::env::var("SES_FROM_NAME").unwrap_or_else(|_| "LogisticOS".into()),
+    ).await);
+    let identity_base_url = std::env::var("SERVICES__IDENTITY_URL")
+        .unwrap_or_else(|_| "http://identity:8001".into());
+    let push: Arc<dyn ChannelAdapter> = Arc::new(ExpoPushAdapter::new(identity_base_url));
 
-    let notification_svc = Arc::new(NotificationService::new(whatsapp, sms, email));
+    let notification_svc = Arc::new(NotificationService::new(whatsapp, sms, email, push));
 
     // Kafka consumer
     let consumer: Arc<StreamConsumer> = Arc::new(
@@ -163,6 +165,7 @@ async fn run_kafka_consumer(
         topics::DELIVERY_COMPLETED,
         topics::DELIVERY_FAILED,
         topics::COD_COLLECTED,
+        topics::INVOICE_GENERATED,
     ]).expect("Engagement consumer subscription failed");
 
     loop {

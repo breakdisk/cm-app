@@ -2,7 +2,7 @@ use axum::{extract::State, Json};
 use std::sync::Arc;
 use crate::{
     api::http::AppState,
-    application::commands::{LoginCommand, RefreshTokenCommand, ForgotPasswordCommand, ResetPasswordCommand, RegisterCommand, SendVerificationEmailCommand, VerifyEmailCommand},
+    application::commands::{LoginCommand, RefreshTokenCommand, ForgotPasswordCommand, ResetPasswordCommand, RegisterCommand, SendVerificationEmailCommand, VerifyEmailCommand, OtpSendCommand, OtpVerifyCommand},
 };
 use logisticos_errors::AppError;
 
@@ -62,4 +62,22 @@ pub async fn register(
     Ok(Json(serde_json::json!({
         "data": { "message": "Registration successful. Please verify your email." }
     })))
+}
+
+// ─── OTP endpoints (driver app + customer app) ──────────────────────────────
+
+pub async fn send_otp(
+    State(state): State<Arc<AppState>>,
+    Json(cmd): Json<OtpSendCommand>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    state.auth_service.otp_send(cmd).await?;
+    Ok(Json(serde_json::json!({ "data": { "message": "OTP sent." } })))
+}
+
+pub async fn verify_otp(
+    State(state): State<Arc<AppState>>,
+    Json(cmd): Json<OtpVerifyCommand>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let result = state.auth_service.otp_verify(cmd).await?;
+    Ok(Json(serde_json::json!({ "data": result })))
 }

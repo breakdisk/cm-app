@@ -67,13 +67,29 @@ pub struct LocationUpdated {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PodCaptured {
-    pub pod_id: Uuid,
-    pub shipment_id: Uuid,
-    pub driver_id: Uuid,
-    pub pod_type: String,       // "signature" | "photo" | "otp"
-    pub captured_at: String,
-    pub lat: Option<f64>,
-    pub lng: Option<f64>,
+    pub pod_id:             Uuid,
+    pub shipment_id:        Uuid,
+    pub driver_id:          Uuid,
+    pub pod_type:           String,   // "signature" | "photo" | "otp"
+    pub captured_at:        String,
+    pub lat:                Option<f64>,
+    pub lng:                Option<f64>,
+    /// 3-char tenant code for invoice number generation (e.g. "PH1").
+    #[serde(default)]
+    pub tenant_code:        String,
+    /// True when the shipment was booked by a customer via the customer app.
+    /// Payments service checks this to issue a PaymentReceipt at POD.
+    #[serde(default)]
+    pub booked_by_customer: bool,
+    /// Customer UUID — populated when `booked_by_customer` is true.
+    #[serde(default)]
+    pub customer_id:        Option<Uuid>,
+    /// Customer email for receipt delivery — populated when `booked_by_customer` is true.
+    #[serde(default)]
+    pub customer_email:     Option<String>,
+    /// COD amount collected at doorstep (0 if non-COD).
+    #[serde(default)]
+    pub cod_amount_cents:   i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,16 +99,6 @@ pub struct CodCollected {
     pub amount_cents: i64,
     pub currency: String,
     pub collected_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InvoiceGenerated {
-    pub invoice_id: Uuid,
-    pub merchant_id: Uuid,
-    pub total_cents: i64,
-    pub due_date: String,
-    pub period_from: String,
-    pub period_to: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -38,6 +38,12 @@ pub struct CreateShipmentCommand {
     /// Populated from JWT claims in the HTTP handler.
     #[serde(default)]
     pub tenant_code: String,
+
+    /// True when the booking originates from the customer app (B2C self-service).
+    /// Set by the API handler based on the JWT `role` claim ("customer").
+    /// When true, a payment receipt is issued at POD instead of a merchant invoice.
+    #[serde(default)]
+    pub booked_by_customer: bool,
 }
 
 #[derive(Debug, Deserialize, Validate, Serialize)]

@@ -1,0 +1,102 @@
+name: CI — Rust Quickcheck
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+    paths:
+      - "services/**"
+      - "libs/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/ci-rust-quickcheck.yml"
+  pull_request:
+    branches:
+      - main
+      - master
+      - develop
+    paths:
+      - "services/**"
+      - "libs/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/ci-rust-quickcheck.yml"
+
+concurrency:
+  group: ci-rust-quickcheck-${{ github.ref }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  SQLX_OFFLINE: "true"
+
+jobs:
+  quickcheck:
+    name: cargo check + clippy (workspace)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies (librdkafka build deps)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            pkg-config \
+            libssl-dev \
+            libsasl2-dev \
+            libcurl4-openssl-dev \
+            libzstd-dev \
+            zlib1g-dev
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Restore Cargo registry cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Restore target cache
+        uses: actions/cache@v4
+        with:
+          path: target/
+          key: ${{ runner.os }}-cargo-quickcheck-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-quickcheck-
+
+      - name: cargo check --workspace
+        run: cargo check --workspace --all-targets
+
+      # Clippy intentionally runs as non-blocking advisory only.
+      # The workspace has significant pre-existing lint debt (unused imports,
+      # dead fields, useless conversions) that will be addressed in a
+      # dedicated cleanup PR. Until then, `cargo check` is the CI gate and
+      # clippy output is informational.
+      - name: cargo clippy --workspace (advisory)
+        continue-on-error: true
+        run: |
+          cargo clippy \
+            --workspace \
+            --all-targets \
+            -- -W warnings \
+               -A clippy::module_name_repetitions \
+               -A clippy::must_use_candidate \
+               -A clippy::missing_errors_doc \
+               -A clippy::missing_panics_doc \
+               -A clippy::too_many_lines

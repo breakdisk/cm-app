@@ -4,7 +4,7 @@ use uuid::Uuid;
 use logisticos_auth::middleware::AuthClaims;
 use logisticos_auth::require_permission;
 use logisticos_errors::AppError;
-use logisticos_types::{InvoiceId, MerchantId, TenantId};
+use logisticos_types::{CustomerId, InvoiceId, MerchantId, TenantId};
 use crate::{api::http::AppState, application::commands::GenerateInvoiceCommand};
 
 pub async fn list_invoices(
@@ -27,6 +27,27 @@ pub async fn get_invoice(
     let invoice_id = InvoiceId::from_uuid(id);
     let invoice = state.invoice_service.get(&invoice_id).await?;
     Ok(Json(serde_json::json!({ "data": invoice })))
+}
+
+/// `GET /v1/customers/:customer_id/invoices` — customer app receipt list.
+/// The caller must be authenticated as the customer themselves (or an admin/billing manager).
+pub async fn list_customer_invoices(
+    AuthClaims(claims): AuthClaims,
+    Path(customer_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_VIEW);
+    // Customers may only fetch their own receipts.
+    // Callers with BILLING_MANAGE (admins, ops) may fetch any customer's receipts.
+    let has_manage = claims.has_permission(logisticos_auth::rbac::permissions::BILLING_MANAGE);
+    if !has_manage && claims.user_id != customer_id {
+        return Err(AppError::Forbidden {
+            resource: "invoices for another customer".into(),
+        });
+    }
+    let cid = CustomerId::from_uuid(customer_id);
+    let invoices = state.invoice_service.list_for_customer(&cid).await?;
+    Ok(Json(serde_json::json!({ "data": invoices })))
 }
 
 pub async fn generate_invoice(

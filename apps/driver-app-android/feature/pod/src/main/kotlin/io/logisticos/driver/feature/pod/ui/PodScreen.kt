@@ -48,6 +48,8 @@ private val Border = Color(0x14FFFFFF)
 @Composable
 fun PodScreen(
     taskId: String,
+    shipmentId: String = "",
+    recipientName: String = "",
     requiresPhoto: Boolean,
     requiresSignature: Boolean,
     requiresOtp: Boolean,
@@ -60,8 +62,21 @@ fun PodScreen(
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
 
-    LaunchedEffect(Unit) {
-        viewModel.setRequirements(taskId, requiresPhoto, requiresSignature, requiresOtp, isCod, codAmount)
+    LaunchedEffect(taskId) {
+        viewModel.setRequirements(
+            taskId = taskId,
+            shipmentId = shipmentId,
+            recipientName = recipientName,
+            requiresPhoto = requiresPhoto,
+            requiresSignature = requiresSignature,
+            requiresOtp = requiresOtp,
+            isCod = isCod,
+            codAmount = codAmount
+        )
+        // If shipmentId wasn't passed (e.g. navigated without it), load from local DB
+        if (shipmentId.isBlank()) {
+            viewModel.loadTaskMeta(taskId)
+        }
     }
 
     // Success state

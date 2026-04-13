@@ -36,6 +36,7 @@ validator.workspace  = true
 rdkafka.workspace    = true
 tracing.workspace    = true
 rand.workspace       = true
+async-trait.workspace = true
 
 [dev-dependencies]
 axum-test     = "19.1"

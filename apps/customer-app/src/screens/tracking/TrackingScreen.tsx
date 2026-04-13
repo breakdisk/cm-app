@@ -19,6 +19,7 @@ import { useRoute } from "@react-navigation/native";
 import { useNetInfo } from "@react-native-community/netinfo";
 import { getDatabase } from "../../db/sqlite";
 import OfflineIndicator from "../../components/OfflineIndicator";
+import { LiveDriverMap } from "../../components/LiveDriverMap";
 import { trackingApi } from "../../services/api/tracking";
 
 const CANVAS = "#050810";
@@ -50,6 +51,7 @@ interface TrackingResult {
   eta?:             string;
   driver_name?:     string;
   driver_phone?:    string;
+  driver_location?: { lat: number; lng: number };
   timeline:         TimelineEvent[];
 }
 
@@ -125,21 +127,24 @@ export function TrackingScreen() {
     setLocalError("");
     setResult(null);
     try {
-      const tracking = await trackingApi.getLive(awb, "");
+      const tracking = await trackingApi.getByTrackingNumber(awb);
       const data = (tracking.data as any)?.data ?? tracking.data as any;
       const mapped: TrackingResult = {
         awb: data.tracking_number ?? awb,
         status: (data.status ?? "pending") as ShipmentStatus,
-        origin_city: data.origin_city ?? "",
-        destination_city: data.destination_city ?? "",
-        eta: data.eta,
+        origin_city: data.origin ?? data.origin_city ?? "",
+        destination_city: data.destination ?? data.destination_city ?? "",
+        eta: data.estimated_delivery ?? data.eta,
         driver_name: data.driver?.name,
         driver_phone: undefined,
-        timeline: (data.events ?? []).map((e: any) => ({
+        driver_location: data.driver_location
+          ? { lat: Number(data.driver_location.lat), lng: Number(data.driver_location.lng) }
+          : undefined,
+        timeline: (data.history ?? data.events ?? []).map((e: any) => ({
           status: (e.status ?? "pending") as ShipmentStatus,
-          description: e.description ?? "",
+          description: e.description ?? e.status_label ?? "",
           location: e.location,
-          occurred_at: e.occurred_at ?? "",
+          occurred_at: e.occurred_at ?? e.timestamp ?? "",
         })),
       };
       setResult(mapped);
@@ -313,6 +318,14 @@ export function TrackingScreen() {
                 </Pressable>
               )}
             </View>
+          )}
+
+          {/* Live driver map — shown only when driver_location is present */}
+          {displayResult.driver_location && (
+            <LiveDriverMap
+              driverLocation={displayResult.driver_location}
+              driverName={displayResult.driver_name}
+            />
           )}
 
           {/* Timeline */}

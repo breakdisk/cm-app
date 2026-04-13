@@ -33,12 +33,12 @@ android {
     buildTypes {
         debug {
             isDebuggable = true
+            // Debug uses BASE_URL from the active product flavor
         }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            buildConfigField("String", "BASE_URL", "\"https://api.logisticos.io/\"")
         }
     }
 
@@ -47,15 +47,20 @@ android {
         create("dev") {
             dimension = "env"
             applicationIdSuffix = ".dev"
-            buildConfigField("String", "BASE_URL", "\"https://dev-api.logisticos.io/\"")
+            val devUrl = localProps.getProperty("API_BASE_URL") ?: "https://api.os.cargomarket.net/"
+            val tenantId = localProps.getProperty("TENANT_ID") ?: "demo"
+            buildConfigField("String", "BASE_URL", "\"$devUrl\"")
+            buildConfigField("String", "TENANT_ID", "\"$tenantId\"")
         }
         create("staging") {
             dimension = "env"
-            buildConfigField("String", "BASE_URL", "\"https://staging-api.logisticos.io/\"")
+            buildConfigField("String", "BASE_URL", "\"https://api.os.cargomarket.net/\"")
+            buildConfigField("String", "TENANT_ID", "\"demo\"")
         }
         create("prod") {
             dimension = "env"
-            buildConfigField("String", "BASE_URL", "\"https://api.logisticos.io/\"")
+            buildConfigField("String", "BASE_URL", "\"https://api.os.cargomarket.net/\"")
+            buildConfigField("String", "TENANT_ID", "\"demo\"")
         }
     }
 

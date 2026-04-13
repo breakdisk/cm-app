@@ -4,7 +4,8 @@
 //!
 //! | Type | Format | Example |
 //! |------|--------|---------|
-//! | Shipment charges invoice | `IN-{TTT}-{YYYY}-{MM}-{NNNNN}` | `IN-PH1-2026-04-00001` |
+//! | Tax invoice (merchant monthly) | `IN-{TTT}-{YYYY}-{MM}-{NNNNN}` | `IN-PH1-2026-04-00001` |
+//! | Payment receipt (customer per-shipment) | `RC-{TTT}-{YYYY}-{MM}-{NNNNN}` | `RC-PH1-2026-04-00001` |
 //! | COD remittance | `REM-{TTT}-{YYYY}-{MM}-{NNNNN}` | `REM-PH1-2026-04-00001` |
 //! | Credit note | `CN-{TTT}-{YYYY}-{MM}-{NNNNN}` | `CN-PH1-2026-04-00001` |
 //! | Wallet top-up receipt | `WR-{TTT}-{YYYY}-{MM}-{NNNNN}` | `WR-PH1-2026-04-00001` |
@@ -23,8 +24,13 @@ use thiserror::Error;
 /// The class of billing document, determining prefix and accounting treatment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum InvoiceType {
-    /// Merchant owes platform — shipment delivery charges.
+    /// Merchant owes platform — monthly batched shipment delivery charges.
+    /// Presentation label: "Tax Invoice".
     ShipmentCharges,
+    /// Customer paid platform — per-shipment receipt issued at POD for B2C self-bookings.
+    /// Money was already collected at booking (card preauth captured at POD).
+    /// Presentation label: "Payment Receipt".
+    PaymentReceipt,
     /// Platform owes merchant — COD cash collected by driver.
     CodRemittance,
     /// Cancellation refund or billing dispute resolution.
@@ -39,6 +45,7 @@ impl InvoiceType {
     pub fn prefix(self) -> &'static str {
         match self {
             Self::ShipmentCharges => "IN",
+            Self::PaymentReceipt  => "RC",
             Self::CodRemittance   => "REM",
             Self::CreditNote      => "CN",
             Self::WalletTopUp     => "WR",
@@ -49,6 +56,7 @@ impl InvoiceType {
     pub fn from_prefix(p: &str) -> Result<Self, InvoiceNumberError> {
         match p {
             "IN"  => Ok(Self::ShipmentCharges),
+            "RC"  => Ok(Self::PaymentReceipt),
             "REM" => Ok(Self::CodRemittance),
             "CN"  => Ok(Self::CreditNote),
             "WR"  => Ok(Self::WalletTopUp),
@@ -59,7 +67,7 @@ impl InvoiceType {
 
     /// Whether this document type represents money owed TO the platform (receivable).
     pub fn is_receivable(self) -> bool {
-        matches!(self, Self::ShipmentCharges | Self::WalletTopUp)
+        matches!(self, Self::ShipmentCharges | Self::WalletTopUp | Self::PaymentReceipt)
     }
 
     /// Whether this document type represents money owed BY the platform (payable).
@@ -232,7 +240,7 @@ pub enum InvoiceNumberError {
     #[error("Invalid invoice number format")]
     InvalidFormat,
 
-    #[error("Unknown document prefix '{0}' — must be IN, REM, CN, WR, or CP")]
+    #[error("Unknown document prefix '{0}' — must be IN, RC, REM, CN, WR, or CP")]
     UnknownPrefix(String),
 
     #[error("Invalid tenant code '{0}' — must be 3 alphanumeric characters")]

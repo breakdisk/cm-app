@@ -20,8 +20,25 @@ pub async fn run() -> anyhow::Result<()> {
         log_level: None,
     })?;
 
+    // Connect without search_path first so migrations can create the schema
+    let pre_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&cfg.database.url)
+        .await?;
+    // Ensure schema exists before setting search_path on pool connections
+    sqlx::query("CREATE SCHEMA IF NOT EXISTS delivery_experience")
+        .execute(&pre_pool)
+        .await?;
+    pre_pool.close().await;
+
     let pool = PgPoolOptions::new()
         .max_connections(cfg.database.max_connections)
+        .after_connect(|conn, _meta| Box::pin(async move {
+            sqlx::query("SET search_path TO delivery_experience, public")
+                .execute(&mut *conn)
+                .await?;
+            Ok(())
+        }))
         .connect(&cfg.database.url)
         .await?;
 

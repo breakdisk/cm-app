@@ -212,20 +212,24 @@ impl PodService {
         let pod_id = pod.id;
         self.pod_repo.save(&pod).await.map_err(AppError::Internal)?;
 
-        // Publish POD captured event — payments service reconciles COD,
-        // engagement sends delivery confirmation to customer
+        // Publish POD captured event — payments service reconciles COD and
+        // issues a payment receipt for customer-booked shipments.
         let event = Event::new("pod", "pod.captured", tenant_id.inner(), PodCaptured {
-            pod_id: pod.id,
-            shipment_id: pod.shipment_id,
-            task_id: pod.task_id,
-            tenant_id: tenant_id.inner(),
-            driver_id: driver_id.inner(),
-            recipient_name: pod.recipient_name.clone(),
-            has_signature: pod.signature_data.is_some(),
-            photo_count: pod.photos.len(),
-            otp_verified: pod.otp_verified,
+            pod_id:              pod.id,
+            shipment_id:         pod.shipment_id,
+            task_id:             pod.task_id,
+            tenant_id:           tenant_id.inner(),
+            driver_id:           driver_id.inner(),
+            recipient_name:      pod.recipient_name.clone(),
+            has_signature:       pod.signature_data.is_some(),
+            photo_count:         pod.photos.len(),
+            otp_verified:        pod.otp_verified,
             cod_collected_cents: pod.cod_collected_cents,
-            captured_at: pod.captured_at,
+            captured_at:         pod.captured_at,
+            tenant_code:         cmd.tenant_code.clone(),
+            booked_by_customer:  cmd.booked_by_customer,
+            customer_id:         cmd.customer_id,
+            customer_email:      cmd.customer_email.clone(),
         });
         self.kafka.publish_event(topics::POD_CAPTURED, &event).await
             .map_err(AppError::Internal)?;

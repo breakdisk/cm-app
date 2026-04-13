@@ -63,4 +63,28 @@ impl RedisCache {
         let count: Option<u32> = conn.get(&key).await?;
         Ok(count.unwrap_or(0) >= 5)
     }
+
+    // ─── OTP storage ─────────────────────────────────────────────────────────
+
+    /// Store a 6-digit OTP for a phone number with a 5-minute TTL.
+    pub async fn store_otp(&self, phone: &str, otp: &str) -> Result<()> {
+        let key = format!("identity:otp:{phone}");
+        let mut conn = self.conn().await?;
+        conn.set_ex::<_, _, ()>(&key, otp, 300).await?; // 5 min TTL
+        Ok(())
+    }
+
+    /// Verify the OTP for a phone number. Deletes the key on success to prevent replay.
+    pub async fn verify_otp(&self, phone: &str, otp: &str) -> Result<bool> {
+        let key = format!("identity:otp:{phone}");
+        let mut conn = self.conn().await?;
+        let stored: Option<String> = conn.get(&key).await?;
+        match stored {
+            Some(ref stored_otp) if stored_otp == otp => {
+                conn.del::<_, ()>(&key).await?; // consume the OTP
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
 }

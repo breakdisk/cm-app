@@ -335,16 +335,17 @@ impl PalletService {
             "container.departed",
             container.tenant_id.inner(),
             ContainerDeparted {
-                container_id:    container.id.inner().to_string(),
-                transport_mode:  format!("{:?}", container.transport_mode).to_lowercase(),
-                origin_hub:      container.origin_hub_id.inner().to_string(),
-                destination_hub: container.destination_hub.inner().to_string(),
-                master_awbs:     master_awbs.clone(),
-                pallet_count:    container.pallet_count() as u32,
-                loose_piece_count: container.loose_piece_count() as u32,
-                carrier_ref:     container.carrier_ref.clone(),
-                departed_at:     container.departed_at.unwrap_or_else(Utc::now).to_rfc3339(),
-                estimated_arrival: container.estimated_arrival.map(|t| t.to_rfc3339()),
+                container_id:      container.id.inner(),
+                tenant_id:         container.tenant_id.inner(),
+                origin_hub_id:     container.origin_hub_id.inner(),
+                destination_hub:   container.destination_hub.inner(),
+                transport_mode:    format!("{:?}", container.transport_mode).to_lowercase(),
+                pallet_count:      container.pallet_count() as u16,
+                loose_piece_count: container.loose_piece_count() as u16,
+                carrier_ref:       container.carrier_ref.clone(),
+                departed_at:       container.departed_at.unwrap_or_else(Utc::now).to_rfc3339(),
+                eta:               container.estimated_arrival.map(|t| t.to_rfc3339()),
+                master_awbs:       master_awbs.clone(),
             },
         );
         self.kafka
@@ -387,10 +388,11 @@ impl PalletService {
             "container.arrived",
             container.tenant_id.inner(),
             ContainerArrived {
-                container_id:    container.id.inner().to_string(),
-                destination_hub: container.destination_hub.inner().to_string(),
-                master_awbs:     master_awbs.clone(),
+                container_id:    container.id.inner(),
+                tenant_id:       container.tenant_id.inner(),
+                destination_hub: container.destination_hub.inner(),
                 arrived_at:      container.arrived_at.unwrap_or_else(Utc::now).to_rfc3339(),
+                master_awbs:     master_awbs.clone(),
             },
         );
         self.kafka
@@ -428,12 +430,13 @@ impl PalletService {
                 master_awb:     master_awb.as_str().to_string(),
                 shipment_id:    uuid::Uuid::nil(), // populated by hub scan handler
                 tenant_id:      tenant_id.inner(),
-                hub_id:         hub_id.inner().to_string(),
+                merchant_id:    uuid::Uuid::nil(), // populated by hub scan handler
+                hub_id:         hub_id.inner(),
                 declared_grams,
                 actual_grams,
                 delta_grams:    delta,
-                scanned_by,
-                scanned_at:     Utc::now().to_rfc3339(),
+                found_at:       Utc::now().to_rfc3339(),
+                found_by:       scanned_by,
             },
         );
         self.kafka

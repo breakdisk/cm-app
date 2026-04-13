@@ -15,6 +15,7 @@ import { useNavigation } from "@react-navigation/native";
 import type { RootState, AppDispatch } from "../../store";
 import { authActions, prefsActions } from "../../store";
 import type { KycStatus } from "../../store";
+import { unregisterPushToken } from "../../services/notifications";
 import { getTier, getNextTier, ptsToNextTier, tierProgress, ptsToPhp, REDEMPTION_MIN } from "../../utils/loyalty";
 
 const CANVAS  = "#050810";
@@ -213,7 +214,14 @@ export function ProfileScreen() {
   function handleSignOut() {
     Alert.alert("Sign Out", "Are you sure?", [
       { text: "Cancel", style: "cancel" },
-      { text: "Sign Out", style: "destructive", onPress: () => dispatch(authActions.logout()) },
+      {
+        text: "Sign Out",
+        style: "destructive",
+        onPress: () => {
+          unregisterPushToken().catch(() => {});
+          dispatch(authActions.logout());
+        },
+      },
     ]);
   }
 
@@ -400,11 +408,12 @@ export function ProfileScreen() {
       <FadeInView delay={200} fromY={16} style={s.section}>
         <Text style={s.sectionTitle}>Account</Text>
         {[
-          { icon: "card-outline",         label: "Saved Addresses",  sub: `${shipments.length} locations used`,   color: PURPLE },
-          { icon: "wallet-outline",       label: "Payment Methods",  sub: "Add credit/debit card",               color: GREEN  },
-          { icon: "shield-checkmark-outline", label: "Security",     sub: `Tier: ${verificationTier.replace("_"," ")}`, color: AMBER  },
+          { icon: "receipt-outline",          label: "Payment Receipts", sub: "View delivery receipts",              color: CYAN,   onPress: () => navigation.navigate("Invoices") },
+          { icon: "card-outline",             label: "Saved Addresses",  sub: `${shipments.length} locations used`,  color: PURPLE, onPress: undefined },
+          { icon: "wallet-outline",           label: "Payment Methods",  sub: "Add credit/debit card",               color: GREEN,  onPress: undefined },
+          { icon: "shield-checkmark-outline", label: "Security",         sub: `Tier: ${verificationTier.replace("_"," ")}`, color: AMBER, onPress: undefined },
         ].map((item) => (
-          <Pressable key={item.label} style={({ pressed }) => [s.menuRow, { opacity: pressed ? 0.7 : 1 }]}>
+          <Pressable key={item.label} onPress={item.onPress} style={({ pressed }) => [s.menuRow, { opacity: pressed ? 0.7 : 1 }]}>
             <View style={[s.menuIcon, { backgroundColor: item.color + "20" }]}>
               <Ionicons name={item.icon as any} size={16} color={item.color} />
             </View>

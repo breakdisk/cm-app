@@ -94,8 +94,13 @@ async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) -> Res
     let path = req.uri().path();
     let is_public = path.starts_with("/v1/tracking/public/")
         || path == "/v1/auth/login"
+        || path == "/v1/auth/register"
         || path == "/v1/auth/refresh"
-        || path == "/v1/auth/signup";
+        || path == "/v1/auth/signup"
+        || path == "/v1/auth/otp/send"
+        || path == "/v1/auth/otp/verify"
+        || path == "/v1/auth/forgot-password"
+        || path == "/v1/auth/reset-password";
 
     let (tenant_id, subscription_tier) = if is_public {
         (String::from("public"), String::from("starter"))

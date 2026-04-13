@@ -3,9 +3,10 @@ use std::fmt::Write;
 use logisticos_auth::{jwt::JwtService, password::verify_password, claims::Claims, rbac::default_permissions_for_role};
 use logisticos_errors::{AppError, AppResult};
 use crate::{
-    application::commands::{LoginCommand, LoginResult, RefreshTokenCommand},
+    application::commands::{LoginCommand, LoginResult, RefreshTokenCommand, OtpSendCommand, OtpVerifyCommand, OtpVerifyResult},
     domain::repositories::{TenantRepository, UserRepository},
     infrastructure::db::user_repo::{PgPasswordResetTokenRepository, PgEmailVerificationTokenRepository},
+    infrastructure::cache::RedisCache,
 };
 
 pub struct AuthService {
@@ -14,6 +15,7 @@ pub struct AuthService {
     jwt: Arc<JwtService>,
     reset_token_repo: Arc<PgPasswordResetTokenRepository>,
     email_verification_token_repo: Arc<PgEmailVerificationTokenRepository>,
+    redis_cache: Arc<RedisCache>,
 }
 
 impl AuthService {
@@ -23,8 +25,9 @@ impl AuthService {
         jwt: Arc<JwtService>,
         reset_token_repo: Arc<PgPasswordResetTokenRepository>,
         email_verification_token_repo: Arc<PgEmailVerificationTokenRepository>,
+        redis_cache: Arc<RedisCache>,
     ) -> Self {
-        Self { tenant_repo, user_repo, jwt, reset_token_repo, email_verification_token_repo }
+        Self { tenant_repo, user_repo, jwt, reset_token_repo, email_verification_token_repo, redis_cache }
     }
 
     pub async fn login(&self, cmd: LoginCommand) -> AppResult<LoginResult> {
@@ -226,22 +229,38 @@ impl AuthService {
         let password_hash = logisticos_auth::password::hash_password(&cmd.password)
             .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
 
-        let user = crate::domain::entities::User::new(
+        // Assign role based on email convention:
+        // - *@customer.logisticos.app → customer
+        // - everything else defaults to driver (invite flow assigns explicit roles)
+        let role = if cmd.email.ends_with("@customer.logisticos.app") {
+            "customer"
+        } else {
+            "driver"
+        };
+        let mut user = crate::domain::entities::User::new(
             tenant.id.clone(),
             cmd.email.clone(),
             password_hash,
             cmd.first_name,
             cmd.last_name,
-            vec!["driver".to_owned()],
+            vec![role.to_owned()],
         );
+
+        // In development, auto-verify customer accounts so the mobile app flow works.
+        let env = std::env::var("APP__ENV").unwrap_or_default();
+        if env == "development" && user.email.ends_with("@customer.logisticos.app") {
+            user.email_verified = true;
+        }
 
         self.user_repo.save(&user).await.map_err(AppError::Internal)?;
 
-        // Send verification email.
-        self.send_verification_email(crate::application::commands::SendVerificationEmailCommand {
-            tenant_slug: cmd.tenant_slug,
-            email: cmd.email,
-        }).await?;
+        // Send verification email (skipped in dev for customer accounts).
+        if !user.email_verified {
+            self.send_verification_email(crate::application::commands::SendVerificationEmailCommand {
+                tenant_slug: cmd.tenant_slug,
+                email: cmd.email,
+            }).await?;
+        }
 
         tracing::info!(user_id = %user.id, tenant_id = %tenant.id, "User registered");
         Ok(())
@@ -266,6 +285,128 @@ impl AuthService {
 
         tracing::info!(user_id = %user_id, "Email verified");
         Ok(())
+    }
+
+    // ─── OTP-based authentication (driver app + customer app) ────────────────
+
+    pub async fn otp_send(&self, cmd: OtpSendCommand) -> AppResult<()> {
+        use validator::Validate;
+        cmd.validate().map_err(|e| AppError::Validation(e.to_string()))?;
+
+        // Generate a 6-digit OTP
+        use rand::Rng;
+        let otp: String = format!("{:06}", rand::thread_rng().gen_range(0..1_000_000u32));
+
+        self.redis_cache.store_otp(&cmd.phone_number, &otp).await
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("Redis: {e}")))?;
+
+        // In production this would dispatch to the engagement engine via Kafka
+        // to send the OTP via SMS/WhatsApp. For now, log it in dev.
+        let env = std::env::var("APP__ENV").unwrap_or_default();
+        if env == "development" {
+            tracing::info!(phone = %cmd.phone_number, otp = %otp, "DEV OTP generated (also accept 123456)");
+        }
+
+        Ok(())
+    }
+
+    pub async fn otp_verify(&self, cmd: OtpVerifyCommand) -> AppResult<OtpVerifyResult> {
+        use validator::Validate;
+        cmd.validate().map_err(|e| AppError::Validation(e.to_string()))?;
+
+        let tenant_slug = cmd.tenant_slug.as_deref().unwrap_or("demo");
+        let env = std::env::var("APP__ENV").unwrap_or_default();
+
+        // Dev bypass: always accept 123456
+        let otp_valid = if env == "development" && cmd.otp_code == "123456" {
+            true
+        } else {
+            self.redis_cache.verify_otp(&cmd.phone_number, &cmd.otp_code).await
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("Redis: {e}")))?
+        };
+
+        if !otp_valid {
+            return Err(AppError::Unauthorized("Invalid or expired OTP".into()));
+        }
+
+        // Resolve tenant
+        let tenant = self.tenant_repo
+            .find_by_slug(tenant_slug).await
+            .map_err(AppError::Internal)?
+            .ok_or_else(|| AppError::NotFound { resource: "Tenant", id: tenant_slug.to_owned() })?;
+
+        // Derive a synthetic email from the phone number (digits only)
+        let digits: String = cmd.phone_number.chars().filter(|c| c.is_ascii_digit()).collect();
+        let role = cmd.role.as_deref().unwrap_or("driver");
+        let (email, password, first_name) = match role {
+            "customer" => (
+                format!("{digits}@customer.logisticos.app"),
+                format!("Cust{digits}!Lgx"),
+                "Customer".to_owned(),
+            ),
+            _ => (
+                format!("{digits}@driver.logisticos.app"),
+                format!("Drv{digits}!Lgx"),
+                "Driver".to_owned(),
+            ),
+        };
+
+        // Find-or-create user
+        let user = match self.user_repo.find_by_email(&tenant.id, &email).await.map_err(AppError::Internal)? {
+            Some(u) => u,
+            None => {
+                // Auto-register
+                let password_hash = logisticos_auth::password::hash_password(&password)
+                    .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
+                let mut new_user = crate::domain::entities::User::new(
+                    tenant.id.clone(),
+                    email.clone(),
+                    password_hash,
+                    first_name,
+                    digits.clone(),
+                    vec![role.to_owned()],
+                );
+                new_user.email_verified = true; // OTP-verified phone = verified identity
+                self.user_repo.save(&new_user).await.map_err(AppError::Internal)?;
+                tracing::info!(user_id = %new_user.id, phone = %cmd.phone_number, role = %role, "Auto-registered user via OTP");
+                new_user
+            }
+        };
+
+        // Issue tokens
+        let permissions: Vec<String> = user.roles.iter()
+            .flat_map(|r| default_permissions_for_role(r))
+            .map(|p| p.to_owned())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        let claims = Claims::new(
+            user.id.inner(), tenant.id.inner(),
+            tenant.slug.clone(),
+            format!("{:?}", tenant.subscription_tier).to_lowercase(),
+            user.email.clone(), user.roles.clone(), permissions,
+            self.jwt.access_expiry_seconds(),
+        );
+        let refresh_claims = logisticos_auth::claims::RefreshClaims::new(
+            user.id.inner(), tenant.id.inner(), self.jwt.refresh_expiry_seconds(),
+        );
+
+        let access_token = self.jwt.issue_access_token(claims)
+            .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
+        let refresh_token = self.jwt.issue_refresh_token(refresh_claims)
+            .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
+
+        tracing::info!(user_id = %user.id, tenant_id = %tenant.id, phone = %cmd.phone_number, "OTP login successful");
+
+        Ok(OtpVerifyResult {
+            access_token,
+            refresh_token,
+            driver_id: user.id.inner().to_string(),
+            tenant_id: tenant.id.inner().to_string(),
+            expires_in: self.jwt.access_expiry_seconds(),
+            token_type: "Bearer".into(),
+        })
     }
 }
 

@@ -38,4 +38,5 @@ pub struct AvailableDriver {
     pub distance_km: f64,
     pub location: logisticos_types::Coordinates,
     pub active_stop_count: u32,  // how many stops already assigned today
+    pub vehicle_type: Option<String>,
 }

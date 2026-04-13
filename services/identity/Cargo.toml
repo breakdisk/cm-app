@@ -49,4 +49,4 @@ serde_json    = "1"
 uuid          = { version = "1", features = ["v4"] }
 chrono        = { version = "0.4", features = ["serde"] }
 # rdkafka for dev testing
-rdkafka       = { version = "0.36", features = ["cmake-build"] }
+rdkafka       = { version = "0.36", default-features = false, features = ["cmake-build", "naive-runtime"] }

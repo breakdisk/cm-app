@@ -62,7 +62,11 @@ pub async fn run() -> anyhow::Result<()> {
     // ── JWT service ───────────────────────────────────────────────────────────
     let jwt_secret = std::env::var("AUTH__JWT_SECRET")
         .context("AUTH__JWT_SECRET not set")?;
-    let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
+    let jwt = Arc::new(JwtService::new(
+        &jwt_secret,
+        cfg.auth.access_token_ttl,
+        cfg.auth.refresh_token_ttl,
+    ));
 
     // ── Repositories ──────────────────────────────────────────────────────────
     let profile_repo  = Arc::new(PgComplianceProfileRepository::new(pool.clone()));
