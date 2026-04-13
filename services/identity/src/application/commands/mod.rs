@@ -98,3 +98,37 @@ pub struct RegisterCommand {
     pub first_name: String,
     pub last_name: String,
 }
+
+// ─── OTP-based authentication (driver app + customer app) ────────────────────
+
+#[derive(Debug, Deserialize, Validate)]
+pub struct OtpSendCommand {
+    #[validate(length(min = 7, max = 20))]
+    pub phone_number: String,
+    /// Optional tenant slug; defaults to "default" if omitted.
+    pub tenant_slug: Option<String>,
+    /// "driver" or "customer"; determines auto-registration role. Defaults to "driver".
+    pub role: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Validate)]
+pub struct OtpVerifyCommand {
+    #[validate(length(min = 7, max = 20))]
+    pub phone_number: String,
+    #[validate(length(equal = 6))]
+    pub otp_code: String,
+    /// Optional tenant slug; defaults to "default" if omitted.
+    pub tenant_slug: Option<String>,
+    /// "driver" or "customer"; determines auto-registration role. Defaults to "driver".
+    pub role: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OtpVerifyResult {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub driver_id: String,
+    pub tenant_id: String,
+    pub expires_in: i64,
+    pub token_type: String,
+}

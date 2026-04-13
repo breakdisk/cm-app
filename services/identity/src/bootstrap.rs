@@ -62,20 +62,30 @@ pub async fn run() -> anyhow::Result<()> {
         cfg.auth.refresh_token_expiry_seconds as i64,
     ));
 
-    // 7. Repositories — injected as trait objects (hexagonal architecture)
+    // 7. Redis cache — OTP storage and token revocation
+    let redis_cache = Arc::new(
+        crate::infrastructure::cache::RedisCache::new(&cfg.redis.url)
+            .context("Failed to connect Redis")?
+    );
+
+    tracing::info!("Redis cache ready");
+
+    // 8. Repositories — injected as trait objects (hexagonal architecture)
     let tenant_repo = Arc::new(PgTenantRepository::new(pool.clone()));
     let user_repo   = Arc::new(PgUserRepository::new(pool.clone()));
     let api_key_repo = Arc::new(PgApiKeyRepository::new(pool.clone()));
     let reset_token_repo = Arc::new(PgPasswordResetTokenRepository::new(pool.clone()));
     let email_verification_token_repo = Arc::new(PgEmailVerificationTokenRepository::new(pool.clone()));
+    let push_token_repo = Arc::new(crate::infrastructure::db::PgPushTokenRepository::new(pool.clone()));
 
-    // 8. Application services — depend only on repository traits, not DB types
+    // 9. Application services — depend only on repository traits, not DB types
     let auth_service = Arc::new(AuthService::new(
         Arc::clone(&tenant_repo) as _,
         Arc::clone(&user_repo) as _,
         Arc::clone(&jwt),
         Arc::clone(&reset_token_repo),
         Arc::clone(&email_verification_token_repo),
+        Arc::clone(&redis_cache),
     ));
 
     let tenant_service = Arc::new(TenantService::new(
@@ -96,6 +106,7 @@ pub async fn run() -> anyhow::Result<()> {
         jwt: Arc::clone(&jwt),
         reset_token_repo,
         email_verification_token_repo,
+        push_token_repo,
     });
 
     use tower_http::cors::CorsLayer;
