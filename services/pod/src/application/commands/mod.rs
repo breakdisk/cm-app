@@ -18,9 +18,21 @@ pub struct AttachSignatureCommand {
 
 #[derive(Debug, Deserialize)]
 pub struct SubmitPodCommand {
-    pub pod_id: Uuid,
-    pub cod_collected_cents: Option<i64>,
-    pub otp_code: Option<String>,  // Required if shipment requires OTP verification
+    pub pod_id:               Uuid,
+    pub cod_collected_cents:  Option<i64>,
+    pub otp_code:             Option<String>,  // Required if shipment requires OTP verification
+    /// 3-char tenant code for invoice number generation (e.g. "PH1").
+    #[serde(default)]
+    pub tenant_code:          String,
+    /// True if shipment was self-booked via customer app.
+    #[serde(default)]
+    pub booked_by_customer:   bool,
+    /// Customer UUID — required when `booked_by_customer` is true.
+    #[serde(default)]
+    pub customer_id:          Option<Uuid>,
+    /// Customer email for payment receipt delivery.
+    #[serde(default)]
+    pub customer_email:       Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
