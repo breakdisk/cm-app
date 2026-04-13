@@ -46,6 +46,25 @@ pub async fn submit_document(
         .await?
         .ok_or(AppError::NotFound { resource: "ComplianceProfile", id: claims.user_id.to_string() })?;
 
+    // Validate file_url: must be a non-empty https:// or http:// URL.
+    let file_url = req.file_url.trim().to_owned();
+    if file_url.is_empty() || (!file_url.starts_with("https://") && !file_url.starts_with("http://")) {
+        return Err(AppError::Validation(
+            "file_url must be a valid http:// or https:// URL".into(),
+        ));
+    }
+
+    // Validate document_number: 1–100 characters, no leading/trailing whitespace.
+    let document_number = req.document_number.trim().to_owned();
+    if document_number.is_empty() {
+        return Err(AppError::Validation("document_number cannot be empty".into()));
+    }
+    if document_number.len() > 100 {
+        return Err(AppError::Validation(
+            "document_number must be 100 characters or fewer".into(),
+        ));
+    }
+
     let parse_date = |s: Option<String>| -> Result<Option<chrono::NaiveDate>, AppError> {
         match s {
             None => Ok(None),
@@ -58,10 +77,10 @@ pub async fn submit_document(
     let doc = state.compliance.submit_document(
         profile.id,
         req.document_type_id,
-        req.document_number,
+        document_number,
         parse_date(req.issue_date)?,
         parse_date(req.expiry_date)?,
-        req.file_url,
+        file_url,
         claims.user_id,
     ).await?;
 
