@@ -23,7 +23,7 @@ COPY --from=cacher /usr/local/cargo /usr/local/cargo
 RUN cargo build --profile docker --locked -j4 --bin order_intake
 
 FROM debian:bookworm-slim AS runtime
-RUN apt-get update && apt-get install -y     ca-certificates libssl3 zlib1g libsasl2-2     && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y     ca-certificates curl libssl3 zlib1g libsasl2-2     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /app/target/docker/order_intake /app/order_intake
 EXPOSE 8004
