@@ -169,10 +169,10 @@ services:
     labels:
       - traefik.enable=true
       - traefik.docker.network=dokploy-network
-      - traefik.http.routers.logisticos-api-web.rule=Host(`api.os.cargomarket.net`)
+      - traefik.http.routers.logisticos-api-web.rule=Host(`os-api.cargomarket.net`)
       - traefik.http.routers.logisticos-api-web.entrypoints=web
       - traefik.http.routers.logisticos-api-web.middlewares=redirect-to-https@file
-      - traefik.http.routers.logisticos-api-websecure.rule=Host(`api.os.cargomarket.net`)
+      - traefik.http.routers.logisticos-api-websecure.rule=Host(`os-api.cargomarket.net`)
       - traefik.http.routers.logisticos-api-websecure.entrypoints=websecure
       - traefik.http.routers.logisticos-api-websecure.tls.certresolver=letsencrypt
       - traefik.http.services.logisticos-api.loadbalancer.server.port=8000

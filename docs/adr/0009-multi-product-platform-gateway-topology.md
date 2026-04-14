@@ -19,7 +19,7 @@ The architecture must accommodate all six products without re-litigating gateway
 
 These products share customers, identity, billing, communication channels, and AI infrastructure but have **independent operational domains**, **independent release cadences**, and likely **independent product teams**.
 
-The current setup has a single `api-gateway` service exposed at `api.os.cargomarket.net`, which the 5 LogisticOS portals (merchant, admin, partner, customer landing page, OS landing page) all point at. When this gateway was deleted from Dokploy during recent infra cleanup, every portal broke simultaneously — the exact failure mode this ADR aims to eliminate going forward.
+The current setup has a single `api-gateway` service exposed at `os-api.cargomarket.net`, which the 5 LogisticOS portals (merchant, admin, partner, customer landing page, OS landing page) all point at. When this gateway was deleted from Dokploy during recent infra cleanup, every portal broke simultaneously — the exact failure mode this ADR aims to eliminate going forward.
 
 Two anti-patterns must be avoided:
 
