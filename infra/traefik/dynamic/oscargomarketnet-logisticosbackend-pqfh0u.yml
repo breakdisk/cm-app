@@ -1,0 +1,41 @@
+# Traefik dynamic config for the LogisticOS backend stack on the shared Dokploy VPS.
+#
+# Deploy location: /etc/dokploy/traefik/dynamic/oscargomarketnet-logisticosbackend-pqfh0u.yml
+#
+# Why this file exists:
+#   Dokploy's Traefik instance is configured with `providers.docker.exposedByDefault: false`
+#   and discovers compose stacks via the file provider (NOT via docker container labels).
+#   When you add a Domain in the Dokploy dashboard, Dokploy normally auto-generates a
+#   matching file here — but only when the compose services use Dokploy's default
+#   container naming convention. Our stack uses explicit `container_name:` directives
+#   (e.g. `logisticos-api-gateway`), which breaks the auto-generation. The file below
+#   is managed by hand.
+#
+# Source of truth: this file in the repo. When changes are made here, copy to the VPS:
+#   scp infra/traefik/dynamic/oscargomarketnet-logisticosbackend-pqfh0u.yml \
+#       vps:/etc/dokploy/traefik/dynamic/
+#   # Traefik hot-reloads via fsnotify — no restart required.
+
+http:
+  routers:
+    oscargomarketnet-logisticosbackend-pqfh0u-router-api:
+      rule: Host(`os-api.cargomarket.net`)
+      service: oscargomarketnet-logisticosbackend-pqfh0u-service-api
+      middlewares:
+        - redirect-to-https
+      entryPoints:
+        - web
+    oscargomarketnet-logisticosbackend-pqfh0u-router-websecure-api:
+      rule: Host(`os-api.cargomarket.net`)
+      service: oscargomarketnet-logisticosbackend-pqfh0u-service-api
+      middlewares: []
+      entryPoints:
+        - websecure
+      tls:
+        certResolver: letsencrypt
+  services:
+    oscargomarketnet-logisticosbackend-pqfh0u-service-api:
+      loadBalancer:
+        servers:
+          - url: http://logisticos-api-gateway:8000
+        passHostHeader: true

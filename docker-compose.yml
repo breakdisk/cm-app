@@ -166,17 +166,11 @@ services:
     networks:
       - logisticos
       - dokploy-network
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=dokploy-network
-      - traefik.http.routers.logisticos-api-web.rule=Host(`os-api.cargomarket.net`)
-      - traefik.http.routers.logisticos-api-web.entrypoints=web
-      - traefik.http.routers.logisticos-api-web.middlewares=redirect-to-https@file
-      - traefik.http.routers.logisticos-api-websecure.rule=Host(`os-api.cargomarket.net`)
-      - traefik.http.routers.logisticos-api-websecure.entrypoints=websecure
-      - traefik.http.routers.logisticos-api-websecure.tls.certresolver=letsencrypt
-      - traefik.http.services.logisticos-api.loadbalancer.server.port=8000
-      - traefik.http.routers.logisticos-api-websecure.service=logisticos-api
+    # Routing is owned by the Traefik file provider, not container labels.
+    # Source of truth: infra/traefik/dynamic/oscargomarketnet-logisticosbackend-pqfh0u.yml
+    # (deployed to /etc/dokploy/traefik/dynamic/ on the VPS).
+    # Dokploy's Traefik ignores docker labels for this stack — see commit history
+    # and docs/adr/0009 for context.
     healthcheck:
       test:
         - CMD-SHELL
