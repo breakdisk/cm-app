@@ -12,10 +12,10 @@ use crate::{
         RejectAssignmentCommand, RouteView, QuickDispatchCommand,
     },
     domain::{
-        entities::{Route, DeliveryStop, DriverAssignment, StopType, RouteStatus},
+        entities::{Route, DriverAssignment, RouteStatus},
         events::{RouteCreated, DriverAssigned},
         repositories::{RouteRepository, DriverAssignmentRepository, DriverAvailabilityRepository},
-        value_objects::{MAX_STOPS_BUSINESS, DEFAULT_DRIVER_SEARCH_RADIUS_KM, estimate_duration_minutes},
+        value_objects::DEFAULT_DRIVER_SEARCH_RADIUS_KM,
     },
 };
 
@@ -463,8 +463,6 @@ impl DriverAssignmentService {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn task_assigned_event_has_required_fields() {
         // Validate that TaskAssigned payload compiles and has all fields

@@ -36,7 +36,6 @@ impl KafkaConsumer {
         F: FnMut(String, serde_json::Value) -> Fut,
         Fut: std::future::Future<Output = anyhow::Result<()>>,
     {
-        use rdkafka::consumer::ConsumerContext;
         loop {
             match self.inner.recv().await {
                 Err(e) => error!("Kafka receive error: {e}"),

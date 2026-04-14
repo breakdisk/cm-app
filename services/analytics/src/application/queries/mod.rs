@@ -1,6 +1,5 @@
 use std::sync::Arc;
 use chrono::NaiveDate;
-use uuid::Uuid;
 
 use logisticos_errors::{AppError, AppResult};
 use logisticos_types::TenantId;

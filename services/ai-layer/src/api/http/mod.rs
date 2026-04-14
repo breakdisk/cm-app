@@ -17,7 +17,6 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use logisticos_auth::middleware::AuthClaims;
-use logisticos_auth::rbac::permissions;
 use logisticos_errors::AppError;
 
 use crate::domain::entities::AgentType;

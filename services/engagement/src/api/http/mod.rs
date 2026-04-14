@@ -12,7 +12,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
-    routing::{get, post, put},
+    routing::{get, post},
     Router,
 };
 use serde::Deserialize;
@@ -25,7 +25,7 @@ use logisticos_errors::AppError;
 use crate::{
     application::services::notification_service::NotificationService,
     domain::entities::{
-        notification::{NotificationPriority, NotificationStatus},
+        notification::NotificationPriority,
         template::{NotificationChannel, NotificationTemplate},
     },
     infrastructure::db::NotificationDb,

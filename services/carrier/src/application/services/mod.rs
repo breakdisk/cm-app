@@ -6,7 +6,7 @@ use logisticos_errors::{AppError, AppResult};
 use logisticos_types::TenantId;
 
 use crate::domain::{
-    entities::{Carrier, CarrierId, RateCard, SlaCommitment},
+    entities::{Carrier, CarrierId, SlaCommitment},
     repositories::CarrierRepository,
 };
 

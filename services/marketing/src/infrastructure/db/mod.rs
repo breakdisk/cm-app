@@ -5,7 +5,7 @@ use uuid::Uuid;
 use logisticos_types::TenantId;
 
 use crate::domain::{
-    entities::{Campaign, CampaignId, CampaignStatus, Channel},
+    entities::{Campaign, CampaignId, CampaignStatus},
     repositories::CampaignRepository,
 };
 

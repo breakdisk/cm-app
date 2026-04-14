@@ -9,19 +9,18 @@
 ///   6. Persist session after every turn (crash recovery)
 use std::sync::Arc;
 use serde_json::{json, Value};
-use uuid::Uuid;
 
 use logisticos_errors::{AppError, AppResult};
 use logisticos_types::TenantId;
 
 use crate::domain::entities::{
-    AgentAction, AgentMessage, AgentSession, AgentType, MessageRole, SessionStatus,
+    AgentAction, AgentMessage, AgentSession, AgentType, MessageRole,
 };
 use crate::infrastructure::claude::ContentBlock;
 use crate::infrastructure::{
-    claude::{ClaudeClient, ContentBlock as ClaudeContent},
+    claude::ClaudeClient,
     db::SessionRepository,
-    tools::{ToolRegistry, ToolResult},
+    tools::ToolRegistry,
 };
 
 const MAX_TURNS: usize = 20;  // Hard cap on agentic loop iterations

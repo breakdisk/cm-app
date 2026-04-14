@@ -2,7 +2,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
-    routing::{get, post, put},
+    routing::get,
     Router,
 };
 use serde::Deserialize;
@@ -12,7 +12,7 @@ use logisticos_auth::middleware::AuthClaims;
 use logisticos_auth::rbac::permissions;
 use logisticos_errors::AppError;
 
-use crate::application::services::{ProfileService, UpsertProfileCommand};
+use crate::application::services::UpsertProfileCommand;
 use crate::domain::repositories::ProfileFilter;
 use crate::AppState;
 

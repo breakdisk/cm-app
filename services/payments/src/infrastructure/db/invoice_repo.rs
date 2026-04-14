@@ -3,7 +3,7 @@ use chrono::NaiveDate;
 use sqlx::PgPool;
 use uuid::Uuid;
 use logisticos_types::{
-    invoice::{ChargeType, InvoiceNumber, InvoiceType},
+    invoice::{InvoiceNumber, InvoiceType},
     Currency, CustomerId, InvoiceId, MerchantId, TenantId,
 };
 
