@@ -29,15 +29,13 @@ object NetworkModule {
     // Pins the Let's Encrypt E7 intermediate (valid until Mar 2027) and ISRG Root X1
     // as fallback. Both rotate much less frequently than the leaf cert.
     // Update E7 pin when it approaches expiry: run
-    //   echo | openssl s_client -connect api.os.cargomarket.net:443 -showcerts 2>/dev/null |
+    //   echo | openssl s_client -connect os-api.cargomarket.net:443 -showcerts 2>/dev/null |
     //   openssl x509 -pubkey -noout | openssl pkey -pubin -outform der |
     //   openssl dgst -sha256 -binary | openssl enc -base64
     // on the second certificate in the chain.
     private val CERT_PINNER = CertificatePinner.Builder()
-        .add("api.os.cargomarket.net", "sha256/y7xVm0TVJNahMr2sZydE2jQH8SquXV9yLF9seROHHHU=") // LE E7 intermediate
-        .add("api.os.cargomarket.net", "sha256/YLh1dUR9y6Kja30RrAn7JKnbQG/uEtLMkBgFF2Fuihg=") // ISRG Root X1
-        .add("*.cargomarket.net",      "sha256/y7xVm0TVJNahMr2sZydE2jQH8SquXV9yLF9seROHHHU=")
-        .add("*.cargomarket.net",      "sha256/YLh1dUR9y6Kja30RrAn7JKnbQG/uEtLMkBgFF2Fuihg=")
+        .add("*.cargomarket.net",      "sha256/y7xVm0TVJNahMr2sZydE2jQH8SquXV9yLF9seROHHHU=") // LE E7 intermediate
+        .add("*.cargomarket.net",      "sha256/YLh1dUR9y6Kja30RrAn7JKnbQG/uEtLMkBgFF2Fuihg=") // ISRG Root X1
         .build()
 
     @Provides @Singleton

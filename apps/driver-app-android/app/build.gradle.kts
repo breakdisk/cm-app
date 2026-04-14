@@ -47,19 +47,19 @@ android {
         create("dev") {
             dimension = "env"
             applicationIdSuffix = ".dev"
-            val devUrl = localProps.getProperty("API_BASE_URL") ?: "https://api.os.cargomarket.net/"
+            val devUrl = localProps.getProperty("API_BASE_URL") ?: "https://os-api.cargomarket.net/"
             val tenantId = localProps.getProperty("TENANT_ID") ?: "demo"
             buildConfigField("String", "BASE_URL", "\"$devUrl\"")
             buildConfigField("String", "TENANT_ID", "\"$tenantId\"")
         }
         create("staging") {
             dimension = "env"
-            buildConfigField("String", "BASE_URL", "\"https://api.os.cargomarket.net/\"")
+            buildConfigField("String", "BASE_URL", "\"https://os-api.cargomarket.net/\"")
             buildConfigField("String", "TENANT_ID", "\"demo\"")
         }
         create("prod") {
             dimension = "env"
-            buildConfigField("String", "BASE_URL", "\"https://api.os.cargomarket.net/\"")
+            buildConfigField("String", "BASE_URL", "\"https://os-api.cargomarket.net/\"")
             buildConfigField("String", "TENANT_ID", "\"demo\"")
         }
     }
