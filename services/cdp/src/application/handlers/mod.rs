@@ -15,7 +15,7 @@ use rdkafka::{
 use serde::Deserialize;
 use uuid::Uuid;
 
-use logisticos_events::{topics, Event};
+use logisticos_events::topics;
 use logisticos_types::TenantId;
 
 use crate::application::services::{ProfileService, RecordEventCommand};

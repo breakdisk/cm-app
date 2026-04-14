@@ -8,7 +8,6 @@ use axum::{
     routing::get,
     Router,
 };
-use redis::AsyncCommands;
 use serde_json::json;
 use tower_http::trace::TraceLayer;
 

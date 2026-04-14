@@ -2,7 +2,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
-    routing::{get, post, put, delete},
+    routing::{get, post},
     Router,
 };
 use serde::Deserialize;
@@ -13,7 +13,7 @@ use logisticos_auth::rbac::permissions;
 use logisticos_errors::AppError;
 
 use crate::application::services::{
-    CompleteMaintenanceCommand, CreateVehicleCommand, FleetService, ScheduleMaintenanceCommand,
+    CompleteMaintenanceCommand, CreateVehicleCommand, ScheduleMaintenanceCommand,
 };
 use crate::AppState;
 

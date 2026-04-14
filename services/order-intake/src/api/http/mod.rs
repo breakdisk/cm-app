@@ -7,7 +7,6 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use serde::Deserialize;
 use uuid::Uuid;
 
 use logisticos_auth::middleware::AuthClaims;

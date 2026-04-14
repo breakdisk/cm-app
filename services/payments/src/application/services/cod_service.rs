@@ -7,7 +7,7 @@ use crate::{
     application::commands::ReconcileCodCommand,
     domain::{
         entities::{CodCollection, WalletTransaction},
-        events::{CodReconciled, WalletCredited},
+        events::CodReconciled,
         repositories::{CodRepository, WalletRepository},
     },
 };

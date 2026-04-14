@@ -3,9 +3,7 @@ name: CI — Rust Quickcheck
 on:
   push:
     branches:
-      - main
-      - master
-      - develop
+      - "**"
     paths:
       - "services/**"
       - "libs/**"
@@ -13,10 +11,6 @@ on:
       - "Cargo.lock"
       - ".github/workflows/ci-rust-quickcheck.yml"
   pull_request:
-    branches:
-      - main
-      - master
-      - develop
     paths:
       - "services/**"
       - "libs/**"

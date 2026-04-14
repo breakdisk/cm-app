@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::{
     application::commands::{StartTaskCommand, CompleteTaskCommand, FailTaskCommand, TaskSummary},
     domain::{
-        entities::{DriverTask, TaskStatus, TaskType},
+        entities::{DriverTask, TaskStatus},
         events::{TaskCompleted, TaskFailed},
         repositories::{TaskRepository, DriverRepository},
     },
