@@ -255,6 +255,7 @@ impl ShipmentService {
                 destination_lng:      shipment.destination.coordinates.map(|c| c.lng),
                 service_type:         service_type.as_str().into(),
                 cod_amount_cents:     shipment.cod_amount.map(|m| m.amount),
+                booked_by_customer:   shipment.booked_by_customer,
             },
         );
         let payload = serde_json::to_string(&event).map_err(|e| AppError::Internal(e.into()))?;
