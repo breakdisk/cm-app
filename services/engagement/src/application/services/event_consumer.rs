@@ -4,12 +4,12 @@
 //! This is the core of the automated communication system.
 //!
 //! Event → Template mapping:
-//!   shipment.created        → "shipment_confirmation"   → WhatsApp + Email
-//!   driver.assigned         → "pickup_scheduled"        → WhatsApp
-//!   driver.pickup.completed → "shipment_picked_up"      → WhatsApp
-//!   driver.delivery.completed → "delivery_confirmed"    → WhatsApp + Email
-//!   driver.delivery.failed  → "delivery_failed_reschedule" → WhatsApp + SMS
-//!   payments.cod.collected  → "cod_receipt"             → WhatsApp
+//!   shipment.created        → "shipment_confirmation"   → WhatsApp + Email + Push
+//!   driver.assigned         → "pickup_scheduled"        → WhatsApp + Push
+//!   driver.pickup.completed → "shipment_picked_up"      → WhatsApp + Push
+//!   driver.delivery.completed → "delivery_confirmed"    → WhatsApp + Email + Push
+//!   driver.delivery.failed  → "delivery_failed_reschedule" → WhatsApp + SMS + Push
+//!   payments.cod.collected  → "cod_receipt"             → WhatsApp + Push
 //!   payments.invoice.generated → "invoice_issued"        → Email                    (recipient_type=merchant)
 //!   payments.invoice.generated → "payment_receipt"      → WhatsApp + Email + Push  (recipient_type=customer)
 
@@ -30,32 +30,32 @@ fn get_mapping(event_type: &str) -> Option<EventNotificationMapping> {
         topics::SHIPMENT_CREATED => Some(EventNotificationMapping {
             template_id: "shipment_confirmation",
             priority: NotificationPriority::Normal,
-            channels: &["whatsapp", "email"],
+            channels: &["whatsapp", "email", "push"],
         }),
         topics::DRIVER_ASSIGNED => Some(EventNotificationMapping {
             template_id: "pickup_scheduled",
             priority: NotificationPriority::Normal,
-            channels: &["whatsapp"],
+            channels: &["whatsapp", "push"],
         }),
         topics::PICKUP_COMPLETED => Some(EventNotificationMapping {
             template_id: "shipment_picked_up",
             priority: NotificationPriority::Normal,
-            channels: &["whatsapp"],
+            channels: &["whatsapp", "push"],
         }),
         topics::DELIVERY_COMPLETED => Some(EventNotificationMapping {
             template_id: "delivery_confirmed",
             priority: NotificationPriority::High,
-            channels: &["whatsapp", "email"],
+            channels: &["whatsapp", "email", "push"],
         }),
         topics::DELIVERY_FAILED => Some(EventNotificationMapping {
             template_id: "delivery_failed_reschedule",
             priority: NotificationPriority::High,
-            channels: &["whatsapp", "sms"],
+            channels: &["whatsapp", "sms", "push"],
         }),
         topics::COD_COLLECTED => Some(EventNotificationMapping {
             template_id: "cod_receipt",
             priority: NotificationPriority::High,
-            channels: &["whatsapp"],
+            channels: &["whatsapp", "push"],
         }),
         // INVOICE_GENERATED channels/template differ by recipient_type.
         // Routing is handled in process_event(); return a placeholder here so
@@ -223,6 +223,36 @@ pub async fn process_event(
                  Due Date:   {{due_date}}\n\n\
                  You can view and pay your invoice in the LogisticOS Merchant Portal.\n\n\
                  — LogisticOS Billing".to_owned(),
+            ),
+            "shipment_confirmation" => (
+                Some("Shipment Confirmed — LogisticOS".to_owned()),
+                "Hi {{customer_name}}, your shipment {{tracking_number}} has been confirmed. \
+                 Track it live: {{tracking_url}}".to_owned(),
+            ),
+            "pickup_scheduled" => (
+                Some("Pickup Scheduled — LogisticOS".to_owned()),
+                "Hi {{customer_name}}, driver {{driver_name}} will pick up {{tracking_number}} \
+                 at {{estimated_arrival}}. Track: {{tracking_url}}".to_owned(),
+            ),
+            "shipment_picked_up" => (
+                Some("Package Picked Up — LogisticOS".to_owned()),
+                "Hi {{customer_name}}, your shipment {{tracking_number}} has been picked up \
+                 and is on its way. Track: {{tracking_url}}".to_owned(),
+            ),
+            "delivery_confirmed" => (
+                Some("Delivered! — LogisticOS".to_owned()),
+                "Hi {{customer_name}}, your shipment {{tracking_number}} has been delivered. \
+                 Thank you for shipping with LogisticOS!".to_owned(),
+            ),
+            "delivery_failed_reschedule" => (
+                Some("Delivery Attempt Failed — LogisticOS".to_owned()),
+                "Hi {{customer_name}}, we were unable to deliver {{tracking_number}} \
+                 ({{failed_reason}}). We will reattempt soon. Track: {{tracking_url}}".to_owned(),
+            ),
+            "cod_receipt" => (
+                Some("COD Payment Received — LogisticOS".to_owned()),
+                "Hi {{customer_name}}, we received your COD payment for {{tracking_number}}. \
+                 Thank you!".to_owned(),
             ),
             _ => (None, "{{body}}".to_owned()),
         };
