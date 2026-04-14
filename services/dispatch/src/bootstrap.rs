@@ -97,12 +97,20 @@ pub async fn run() -> anyhow::Result<()> {
     ));
 
     // Spawn shipment consumer — populates dispatch_queue from SHIPMENT_CREATED events
-    let pool_for_shipment    = pool.clone();
-    let brokers_shipment     = cfg.kafka.brokers.clone();
-    let group_shipment       = cfg.kafka.group_id.clone();
-    let shutdown_rx_shipment = shutdown_tx.subscribe();
+    // and auto-dispatches customer-app bookings (booked_by_customer == true).
+    let pool_for_shipment     = pool.clone();
+    let brokers_shipment      = cfg.kafka.brokers.clone();
+    let group_shipment        = cfg.kafka.group_id.clone();
+    let dispatch_svc_shipment = Arc::clone(&dispatch_service);
+    let shutdown_rx_shipment  = shutdown_tx.subscribe();
     tokio::spawn(async move {
-        if let Err(e) = start_shipment_consumer(&brokers_shipment, &group_shipment, pool_for_shipment, shutdown_rx_shipment).await {
+        if let Err(e) = start_shipment_consumer(
+            &brokers_shipment,
+            &group_shipment,
+            pool_for_shipment,
+            dispatch_svc_shipment,
+            shutdown_rx_shipment,
+        ).await {
             tracing::error!("Shipment consumer crashed: {e}");
         }
     });

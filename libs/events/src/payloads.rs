@@ -26,6 +26,12 @@ pub struct ShipmentCreated {
     pub destination_lng:      Option<f64>,
     pub service_type:         String,
     pub cod_amount_cents:     Option<i64>,
+    /// True when the booking originated from the customer app. Dispatch uses
+    /// this to route the shipment to auto-dispatch (one-shot quick_dispatch)
+    /// instead of waiting for a human dispatcher. Defaults to false for
+    /// backwards compatibility with events emitted before this field existed.
+    #[serde(default)]
+    pub booked_by_customer:   bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
