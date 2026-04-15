@@ -1,0 +1,115 @@
+# ============================================================
+# LogisticOS — Auth Bridge E2E
+# ============================================================
+# Runs the root-level /e2e Playwright suite against the staging
+# deployment. Covers: /api/token across portals, /api/auth/refresh
+# rotation, /setup onboarding, and X-LogisticOS-Client handling.
+#
+# Triggered on:
+#   - push to main / develop (confidence that staging still works)
+#   - pull_request touching e2e/, landing, portals, or identity
+#   - workflow_dispatch
+#
+# The suite is hermetic w.r.t. Firebase — we mint tokens directly
+# via identity's /v1/internal/auth/exchange-firebase endpoint using
+# pre-seeded Firebase UIDs in staging.
+# ============================================================
+
+name: CI — E2E Auth Bridge
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "e2e/**"
+      - "apps/landing/**"
+      - "apps/merchant-portal/**"
+      - "apps/admin-portal/**"
+      - "apps/partner-portal/**"
+      - "apps/customer-portal/**"
+      - "services/identity/**"
+      - "libs/auth/**"
+      - ".github/workflows/ci-e2e-auth.yml"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "e2e/**"
+      - "apps/landing/**"
+      - "apps/merchant-portal/**"
+      - "apps/admin-portal/**"
+      - "apps/partner-portal/**"
+      - "apps/customer-portal/**"
+      - "services/identity/**"
+      - "libs/auth/**"
+      - ".github/workflows/ci-e2e-auth.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-e2e-auth-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e-auth:
+    name: Playwright — auth bridge
+    runs-on: ubuntu-latest
+    # Skip on forks where secrets aren't available.
+    if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name != 'pull_request'
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: Install dependencies
+        working-directory: e2e
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install --no-audit --no-fund
+          fi
+
+      - name: Install Playwright browsers
+        working-directory: e2e
+        run: npx playwright install --with-deps chromium
+
+      - name: Seed auth fixtures
+        run: ./scripts/e2e-seed.sh
+        env:
+          IDENTITY_URL:                ${{ secrets.STAGING_IDENTITY_URL }}
+          LOGISTICOS_INTERNAL_SECRET:  ${{ secrets.STAGING_INTERNAL_SECRET }}
+          E2E_ACTIVE_FIREBASE_UID:     ${{ secrets.E2E_ACTIVE_FIREBASE_UID }}
+          E2E_ACTIVE_EMAIL:            ${{ secrets.E2E_ACTIVE_EMAIL }}
+          E2E_DRAFT_FIREBASE_UID:      ${{ secrets.E2E_DRAFT_FIREBASE_UID }}
+          E2E_DRAFT_EMAIL:             ${{ secrets.E2E_DRAFT_EMAIL }}
+
+      - name: Run Playwright suite
+        working-directory: e2e
+        run: npm test
+        env:
+          CI:           "true"
+          LANDING_URL:  ${{ vars.STAGING_LANDING_URL }}
+          MERCHANT_URL: ${{ vars.STAGING_MERCHANT_URL }}
+          ADMIN_URL:    ${{ vars.STAGING_ADMIN_URL }}
+          PARTNER_URL:  ${{ vars.STAGING_PARTNER_URL }}
+          CUSTOMER_URL: ${{ vars.STAGING_CUSTOMER_URL }}
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report-auth-bridge-${{ github.sha }}
+          path: |
+            e2e/playwright-report/
+            e2e/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
