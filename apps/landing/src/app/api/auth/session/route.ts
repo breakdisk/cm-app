@@ -75,12 +75,20 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     if (err instanceof IdentityError) {
       console.error("[session] identity exchange failed", err.status, err.code, err.message);
+      // Never forward raw internal errors (e.g., missing env vars) to the browser.
+      const clientMessage =
+        err.status >= 500
+          ? "Service temporarily unavailable. Please try again."
+          : err.message;
       return NextResponse.json(
-        { error: err.message, code: err.code },
+        { error: clientMessage, code: err.code },
         { status: err.status === 500 ? 502 : err.status },
       );
     }
     console.error("[session] identity exchange threw", err);
-    return NextResponse.json({ error: "Identity exchange failed" }, { status: 502 });
+    return NextResponse.json(
+      { error: "Service temporarily unavailable. Please try again." },
+      { status: 502 },
+    );
   }
 }
