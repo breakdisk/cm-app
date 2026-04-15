@@ -2,7 +2,11 @@ use axum::{extract::State, Json};
 use std::sync::Arc;
 use crate::{
     api::http::AppState,
-    application::commands::{LoginCommand, RefreshTokenCommand, ForgotPasswordCommand, ResetPasswordCommand, RegisterCommand, SendVerificationEmailCommand, VerifyEmailCommand, OtpSendCommand, OtpVerifyCommand},
+    application::commands::{
+        LoginCommand, RefreshTokenCommand, ForgotPasswordCommand, ResetPasswordCommand,
+        RegisterCommand, SendVerificationEmailCommand, VerifyEmailCommand,
+        OtpSendCommand, OtpVerifyCommand, ExchangeFirebaseCommand,
+    },
 };
 use logisticos_errors::AppError;
 
@@ -79,5 +83,20 @@ pub async fn verify_otp(
     Json(cmd): Json<OtpVerifyCommand>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let result = state.auth_service.otp_verify(cmd).await?;
+    Ok(Json(serde_json::json!({ "data": result })))
+}
+
+// ─── Firebase token exchange (internal only) ────────────────────────────────
+//
+// Reached via `POST /v1/internal/auth/exchange-firebase`, guarded by
+// `require_internal_secret`. The landing app's server-side route handler
+// verifies the Firebase ID token against Google's JWKS, then POSTs the
+// claims here so identity mints a LogisticOS JWT.
+
+pub async fn exchange_firebase(
+    State(state): State<Arc<AppState>>,
+    Json(cmd): Json<ExchangeFirebaseCommand>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let result = state.auth_service.exchange_firebase(cmd).await?;
     Ok(Json(serde_json::json!({ "data": result })))
 }

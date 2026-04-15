@@ -7,6 +7,7 @@ pub mod push_tokens;
 
 use axum::{Router, routing::{get, post, delete}};
 use std::sync::Arc;
+use crate::api::middleware::{require_internal_secret, InternalSecret};
 use crate::application::services::{auth_service::AuthService, tenant_service::TenantService, api_key_service::ApiKeyService};
 
 pub struct AppState {
@@ -20,6 +21,14 @@ pub struct AppState {
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
+    let internal_secret_value = std::env::var("LOGISTICOS_INTERNAL_SECRET").unwrap_or_default();
+    if internal_secret_value.is_empty() {
+        tracing::warn!(
+            "LOGISTICOS_INTERNAL_SECRET is not set — /v1/internal/* endpoints will reject every request"
+        );
+    }
+    let internal_secret = InternalSecret(internal_secret_value);
+
     Router::new()
         // Health
         .route("/health", get(health::health))
@@ -40,9 +49,22 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/tenants", post(tenants::create_tenant))
         // Internal endpoints (protected by Docker network isolation, NOT exposed via api-gateway)
         .route("/internal/push-tokens", get(push_tokens::list_push_tokens_internal))
+        .merge(internal_router(internal_secret))
         // Protected routes
         .nest("/v1", protected_router(state.clone()))
         .with_state(state)
+}
+
+/// Routes reachable only from the internal network with a shared secret.
+/// Used by the landing app's server-side route handler to exchange a
+/// verified Firebase ID token for a LogisticOS JWT. The api-gateway must
+/// strip `X-Internal-Secret` on ingress so the header can never reach this
+/// scope from the public internet.
+fn internal_router(secret: InternalSecret) -> Router<Arc<AppState>> {
+    let guard = axum::middleware::from_fn_with_state(secret, require_internal_secret);
+    Router::new()
+        .route("/v1/internal/auth/exchange-firebase", post(auth::exchange_firebase))
+        .layer(guard)
 }
 
 fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
