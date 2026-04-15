@@ -5,7 +5,7 @@ use uuid::Uuid;
 use logisticos_types::TenantId;
 
 use crate::domain::{
-    entities::{Carrier, CarrierId, CarrierStatus, PerformanceGrade, SlaCommitment},
+    entities::{Carrier, CarrierId},
     repositories::CarrierRepository,
 };
 

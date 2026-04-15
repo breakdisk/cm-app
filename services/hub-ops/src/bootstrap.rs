@@ -1,13 +1,12 @@
 use std::{net::SocketAddr, sync::Arc};
 use sqlx::postgres::PgPoolOptions;
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Json},
     routing::{get, post},
     Router,
 };
-use serde::Deserialize;
 use uuid::Uuid;
 
 use logisticos_auth::middleware::AuthClaims;

@@ -1,9 +1,9 @@
 use std::sync::Arc;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use uuid::Uuid;
 
 use logisticos_errors::{AppError, AppResult};
-use logisticos_types::{Pagination, PaginatedResponse, ShipmentId, TenantId};
+use logisticos_types::ShipmentId;
 
 use crate::{
     application::services::shipment_service::{ShipmentListFilter, ShipmentRepository},

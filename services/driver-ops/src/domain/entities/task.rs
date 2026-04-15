@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use logisticos_types::{DriverId, Coordinates};
+use logisticos_types::DriverId;
 use serde::{Deserialize, Serialize};
 
 /// A single delivery or pickup task assigned to a driver.

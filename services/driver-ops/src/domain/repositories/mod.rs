@@ -15,6 +15,7 @@ pub trait DriverRepository: Send + Sync {
 pub trait TaskRepository: Send + Sync {
     async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<DriverTask>>;
     async fn list_by_driver(&self, driver_id: &DriverId) -> anyhow::Result<Vec<DriverTask>>;
+    async fn list_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<DriverTask>>;
     async fn list_by_route(&self, route_id: Uuid) -> anyhow::Result<Vec<DriverTask>>;
     async fn save(&self, task: &DriverTask) -> anyhow::Result<()>;
     async fn bulk_save(&self, tasks: &[DriverTask]) -> anyhow::Result<()>;

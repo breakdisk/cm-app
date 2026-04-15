@@ -6,7 +6,6 @@
 ///   3. Append tool_result to messages
 ///   4. Repeat until Claude returns a final text response (no more tool calls)
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 use crate::domain::entities::{AgentMessage, MessageRole, ToolDefinition};
 

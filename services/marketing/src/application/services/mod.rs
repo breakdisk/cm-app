@@ -4,7 +4,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use logisticos_errors::{AppError, AppResult};
-use logisticos_events::{topics, Event};
+use logisticos_events::topics;
 use logisticos_types::TenantId;
 
 use crate::domain::{

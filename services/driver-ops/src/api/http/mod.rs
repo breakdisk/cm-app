@@ -56,5 +56,9 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/tasks/:id/start",    put(tasks::start_task))
         .route("/tasks/:id/complete", put(tasks::complete_task))
         .route("/tasks/:id/fail",     put(tasks::fail_task))
+        // Admin/dispatcher overrides — ops can act on behalf of any driver.
+        .route("/admin/tasks",                 get(tasks::admin_list_tasks))
+        .route("/admin/tasks/:id/start",       put(tasks::admin_start_task))
+        .route("/admin/tasks/:id/complete",    put(tasks::admin_complete_task))
         .layer(auth_layer)
 }

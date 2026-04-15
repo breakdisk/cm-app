@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use chrono::NaiveDate;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use uuid::Uuid;
 
 use logisticos_errors::{AppError, AppResult};

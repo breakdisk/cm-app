@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use logisticos_types::{TenantId, UserId};
+use logisticos_types::TenantId;
 
 /// Stable internal identifier for a CDP customer profile.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
