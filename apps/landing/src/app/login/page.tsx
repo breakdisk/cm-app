@@ -112,8 +112,22 @@ function LoginPageInner() {
       body:    JSON.stringify({ idToken, role }),
     });
     if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      setError((body as { error?: string }).error ?? "Sign-in failed.");
+      const body = await res.json().catch(() => ({})) as { error?: string; code?: string };
+      const status = res.status;
+
+      if (status === 403) {
+        if (role === "admin" || role === "partner") {
+          setError("This portal requires prior activation. Contact your LogisticOS administrator to get access.");
+        } else if (role === "customer") {
+          setError("Customer accounts must sign in via your dedicated tracking link or the LogisticOS app.");
+        } else {
+          setError(body.error ?? "Access denied.");
+        }
+      } else if (status >= 500) {
+        setError("Service temporarily unavailable. Please try again in a moment.");
+      } else {
+        setError(body.error ?? "Sign-in failed.");
+      }
       return;
     }
     // Draft merchants are redirected to the onboarding wizard; everyone else
@@ -134,8 +148,16 @@ function LoginPageInner() {
       const result  = await signInWithPopup(auth, new GoogleAuthProvider());
       const idToken = await result.user.getIdToken();
       await completeSignIn(idToken);
-    } catch {
-      setError("Google sign-in failed. Please try again.");
+    } catch (err: unknown) {
+      const fbCode = (err as { code?: string })?.code;
+      if (fbCode === "auth/unauthorized-domain") {
+        setError("Sign-in is not configured for this domain. Please contact support.");
+      } else if (
+        fbCode !== "auth/popup-closed-by-user" &&
+        fbCode !== "auth/cancelled-popup-request"
+      ) {
+        setError("Google sign-in failed. Please try again.");
+      }
     } finally {
       setLoading(false);
     }
@@ -149,8 +171,16 @@ function LoginPageInner() {
       const result  = await signInWithPopup(auth, new FacebookAuthProvider());
       const idToken = await result.user.getIdToken();
       await completeSignIn(idToken);
-    } catch {
-      setError("Facebook sign-in failed. Please try again.");
+    } catch (err: unknown) {
+      const fbCode = (err as { code?: string })?.code;
+      if (fbCode === "auth/unauthorized-domain") {
+        setError("Sign-in is not configured for this domain. Please contact support.");
+      } else if (
+        fbCode !== "auth/popup-closed-by-user" &&
+        fbCode !== "auth/cancelled-popup-request"
+      ) {
+        setError("Facebook sign-in failed. Please try again.");
+      }
     } finally {
       setLoading(false);
     }
