@@ -147,7 +147,7 @@ Handled in Firebase Console → IAM → Service Accounts. Generate a new JSON ke
 Run these against prod regardless of rotation type:
 
 - [ ] `./scripts/auth-bridge-smoke.sh` returns exit 0 with `LOGISTICOS_INTERNAL_SECRET` set to the new value
-- [ ] A fresh Firebase sign-in on `merchant.cargomarket.net` lands on the dashboard (no "Not authenticated" error)
+- [ ] A fresh Firebase sign-in on `os.cargomarket.net/merchant` lands on the dashboard (no "Not authenticated" error)
 - [ ] The identity Grafana dashboard shows no spike in `exchange_firebase_auth_failures_total`
 - [ ] The E2E auth workflow in GitHub Actions is green on the latest `main` commit
 
