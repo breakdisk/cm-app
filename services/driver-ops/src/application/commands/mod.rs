@@ -50,6 +50,7 @@ pub struct FailTaskCommand {
 pub struct TaskSummary {
     pub task_id: Uuid,
     pub shipment_id: Uuid,
+    pub driver_id: Uuid,
     pub sequence: u32,
     pub status: String,
     pub task_type: String,

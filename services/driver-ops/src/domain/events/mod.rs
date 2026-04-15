@@ -13,6 +13,15 @@ pub struct DriverLocationUpdated {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskStarted {
+    pub task_id: Uuid,
+    pub driver_id: Uuid,
+    pub shipment_id: Uuid,
+    pub tenant_id: Uuid,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskCompleted {
     pub task_id: Uuid,
     pub driver_id: Uuid,

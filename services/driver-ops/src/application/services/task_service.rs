@@ -8,7 +8,7 @@ use crate::{
     application::commands::{StartTaskCommand, CompleteTaskCommand, FailTaskCommand, TaskSummary},
     domain::{
         entities::{DriverTask, TaskStatus},
-        events::{TaskCompleted, TaskFailed},
+        events::{TaskStarted, TaskCompleted, TaskFailed},
         repositories::{TaskRepository, DriverRepository},
     },
 };
@@ -33,29 +33,80 @@ impl TaskService {
         let tasks = self.task_repo.list_by_driver(driver_id).await.map_err(AppError::Internal)?;
         Ok(tasks.into_iter()
             .filter(|t| matches!(t.status, TaskStatus::Pending | TaskStatus::InProgress))
-            .map(|t| TaskSummary {
-                task_id: t.id,
-                shipment_id: t.shipment_id,
-                sequence: t.sequence as u32,
-                status: format!("{:?}", t.status).to_lowercase(),
-                task_type: format!("{:?}", t.task_type).to_lowercase(),
-                customer_name: t.customer_name.clone(),
-                address: format!("{}, {}", t.address.line1, t.address.city),
-                cod_amount_cents: t.cod_amount_cents,
-            })
+            .map(Self::task_summary)
             .collect()
         )
     }
 
-    pub async fn start_task(&self, driver_id: &DriverId, cmd: StartTaskCommand) -> AppResult<()> {
-        let mut task = self.fetch_and_validate_ownership(driver_id, cmd.task_id).await?;
+    /// Returns all active tasks across all drivers in a tenant.
+    /// Used by admin/dispatch console to monitor and manually transition state.
+    pub async fn list_tenant_tasks(&self, tenant_id: &TenantId) -> AppResult<Vec<TaskSummary>> {
+        let tasks = self.task_repo.list_by_tenant(tenant_id).await.map_err(AppError::Internal)?;
+        Ok(tasks.into_iter().map(Self::task_summary).collect())
+    }
 
+    fn task_summary(t: DriverTask) -> TaskSummary {
+        TaskSummary {
+            task_id: t.id,
+            shipment_id: t.shipment_id,
+            driver_id: t.driver_id.inner(),
+            sequence: t.sequence as u32,
+            status: format!("{:?}", t.status).to_lowercase(),
+            task_type: format!("{:?}", t.task_type).to_lowercase(),
+            customer_name: t.customer_name.clone(),
+            address: format!("{}, {}", t.address.line1, t.address.city),
+            cod_amount_cents: t.cod_amount_cents,
+        }
+    }
+
+    pub async fn start_task(
+        &self,
+        driver_id: &DriverId,
+        tenant_id: &TenantId,
+        cmd: StartTaskCommand,
+    ) -> AppResult<()> {
+        let task = self.fetch_and_validate_ownership(driver_id, cmd.task_id).await?;
+        self.start_task_internal(driver_id, tenant_id, task).await
+    }
+
+    /// Admin/dispatcher override — starts a task on behalf of any driver without
+    /// ownership check. The driver_id passed here is the task's actual owner.
+    pub async fn admin_start_task(
+        &self,
+        tenant_id: &TenantId,
+        task_id: Uuid,
+    ) -> AppResult<()> {
+        let task = self.task_repo.find_by_id(task_id).await.map_err(AppError::Internal)?
+            .ok_or_else(|| AppError::NotFound { resource: "Task", id: task_id.to_string() })?;
+        let driver_id = DriverId::from_uuid(task.driver_id.inner());
+        self.start_task_internal(&driver_id, tenant_id, task).await
+    }
+
+    async fn start_task_internal(
+        &self,
+        driver_id: &DriverId,
+        tenant_id: &TenantId,
+        mut task: DriverTask,
+    ) -> AppResult<()> {
         if task.status != TaskStatus::Pending {
             return Err(AppError::BusinessRule("Can only start a pending task".into()));
         }
 
         task.start();
         self.task_repo.save(&task).await.map_err(AppError::Internal)?;
+
+        // Publish pickup.completed event — engagement will notify the customer that
+        // their package has been picked up / is now on its way.
+        let event = Event::new("driver-ops", "driver.pickup.completed", tenant_id.inner(), TaskStarted {
+            task_id: task.id,
+            driver_id: driver_id.inner(),
+            shipment_id: task.shipment_id,
+            tenant_id: tenant_id.inner(),
+            started_at: task.started_at.unwrap_or_else(chrono::Utc::now),
+        });
+        self.kafka.publish_event(topics::PICKUP_COMPLETED, &event).await
+            .map_err(AppError::Internal)?;
+
         tracing::info!(task_id = %task.id, driver_id = %driver_id, "Task started");
         Ok(())
     }
@@ -66,13 +117,36 @@ impl TaskService {
         tenant_id: &TenantId,
         cmd: CompleteTaskCommand,
     ) -> AppResult<()> {
-        let mut task = self.fetch_and_validate_ownership(driver_id, cmd.task_id).await?;
+        let task = self.fetch_and_validate_ownership(driver_id, cmd.task_id).await?;
+        self.complete_task_internal(driver_id, tenant_id, task, cmd.pod_id).await
+    }
 
+    /// Admin/dispatcher override — completes a task on behalf of any driver without
+    /// ownership check. Used by ops console for manual state recovery.
+    pub async fn admin_complete_task(
+        &self,
+        tenant_id: &TenantId,
+        task_id: Uuid,
+        pod_id: Option<Uuid>,
+    ) -> AppResult<()> {
+        let task = self.task_repo.find_by_id(task_id).await.map_err(AppError::Internal)?
+            .ok_or_else(|| AppError::NotFound { resource: "Task", id: task_id.to_string() })?;
+        let driver_id = DriverId::from_uuid(task.driver_id.inner());
+        self.complete_task_internal(&driver_id, tenant_id, task, pod_id).await
+    }
+
+    async fn complete_task_internal(
+        &self,
+        driver_id: &DriverId,
+        tenant_id: &TenantId,
+        mut task: DriverTask,
+        pod_id: Option<Uuid>,
+    ) -> AppResult<()> {
         if task.status != TaskStatus::InProgress {
             return Err(AppError::BusinessRule("Can only complete an in-progress task".into()));
         }
 
-        task.complete(cmd.pod_id)
+        task.complete(pod_id)
             .map_err(|e| AppError::BusinessRule(e.to_string()))?;
 
         self.task_repo.save(&task).await.map_err(AppError::Internal)?;
@@ -84,13 +158,13 @@ impl TaskService {
             driver_id: driver_id.inner(),
             shipment_id: task.shipment_id,
             tenant_id: tenant_id.inner(),
-            pod_id: cmd.pod_id,
+            pod_id,
             completed_at: task.completed_at.unwrap_or_else(chrono::Utc::now),
         });
         self.kafka.publish_event(topics::DELIVERY_COMPLETED, &event).await
             .map_err(AppError::Internal)?;
 
-        tracing::info!(task_id = %task.id, driver_id = %driver_id, pod_id = ?cmd.pod_id, "Task completed");
+        tracing::info!(task_id = %task.id, driver_id = %driver_id, pod_id = ?pod_id, "Task completed");
         Ok(())
     }
 

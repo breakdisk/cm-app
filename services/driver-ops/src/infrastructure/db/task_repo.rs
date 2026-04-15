@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use sqlx::PgPool;
-use logisticos_types::{DriverId, Address, Coordinates};
+use logisticos_types::{DriverId, TenantId, Address, Coordinates};
 use uuid::Uuid;
 use crate::domain::{
     entities::{DriverTask, TaskStatus, TaskType},
@@ -124,6 +124,24 @@ impl TaskRepository for PgTaskRepository {
                ORDER BY sequence ASC"#
         )
         .bind(driver_id.inner())
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(DriverTask::from).collect())
+    }
+
+    async fn list_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<DriverTask>> {
+        let rows = sqlx::query_as::<_, TaskRow>(
+            r#"SELECT t.id, t.driver_id, t.route_id, t.shipment_id, t.task_type, t.sequence, t.status,
+                      t.address_line1, t.address_line2, t.city, t.province, t.postal_code, t.country AS country_code,
+                      t.lat, t.lng, t.customer_name, t.customer_phone, t.cod_amount_cents,
+                      t.special_instructions, t.pod_id, t.started_at, t.completed_at, t.failed_reason
+               FROM driver_ops.tasks t
+               INNER JOIN driver_ops.drivers d ON d.id = t.driver_id
+               WHERE d.tenant_id = $1
+                 AND t.status IN ('pending', 'in_progress')
+               ORDER BY t.sequence ASC"#
+        )
+        .bind(tenant_id.inner())
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(DriverTask::from).collect())
