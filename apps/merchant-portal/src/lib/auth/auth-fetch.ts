@@ -64,7 +64,13 @@ async function runRefresh(): Promise<string | null> {
   return refreshInFlight;
 }
 
-async function getAccessToken(forceRefresh = false): Promise<string | null> {
+/**
+ * Return the current LogisticOS access JWT, refreshing from the cookie jar
+ * via `/api/token` (or `/api/auth/refresh` if expired) as needed. Exposed for
+ * axios clients and other non-`fetch` transports that still need to stamp
+ * an `Authorization` header themselves.
+ */
+export async function getAccessToken(forceRefresh = false): Promise<string | null> {
   if (!forceRefresh && cachedTokenPromise) {
     const t = await cachedTokenPromise;
     if (t) return t;

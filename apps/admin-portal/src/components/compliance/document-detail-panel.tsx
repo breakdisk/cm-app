@@ -25,15 +25,10 @@ export function DocumentDetailPanel({ profileId, onApprove, onReject }: Props) {
   const [rejectDocId,  setRejectDocId]  = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState("");
 
-  const token =
-    typeof window !== "undefined"
-      ? (localStorage.getItem("access_token") ?? "mock-token")
-      : "mock-token";
-
   useEffect(() => {
     setDetail(null);
-    fetchProfile(token, profileId).then(setDetail);
-  }, [profileId, token]);
+    fetchProfile(profileId).then(setDetail);
+  }, [profileId]);
 
   if (!detail) {
     return (
@@ -53,18 +48,18 @@ export function DocumentDetailPanel({ profileId, onApprove, onReject }: Props) {
   });
 
   async function handleApprove(docId: string) {
-    await approveDocument(token, docId);
+    await approveDocument(docId);
     onApprove(docId);
-    fetchProfile(token, profileId).then(setDetail);
+    fetchProfile(profileId).then(setDetail);
   }
 
   async function handleReject(docId: string) {
     if (!rejectReason.trim()) return;
-    await rejectDocument(token, docId, rejectReason);
+    await rejectDocument(docId, rejectReason);
     onReject(docId, rejectReason);
     setRejectDocId(null);
     setRejectReason("");
-    fetchProfile(token, profileId).then(setDetail);
+    fetchProfile(profileId).then(setDetail);
   }
 
   const badgeClass =

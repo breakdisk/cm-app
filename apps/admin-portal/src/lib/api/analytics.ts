@@ -36,8 +36,8 @@ export interface AnalyticsDashboard {
   zone_performance: ZonePerformance[];
 }
 
-export function createAnalyticsApi(token: string) {
-  const client = createApiClient(token);
+export function createAnalyticsApi() {
+  const client = createApiClient();
 
   return {
     getDashboard: (params?: { from?: string; to?: string }) =>

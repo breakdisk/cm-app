@@ -65,9 +65,7 @@ export default function FleetPage() {
   const [kpi, setKpi] = useState(KPI);
 
   useEffect(() => {
-    const token = typeof window !== "undefined" ? localStorage.getItem("access_token") ?? "" : "";
-    if (!token) return;
-    const api = createFleetApi(token);
+    const api = createFleetApi();
     Promise.all([api.listVehicles({ per_page: 100 }), api.getSummary()])
       .then(([listRes, summaryRes]) => {
         setVehicles(listRes.data.map((v: ApiVehicle) => ({

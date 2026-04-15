@@ -10,12 +10,9 @@ import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
 import { LiveDispatchMap } from "@/components/maps/live-dispatch-map";
 import { variants } from "@/lib/design-system/tokens";
+import { authFetch } from "@/lib/auth/auth-fetch";
 
 const DISPATCH_URL = process.env.NEXT_PUBLIC_DISPATCH_URL ?? "http://localhost:8005";
-
-function getToken(): string {
-  return typeof window !== "undefined" ? localStorage.getItem("access_token") ?? "" : "";
-}
 
 interface QueueItem {
   id:             string;
@@ -57,14 +54,12 @@ export default function DispatchPage() {
   const [error,         setError]         = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
-    const token = getToken();
-    if (!token) return;
     setLoading(true);
     setError(null);
     try {
       const [qRes, dRes] = await Promise.all([
-        fetch(`${DISPATCH_URL}/v1/queue`,   { headers: { Authorization: `Bearer ${token}` } }),
-        fetch(`${DISPATCH_URL}/v1/drivers`, { headers: { Authorization: `Bearer ${token}` } }),
+        authFetch(`${DISPATCH_URL}/v1/queue`),
+        authFetch(`${DISPATCH_URL}/v1/drivers`),
       ]);
       if (qRes.ok) { const j = await qRes.json(); setQueue(j.data ?? []); }
       if (dRes.ok) { const j = await dRes.json(); setDrivers(j.data ?? []); }
@@ -78,14 +73,11 @@ export default function DispatchPage() {
   useEffect(() => { fetchData(); }, [fetchData]);
 
   async function handleDispatch(shipmentId: string) {
-    const token = getToken();
-    if (!token) return;
     setDispatching(shipmentId);
     try {
       const body = selectedDriver ? { preferred_driver_id: selectedDriver } : {};
-      const res = await fetch(`${DISPATCH_URL}/v1/queue/${shipmentId}/dispatch`, {
+      const res = await authFetch(`${DISPATCH_URL}/v1/queue/${shipmentId}/dispatch`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify(body),
       });
       if (!res.ok) {

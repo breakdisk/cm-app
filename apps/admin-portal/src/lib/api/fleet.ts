@@ -27,8 +27,8 @@ export interface FleetSummary {
   total_km_today: number;
 }
 
-export function createFleetApi(token: string) {
-  const client = createApiClient(token);
+export function createFleetApi() {
+  const client = createApiClient();
 
   return {
     listVehicles: (params?: { status?: VehicleStatus; page?: number; per_page?: number }) =>

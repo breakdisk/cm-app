@@ -14,13 +14,11 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
 import { Star, AlertTriangle, CheckCircle2, Clock } from "lucide-react";
+import { authFetch } from "@/lib/auth/auth-fetch";
 
 // ── API helpers ────────────────────────────────────────────────────────────────
 
 const ANALYTICS_URL = process.env.NEXT_PUBLIC_ANALYTICS_URL ?? "http://localhost:8013";
-
-function getToken()  { return typeof window !== "undefined" ? localStorage.getItem("access_token") ?? "" : ""; }
-function getTenant() { return typeof window !== "undefined" ? localStorage.getItem("tenant_slug")  ?? "demo" : "demo"; }
 
 function todayStr()     { return new Date().toISOString().slice(0, 10); }
 function daysAgoStr(n: number) {
@@ -31,9 +29,8 @@ function daysAgoStr(n: number) {
 
 async function fetchKpis() {
   try {
-    const res = await fetch(
+    const res = await authFetch(
       `${ANALYTICS_URL}/v1/analytics/kpis?from=${daysAgoStr(30)}&to=${todayStr()}`,
-      { headers: { Authorization: `Bearer ${getToken()}`, "X-Tenant": getTenant() } },
     );
     if (!res.ok) return null;
     const json = await res.json();
@@ -45,9 +42,8 @@ async function fetchKpis() {
 
 async function fetchTimeseries() {
   try {
-    const res = await fetch(
+    const res = await authFetch(
       `${ANALYTICS_URL}/v1/analytics/timeseries?from=${daysAgoStr(30)}&to=${todayStr()}`,
-      { headers: { Authorization: `Bearer ${getToken()}`, "X-Tenant": getTenant() } },
     );
     if (!res.ok) return null;
     const json = await res.json();

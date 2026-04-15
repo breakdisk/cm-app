@@ -63,9 +63,7 @@ export default function AnalyticsPage() {
   const [zonePerformance, setZonePerformance] = useState(ZONE_PERFORMANCE);
 
   useEffect(() => {
-    const token = typeof window !== "undefined" ? localStorage.getItem("access_token") ?? "" : "";
-    if (!token) return;
-    const api = createAnalyticsApi(token);
+    const api = createAnalyticsApi();
     api.getDashboard().then((res) => {
       const m = res.data.metrics;
       setKpi([

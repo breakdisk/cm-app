@@ -12,14 +12,12 @@ import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
 import { variants } from "@/lib/design-system/tokens";
 import { cn } from "@/lib/design-system/cn";
+import { authFetch } from "@/lib/auth/auth-fetch";
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 
 const ORDER_INTAKE_URL = process.env.NEXT_PUBLIC_ORDER_INTAKE_URL ?? "http://localhost:8004";
 const DISPATCH_URL     = process.env.NEXT_PUBLIC_DISPATCH_URL     ?? "http://localhost:8005";
-
-function getToken()  { return typeof window !== "undefined" ? localStorage.getItem("access_token") ?? "" : ""; }
-function getTenant() { return typeof window !== "undefined" ? localStorage.getItem("tenant_slug")  ?? "demo" : "demo"; }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -173,9 +171,7 @@ const MOCK_DRIVERS: Driver[] = [
 
 async function fetchOrders(): Promise<IncomingOrder[]> {
   try {
-    const res = await fetch(`${ORDER_INTAKE_URL}/v1/shipments`, {
-      headers: { Authorization: `Bearer ${getToken()}`, "X-Tenant": getTenant() },
-    });
+    const res = await authFetch(`${ORDER_INTAKE_URL}/v1/shipments`);
     if (!res.ok) return MOCK_ORDERS;
     const json = await res.json();
     const items = json.data?.items ?? json.data ?? [];
@@ -208,9 +204,7 @@ async function fetchOrders(): Promise<IncomingOrder[]> {
 
 async function fetchAvailableDrivers(): Promise<Driver[]> {
   try {
-    const res = await fetch(`${DISPATCH_URL}/v1/drivers`, {
-      headers: { Authorization: `Bearer ${getToken()}`, "X-Tenant": getTenant() },
-    });
+    const res = await authFetch(`${DISPATCH_URL}/v1/drivers`);
     if (!res.ok) return MOCK_DRIVERS;
     const json = await res.json();
     const items = json.data ?? json.drivers ?? [];
@@ -234,13 +228,9 @@ async function fetchAvailableDrivers(): Promise<Driver[]> {
 
 async function dispatchOrder(shipmentId: string, driverId: string): Promise<boolean> {
   try {
-    const res = await fetch(`${DISPATCH_URL}/v1/queue/${shipmentId}/dispatch`, {
+    const res = await authFetch(`${DISPATCH_URL}/v1/queue/${shipmentId}/dispatch`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${getToken()}`,
-        "X-Tenant": getTenant(),
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ driver_id: driverId }),
     });
     return res.ok;

@@ -29,8 +29,8 @@ export interface DriverSummary {
   total_cod_collected: number;
 }
 
-export function createDriversApi(token: string) {
-  const client = createApiClient(token);
+export function createDriversApi() {
+  const client = createApiClient();
 
   return {
     listDrivers: (params?: { status?: DriverStatus; search?: string; page?: number; per_page?: number }) =>
