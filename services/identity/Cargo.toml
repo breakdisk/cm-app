@@ -41,6 +41,9 @@ rdkafka.workspace     = true
 tracing.workspace     = true
 async-trait.workspace = true
 sha2.workspace        = true
+subtle.workspace      = true
+hmac                  = "0.12"
+base64                = "0.22"
 
 [dev-dependencies]
 axum-test     = "19.1"

@@ -2,6 +2,36 @@ use chrono::{DateTime, Utc};
 use logisticos_types::{TenantId, SubscriptionTier};
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TenantStatus {
+    /// Created via lazy onboarding; owner has not yet completed `/setup`.
+    Draft,
+    /// Fully provisioned tenant.
+    Active,
+    /// Suspended by support or billing.
+    Suspended,
+}
+
+impl TenantStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Draft     => "draft",
+            Self::Active    => "active",
+            Self::Suspended => "suspended",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "draft"     => Some(Self::Draft),
+            "active"    => Some(Self::Active),
+            "suspended" => Some(Self::Suspended),
+            _           => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tenant {
     pub id: TenantId,
@@ -9,6 +39,7 @@ pub struct Tenant {
     pub slug: String,          // URL-safe unique identifier, e.g. "acme-logistics"
     pub subscription_tier: SubscriptionTier,
     pub is_active: bool,
+    pub status: TenantStatus,
     pub owner_email: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -23,10 +54,33 @@ impl Tenant {
             slug,
             subscription_tier: SubscriptionTier::Starter,
             is_active: true,
+            status: TenantStatus::Active,
             owner_email,
             created_at: now,
             updated_at: now,
         }
+    }
+
+    /// Create a draft tenant for lazy onboarding. The owner has signed in via
+    /// Firebase but has not yet supplied business name / region / currency;
+    /// claims minted for this tenant only permit onboarding endpoints.
+    pub fn new_draft(slug: String, owner_email: String) -> Self {
+        let now = Utc::now();
+        Self {
+            id: TenantId::new(),
+            name: owner_email.clone(),   // placeholder until finalize
+            slug,
+            subscription_tier: SubscriptionTier::Starter,
+            is_active: true,
+            status: TenantStatus::Draft,
+            owner_email,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    pub fn is_draft(&self) -> bool {
+        self.status == TenantStatus::Draft
     }
 
     /// Business rule: tenant slug must be lowercase alphanumeric + hyphens, 3-50 chars.
