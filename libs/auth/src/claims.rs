@@ -22,6 +22,19 @@ pub struct Claims {
     pub email: String,
     pub roles: Vec<String>,         // e.g. ["admin", "dispatcher"]
     pub permissions: Vec<String>,   // e.g. ["shipments:create", "drivers:assign"]
+
+    /// Draft-tenant onboarding flag. When `true`, the subject is still in the
+    /// lazy-onboarding flow — the JWT was minted for a draft tenant via
+    /// `/v1/internal/auth/exchange-firebase` and only carries the narrow
+    /// `tenants:update-self` / `billing:setup` permission set. Gateway and
+    /// service middleware can use this as a defensive belt-and-suspenders
+    /// check alongside permission gating (e.g. block non-finalize mutations
+    /// on operational services even if a permission was accidentally granted).
+    ///
+    /// `#[serde(default)]` keeps existing tokens deserializable after the
+    /// upgrade — old JWTs without this field decode as `onboarding: false`.
+    #[serde(default)]
+    pub onboarding: bool,
 }
 
 impl Claims {
@@ -48,7 +61,17 @@ impl Claims {
             email,
             roles,
             permissions,
+            onboarding: false,
         }
+    }
+
+    /// Mark the claims as an onboarding (draft-tenant) token. Chainable on
+    /// `Claims::new(...)` so existing call sites stay untouched; only the
+    /// draft-merchant branch in `exchange_firebase` needs to set this.
+    #[must_use]
+    pub fn with_onboarding(mut self, onboarding: bool) -> Self {
+        self.onboarding = onboarding;
+        self
     }
 
     /// Check if the claims include a specific permission.

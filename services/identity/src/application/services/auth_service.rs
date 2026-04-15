@@ -116,16 +116,26 @@ impl AuthService {
             return Err(AppError::Unauthorized("Account inactive".into()));
         }
 
-        let permissions: Vec<String> = user.roles.iter()
-            .flat_map(|r| default_permissions_for_role(r))
-            .map(|p| p.to_owned())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
+        // Draft tenants retain the narrow onboarding permission set across
+        // refreshes — only a successful `finalize_self` call (which flips the
+        // tenant to `active`) upgrades the user to their full role-based perms
+        // on the next refresh.
+        let onboarding_required = tenant.is_draft();
+        let permissions: Vec<String> = if onboarding_required {
+            ONBOARDING_PERMISSIONS.iter().map(|p| (*p).to_owned()).collect()
+        } else {
+            user.roles.iter()
+                .flat_map(|r| default_permissions_for_role(r))
+                .map(|p| p.to_owned())
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect()
+        };
 
         let claims = Claims::new(user.id.inner(), tenant.id.inner(), tenant.slug.clone(),
             format!("{:?}", tenant.subscription_tier).to_lowercase(),
-            user.email.clone(), user.roles.clone(), permissions, self.jwt.access_expiry_seconds());
+            user.email.clone(), user.roles.clone(), permissions, self.jwt.access_expiry_seconds())
+            .with_onboarding(onboarding_required);
         let refresh_claims = logisticos_auth::claims::RefreshClaims::new(user.id.inner(), tenant.id.inner(), self.jwt.refresh_expiry_seconds());
 
         Ok(LoginResult {
@@ -645,7 +655,8 @@ impl AuthService {
             user.roles.clone(),
             permissions,
             self.jwt.access_expiry_seconds(),
-        );
+        )
+        .with_onboarding(onboarding_required);
         let refresh_claims = logisticos_auth::claims::RefreshClaims::new(
             user.id.inner(),
             tenant.id.inner(),
