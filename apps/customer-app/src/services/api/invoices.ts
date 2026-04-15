@@ -67,3 +67,13 @@ export async function getInvoice(invoiceId: string): Promise<InvoiceDetail> {
   const res = await client.get<{ data: InvoiceDetail }>(`/v1/invoices/${invoiceId}`);
   return res.data.data;
 }
+
+/** Re-send a payment receipt to the customer's email on file. */
+export async function resendInvoice(invoiceId: string): Promise<{ sent: boolean }> {
+  const client = getPaymentsClient();
+  const res = await client.post<{ data: { sent: boolean } }>(
+    `/v1/invoices/${invoiceId}/resend`,
+    {}
+  );
+  return res.data.data ?? { sent: true };
+}

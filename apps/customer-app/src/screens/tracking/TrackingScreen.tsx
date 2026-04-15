@@ -2,12 +2,12 @@
  * Customer App — Tracking Screen
  * Search by AWB, live status timeline, driver ETA card.
  */
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FadeInView } from '../../components/FadeInView';
 import {
   View, Text, StyleSheet, ScrollView, TextInput,
-  Pressable, ActivityIndicator,
+  Pressable, ActivityIndicator, Modal, Alert,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
@@ -86,6 +86,12 @@ export function TrackingScreen() {
   const [currentAwb, setCurrentAwb] = useState<string>("");
   const [offlineData, setOfflineData] = useState<any>(null);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  const [confirmModal, setConfirmModal] = useState(false);
+  const [confirmLoading, setConfirmLoading] = useState(false);
+  const [feedbackModal, setFeedbackModal] = useState(false);
+  const [feedbackRating, setFeedbackRating] = useState(0);
+  const [feedbackComment, setFeedbackComment] = useState("");
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
 
   // Use the tracking hook for the current AWB
   const { data: trackingData, loading: hookLoading, error: hookError, refetch } = useTracking(
@@ -177,6 +183,38 @@ export function TrackingScreen() {
       await refetch();
     }
   };
+
+  const handleConfirmReceipt = useCallback(async () => {
+    if (!currentAwb) return;
+    setConfirmLoading(true);
+    try {
+      await trackingApi.confirmReceipt(currentAwb);
+      setConfirmModal(false);
+      // Update local status optimistically
+      setResult(prev => prev ? { ...prev, status: "delivered" } : prev);
+      setFeedbackModal(true);
+    } catch (err: any) {
+      Alert.alert("Error", err?.message ?? "Failed to confirm receipt. Please try again.");
+    } finally {
+      setConfirmLoading(false);
+    }
+  }, [currentAwb]);
+
+  const handleFeedbackSubmit = useCallback(async () => {
+    if (!currentAwb || feedbackRating === 0) return;
+    setFeedbackSubmitting(true);
+    try {
+      await trackingApi.submitFeedback(currentAwb, feedbackRating, feedbackComment || undefined, "");
+      setFeedbackModal(false);
+      setFeedbackRating(0);
+      setFeedbackComment("");
+      Alert.alert("Thank you!", "Your feedback helps us improve our delivery service.");
+    } catch {
+      setFeedbackModal(false);
+    } finally {
+      setFeedbackSubmitting(false);
+    }
+  }, [currentAwb, feedbackRating, feedbackComment]);
 
   return (
     <ScrollView style={s.container} contentContainerStyle={{ paddingBottom: 40 }} keyboardShouldPersistTaps="handled">
@@ -328,6 +366,30 @@ export function TrackingScreen() {
             />
           )}
 
+          {/* Confirm Delivery CTA — shown when out for delivery or attempted */}
+          {(displayResult.status === "out_for_delivery" || displayResult.status === "delivery_attempted") && isConnected && (
+            <Pressable
+              onPress={() => setConfirmModal(true)}
+              style={({ pressed }) => [s.confirmCta, { opacity: pressed ? 0.85 : 1 }]}
+            >
+              <LinearGradient colors={[GREEN, "#00CC6A"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.confirmCtaGrad}>
+                <Ionicons name="checkmark-circle-outline" size={18} color={CANVAS} />
+                <Text style={s.confirmCtaText}>I Received My Package</Text>
+              </LinearGradient>
+            </Pressable>
+          )}
+
+          {/* Leave Feedback CTA — shown after delivery */}
+          {displayResult.status === "delivered" && isConnected && (
+            <Pressable
+              onPress={() => setFeedbackModal(true)}
+              style={({ pressed }) => [s.feedbackCta, { opacity: pressed ? 0.8 : 1 }]}
+            >
+              <Ionicons name="star-outline" size={16} color={AMBER} />
+              <Text style={s.feedbackCtaText}>Rate Your Delivery</Text>
+            </Pressable>
+          )}
+
           {/* Timeline */}
           <Text style={s.sectionLabel}>Timeline</Text>
           {displayResult.timeline.map((event: any, i: number) => {
@@ -352,6 +414,91 @@ export function TrackingScreen() {
           })}
         </FadeInView>
       )}
+
+      {/* ── Confirm Receipt Modal ─────────────────────────────────────────── */}
+      <Modal visible={confirmModal} transparent animationType="fade" onRequestClose={() => setConfirmModal(false)}>
+        <View style={s.modalOverlay}>
+          <View style={s.modalSheet}>
+            <View style={[s.modalIconWrap, { backgroundColor: GREEN + "18" }]}>
+              <Ionicons name="checkmark-circle-outline" size={36} color={GREEN} />
+            </View>
+            <Text style={s.modalTitle}>Confirm Delivery</Text>
+            <Text style={s.modalBody}>
+              By tapping below, you confirm that you have personally received this package. This action cannot be undone.
+            </Text>
+            <Pressable
+              onPress={handleConfirmReceipt}
+              disabled={confirmLoading}
+              style={({ pressed }) => [s.modalPrimaryBtn, { opacity: pressed || confirmLoading ? 0.75 : 1 }]}
+            >
+              <LinearGradient colors={[GREEN, "#00CC6A"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.modalBtnGrad}>
+                {confirmLoading ? (
+                  <ActivityIndicator size="small" color={CANVAS} />
+                ) : (
+                  <Text style={s.modalBtnText}>Yes, I Received It</Text>
+                )}
+              </LinearGradient>
+            </Pressable>
+            <Pressable onPress={() => setConfirmModal(false)} style={s.modalSecondaryBtn}>
+              <Text style={s.modalSecondaryText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── Delivery Feedback Modal ─────────────────────────────────────────── */}
+      <Modal visible={feedbackModal} transparent animationType="slide" onRequestClose={() => setFeedbackModal(false)}>
+        <View style={s.modalOverlay}>
+          <View style={s.modalSheet}>
+            <View style={[s.modalIconWrap, { backgroundColor: AMBER + "18" }]}>
+              <Ionicons name="star-outline" size={36} color={AMBER} />
+            </View>
+            <Text style={s.modalTitle}>How was your delivery?</Text>
+            <Text style={s.modalBody}>Rate your overall experience to help us improve.</Text>
+
+            {/* Star rating */}
+            <View style={s.starsRow}>
+              {[1, 2, 3, 4, 5].map(star => (
+                <Pressable key={star} onPress={() => setFeedbackRating(star)}>
+                  <Ionicons
+                    name={star <= feedbackRating ? "star" : "star-outline"}
+                    size={32}
+                    color={star <= feedbackRating ? AMBER : "rgba(255,255,255,0.2)"}
+                  />
+                </Pressable>
+              ))}
+            </View>
+
+            <TextInput
+              value={feedbackComment}
+              onChangeText={setFeedbackComment}
+              placeholder="Leave a comment (optional)..."
+              placeholderTextColor="rgba(255,255,255,0.2)"
+              style={s.feedbackInput}
+              multiline
+              numberOfLines={3}
+              maxLength={200}
+            />
+
+            <Pressable
+              onPress={handleFeedbackSubmit}
+              disabled={feedbackRating === 0 || feedbackSubmitting}
+              style={({ pressed }) => [s.modalPrimaryBtn, { opacity: pressed || feedbackRating === 0 || feedbackSubmitting ? 0.6 : 1 }]}
+            >
+              <LinearGradient colors={[AMBER, "#FF8C00"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.modalBtnGrad}>
+                {feedbackSubmitting ? (
+                  <ActivityIndicator size="small" color={CANVAS} />
+                ) : (
+                  <Text style={s.modalBtnText}>Submit Feedback</Text>
+                )}
+              </LinearGradient>
+            </Pressable>
+            <Pressable onPress={() => setFeedbackModal(false)} style={s.modalSecondaryBtn}>
+              <Text style={s.modalSecondaryText}>Skip</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
 
       {/* Recent searches or sample numbers */}
       {!displayResult && !displayLoading && (
@@ -443,4 +590,29 @@ const s = StyleSheet.create({
   hintRow:        { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.05)" },
   hintAWB:        { flex: 1, fontSize: 13, fontFamily: "JetBrainsMono-Regular", color: "#FFF" },
   hintStatus:     { fontSize: 11, fontWeight: "600" },
+
+  // Confirm delivery CTA
+  confirmCta:     { borderRadius: 14, overflow: "hidden" },
+  confirmCtaGrad: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 16, paddingHorizontal: 20 },
+  confirmCtaText: { fontSize: 15, fontWeight: "700", color: CANVAS, fontFamily: "SpaceGrotesk-Bold" },
+
+  // Feedback CTA
+  feedbackCta:    { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 12, paddingHorizontal: 20, backgroundColor: AMBER + "12", borderWidth: 1, borderColor: AMBER + "30", borderRadius: 12 },
+  feedbackCtaText:{ fontSize: 13, fontWeight: "600", color: AMBER },
+
+  // Modals
+  modalOverlay:   { flex: 1, backgroundColor: "rgba(0,0,0,0.85)", justifyContent: "flex-end" },
+  modalSheet:     { backgroundColor: "#0A0E1A", borderTopLeftRadius: 24, borderTopRightRadius: 24, borderWidth: 1, borderColor: BORDER, padding: 28, paddingBottom: 48, alignItems: "center", gap: 14 },
+  modalIconWrap:  { width: 64, height: 64, borderRadius: 20, alignItems: "center", justifyContent: "center", marginBottom: 4 },
+  modalTitle:     { fontSize: 20, fontWeight: "700", color: "#FFF", fontFamily: "SpaceGrotesk-Bold", textAlign: "center" },
+  modalBody:      { fontSize: 14, color: "rgba(255,255,255,0.5)", textAlign: "center", lineHeight: 20, paddingHorizontal: 8 },
+  modalPrimaryBtn:{ width: "100%", borderRadius: 14, overflow: "hidden", marginTop: 6 },
+  modalBtnGrad:   { paddingVertical: 16, alignItems: "center", justifyContent: "center" },
+  modalBtnText:   { fontSize: 15, fontWeight: "700", color: CANVAS, fontFamily: "SpaceGrotesk-Bold" },
+  modalSecondaryBtn: { paddingVertical: 12 },
+  modalSecondaryText:{ fontSize: 14, color: "rgba(255,255,255,0.35)" },
+
+  // Feedback stars + input
+  starsRow:       { flexDirection: "row", gap: 8, marginVertical: 4 },
+  feedbackInput:  { width: "100%", backgroundColor: GLASS, borderWidth: 1, borderColor: BORDER, borderRadius: 12, padding: 14, color: "#FFF", fontSize: 13, minHeight: 80, textAlignVertical: "top" },
 });

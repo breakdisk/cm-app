@@ -50,6 +50,23 @@ pub async fn list_customer_invoices(
     Ok(Json(serde_json::json!({ "data": invoices })))
 }
 
+/// `POST /v1/invoices/:id/resend`
+///
+/// Re-sends the invoice to the customer (or merchant) via the `invoice.generated`
+/// Kafka event.  The engagement engine picks this up and delivers the email/SMS.
+///
+/// Customers may only resend their own receipts (BILLING_VIEW is sufficient).
+pub async fn resend_invoice(
+    AuthClaims(claims): AuthClaims,
+    Path(id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_VIEW);
+    let invoice_id = InvoiceId::from_uuid(id);
+    state.invoice_service.resend(&invoice_id, claims.user_id).await?;
+    Ok(Json(serde_json::json!({ "data": { "sent": true } })))
+}
+
 pub async fn generate_invoice(
     AuthClaims(claims): AuthClaims,
     State(state): State<Arc<AppState>>,
