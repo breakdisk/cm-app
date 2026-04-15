@@ -102,10 +102,15 @@ Browser, on subsequent portal API calls:
 
 1. Look up `auth_identities` row by `(provider = "firebase", provider_subject = firebase_uid)`.
 2. If found → load `users.tenant_id`, `tenants.slug`, `tenants.subscription_tier`, role/permission set → mint `Claims` → return.
-3. If not found → policy-driven:
-   - **merchant / customer** role: auto-provision a new tenant (slug derived from email domain) + user, attach Firebase identity, assign default permissions. Emit `user.provisioned` Kafka event.
+3. If not found → **lazy onboarding** (policy-driven):
+   - **merchant** role: create a *draft* tenant (`tenants.status = 'draft'`, slug = `draft-<uid-prefix>`, `subscription_tier = 'starter'`) + user with `OWNER` role, attach Firebase identity. Mint a JWT whose permissions only allow the onboarding endpoints (`tenants:update-self`, `billing:setup`). Emit `user.provisioned` Kafka event with `{ status: "draft" }`. Response includes `{ "user": { "onboarding_required": true } }` so landing redirects to `/setup` instead of `/merchant`.
+   - **customer** role: only auto-link when the Firebase sign-in carries a signed partner context (`?partner=<tenant_slug>&sig=<hmac>` set by a white-label link, verified server-side). Create user in that tenant with `CUSTOMER` role. If no partner context → 403 `tenant_required`.
    - **admin / partner** role: return 403 `tenant_not_provisioned`. These roles require explicit invite.
 4. Log every exchange to `audit_events` with `actor = firebase:<uid>`, `action = "auth.exchange"`.
+
+### Onboarding state machine
+
+Draft tenants have a restricted claim set. The `/v1/tenants/me/finalize` endpoint promotes `status: draft → active` once the user submits business name, currency, and region. `finalize` swaps in the full permission set on next refresh. Until then, every non-onboarding API call returns 403 `onboarding_required` so no stray requests hit RLS-protected resources with a half-built tenant.
 
 ### New schema (identity DB)
 
@@ -167,10 +172,14 @@ Each portal adds `app/api/token/route.ts` (Node runtime):
 ```ts
 export async function GET(req: NextRequest) {
   const token = req.cookies.get("los_at")?.value;
-  return NextResponse.json({ token: token ?? null });
+  const res = NextResponse.json({ token: token ?? null });
+  // Browser caches 60s; CDN/edge never caches (prevents cross-user leaks)
+  res.headers.set("Cache-Control", "private, s-maxage=0, max-age=60, must-revalidate");
+  res.headers.set("Vary", "Cookie");
+  return res;
 }
 ```
-Portal client fetches `/merchant/api/token` once on mount, stores in memory (NOT localStorage), attaches to `Authorization` header.
+Portal client fetches `/<role>/api/token` on mount, stores in memory (NOT localStorage), attaches to `Authorization` header. The 60s private cache absorbs dashboard refresh bursts; `s-maxage=0` + `Vary: Cookie` ensures no Vercel/Traefik/CDN layer ever serves one user's token to another.
 
 **B. Server-side only (stricter).**
 Portal pages become Server Components; API calls happen via server route handlers that read the cookie directly. Better security but requires refactoring existing client-heavy pages. Defer to a later pass.
@@ -211,6 +220,9 @@ Add `apps/<portal>/src/lib/auth-fetch.ts` as the single pattern. Grep for `local
 | XSS steals `los_at` via token endpoint | `los_at` lives in cookie, not JS memory long-term. Token endpoint requires `__session` cookie = same origin |
 | Tenant escalation via crafted `role` | Landing re-verifies Firebase custom claim `role` matches requested role BEFORE calling exchange. Identity ignores role from request on lookup path (derives from DB) |
 | Stale JWT after role change in Firebase | `los_at` 1h TTL bounds exposure. Refresh endpoint re-reads DB. Admin role changes require a hard sign-out (document in runbook) |
+| CSRF | `SameSite=Lax` blocks cross-site cookie-bearing POSTs + **required custom header** `X-LogisticOS-Client: web` on every state-changing request (`POST`/`PUT`/`PATCH`/`DELETE`). Enforced in `libs/auth` middleware: requests without the header → 403. SOP prevents third-party sites from adding custom headers without a CORS preflight, which our gateway denies for unknown origins. Mobile apps send `X-LogisticOS-Client: mobile` |
+| Cross-user cache leak on `/api/token` | `Cache-Control: private, s-maxage=0` + `Vary: Cookie` stops every CDN / reverse proxy from sharing responses. Browser-only cache, 60s max |
+| Draft tenant used to hit protected endpoints | Draft-tenant JWT carries only onboarding permissions. `require_permission` middleware returns 403 `onboarding_required` on all other routes |
 
 ---
 
@@ -236,8 +248,10 @@ No data migration needed. Existing non-Firebase users (seed data like `merchant@
 
 ---
 
-## Open questions
+## Resolved decisions (2026-04-15)
 
-1. **Auto-provision on first Firebase sign-in?** Spec proposes YES for merchant/customer, NO for admin/partner. Confirm before implementation.
-2. **Token endpoint caching.** Returning `los_at` to JS land each mount is a minor latency hit. Cache for the token's lifetime via ETag/`Cache-Control: private, max-age=<exp-now>`? Deferred.
-3. **CSRF.** `SameSite=Lax` blocks most cross-site POSTs; safe for now. Add double-submit-token pattern if we ever relax `SameSite`.
+| # | Decision | Rationale |
+|---|----------|-----------|
+| 1 | **Lazy onboarding.** Merchant → draft tenant + `/setup` flow. Customer → signed white-label partner context required. Admin/partner → invite only. | Low friction for self-service roles; no unscoped data for draft tenants; gated escalation for privileged roles |
+| 2 | **`Cache-Control: private, s-maxage=0, max-age=60, must-revalidate` + `Vary: Cookie`** on `/<role>/api/token` | 60s browser cache absorbs refresh bursts; explicit `s-maxage=0` prevents any CDN/proxy from sharing tokens across users |
+| 3 | **`SameSite=Lax` + required `X-LogisticOS-Client` custom header** on every state-changing request | Cheaper and more composable than double-submit tokens; relies on SOP/CORS guarantees already in the browser; mobile apps opt into `mobile` value for telemetry + client-specific policy later |
