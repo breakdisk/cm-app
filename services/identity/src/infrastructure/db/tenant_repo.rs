@@ -50,7 +50,7 @@ impl From<TenantRow> for Tenant {
 impl TenantRepository for PgTenantRepository {
     async fn find_by_id(&self, id: &TenantId) -> anyhow::Result<Option<Tenant>> {
         let row = sqlx::query_as::<_, TenantRow>(
-            "SELECT id, name, slug, subscription_tier, is_active, status, owner_email, created_at, updated_at
+            "SELECT id, name, slug, subscription_tier, is_active, status::text AS status, owner_email, created_at, updated_at
              FROM identity.tenants WHERE id = $1"
         )
         .bind(id.inner())
@@ -61,7 +61,7 @@ impl TenantRepository for PgTenantRepository {
 
     async fn find_by_slug(&self, slug: &str) -> anyhow::Result<Option<Tenant>> {
         let row = sqlx::query_as::<_, TenantRow>(
-            "SELECT id, name, slug, subscription_tier, is_active, status, owner_email, created_at, updated_at
+            "SELECT id, name, slug, subscription_tier, is_active, status::text AS status, owner_email, created_at, updated_at
              FROM identity.tenants WHERE slug = $1"
         )
         .bind(slug)

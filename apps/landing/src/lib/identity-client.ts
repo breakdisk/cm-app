@@ -82,7 +82,9 @@ export async function exchangeFirebaseToken(body: ExchangeBody): Promise<Exchang
     );
   }
 
-  return (await res.json()) as ExchangeResult;
+  const payload = (await res.json()) as { data: ExchangeResult } | ExchangeResult;
+  // Identity wraps successful responses in { data: ... }
+  return ("data" in payload ? payload.data : payload) as ExchangeResult;
 }
 
 export interface FinalizeTenantBody {
@@ -142,7 +144,8 @@ export async function refreshLosToken(refreshToken: string): Promise<RefreshResu
     );
   }
 
-  return (await res.json()) as RefreshResult;
+  const payload = (await res.json()) as { data: RefreshResult } | RefreshResult;
+  return ("data" in payload ? payload.data : payload) as RefreshResult;
 }
 
 async function safeJson(res: Response): Promise<any> {
