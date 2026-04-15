@@ -123,6 +123,48 @@ pub struct OtpVerifyCommand {
     pub role: Option<String>,
 }
 
+// ─── Firebase token exchange (server-side bridge) ────────────────────────────
+//
+// Consumed by the internal endpoint POST /v1/internal/auth/exchange-firebase.
+// The landing app verifies the Firebase ID token, then POSTs the claims here
+// so identity mints a LogisticOS JWT. See the Firebase → LogisticOS JWT bridge
+// spec under docs/superpowers/specs/.
+
+#[derive(Debug, Deserialize, Validate)]
+pub struct ExchangeFirebaseCommand {
+    #[validate(length(min = 1))]
+    pub firebase_uid: String,
+    #[validate(email)]
+    pub email: String,
+    pub email_verified: bool,
+    /// "merchant" | "admin" | "partner" | "customer"
+    pub role: String,
+    pub display_name: Option<String>,
+    /// Signed white-label partner context for customer auto-link.
+    /// `partner_sig` = HMAC-SHA256(LOGISTICOS_PARTNER_HMAC_SECRET, partner_slug + ":" + firebase_uid)
+    pub partner_slug: Option<String>,
+    pub partner_sig: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExchangeFirebaseResult {
+    pub access_token:  String,
+    pub refresh_token: String,
+    pub expires_in:    i64,
+    pub token_type:    String,
+    pub user:          ExchangedUser,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExchangedUser {
+    pub id:                   String,
+    pub tenant_id:             String,
+    pub tenant_slug:           String,
+    pub email:                 String,
+    pub roles:                 Vec<String>,
+    pub onboarding_required:   bool,
+}
+
 #[derive(Debug, Serialize)]
 pub struct OtpVerifyResult {
     pub access_token: String,
