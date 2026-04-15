@@ -11,7 +11,8 @@ import { LiveMetric } from "@/components/ui/live-metric";
 import { LiveDispatchMap } from "@/components/maps/live-dispatch-map";
 import { variants } from "@/lib/design-system/tokens";
 
-const DISPATCH_URL = process.env.NEXT_PUBLIC_DISPATCH_URL ?? "http://localhost:8005";
+const DISPATCH_URL   = process.env.NEXT_PUBLIC_DISPATCH_URL   ?? "http://localhost:8005";
+const DRIVER_OPS_URL = process.env.NEXT_PUBLIC_DRIVER_OPS_URL ?? "http://localhost:8006";
 
 function getToken(): string {
   return typeof window !== "undefined" ? localStorage.getItem("access_token") ?? "" : "";
@@ -36,6 +37,18 @@ interface DriverProfile {
   tenant_id:  string;
 }
 
+interface ActiveTask {
+  task_id:          string;
+  shipment_id:      string;
+  driver_id:        string;
+  sequence:         number;
+  status:           string;
+  task_type:        string;
+  customer_name:    string;
+  address:          string;
+  cod_amount_cents?: number | null;
+}
+
 const KPI_METRICS = [
   { label: "Pending Queue",    value: 0,  trend: 0,    color: "cyan"   as const, format: "number"  as const, key: "queue"    },
   { label: "Active Drivers",   value: 0,  trend: 0,    color: "green"  as const, format: "number"  as const, key: "drivers"  },
@@ -51,7 +64,9 @@ export default function DispatchPage() {
 
   const [queue,         setQueue]         = useState<QueueItem[]>([]);
   const [drivers,       setDrivers]       = useState<DriverProfile[]>([]);
+  const [tasks,         setTasks]         = useState<ActiveTask[]>([]);
   const [dispatching,   setDispatching]   = useState<string | null>(null);
+  const [taskActing,    setTaskActing]    = useState<string | null>(null);
   const [selectedDriver,setSelectedDriver]= useState<string>("");
   const [loading,       setLoading]       = useState(false);
   const [error,         setError]         = useState<string | null>(null);
@@ -62,12 +77,14 @@ export default function DispatchPage() {
     setLoading(true);
     setError(null);
     try {
-      const [qRes, dRes] = await Promise.all([
-        fetch(`${DISPATCH_URL}/v1/queue`,   { headers: { Authorization: `Bearer ${token}` } }),
-        fetch(`${DISPATCH_URL}/v1/drivers`, { headers: { Authorization: `Bearer ${token}` } }),
+      const [qRes, dRes, tRes] = await Promise.all([
+        fetch(`${DISPATCH_URL}/v1/queue`,        { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`${DISPATCH_URL}/v1/drivers`,      { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`${DRIVER_OPS_URL}/v1/admin/tasks`,{ headers: { Authorization: `Bearer ${token}` } }),
       ]);
       if (qRes.ok) { const j = await qRes.json(); setQueue(j.data ?? []); }
       if (dRes.ok) { const j = await dRes.json(); setDrivers(j.data ?? []); }
+      if (tRes.ok) { const j = await tRes.json(); setTasks(j.data ?? []); }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load dispatch data");
     } finally {
@@ -75,7 +92,36 @@ export default function DispatchPage() {
     }
   }, []);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => {
+    fetchData();
+    const id = setInterval(fetchData, 10_000);
+    return () => clearInterval(id);
+  }, [fetchData]);
+
+  async function handleTaskAction(taskId: string, action: "start" | "complete") {
+    const token = getToken();
+    if (!token) return;
+    setTaskActing(taskId);
+    try {
+      const res = await fetch(`${DRIVER_OPS_URL}/v1/admin/tasks/${taskId}/${action}`, {
+        method:  "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization:  `Bearer ${token}`,
+        },
+        body: action === "complete" ? JSON.stringify({}) : undefined,
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error?.message ?? `Task ${action} failed`);
+      }
+      await fetchData();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : `Task ${action} error`);
+    } finally {
+      setTaskActing(null);
+    }
+  }
 
   async function handleDispatch(shipmentId: string) {
     const token = getToken();
@@ -204,7 +250,7 @@ export default function DispatchPage() {
             <p className="text-xs font-mono text-white/25 text-center py-4">No pending shipments</p>
           )}
 
-          <div className="flex flex-col gap-2 overflow-y-auto max-h-[400px] pr-1">
+          <div className="flex flex-col gap-2 overflow-y-auto max-h-[260px] pr-1">
             {queue.map((item) => (
               <GlassCard key={item.id} size="sm" glow="cyan">
                 <div className="flex flex-col gap-2">
@@ -228,6 +274,58 @@ export default function DispatchPage() {
                 </div>
               </GlassCard>
             ))}
+          </div>
+
+          {/* Active Tasks — admin override controls for picked-up / delivered */}
+          <span className="text-xs font-mono uppercase tracking-widest text-white/30 mt-2">
+            Active Tasks · {tasks.length}
+          </span>
+
+          {tasks.length === 0 && !loading && (
+            <p className="text-xs font-mono text-white/25 text-center py-4">No active tasks</p>
+          )}
+
+          <div className="flex flex-col gap-2 overflow-y-auto max-h-[300px] pr-1">
+            {tasks.map((t) => {
+              const isPending    = t.status === "pending";
+              const isInProgress = t.status === "inprogress" || t.status === "in_progress";
+              const glow         = isInProgress ? "green" : "cyan";
+              const badgeVariant = isInProgress ? "green" : "cyan";
+              return (
+                <GlassCard key={t.task_id} size="sm" glow={glow}>
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-white truncate">{t.customer_name}</p>
+                        <p className="text-xs font-mono text-white/40 truncate">{t.address}</p>
+                        <p className="text-xs font-mono text-white/25">
+                          #{t.sequence} · {t.task_type}
+                        </p>
+                      </div>
+                      <NeonBadge variant={badgeVariant}>{t.status}</NeonBadge>
+                    </div>
+                    {isPending && (
+                      <button
+                        onClick={() => handleTaskAction(t.task_id, "start")}
+                        disabled={taskActing === t.task_id}
+                        className="w-full rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-1.5 text-xs font-mono text-cyan-300 hover:bg-cyan-500/20 transition-colors disabled:opacity-40"
+                      >
+                        {taskActing === t.task_id ? "Working…" : "📦 Mark Picked Up"}
+                      </button>
+                    )}
+                    {isInProgress && (
+                      <button
+                        onClick={() => handleTaskAction(t.task_id, "complete")}
+                        disabled={taskActing === t.task_id}
+                        className="w-full rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-1.5 text-xs font-mono text-green-300 hover:bg-green-500/20 transition-colors disabled:opacity-40"
+                      >
+                        {taskActing === t.task_id ? "Working…" : "✓ Mark Delivered"}
+                      </button>
+                    )}
+                  </div>
+                </GlassCard>
+              );
+            })}
           </div>
         </motion.div>
       </div>
