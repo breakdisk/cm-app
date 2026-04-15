@@ -116,6 +116,13 @@ function LoginPageInner() {
       setError((body as { error?: string }).error ?? "Sign-in failed.");
       return;
     }
+    // Draft merchants are redirected to the onboarding wizard; everyone else
+    // lands on their portal home.
+    const body = (await res.json().catch(() => ({}))) as { onboarding_required?: boolean };
+    if (body.onboarding_required) {
+      router.push(`/setup?role=${role}`);
+      return;
+    }
     router.push(`/${role}`);
   }
 
