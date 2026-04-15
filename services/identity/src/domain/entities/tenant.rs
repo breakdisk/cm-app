@@ -83,6 +83,20 @@ impl Tenant {
         self.status == TenantStatus::Draft
     }
 
+    /// Promote a draft tenant to active. Called from the finalize endpoint
+    /// once the owner has supplied business name (and any additional
+    /// onboarding fields the product requires). No-op if already active;
+    /// rejects suspended tenants.
+    pub fn finalize(&mut self, business_name: String) -> Result<(), &'static str> {
+        if self.status == TenantStatus::Suspended {
+            return Err("Suspended tenant cannot be finalized");
+        }
+        self.name = business_name;
+        self.status = TenantStatus::Active;
+        self.updated_at = Utc::now();
+        Ok(())
+    }
+
     /// Business rule: tenant slug must be lowercase alphanumeric + hyphens, 3-50 chars.
     pub fn validate_slug(slug: &str) -> Result<(), &'static str> {
         if slug.len() < 3 || slug.len() > 50 {
