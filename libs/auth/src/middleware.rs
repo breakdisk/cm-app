@@ -110,6 +110,46 @@ fn extract_bearer_token(headers: &axum::http::HeaderMap) -> Option<&str> {
     value.strip_prefix("Bearer ")
 }
 
+/// CSRF guard header: every browser/mobile caller must stamp one of these
+/// values. Server-to-server callers inside the mesh use `service`.
+pub const CLIENT_HEADER: &str = "x-logisticos-client";
+pub const CLIENT_WEB: &str = "web";
+pub const CLIENT_MOBILE: &str = "mobile";
+pub const CLIENT_SERVICE: &str = "service";
+
+/// CSRF defense middleware: rejects requests missing a valid
+/// `X-LogisticOS-Client` header. Cookie-bearing auth (portals) relies on this
+/// SameOrigin-esque custom-header trick to block cross-site form posts —
+/// attackers can't set custom headers on cross-origin `fetch`/form submissions
+/// without a preflight that the browser will refuse unless our CORS policy
+/// allows it (which it does not for third-party origins).
+///
+/// Fail-closed: any unrecognized value yields 403. Mount on any router that
+/// accepts mutating traffic authenticated by cookies.
+pub async fn require_client_header(req: Request, next: Next) -> Response {
+    let Some(value) = req
+        .headers()
+        .get(CLIENT_HEADER)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return client_header_rejection("CLIENT_HEADER_MISSING", "X-LogisticOS-Client header required");
+    };
+
+    if !matches!(value, CLIENT_WEB | CLIENT_MOBILE | CLIENT_SERVICE) {
+        return client_header_rejection("CLIENT_HEADER_INVALID", "Unrecognized X-LogisticOS-Client value");
+    }
+
+    next.run(req).await
+}
+
+fn client_header_rejection(code: &'static str, msg: &'static str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({ "error": { "code": code, "message": msg } })),
+    )
+        .into_response()
+}
+
 /// Guard macro: check permission inside a handler, return 403 if missing.
 /// Usage: `require_permission!(claims, SHIPMENT_CREATE);`
 #[macro_export]
