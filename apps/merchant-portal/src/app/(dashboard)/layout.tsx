@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
-import { usePathname } from "next/navigation";
+import { useState, useEffect, type ReactNode } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -145,7 +145,20 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const pathname = usePathname();
+  const router = useRouter();
   const pageTitle = getPageTitle(pathname);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!localStorage.getItem("access_token")) {
+      router.replace("/login");
+    }
+  }, [router]);
+
+  function handleSignOut() {
+    if (typeof window !== "undefined") localStorage.removeItem("access_token");
+    router.replace("/login");
+  }
 
   return (
     <div className="flex min-h-screen bg-canvas font-sans antialiased">
@@ -293,6 +306,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
           {/* Sign out */}
           <button
+            onClick={handleSignOut}
             className={cn(
               "group flex w-full items-center gap-3 rounded-lg px-3 py-2",
               "text-xs text-white/40 transition-all hover:bg-red-surface hover:text-red-signal",
