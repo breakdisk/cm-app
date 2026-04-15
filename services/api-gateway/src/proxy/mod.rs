@@ -27,6 +27,12 @@ impl ProxyClient {
 
     /// Resolve the base URL for a service given the request path prefix.
     pub fn resolve_upstream(&self, path: &str) -> Option<&str> {
+        // Internal-only routes (e.g. Firebase → LogisticOS JWT exchange) must
+        // never be reachable from the public gateway; reject them here as a
+        // defence-in-depth measure on top of identity's internal-secret guard.
+        if path.starts_with("/v1/internal") || path.contains("/internal/") {
+            return None;
+        }
         // Identity & Auth
         if path.starts_with("/v1/auth") || path.starts_with("/v1/users") || path.starts_with("/v1/tenants") || path.starts_with("/v1/api-keys") {
             Some(&self.services.identity_url)
