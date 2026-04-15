@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { clearAllAuthCookies } from "@/lib/los-cookies";
 
 export async function POST() {
   const baseUrl =
@@ -7,6 +8,6 @@ export async function POST() {
       : "http://localhost:3004";
 
   const res = NextResponse.redirect(new URL("/", baseUrl));
-  res.cookies.set("__session", "", { maxAge: 0, path: "/" });
+  clearAllAuthCookies(res);
   return res;
 }
