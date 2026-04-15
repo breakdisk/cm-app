@@ -85,6 +85,46 @@ export async function exchangeFirebaseToken(body: ExchangeBody): Promise<Exchang
   return (await res.json()) as ExchangeResult;
 }
 
+export interface FinalizeTenantBody {
+  business_name: string;
+  currency: string;
+  region: string;
+}
+
+export interface FinalizeTenantResult {
+  tenant_id: string;
+  slug: string;
+  name: string;
+  status: string;
+}
+
+export async function finalizeTenantSelf(
+  accessToken: string,
+  body: FinalizeTenantBody,
+): Promise<FinalizeTenantResult> {
+  const res = await fetch(`${IDENTITY_URL}/v1/tenants/me/finalize`, {
+    method:  "POST",
+    headers: {
+      "Content-Type":        "application/json",
+      "Authorization":       `Bearer ${accessToken}`,
+      "X-LogisticOS-Client": "service",
+    },
+    body:  JSON.stringify(body),
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    const payload = await safeJson(res);
+    throw new IdentityError(
+      res.status,
+      payload?.error?.code ?? "FINALIZE_FAILED",
+      payload?.error?.message ?? `Identity finalize returned ${res.status}`,
+    );
+  }
+
+  return ((await res.json()) as { data: FinalizeTenantResult }).data;
+}
+
 export async function refreshLosToken(refreshToken: string): Promise<RefreshResult> {
   const res = await fetch(`${IDENTITY_URL}/v1/auth/refresh`, {
     method:  "POST",
