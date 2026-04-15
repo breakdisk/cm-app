@@ -42,6 +42,7 @@ function TabNavigator() {
 
   return (
     <Tab.Navigator
+      id="TabNavigator"
       screenOptions={({ route }) => ({
         headerShown: false,
         tabBarStyle: {
@@ -84,7 +85,7 @@ function OnboardingNavigator() {
   const onboardingStep = useSelector((s: RootState) => s.auth.onboardingStep);
 
   return (
-    <Stack.Navigator screenOptions={{ headerShown: false, contentStyle: { backgroundColor: CANVAS }, animation: "slide_from_right" }}>
+    <Stack.Navigator id="OnboardingStack" screenOptions={{ headerShown: false, contentStyle: { backgroundColor: CANVAS }, animation: "slide_from_right" }}>
       {onboardingStep === "phone" && (
         <Stack.Screen name="Phone"   component={PhoneScreen} />
       )}
@@ -102,7 +103,7 @@ function OnboardingNavigator() {
 
 function AuthenticatedNavigator() {
   return (
-    <Stack.Navigator screenOptions={{ headerShown: false, contentStyle: { backgroundColor: CANVAS }, animation: "slide_from_right" }}>
+    <Stack.Navigator id="AuthenticatedStack" screenOptions={{ headerShown: false, contentStyle: { backgroundColor: CANVAS }, animation: "slide_from_right" }}>
       <Stack.Screen name="Tabs"          component={TabNavigator}        />
       <Stack.Screen name="Receipt"       component={ReceiptScreen}        />
       <Stack.Screen name="Invoices"      component={InvoicesScreen}       />
@@ -131,7 +132,7 @@ export function AppNavigator() {
     <SafeAreaView style={{ flex: 1, backgroundColor: CANVAS }} edges={["left", "right"]}>
       <StatusBar style="light" backgroundColor={CANVAS} />
       <NavigationContainer linking={linking}>
-        <Stack.Navigator screenOptions={{ headerShown: false, contentStyle: { backgroundColor: CANVAS }, animation: "fade" }}>
+        <Stack.Navigator id="RootStack" screenOptions={{ headerShown: false, contentStyle: { backgroundColor: CANVAS }, animation: "fade" }}>
           {showOnboarding ? (
             <Stack.Screen name="Onboarding" component={OnboardingNavigator} />
           ) : (

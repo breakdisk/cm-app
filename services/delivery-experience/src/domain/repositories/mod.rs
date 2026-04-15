@@ -36,4 +36,8 @@ pub trait TrackingRepository: Send + Sync {
         tags: &[String],
         comments: Option<&str>,
     ) -> anyhow::Result<()>;
+
+    /// Record customer's self-confirmation of receipt.
+    /// Sets `customer_confirmed_at` timestamp on the tracking record.
+    async fn confirm_customer_receipt(&self, tracking_number: &str) -> anyhow::Result<()>;
 }

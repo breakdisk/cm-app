@@ -24,6 +24,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/tracking/:tracking_number/reschedule",         post(reschedule_delivery))
         .route("/track/:tracking_number/feedback",                 post(submit_feedback))
         .route("/v1/tracking/:tracking_number/feedback",           post(submit_feedback))
+        .route("/v1/tracking/:tracking_number/confirm-receipt",    post(confirm_receipt))
         // Authenticated — merchant/ops
         .route("/v1/tracking/:shipment_id",                        get(get_by_shipment_id))
         .route("/v1/tracking",                                     get(list_shipments))
@@ -162,6 +163,42 @@ async fn reschedule_delivery(
         Err(AppError::NotFound { .. }) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "Tracking number not found"})),
+        ).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/tracking/:tracking_number/confirm-receipt
+// Customer confirms they received the package (authenticated).
+// Triggers a delivery.customer_confirmed Kafka event which downstream services
+// (POD, analytics) can react to.
+// ---------------------------------------------------------------------------
+
+async fn confirm_receipt(
+    State(state): State<AppState>,
+    Path(tracking_number): Path<String>,
+) -> impl IntoResponse {
+    match state.tracking_svc.confirm_customer_receipt(&tracking_number).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "data": {
+                    "confirmed": true,
+                    "tracking_number": tracking_number,
+                }
+            })),
+        ).into_response(),
+        Err(AppError::NotFound { .. }) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Tracking number not found"})),
+        ).into_response(),
+        Err(AppError::BusinessRule(msg)) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": msg})),
         ).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,

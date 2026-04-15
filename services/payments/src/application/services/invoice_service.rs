@@ -373,6 +373,57 @@ impl InvoiceService {
                 id: invoice_id.inner().to_string(),
             })
     }
+
+    /// Re-publish the `invoice.generated` Kafka event so the engagement engine
+    /// re-sends the email/SMS receipt.  Only the invoice's customer (or an admin
+    /// with BILLING_MANAGE) may request a resend.
+    pub async fn resend(
+        &self,
+        invoice_id: &InvoiceId,
+        caller_id:  uuid::Uuid,
+    ) -> AppResult<()> {
+        let invoice = self.get(invoice_id).await?;
+
+        // Authorisation: customers may only resend their own receipts.
+        if let Some(ref cid) = invoice.customer_id {
+            if cid.inner() != caller_id {
+                return Err(AppError::Forbidden {
+                    resource: "invoice belonging to another customer".into(),
+                });
+            }
+        }
+
+        let event = Event::new(
+            "payments",
+            "invoice.resend_requested",
+            invoice.tenant_id.inner(),
+            InvoiceGenerated {
+                invoice_id:     invoice.id.inner(),
+                invoice_number: invoice.invoice_number.to_string(),
+                recipient_type: invoice.customer_id.as_ref().map(|_| "customer").unwrap_or("merchant").into(),
+                merchant_id:    uuid::Uuid::nil(),
+                merchant_email: None,
+                customer_id:    invoice.customer_id.as_ref().map(|c| c.inner()).unwrap_or(uuid::Uuid::nil()),
+                customer_email: None, // engagement engine looks this up from CDP
+                tenant_id:      invoice.tenant_id.inner(),
+                total_cents:    invoice.total_due().amount,
+                currency:       format!("{:?}", invoice.currency),
+                due_at:         invoice.due_at,
+            },
+        );
+
+        self.kafka
+            .publish_event(topics::INVOICE_GENERATED, &event)
+            .await
+            .map_err(AppError::Internal)?;
+
+        tracing::info!(
+            invoice_id = %invoice_id,
+            caller     = %caller_id,
+            "Invoice resend requested"
+        );
+        Ok(())
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

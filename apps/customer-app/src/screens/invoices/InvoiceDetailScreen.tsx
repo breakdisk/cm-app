@@ -3,9 +3,9 @@
  * Accessible from InvoicesScreen or via deep-link:
  *   logisticos://invoices/:id
  */
-import React, { useCallback, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator,
+  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -13,6 +13,7 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import { useDispatch, useSelector } from 'react-redux';
 import type { RootState, AppDispatch } from '../../store';
 import { setLoading, setDetail, setError } from '../../store/slices/invoices';
+import { resendInvoice } from '../../services/api/invoices';
 import { getInvoice } from '../../services/api/invoices';
 
 const CANVAS  = '#050810';
@@ -61,6 +62,7 @@ export function InvoiceDetailScreen() {
   const detail    = useSelector((s: RootState) => s.invoices.byId[invoiceId]);
   const loading   = useSelector((s: RootState) => s.invoices.loading);
   const error     = useSelector((s: RootState) => s.invoices.error);
+  const [resending, setResending] = useState(false);
 
   const load = useCallback(async () => {
     if (!invoiceId) return;
@@ -72,6 +74,19 @@ export function InvoiceDetailScreen() {
       dispatch(setError(e?.message ?? 'Failed to load receipt'));
     }
   }, [invoiceId, dispatch]);
+
+  const handleResend = useCallback(async () => {
+    if (!invoiceId) return;
+    setResending(true);
+    try {
+      await resendInvoice(invoiceId);
+      Alert.alert('Receipt Sent', 'A copy of your receipt has been sent to your email address.');
+    } catch (e: any) {
+      Alert.alert('Error', e?.message ?? 'Failed to send receipt. Please try again.');
+    } finally {
+      setResending(false);
+    }
+  }, [invoiceId]);
 
   useEffect(() => {
     if (!detail) load();
@@ -198,6 +213,22 @@ export function InvoiceDetailScreen() {
           <Text style={s.idValue} selectable>{detail.id}</Text>
         </View>
 
+        {/* Resend receipt to email */}
+        <Pressable
+          onPress={handleResend}
+          disabled={resending}
+          style={({ pressed }) => [s.resendBtn, { opacity: pressed || resending ? 0.7 : 1 }]}
+        >
+          {resending ? (
+            <ActivityIndicator size="small" color={CYAN} />
+          ) : (
+            <Ionicons name="mail-outline" size={16} color={CYAN} />
+          )}
+          <Text style={s.resendText}>
+            {resending ? 'Sending...' : 'Email This Receipt'}
+          </Text>
+        </Pressable>
+
       </ScrollView>
     </View>
   );
@@ -247,4 +278,7 @@ const s = StyleSheet.create({
   idCard:          { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: PURPLE + '10', borderWidth: 1, borderColor: PURPLE + '30', borderRadius: 10, padding: 12 },
   idLabel:         { fontSize: 10, color: PURPLE, fontFamily: 'JetBrainsMono-Regular', textTransform: 'uppercase', letterSpacing: 0.5 },
   idValue:         { flex: 1, fontSize: 10, color: 'rgba(255,255,255,0.4)', fontFamily: 'JetBrainsMono-Regular' },
+
+  resendBtn:       { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, paddingHorizontal: 20, backgroundColor: CYAN + '10', borderWidth: 1, borderColor: CYAN + '30', borderRadius: 14, marginTop: 4 },
+  resendText:      { fontSize: 14, fontWeight: '600', color: CYAN, fontFamily: 'SpaceGrotesk-SemiBold' },
 });

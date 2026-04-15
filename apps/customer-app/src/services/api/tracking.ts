@@ -125,4 +125,13 @@ export const trackingApi = {
       comment,
     });
   },
+
+  /** Customer confirms they received their package */
+  confirmReceipt: (trackingNumber: string) => {
+    const trackingClient = getTrackingClient();
+    return trackingClient.post<{ confirmed: boolean; invoice_id?: string }>(
+      `/v1/tracking/${trackingNumber}/confirm-receipt`,
+      {}
+    );
+  },
 };

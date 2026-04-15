@@ -97,6 +97,40 @@ impl TrackingService {
             .map_err(|e| AppError::Internal(e))
     }
 
+    /// Customer confirms they received their package.
+    ///
+    /// This is an optional, customer-initiated action that supplements the
+    /// driver's POD capture.  The record is updated with
+    /// `customer_confirmed_at`, and a `delivery.customer_confirmed` event is
+    /// published downstream for analytics and engagement triggers.
+    pub async fn confirm_customer_receipt(&self, tracking_number: &str) -> AppResult<()> {
+        let record = self.repo
+            .find_by_tracking_number(tracking_number)
+            .await
+            .map_err(|e| AppError::Internal(e))?
+            .ok_or_else(|| AppError::NotFound {
+                resource: "tracking",
+                id: tracking_number.to_owned(),
+            })?;
+
+        // Only allow confirmation when the shipment is delivered or out-for-delivery.
+        use crate::domain::entities::TrackingStatus;
+        match record.current_status {
+            TrackingStatus::Delivered
+            | TrackingStatus::OutForDelivery => {}
+            _ => {
+                return Err(AppError::BusinessRule(
+                    "Receipt can only be confirmed for shipments that are out for delivery or already marked as delivered".into(),
+                ));
+            }
+        }
+
+        self.repo
+            .confirm_customer_receipt(tracking_number)
+            .await
+            .map_err(|e| AppError::Internal(e))
+    }
+
     pub async fn submit_feedback(
         &self,
         tracking_number: &str,

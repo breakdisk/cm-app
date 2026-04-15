@@ -29,6 +29,7 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
         .route("/invoices",                              get(invoices::list_invoices).post(invoices::generate_invoice))
         .route("/invoices/:id",                          get(invoices::get_invoice))
+        .route("/invoices/:id/resend",                   post(invoices::resend_invoice))
         .route("/customers/:customer_id/invoices",       get(invoices::list_customer_invoices))
         .route("/cod/reconcile",                         post(wallet::reconcile_cod))
         .route("/wallet",                                get(wallet::get_wallet))

@@ -289,4 +289,17 @@ impl TrackingRepository for PgTrackingRepository {
         .await?;
         Ok(())
     }
+
+    async fn confirm_customer_receipt(&self, tracking_number: &str) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"UPDATE tracking.shipment_tracking
+               SET customer_confirmed_at = NOW(),
+                   updated_at           = NOW()
+               WHERE tracking_number = $1"#,
+        )
+        .bind(tracking_number)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
