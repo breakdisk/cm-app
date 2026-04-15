@@ -23,8 +23,8 @@ export interface CarrierSummary {
   total_shipments_today: number;
 }
 
-export function createCarriersApi(token: string) {
-  const client = createApiClient(token);
+export function createCarriersApi() {
+  const client = createApiClient();
 
   return {
     listCarriers: (params?: { status?: CarrierStatus; page?: number; per_page?: number }) =>

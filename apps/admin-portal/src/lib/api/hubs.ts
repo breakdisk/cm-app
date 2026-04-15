@@ -26,8 +26,8 @@ export interface HubSummary {
   total_outbound_today: number;
 }
 
-export function createHubsApi(token: string) {
-  const client = createApiClient(token);
+export function createHubsApi() {
+  const client = createApiClient();
 
   return {
     listHubs: (params?: { page?: number; per_page?: number }) =>

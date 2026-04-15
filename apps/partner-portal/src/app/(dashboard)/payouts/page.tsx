@@ -13,19 +13,15 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { CreditCard, Download, CheckCircle2, Clock, AlertCircle } from "lucide-react";
+import { authFetch } from "@/lib/auth/auth-fetch";
 
 // ── API helpers ────────────────────────────────────────────────────────────────
 
 const PAYMENTS_URL = process.env.NEXT_PUBLIC_PAYMENTS_URL ?? "http://localhost:8008";
 
-function getToken()  { return typeof window !== "undefined" ? localStorage.getItem("access_token") ?? "" : ""; }
-function getTenant() { return typeof window !== "undefined" ? localStorage.getItem("tenant_slug")  ?? "demo" : "demo"; }
-
 async function fetchInvoices() {
   try {
-    const res = await fetch(`${PAYMENTS_URL}/v1/invoices`, {
-      headers: { Authorization: `Bearer ${getToken()}`, "X-Tenant": getTenant() },
-    });
+    const res = await authFetch(`${PAYMENTS_URL}/v1/invoices`);
     if (!res.ok) return null;
     const json = await res.json();
     return json.data ?? json.invoices ?? null;
@@ -36,9 +32,7 @@ async function fetchInvoices() {
 
 async function fetchWallet() {
   try {
-    const res = await fetch(`${PAYMENTS_URL}/v1/wallet`, {
-      headers: { Authorization: `Bearer ${getToken()}`, "X-Tenant": getTenant() },
-    });
+    const res = await authFetch(`${PAYMENTS_URL}/v1/wallet`);
     if (!res.ok) return null;
     const json = await res.json();
     return json.data ?? null;

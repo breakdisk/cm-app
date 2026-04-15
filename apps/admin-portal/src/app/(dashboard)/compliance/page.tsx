@@ -44,18 +44,12 @@ export default function CompliancePage() {
   const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
   const [loading,         setLoading]         = useState(false);
 
-  const token =
-    typeof window !== "undefined"
-      ? (localStorage.getItem("access_token") ?? "")
-      : "";
-
   const refresh = useCallback(async () => {
-    if (!token) return;
     setLoading(true);
     try {
       const [q, p] = await Promise.all([
-        fetchReviewQueue(token),
-        fetchProfiles(token),
+        fetchReviewQueue(),
+        fetchProfiles(),
       ]);
       setQueue(q);
       setProfiles(p);
@@ -64,7 +58,7 @@ export default function CompliancePage() {
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
 

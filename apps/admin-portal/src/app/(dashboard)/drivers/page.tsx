@@ -72,11 +72,9 @@ export default function DriversPage() {
   const [loading, setLoading] = useState(false);
 
   const fetchDrivers = useCallback(async () => {
-    const token = typeof window !== "undefined" ? localStorage.getItem("access_token") ?? "" : "";
-    if (!token) return;
     setLoading(true);
     try {
-      const api = createDriversApi(token);
+      const api = createDriversApi();
       const [listRes, summaryRes] = await Promise.all([
         api.listDrivers({ per_page: 100 }),
         api.getSummary(),

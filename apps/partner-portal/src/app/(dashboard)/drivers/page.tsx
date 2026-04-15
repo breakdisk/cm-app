@@ -11,13 +11,11 @@ import { NeonBadge } from "@/components/ui/neon-badge";
 import { Users, Clock, Briefcase, Search, ChevronDown, Check, Pencil, X } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 import { ComplianceBadge, canAssign } from "@/components/compliance/compliance-badge";
+import { authFetch } from "@/lib/auth/auth-fetch";
 
 // ── API helpers ────────────────────────────────────────────────────────────────
 
 const DRIVER_OPS_URL = process.env.NEXT_PUBLIC_DRIVER_OPS_URL ?? "http://localhost:8006";
-
-function getToken()  { return typeof window !== "undefined" ? localStorage.getItem("access_token") ?? "" : ""; }
-function getTenant() { return typeof window !== "undefined" ? localStorage.getItem("tenant_slug")  ?? "demo" : "demo"; }
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -43,9 +41,7 @@ interface Driver {
 
 async function fetchDriversFromApi(): Promise<Driver[] | null> {
   try {
-    const res = await fetch(`${DRIVER_OPS_URL}/v1/drivers`, {
-      headers: { Authorization: `Bearer ${getToken()}`, "X-Tenant": getTenant() },
-    });
+    const res = await authFetch(`${DRIVER_OPS_URL}/v1/drivers`);
     if (!res.ok) return null;
     const json = await res.json();
     const items = json.data ?? json.drivers ?? [];

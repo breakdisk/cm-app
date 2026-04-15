@@ -16,6 +16,7 @@ import {
   FileText, CheckCircle2, AlertCircle,
 } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
+import { authFetch } from "@/lib/auth/auth-fetch";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -78,10 +79,6 @@ const STATS = [
 // ── API helpers ───────────────────────────────────────────────────────────────
 
 const ORDER_INTAKE_URL = process.env.NEXT_PUBLIC_ORDER_INTAKE_URL ?? "http://localhost:8004";
-
-function getToken() {
-  return typeof window !== "undefined" ? localStorage.getItem("access_token") ?? "" : "";
-}
 
 // ── New Shipment Modal ────────────────────────────────────────────────────────
 
@@ -507,8 +504,6 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
   }
 
   async function handleBook() {
-    const token = getToken();
-    if (!token) { setBookError("Not authenticated"); return; }
     setBooking(true); setBookError(null);
     try {
       const weightGrams = Math.round(parseFloat(weight || "0") * 1000);
@@ -533,9 +528,8 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
         ...(description || contents ? { special_instructions: description || contents } : {}),
         ...(isIntl ? { freight_mode: freightMode } : {}),
       };
-      const res = await fetch(`${ORDER_INTAKE_URL}/v1/shipments`, {
+      const res = await authFetch(`${ORDER_INTAKE_URL}/v1/shipments`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify(body),
       });
       const json = await res.json();
@@ -872,12 +866,8 @@ function ShipmentsContent() {
   }, [searchParams, router]);
 
   const fetchShipments = useCallback(async () => {
-    const token = getToken();
-    if (!token) return;
     try {
-      const res = await fetch(`${ORDER_INTAKE_URL}/v1/shipments`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await authFetch(`${ORDER_INTAKE_URL}/v1/shipments`);
       if (!res.ok) return;
       const json = await res.json();
       const rows = (json.shipments ?? []).map((s: {
