@@ -155,6 +155,18 @@ pub struct ExchangeFirebaseResult {
     pub user:          ExchangedUser,
 }
 
+#[derive(Debug, Deserialize, Validate)]
+pub struct FinalizeTenantCommand {
+    #[validate(length(min = 2, max = 100))]
+    pub business_name: String,
+    /// ISO 4217 currency code, e.g. "USD", "AED", "PHP".
+    #[validate(length(equal = 3))]
+    pub currency: String,
+    /// ISO 3166-1 alpha-2 region code, e.g. "PH", "AE".
+    #[validate(length(equal = 2))]
+    pub region: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ExchangedUser {
     pub id:                   String,

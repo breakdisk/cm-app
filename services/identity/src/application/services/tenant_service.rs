@@ -3,7 +3,7 @@ use logisticos_auth::password::hash_password;
 use logisticos_errors::{AppError, AppResult};
 use logisticos_events::{producer::KafkaProducer, topics, payloads::{TenantCreated, UserCreated}, envelope::Event};
 use crate::{
-    application::commands::{CreateTenantCommand, InviteUserCommand},
+    application::commands::{CreateTenantCommand, FinalizeTenantCommand, InviteUserCommand},
     domain::{
         entities::{Tenant, User},
         repositories::{TenantRepository, UserRepository},
@@ -79,6 +79,53 @@ impl TenantService {
     /// Expose the user repo for read operations from HTTP handlers.
     pub fn user_repo_ref(&self) -> Arc<dyn crate::domain::repositories::UserRepository> {
         Arc::clone(&self.user_repo)
+    }
+
+    /// Promote the caller's own tenant from `draft` to `active`. Called via
+    /// `POST /v1/tenants/me/finalize` from the lazy-onboarding `/setup` flow.
+    /// Idempotent for already-active tenants — re-calling just updates the
+    /// business name. The caller's next refresh_token call will receive the
+    /// full role-based permission set in the refreshed access JWT.
+    ///
+    /// Currency and region arrive in the command but are only logged until
+    /// a follow-up migration extends the `identity.tenants` schema with
+    /// those columns; they are already validated (ISO 4217 / 3166-1 alpha-2).
+    pub async fn finalize_self(
+        &self,
+        tenant_id: &logisticos_types::TenantId,
+        cmd: FinalizeTenantCommand,
+    ) -> AppResult<Tenant> {
+        use validator::Validate;
+        cmd.validate().map_err(|e| AppError::Validation(e.to_string()))?;
+
+        let mut tenant = self.tenant_repo
+            .find_by_id(tenant_id).await
+            .map_err(AppError::Internal)?
+            .ok_or_else(|| AppError::NotFound {
+                resource: "Tenant",
+                id: tenant_id.inner().to_string(),
+            })?;
+
+        let was_draft = tenant.is_draft();
+        tenant.finalize(cmd.business_name.clone())
+            .map_err(|e| AppError::BusinessRule(e.to_string()))?;
+
+        self.tenant_repo.save(&tenant).await.map_err(AppError::Internal)?;
+
+        tracing::info!(
+            tenant_id = %tenant.id,
+            was_draft,
+            currency = %cmd.currency,
+            region = %cmd.region,
+            "Tenant finalized"
+        );
+
+        // TODO: emit `tenant.finalized` Kafka event once libs/events has the
+        // payload; downstream consumers (engagement welcome flow, billing
+        // setup) currently react to `tenant.created` which is already fired
+        // for draft tenants at provision time.
+
+        Ok(tenant)
     }
 
     pub async fn invite_user(&self, tenant_id: &logisticos_types::TenantId, cmd: InviteUserCommand) -> AppResult<(User, String)> {

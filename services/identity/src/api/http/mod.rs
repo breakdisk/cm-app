@@ -78,5 +78,7 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/api-keys",        get(api_keys::list).post(api_keys::create))
         .route("/api-keys/:id",    delete(api_keys::revoke))
         .route("/push-tokens",     post(push_tokens::register_push_token).delete(push_tokens::delete_push_token))
+        // Tenant self-management (draft-tenant onboarding exit)
+        .route("/tenants/me/finalize", post(tenants::finalize_self))
         .layer(auth_layer)
 }

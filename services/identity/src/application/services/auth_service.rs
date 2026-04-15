@@ -20,8 +20,8 @@ use crate::{
 /// every other API call returns 403 `onboarding_required` until
 /// `POST /v1/tenants/me/finalize` promotes the tenant to `active`.
 const ONBOARDING_PERMISSIONS: &[&str] = &[
-    "tenants:update-self",
-    "billing:setup",
+    logisticos_auth::rbac::permissions::TENANT_UPDATE_SELF,
+    logisticos_auth::rbac::permissions::BILLING_SETUP,
 ];
 
 pub struct AuthService {

@@ -53,6 +53,14 @@ pub mod permissions {
     pub const TENANT_MANAGE:     &str = "tenants:manage";
     pub const API_KEYS_MANAGE:   &str = "api_keys:manage";
 
+    // ── Onboarding (draft-tenant scope) ──────────────────────
+    // Narrow permissions minted by AuthService::exchange_firebase for draft
+    // tenants. These are the ONLY permissions a draft-tenant JWT receives;
+    // `finalize_self` promotes the tenant to active, after which the owner
+    // gets the full `merchant` permission set on next refresh.
+    pub const TENANT_UPDATE_SELF: &str = "tenants:update-self";
+    pub const BILLING_SETUP:      &str = "billing:setup";
+
     // ── Carriers ─────────────────────────────────────────────
     pub const CARRIERS_MANAGE:   &str = "carriers:manage";
     pub const CARRIERS_READ:     &str = "carriers:read";
