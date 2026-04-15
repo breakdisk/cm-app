@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use logisticos_types::{TenantId, UserId};
-use crate::domain::entities::{Tenant, User, ApiKey};
+use crate::domain::entities::{Tenant, User, ApiKey, AuthIdentity, AuthProvider};
 
 #[async_trait]
 pub trait TenantRepository: Send + Sync {
@@ -24,4 +24,17 @@ pub trait ApiKeyRepository: Send + Sync {
     async fn save(&self, key: &ApiKey) -> anyhow::Result<()>;
     async fn list_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<ApiKey>>;
     async fn revoke(&self, id: &logisticos_types::ApiKeyId) -> anyhow::Result<()>;
+}
+
+#[async_trait]
+pub trait AuthIdentityRepository: Send + Sync {
+    async fn find_by_provider_subject(
+        &self,
+        provider: AuthProvider,
+        subject: &str,
+    ) -> anyhow::Result<Option<AuthIdentity>>;
+
+    async fn list_for_user(&self, user_id: &UserId) -> anyhow::Result<Vec<AuthIdentity>>;
+
+    async fn insert(&self, identity: &AuthIdentity) -> anyhow::Result<()>;
 }
