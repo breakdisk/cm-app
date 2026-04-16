@@ -543,7 +543,7 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error?.message ?? "Booking failed");
-      const awb = json.tracking_number ?? json.data?.tracking_number ?? "created";
+      const awb = json.awb ?? json.tracking_number ?? json.data?.awb ?? "created";
       alert(`Shipment booked!\nTracking: ${awb}`);
       onBooked?.();
       onClose();
@@ -881,19 +881,21 @@ function ShipmentsContent() {
       const json = await res.json();
       const rows = (json.shipments ?? []).map((s: {
         id: string;
-        tracking_number: string;
+        awb?: string;
+        tracking_number?: string;
         customer_name: string;
         destination?: { city?: string };
         status: string;
+        cod_amount?: { amount?: number } | null;
         cod_amount_cents?: number | null;
         created_at: string;
       }) => ({
         id:               s.id,
-        tracking_number:  s.tracking_number,
+        tracking_number:  s.awb ?? s.tracking_number ?? "",
         recipient_name:   s.customer_name,
         destination:      s.destination?.city ?? "",
         status:           s.status as ShipmentStatus,
-        cod_amount:       s.cod_amount_cents ? s.cod_amount_cents / 100 : undefined,
+        cod_amount:       s.cod_amount?.amount ? s.cod_amount.amount / 100 : s.cod_amount_cents ? s.cod_amount_cents / 100 : undefined,
         created_at:       s.created_at,
       }));
       if (rows.length > 0) setShipments(rows);
