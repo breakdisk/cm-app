@@ -98,6 +98,10 @@ impl AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = self.status_code();
+        // Log server-side errors so they appear in container logs
+        if status.is_server_error() {
+            tracing::error!(error = ?self, code = self.error_code(), "returning 5xx response");
+        }
         let body = json!({
             "error": {
                 "code": self.error_code(),
