@@ -10,7 +10,10 @@ use axum::{
 };
 use redis::AsyncCommands;
 use serde_json::json;
-use tower_http::trace::TraceLayer;
+use tower_http::{
+    cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer},
+    trace::TraceLayer,
+};
 
 use logisticos_auth::jwt::JwtService;
 
@@ -58,11 +61,16 @@ pub async fn run() -> anyhow::Result<()> {
         cfg:      Arc::new(cfg.clone()),
     };
 
+    // Build CORS layer from config.
+    // APP__CORS_ALLOWED_ORIGINS=* (dev) or comma-separated origins (prod).
+    let cors = build_cors_layer(&cfg.app.cors_allowed_origins);
+
     let app = Router::new()
         .route("/health", get(health_handler))
         .route("/mcp/servers", get(list_mcp_servers))
         .route("/mcp/tools", get(list_mcp_tools))
         .fallback(axum::routing::any(proxy_handler))
+        .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -337,6 +345,55 @@ fn insert_rate_limit_headers(
     if let Ok(v) = HeaderValue::from_str(&reset_in.to_string()) {
         headers.insert("X-RateLimit-Reset", v);
     }
+}
+
+/// Build a CorsLayer from a comma-separated allowed-origins string.
+///
+/// - `"*"` → permissive (any origin); suitable for dev/staging.
+/// - Anything else → exact match list; ONLY those origins are allowed.
+///
+/// All common methods and headers used by the portals and the mobile apps
+/// are explicitly permitted so preflight requests succeed.
+fn build_cors_layer(origins_cfg: &str) -> CorsLayer {
+    let methods = AllowMethods::list([
+        Method::GET,
+        Method::POST,
+        Method::PUT,
+        Method::PATCH,
+        Method::DELETE,
+        Method::OPTIONS,
+    ]);
+
+    let headers = AllowHeaders::list([
+        axum::http::header::AUTHORIZATION,
+        axum::http::header::CONTENT_TYPE,
+        axum::http::header::ACCEPT,
+        axum::http::header::ORIGIN,
+        axum::http::HeaderName::from_static("x-logisticos-client"),
+        axum::http::HeaderName::from_static("x-tenant-id"),
+        axum::http::HeaderName::from_static("x-request-id"),
+    ]);
+
+    let trimmed = origins_cfg.trim();
+
+    if trimmed == "*" {
+        return CorsLayer::permissive()
+            .allow_methods(methods)
+            .allow_headers(headers);
+    }
+
+    let allowed: Vec<axum::http::HeaderValue> = trimmed
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .filter_map(|origin| axum::http::HeaderValue::from_str(origin).ok())
+        .collect();
+
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(allowed))
+        .allow_methods(methods)
+        .allow_headers(headers)
+        .allow_credentials(true)
 }
 
 async fn shutdown_signal() {

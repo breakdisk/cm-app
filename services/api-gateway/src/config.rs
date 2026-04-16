@@ -13,6 +13,15 @@ pub struct AppConfig {
     pub host: String,
     pub port: u16,
     pub env: String,
+    /// Comma-separated list of allowed CORS origins.
+    /// Use `*` to allow all origins (dev/staging only).
+    /// Production example: `https://os.cargomarket.net,https://admin.cargomarket.net`
+    #[serde(default = "default_cors_origins")]
+    pub cors_allowed_origins: String,
+}
+
+fn default_cors_origins() -> String {
+    "*".to_owned()
 }
 
 #[derive(Debug, Deserialize, Clone)]
