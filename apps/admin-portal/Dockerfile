@@ -1,4 +1,5 @@
 FROM node:22-alpine AS builder
+RUN apk add --no-cache libc6-compat
 WORKDIR /app
 COPY apps/admin-portal/package.json apps/admin-portal/package-lock.json* ./
 RUN npm install --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000
