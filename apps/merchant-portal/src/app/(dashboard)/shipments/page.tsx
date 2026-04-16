@@ -21,8 +21,10 @@ import { authFetch } from "@/lib/auth/auth-fetch";
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 type ShipmentStatus =
-  | "pending" | "picked_up" | "in_transit" | "at_hub"
-  | "out_for_delivery" | "delivered" | "failed" | "cancelled";
+  | "pending" | "confirmed" | "pickup_assigned" | "picked_up"
+  | "in_transit" | "at_hub" | "out_for_delivery" | "delivery_attempted"
+  | "delivered" | "partial_delivery" | "piece_exception" | "customs_hold"
+  | "failed" | "cancelled" | "returned";
 
 interface Shipment {
   id: string;
@@ -48,15 +50,22 @@ const MOCK_SHIPMENTS: Shipment[] = [
   { id: "8", tracking_number: "LS-C9D0E1F2", recipient_name: "Dennis Villanueva", destination: "Parañaque City",   status: "delivered",                           created_at: "2026-03-15" },
 ];
 
-const STATUS_MAP: Record<ShipmentStatus, { label: string; variant: BadgeVariant }> = {
-  pending:          { label: "Processing",       variant: "amber"  },
-  picked_up:        { label: "Picked Up",        variant: "cyan"   },
-  in_transit:       { label: "In Transit",       variant: "purple" },
-  at_hub:           { label: "At Hub",           variant: "purple" },
-  out_for_delivery: { label: "Out for Delivery", variant: "green"  },
-  delivered:        { label: "Delivered",        variant: "green"  },
-  failed:           { label: "Failed",           variant: "red"    },
-  cancelled:        { label: "Cancelled",        variant: "red"    },
+const STATUS_MAP: Partial<Record<ShipmentStatus, { label: string; variant: BadgeVariant }>> = {
+  pending:            { label: "Pending",           variant: "amber"  },
+  confirmed:          { label: "Confirmed",         variant: "amber"  },
+  pickup_assigned:    { label: "Pickup Assigned",   variant: "cyan"   },
+  picked_up:          { label: "Picked Up",         variant: "cyan"   },
+  in_transit:         { label: "In Transit",        variant: "purple" },
+  at_hub:             { label: "At Hub",            variant: "purple" },
+  out_for_delivery:   { label: "Out for Delivery",  variant: "green"  },
+  delivery_attempted: { label: "Attempted",         variant: "amber"  },
+  delivered:          { label: "Delivered",          variant: "green"  },
+  partial_delivery:   { label: "Partial Delivery",  variant: "amber"  },
+  piece_exception:    { label: "Exception",         variant: "red"    },
+  customs_hold:       { label: "Customs Hold",      variant: "purple" },
+  failed:             { label: "Failed",            variant: "red"    },
+  cancelled:          { label: "Cancelled",         variant: "red"    },
+  returned:           { label: "Returned",          variant: "red"    },
 };
 
 const STATUS_FILTERS: Array<{ label: string; value: ShipmentStatus | "all" }> = [
@@ -1026,7 +1035,7 @@ function ShipmentsContent() {
 
           {/* Rows */}
           {filtered.map((shipment) => {
-            const { label, variant } = STATUS_MAP[shipment.status];
+            const { label, variant } = STATUS_MAP[shipment.status] ?? { label: shipment.status, variant: "cyan" as BadgeVariant };
             return (
               <div
                 key={shipment.id}
