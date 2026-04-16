@@ -1,3 +1,5 @@
+name: oscargomarketnet-logisticosbackend-pqfh0u
+
 networks:
   logisticos:
     driver: bridge
