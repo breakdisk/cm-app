@@ -104,7 +104,7 @@ jobs:
       - name: Build and push ${{ matrix.app }}
         uses: docker/build-push-action@v6
         with:
-          context: apps/${{ matrix.app }}
+          context: .
           file: apps/${{ matrix.app }}/Dockerfile
           push: true
           tags: |

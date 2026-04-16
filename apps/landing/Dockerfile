@@ -1,8 +1,8 @@
 FROM node:22-alpine AS builder
 WORKDIR /app
-COPY package.json package-lock.json* ./
+COPY apps/landing/package.json apps/landing/package-lock.json* ./
 RUN npm install --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000
-COPY . .
+COPY apps/landing/ .
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 

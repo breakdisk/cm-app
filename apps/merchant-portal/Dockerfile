@@ -1,8 +1,8 @@
 FROM node:22-alpine AS builder
 WORKDIR /app
-COPY package.json package-lock.json* ./
+COPY apps/merchant-portal/package.json apps/merchant-portal/package-lock.json* ./
 RUN npm install --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000
-COPY . .
+COPY apps/merchant-portal/ .
 ENV NEXT_TELEMETRY_DISABLED=1
 # NEXT_PUBLIC_* vars are baked into the JS bundle at build time.
 # Pass --build-arg NEXT_PUBLIC_API_URL=https://os-api.cargomarket.net in Dokploy.
