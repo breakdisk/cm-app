@@ -100,7 +100,7 @@ const MOCK_ORDERS: IncomingOrder[] = [
     bookedAt: "14 min ago",
   },
   {
-    id: "o4", awb: "CM-PH1-I0000013D", type: "balikbayan", freightMode: "air", status: "assigned",
+    id: "o4", awb: "CM-PH1-N0000013D", type: "balikbayan", freightMode: "air", status: "assigned",
     assignedTo: "Rodel Bautista",
     senderName: "John Mendoza",
     pickupAddr: "Flat 401, Deira Twin Towers", pickupCity: "Deira",

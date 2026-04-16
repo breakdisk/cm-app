@@ -47,7 +47,7 @@ const MOCK_SHIPMENTS: Shipment[] = [
   { id: "5", tracking_number: "CM-PH1-D0000005E", recipient_name: "Luz Ramos",         destination: "Mandaluyong",      status: "at_hub",                              created_at: "2026-03-17" },
   { id: "6", tracking_number: "CM-PH1-S0000006F", recipient_name: "Carlo Dela Torre",  destination: "Las Piñas City",   status: "failed",                              created_at: "2026-03-16" },
   { id: "7", tracking_number: "CM-PH1-B0000007G", recipient_name: "Rowena Bautista",   destination: "Caloocan City",    status: "picked_up",        cod_amount: 3100,  created_at: "2026-03-17" },
-  { id: "8", tracking_number: "CM-PH1-I0000008H", recipient_name: "Dennis Villanueva", destination: "Parañaque City",   status: "delivered",                           created_at: "2026-03-15" },
+  { id: "8", tracking_number: "CM-PH1-N0000008H", recipient_name: "Dennis Villanueva", destination: "Parañaque City",   status: "delivered",                           created_at: "2026-03-15" },
 ];
 
 const STATUS_MAP: Partial<Record<ShipmentStatus, { label: string; variant: BadgeVariant }>> = {

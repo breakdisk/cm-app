@@ -6,7 +6,7 @@
 //! - `CM`       — platform prefix, always fixed
 //! - `{TTT}`    — 3-char tenant code (e.g. `PH1`, `SG2`, `AE3`)
 //! - `{S}`      — service code: `S`=Standard, `E`=Express, `D`=SameDay,
-//!                `B`=Balikbayan, `I`=International
+//!                `B`=Balikbayan, `N`=iNternational
 //! - `{NNNNNNN}` — 7-digit zero-padded sequence (per tenant+service)
 //! - `{C}`      — Luhn mod-34 check character
 //!
@@ -92,7 +92,7 @@ impl ServiceCode {
             Self::Express       => 'E',
             Self::SameDay       => 'D',
             Self::Balikbayan    => 'B',
-            Self::International => 'I',
+            Self::International => 'N',
         }
     }
 
@@ -102,7 +102,7 @@ impl ServiceCode {
             'E' => Ok(Self::Express),
             'D' => Ok(Self::SameDay),
             'B' => Ok(Self::Balikbayan),
-            'I' => Ok(Self::International),
+            'N' => Ok(Self::International),
             _   => Err(AwbError::UnknownServiceCode(c)),
         }
     }
@@ -359,7 +359,7 @@ pub enum AwbError {
     #[error("Invalid checksum — AWB may have been mistyped")]
     InvalidChecksum,
 
-    #[error("Unknown service code '{0}' — must be S, E, D, B, or I")]
+    #[error("Unknown service code '{0}' — must be S, E, D, B, or N")]
     UnknownServiceCode(char),
 
     #[error("Invalid tenant code '{0}' — must be 3 alphanumeric chars excluding O and I")]

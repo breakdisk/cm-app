@@ -55,7 +55,7 @@ const DEMO_SHIPMENTS: ShipmentRecord[] = [
     bookedAt: "Mar 17, 2026, 08:00 AM", estimatedDelivery: "Mar 17, 2026", totalFee: 95,
   },
   {
-    awb: "CM-PH1-I0000002B", type: "international", status: "in_transit",
+    awb: "CM-PH1-N0000002B", type: "international", status: "in_transit",
     origin: "88 Ayala Ave, Makati City", destination: "221B Baker St, London",
     destCountry: "GB", description: "Balikbayan Box — Clothes & food", weight: "22",
     isCOD: false, freightMode: "sea",
