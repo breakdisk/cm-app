@@ -43,7 +43,7 @@ fn make_shipment(
         tenant_id:        TenantId::new(),
         merchant_id:      MerchantId::new(),
         customer_id:      CustomerId::new(),
-        tracking_number:  "LSPH0012345678".into(),
+        tracking_number:  "CMPH0012345678".into(),
         status,
         service_type,
         origin:           make_address(),
@@ -532,8 +532,8 @@ mod tracking_number {
     fn generated_tracking_number_has_correct_prefix() {
         let tn = TrackingNumber::generate();
         assert!(
-            tn.starts_with("LSPH"),
-            "Tracking number must start with LSPH, got: {}",
+            tn.starts_with("CMPH"),
+            "Tracking number must start with CMPH, got: {}",
             tn
         );
     }
@@ -541,7 +541,7 @@ mod tracking_number {
     #[test]
     fn generated_tracking_number_has_correct_length() {
         let tn = TrackingNumber::generate();
-        // "LSPH" + 10 digits = 14 characters
+        // "CMPH" + 10 digits = 14 characters
         assert_eq!(
             tn.len(), 14,
             "Tracking number must be 14 characters, got {} ({})",
@@ -560,7 +560,7 @@ mod tracking_number {
     #[test]
     fn generated_tracking_number_suffix_is_all_digits() {
         let tn = TrackingNumber::generate();
-        let suffix = &tn[4..]; // skip "LSPH"
+        let suffix = &tn[4..]; // skip "CMPH"
         assert!(
             suffix.chars().all(|c| c.is_ascii_digit()),
             "Tracking number suffix must be all digits: {}",

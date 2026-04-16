@@ -49,20 +49,20 @@ type FilterTab = "all" | "active" | "done";
 // Demo shipments shown when the Redux list is empty
 const DEMO_SHIPMENTS: ShipmentRecord[] = [
   {
-    awb: "LS-A1B2C3D4", type: "local", status: "out_for_delivery",
+    awb: "CM-PH1-S0000001A", type: "local", status: "out_for_delivery",
     origin: "123 Kalayaan Ave, Pasig City", destination: "45 Timog Ave, Quezon City",
     description: "Electronics", weight: "1.2", isCOD: false,
     bookedAt: "Mar 17, 2026, 08:00 AM", estimatedDelivery: "Mar 17, 2026", totalFee: 95,
   },
   {
-    awb: "LS-E5F6G7H8", type: "international", status: "in_transit",
+    awb: "CM-PH1-I0000002B", type: "international", status: "in_transit",
     origin: "88 Ayala Ave, Makati City", destination: "221B Baker St, London",
     destCountry: "GB", description: "Balikbayan Box — Clothes & food", weight: "22",
     isCOD: false, freightMode: "sea",
     bookedAt: "Mar 17, 2026, 07:00 AM", estimatedDelivery: "30–45 days", totalFee: 720,
   },
   {
-    awb: "LS-I9J0K1L2", type: "local", status: "delivered",
+    awb: "CM-PH1-S0000003C", type: "local", status: "delivered",
     origin: "9 Dela Rosa St, BGC", destination: "12 Dapitan St, Sampaloc, Manila",
     description: "Personal item", weight: "0.8", isCOD: true, codAmount: "1500",
     bookedAt: "Mar 15, 2026, 09:30 AM", estimatedDelivery: "Mar 15, 2026", totalFee: 85,

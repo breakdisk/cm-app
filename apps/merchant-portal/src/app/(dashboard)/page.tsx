@@ -36,11 +36,11 @@ const SPARK = {
 };
 
 const ACTIVITY = [
-  { id: "LS-2024-00847", customer: "Maria Santos",  location: "Quezon City", time: "2m ago",  status: "delivered"        as const },
-  { id: "LS-2024-00846", customer: "Jose Reyes",    location: "Makati CBD",  time: "18m ago", status: "out_for_delivery" as const },
-  { id: "LS-2024-00845", customer: "Ana Garcia",    location: "Taguig BGC",  time: "35m ago", status: "failed"           as const },
-  { id: "LS-2024-00844", customer: "Carlos Lim",    location: "Pasig Hub",   time: "1h ago",  status: "in_transit"       as const },
-  { id: "LS-2024-00843", customer: "Rosa Cruz",     location: "Mandaluyong", time: "2h ago",  status: "picked_up"        as const },
+  { id: "CM-PH1-S0000847A", customer: "Maria Santos",  location: "Quezon City", time: "2m ago",  status: "delivered"        as const },
+  { id: "CM-PH1-E0000846B", customer: "Jose Reyes",    location: "Makati CBD",  time: "18m ago", status: "out_for_delivery" as const },
+  { id: "CM-PH1-S0000845C", customer: "Ana Garcia",    location: "Taguig BGC",  time: "35m ago", status: "failed"           as const },
+  { id: "CM-PH1-S0000844D", customer: "Carlos Lim",    location: "Pasig Hub",   time: "1h ago",  status: "in_transit"       as const },
+  { id: "CM-PH1-D0000843E", customer: "Rosa Cruz",     location: "Mandaluyong", time: "2h ago",  status: "picked_up"        as const },
 ];
 
 const STATUS_CFG = {

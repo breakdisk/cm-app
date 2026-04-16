@@ -1,21 +1,21 @@
-//! AWB (Airway Bill) value objects for LogisticOS.
+//! AWB (Airway Bill) value objects for LogisticOS / CargoMarket.
 //!
 //! # Format
 //!
-//! **Master AWB**: `LS-{TTT}-{S}{NNNNNNN}{C}`
-//! - `LS`       — platform prefix, always fixed
+//! **Master AWB**: `CM-{TTT}-{S}{NNNNNNN}{C}`
+//! - `CM`       — platform prefix, always fixed
 //! - `{TTT}`    — 3-char tenant code (e.g. `PH1`, `SG2`, `AE3`)
 //! - `{S}`      — service code: `S`=Standard, `E`=Express, `D`=SameDay,
 //!                `B`=Balikbayan, `I`=International
 //! - `{NNNNNNN}` — 7-digit zero-padded sequence (per tenant+service)
 //! - `{C}`      — Luhn mod-34 check character
 //!
-//! Example: `LS-PH1-S0001234X`
+//! Example: `CM-PH1-S0001234X`
 //!
-//! **Child AWB** (piece label): `LS-{TTT}-{S}{NNNNNNN}{C}-{PPP}`
+//! **Child AWB** (piece label): `CM-{TTT}-{S}{NNNNNNN}{C}-{PPP}`
 //! - `{PPP}` — 3-digit piece number, 1-based, zero-padded
 //!
-//! Example: `LS-PH1-B0009012Z-002`
+//! Example: `CM-PH1-B0009012Z-002`
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -159,7 +159,7 @@ impl fmt::Display for TenantCode {
 // ── Awb (Master) ──────────────────────────────────────────────────────────────
 
 /// Master AWB — the commercial tracking number issued at booking.
-/// Immutable once issued. Format: `LS-{TTT}-{S}{NNNNNNN}{C}`
+/// Immutable once issued. Format: `CM-{TTT}-{S}{NNNNNNN}{C}`
 ///
 /// # Examples
 /// ```
@@ -177,25 +177,19 @@ impl Awb {
     /// `sequence` must be 1..=9_999_999.
     pub fn generate(tenant: &TenantCode, service: ServiceCode, sequence: u32) -> Self {
         debug_assert!(sequence >= 1 && sequence <= 9_999_999, "sequence out of range");
-        let payload = format!(
-            "LSPH1{}{}{:07}",  // internal compact form for checksum
-            tenant.as_str(),
-            service.as_char(),
-            sequence,
-        );
-        // checksum over the compact payload (no dashes)
+        // checksum over the compact payload (no dashes, no prefix)
         let compact_payload = format!("{}{}{:07}", tenant.as_str(), service.as_char(), sequence);
         let check = luhn_checksum(&compact_payload).expect("charset always valid for generated AWB");
-        let formatted = format!("LS-{}-{}{:07}{}", tenant.as_str(), service.as_char(), sequence, check);
+        let formatted = format!("CM-{}-{}{:07}{}", tenant.as_str(), service.as_char(), sequence, check);
         Self(formatted)
     }
 
     /// Parse and validate an AWB string.
-    /// Accepts both dash form (`LS-PH1-S0001234X`) and compact form (`LSPH1S0001234X`).
+    /// Accepts both dash form (`CM-PH1-S0001234X`) and compact form (`CMPH1S0001234X`).
     pub fn parse(raw: &str) -> Result<Self, AwbError> {
         let normalised = Self::normalise(raw)?;
         // validate checksum over TTT+S+NNNNNNN+C (11 chars)
-        let inner = &normalised[3..]; // strip "LS-"
+        let inner = &normalised[3..]; // strip "CM-"
         let parts: Vec<&str> = inner.splitn(2, '-').collect();
         if parts.len() != 2 {
             return Err(AwbError::InvalidFormat);
@@ -216,19 +210,19 @@ impl Awb {
         Ok(Self(normalised))
     }
 
-    /// Full display string with dashes: `LS-PH1-S0001234X`
+    /// Full display string with dashes: `CM-PH1-S0001234X`
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    /// Compact barcode string (no dashes): `LSPH1S0001234X`
+    /// Compact barcode string (no dashes): `CMPH1S0001234X`
     pub fn barcode_str(&self) -> String {
         self.0.replace('-', "")
     }
 
     /// Validate the embedded checksum.
     pub fn is_valid(&self) -> bool {
-        let inner = match self.0.strip_prefix("LS-") {
+        let inner = match self.0.strip_prefix("CM-") {
             Some(s) => s,
             None    => return false,
         };
@@ -259,16 +253,16 @@ impl Awb {
     /// Normalise raw string to dash form. Accepts compact or dash form.
     fn normalise(raw: &str) -> Result<String, AwbError> {
         let s = raw.trim().to_uppercase();
-        // already dash form: LS-XXX-XNNNNNNNX (16 chars)
-        if s.starts_with("LS-") && s.len() == 16 {
+        // already dash form: CM-XXX-XNNNNNNNX (16 chars)
+        if s.starts_with("CM-") && s.len() == 16 {
             return Ok(s);
         }
-        // compact form: LSXXXSXXXXXXXC (14 chars)
-        if s.starts_with("LS") && !s.contains('-') && s.len() == 14 {
+        // compact form: CMXXXSXXXXXXXC (14 chars)
+        if s.starts_with("CM") && !s.contains('-') && s.len() == 14 {
             let tenant  = &s[2..5];
             let service = &s[5..6];
             let seq_chk = &s[6..14];
-            return Ok(format!("LS-{}-{}{}", tenant, service, seq_chk));
+            return Ok(format!("CM-{}-{}{}", tenant, service, seq_chk));
         }
         Err(AwbError::InvalidFormat)
     }
@@ -310,7 +304,7 @@ impl ChildAwb {
     /// Parse a child AWB string.
     pub fn parse(raw: &str) -> Result<Self, AwbError> {
         let s = raw.trim().to_uppercase();
-        // Expected: LS-XXX-XNNNNNNNC-PPP  (20 chars)
+        // Expected: CM-XXX-XNNNNNNNC-PPP  (20 chars)
         if s.len() != 20 {
             return Err(AwbError::InvalidFormat);
         }
@@ -343,7 +337,7 @@ impl ChildAwb {
         self.0[17..].parse().expect("ChildAwb always has valid piece number")
     }
 
-    /// Compact barcode string (no dashes): `LSPH1B0009012Z002`
+    /// Compact barcode string (no dashes): `CMPH1B0009012Z002`
     pub fn barcode_str(&self) -> String {
         self.0.replace('-', "")
     }
@@ -359,7 +353,7 @@ impl fmt::Display for ChildAwb {
 
 #[derive(Debug, Error, PartialEq)]
 pub enum AwbError {
-    #[error("Invalid AWB format — expected LS-TTT-SNNNNNNNC or compact LSTTTSXXXXXXXC")]
+    #[error("Invalid AWB format — expected CM-TTT-SNNNNNNNC or compact CMTTTSXXXXXXXC")]
     InvalidFormat,
 
     #[error("Invalid checksum — AWB may have been mistyped")]
@@ -455,7 +449,7 @@ mod tests {
     fn awb_generate_format() {
         let awb = Awb::generate(&ph1(), ServiceCode::Standard, 1234);
         let s = awb.as_str();
-        assert!(s.starts_with("LS-PH1-S"), "got: {}", s);
+        assert!(s.starts_with("CM-PH1-S"), "got: {}", s);
         assert_eq!(s.len(), 16, "got: {}", s);
     }
 
@@ -496,7 +490,7 @@ mod tests {
     #[test]
     fn awb_parse_rejects_garbage() {
         assert!(Awb::parse("GARBAGE").is_err());
-        assert!(Awb::parse("LS-XX-S1234567A").is_err()); // wrong tenant len
+        assert!(Awb::parse("CM-XX-S1234567A").is_err()); // wrong tenant len
         assert!(Awb::parse("").is_err());
     }
 

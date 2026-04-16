@@ -37,7 +37,7 @@ const AUDIT_LOG = [
   { ts: "2026-03-17 13:15:44", actor: "ops@logisticos.io",     action: "webhook.disabled",        resource: "wh_3 old.system.internal",   ip: "112.200.5.88"  },
   { ts: "2026-03-17 11:00:02", actor: "admin@logisticos.io",   action: "role.user_assigned",      resource: "Dispatcher → jdelacruz",     ip: "118.177.32.1"  },
   { ts: "2026-03-16 18:44:59", actor: "finance@logisticos.io", action: "billing.invoice_exported",resource: "INV-2026-02-0045",           ip: "203.177.91.22" },
-  { ts: "2026-03-16 16:20:33", actor: "ops@logisticos.io",     action: "shipment.manual_override",resource: "LS-A1B2C3D4 → delivered",    ip: "112.200.5.88"  },
+  { ts: "2026-03-16 16:20:33", actor: "ops@logisticos.io",     action: "shipment.manual_override",resource: "CM-PH1-S0000001A → delivered",    ip: "112.200.5.88"  },
   { ts: "2026-03-15 09:05:17", actor: "admin@logisticos.io",   action: "tenant.settings_updated", resource: "SLA policy D+1 → D+2",       ip: "118.177.32.1"  },
 ];
 

@@ -18,7 +18,7 @@ pub struct Piece {
     pub shipment_id: ShipmentId,
     /// 1-based piece number within the shipment (1..=999).
     pub piece_number: u16,
-    /// Scannable piece-level barcode (e.g. `LS-PH1-B0009012Z-002`).
+    /// Scannable piece-level barcode (e.g. `CM-PH1-B0009012Z-002`).
     pub piece_awb: ChildAwb,
     /// Declared weight at booking.
     pub declared_weight: ShipmentWeight,

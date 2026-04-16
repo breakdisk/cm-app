@@ -5,7 +5,7 @@ use uuid::Uuid;
 /// One billable charge entry for a single AWB — passed in when generating an invoice.
 #[derive(Debug, Deserialize)]
 pub struct AwbChargeInput {
-    /// Master AWB string (e.g. "LS-PH1-S0001234X").
+    /// Master AWB string (e.g. "CM-PH1-S0001234X").
     pub awb:              String,
     /// Charge type string (e.g. "base_freight", "weight_surcharge").
     pub charge_type:      String,

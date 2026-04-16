@@ -30,12 +30,12 @@ interface Notif {
 }
 
 const NOTIFS: Notif[] = [
-  { id: "N1", type: "delivery", title: "Out for Delivery!",        body: "LS-A1B2C3D4 will be delivered today between 2–4 PM. Stay at home!",                 time: "10m ago",  read: false },
-  { id: "N2", type: "delivery", title: "Package Picked Up",        body: "LS-E5F6G7H8 has been picked up from the merchant and is heading to sorting.",     time: "1h ago",   read: false },
+  { id: "N1", type: "delivery", title: "Out for Delivery!",        body: "CM-PH1-S0000001A will be delivered today between 2–4 PM. Stay at home!",                 time: "10m ago",  read: false },
+  { id: "N2", type: "delivery", title: "Package Picked Up",        body: "CM-PH1-E0000002B has been picked up from the merchant and is heading to sorting.",     time: "1h ago",   read: false },
   { id: "N3", type: "loyalty",  title: "+50 Loyalty Points!",      body: "You earned 50 points for your last delivery. 380 more to reach Platinum.",         time: "3h ago",   read: true  },
-  { id: "N4", type: "alert",    title: "Delivery Attempt Failed",  body: "LS-M3N4O5P6 — we couldn't reach you. We'll retry tomorrow. Tap to reschedule.",   time: "Yesterday", read: true  },
+  { id: "N4", type: "alert",    title: "Delivery Attempt Failed",  body: "CM-PH1-S0000004D — we couldn't reach you. We'll retry tomorrow. Tap to reschedule.",   time: "Yesterday", read: true  },
   { id: "N5", type: "promo",    title: "₱50 Off Your Next Booking", body: "Book any shipment today and get ₱50 off. Use code MARCH50. Valid until Mar 31.", time: "Yesterday", read: true  },
-  { id: "N6", type: "delivery", title: "Package Delivered ✓",      body: "LS-I9J0K1L2 was delivered and signed for by the recipient. Rate your experience.", time: "2 days ago", read: true },
+  { id: "N6", type: "delivery", title: "Package Delivered ✓",      body: "CM-PH1-S0000003C was delivered and signed for by the recipient. Rate your experience.", time: "2 days ago", read: true },
   { id: "N7", type: "promo",    title: "New: COD in Mindanao",      body: "Cash on Delivery is now available across Mindanao. Try it on your next shipment.", time: "3 days ago", read: true },
 ];
 

@@ -40,14 +40,14 @@ interface Shipment {
 // ── Mock data ──────────────────────────────────────────────────────────────────
 
 const MOCK_SHIPMENTS: Shipment[] = [
-  { id: "1", tracking_number: "LS-A1B2C3D4", recipient_name: "Maria Santos",      destination: "Makati City",      status: "out_for_delivery", cod_amount: 1500,  created_at: "2026-03-17", eta: "Today 2-4PM" },
-  { id: "2", tracking_number: "LS-E5F6G7H8", recipient_name: "Jose Reyes",        destination: "Quezon City",      status: "in_transit",       cod_amount: 2200,  created_at: "2026-03-17" },
-  { id: "3", tracking_number: "LS-I9J0K1L2", recipient_name: "Ana Cruz",          destination: "Pasig City",       status: "delivered",                           created_at: "2026-03-16" },
-  { id: "4", tracking_number: "LS-M3N4O5P6", recipient_name: "Pedro Gonzales",    destination: "Taguig City",      status: "pending",          cod_amount: 850,   created_at: "2026-03-17" },
-  { id: "5", tracking_number: "LS-Q7R8S9T0", recipient_name: "Luz Ramos",         destination: "Mandaluyong",      status: "at_hub",                              created_at: "2026-03-17" },
-  { id: "6", tracking_number: "LS-U1V2W3X4", recipient_name: "Carlo Dela Torre",  destination: "Las Piñas City",   status: "failed",                              created_at: "2026-03-16" },
-  { id: "7", tracking_number: "LS-Y5Z6A7B8", recipient_name: "Rowena Bautista",   destination: "Caloocan City",    status: "picked_up",        cod_amount: 3100,  created_at: "2026-03-17" },
-  { id: "8", tracking_number: "LS-C9D0E1F2", recipient_name: "Dennis Villanueva", destination: "Parañaque City",   status: "delivered",                           created_at: "2026-03-15" },
+  { id: "1", tracking_number: "CM-PH1-S0000001A", recipient_name: "Maria Santos",      destination: "Makati City",      status: "out_for_delivery", cod_amount: 1500,  created_at: "2026-03-17", eta: "Today 2-4PM" },
+  { id: "2", tracking_number: "CM-PH1-E0000002B", recipient_name: "Jose Reyes",        destination: "Quezon City",      status: "in_transit",       cod_amount: 2200,  created_at: "2026-03-17" },
+  { id: "3", tracking_number: "CM-PH1-S0000003C", recipient_name: "Ana Cruz",          destination: "Pasig City",       status: "delivered",                           created_at: "2026-03-16" },
+  { id: "4", tracking_number: "CM-PH1-S0000004D", recipient_name: "Pedro Gonzales",    destination: "Taguig City",      status: "pending",          cod_amount: 850,   created_at: "2026-03-17" },
+  { id: "5", tracking_number: "CM-PH1-D0000005E", recipient_name: "Luz Ramos",         destination: "Mandaluyong",      status: "at_hub",                              created_at: "2026-03-17" },
+  { id: "6", tracking_number: "CM-PH1-S0000006F", recipient_name: "Carlo Dela Torre",  destination: "Las Piñas City",   status: "failed",                              created_at: "2026-03-16" },
+  { id: "7", tracking_number: "CM-PH1-B0000007G", recipient_name: "Rowena Bautista",   destination: "Caloocan City",    status: "picked_up",        cod_amount: 3100,  created_at: "2026-03-17" },
+  { id: "8", tracking_number: "CM-PH1-I0000008H", recipient_name: "Dennis Villanueva", destination: "Parañaque City",   status: "delivered",                           created_at: "2026-03-15" },
 ];
 
 const STATUS_MAP: Partial<Record<ShipmentStatus, { label: string; variant: BadgeVariant }>> = {

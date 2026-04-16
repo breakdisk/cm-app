@@ -521,7 +521,7 @@ export function TrackingScreen() {
             <>
               <Text style={s.hintTitle}>Enter a tracking number above</Text>
               <Text style={{ fontSize: 12, color: "rgba(255,255,255,0.25)", fontFamily: "JetBrainsMono-Regular", marginTop: 4 }}>
-                e.g. LS-PH1-S0001234X
+                e.g. CM-PH1-S0001234X
               </Text>
             </>
           )}

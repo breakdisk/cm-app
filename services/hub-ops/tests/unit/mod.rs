@@ -34,7 +34,7 @@ fn make_induction(hub: &Hub) -> ParcelInduction {
         hub.id.clone(),
         hub.tenant_id.clone(),
         Uuid::new_v4(),
-        "LSPH0011223344".into(),
+        "CMPH0011223344".into(),
         Some(Uuid::new_v4()),
     )
 }
@@ -422,10 +422,10 @@ mod parcel_induction_new {
             hub.id.clone(),
             hub.tenant_id.clone(),
             Uuid::new_v4(),
-            "LSPH0099887766".into(),
+            "CMPH0099887766".into(),
             None,
         );
-        assert_eq!(induction.tracking_number, "LSPH0099887766");
+        assert_eq!(induction.tracking_number, "CMPH0099887766");
     }
 
     #[test]
@@ -436,7 +436,7 @@ mod parcel_induction_new {
             hub.id.clone(),
             hub.tenant_id.clone(),
             shipment_id,
-            "LSPH0012345678".into(),
+            "CMPH0012345678".into(),
             None,
         );
         assert_eq!(induction.shipment_id, shipment_id);
@@ -450,7 +450,7 @@ mod parcel_induction_new {
             hub.id.clone(),
             hub.tenant_id.clone(),
             Uuid::new_v4(),
-            "LSPH0012345678".into(),
+            "CMPH0012345678".into(),
             Some(staff_id),
         );
         assert_eq!(induction.inducted_by, Some(staff_id));
@@ -463,7 +463,7 @@ mod parcel_induction_new {
             hub.id.clone(),
             hub.tenant_id.clone(),
             Uuid::new_v4(),
-            "LSPH0012345678".into(),
+            "CMPH0012345678".into(),
             None,
         );
         assert!(induction.inducted_by.is_none());

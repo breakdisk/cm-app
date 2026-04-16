@@ -122,7 +122,7 @@ pub struct UserCreated {
 /// payments (initialise billable record).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AwbIssued {
-    pub awb:          String,    // e.g. "LS-PH1-S0001234X"
+    pub awb:          String,    // e.g. "CM-PH1-S0001234X"
     pub tenant_id:    Uuid,
     pub shipment_id:  Uuid,
     pub merchant_id:  Uuid,
@@ -137,8 +137,8 @@ pub struct AwbIssued {
 /// payments (trigger storage fee timer), analytics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PieceScanned {
-    pub piece_awb:    String,   // e.g. "LS-PH1-B0009012Z-002"
-    pub master_awb:   String,   // e.g. "LS-PH1-B0009012Z"
+    pub piece_awb:    String,   // e.g. "CM-PH1-B0009012Z-002"
+    pub master_awb:   String,   // e.g. "CM-PH1-B0009012Z"
     pub shipment_id:  Uuid,
     pub tenant_id:    Uuid,
     pub hub_id:       Uuid,

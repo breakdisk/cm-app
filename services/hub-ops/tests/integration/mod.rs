@@ -247,7 +247,7 @@ fn seed_inducted_parcel(app: &TestApp, hub: &Hub) -> ParcelInduction {
         hub.id.clone(),
         hub.tenant_id.clone(),
         Uuid::new_v4(),
-        format!("LSPH{:010}", rand_u32()),
+        format!("CMPH{:010}", rand_u32()),
         None,
     );
     // Also increment hub load so state is consistent
@@ -572,7 +572,7 @@ mod create_induction {
         json!({
             "hub_id":          hub_id,
             "shipment_id":     Uuid::new_v4(),
-            "tracking_number": "LSPH0012345678",
+            "tracking_number": "CMPH0012345678",
             "inducted_by":     null
         })
     }
@@ -610,7 +610,7 @@ mod create_induction {
                 json!({
                     "hub_id":          hub.id.inner(),
                     "shipment_id":     Uuid::new_v4(),
-                    "tracking_number": format!("LSPH{:010}", rand_u32()),
+                    "tracking_number": format!("CMPH{:010}", rand_u32()),
                     "inducted_by":     null
                 }),
             ))
@@ -640,7 +640,7 @@ mod create_induction {
         let payload = json!({
             "hub_id":          hub.id.inner(),
             "shipment_id":     shipment_id,
-            "tracking_number": "LSPH0012345678",
+            "tracking_number": "CMPH0012345678",
             "inducted_by":     null
         });
 
@@ -946,7 +946,7 @@ mod hub_capacity_endpoint {
                 json!({
                     "hub_id":          hub.id.inner(),
                     "shipment_id":     Uuid::new_v4(),
-                    "tracking_number": format!("LSPH{:010}", rand_u32()),
+                    "tracking_number": format!("CMPH{:010}", rand_u32()),
                     "inducted_by":     null
                 }),
             ))
@@ -970,7 +970,7 @@ mod hub_capacity_endpoint {
             json!({
                 "hub_id":          hub.id.inner(),
                 "shipment_id":     Uuid::new_v4(),
-                "tracking_number": "LSPH0099887766",
+                "tracking_number": "CMPH0099887766",
                 "inducted_by":     null
             }),
         ))
@@ -1018,7 +1018,7 @@ mod induction_capacity_enforcement {
             json!({
                 "hub_id":          hub.id.inner(),
                 "shipment_id":     Uuid::new_v4(),
-                "tracking_number": "LSPH0011111111",
+                "tracking_number": "CMPH0011111111",
                 "inducted_by":     null
             }),
         ))
@@ -1030,7 +1030,7 @@ mod induction_capacity_enforcement {
             json!({
                 "hub_id":          hub.id.inner(),
                 "shipment_id":     Uuid::new_v4(),
-                "tracking_number": "LSPH0022222222",
+                "tracking_number": "CMPH0022222222",
                 "inducted_by":     null
             }),
         ))
@@ -1062,7 +1062,7 @@ mod induction_capacity_enforcement {
                 json!({
                     "hub_id":          hub.id.inner(),
                     "shipment_id":     Uuid::new_v4(),
-                    "tracking_number": format!("LSPH00000{:05}", i),
+                    "tracking_number": format!("CMPH00000{:05}", i),
                     "inducted_by":     null
                 }),
             ))
@@ -1081,7 +1081,7 @@ mod induction_capacity_enforcement {
             json!({
                 "hub_id":          hub.id.inner(),
                 "shipment_id":     Uuid::new_v4(),
-                "tracking_number": "LSPH0099999999",
+                "tracking_number": "CMPH0099999999",
                 "inducted_by":     null
             }),
         ))
@@ -1105,7 +1105,7 @@ mod induction_capacity_enforcement {
             json!({
                 "hub_id":          hub.id.inner(),
                 "shipment_id":     Uuid::new_v4(),
-                "tracking_number": "LSPH0011111111",
+                "tracking_number": "CMPH0011111111",
                 "inducted_by":     null
             }),
         ))
@@ -1124,7 +1124,7 @@ mod induction_capacity_enforcement {
             json!({
                 "hub_id":          hub.id.inner(),
                 "shipment_id":     Uuid::new_v4(),
-                "tracking_number": "LSPH0022222222",
+                "tracking_number": "CMPH0022222222",
                 "inducted_by":     null
             }),
         ))

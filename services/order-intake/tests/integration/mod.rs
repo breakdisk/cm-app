@@ -293,10 +293,10 @@ mod create_shipment {
         let body: Value = resp.json();
         let tracking = body["tracking_number"].as_str().expect("tracking_number must be present");
         assert!(
-            tracking.starts_with("LSPH"),
-            "tracking number must match LSPH format, got: {tracking}"
+            tracking.starts_with("CMPH"),
+            "tracking number must match CMPH format, got: {tracking}"
         );
-        assert_eq!(tracking.len(), 14, "LSPH + 10 digits = 14 chars");
+        assert_eq!(tracking.len(), 14, "CMPH + 10 digits = 14 chars");
         assert!(body["id"].is_string(), "shipment id must be a UUID string");
         assert_eq!(body["status"], "Pending");
     }
@@ -983,14 +983,14 @@ mod tracking_number_format {
 
     #[tokio::test]
     async fn generated_tracking_numbers_match_lsph_format() {
-        // Domain-level unit test — TrackingNumber::generate() returns "LSPH" + 10 digits
+        // Domain-level unit test — TrackingNumber::generate() returns "CMPH" + 10 digits
         for _ in 0..20 {
             let tn = TrackingNumber::generate();
             assert!(
-                tn.starts_with("LSPH"),
-                "tracking number must start with LSPH, got {tn}"
+                tn.starts_with("CMPH"),
+                "tracking number must start with CMPH, got {tn}"
             );
-            assert_eq!(tn.len(), 14, "LSPH + 10 digits = 14 chars total, got {tn}");
+            assert_eq!(tn.len(), 14, "CMPH + 10 digits = 14 chars total, got {tn}");
             let digits = &tn[4..];
             assert!(
                 digits.chars().all(|c| c.is_ascii_digit()),

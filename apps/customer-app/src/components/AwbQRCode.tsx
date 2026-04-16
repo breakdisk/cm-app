@@ -3,8 +3,8 @@
  * Shows the AWB in a styled code box as a fallback (no external QR library needed).
  *
  * Usage:
- *   <AwbQRCode awb="LS-A1B2C3D4" size={180} />
- *   <AwbQRCode awb="LS-A1B2C3D4" size={280} fullscreen onClose={() => ...} />
+ *   <AwbQRCode awb="CM-PH1-S0000001A" size={180} />
+ *   <AwbQRCode awb="CM-PH1-S0000001A" size={280} fullscreen onClose={() => ...} />
  */
 import React from "react";
 import {

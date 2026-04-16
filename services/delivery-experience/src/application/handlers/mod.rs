@@ -139,9 +139,9 @@ async fn handle_message(
     match msg.topic() {
         topics::SHIPMENT_CREATED => {
             let data: ShipmentCreated = serde_json::from_slice(payload)?;
-            // Generate a human-readable tracking number: LS-<last8 of shipment_id>.
+            // Generate a human-readable tracking number: CM-<last8 of shipment_id>.
             let tracking_number = format!(
-                "LS-{}",
+                "CM-{}",
                 data.shipment_id.to_string().replace('-', "")[..8].to_uppercase()
             );
             let record = TrackingRecord::new(

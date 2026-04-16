@@ -271,7 +271,7 @@ export default function TrackingPage() {
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="LS-A1B2C3D4"
+            placeholder="CM-PH1-S0000001A"
             className="flex-1 bg-transparent text-sm font-mono text-white placeholder:text-white/20 outline-none uppercase"
             spellCheck={false}
           />

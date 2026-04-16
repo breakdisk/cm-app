@@ -70,7 +70,7 @@ interface Driver {
 
 const MOCK_ORDERS: IncomingOrder[] = [
   {
-    id: "o1", awb: "LS-F7G8H9I0", type: "local", status: "unassigned",
+    id: "o1", awb: "CM-PH1-S0000010A", type: "local", status: "unassigned",
     senderName: "Fatima Al-Rashid",
     pickupAddr: "Bldg 7, Al Quoz Industrial Area", pickupCity: "Dubai",
     receiverName: "Maria Santos",
@@ -80,7 +80,7 @@ const MOCK_ORDERS: IncomingOrder[] = [
     bookedAt: "2 min ago",
   },
   {
-    id: "o2", awb: "LS-J1K2L3M4", type: "balikbayan", freightMode: "sea", status: "unassigned",
+    id: "o2", awb: "CM-PH1-B0000011B", type: "balikbayan", freightMode: "sea", status: "unassigned",
     senderName: "Ahmed Hassan",
     pickupAddr: "Villa 12, Jumeirah 2", pickupCity: "Dubai",
     receiverName: "Lourdes Hassan",
@@ -90,7 +90,7 @@ const MOCK_ORDERS: IncomingOrder[] = [
     bookedAt: "8 min ago",
   },
   {
-    id: "o3", awb: "LS-N5O6P7Q8", type: "local", status: "assigning",
+    id: "o3", awb: "CM-PH1-S0000012C", type: "local", status: "assigning",
     senderName: "Grace Villanueva",
     pickupAddr: "Unit 3A, Silicon Oasis", pickupCity: "Dubai",
     receiverName: "Pedro Reyes",
@@ -100,7 +100,7 @@ const MOCK_ORDERS: IncomingOrder[] = [
     bookedAt: "14 min ago",
   },
   {
-    id: "o4", awb: "LS-R9S0T1U2", type: "balikbayan", freightMode: "air", status: "assigned",
+    id: "o4", awb: "CM-PH1-I0000013D", type: "balikbayan", freightMode: "air", status: "assigned",
     assignedTo: "Rodel Bautista",
     senderName: "John Mendoza",
     pickupAddr: "Flat 401, Deira Twin Towers", pickupCity: "Deira",
@@ -111,7 +111,7 @@ const MOCK_ORDERS: IncomingOrder[] = [
     bookedAt: "21 min ago", etaPickup: "10:45 AM",
   },
   {
-    id: "o5", awb: "LS-V3W4X5Y6", type: "local", status: "assigned",
+    id: "o5", awb: "CM-PH1-S0000014E", type: "local", status: "assigned",
     assignedTo: "Mark Cruz",
     senderName: "Aisha Morales",
     pickupAddr: "Shop 5, Karama Centre", pickupCity: "Al Karama",
@@ -122,7 +122,7 @@ const MOCK_ORDERS: IncomingOrder[] = [
     bookedAt: "35 min ago", etaPickup: "11:00 AM",
   },
   {
-    id: "o6", awb: "LS-Z7A8B9C0", type: "local", status: "picked_up",
+    id: "o6", awb: "CM-PH1-S0000015F", type: "local", status: "picked_up",
     assignedTo: "Danny Soriano",
     senderName: "Sandra Lee",
     pickupAddr: "Office 22, Dafza Free Zone", pickupCity: "Dubai",
