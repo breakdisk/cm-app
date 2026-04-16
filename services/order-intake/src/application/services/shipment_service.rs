@@ -95,15 +95,16 @@ impl ShipmentService {
             "express"       => ServiceType::Express,
             "same_day"      => ServiceType::SameDay,
             "balikbayan"    => ServiceType::Balikbayan,
-            "international" => ServiceType::Balikbayan, // routes via same freight flow
+            "international" => ServiceType::International,
             other => return Err(AppError::Validation(format!("Unknown service type: {other}"))),
         };
 
         let service_code = match service_type {
-            ServiceType::Standard   => ServiceCode::Standard,
-            ServiceType::Express    => ServiceCode::Express,
-            ServiceType::SameDay    => ServiceCode::SameDay,
-            ServiceType::Balikbayan => ServiceCode::Balikbayan,
+            ServiceType::Standard      => ServiceCode::Standard,
+            ServiceType::Express       => ServiceCode::Express,
+            ServiceType::SameDay       => ServiceCode::SameDay,
+            ServiceType::Balikbayan    => ServiceCode::Balikbayan,
+            ServiceType::International => ServiceCode::International,
         };
 
         // ── Business rule: same-day cutoff at 14:00 ──────────────────────────

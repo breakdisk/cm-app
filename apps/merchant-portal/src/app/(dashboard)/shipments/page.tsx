@@ -529,7 +529,7 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
           province: receiverCity, postal_code: receiverZip,
           country_code: receiverCountry,
         },
-        service_type: isIntl ? "balikbayan" : "standard",
+        service_type: isIntl ? "international" : "standard",
         weight_grams: weightGrams > 0 ? weightGrams : 500,
         ...(isIntl && boxL ? { length_cm: parseInt(boxL), width_cm: parseInt(boxW), height_cm: parseInt(boxH) } : {}),
         ...(declaredValue ? { declared_value_cents: Math.round(parseFloat(declaredValue) * 100) } : {}),

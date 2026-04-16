@@ -98,10 +98,11 @@ impl ShipmentRow {
             },
         };
         let service_type = match self.service_type.as_str() {
-            "express"    => ServiceType::Express,
-            "same_day"   => ServiceType::SameDay,
-            "balikbayan" => ServiceType::Balikbayan,
-            _            => ServiceType::Standard,
+            "express"       => ServiceType::Express,
+            "same_day"      => ServiceType::SameDay,
+            "balikbayan"    => ServiceType::Balikbayan,
+            "international" => ServiceType::International,
+            _               => ServiceType::Standard,
         };
         let status = match self.status.as_str() {
             "confirmed"          => ShipmentStatus::Confirmed,

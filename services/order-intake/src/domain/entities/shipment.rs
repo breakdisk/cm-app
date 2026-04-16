@@ -64,10 +64,11 @@ impl Shipment {
     pub fn compute_base_fee(&self) -> Money {
         use logisticos_types::Currency;
         let base = match self.service_type {
-            ServiceType::Standard  => 8500,  // PHP 85.00
-            ServiceType::Express   => 15000, // PHP 150.00
-            ServiceType::SameDay   => 20000, // PHP 200.00
-            ServiceType::Balikbayan => 50000, // PHP 500.00
+            ServiceType::Standard      => 8500,   // PHP 85.00
+            ServiceType::Express       => 15000,  // PHP 150.00
+            ServiceType::SameDay       => 20000,  // PHP 200.00
+            ServiceType::Balikbayan    => 50000,  // PHP 500.00
+            ServiceType::International => 75000,  // PHP 750.00
         };
         // Weight surcharge: +PHP 10 per 0.5kg over 1kg
         let weight_kg = self.weight.grams as f64 / 1000.0;

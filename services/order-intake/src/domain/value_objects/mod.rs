@@ -9,6 +9,7 @@ pub enum ServiceType {
     Express,
     SameDay,
     Balikbayan,
+    International,
 }
 
 impl ServiceType {
@@ -18,6 +19,7 @@ impl ServiceType {
             Self::Express => "express",
             Self::SameDay => "same_day",
             Self::Balikbayan => "balikbayan",
+            Self::International => "international",
         }
     }
 
