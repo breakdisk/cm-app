@@ -40,4 +40,13 @@ pub trait TrackingRepository: Send + Sync {
     /// Record customer's self-confirmation of receipt.
     /// Sets `customer_confirmed_at` timestamp on the tracking record.
     async fn confirm_customer_receipt(&self, tracking_number: &str) -> anyhow::Result<()>;
+
+    /// Record a customer's request to have their receipt emailed.
+    /// Stores the requested email address and timestamp; the engagement engine
+    /// picks this up via Kafka outbox and sends the actual email.
+    async fn record_receipt_email_request(
+        &self,
+        tracking_number: &str,
+        email: &str,
+    ) -> anyhow::Result<()>;
 }

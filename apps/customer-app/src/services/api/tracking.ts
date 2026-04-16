@@ -134,4 +134,13 @@ export const trackingApi = {
       {}
     );
   },
+
+  /** Customer requests their receipt to be emailed */
+  sendReceiptByEmail: (trackingNumber: string, email: string) => {
+    const trackingClient = getTrackingClient();
+    return trackingClient.post<{ sent: boolean; email: string }>(
+      `/v1/tracking/${trackingNumber}/send-receipt`,
+      { email }
+    );
+  },
 };

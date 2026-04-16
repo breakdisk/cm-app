@@ -17,6 +17,7 @@
  *   Step 5 — Review & Confirm
  */
 import React, { useState } from "react";
+import { useNavigation } from "@react-navigation/native";
 import { FadeInView } from '../../components/FadeInView';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, Image,
@@ -196,6 +197,7 @@ function CountryPickerRN({ value, onChange, accent = CYAN }: {
 
 export function BookingScreen() {
   const dispatch      = useDispatch<AppDispatch>();
+  const navigation    = useNavigation<any>();
   const loyaltyPoints = useSelector((s: RootState) => s.auth.loyaltyPoints);
   const shipmentCount = useSelector((s: RootState) => s.shipments.list.length);
   const { isConnected } = useNetInfo();
@@ -973,11 +975,23 @@ export function BookingScreen() {
                 ))}
               </View>
 
-              <Pressable onPress={handleBookAnother} style={[s.btn, { marginTop: 4 }]}>
-                <LinearGradient colors={isIntl ? [PURPLE, "#6B21D8"] : [GREEN, CYAN]}
-                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.btnGradient}>
-                  <Text style={s.btnText}>Book Another Shipment</Text>
+              {/* Track Pickup — primary CTA after booking */}
+              <Pressable
+                onPress={() => navigation.navigate("Collection", { awb: confirmedAwb, type: isIntl ? "international" : "local" })}
+                style={[s.btn, { marginTop: 4 }]}
+              >
+                <LinearGradient
+                  colors={isIntl ? [PURPLE, "#6B21D8"] : [GREEN, CYAN]}
+                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                  style={s.btnGradient}
+                >
+                  <Ionicons name="locate-outline" size={16} color="#050810" />
+                  <Text style={s.btnText}>Track Pickup</Text>
                 </LinearGradient>
+              </Pressable>
+
+              <Pressable onPress={handleBookAnother} style={[s.btn, s.btnSecondary]}>
+                <Text style={s.btnSecondaryText}>Book Another Shipment</Text>
               </Pressable>
             </LinearGradient>
           </FadeInView>
@@ -1086,8 +1100,10 @@ const s = StyleSheet.create({
   transitNoteText:   { flex: 1, fontSize: 11, color: "rgba(168,85,247,0.7)", lineHeight: 16 },
 
   btn:               { borderRadius: 12, overflow: "hidden" },
-  btnGradient:       { paddingVertical: 14, alignItems: "center", justifyContent: "center", borderRadius: 12 },
+  btnGradient:       { flexDirection: "row", gap: 8, paddingVertical: 14, alignItems: "center", justifyContent: "center", borderRadius: 12 },
   btnText:           { fontSize: 14, fontWeight: "700", color: "#050810" },
+  btnSecondary:      { paddingVertical: 13, alignItems: "center", justifyContent: "center", borderRadius: 12, borderWidth: 1, borderColor: "rgba(255,255,255,0.12)", backgroundColor: "rgba(255,255,255,0.04)", marginTop: 8 },
+  btnSecondaryText:  { fontSize: 14, fontWeight: "600", color: "rgba(255,255,255,0.55)" },
 
   successCard:       { margin: 16 },
   successGradient:   { borderRadius: 20, padding: 24, alignItems: "center", gap: 12, borderWidth: 1, borderColor: BORDER },

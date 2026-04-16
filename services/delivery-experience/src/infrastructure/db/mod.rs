@@ -302,4 +302,24 @@ impl TrackingRepository for PgTrackingRepository {
         .await?;
         Ok(())
     }
+
+    async fn record_receipt_email_request(
+        &self,
+        tracking_number: &str,
+        email: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"INSERT INTO tracking.receipt_email_requests
+                   (tracking_number, email, requested_at)
+               VALUES ($1, $2, NOW())
+               ON CONFLICT (tracking_number)
+               DO UPDATE SET email        = EXCLUDED.email,
+                             requested_at = NOW()"#,
+        )
+        .bind(tracking_number)
+        .bind(email)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }

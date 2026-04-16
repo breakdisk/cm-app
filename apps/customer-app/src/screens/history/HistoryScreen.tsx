@@ -72,7 +72,7 @@ const DEMO_SHIPMENTS: ShipmentRecord[] = [
 // Statuses where driver pickup QR is relevant
 const PICKUP_STATUSES: ShipmentStatus[] = ["pending", "confirmed"];
 
-function ShipmentCard({ item, onShowQR, onViewReceipt }: { item: ShipmentRecord; onShowQR: (awb: string) => void; onViewReceipt: (item: ShipmentRecord) => void }) {
+function ShipmentCard({ item, onShowQR, onViewReceipt, onTrackPickup }: { item: ShipmentRecord; onShowQR: (awb: string) => void; onViewReceipt: (item: ShipmentRecord) => void; onTrackPickup: (item: ShipmentRecord) => void }) {
   const cfg       = STATUS_CONFIG[item.status] ?? { label: item.status, color: AMBER, icon: "time-outline" };
   const isIntl    = item.type === "international";
   const showQRBtn = PICKUP_STATUSES.includes(item.status);
@@ -132,15 +132,27 @@ function ShipmentCard({ item, onShowQR, onViewReceipt }: { item: ShipmentRecord;
         </View>
       )}
 
-      {/* Show QR button — only for pending/confirmed (awaiting pickup) */}
+      {/* Track Pickup button — pending/confirmed = driver coming to collect */}
+      {showQRBtn && (
+        <Pressable
+          onPress={() => onTrackPickup(item)}
+          style={[s.qrBtn, { borderColor: accent + "40", backgroundColor: accent + "0C" }]}
+        >
+          <Ionicons name="locate-outline" size={14} color={accent} />
+          <Text style={[s.qrBtnText, { color: accent }]}>Track Pickup</Text>
+          <Ionicons name="chevron-forward" size={12} color={accent + "80"} />
+        </Pressable>
+      )}
+
+      {/* Show QR button — secondary action for pending/confirmed */}
       {showQRBtn && (
         <Pressable
           onPress={() => onShowQR(item.awb)}
-          style={[s.qrBtn, { borderColor: accent + "40", backgroundColor: accent + "0C" }]}
+          style={[s.qrBtn, { borderColor: "rgba(255,255,255,0.1)", backgroundColor: "rgba(255,255,255,0.03)" }]}
         >
-          <Ionicons name="qr-code-outline" size={14} color={accent} />
-          <Text style={[s.qrBtnText, { color: accent }]}>Show Pickup QR Code</Text>
-          <Ionicons name="chevron-forward" size={12} color={accent + "80"} />
+          <Ionicons name="qr-code-outline" size={14} color="rgba(255,255,255,0.4)" />
+          <Text style={[s.qrBtnText, { color: "rgba(255,255,255,0.4)" }]}>Show QR Code</Text>
+          <Ionicons name="chevron-forward" size={12} color="rgba(255,255,255,0.2)" />
         </Pressable>
       )}
 
@@ -173,6 +185,10 @@ export function HistoryScreen({ navigation }: { navigation: any }) {
 
   function handleViewReceipt(item: ShipmentRecord) {
     navigation.navigate("Receipt", { shipment: item });
+  }
+
+  function handleTrackPickup(item: ShipmentRecord) {
+    navigation.navigate("Collection", { awb: item.awb, type: item.type });
   }
 
   const filtered = shipments.filter((s) => {
@@ -250,7 +266,7 @@ export function HistoryScreen({ navigation }: { navigation: any }) {
       ) : (
         <View style={s.list}>
           {filtered.map((item) => (
-            <ShipmentCard key={item.awb} item={item} onShowQR={setQrAwb} onViewReceipt={handleViewReceipt} />
+            <ShipmentCard key={item.awb} item={item} onShowQR={setQrAwb} onViewReceipt={handleViewReceipt} onTrackPickup={handleTrackPickup} />
           ))}
         </View>
       )}

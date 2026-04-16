@@ -25,6 +25,7 @@ pub fn router() -> Router<AppState> {
         .route("/track/:tracking_number/feedback",                 post(submit_feedback))
         .route("/v1/tracking/:tracking_number/feedback",           post(submit_feedback))
         .route("/v1/tracking/:tracking_number/confirm-receipt",    post(confirm_receipt))
+        .route("/v1/tracking/:tracking_number/send-receipt",       post(send_receipt))
         // Authenticated — merchant/ops
         .route("/v1/tracking/:shipment_id",                        get(get_by_shipment_id))
         .route("/v1/tracking",                                     get(list_shipments))
@@ -235,6 +236,47 @@ async fn submit_feedback(
         Ok(()) => (
             StatusCode::OK,
             Json(serde_json::json!({"data": {"submitted": true}})),
+        ).into_response(),
+        Err(AppError::Validation(msg)) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": msg})),
+        ).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ).into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/tracking/:tracking_number/send-receipt
+// Customer requests their receipt emailed to them.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Deserialize)]
+struct SendReceiptBody {
+    email: String,
+}
+
+async fn send_receipt(
+    State(state): State<AppState>,
+    Path(tracking_number): Path<String>,
+    Json(body): Json<SendReceiptBody>,
+) -> impl IntoResponse {
+    match state.tracking_svc.send_receipt_email(&tracking_number, &body.email).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "data": {
+                    "sent": true,
+                    "email": body.email,
+                    "tracking_number": tracking_number,
+                }
+            })),
+        ).into_response(),
+        Err(AppError::NotFound { .. }) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Tracking number not found"})),
         ).into_response(),
         Err(AppError::Validation(msg)) => (
             StatusCode::UNPROCESSABLE_ENTITY,

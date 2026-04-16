@@ -4,16 +4,18 @@
  * Data is sourced from the shipment record already in Redux + tracking data.
  * Navigated to from HistoryScreen card "View Receipt" button.
  */
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import {
-  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Share,
+  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator,
+  Share, TextInput, Alert, Animated, Keyboard,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
+import { useSelector } from "react-redux";
 import { FadeInView } from "../../components/FadeInView";
 import { trackingApi } from "../../services/api/tracking";
-import type { ShipmentRecord } from "../../store";
+import type { ShipmentRecord, RootState } from "../../store";
 
 const CANVAS = "#050810";
 const CYAN   = "#00E5FF";
@@ -50,9 +52,28 @@ export function ReceiptScreen({ route, navigation }: ReceiptScreenProps) {
   const { shipment } = route.params;
   const isDelivered = shipment.status === "delivered";
 
+  // Pre-fill email from customer profile
+  const profileEmail = useSelector((s: RootState) => (s.auth as any).profile?.email ?? "");
+
   const [deliveredAt, setDeliveredAt] = useState<string | null>(null);
   const [driverName, setDriverName] = useState<string | null>(null);
   const [loadingExtra, setLoadingExtra] = useState(isDelivered);
+
+  // Email receipt state
+  const [emailExpanded, setEmailExpanded] = useState(false);
+  const [emailValue, setEmailValue]       = useState(profileEmail);
+  const [emailSending, setEmailSending]   = useState(false);
+  const [emailSent, setEmailSent]         = useState(false);
+  const emailFadeAnim = useRef(new Animated.Value(0)).current;
+
+  // Animate email section in/out
+  useEffect(() => {
+    Animated.timing(emailFadeAnim, {
+      toValue: emailExpanded ? 1 : 0,
+      duration: 220,
+      useNativeDriver: true,
+    }).start();
+  }, [emailExpanded, emailFadeAnim]);
 
   useEffect(() => {
     if (!isDelivered) return;
@@ -63,7 +84,7 @@ export function ReceiptScreen({ route, navigation }: ReceiptScreenProps) {
         if (deliveryEvent) setDeliveredAt(deliveryEvent.occurred_at);
         if (data.driver?.name) setDriverName(data.driver.name);
       })
-      .catch(() => {/* non-critical — skip silently */})
+      .catch(() => {/* non-critical */})
       .finally(() => setLoadingExtra(false));
   }, [shipment.awb, isDelivered]);
 
@@ -83,6 +104,25 @@ export function ReceiptScreen({ route, navigation }: ReceiptScreenProps) {
       isDelivered && deliveredAt ? `Delivered: ${deliveredAt}` : "",
     ].filter(Boolean).join("\n");
     await Share.share({ message: lines, title: `Receipt — ${shipment.awb}` });
+  }
+
+  async function handleEmailReceipt() {
+    const email = emailValue.trim();
+    if (!email || !email.includes("@")) {
+      Alert.alert("Invalid Email", "Please enter a valid email address.");
+      return;
+    }
+    Keyboard.dismiss();
+    setEmailSending(true);
+    try {
+      await trackingApi.sendReceiptByEmail(shipment.awb, email);
+      setEmailSent(true);
+      setEmailExpanded(false);
+    } catch (err: any) {
+      Alert.alert("Send Failed", err?.response?.data?.error ?? "Could not send receipt. Please try again.");
+    } finally {
+      setEmailSending(false);
+    }
   }
 
   return (
@@ -187,19 +227,78 @@ export function ReceiptScreen({ route, navigation }: ReceiptScreenProps) {
           </FadeInView>
         )}
 
-        {/* Share CTA */}
+        {/* Email Receipt CTA */}
         <FadeInView delay={240} fromY={12} style={s.shareCard}>
+          {/* Email sent success state */}
+          {emailSent ? (
+            <View style={s.emailSentBanner}>
+              <Ionicons name="checkmark-circle" size={18} color={GREEN} />
+              <Text style={[s.shareText, { color: GREEN }]}>Receipt sent to {emailValue}</Text>
+            </View>
+          ) : (
+            <>
+              {/* Email button */}
+              <Pressable
+                onPress={() => setEmailExpanded(v => !v)}
+                style={({ pressed }) => [s.shareButton, { opacity: pressed ? 0.8 : 1, marginBottom: emailExpanded ? 0 : undefined }]}
+              >
+                <LinearGradient
+                  colors={["rgba(0,229,255,0.12)", "rgba(168,85,247,0.12)"]}
+                  start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
+                  style={s.shareGrad}
+                >
+                  <Ionicons name="mail-outline" size={18} color={CYAN} />
+                  <Text style={s.shareText}>Email Receipt</Text>
+                  <Ionicons
+                    name={emailExpanded ? "chevron-up" : "chevron-down"}
+                    size={14} color="rgba(255,255,255,0.35)"
+                  />
+                </LinearGradient>
+              </Pressable>
+
+              {/* Collapsible email input */}
+              <Animated.View style={{ opacity: emailFadeAnim, overflow: "hidden", maxHeight: emailExpanded ? 100 : 0 }}>
+                <View style={s.emailInputRow}>
+                  <TextInput
+                    style={s.emailInput}
+                    value={emailValue}
+                    onChangeText={setEmailValue}
+                    placeholder="your@email.com"
+                    placeholderTextColor="rgba(255,255,255,0.25)"
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                  <Pressable
+                    onPress={handleEmailReceipt}
+                    disabled={emailSending}
+                    style={[s.emailSendBtn, { opacity: emailSending ? 0.6 : 1 }]}
+                  >
+                    {emailSending ? (
+                      <ActivityIndicator size="small" color={CANVAS} />
+                    ) : (
+                      <Ionicons name="send" size={16} color={CANVAS} />
+                    )}
+                  </Pressable>
+                </View>
+              </Animated.View>
+            </>
+          )}
+        </FadeInView>
+
+        {/* Share CTA */}
+        <FadeInView delay={300} fromY={12} style={[s.shareCard, { marginBottom: 8 }]}>
           <Pressable
             onPress={handleShare}
             style={({ pressed }) => [s.shareButton, { opacity: pressed ? 0.7 : 1 }]}
           >
             <LinearGradient
-              colors={[CYAN + "20", PURPLE + "20"]}
+              colors={[CYAN + "10", PURPLE + "10"]}
               start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
               style={s.shareGrad}
             >
-              <Ionicons name="share-outline" size={18} color={CYAN} />
-              <Text style={s.shareText}>Share Receipt</Text>
+              <Ionicons name="share-outline" size={18} color="rgba(255,255,255,0.5)" />
+              <Text style={[s.shareText, { color: "rgba(255,255,255,0.5)" }]}>Share as Text</Text>
             </LinearGradient>
           </Pressable>
         </FadeInView>
@@ -233,8 +332,13 @@ const s = StyleSheet.create({
   totalLabel:  { flex: 1, fontSize: 15, fontWeight: "700", color: "#FFF", fontFamily: "SpaceGrotesk-Bold" },
   totalValue:  { fontSize: 18, fontWeight: "700", fontFamily: "SpaceGrotesk-Bold" },
 
-  shareCard:   { marginHorizontal: 16, marginTop: 8 },
-  shareButton: { borderRadius: 14, overflow: "hidden", borderWidth: 1, borderColor: CYAN + "30" },
-  shareGrad:   { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, paddingVertical: 14 },
-  shareText:   { fontSize: 14, fontWeight: "600", color: CYAN, fontFamily: "SpaceGrotesk-SemiBold" },
+  shareCard:      { marginHorizontal: 16, marginTop: 8 },
+  shareButton:    { borderRadius: 14, overflow: "hidden", borderWidth: 1, borderColor: CYAN + "30" },
+  shareGrad:      { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, paddingVertical: 14 },
+  shareText:      { fontSize: 14, fontWeight: "600", color: CYAN, fontFamily: "SpaceGrotesk-SemiBold" },
+
+  emailInputRow:  { flexDirection: "row", alignItems: "center", gap: 8, padding: 10, borderTopWidth: 1, borderTopColor: BORDER },
+  emailInput:     { flex: 1, height: 40, backgroundColor: "rgba(255,255,255,0.05)", borderRadius: 10, paddingHorizontal: 12, color: "#FFF", fontSize: 14, borderWidth: 1, borderColor: BORDER },
+  emailSendBtn:   { width: 40, height: 40, borderRadius: 10, backgroundColor: CYAN, alignItems: "center", justifyContent: "center" },
+  emailSentBanner:{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 14, borderRadius: 14, borderWidth: 1, borderColor: GREEN + "40", backgroundColor: GREEN + "10" },
 });

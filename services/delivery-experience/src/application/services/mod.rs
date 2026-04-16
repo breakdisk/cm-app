@@ -131,6 +131,35 @@ impl TrackingService {
             .map_err(|e| AppError::Internal(e))
     }
 
+    /// Customer requests their shipment receipt to be emailed.
+    ///
+    /// Validates the tracking number and email, then delegates to the repo
+    /// which writes to the outbox table consumed by the engagement engine.
+    pub async fn send_receipt_email(
+        &self,
+        tracking_number: &str,
+        email: &str,
+    ) -> AppResult<()> {
+        let email = email.trim();
+        if email.is_empty() || !email.contains('@') {
+            return Err(AppError::Validation("A valid email address is required".into()));
+        }
+
+        self.repo
+            .find_by_tracking_number(tracking_number)
+            .await
+            .map_err(|e| AppError::Internal(e))?
+            .ok_or_else(|| AppError::NotFound {
+                resource: "tracking",
+                id: tracking_number.to_owned(),
+            })?;
+
+        self.repo
+            .record_receipt_email_request(tracking_number, email)
+            .await
+            .map_err(|e| AppError::Internal(e))
+    }
+
     pub async fn submit_feedback(
         &self,
         tracking_number: &str,

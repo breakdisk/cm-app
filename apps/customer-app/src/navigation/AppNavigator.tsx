@@ -24,6 +24,7 @@ import { OnboardingProfileScreen }from "../screens/auth/OnboardingProfileScreen"
 import { KYCScreen }              from "../screens/auth/KYCScreen";
 import { InvoicesScreen }         from "../screens/invoices/InvoicesScreen";
 import { InvoiceDetailScreen }    from "../screens/invoices/InvoiceDetailScreen";
+import { CollectionScreen }       from "../screens/collection/CollectionScreen";
 
 // ── Design tokens ───────────────────────────────────────────────────────────────
 const CANVAS = "#050810";
@@ -106,6 +107,7 @@ function AuthenticatedNavigator() {
     <Stack.Navigator id="AuthenticatedStack" screenOptions={{ headerShown: false, contentStyle: { backgroundColor: CANVAS }, animation: "slide_from_right" }}>
       <Stack.Screen name="Tabs"          component={TabNavigator}        />
       <Stack.Screen name="Receipt"       component={ReceiptScreen}        />
+      <Stack.Screen name="Collection"    component={CollectionScreen}     />
       <Stack.Screen name="Invoices"      component={InvoicesScreen}       />
       <Stack.Screen name="InvoiceDetail" component={InvoiceDetailScreen}  />
     </Stack.Navigator>
