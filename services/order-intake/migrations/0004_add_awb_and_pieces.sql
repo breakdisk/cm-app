@@ -112,7 +112,7 @@ CREATE POLICY tenant_isolation ON order_intake.shipment_pieces
 
 CREATE TABLE IF NOT EXISTS order_intake.awb_sequences (
     tenant_code         CHAR(3)     NOT NULL,
-    service_char        CHAR(1)     NOT NULL CHECK (service_char IN ('S','E','D','B','N')),
+    service_char        CHAR(1)     NOT NULL CHECK (service_char IN ('S','E','D','B','I')),
     last_issued         INTEGER     NOT NULL DEFAULT 0
                                     CHECK (last_issued BETWEEN 0 AND 9999999),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
