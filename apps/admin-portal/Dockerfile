@@ -4,7 +4,7 @@ COPY apps/admin-portal/package.json apps/admin-portal/package-lock.json* ./
 RUN npm install --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000
 COPY apps/admin-portal/ .
 ENV NEXT_TELEMETRY_DISABLED=1
-ARG NEXT_PUBLIC_API_URL=https://api.os.cargomarket.net
+ARG NEXT_PUBLIC_API_URL=https://os-api.cargomarket.net
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 RUN npm run build
 

@@ -6,7 +6,7 @@ COPY apps/merchant-portal/ .
 ENV NEXT_TELEMETRY_DISABLED=1
 # NEXT_PUBLIC_* vars are baked into the JS bundle at build time.
 # Pass --build-arg NEXT_PUBLIC_API_URL=https://api.os.cargomarket.net in Dokploy.
-ARG NEXT_PUBLIC_API_URL=https://api.os.cargomarket.net
+ARG NEXT_PUBLIC_API_URL=https://os-api.cargomarket.net
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 RUN npm run build
 
