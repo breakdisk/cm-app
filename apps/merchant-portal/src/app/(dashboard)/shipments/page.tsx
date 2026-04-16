@@ -78,7 +78,7 @@ const STATS = [
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 
-const ORDER_INTAKE_URL = process.env.NEXT_PUBLIC_ORDER_INTAKE_URL ?? "http://localhost:8004";
+const ORDER_INTAKE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 // ── New Shipment Modal ────────────────────────────────────────────────────────
 
