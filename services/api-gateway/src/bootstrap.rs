@@ -90,6 +90,13 @@ pub async fn run() -> anyhow::Result<()> {
 // ---------------------------------------------------------------------------
 
 async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) -> Response {
+    // CORS preflight — OPTIONS must never hit auth or proxy logic.
+    // CorsLayer adds the Access-Control-* headers; we just need to
+    // short-circuit here so the handler doesn't return 401.
+    if req.method() == Method::OPTIONS {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+
     // 1. Extract JWT from Authorization: Bearer <token>
     let auth_header = req
         .headers()
