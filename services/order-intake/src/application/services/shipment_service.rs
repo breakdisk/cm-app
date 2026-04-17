@@ -94,6 +94,7 @@ impl ShipmentService {
     }
 
     pub async fn create(&self, cmd: CreateShipmentCommand) -> AppResult<Shipment> {
+        tracing::info!(step = "enter", "ShipmentService::create");
         // ── Validate service type ────────────────────────────────────────────
         let service_type = match cmd.service_type.as_str() {
             "standard"      => ServiceType::Standard,
@@ -103,6 +104,7 @@ impl ShipmentService {
             "international" => ServiceType::International,
             other => return Err(AppError::Validation(format!("Unknown service type: {other}"))),
         };
+        tracing::info!(step = "service_type_ok", ?service_type, "create");
 
         let service_code = match service_type {
             ServiceType::Standard      => ServiceCode::Standard,
@@ -141,6 +143,7 @@ impl ShipmentService {
         // ── Normalize and geocode addresses ──────────────────────────────────
         let origin      = self.normalizer.normalize(&cmd.origin).await.map_err(AppError::Internal)?;
         let destination = self.normalizer.normalize(&cmd.destination).await.map_err(AppError::Internal)?;
+        tracing::info!(step = "normalized", "create");
 
         // ── Dimensions / billable weight ─────────────────────────────────────
         let dimensions = match (cmd.length_cm, cmd.width_cm, cmd.height_cm) {
@@ -154,11 +157,13 @@ impl ShipmentService {
         // ── Generate master AWB ───────────────────────────────────────────────
         let tenant_code = logisticos_types::awb::TenantCode::new(&cmd.tenant_code)
             .map_err(|e| AppError::Validation(e.to_string()))?;
+        tracing::info!(step = "tenant_code_ok", tenant_code = %tenant_code.as_str(), "create");
         let master_awb = self
             .awb_generator
             .next_awb(&tenant_code, service_code)
             .await
             .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
+        tracing::info!(step = "awb_generated", awb = %master_awb.as_str(), "create");
 
         // ── Generate child AWBs (one per piece) ───────────────────────────────
         let child_awbs = generate_child_awbs(&master_awb, piece_count)
@@ -218,8 +223,16 @@ impl ShipmentService {
         };
 
         // ── Persist ───────────────────────────────────────────────────────────
-        self.repo.save(&shipment).await.map_err(AppError::Internal)?;
-        self.repo.save_pieces(&pieces).await.map_err(AppError::Internal)?;
+        self.repo.save(&shipment).await.map_err(|e| {
+            tracing::error!(error = ?e, "shipment_repo.save failed");
+            AppError::Internal(e)
+        })?;
+        tracing::info!(step = "shipment_saved", "create");
+        self.repo.save_pieces(&pieces).await.map_err(|e| {
+            tracing::error!(error = ?e, "shipment_repo.save_pieces failed");
+            AppError::Internal(e)
+        })?;
+        tracing::info!(step = "pieces_saved", "create");
 
         // ── Publish AwbIssued (fire-and-forget) ───────────────────────────────
         let awb_event = Event::new(

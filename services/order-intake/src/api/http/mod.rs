@@ -56,8 +56,23 @@ async fn create_shipment(
     if claims.roles.contains(&"customer".to_string()) {
         cmd.booked_by_customer = true;
     }
-    let shipment = s.svc.create(cmd).await?;
-    Ok::<_, AppError>((StatusCode::CREATED, Json(shipment)))
+    tracing::info!(
+        service_type   = %cmd.service_type,
+        origin_country = %cmd.origin.country_code,
+        dest_country   = %cmd.destination.country_code,
+        tenant_slug    = %claims.tenant_slug,
+        tenant_code    = %cmd.tenant_code,
+        weight_grams   = cmd.weight_grams,
+        booked_by_customer = cmd.booked_by_customer,
+        "create_shipment handler entered",
+    );
+    match s.svc.create(cmd).await {
+        Ok(shipment) => Ok::<_, AppError>((StatusCode::CREATED, Json(shipment))),
+        Err(e) => {
+            tracing::error!(error = ?e, "create_shipment handler: service returned error");
+            Err(e)
+        }
+    }
 }
 
 async fn bulk_create_shipments(
