@@ -2,9 +2,14 @@ use std::sync::Arc;
 use sqlx::postgres::PgPoolOptions;
 use anyhow::Context;
 use crate::config::Config;
-use crate::application::services::{BillingAggregationService, InvoiceService, CodService, WalletService};
+use crate::application::services::{
+    BillingAggregationService, CodRemittanceService, CodService, InvoiceService, WalletService,
+};
 use crate::infrastructure::cache::RedisSequenceSource;
-use crate::infrastructure::db::{PgInvoiceRepository, PgCodRepository, PgWalletRepository, PgBillingRunRepository};
+use crate::infrastructure::db::{
+    PgBillingRunRepository, PgCodRemittanceBatchRepository, PgCodRepository,
+    PgInvoiceRepository, PgWalletRepository,
+};
 use crate::infrastructure::http::OrderIntakeClient;
 use crate::api::http::{router, AppState};
 use crate::infrastructure::messaging::PodConsumer;
@@ -49,6 +54,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     let invoice_repo     = Arc::new(PgInvoiceRepository::new(pool.clone()));
     let cod_repo         = Arc::new(PgCodRepository::new(pool.clone()));
+    let cod_batch_repo   = Arc::new(PgCodRemittanceBatchRepository::new(pool.clone()));
     let wallet_repo      = Arc::new(PgWalletRepository::new(pool.clone()));
     let billing_run_repo = Arc::new(PgBillingRunRepository::new(pool.clone()));
     let sequence_source  = Arc::new(
@@ -63,7 +69,15 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::clone(&order_intake_client) as _,
     ));
     let cod_service = Arc::new(CodService::new(
-        Arc::clone(&cod_repo) as _, Arc::clone(&wallet_repo) as _, Arc::clone(&kafka),
+        Arc::clone(&cod_repo) as _,
+        Arc::clone(&order_intake_client) as _,
+        Arc::clone(&kafka),
+    ));
+    let cod_remittance_service = Arc::new(CodRemittanceService::new(
+        Arc::clone(&cod_repo) as _,
+        Arc::clone(&cod_batch_repo) as _,
+        Arc::clone(&wallet_repo) as _,
+        Arc::clone(&kafka),
     ));
     let wallet_service = Arc::new(WalletService::new(
         Arc::clone(&wallet_repo) as _,
@@ -75,11 +89,12 @@ pub async fn run() -> anyhow::Result<()> {
     ));
 
     let state = Arc::new(AppState {
-        invoice_service: Arc::clone(&invoice_service),
-        cod_service:     Arc::clone(&cod_service),
+        invoice_service:        Arc::clone(&invoice_service),
+        cod_service:            Arc::clone(&cod_service),
+        cod_remittance_service: Arc::clone(&cod_remittance_service),
         wallet_service,
-        billing_service: Arc::clone(&billing_service),
-        jwt:             Arc::clone(&jwt),
+        billing_service:        Arc::clone(&billing_service),
+        jwt:                    Arc::clone(&jwt),
     });
     let app = router(state);
 

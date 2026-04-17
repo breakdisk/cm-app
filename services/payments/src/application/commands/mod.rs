@@ -73,6 +73,25 @@ pub struct RequestWithdrawalCommand {
     pub bank_account_id: Uuid,
 }
 
+/// Create a COD remittance batch for one (tenant, merchant) grouping all
+/// collected-but-unbatched COD rows up to `cutoff_date` end-of-day UTC.
+/// Returns the batch with computed totals in `Created` status.
+#[derive(Debug, Deserialize)]
+pub struct CreateCodBatchCommand {
+    pub tenant_id:   Uuid,
+    pub merchant_id: Uuid,
+    pub cutoff_date: NaiveDate,
+}
+
+/// Confirm a COD remittance batch — finance has verified physical cash or
+/// driver payout. Flips batch → `Paid`, flips member COD rows → `remitted`,
+/// credits the merchant wallet with `net_cents`, emits `cod.remitted`.
+#[derive(Debug, Deserialize)]
+pub struct ConfirmCodBatchCommand {
+    pub tenant_id: Uuid,
+    pub batch_id:  Uuid,
+}
+
 /// Run the monthly billing aggregation for a single (tenant, merchant) and
 /// issue a shipment-charges invoice covering all shipments delivered in the
 /// period. Idempotent on `(tenant_id, merchant_id, year, month)`.

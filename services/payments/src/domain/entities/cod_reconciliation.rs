@@ -1,16 +1,17 @@
 use chrono::{DateTime, Utc};
-use logisticos_types::{Money, TenantId};
+use logisticos_types::{MerchantId, Money, TenantId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Cash-on-Delivery reconciliation record.
-/// When a driver collects cash, a CodCollection is created.
-/// The payments service reconciles these against invoice line items and
-/// credits the merchant's wallet (minus the platform's COD handling fee).
+/// When a driver collects cash, a CodCollection is created. Remittance to the
+/// merchant happens asynchronously via a `CodRemittanceBatch` — this record
+/// alone does **not** credit the merchant's wallet.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodCollection {
     pub id: Uuid,
     pub tenant_id: TenantId,
+    pub merchant_id: MerchantId,
     pub shipment_id: Uuid,
     pub driver_id: Uuid,
     pub pod_id: Uuid,
@@ -18,7 +19,7 @@ pub struct CodCollection {
     pub status: CodStatus,
     pub collected_at: DateTime<Utc>,
     pub remitted_at: Option<DateTime<Utc>>,
-    pub batch_id: Option<Uuid>,     // Grouped for remittance (daily/weekly batches)
+    pub batch_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -32,6 +33,7 @@ pub enum CodStatus {
 impl CodCollection {
     pub fn new(
         tenant_id: TenantId,
+        merchant_id: MerchantId,
         shipment_id: Uuid,
         driver_id: Uuid,
         pod_id: Uuid,
@@ -40,6 +42,7 @@ impl CodCollection {
         Self {
             id: Uuid::new_v4(),
             tenant_id,
+            merchant_id,
             shipment_id,
             driver_id,
             pod_id,

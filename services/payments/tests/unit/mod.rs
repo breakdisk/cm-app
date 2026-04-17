@@ -47,6 +47,7 @@ fn make_invoice(items: Vec<InvoiceLineItem>) -> Invoice {
 fn make_cod(tenant_id: TenantId, amount_centavos: i64) -> CodCollection {
     CodCollection::new(
         tenant_id,
+        logisticos_types::MerchantId::from_uuid(Uuid::new_v4()),
         Uuid::new_v4(), // shipment_id
         Uuid::new_v4(), // driver_id
         Uuid::new_v4(), // pod_id

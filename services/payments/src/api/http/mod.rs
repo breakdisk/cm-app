@@ -1,18 +1,22 @@
 pub mod invoices;
 pub mod wallet;
 pub mod billing;
+pub mod cod_batches;
 pub mod health;
 
 use axum::{Router, routing::{get, post}};
 use std::sync::Arc;
-use crate::application::services::{BillingAggregationService, InvoiceService, CodService, WalletService};
+use crate::application::services::{
+    BillingAggregationService, CodRemittanceService, CodService, InvoiceService, WalletService,
+};
 
 pub struct AppState {
-    pub invoice_service: Arc<InvoiceService>,
-    pub cod_service: Arc<CodService>,
-    pub wallet_service: Arc<WalletService>,
-    pub billing_service: Arc<BillingAggregationService>,
-    pub jwt: Arc<logisticos_auth::jwt::JwtService>,
+    pub invoice_service:         Arc<InvoiceService>,
+    pub cod_service:             Arc<CodService>,
+    pub cod_remittance_service:  Arc<CodRemittanceService>,
+    pub wallet_service:          Arc<WalletService>,
+    pub billing_service:         Arc<BillingAggregationService>,
+    pub jwt:                     Arc<logisticos_auth::jwt::JwtService>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -44,5 +48,7 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
 
 fn internal_router(_state: Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
-        .route("/billing/run", post(billing::run_billing))
+        .route("/billing/run",                  post(billing::run_billing))
+        .route("/cod/batches",                  post(cod_batches::create_batch))
+        .route("/cod/batches/:id/confirm",      post(cod_batches::confirm_batch))
 }

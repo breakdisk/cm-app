@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use logisticos_types::{CustomerId, InvoiceId, MerchantId, TenantId};
 use uuid::Uuid;
-use crate::domain::entities::{Invoice, CodCollection, Wallet, WalletTransaction};
+use crate::domain::entities::{Invoice, CodCollection, CodRemittanceBatch, Wallet, WalletTransaction};
 
 #[async_trait]
 pub trait InvoiceRepository: Send + Sync {
@@ -18,6 +18,39 @@ pub trait CodRepository: Send + Sync {
     async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<CodCollection>>;
     async fn list_pending_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<CodCollection>>;
     async fn save(&self, cod: &CodCollection) -> anyhow::Result<()>;
+
+    /// Collected-but-unbatched rows for a merchant up to `cutoff` (inclusive).
+    /// Status must be `collected`, `batch_id IS NULL`, `collected_at <= cutoff`.
+    async fn list_unbatched_for_merchant(
+        &self,
+        tenant_id:   &TenantId,
+        merchant_id: &MerchantId,
+        cutoff:      chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<Vec<CodCollection>>;
+
+    /// Bulk-assign rows to a batch and flip `collected` → `in_batch`.
+    /// Only affects rows currently `collected` with NULL batch_id.
+    /// Returns the number of rows actually updated.
+    async fn assign_to_batch(
+        &self,
+        tenant_id: &TenantId,
+        cod_ids:   &[Uuid],
+        batch_id:  Uuid,
+    ) -> anyhow::Result<u64>;
+
+    /// Bulk-transition all rows in a batch to `remitted`.
+    /// Only affects rows currently `in_batch`.
+    async fn mark_batch_remitted(
+        &self,
+        tenant_id: &TenantId,
+        batch_id:  Uuid,
+    ) -> anyhow::Result<u64>;
+}
+
+#[async_trait]
+pub trait CodRemittanceBatchRepository: Send + Sync {
+    async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<CodRemittanceBatch>>;
+    async fn save(&self, batch: &CodRemittanceBatch) -> anyhow::Result<()>;
 }
 
 #[async_trait]

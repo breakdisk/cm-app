@@ -30,6 +30,19 @@ pub struct CodReconciled {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodRemitted {
+    pub batch_id:             Uuid,
+    pub tenant_id:            Uuid,
+    pub merchant_id:          Uuid,
+    pub cutoff_date:          chrono::NaiveDate,
+    pub cod_count:            i32,
+    pub gross_cents:          i64,
+    pub platform_fee_cents:   i64,
+    pub net_credit_cents:     i64,
+    pub remitted_at:          chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletCredited {
     pub wallet_id: Uuid,
     pub tenant_id: Uuid,

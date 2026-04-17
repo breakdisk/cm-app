@@ -46,6 +46,7 @@ pub const POD_CAPTURED:              &str = "logisticos.pod.captured";
 pub const INVOICE_GENERATED:         &str = "logisticos.payments.invoice.generated";
 pub const PAYMENT_RECEIVED:          &str = "logisticos.payments.payment.received";
 pub const COD_COLLECTED:             &str = "logisticos.payments.cod.collected";
+pub const COD_REMITTED:              &str = "logisticos.payments.cod.remitted";
 
 // Engagement
 pub const NOTIFICATION_QUEUED:       &str = "logisticos.engagement.notification.queued";

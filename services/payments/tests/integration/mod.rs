@@ -326,6 +326,7 @@ fn build_test_app(repos: TestRepos) -> (Router, TestRepos) {
         let amount    = Money::new(cmd.amount_cents, Currency::PHP);
         let mut cod   = CodCollection::new(
             tenant_id.clone(),
+            logisticos_types::MerchantId::from_uuid(Uuid::new_v4()),
             cmd.shipment_id,
             cmd.driver_id,
             cmd.pod_id,
