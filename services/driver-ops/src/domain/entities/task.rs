@@ -16,6 +16,8 @@ pub struct DriverTask {
     pub address: logisticos_types::Address,
     pub customer_name: String,
     pub customer_phone: String,
+    pub customer_email: Option<String>,
+    pub tracking_number: Option<String>,
     pub cod_amount_cents: Option<i64>,
     pub special_instructions: Option<String>,
     pub pod_id: Option<uuid::Uuid>,         // Filled when task completed

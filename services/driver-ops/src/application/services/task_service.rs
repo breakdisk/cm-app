@@ -77,17 +77,28 @@ impl TaskService {
 
         self.task_repo.save(&task).await.map_err(AppError::Internal)?;
 
-        // Publish event — engagement will send delivery notification to customer,
-        // payments will process COD reconciliation if applicable.
-        let event = Event::new("driver-ops", "delivery.completed", tenant_id.inner(), TaskCompleted {
+        // Determine event topic based on task type — pickup vs delivery
+        let (event_type, topic) = match task.task_type {
+            TaskType::Pickup   => ("pickup.completed",   topics::PICKUP_COMPLETED),
+            TaskType::Delivery => ("delivery.completed",  topics::DELIVERY_COMPLETED),
+        };
+
+        // Publish event — engagement sends receipt/notification to customer,
+        // payments processes COD reconciliation if applicable.
+        let event = Event::new("driver-ops", event_type, tenant_id.inner(), TaskCompleted {
             task_id: task.id,
             driver_id: driver_id.inner(),
             shipment_id: task.shipment_id,
             tenant_id: tenant_id.inner(),
             pod_id: cmd.pod_id,
             completed_at: task.completed_at.unwrap_or_else(chrono::Utc::now),
+            customer_name: task.customer_name.clone(),
+            customer_phone: task.customer_phone.clone(),
+            customer_email: task.customer_email.clone().unwrap_or_default(),
+            tracking_number: task.tracking_number.clone().unwrap_or_default(),
+            cod_amount_cents: task.cod_amount_cents,
         });
-        self.kafka.publish_event(topics::DELIVERY_COMPLETED, &event).await
+        self.kafka.publish_event(topic, &event).await
             .map_err(AppError::Internal)?;
 
         tracing::info!(task_id = %task.id, driver_id = %driver_id, pod_id = ?cmd.pod_id, "Task completed");
@@ -117,6 +128,9 @@ impl TaskService {
             tenant_id: tenant_id.inner(),
             reason: cmd.reason,
             failed_at: task.completed_at.unwrap_or_else(chrono::Utc::now),
+            customer_name: task.customer_name.clone(),
+            customer_phone: task.customer_phone.clone(),
+            tracking_number: task.tracking_number.clone().unwrap_or_default(),
         });
         self.kafka.publish_event(topics::DELIVERY_FAILED, &event).await
             .map_err(AppError::Internal)?;

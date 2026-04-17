@@ -34,6 +34,8 @@ struct TaskRow {
     lng:                  Option<f64>,
     customer_name:        String,
     customer_phone:       String,
+    customer_email:       Option<String>,
+    tracking_number:      Option<String>,
     cod_amount_cents:     Option<i64>,
     special_instructions: Option<String>,
     pod_id:               Option<Uuid>,
@@ -87,6 +89,8 @@ impl From<TaskRow> for DriverTask {
             },
             customer_name: r.customer_name,
             customer_phone: r.customer_phone,
+            customer_email: r.customer_email,
+            tracking_number: r.tracking_number,
             cod_amount_cents: r.cod_amount_cents,
             special_instructions: r.special_instructions,
             pod_id: r.pod_id,
@@ -103,8 +107,8 @@ impl TaskRepository for PgTaskRepository {
         let row = sqlx::query_as::<_, TaskRow>(
             r#"SELECT id, driver_id, route_id, shipment_id, task_type, sequence, status,
                       address_line1, address_line2, city, province, postal_code, country AS country_code,
-                      lat, lng, customer_name, customer_phone, cod_amount_cents,
-                      special_instructions, pod_id, started_at, completed_at, failed_reason
+                      lat, lng, customer_name, customer_phone, customer_email, tracking_number,
+                      cod_amount_cents, special_instructions, pod_id, started_at, completed_at, failed_reason
                FROM driver_ops.tasks WHERE id = $1"#
         )
         .bind(id)
@@ -117,8 +121,8 @@ impl TaskRepository for PgTaskRepository {
         let rows = sqlx::query_as::<_, TaskRow>(
             r#"SELECT id, driver_id, route_id, shipment_id, task_type, sequence, status,
                       address_line1, address_line2, city, province, postal_code, country AS country_code,
-                      lat, lng, customer_name, customer_phone, cod_amount_cents,
-                      special_instructions, pod_id, started_at, completed_at, failed_reason
+                      lat, lng, customer_name, customer_phone, customer_email, tracking_number,
+                      cod_amount_cents, special_instructions, pod_id, started_at, completed_at, failed_reason
                FROM driver_ops.tasks
                WHERE driver_id = $1
                ORDER BY sequence ASC"#
@@ -133,8 +137,8 @@ impl TaskRepository for PgTaskRepository {
         let rows = sqlx::query_as::<_, TaskRow>(
             r#"SELECT id, driver_id, route_id, shipment_id, task_type, sequence, status,
                       address_line1, address_line2, city, province, postal_code, country AS country_code,
-                      lat, lng, customer_name, customer_phone, cod_amount_cents,
-                      special_instructions, pod_id, started_at, completed_at, failed_reason
+                      lat, lng, customer_name, customer_phone, customer_email, tracking_number,
+                      cod_amount_cents, special_instructions, pod_id, started_at, completed_at, failed_reason
                FROM driver_ops.tasks
                WHERE route_id = $1
                ORDER BY sequence ASC"#
@@ -152,9 +156,9 @@ impl TaskRepository for PgTaskRepository {
             r#"INSERT INTO driver_ops.tasks
                    (id, driver_id, route_id, shipment_id, task_type, sequence, status,
                     address_line1, address_line2, city, province, postal_code, country,
-                    lat, lng, customer_name, customer_phone, cod_amount_cents,
-                    special_instructions, pod_id, started_at, completed_at, failed_reason)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+                    lat, lng, customer_name, customer_phone, customer_email, tracking_number,
+                    cod_amount_cents, special_instructions, pod_id, started_at, completed_at, failed_reason)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
                ON CONFLICT (id) DO UPDATE SET
                    status        = EXCLUDED.status,
                    pod_id        = EXCLUDED.pod_id,
@@ -179,6 +183,8 @@ impl TaskRepository for PgTaskRepository {
         .bind(t.address.coordinates.map(|c| c.lng))
         .bind(&t.customer_name)
         .bind(&t.customer_phone)
+        .bind(&t.customer_email)
+        .bind(&t.tracking_number)
         .bind(t.cod_amount_cents)
         .bind(&t.special_instructions)
         .bind(t.pod_id)

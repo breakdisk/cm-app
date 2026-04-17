@@ -432,6 +432,8 @@ impl DriverAssignmentService {
             customer_phone:       queue_item.customer_phone.clone(),
             cod_amount_cents:     queue_item.cod_amount_cents,
             special_instructions: queue_item.special_instructions.clone(),
+            tracking_number:      queue_item.tracking_number.clone().unwrap_or_default(),
+            customer_email:       queue_item.customer_email.clone().unwrap_or_default(),
         });
         self.kafka.publish_event(topics::TASK_ASSIGNED, &task_event).await
             .map_err(AppError::Internal)?;
@@ -486,6 +488,8 @@ mod tests {
             customer_phone:      "+63912345678".into(),
             cod_amount_cents:    None,
             special_instructions: None,
+            tracking_number:     "CM-PH1-S0001234X".into(),
+            customer_email:      "test@example.com".into(),
         };
     }
 }

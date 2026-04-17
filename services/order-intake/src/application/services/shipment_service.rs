@@ -238,7 +238,8 @@ impl ShipmentService {
                 .await;
         }
 
-        // ── Publish ShipmentCreated (consumed by dispatch) ────────────────────
+        // ── Publish ShipmentCreated (consumed by dispatch, engagement, analytics) ─
+        let total_fee_cents = shipment.compute_base_fee().amount;
         let event = Event::new(
             "logisticos/order-intake",
             "shipment.created",
@@ -249,6 +250,7 @@ impl ShipmentService {
                 customer_id:          shipment.customer_id.inner(),
                 customer_name:        cmd.customer_name.clone(),
                 customer_phone:       cmd.customer_phone.clone(),
+                customer_email:       cmd.customer_email.clone().unwrap_or_default(),
                 origin_address:       format!("{}, {}", shipment.origin.city, shipment.origin.province),
                 destination_address:  format!("{}, {}", shipment.destination.city, shipment.destination.province),
                 destination_city:     shipment.destination.city.clone(),
@@ -256,6 +258,11 @@ impl ShipmentService {
                 destination_lng:      shipment.destination.coordinates.map(|c| c.lng),
                 service_type:         service_type.as_str().into(),
                 cod_amount_cents:     shipment.cod_amount.map(|m| m.amount),
+                tracking_number:      master_awb.as_str().to_string(),
+                total_fee_cents,
+                currency:             "PHP".into(),
+                weight_grams:         billable_grams,
+                estimated_delivery:   String::new(), // TODO: derive from service_type SLA
                 booked_by_customer:   shipment.booked_by_customer,
             },
         );

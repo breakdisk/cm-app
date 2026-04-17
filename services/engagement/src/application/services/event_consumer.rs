@@ -163,13 +163,38 @@ pub async fn process_event(
         let phone = data["customer_phone"].as_str().unwrap_or("").to_owned();
         let email = data["customer_email"].as_str().unwrap_or("").to_owned();
 
+        // Format fee amounts for receipt display
+        let total_fee_cents = data["total_fee_cents"].as_i64().unwrap_or(0);
+        let cod_cents = data["cod_amount_cents"].as_i64().unwrap_or(0);
+        let currency = data["currency"].as_str().unwrap_or("PHP");
+        let total_fee = format!("{} {:.2}", currency, total_fee_cents as f64 / 100.0);
+        let cod_amount = if cod_cents > 0 {
+            format!("{} {:.2}", currency, cod_cents as f64 / 100.0)
+        } else {
+            "N/A".to_owned()
+        };
+        let weight_grams = data["weight_grams"].as_u64().unwrap_or(0);
+        let weight_display = if weight_grams > 0 {
+            format!("{:.1} kg", weight_grams as f64 / 1000.0)
+        } else {
+            "—".to_owned()
+        };
+
         let vars = serde_json::json!({
             "customer_name":     data["customer_name"].as_str().unwrap_or("Customer"),
             "tracking_number":   data["tracking_number"].as_str().unwrap_or(""),
             "shipment_id":       data["shipment_id"].as_str().unwrap_or(""),
             "driver_name":       data["driver_name"].as_str().unwrap_or(""),
             "estimated_arrival": data["estimated_arrival"].as_str().unwrap_or(""),
+            "estimated_delivery": data["estimated_delivery"].as_str().unwrap_or(""),
             "failed_reason":     data["reason"].as_str().unwrap_or(""),
+            "origin_address":    data["origin_address"].as_str().unwrap_or(""),
+            "destination_address": data["destination_address"].as_str().unwrap_or(""),
+            "service_type":      data["service_type"].as_str().unwrap_or("standard"),
+            "total_fee":         total_fee,
+            "cod_amount":        cod_amount,
+            "weight":            weight_display,
+            "completed_at":      data["completed_at"].as_str().unwrap_or(""),
             "tracking_url":      format!("https://track.logisticos.app/{}", data["tracking_number"].as_str().unwrap_or("")),
         });
 
@@ -201,10 +226,64 @@ pub async fn process_event(
             continue;
         }
 
-        // Build an inline template — in production these come from the template registry DB
+        // Build inline templates — these are the hardcoded receipt templates.
+        // In production, templates come from the DB template registry.
         let (subject, body) = match resolved_template {
+            "shipment_confirmation" => (
+                Some(format!("Shipment Confirmed — {}", vars["tracking_number"].as_str().unwrap_or(""))),
+                "Hi {{customer_name}},\n\n\
+                 Your shipment has been confirmed and is being processed.\n\n\
+                 Tracking Number: {{tracking_number}}\n\
+                 From: {{origin_address}}\n\
+                 To:   {{destination_address}}\n\
+                 Service: {{service_type}}\n\
+                 Weight:  {{weight}}\n\
+                 Fee:     {{total_fee}}\n\
+                 COD:     {{cod_amount}}\n\n\
+                 Track your shipment: {{tracking_url}}\n\n\
+                 Thank you for choosing CargoMarket!\n\
+                 — CargoMarket Logistics".to_owned(),
+            ),
+            "pickup_scheduled" => (
+                None,
+                "Hi {{customer_name}},\n\n\
+                 A rider has been assigned to pick up your shipment {{tracking_number}}.\n\
+                 Track your pickup: {{tracking_url}}\n\n\
+                 — CargoMarket".to_owned(),
+            ),
+            "shipment_picked_up" => (
+                None,
+                "Hi {{customer_name}},\n\n\
+                 Your package {{tracking_number}} has been picked up and is on its way!\n\
+                 Track it here: {{tracking_url}}\n\n\
+                 — CargoMarket".to_owned(),
+            ),
+            "delivery_confirmed" => (
+                Some(format!("Delivery Confirmed — {}", vars["tracking_number"].as_str().unwrap_or(""))),
+                "Hi {{customer_name}},\n\n\
+                 Your shipment {{tracking_number}} has been delivered!\n\n\
+                 Delivered at: {{completed_at}}\n\n\
+                 If you have any questions, contact us or track details at: {{tracking_url}}\n\n\
+                 Thank you for shipping with CargoMarket!\n\
+                 — CargoMarket Logistics".to_owned(),
+            ),
+            "delivery_failed_reschedule" => (
+                None,
+                "Hi {{customer_name}},\n\n\
+                 We attempted delivery of {{tracking_number}} but couldn't complete it.\n\
+                 Reason: {{failed_reason}}\n\n\
+                 We'll retry delivery. To reschedule: {{tracking_url}}\n\n\
+                 — CargoMarket".to_owned(),
+            ),
+            "cod_receipt" => (
+                None,
+                "Hi {{customer_name}},\n\n\
+                 Cash on Delivery collected for {{tracking_number}}.\n\
+                 Amount: {{cod_amount}}\n\n\
+                 — CargoMarket".to_owned(),
+            ),
             "payment_receipt" => (
-                Some(format!("Payment Receipt {} — LogisticOS", vars["invoice_number"].as_str().unwrap_or(""))),
+                Some(format!("Payment Receipt {} — CargoMarket", vars["invoice_number"].as_str().unwrap_or(""))),
                 "Dear {{customer_name}},\n\n\
                  Your payment has been received and a receipt has been issued.\n\n\
                  Receipt Number: {{invoice_number}}\n\
@@ -212,17 +291,17 @@ pub async fn process_event(
                  Date:           {{paid_at}}\n\
                  Tracking:       {{tracking_number}}\n\n\
                  View your receipt in the app: {{deep_link}}\n\n\
-                 Thank you for shipping with LogisticOS!\n\
-                 — LogisticOS".to_owned(),
+                 Thank you for shipping with CargoMarket!\n\
+                 — CargoMarket".to_owned(),
             ),
             "invoice_issued" => (
-                Some(format!("Invoice {} — LogisticOS", vars["invoice_number"].as_str().unwrap_or(""))),
+                Some(format!("Invoice {} — CargoMarket", vars["invoice_number"].as_str().unwrap_or(""))),
                 "Dear {{merchant_name}},\n\n\
                  Your invoice {{invoice_number}} has been issued.\n\n\
                  Amount Due: {{currency}} {{total_amount}}\n\
                  Due Date:   {{due_date}}\n\n\
-                 You can view and pay your invoice in the LogisticOS Merchant Portal.\n\n\
-                 — LogisticOS Billing".to_owned(),
+                 You can view and pay your invoice in the CargoMarket Merchant Portal.\n\n\
+                 — CargoMarket Billing".to_owned(),
             ),
             _ => (None, "{{body}}".to_owned()),
         };

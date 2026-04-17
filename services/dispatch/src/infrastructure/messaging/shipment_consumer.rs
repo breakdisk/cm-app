@@ -86,14 +86,16 @@ async fn handle_shipment_created(
         shipment_id,
         customer_name:        d.customer_name,
         customer_phone:       d.customer_phone,
+        customer_email:       if d.customer_email.is_empty() { None } else { Some(d.customer_email) },
+        tracking_number:      if d.tracking_number.is_empty() { None } else { Some(d.tracking_number) },
         dest_address_line1:   d.destination_address,
         dest_city:            d.destination_city,
-        dest_province:        String::new(),    // TODO: ShipmentCreated payload doesn't carry province yet — add to payload in Task 2 follow-up
+        dest_province:        String::new(),    // TODO: ShipmentCreated payload doesn't carry province yet
         dest_postal_code:     String::new(),    // TODO: Same — postal_code not in ShipmentCreated payload
         dest_lat:             d.destination_lat,
         dest_lng:             d.destination_lng,
         cod_amount_cents:     d.cod_amount_cents,
-        special_instructions: None,             // TODO: ShipmentCreated payload doesn't carry special_instructions yet — add to payload in Task 2 follow-up
+        special_instructions: None,             // TODO: ShipmentCreated payload doesn't carry special_instructions yet
         service_type:         d.service_type,
         status:               "pending".to_string(),
     };

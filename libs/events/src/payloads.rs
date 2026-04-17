@@ -11,7 +11,7 @@ pub struct TenantCreated {
     pub subscription_tier: String,
 }
 
-// Enriched ShipmentCreated — add customer details for dispatch_queue
+// Enriched ShipmentCreated — consumed by dispatch, engagement, analytics, delivery-experience
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShipmentCreated {
     pub shipment_id:          Uuid,
@@ -19,6 +19,9 @@ pub struct ShipmentCreated {
     pub customer_id:          Uuid,
     pub customer_name:        String,
     pub customer_phone:       String,
+    /// Customer email — used by engagement for receipt delivery. Empty if not provided.
+    #[serde(default)]
+    pub customer_email:       String,
     pub origin_address:       String,
     pub destination_address:  String,
     pub destination_city:     String,
@@ -26,6 +29,22 @@ pub struct ShipmentCreated {
     pub destination_lng:      Option<f64>,
     pub service_type:         String,
     pub cod_amount_cents:     Option<i64>,
+    /// AWB tracking number (e.g. "CM-PH1-S0001234X"). Engagement uses this for
+    /// the shipment confirmation receipt and tracking link.
+    #[serde(default)]
+    pub tracking_number:      String,
+    /// Total fee in cents (base freight + surcharges). Shown on receipt.
+    #[serde(default)]
+    pub total_fee_cents:      i64,
+    /// Currency code (e.g. "PHP"). Shown on receipt.
+    #[serde(default = "default_currency")]
+    pub currency:             String,
+    /// Declared weight in grams. Shown on receipt.
+    #[serde(default)]
+    pub weight_grams:         u32,
+    /// Estimated delivery date/range as a human-readable string.
+    #[serde(default)]
+    pub estimated_delivery:   String,
     /// True when the booking originated from the customer app. Dispatch uses
     /// this to route the shipment to auto-dispatch (one-shot quick_dispatch)
     /// instead of waiting for a human dispatcher. Defaults to false for
@@ -33,6 +52,8 @@ pub struct ShipmentCreated {
     #[serde(default)]
     pub booked_by_customer:   bool,
 }
+
+fn default_currency() -> String { "PHP".into() }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriverAssigned {
@@ -288,4 +309,11 @@ pub struct TaskAssigned {
     pub customer_phone:       String,
     pub cod_amount_cents:     Option<i64>,
     pub special_instructions: Option<String>,
+    /// AWB tracking number — carried through to TaskCompleted so engagement
+    /// can send delivery receipt without querying order-intake.
+    #[serde(default)]
+    pub tracking_number:      String,
+    /// Customer email — forwarded to engagement for delivery receipt email.
+    #[serde(default)]
+    pub customer_email:       String,
 }
