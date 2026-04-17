@@ -23,6 +23,18 @@ pub struct ShipmentCreated {
     #[serde(default)]
     pub customer_email:       String,
     pub origin_address:       String,
+    /// Structured origin (added so dispatch can create a pickup task with a real
+    /// street/city, not just the flattened "city, province" string above).
+    #[serde(default)]
+    pub origin_city:          String,
+    #[serde(default)]
+    pub origin_province:      String,
+    #[serde(default)]
+    pub origin_postal_code:   String,
+    #[serde(default)]
+    pub origin_lat:           Option<f64>,
+    #[serde(default)]
+    pub origin_lng:           Option<f64>,
     pub destination_address:  String,
     pub destination_city:     String,
     pub destination_lat:      Option<f64>,
@@ -54,6 +66,7 @@ pub struct ShipmentCreated {
 }
 
 fn default_currency() -> String { "PHP".into() }
+fn default_task_type() -> String { "delivery".into() }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriverAssigned {
@@ -297,7 +310,12 @@ pub struct TaskAssigned {
     pub driver_id:            Uuid,
     pub tenant_id:            Uuid,
     pub sequence:             i32,
-    // Destination (denormalized from dispatch_queue for offline driver app)
+    /// "pickup" | "delivery". Defaults to "delivery" so events emitted before
+    /// this field existed (single-leg dispatch) keep their original meaning.
+    #[serde(default = "default_task_type")]
+    pub task_type:            String,
+    // Stop address — for pickup tasks this is the origin (sender), for
+    // delivery tasks this is the destination (recipient).
     pub address_line1:        String,
     pub address_city:         String,
     pub address_province:     String,

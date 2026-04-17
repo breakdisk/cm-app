@@ -412,16 +412,56 @@ impl DriverAssignmentService {
         let assignment = DriverAssignment::new(tenant_id.clone(), driver_id.clone(), route_id.clone());
         self.assignment_repo.save(&assignment).await.map_err(AppError::Internal)?;
 
-        // 6. Emit TASK_ASSIGNED — driver-ops consumes this to create a DriverTask row
-        let task_id = Uuid::new_v4();
-        let task_event = Event::new("dispatch", "task.assigned", tenant_id.inner(), TaskAssigned {
-            task_id,
+        // 6. Emit TASK_ASSIGNED twice — once for the pickup leg (origin) and once
+        //    for the delivery leg (destination). driver-ops creates one DriverTask
+        //    row per event, sequenced so the driver app shows pickup → delivery.
+        //    Both events share the same assignment_id so they belong to the same
+        //    job. We only emit the pickup task when origin coordinates exist —
+        //    legacy shipments without structured origin fall through to a single
+        //    delivery task (pre-Path-A behavior).
+        let has_origin = !queue_item.origin_address_line1.is_empty()
+            || queue_item.origin_lat.is_some();
+
+        let mut next_sequence: i32 = 1;
+        if has_origin {
+            let pickup_task_id = Uuid::new_v4();
+            let pickup_event = Event::new("dispatch", "task.assigned", tenant_id.inner(), TaskAssigned {
+                task_id:              pickup_task_id,
+                assignment_id:        assignment.id,
+                shipment_id:          cmd.shipment_id,
+                route_id:             route_id.inner(),
+                driver_id:            driver_id.inner(),
+                tenant_id:            tenant_id.inner(),
+                sequence:             next_sequence,
+                task_type:            "pickup".into(),
+                address_line1:        queue_item.origin_address_line1.clone(),
+                address_city:         queue_item.origin_city.clone(),
+                address_province:     queue_item.origin_province.clone(),
+                address_postal_code:  queue_item.origin_postal_code.clone(),
+                address_lat:          queue_item.origin_lat,
+                address_lng:          queue_item.origin_lng,
+                customer_name:        queue_item.customer_name.clone(),
+                customer_phone:       queue_item.customer_phone.clone(),
+                cod_amount_cents:     None,                    // COD is collected on delivery, never on pickup
+                special_instructions: queue_item.special_instructions.clone(),
+                tracking_number:      queue_item.tracking_number.clone().unwrap_or_default(),
+                customer_email:       queue_item.customer_email.clone().unwrap_or_default(),
+            });
+            self.kafka.publish_event(topics::TASK_ASSIGNED, &pickup_event).await
+                .map_err(AppError::Internal)?;
+            next_sequence += 1;
+        }
+
+        let delivery_task_id = Uuid::new_v4();
+        let delivery_event = Event::new("dispatch", "task.assigned", tenant_id.inner(), TaskAssigned {
+            task_id:              delivery_task_id,
             assignment_id:        assignment.id,
             shipment_id:          cmd.shipment_id,
             route_id:             route_id.inner(),
             driver_id:            driver_id.inner(),
             tenant_id:            tenant_id.inner(),
-            sequence:             1i32,
+            sequence:             next_sequence,
+            task_type:            "delivery".into(),
             address_line1:        queue_item.dest_address_line1.clone(),
             address_city:         queue_item.dest_city.clone(),
             address_province:     queue_item.dest_province.clone(),
@@ -435,7 +475,7 @@ impl DriverAssignmentService {
             tracking_number:      queue_item.tracking_number.clone().unwrap_or_default(),
             customer_email:       queue_item.customer_email.clone().unwrap_or_default(),
         });
-        self.kafka.publish_event(topics::TASK_ASSIGNED, &task_event).await
+        self.kafka.publish_event(topics::TASK_ASSIGNED, &delivery_event).await
             .map_err(AppError::Internal)?;
 
         // 7. Emit legacy DRIVER_ASSIGNED — delivery-experience updates tracking status
@@ -478,6 +518,7 @@ mod tests {
             driver_id:           uuid::Uuid::new_v4(),
             tenant_id:           uuid::Uuid::new_v4(),
             sequence:            1i32,
+            task_type:           "delivery".into(),
             address_line1:       "123 Test St".into(),
             address_city:        "Manila".into(),
             address_province:    "Metro Manila".into(),
