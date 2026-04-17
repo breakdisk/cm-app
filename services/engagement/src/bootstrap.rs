@@ -9,6 +9,7 @@ use crate::{
     config::Config,
     infrastructure::channels::{
         email::SesEmailAdapter,
+        log_adapter::LogChannelAdapter,
         push::ExpoPushAdapter,
         sms::TwilioSmsAdapter,
         whatsapp::TwilioWhatsAppAdapter,
@@ -26,27 +27,58 @@ pub async fn run() -> anyhow::Result<()> {
         log_level: None,
     })?;
 
-    // Channel adapters — credentials from environment.
-    // In dev, placeholders are accepted; actual sends will fail gracefully at the channel layer.
-    let twilio_sid   = std::env::var("TWILIO_ACCOUNT_SID").unwrap_or_else(|_| "dev-placeholder".into());
-    let twilio_token = std::env::var("TWILIO_AUTH_TOKEN").unwrap_or_else(|_| "dev-placeholder".into());
-    let whatsapp: Arc<dyn ChannelAdapter> = Arc::new(TwilioWhatsAppAdapter::new(
-        twilio_sid.clone(),
-        twilio_token.clone(),
-        std::env::var("TWILIO_WHATSAPP_FROM").unwrap_or_else(|_| "whatsapp:+15005550006".into()),
-    ));
-    let sms: Arc<dyn ChannelAdapter> = Arc::new(TwilioSmsAdapter::new(
-        twilio_sid,
-        twilio_token,
-        std::env::var("TWILIO_SMS_FROM").unwrap_or_else(|_| "+15005550006".into()),
-    ));
-    let email: Arc<dyn ChannelAdapter> = Arc::new(SesEmailAdapter::new(
-        std::env::var("SES_FROM_EMAIL").unwrap_or_else(|_| "noreply@logisticos.app".into()),
-        std::env::var("SES_FROM_NAME").unwrap_or_else(|_| "LogisticOS".into()),
-    ).await);
-    let identity_base_url = std::env::var("SERVICES__IDENTITY_URL")
-        .unwrap_or_else(|_| "http://identity:8001".into());
-    let push: Arc<dyn ChannelAdapter> = Arc::new(ExpoPushAdapter::new(identity_base_url));
+    // Channel adapters — real when credentials present, LogChannelAdapter otherwise.
+    // The log adapter prints the full rendered receipt to container stdout and
+    // succeeds, making prod booking a verifiable end-to-end test without
+    // paying Twilio/SES.
+    let twilio_sid   = std::env::var("TWILIO_ACCOUNT_SID").ok();
+    let twilio_token = std::env::var("TWILIO_AUTH_TOKEN").ok();
+    let twilio_ready = twilio_sid.as_deref().is_some_and(is_real_cred)
+        && twilio_token.as_deref().is_some_and(is_real_cred);
+
+    let whatsapp: Arc<dyn ChannelAdapter> = if twilio_ready {
+        tracing::info!("engagement: WhatsApp using Twilio adapter");
+        Arc::new(TwilioWhatsAppAdapter::new(
+            twilio_sid.clone().unwrap(),
+            twilio_token.clone().unwrap(),
+            std::env::var("TWILIO_WHATSAPP_FROM").unwrap_or_else(|_| "whatsapp:+15005550006".into()),
+        ))
+    } else {
+        tracing::warn!("engagement: WhatsApp using LogChannelAdapter (TWILIO_* not set) — receipts printed to stdout");
+        Arc::new(LogChannelAdapter::new("whatsapp"))
+    };
+
+    let sms: Arc<dyn ChannelAdapter> = if twilio_ready {
+        tracing::info!("engagement: SMS using Twilio adapter");
+        Arc::new(TwilioSmsAdapter::new(
+            twilio_sid.unwrap(),
+            twilio_token.unwrap(),
+            std::env::var("TWILIO_SMS_FROM").unwrap_or_else(|_| "+15005550006".into()),
+        ))
+    } else {
+        tracing::warn!("engagement: SMS using LogChannelAdapter");
+        Arc::new(LogChannelAdapter::new("sms"))
+    };
+
+    let email: Arc<dyn ChannelAdapter> = match std::env::var("SES_FROM_EMAIL").ok().as_deref() {
+        Some(v) if is_real_cred(v) => {
+            tracing::info!(from = %v, "engagement: Email using SES adapter");
+            Arc::new(SesEmailAdapter::new(
+                v.to_string(),
+                std::env::var("SES_FROM_NAME").unwrap_or_else(|_| "CargoMarket".into()),
+            ).await)
+        }
+        _ => {
+            tracing::warn!("engagement: Email using LogChannelAdapter (SES_FROM_EMAIL not set)");
+            Arc::new(LogChannelAdapter::new("email"))
+        }
+    };
+
+    let push: Arc<dyn ChannelAdapter> = {
+        let identity_base_url = std::env::var("SERVICES__IDENTITY_URL")
+            .unwrap_or_else(|_| "http://identity:8001".into());
+        Arc::new(ExpoPushAdapter::new(identity_base_url))
+    };
 
     let notification_svc = Arc::new(NotificationService::new(whatsapp, sms, email, push));
 
@@ -184,6 +216,21 @@ async fn run_kafka_consumer(
             }
         }
     }
+}
+
+/// Returns true if the env value looks like a real credential (not unset,
+/// not empty, not one of our known placeholders).
+fn is_real_cred(v: &str) -> bool {
+    let t = v.trim();
+    if t.is_empty() { return false; }
+    !matches!(
+        t,
+        "dev-placeholder"
+            | "placeholder"
+            | "changeme"
+            | "noreply@logisticos.app"
+            | "noreply@cargomarket.net"
+    )
 }
 
 async fn shutdown_signal() {

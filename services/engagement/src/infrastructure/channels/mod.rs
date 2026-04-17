@@ -1,4 +1,5 @@
 pub mod email;
+pub mod log_adapter;
 pub mod push;
 pub mod sms;
 pub mod whatsapp;
