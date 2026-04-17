@@ -16,6 +16,12 @@ pub struct DispatchQueueRow {
     pub dest_postal_code:     String,
     pub dest_lat:             Option<f64>,
     pub dest_lng:             Option<f64>,
+    pub origin_address_line1: String,
+    pub origin_city:          String,
+    pub origin_province:      String,
+    pub origin_postal_code:   String,
+    pub origin_lat:           Option<f64>,
+    pub origin_lng:           Option<f64>,
     pub cod_amount_cents:     Option<i64>,
     pub special_instructions: Option<String>,
     pub service_type:         String,
@@ -39,8 +45,10 @@ impl PgDispatchQueueRepository {
                 customer_name, customer_phone, customer_email, tracking_number,
                 dest_address_line1, dest_city, dest_province, dest_postal_code,
                 dest_lat, dest_lng,
+                origin_address_line1, origin_city, origin_province, origin_postal_code,
+                origin_lat, origin_lng,
                 cod_amount_cents, special_instructions, service_type, status
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
             ON CONFLICT (shipment_id) DO NOTHING
             "#,
         )
@@ -57,6 +65,12 @@ impl PgDispatchQueueRepository {
         .bind(&row.dest_postal_code)
         .bind(row.dest_lat)
         .bind(row.dest_lng)
+        .bind(&row.origin_address_line1)
+        .bind(&row.origin_city)
+        .bind(&row.origin_province)
+        .bind(&row.origin_postal_code)
+        .bind(row.origin_lat)
+        .bind(row.origin_lng)
         .bind(row.cod_amount_cents)
         .bind(&row.special_instructions)
         .bind(&row.service_type)
@@ -71,7 +85,10 @@ impl PgDispatchQueueRepository {
             "SELECT id, tenant_id, shipment_id, customer_name, customer_phone,
                     customer_email, tracking_number,
                     dest_address_line1, dest_city, dest_province, dest_postal_code,
-                    dest_lat, dest_lng, cod_amount_cents, special_instructions, service_type, status
+                    dest_lat, dest_lng,
+                    origin_address_line1, origin_city, origin_province, origin_postal_code,
+                    origin_lat, origin_lng,
+                    cod_amount_cents, special_instructions, service_type, status
              FROM dispatch.dispatch_queue WHERE shipment_id = $1",
         )
         .bind(shipment_id)
@@ -85,7 +102,10 @@ impl PgDispatchQueueRepository {
             "SELECT id, tenant_id, shipment_id, customer_name, customer_phone,
                     customer_email, tracking_number,
                     dest_address_line1, dest_city, dest_province, dest_postal_code,
-                    dest_lat, dest_lng, cod_amount_cents, special_instructions, service_type, status
+                    dest_lat, dest_lng,
+                    origin_address_line1, origin_city, origin_province, origin_postal_code,
+                    origin_lat, origin_lng,
+                    cod_amount_cents, special_instructions, service_type, status
              FROM dispatch.dispatch_queue
              WHERE tenant_id = $1 AND status = 'pending'
              ORDER BY queued_at ASC",

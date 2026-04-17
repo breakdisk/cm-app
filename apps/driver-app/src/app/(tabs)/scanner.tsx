@@ -6,7 +6,7 @@
 import { useState, useCallback } from "react";
 import {
   View, Text, StyleSheet, Pressable, TextInput,
-  Keyboard, ScrollView,
+  Keyboard, ScrollView, ActivityIndicator, Alert,
 } from "react-native";
 import { BarCodeScanner, type BarCodeScannerResult } from "expo-barcode-scanner";
 import { useCameraPermissions } from "expo-camera";
@@ -18,6 +18,7 @@ import * as Haptics from "expo-haptics";
 
 import type { RootState, AppDispatch } from "../../store";
 import { taskActions } from "../../store";
+import { tasksApi } from "../../services/api/tasks";
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
 const CANVAS = "#050810";
@@ -94,9 +95,11 @@ export default function ScannerScreen() {
   const [manualAwb,  setManualAwb]      = useState("");
   const [showManual, setShowManual]     = useState(false);
   const [confirmed,  setConfirmed]      = useState(false);
+  const [submitting, setSubmitting]     = useState(false);
 
   const dispatch = useDispatch<AppDispatch>();
   const tasks    = useSelector((s: RootState) => s.tasks.tasks);
+  const token    = useSelector((s: RootState) => s.auth.token);
 
   const cfg = MODES[mode];
 
@@ -146,16 +149,33 @@ export default function ScannerScreen() {
 
   // ── Action button handler ─────────────────────────────────────────────────
 
-  function handleAction() {
-    if (!result) return;
+  async function handleAction() {
+    if (!result || submitting) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     if (result.found && result.taskId) {
       if (result.mode === "pickup") {
-        dispatch(taskActions.updateTaskStatus({ id: result.taskId, status: "pickup_confirmed" }));
-        setConfirmed(true);
-        // Return to task list after short pause
-        setTimeout(() => router.push("/(tabs)"), 1600);
+        if (!token) {
+          Alert.alert("Not signed in", "Sign in again to confirm the pickup.");
+          return;
+        }
+        setSubmitting(true);
+        try {
+          // Start the task (no-op error if already started)
+          try { await tasksApi.start(result.taskId, token); } catch {}
+          // Complete the task — pickup task type emits pickup.completed event
+          await tasksApi.complete(result.taskId, {}, token);
+          dispatch(taskActions.updateTaskStatus({ id: result.taskId, status: "pickup_confirmed" }));
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          setConfirmed(true);
+          setTimeout(() => router.push("/(tabs)"), 1600);
+        } catch (err: any) {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          const msg = err?.message ?? "Could not confirm pickup. Try again.";
+          Alert.alert("Pickup failed", msg);
+        } finally {
+          setSubmitting(false);
+        }
       } else if (result.mode === "delivery") {
         router.push(`/task/${result.taskId}`);
       }
@@ -336,10 +356,15 @@ export default function ScannerScreen() {
                   )}
                   <Pressable
                     onPress={handleAction}
-                    style={[styles.actionBtn, { backgroundColor: cfg.color }]}
+                    disabled={submitting}
+                    style={[styles.actionBtn, { backgroundColor: cfg.color, opacity: submitting ? 0.6 : 1 }]}
                   >
-                    <Ionicons name={MODES[result.mode].icon as never} size={15} color={CANVAS} />
-                    <Text style={styles.actionBtnText}>{cfg.action}</Text>
+                    {submitting ? (
+                      <ActivityIndicator size="small" color={CANVAS} />
+                    ) : (
+                      <Ionicons name={MODES[result.mode].icon as never} size={15} color={CANVAS} />
+                    )}
+                    <Text style={styles.actionBtnText}>{submitting ? "Confirming…" : cfg.action}</Text>
                   </Pressable>
                 </>
               ) : (

@@ -59,6 +59,21 @@ async fn handle_task_assigned(payload: &[u8], pool: &PgPool) -> anyhow::Result<(
     let event: Event<TaskAssigned> = serde_json::from_slice(payload)?;
     let t = event.data;
 
+    // Validate task_type — driver_ops.tasks.task_type has a CHECK constraint and
+    // task_service::complete_task only branches on Pickup/Delivery. Anything
+    // outside that set is a producer bug; reject early so we don't poison the row.
+    let task_type = match t.task_type.as_str() {
+        "pickup" | "delivery" => t.task_type.as_str(),
+        other => {
+            tracing::warn!(
+                task_id = %t.task_id,
+                task_type = %other,
+                "task consumer: unknown task_type — defaulting to 'delivery'"
+            );
+            "delivery"
+        }
+    };
+
     // Ensure driver row exists before inserting the task.
     // TASK_ASSIGNED may arrive before the driver has ever logged in (driver_ops.drivers is
     // populated on first app login). This guard creates a stub row so the FK doesn't fail.
@@ -98,10 +113,10 @@ async fn handle_task_assigned(payload: &[u8], pool: &PgPool) -> anyhow::Result<(
             special_instructions
         ) VALUES (
             $1, $2, $3, $4,
-            'delivery', $5, 'pending',
-            $6, $7, $8, $9, 'PH',
-            $10, $11,
-            $12, $13, $14, $15, $16, $17
+            $5, $6, 'pending',
+            $7, $8, $9, $10, 'PH',
+            $11, $12,
+            $13, $14, $15, $16, $17, $18
         )
         ON CONFLICT (id) DO NOTHING
         "#,
@@ -110,6 +125,7 @@ async fn handle_task_assigned(payload: &[u8], pool: &PgPool) -> anyhow::Result<(
     .bind(t.driver_id)
     .bind(t.route_id)
     .bind(t.shipment_id)
+    .bind(task_type)                // pickup | delivery (validated above)
     .bind(t.sequence)               // i32
     .bind(&t.address_line1)
     .bind(&t.address_city)
@@ -131,6 +147,7 @@ async fn handle_task_assigned(payload: &[u8], pool: &PgPool) -> anyhow::Result<(
         driver_id  = %t.driver_id,
         shipment_id = %t.shipment_id,
         sequence   = t.sequence,
+        task_type  = task_type,
         "task consumer: task created for driver"
     );
     Ok(())

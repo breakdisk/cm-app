@@ -94,6 +94,12 @@ async fn handle_shipment_created(
         dest_postal_code:     String::new(),    // TODO: Same — postal_code not in ShipmentCreated payload
         dest_lat:             d.destination_lat,
         dest_lng:             d.destination_lng,
+        origin_address_line1: d.origin_address,
+        origin_city:          d.origin_city,
+        origin_province:      d.origin_province,
+        origin_postal_code:   d.origin_postal_code,
+        origin_lat:           d.origin_lat,
+        origin_lng:           d.origin_lng,
         cod_amount_cents:     d.cod_amount_cents,
         special_instructions: None,             // TODO: ShipmentCreated payload doesn't carry special_instructions yet
         service_type:         d.service_type,
