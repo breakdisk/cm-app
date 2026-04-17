@@ -115,6 +115,7 @@ pub fn router(state: AppState) -> Router {
         // Internal service-to-service endpoints — no JWT auth required (Istio mTLS enforces caller identity).
         .nest("/v1/internal", Router::new()
             .route("/shipments/:id/billing", get(get_shipment_billing))
+            .route("/billing/shipments",     get(list_billing_shipments))
         )
         .with_state(state)
 }
@@ -154,5 +155,17 @@ async fn list_shipments(
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
         "shipments": shipments,
         "total": total,
+    }))))
+}
+
+async fn list_billing_shipments(
+    State(s): State<AppState>,
+    Query(q): Query<crate::application::queries::BillingShipmentsQuery>,
+) -> impl IntoResponse {
+    let shipments = s.query.list_for_billing(q).await?;
+    let count = shipments.len();
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+        "shipments": shipments,
+        "count":     count,
     }))))
 }

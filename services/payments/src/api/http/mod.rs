@@ -1,15 +1,17 @@
 pub mod invoices;
 pub mod wallet;
+pub mod billing;
 pub mod health;
 
 use axum::{Router, routing::{get, post}};
 use std::sync::Arc;
-use crate::application::services::{InvoiceService, CodService, WalletService};
+use crate::application::services::{BillingAggregationService, InvoiceService, CodService, WalletService};
 
 pub struct AppState {
     pub invoice_service: Arc<InvoiceService>,
     pub cod_service: Arc<CodService>,
     pub wallet_service: Arc<WalletService>,
+    pub billing_service: Arc<BillingAggregationService>,
     pub jwt: Arc<logisticos_auth::jwt::JwtService>,
 }
 
@@ -17,6 +19,8 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health::health))
         .route("/ready",  get(health::ready))
+        // Internal service-to-service endpoints — no JWT (Istio mTLS gates caller identity).
+        .nest("/v1/internal", internal_router(state.clone()))
         .nest("/v1", protected_router(state.clone()))
         .with_state(state)
 }
@@ -36,4 +40,9 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/wallet/transactions",                   get(wallet::list_transactions))
         .route("/wallet/withdraw",                       post(wallet::request_withdrawal))
         .layer(auth_layer)
+}
+
+fn internal_router(_state: Arc<AppState>) -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/billing/run", post(billing::run_billing))
 }

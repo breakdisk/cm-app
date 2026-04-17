@@ -48,3 +48,58 @@ pub struct ShipmentBillingDto {
 pub trait ShipmentBillingSource: Send + Sync {
     async fn fetch(&self, shipment_id: Uuid) -> anyhow::Result<ShipmentBillingDto>;
 }
+
+/// Billing-ready breakdown for a single delivered shipment in a billing period.
+#[derive(Debug, Clone)]
+pub struct BillingShipmentDto {
+    pub shipment_id:          Uuid,
+    pub awb:                  String,
+    pub merchant_id:          Uuid,
+    pub currency:             String,
+    pub base_freight_cents:   i64,
+    pub fuel_surcharge_cents: i64,
+    pub insurance_cents:      i64,
+    pub total_cents:          i64,
+    pub delivered_at:         chrono::DateTime<chrono::Utc>,
+}
+
+/// Driven port — enumerates delivered shipments for a merchant in a billing window.
+/// Implemented by `OrderIntakeClient` against `/v1/internal/billing/shipments`.
+#[async_trait]
+pub trait MerchantBillingSource: Send + Sync {
+    async fn list_delivered(
+        &self,
+        tenant_id:   Uuid,
+        merchant_id: Uuid,
+        from:        chrono::DateTime<chrono::Utc>,
+        to:          chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<Vec<BillingShipmentDto>>;
+}
+
+#[async_trait]
+pub trait BillingRunRepository: Send + Sync {
+    /// Returns the existing run for (tenant, merchant, period_start, period_end) if any.
+    async fn find_for_period(
+        &self,
+        tenant_id:     &TenantId,
+        merchant_id:   &MerchantId,
+        period_start:  chrono::NaiveDate,
+        period_end:    chrono::NaiveDate,
+    ) -> anyhow::Result<Option<BillingRunRecord>>;
+
+    async fn save(&self, run: &BillingRunRecord) -> anyhow::Result<()>;
+}
+
+/// Audit + idempotency record for an invoice-generating billing run.
+#[derive(Debug, Clone)]
+pub struct BillingRunRecord {
+    pub id:             Uuid,
+    pub tenant_id:      TenantId,
+    pub merchant_id:    MerchantId,
+    pub period_start:   chrono::NaiveDate,
+    pub period_end:     chrono::NaiveDate,
+    pub invoice_id:     Option<InvoiceId>,
+    pub shipment_count: i32,
+    pub total_cents:    i64,
+    pub created_at:     chrono::DateTime<chrono::Utc>,
+}

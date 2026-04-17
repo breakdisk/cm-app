@@ -246,11 +246,15 @@ impl ShipmentRepository for PgShipmentRepository {
                 r#"SELECT COUNT(*) FROM order_intake.shipments
                    WHERE tenant_id = $1
                      AND ($2::uuid IS NULL OR merchant_id = $2)
-                     AND ($3::text IS NULL OR status = $3)"#,
+                     AND ($3::text IS NULL OR status = $3)
+                     AND ($4::timestamptz IS NULL OR updated_at >= $4)
+                     AND ($5::timestamptz IS NULL OR updated_at < $5)"#,
             )
             .bind(filter.tenant_id)
             .bind(filter.merchant_id)
             .bind(filter.status.as_deref())
+            .bind(filter.updated_from)
+            .bind(filter.updated_to)
             .fetch_one(&self.pool)
             .await?;
 
@@ -259,8 +263,10 @@ impl ShipmentRepository for PgShipmentRepository {
                    WHERE tenant_id = $1
                      AND ($2::uuid IS NULL OR merchant_id = $2)
                      AND ($3::text IS NULL OR status = $3)
+                     AND ($4::timestamptz IS NULL OR updated_at >= $4)
+                     AND ($5::timestamptz IS NULL OR updated_at < $5)
                    ORDER BY created_at DESC
-                   LIMIT $4 OFFSET $5"#,
+                   LIMIT $6 OFFSET $7"#,
                 SHIPMENT_COLS,
             );
 
@@ -268,6 +274,8 @@ impl ShipmentRepository for PgShipmentRepository {
                 .bind(filter.tenant_id)
                 .bind(filter.merchant_id)
                 .bind(filter.status.as_deref())
+                .bind(filter.updated_from)
+                .bind(filter.updated_to)
                 .bind(filter.limit)
                 .bind(filter.offset)
                 .fetch_all(&self.pool)

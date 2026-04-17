@@ -73,6 +73,19 @@ pub struct RequestWithdrawalCommand {
     pub bank_account_id: Uuid,
 }
 
+/// Run the monthly billing aggregation for a single (tenant, merchant) and
+/// issue a shipment-charges invoice covering all shipments delivered in the
+/// period. Idempotent on `(tenant_id, merchant_id, year, month)`.
+#[derive(Debug, Deserialize)]
+pub struct RunBillingCommand {
+    pub tenant_id:      Uuid,
+    pub tenant_code:    String,          // 3-char AWB tenant code, e.g. "PH1"
+    pub merchant_id:    Uuid,
+    pub merchant_email: Option<String>,
+    pub year:           i32,
+    pub month:          u32,
+}
+
 // ── Response shapes ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]

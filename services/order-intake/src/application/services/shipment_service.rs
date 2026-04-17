@@ -29,6 +29,11 @@ pub struct ShipmentListFilter {
     pub tenant_id:   uuid::Uuid,
     pub merchant_id: Option<uuid::Uuid>,
     pub status:      Option<String>,
+    /// Inclusive lower bound on `updated_at` — used by billing queries to
+    /// window shipments delivered within a billing period.
+    pub updated_from: Option<chrono::DateTime<chrono::Utc>>,
+    /// Exclusive upper bound on `updated_at`.
+    pub updated_to:   Option<chrono::DateTime<chrono::Utc>>,
     pub limit:       i64,
     pub offset:      i64,
 }
