@@ -6,7 +6,8 @@ use crate::config::Config;
 use crate::application::services::DriverAssignmentService;
 use crate::infrastructure::db::{
     PgRouteRepository, PgDriverAssignmentRepository, PgDriverAvailabilityRepository,
-    ComplianceCache, PgDispatchQueueRepository, PgDriverProfilesRepository,
+    ComplianceCache, DispatchQueueRepository, DriverProfilesRepository,
+    PgDispatchQueueRepository, PgDriverProfilesRepository,
 };
 use crate::infrastructure::messaging::compliance_consumer::start_compliance_consumer;
 use crate::infrastructure::messaging::{start_shipment_consumer, start_user_consumer};
@@ -91,9 +92,8 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::clone(&assignment_repo) as _,
         Arc::clone(&driver_avail) as _,
         Arc::clone(&kafka),
-        Arc::clone(&compliance_cache),
-        Arc::clone(&queue_repo),
-        Arc::clone(&drivers_repo),
+        Some(Arc::clone(&compliance_cache)),
+        Arc::clone(&queue_repo) as Arc<dyn DispatchQueueRepository>,
     ));
 
     // Spawn shipment consumer — populates dispatch_queue from SHIPMENT_CREATED events
@@ -129,8 +129,8 @@ pub async fn run() -> anyhow::Result<()> {
     let state = Arc::new(AppState {
         dispatch_service,
         jwt:          Arc::clone(&jwt),
-        queue_repo,
-        drivers_repo,
+        queue_repo:   queue_repo as Arc<dyn DispatchQueueRepository>,
+        drivers_repo: drivers_repo as Arc<dyn DriverProfilesRepository>,
     });
     use tower_http::cors::CorsLayer;
     use axum::http::{HeaderName, HeaderValue, Method};

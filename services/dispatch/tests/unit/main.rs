@@ -254,6 +254,7 @@ mod driver_availability {
             distance_km,
             location: Coordinates { lat: 14.5995, lng: 120.9842 },
             active_stop_count,
+            vehicle_type: None,
         }
     }
 

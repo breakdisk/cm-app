@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -28,6 +29,14 @@ pub struct DispatchQueueRow {
     pub status:               String,
 }
 
+#[async_trait]
+pub trait DispatchQueueRepository: Send + Sync {
+    async fn upsert(&self, row: &DispatchQueueRow) -> anyhow::Result<()>;
+    async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<DispatchQueueRow>>;
+    async fn list_pending(&self, tenant_id: Uuid) -> anyhow::Result<Vec<DispatchQueueRow>>;
+    async fn mark_dispatched(&self, shipment_id: Uuid) -> anyhow::Result<()>;
+}
+
 pub struct PgDispatchQueueRepository {
     pool: PgPool,
 }
@@ -36,8 +45,11 @@ impl PgDispatchQueueRepository {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
+}
 
-    pub async fn upsert(&self, row: &DispatchQueueRow) -> anyhow::Result<()> {
+#[async_trait]
+impl DispatchQueueRepository for PgDispatchQueueRepository {
+    async fn upsert(&self, row: &DispatchQueueRow) -> anyhow::Result<()> {
         sqlx::query(
             r#"
             INSERT INTO dispatch.dispatch_queue (
@@ -80,7 +92,7 @@ impl PgDispatchQueueRepository {
         Ok(())
     }
 
-    pub async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<DispatchQueueRow>> {
+    async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<DispatchQueueRow>> {
         let row = sqlx::query_as::<_, DispatchQueueRow>(
             "SELECT id, tenant_id, shipment_id, customer_name, customer_phone,
                     customer_email, tracking_number,
@@ -97,7 +109,7 @@ impl PgDispatchQueueRepository {
         Ok(row)
     }
 
-    pub async fn list_pending(&self, tenant_id: Uuid) -> anyhow::Result<Vec<DispatchQueueRow>> {
+    async fn list_pending(&self, tenant_id: Uuid) -> anyhow::Result<Vec<DispatchQueueRow>> {
         let rows = sqlx::query_as::<_, DispatchQueueRow>(
             "SELECT id, tenant_id, shipment_id, customer_name, customer_phone,
                     customer_email, tracking_number,
@@ -116,7 +128,7 @@ impl PgDispatchQueueRepository {
         Ok(rows)
     }
 
-    pub async fn mark_dispatched(&self, shipment_id: Uuid) -> anyhow::Result<()> {
+    async fn mark_dispatched(&self, shipment_id: Uuid) -> anyhow::Result<()> {
         let result = sqlx::query(
             "UPDATE dispatch.dispatch_queue
              SET status = 'dispatched', dispatched_at = NOW()

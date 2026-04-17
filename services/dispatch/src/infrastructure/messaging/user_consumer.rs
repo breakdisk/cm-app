@@ -10,7 +10,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::sync::watch;
 
-use crate::infrastructure::db::driver_profiles_repo::{DriverProfileRow, PgDriverProfilesRepository};
+use crate::infrastructure::db::driver_profiles_repo::{DriverProfileRow, DriverProfilesRepository, PgDriverProfilesRepository};
 
 pub async fn start_user_consumer(
     brokers: &str,
@@ -40,7 +40,7 @@ pub async fn start_user_consumer(
                 match result {
                     Ok(msg) => {
                         if let Some(payload) = msg.payload() {
-                            if let Err(e) = handle_user_created(payload, &repo).await {
+                            if let Err(e) = handle_user_created(payload, &*repo).await {
                                 tracing::warn!(err = %e, "user consumer: handler error (skipping)");
                             }
                         }
@@ -60,7 +60,7 @@ pub async fn start_user_consumer(
 
 async fn handle_user_created(
     payload: &[u8],
-    repo: &PgDriverProfilesRepository,
+    repo: &dyn DriverProfilesRepository,
 ) -> anyhow::Result<()> {
     let event: Event<UserCreated> = serde_json::from_slice(payload)?;
     let d = event.data;

@@ -9,5 +9,5 @@ pub use route_repo::PgRouteRepository;
 pub use assignment_repo::PgDriverAssignmentRepository;
 pub use driver_avail_repo::PgDriverAvailabilityRepository;
 pub use compliance_cache::ComplianceCache;
-pub use dispatch_queue_repo::PgDispatchQueueRepository;
-pub use driver_profiles_repo::PgDriverProfilesRepository;
+pub use dispatch_queue_repo::{DispatchQueueRepository, DispatchQueueRow, PgDispatchQueueRepository};
+pub use driver_profiles_repo::{DriverProfilesRepository, DriverProfileRow, PgDriverProfilesRepository};

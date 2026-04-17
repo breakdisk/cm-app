@@ -4,7 +4,7 @@ use logisticos_types::{Coordinates, DriverId, RouteId, TenantId, VehicleId};
 use logisticos_events::{producer::KafkaProducer, topics, envelope::Event};
 use tokio::sync::Mutex;
 use uuid::Uuid;
-use crate::infrastructure::db::{ComplianceCache, PgDispatchQueueRepository, PgDriverProfilesRepository};
+use crate::infrastructure::db::{ComplianceCache, DispatchQueueRepository};
 
 use crate::{
     application::commands::{
@@ -24,9 +24,8 @@ pub struct DriverAssignmentService {
     assignment_repo: Arc<dyn DriverAssignmentRepository>,
     driver_avail_repo: Arc<dyn DriverAvailabilityRepository>,
     kafka: Arc<KafkaProducer>,
-    compliance_cache: Arc<Mutex<ComplianceCache>>,
-    queue_repo: Arc<PgDispatchQueueRepository>,
-    driver_profiles: Arc<PgDriverProfilesRepository>,
+    compliance_cache: Option<Arc<Mutex<ComplianceCache>>>,
+    queue_repo: Arc<dyn DispatchQueueRepository>,
 }
 
 impl DriverAssignmentService {
@@ -35,11 +34,10 @@ impl DriverAssignmentService {
         assignment_repo: Arc<dyn DriverAssignmentRepository>,
         driver_avail_repo: Arc<dyn DriverAvailabilityRepository>,
         kafka: Arc<KafkaProducer>,
-        compliance_cache: Arc<Mutex<ComplianceCache>>,
-        queue_repo: Arc<PgDispatchQueueRepository>,
-        driver_profiles: Arc<PgDriverProfilesRepository>,
+        compliance_cache: Option<Arc<Mutex<ComplianceCache>>>,
+        queue_repo: Arc<dyn DispatchQueueRepository>,
     ) -> Self {
-        Self { route_repo, assignment_repo, driver_avail_repo, kafka, compliance_cache, queue_repo, driver_profiles }
+        Self { route_repo, assignment_repo, driver_avail_repo, kafka, compliance_cache, queue_repo }
     }
 
     /// Create a new route for a driver. The route starts as Planned and gets stops added.
@@ -159,8 +157,9 @@ impl DriverAssignmentService {
         // Compliance gate — fail fast if driver is not cleared for assignment.
         // On cache miss we default to assignable; the compliance service corrects within TTL.
         // On Redis error we also default to assignable but log so operators can detect outages.
-        let is_assignable = {
-            let mut cache = self.compliance_cache.lock().await;
+        // compliance_cache is None in test environments — skip the check entirely.
+        let is_assignable = if let Some(ref cc) = self.compliance_cache {
+            let mut cache = cc.lock().await;
             match cache.get_status(driver_id.inner()).await {
                 Ok(Some((_, assignable))) => assignable,
                 Ok(None)                  => true, // cache miss — assume compliant
@@ -172,6 +171,8 @@ impl DriverAssignmentService {
                     true
                 }
             }
+        } else {
+            true
         };
 
         if !is_assignable {
@@ -360,12 +361,12 @@ impl DriverAssignmentService {
             }
         };
 
-        // 3. Compliance gate
-        let is_assignable = {
-            let mut cache = self.compliance_cache.lock().await;
+        // 3. Compliance gate (skipped in test environments where compliance_cache is None)
+        let is_assignable = if let Some(ref cc) = self.compliance_cache {
+            let mut cache = cc.lock().await;
             match cache.get_status(driver_id.inner()).await {
                 Ok(Some((_, assignable))) => assignable,
-                Ok(None) => true, // cache miss — assume compliant
+                Ok(None) => true,
                 Err(e) => {
                     tracing::warn!(
                         driver_id = %driver_id,
@@ -374,6 +375,8 @@ impl DriverAssignmentService {
                     true
                 }
             }
+        } else {
+            true
         };
         if !is_assignable {
             return Err(AppError::BusinessRule(format!(
