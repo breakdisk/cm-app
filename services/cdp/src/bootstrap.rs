@@ -34,7 +34,7 @@ pub async fn run() -> anyhow::Result<()> {
         .connect(&cfg.database.url)
         .await?;
 
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    logisticos_common::migrations::run(&pool, "cdp", &sqlx::migrate!("./migrations")).await?;
 
     // Domain layer
     let profile_repo = Arc::new(PgCustomerProfileRepository::new(pool.clone()));

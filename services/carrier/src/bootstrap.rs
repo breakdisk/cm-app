@@ -23,7 +23,7 @@ pub async fn run() -> anyhow::Result<()> {
         .connect(&cfg.database.url)
         .await?;
 
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    logisticos_common::migrations::run(&pool, "carrier", &sqlx::migrate!("./migrations")).await?;
 
     let carrier_repo = Arc::new(PgCarrierRepository::new(pool));
     let carrier_svc  = Arc::new(CarrierService::new(carrier_repo));

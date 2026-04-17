@@ -35,7 +35,7 @@ pub async fn run() -> anyhow::Result<()> {
         .connect(&cfg.database.url)
         .await?;
 
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    logisticos_common::migrations::run(&pool, "ai_layer", &sqlx::migrate!("./migrations")).await?;
 
     // Claude API client
     let claude = Arc::new(ClaudeClient::new(cfg.anthropic.api_key.clone()));

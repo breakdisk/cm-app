@@ -109,7 +109,7 @@ pub async fn run() -> anyhow::Result<()> {
         .connect(&cfg.database.url)
         .await?;
 
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    logisticos_common::migrations::run(&pool, "business_logic", &sqlx::migrate!("./migrations")).await?;
 
     let pg_repo = Arc::new(PgRuleRepository::new(pool));
 

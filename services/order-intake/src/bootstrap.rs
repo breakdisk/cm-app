@@ -39,7 +39,7 @@ pub async fn run() -> anyhow::Result<()> {
         .connect(&cfg.database.url)
         .await?;
 
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    logisticos_common::migrations::run(&pool, "order_intake", &sqlx::migrate!("./migrations")).await?;
 
     // Infrastructure adapters
     let repo = Arc::new(PgShipmentRepository { pool: pool.clone() });

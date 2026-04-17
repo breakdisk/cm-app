@@ -31,7 +31,7 @@ pub async fn run() -> anyhow::Result<()> {
         .connect(&cfg.database.url)
         .await?;
 
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    logisticos_common::migrations::run(&pool, "analytics", &sqlx::migrate!("./migrations")).await?;
 
     let db         = Arc::new(AnalyticsDb::new(pool));
     let query_svc  = Arc::new(QueryService::new(db.clone()));

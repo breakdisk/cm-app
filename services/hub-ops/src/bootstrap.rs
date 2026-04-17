@@ -253,7 +253,7 @@ pub async fn run() -> anyhow::Result<()> {
         .connect(&cfg.database.url)
         .await?;
 
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    logisticos_common::migrations::run(&pool, "hub_ops", &sqlx::migrate!("./migrations")).await?;
 
     let hub_repo       = Arc::new(PgHubRepository { pool: pool.clone() });
     let induction_repo = Arc::new(PgInductionRepository { pool });

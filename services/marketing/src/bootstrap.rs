@@ -59,7 +59,7 @@ pub async fn run() -> anyhow::Result<()> {
         .connect(&cfg.database.url)
         .await?;
 
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    logisticos_common::migrations::run(&pool, "marketing", &sqlx::migrate!("./migrations")).await?;
 
     let producer: FutureProducer = ClientConfig::new()
         .set("bootstrap.servers", &cfg.kafka.brokers)

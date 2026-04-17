@@ -42,7 +42,7 @@ pub async fn run() -> anyhow::Result<()> {
         .connect(&cfg.database.url)
         .await?;
 
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    logisticos_common::migrations::run(&pool, "delivery_experience", &sqlx::migrate!("./migrations")).await?;
 
     let tracking_repo = Arc::new(PgTrackingRepository::new(pool.clone()));
     let tracking_svc  = Arc::new(TrackingService::new(tracking_repo.clone()));

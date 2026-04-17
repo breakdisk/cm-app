@@ -39,9 +39,8 @@ pub async fn run() -> anyhow::Result<()> {
 
     tracing::info!("PostgreSQL pool established");
 
-    // 4. Run pending migrations (sqlx compile-time checked)
-    sqlx::migrate!("./migrations")
-        .run(&pool)
+    // 4. Run pending migrations (sqlx compile-time checked, schema-isolated tracking table)
+    logisticos_common::migrations::run(&pool, "identity", &sqlx::migrate!("./migrations"))
         .await
         .context("Database migration failed")?;
 

@@ -24,7 +24,7 @@ pub async fn run() -> anyhow::Result<()> {
         .connect(&cfg.database.url)
         .await?;
 
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    logisticos_common::migrations::run(&pool, "fleet", &sqlx::migrate!("./migrations")).await?;
 
     let vehicle_repo = Arc::new(PgVehicleRepository::new(pool));
     let fleet_svc    = Arc::new(FleetService::new(vehicle_repo));

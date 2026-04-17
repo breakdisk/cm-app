@@ -36,7 +36,7 @@ pub async fn run() -> anyhow::Result<()> {
         .await
         .context("Failed to connect to PostgreSQL")?;
 
-    sqlx::migrate!("./migrations").run(&pool).await
+    logisticos_common::migrations::run(&pool, "driver_ops", &sqlx::migrate!("./migrations")).await
         .context("driver-ops migration failed")?;
 
     let kafka = Arc::new(

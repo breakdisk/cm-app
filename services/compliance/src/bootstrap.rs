@@ -42,7 +42,7 @@ pub async fn run() -> anyhow::Result<()> {
         .await
         .context("Failed to connect to PostgreSQL")?;
 
-    sqlx::migrate!("./migrations").run(&pool)
+    logisticos_common::migrations::run(&pool, "compliance", &sqlx::migrate!("./migrations"))
         .await
         .context("compliance migration failed")?;
 
