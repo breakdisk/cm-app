@@ -89,7 +89,7 @@ export const trackingApi = {
   getByTrackingNumber: (trackingNumber: string) => {
     const trackingClient = getTrackingClient();
     return trackingClient.get<PublicTrackingData>(
-      `/track/${trackingNumber}`
+      `/v1/tracking/public/${trackingNumber}`
     );
   },
 

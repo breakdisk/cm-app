@@ -10,14 +10,18 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   View, Text, StyleSheet, ScrollView, Pressable,
   ActivityIndicator, RefreshControl, Linking, Alert, Animated,
+  Share, TextInput, Keyboard,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
+import { useSelector } from "react-redux";
 import { useNetInfo } from "@react-native-community/netinfo";
 import { AwbQRCode } from "../../components/AwbQRCode";
 import { FadeInView } from "../../components/FadeInView";
 import { trackingApi, type PublicTrackingData } from "../../services/api/tracking";
+import type { RootState } from "../../store";
+import { formatDate } from "../../utils/formatting";
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
 const CANVAS = "#050810";
@@ -101,6 +105,23 @@ export function CollectionScreen({ route, navigation }: CollectionScreenProps) {
   const [pickupStatus, setPickupStatus] = useState<PickupStatus>("confirmed");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Pickup receipt — Email + Share state
+  const profileEmail = useSelector((st: RootState) => st.auth.email ?? "");
+  const [emailExpanded, setEmailExpanded] = useState(false);
+  const [emailValue, setEmailValue]       = useState("");
+  const [emailSending, setEmailSending]   = useState(false);
+  const [emailSent, setEmailSent]         = useState(false);
+  const emailFadeAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => { if (profileEmail && !emailValue) setEmailValue(profileEmail); }, [profileEmail]);
+  useEffect(() => {
+    Animated.timing(emailFadeAnim, {
+      toValue: emailExpanded ? 1 : 0,
+      duration: 220,
+      useNativeDriver: true,
+    }).start();
+  }, [emailExpanded, emailFadeAnim]);
+
   const fetchTracking = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
     setError(null);
@@ -140,6 +161,45 @@ export function CollectionScreen({ route, navigation }: CollectionScreenProps) {
   const currentStep = stepIndex(pickupStatus);
   const isComplete  = pickupStatus === "picked_up";
   const driver      = (trackData as any)?.driver;
+
+  // Pickup receipt — derive timestamp from history, fall back to "just now"
+  const pickupEvent  = trackData?.history?.find(e => e.status === "picked_up");
+  const pickedUpAt   = pickupEvent?.occurred_at ?? null;
+  const pickupOrigin = trackData?.origin ?? trackData?.origin_city ?? "";
+
+  async function handleShareReceipt() {
+    const lines = [
+      `CargoMarket — Pickup Receipt`,
+      `AWB: ${awb}`,
+      `Status: Collected`,
+      pickedUpAt ? `Picked up: ${formatDate(pickedUpAt, { time: true })}` : "",
+      pickupOrigin ? `From: ${pickupOrigin}` : "",
+      trackData?.destination ? `To: ${trackData.destination}` : "",
+    ].filter(Boolean).join("\n");
+    try {
+      await Share.share({ message: lines, title: `Pickup Receipt — ${awb}` });
+    } catch {}
+  }
+
+  async function handleEmailReceipt() {
+    const email = emailValue.trim();
+    if (!email || !email.includes("@")) {
+      Alert.alert("Invalid Email", "Please enter a valid email address.");
+      return;
+    }
+    Keyboard.dismiss();
+    setEmailSending(true);
+    try {
+      await trackingApi.sendReceiptByEmail(awb, email);
+      setEmailSent(true);
+      setEmailExpanded(false);
+    } catch (err: any) {
+      const msg = err?.data?.error ?? err?.response?.data?.error ?? err?.message ?? "Could not send receipt. Please try again.";
+      Alert.alert("Send Failed", msg);
+    } finally {
+      setEmailSending(false);
+    }
+  }
 
   return (
     <View style={{ flex: 1, backgroundColor: CANVAS }}>
@@ -328,18 +388,111 @@ export function CollectionScreen({ route, navigation }: CollectionScreenProps) {
             </FadeInView>
           )}
 
-          {/* ── Collection complete celebration ───────────────────────────── */}
+          {/* ── Collection complete celebration + receipt ─────────────────── */}
           {isComplete && (
-            <FadeInView delay={60} fromY={12} style={[s.card, s.successCard]}>
-              <LinearGradient
-                colors={["rgba(0,255,136,0.12)", "rgba(0,255,136,0.03)"]}
-                style={s.successGrad}
-              >
-                <Ionicons name="checkmark-done-circle" size={48} color={GREEN} />
-                <Text style={s.successTitle}>Package Collected!</Text>
-                <Text style={s.successSub}>
-                  Your package is now with our courier and will be processed at the hub.
-                </Text>
+            <>
+              <FadeInView delay={60} fromY={12} style={[s.card, s.successCard]}>
+                <LinearGradient
+                  colors={["rgba(0,255,136,0.12)", "rgba(0,255,136,0.03)"]}
+                  style={s.successGrad}
+                >
+                  <Ionicons name="checkmark-done-circle" size={48} color={GREEN} />
+                  <Text style={s.successTitle}>Package Collected!</Text>
+                  {pickedUpAt && (
+                    <Text style={s.successTime}>{formatDate(pickedUpAt, { time: true })}</Text>
+                  )}
+                  <Text style={s.successSub}>
+                    Your package is now with our courier and will be processed at the hub.
+                  </Text>
+                </LinearGradient>
+              </FadeInView>
+
+              {/* Pickup Receipt */}
+              <FadeInView delay={120} fromY={12} style={s.card}>
+                <Text style={s.cardTitle}>Pickup Receipt</Text>
+                <View style={s.receiptDivider} />
+                <View style={s.receiptRow}>
+                  <Text style={s.receiptLabel}>AWB</Text>
+                  <Text style={[s.receiptValue, s.receiptMono]}>{awb}</Text>
+                </View>
+                <View style={s.receiptRow}>
+                  <Text style={s.receiptLabel}>Status</Text>
+                  <Text style={[s.receiptValue, { color: GREEN }]}>Collected</Text>
+                </View>
+                {pickedUpAt && (
+                  <View style={s.receiptRow}>
+                    <Text style={s.receiptLabel}>Picked up</Text>
+                    <Text style={s.receiptValue}>{formatDate(pickedUpAt, { time: true })}</Text>
+                  </View>
+                )}
+                {pickupOrigin ? (
+                  <View style={s.receiptRow}>
+                    <Text style={s.receiptLabel}>From</Text>
+                    <Text style={s.receiptValue} numberOfLines={2}>{pickupOrigin}</Text>
+                  </View>
+                ) : null}
+                {trackData?.destination ? (
+                  <View style={s.receiptRow}>
+                    <Text style={s.receiptLabel}>To</Text>
+                    <Text style={s.receiptValue} numberOfLines={2}>{trackData.destination}</Text>
+                  </View>
+                ) : null}
+
+                {/* Action buttons */}
+                <View style={s.receiptActionsRow}>
+                  <Pressable onPress={handleShareReceipt} style={s.receiptActionBtn}>
+                    <Ionicons name="share-outline" size={16} color={CYAN} />
+                    <Text style={[s.receiptActionText, { color: CYAN }]}>Share</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => { setEmailExpanded(v => !v); setEmailSent(false); }}
+                    style={s.receiptActionBtn}
+                  >
+                    <Ionicons name="mail-outline" size={16} color={PURPLE} />
+                    <Text style={[s.receiptActionText, { color: PURPLE }]}>Email</Text>
+                    <Ionicons
+                      name={emailExpanded ? "chevron-up" : "chevron-down"}
+                      size={12} color="rgba(255,255,255,0.35)"
+                    />
+                  </Pressable>
+                </View>
+
+                {/* Email confirmation banner */}
+                {emailSent && (
+                  <View style={s.emailSentBanner}>
+                    <Ionicons name="checkmark-circle" size={16} color={GREEN} />
+                    <Text style={[s.emailSentText, { color: GREEN }]}>Sent to {emailValue}</Text>
+                  </View>
+                )}
+
+                {/* Email input — collapsible */}
+                <Animated.View style={{ opacity: emailFadeAnim, overflow: "hidden", maxHeight: emailExpanded ? 60 : 0 }}>
+                  <View style={s.emailInputRow}>
+                    <TextInput
+                      style={s.emailInput}
+                      value={emailValue}
+                      onChangeText={setEmailValue}
+                      placeholder="your@email.com"
+                      placeholderTextColor="rgba(255,255,255,0.25)"
+                      keyboardType="email-address"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                    <Pressable
+                      onPress={handleEmailReceipt}
+                      disabled={emailSending}
+                      style={[s.emailSendBtn, { opacity: emailSending ? 0.6 : 1 }]}
+                    >
+                      {emailSending ? (
+                        <ActivityIndicator size="small" color={CANVAS} />
+                      ) : (
+                        <Ionicons name="send" size={14} color={CANVAS} />
+                      )}
+                    </Pressable>
+                  </View>
+                </Animated.View>
+
+                {/* Track shipment CTA */}
                 <Pressable
                   onPress={() => navigation.navigate("Tabs", { screen: "Track" })}
                   style={s.trackNowBtn}
@@ -347,8 +500,8 @@ export function CollectionScreen({ route, navigation }: CollectionScreenProps) {
                   <Ionicons name="locate-outline" size={16} color={CANVAS} />
                   <Text style={s.trackNowText}>Track Shipment</Text>
                 </Pressable>
-              </LinearGradient>
-            </FadeInView>
+              </FadeInView>
+            </>
           )}
 
           {/* ── Shipment events timeline ───────────────────────────────────── */}
@@ -424,11 +577,26 @@ const s = StyleSheet.create({
   instructionText:  { flex: 1, fontSize: 13, color: "rgba(255,255,255,0.55)", lineHeight: 19 },
 
   successCard:  { padding: 0, overflow: "hidden" },
-  successGrad:  { alignItems: "center", gap: 10, padding: 28 },
+  successGrad:  { alignItems: "center", gap: 8, padding: 28 },
   successTitle: { fontSize: 20, fontWeight: "700", color: GREEN, fontFamily: "SpaceGrotesk-Bold" },
-  successSub:   { fontSize: 13, color: "rgba(255,255,255,0.55)", textAlign: "center", lineHeight: 20 },
-  trackNowBtn:  { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 8, backgroundColor: GREEN, borderRadius: 12, paddingHorizontal: 20, paddingVertical: 11 },
+  successTime:  { fontSize: 11, color: "rgba(255,255,255,0.5)", fontFamily: "JetBrainsMono-Regular" },
+  successSub:   { fontSize: 13, color: "rgba(255,255,255,0.55)", textAlign: "center", lineHeight: 20, marginTop: 4 },
+  trackNowBtn:  { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 8, backgroundColor: GREEN, borderRadius: 12, paddingHorizontal: 20, paddingVertical: 12 },
   trackNowText: { fontSize: 14, fontWeight: "700", color: CANVAS, fontFamily: "SpaceGrotesk-Bold" },
+
+  receiptDivider:    { height: 1, backgroundColor: BORDER, marginVertical: 2 },
+  receiptRow:        { flexDirection: "row", alignItems: "flex-start", gap: 8, paddingVertical: 2 },
+  receiptLabel:      { flex: 1, fontSize: 12, color: "rgba(255,255,255,0.45)", fontFamily: "JetBrainsMono-Regular" },
+  receiptValue:      { fontSize: 13, color: "#FFF", fontFamily: "SpaceGrotesk-Regular", flexShrink: 1, textAlign: "right", maxWidth: "60%" },
+  receiptMono:       { fontFamily: "JetBrainsMono-Regular", letterSpacing: 0.5 },
+  receiptActionsRow: { flexDirection: "row", gap: 10, marginTop: 8 },
+  receiptActionBtn:  { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 11, borderRadius: 10, borderWidth: 1, borderColor: "rgba(255,255,255,0.08)", backgroundColor: "rgba(255,255,255,0.03)" },
+  receiptActionText: { fontSize: 13, fontWeight: "600", fontFamily: "SpaceGrotesk-SemiBold" },
+  emailInputRow:     { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 4 },
+  emailInput:        { flex: 1, height: 40, backgroundColor: "rgba(255,255,255,0.05)", borderRadius: 10, paddingHorizontal: 12, color: "#FFF", fontSize: 14, borderWidth: 1, borderColor: BORDER },
+  emailSendBtn:      { width: 40, height: 40, borderRadius: 10, backgroundColor: PURPLE, alignItems: "center", justifyContent: "center" },
+  emailSentBanner:   { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 10, borderRadius: 10, borderWidth: 1, borderColor: GREEN + "40", backgroundColor: GREEN + "10", marginTop: 4 },
+  emailSentText:     { fontSize: 12, fontWeight: "600", fontFamily: "SpaceGrotesk-SemiBold" },
 
   eventRow:   { flexDirection: "row", alignItems: "flex-start", gap: 12 },
   eventDot:   { width: 8, height: 8, borderRadius: 4, backgroundColor: CYAN, marginTop: 5 },
