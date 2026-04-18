@@ -41,6 +41,16 @@ pub async fn run() -> anyhow::Result<()> {
         .await
         .context("Failed to connect to PostgreSQL")?;
 
+    // dispatch now shares the svc_driver_ops database so driver_avail_repo can read
+    // driver_ops.drivers and driver_ops.driver_latest_locations in the same query.
+    // The dispatch schema won't exist yet on that DB — create it before migrations run.
+    sqlx::query("CREATE SCHEMA IF NOT EXISTS dispatch").execute(&pool).await
+        .context("Failed to create dispatch schema")?;
+    sqlx::query(r#"CREATE EXTENSION IF NOT EXISTS "uuid-ossp""#).execute(&pool).await
+        .context("Failed to enable uuid-ossp extension")?;
+    sqlx::query("CREATE EXTENSION IF NOT EXISTS postgis").execute(&pool).await
+        .context("Failed to enable postgis extension")?;
+
     logisticos_common::migrations::run(&pool, "dispatch", &sqlx::migrate!("./migrations")).await
         .context("Dispatch database migration failed")?;
 
