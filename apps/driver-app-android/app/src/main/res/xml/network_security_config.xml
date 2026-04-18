@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Allow cleartext to VPS IP in dev/debug builds only -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">75.119.138.135</domain>
+    </domain-config>
+    <!-- Production: HTTPS only, cert-pinned -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">os-api.cargomarket.net</domain>
+        <pin-set>
+            <pin digest="SHA-256">y7xVm0TVJNahMr2sZydE2jQH8SquXV9yLF9seROHHHU=</pin>
+            <pin digest="SHA-256">YLh1dUR9y6Kja30RrAn7JKnbQG/uEtLMkBgFF2Fuihg=</pin>
+        </pin-set>
+    </domain-config>
+</network-security-config>
