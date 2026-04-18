@@ -58,8 +58,9 @@ class HomeViewModel @Inject constructor(
             runCatching {
                 if (goingOnline) {
                     api.goOnline()
-                    // Push current location immediately so dispatch can find this driver
-                    locationRepo.getLastKnownLocation()?.let { loc ->
+                    // Push a fresh GPS fix so dispatch can find this driver immediately.
+                    // Falls back to last known if a fresh fix isn't available within 5 s.
+                    locationRepo.getCurrentOrLastKnownLocation()?.let { loc ->
                         api.updateLocation(
                             UpdateLocationRequest(
                                 lat = loc.lat,
