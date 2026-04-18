@@ -1,6 +1,6 @@
 use logisticos_driver_ops::domain::{
     entities::{
-        driver::{Driver, DriverStatus},
+        driver::{Driver, DriverStatus, DriverType},
         location::DriverLocation,
         task::{DriverTask, TaskStatus, TaskType},
     },
@@ -28,6 +28,11 @@ fn make_driver(status: DriverStatus, active_route_id: Option<Uuid>) -> Driver {
         vehicle_id: None,
         active_route_id,
         is_active: true,
+        driver_type: DriverType::FullTime,
+        per_delivery_rate_cents: 0,
+        cod_commission_rate_bps: 0,
+        zone: None,
+        vehicle_type: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     }

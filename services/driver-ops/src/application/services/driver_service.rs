@@ -4,9 +4,9 @@ use logisticos_types::{DriverId, TenantId};
 use uuid::Uuid;
 
 use crate::{
-    application::commands::RegisterDriverCommand,
+    application::commands::{RegisterDriverCommand, UpdateDriverCommand},
     domain::{
-        entities::{Driver, DriverStatus},
+        entities::{Driver, DriverStatus, DriverType},
         repositories::DriverRepository,
     },
 };
@@ -42,12 +42,37 @@ impl DriverService {
             vehicle_id: cmd.vehicle_id,
             active_route_id: None,
             is_active: true,
+            driver_type: DriverType::FullTime,
+            per_delivery_rate_cents: 0,
+            cod_commission_rate_bps: 0,
+            zone: None,
+            vehicle_type: None,
             created_at: now,
             updated_at: now,
         };
 
         self.driver_repo.save(&driver).await.map_err(AppError::Internal)?;
         tracing::info!(driver_id = %driver.id, user_id = %driver.user_id, "Driver registered");
+        Ok(driver)
+    }
+
+    /// Partner-portal profile update: commission/rate/zone/vehicle/contact fields.
+    pub async fn update(&self, tenant_id: &TenantId, driver_id: &DriverId, cmd: UpdateDriverCommand) -> AppResult<Driver> {
+        let mut driver = self.get(driver_id).await?;
+        if driver.tenant_id.inner() != tenant_id.inner() {
+            return Err(AppError::NotFound { resource: "Driver", id: driver_id.inner().to_string() });
+        }
+        if let Some(v) = cmd.first_name              { driver.first_name = v; }
+        if let Some(v) = cmd.last_name               { driver.last_name  = v; }
+        if let Some(v) = cmd.phone                   { driver.phone      = v; }
+        if let Some(v) = cmd.driver_type             { driver.driver_type = v; }
+        if let Some(v) = cmd.per_delivery_rate_cents { driver.per_delivery_rate_cents = v; }
+        if let Some(v) = cmd.cod_commission_rate_bps { driver.cod_commission_rate_bps = v; }
+        if let Some(v) = cmd.zone                    { driver.zone = Some(v); }
+        if let Some(v) = cmd.vehicle_type            { driver.vehicle_type = Some(v); }
+        if let Some(v) = cmd.is_active               { driver.is_active = v; }
+        driver.updated_at = chrono::Utc::now();
+        self.driver_repo.save(&driver).await.map_err(AppError::Internal)?;
         Ok(driver)
     }
 

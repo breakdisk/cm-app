@@ -39,28 +39,52 @@ interface Driver {
 
 // ── API fetch ──────────────────────────────────────────────────────────────────
 
+// Maps driver-ops DriverDto → UI row. per_delivery_rate_cents → PHP, bps → fraction.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function dtoToDriver(d: any): Driver {
+  const activeRoute = d.active_route_id ?? null;
+  const onlineStatus: Driver["status"] =
+    activeRoute ? "on_delivery" : d.is_online ? "active" : "offline";
+  return {
+    id:                d.id,
+    name:              `${d.first_name ?? ""} ${d.last_name ?? ""}`.trim() || "—",
+    phone:             d.phone ?? "—",
+    zone:              d.zone ?? "—",
+    driverType:        d.driver_type === "part_time" ? "part_time" : "full_time",
+    commissionRate:    (d.per_delivery_rate_cents ?? 0) / 100,
+    codCommissionRate: (d.cod_commission_rate_bps ?? 0) / 10_000,
+    deliveriesToday:   d.deliveries_today ?? 0,
+    deliveriesWeek:    d.deliveries_week ?? 0,
+    earningsToday:     d.earnings_today ?? 0,
+    status:            onlineStatus,
+    compliance_status: d.compliance_status ?? "compliant",
+    compliance_detail: d.compliance_detail ?? undefined,
+  };
+}
+
 async function fetchDriversFromApi(): Promise<Driver[] | null> {
   try {
     const res = await authFetch(`${DRIVER_OPS_URL}/v1/drivers`);
     if (!res.ok) return null;
     const json = await res.json();
-    const items = json.data ?? json.drivers ?? [];
+    const items = json.data ?? [];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return items.map((d: any): Driver => ({
-      id:               d.id,
-      name:             d.name ?? `${d.first_name ?? ""} ${d.last_name ?? ""}`.trim(),
-      phone:            d.phone ?? "—",
-      zone:             d.zone ?? d.current_zone ?? "—",
-      driverType:       d.driver_type === "full_time" ? "full_time" : "part_time",
-      commissionRate:   d.per_delivery_rate ?? d.commission_rate ?? 0,
-      codCommissionRate: d.cod_commission_rate ?? 0,
-      deliveriesToday:  d.deliveries_today  ?? 0,
-      deliveriesWeek:   d.deliveries_week   ?? 0,
-      earningsToday:    d.earnings_today    ?? 0,
-      status:           d.is_online ? "active" : "offline",
-      compliance_status: d.compliance_status ?? "compliant",
-      compliance_detail: d.compliance_detail ?? undefined,
-    }));
+    return items.map((d: any) => dtoToDriver(d));
+  } catch {
+    return null;
+  }
+}
+
+async function patchDriver(id: string, patch: Record<string, unknown>): Promise<Driver | null> {
+  try {
+    const res = await authFetch(`${DRIVER_OPS_URL}/v1/drivers/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json.data ? dtoToDriver(json.data) : null;
   } catch {
     return null;
   }
@@ -375,10 +399,19 @@ export default function DriversPage() {
     return matchSearch && matchFilter;
   });
 
-  function handleSave(updates: Partial<Driver>) {
+  async function handleSave(updates: Partial<Driver>) {
     if (!editingDriver) return;
+    const patch: Record<string, unknown> = {};
+    if (updates.driverType       !== undefined) patch.driver_type             = updates.driverType;
+    if (updates.commissionRate    !== undefined) patch.per_delivery_rate_cents = Math.round(updates.commissionRate * 100);
+    if (updates.codCommissionRate !== undefined) patch.cod_commission_rate_bps = Math.round(updates.codCommissionRate * 10_000);
+    if (updates.zone              !== undefined) patch.zone                    = updates.zone;
+
+    const saved = await patchDriver(editingDriver.id, patch);
     setDrivers((prev) =>
-      prev.map((d) => d.id === editingDriver.id ? { ...d, ...updates } : d)
+      prev.map((d) =>
+        d.id === editingDriver.id ? (saved ?? { ...d, ...updates }) : d
+      )
     );
     setEditing(null);
   }

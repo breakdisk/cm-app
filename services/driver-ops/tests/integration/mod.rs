@@ -26,7 +26,7 @@ use logisticos_driver_ops::{
     api::http::{AppState, LocationBroadcast},
     application::services::{DriverService, LocationService, TaskService},
     domain::{
-        entities::{Driver, DriverLocation, DriverStatus, DriverTask, TaskStatus, TaskType},
+        entities::{Driver, DriverLocation, DriverStatus, DriverType, DriverTask, TaskStatus, TaskType},
         repositories::{DriverRepository, LocationRepository, TaskRepository},
     },
 };
@@ -366,6 +366,11 @@ fn make_driver(tenant_id: Uuid, user_id: Uuid) -> Driver {
         vehicle_id: None,
         active_route_id: None,
         is_active: true,
+        driver_type: DriverType::FullTime,
+        per_delivery_rate_cents: 0,
+        cod_commission_rate_bps: 0,
+        zone: None,
+        vehicle_type: None,
         created_at: now,
         updated_at: now,
     }

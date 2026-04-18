@@ -16,6 +16,11 @@ pub struct Driver {
     pub vehicle_id: Option<uuid::Uuid>,
     pub active_route_id: Option<uuid::Uuid>,
     pub is_active: bool,
+    pub driver_type: DriverType,
+    pub per_delivery_rate_cents: i32,
+    pub cod_commission_rate_bps: i32,   // basis points (250 = 2.50%)
+    pub zone: Option<String>,
+    pub vehicle_type: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -28,6 +33,13 @@ pub enum DriverStatus {
     Delivering,
     Returning,
     OnBreak,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DriverType {
+    FullTime,
+    PartTime,
 }
 
 impl Driver {
