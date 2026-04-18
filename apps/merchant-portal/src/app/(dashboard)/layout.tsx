@@ -2,6 +2,7 @@
 
 import { useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
+import { clearAuthCache } from "@/lib/auth/auth-fetch";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -144,8 +145,28 @@ function NavLink({
 export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
   const pathname = usePathname();
   const pageTitle = getPageTitle(pathname);
+
+  async function handleSignOut() {
+    setSigningOut(true);
+    try {
+      // Basepath-aware — merchant portal lives under `/merchant` in prod.
+      const match = window.location.pathname.match(/^\/(merchant|admin|customer|partner)(?=\/|$)/);
+      const prefix = match ? match[0] : "";
+      await fetch(`${prefix}/api/auth/signout`, {
+        method:      "POST",
+        credentials: "same-origin",
+        cache:       "no-store",
+      }).catch(() => { /* still clear client state even if the server call fails */ });
+    } finally {
+      clearAuthCache();
+      // Redirect to the landing login. Full nav so the root app remounts
+      // without any residual client state.
+      window.location.href = "/login";
+    }
+  }
 
   return (
     <div className="flex min-h-screen bg-canvas font-sans antialiased">
@@ -293,9 +314,12 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
           {/* Sign out */}
           <button
+            onClick={handleSignOut}
+            disabled={signingOut}
             className={cn(
               "group flex w-full items-center gap-3 rounded-lg px-3 py-2",
               "text-xs text-white/40 transition-all hover:bg-red-surface hover:text-red-signal",
+              "disabled:opacity-50",
               collapsed && "justify-center"
             )}
           >
