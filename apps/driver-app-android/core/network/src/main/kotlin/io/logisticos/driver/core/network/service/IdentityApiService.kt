@@ -48,7 +48,7 @@ interface IdentityApiService {
     suspend fun verifyOtp(@Body request: OtpVerifyRequest): ApiResponse<OtpVerifyResponse>
 
     @POST("v1/auth/refresh")
-    suspend fun refreshToken(@Body request: io.logisticos.driver.core.network.model.RefreshRequest): io.logisticos.driver.core.network.model.TokenResponse
+    suspend fun refreshToken(@Body request: io.logisticos.driver.core.network.model.RefreshRequest): ApiResponse<io.logisticos.driver.core.network.model.TokenResponse>
 
     @POST("v1/auth/fcm-token")
     suspend fun registerFcmToken(@Body request: FcmTokenRequest): retrofit2.Response<Unit>
