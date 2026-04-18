@@ -48,15 +48,23 @@ impl DriverAvailabilityRepository for PgDriverAvailabilityRepository {
                 d.first_name,
                 d.last_name,
                 d.vehicle_type,
-                dl.lat                  AS lat,
-                dl.lng                  AS lng,
-                ST_Distance(
-                    geography(ST_SetSRID(ST_MakePoint(dl.lng, dl.lat), 4326)),
-                    ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography
-                ) AS distance_meters,
+                COALESCE(dl.lat, 0.0)   AS lat,
+                COALESCE(dl.lng, 0.0)   AS lng,
+                CASE
+                    WHEN dl.driver_id IS NOT NULL THEN
+                        ST_Distance(
+                            geography(ST_SetSRID(ST_MakePoint(dl.lng, dl.lat), 4326)),
+                            ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography
+                        )
+                    ELSE 999999999.0
+                END                     AS distance_meters,
                 COALESCE(stop_counts.cnt, 0) AS active_stop_count
             FROM driver_ops.drivers d
-            INNER JOIN driver_ops.driver_latest_locations dl ON dl.driver_id = d.user_id
+            -- LEFT JOIN so drivers with no recent GPS fix are still returned
+            -- (they appear last in scoring due to 999999999 m distance).
+            LEFT JOIN driver_ops.driver_latest_locations dl
+                   ON dl.driver_id = d.user_id
+                  AND dl.recorded_at > NOW() - INTERVAL '10 minutes'
             LEFT JOIN (
                 SELECT da.driver_id, COUNT(rs.id) AS cnt
                 FROM dispatch.driver_assignments da
@@ -69,10 +77,13 @@ impl DriverAvailabilityRepository for PgDriverAvailabilityRepository {
             WHERE d.tenant_id = $1
               AND d.is_active = true
               AND d.status = 'available'
-              AND ST_DWithin(
-                  geography(ST_SetSRID(ST_MakePoint(dl.lng, dl.lat), 4326)),
-                  ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography,
-                  $4
+              AND (
+                  dl.driver_id IS NULL
+                  OR ST_DWithin(
+                      geography(ST_SetSRID(ST_MakePoint(dl.lng, dl.lat), 4326)),
+                      ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography,
+                      $4
+                  )
               )
               -- Exclude drivers already assigned to an active route
               AND NOT EXISTS (
@@ -80,8 +91,6 @@ impl DriverAvailabilityRepository for PgDriverAvailabilityRepository {
                   WHERE da2.driver_id = d.user_id
                     AND da2.status IN ('pending', 'accepted')
               )
-              -- Only use fresh location data (< 10 minutes old)
-              AND dl.recorded_at > NOW() - INTERVAL '10 minutes'
             ORDER BY distance_meters ASC
             "#
         )

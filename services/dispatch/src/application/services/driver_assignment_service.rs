@@ -336,9 +336,11 @@ impl DriverAssignmentService {
         let driver_id = match cmd.preferred_driver_id {
             Some(id) => DriverId::from_uuid(id),
             None => {
+                // Use origin (pickup point) as anchor for driver proximity — the driver
+                // needs to travel to the origin first. Fall back to destination if no origin.
                 let anchor = Coordinates {
-                    lat: queue_item.dest_lat.unwrap_or(14.5995),
-                    lng: queue_item.dest_lng.unwrap_or(120.9842),
+                    lat: queue_item.origin_lat.or(queue_item.dest_lat).unwrap_or(14.5995),
+                    lng: queue_item.origin_lng.or(queue_item.dest_lng).unwrap_or(120.9842),
                 };
                 let candidates = self.driver_avail_repo
                     .find_available_near(&tenant_id, anchor, DEFAULT_DRIVER_SEARCH_RADIUS_KM)
