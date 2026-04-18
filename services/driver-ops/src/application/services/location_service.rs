@@ -69,11 +69,14 @@ impl LocationService {
         // Persist to time-series table
         self.location_repo.record(&location).await.map_err(AppError::Internal)?;
 
-        // Update driver's live position in the main drivers table
-        let mut driver = self.load_driver(driver_id).await?;
+        // Update driver's denormalised position in the drivers table (best-effort).
+        let driver_row = self.driver_repo
+            .find_by_user_id(driver_id.inner()).await.map_err(AppError::Internal)?;
+        if let Some(mut driver) = driver_row {
 
-        driver.update_location(Coordinates { lat: cmd.lat, lng: cmd.lng });
-        self.driver_repo.save(&driver).await.map_err(AppError::Internal)?;
+            driver.update_location(Coordinates { lat: cmd.lat, lng: cmd.lng });
+            self.driver_repo.save(&driver).await.map_err(AppError::Internal)?;
+        }
 
         // Publish event — dispatch service caches this for proximity scoring,
         // merchant portal map subscribes via WebSocket relay.
@@ -92,10 +95,10 @@ impl LocationService {
         Ok(())
     }
 
-    pub async fn go_online(&self, driver_id: &DriverId) -> AppResult<()> {
-        let mut driver = self.load_driver(driver_id).await?;
+    pub async fn go_online(&self, driver_id: &DriverId, tenant_id: &TenantId) -> AppResult<()> {
+        let mut driver = self.find_or_create_driver(driver_id, tenant_id).await?;
         if driver.status == DriverStatus::Available {
-            return Ok(()); // Already online — idempotent
+            return Ok(());
         }
         driver.go_online();
         self.driver_repo.save(&driver).await.map_err(AppError::Internal)?;
@@ -104,8 +107,12 @@ impl LocationService {
     }
 
     pub async fn go_offline(&self, driver_id: &DriverId) -> AppResult<()> {
-        let mut driver = self.load_driver(driver_id).await?;
-        // Business rule: cannot go offline with an active route
+        // If driver row doesn't exist there's nothing to go offline from — return Ok.
+        let Some(mut driver) = self.driver_repo
+            .find_by_user_id(driver_id.inner()).await.map_err(AppError::Internal)?
+        else {
+            return Ok(());
+        };
         if driver.active_route_id.is_some() {
             return Err(AppError::BusinessRule(
                 "Cannot go offline while assigned to an active route".into()
@@ -117,9 +124,34 @@ impl LocationService {
         Ok(())
     }
 
-    async fn load_driver(&self, user_id: &DriverId) -> AppResult<Driver> {
-        // HTTP handlers always pass claims.user_id as driver_id; use find_by_user_id so
-        // this works even when drivers.id was generated differently (e.g. via POST /v1/drivers).
+    /// Returns the driver row, creating a minimal stub on first login if one doesn't exist yet.
+    async fn find_or_create_driver(&self, user_id: &DriverId, tenant_id: &TenantId) -> AppResult<Driver> {
+        if let Some(d) = self.driver_repo.find_by_user_id(user_id.inner()).await.map_err(AppError::Internal)? {
+            return Ok(d);
+        }
+        let now = chrono::Utc::now();
+        let driver = Driver {
+            id:               user_id.clone(),
+            tenant_id:        tenant_id.clone(),
+            user_id:          user_id.inner(),
+            first_name:       "Driver".into(),
+            last_name:        String::new(),
+            phone:            String::new(),
+            status:           DriverStatus::Offline,
+            current_location: None,
+            last_location_at: None,
+            vehicle_id:       None,
+            active_route_id:  None,
+            is_active:        true,
+            created_at:       now,
+            updated_at:       now,
+        };
+        self.driver_repo.save(&driver).await.map_err(AppError::Internal)?;
+        tracing::info!(driver_id = %user_id, "Auto-created driver profile on first login");
+        Ok(driver)
+    }
+
+    async fn load_driver_by_user_id(&self, user_id: &DriverId) -> AppResult<Driver> {
         self.driver_repo.find_by_user_id(user_id.inner()).await.map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound { resource: "Driver", id: user_id.inner().to_string() })
     }

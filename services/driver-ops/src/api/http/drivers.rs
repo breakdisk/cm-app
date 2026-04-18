@@ -48,7 +48,8 @@ pub async fn go_online(
     State(state): State<Arc<AppState>>,
 ) -> Result<axum::http::StatusCode, AppError> {
     let driver_id = DriverId::from_uuid(claims.user_id);
-    state.location_service.go_online(&driver_id).await?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    state.location_service.go_online(&driver_id, &tenant_id).await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
