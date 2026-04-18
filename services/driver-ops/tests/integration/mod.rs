@@ -23,7 +23,7 @@ use logisticos_auth::{claims::Claims, jwt::JwtService};
 use logisticos_types::{Address, Coordinates, DriverId, TenantId};
 
 use logisticos_driver_ops::{
-    api::http::{AppState, LocationBroadcast},
+    api::http::{AppState, RosterEvent},
     application::services::{DriverService, LocationService, TaskService},
     domain::{
         entities::{Driver, DriverLocation, DriverStatus, DriverType, DriverTask, TaskStatus, TaskType},
@@ -316,15 +316,15 @@ impl TestApp {
             Arc::clone(&kafka),
         ));
 
-        let (location_tx, _location_rx) =
-            tokio::sync::broadcast::channel::<LocationBroadcast>(64);
+        let (roster_tx, _roster_rx) =
+            tokio::sync::broadcast::channel::<RosterEvent>(64);
 
         let state = Arc::new(AppState {
             driver_service: driver_svc,
             task_service: task_svc,
             location_service: location_svc,
             jwt: Arc::clone(&jwt_svc),
-            location_tx,
+            roster_tx,
         });
 
         let router = logisticos_driver_ops::api::http::router(state);

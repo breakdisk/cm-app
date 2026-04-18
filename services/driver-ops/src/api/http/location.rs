@@ -4,7 +4,7 @@ use logisticos_auth::middleware::AuthClaims;
 use logisticos_errors::AppError;
 use logisticos_types::{TenantId, DriverId};
 use crate::{
-    api::http::{AppState, LocationBroadcast},
+    api::http::{AppState, RosterEvent},
     application::commands::UpdateLocationCommand,
 };
 
@@ -25,7 +25,7 @@ pub async fn update_location(
 
     // Broadcast to all connected WebSocket subscribers for this tenant.
     // Failures are silently ignored — no subscribers is not an error.
-    let _ = state.location_tx.send(LocationBroadcast {
+    let _ = state.roster_tx.send(RosterEvent::LocationUpdated {
         driver_id: claims.user_id,
         tenant_id: claims.tenant_id,
         lat,

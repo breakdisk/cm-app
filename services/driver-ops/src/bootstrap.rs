@@ -6,7 +6,7 @@ use crate::config::Config;
 use crate::application::services::{DriverService, TaskService, LocationService};
 use crate::infrastructure::db::{PgDriverRepository, PgTaskRepository, PgLocationRepository};
 use crate::infrastructure::messaging::start_task_consumer;
-use crate::api::http::{router, AppState, LocationBroadcast};
+use crate::api::http::{router, AppState, RosterEvent};
 use logisticos_auth::jwt::JwtService;
 use logisticos_events::producer::KafkaProducer;
 
@@ -87,15 +87,15 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::clone(&kafka),
     ));
 
-    // Broadcast channel for WebSocket location streaming (capacity 512)
-    let (location_tx, _) = broadcast::channel::<LocationBroadcast>(512);
+    // Broadcast channel for WebSocket roster streaming — location + status (capacity 512)
+    let (roster_tx, _) = broadcast::channel::<RosterEvent>(512);
 
     let state = Arc::new(AppState {
         driver_service,
         task_service,
         location_service,
         jwt: Arc::clone(&jwt),
-        location_tx,
+        roster_tx,
     });
 
     use tower_http::cors::CorsLayer;

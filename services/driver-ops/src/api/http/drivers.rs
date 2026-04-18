@@ -6,7 +6,7 @@ use logisticos_auth::require_permission;
 use logisticos_errors::AppError;
 use logisticos_types::{TenantId, DriverId};
 use crate::{
-    api::http::AppState,
+    api::http::{AppState, RosterEvent},
     application::commands::{RegisterDriverCommand, UpdateDriverCommand},
     domain::entities::{Driver, DriverStatus},
 };
@@ -138,6 +138,13 @@ pub async fn go_online(
     let driver_id = DriverId::from_uuid(claims.user_id);
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     state.location_service.go_online(&driver_id, &tenant_id).await?;
+    let _ = state.roster_tx.send(RosterEvent::StatusChanged {
+        driver_id: claims.user_id,
+        tenant_id: claims.tenant_id,
+        status: "available".into(),
+        is_online: true,
+        active_route_id: None,
+    });
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
@@ -147,5 +154,12 @@ pub async fn go_offline(
 ) -> Result<axum::http::StatusCode, AppError> {
     let driver_id = DriverId::from_uuid(claims.user_id);
     state.location_service.go_offline(&driver_id).await?;
+    let _ = state.roster_tx.send(RosterEvent::StatusChanged {
+        driver_id: claims.user_id,
+        tenant_id: claims.tenant_id,
+        status: "offline".into(),
+        is_online: false,
+        active_route_id: None,
+    });
     Ok(axum::http::StatusCode::NO_CONTENT)
 }

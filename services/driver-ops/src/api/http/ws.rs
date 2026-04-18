@@ -38,25 +38,26 @@ pub async fn handle_ws_upgrade(
     };
 
     let tenant_id = claims.tenant_id;
-    let location_rx = state.location_tx.subscribe();
+    let roster_rx = state.roster_tx.subscribe();
 
-    ws.on_upgrade(move |socket| handle_ws(socket, tenant_id, location_rx))
+    ws.on_upgrade(move |socket| handle_ws(socket, tenant_id, roster_rx))
         .into_response()
 }
 
 async fn handle_ws(
     mut socket: WebSocket,
     tenant_id: uuid::Uuid,
-    mut location_rx: tokio::sync::broadcast::Receiver<crate::api::http::LocationBroadcast>,
+    mut roster_rx: tokio::sync::broadcast::Receiver<crate::api::http::RosterEvent>,
 ) {
     loop {
         tokio::select! {
-            // Forward location updates to this WebSocket client (filtered by tenant)
-            Ok(broadcast) = location_rx.recv() => {
-                if broadcast.tenant_id != tenant_id {
-                    continue; // Not for this tenant — skip
+            // Forward roster events (location + status) to this WebSocket client,
+            // filtered by tenant so one tenant's drivers don't leak to another.
+            Ok(event) = roster_rx.recv() => {
+                if event.tenant_id() != tenant_id {
+                    continue;
                 }
-                let msg = match serde_json::to_string(&broadcast) {
+                let msg = match serde_json::to_string(&event) {
                     Ok(s) => s,
                     Err(e) => {
                         tracing::warn!("WS serialize error: {e}");
