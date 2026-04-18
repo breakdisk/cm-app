@@ -3,10 +3,10 @@ package io.logisticos.driver.core.location
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
-import android.os.CancellationSignal
 import com.google.android.gms.location.CurrentLocationRequest
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import com.google.android.gms.tasks.CancellationTokenSource
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.logisticos.driver.core.database.dao.LocationBreadcrumbDao
 import kotlinx.coroutines.tasks.await
@@ -56,17 +56,19 @@ class LocationRepository @Inject constructor(
      */
     @SuppressLint("MissingPermission")
     suspend fun getCurrentOrLastKnownLocation(): LatLng? {
+        val cts = CancellationTokenSource()
         val fresh = withTimeoutOrNull(5_000L) {
             try {
                 val req = CurrentLocationRequest.Builder()
                     .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
                     .build()
-                val loc = fusedClient.getCurrentLocation(req, CancellationSignal()).await()
+                val loc = fusedClient.getCurrentLocation(req, cts.token).await()
                 if (loc != null) LatLng(loc.latitude, loc.longitude) else null
             } catch (_: Exception) {
                 null
             }
         }
+        cts.cancel()
         return fresh ?: getLastKnownLocation()
     }
 
