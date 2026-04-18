@@ -5,6 +5,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -136,7 +138,24 @@ fun HomeScreen(
             border = androidx.compose.foundation.BorderStroke(1.dp, Border)
         ) {
             Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Today's Shift", color = Color.White.copy(alpha = 0.6f), fontSize = 13.sp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Today's Shift", color = Color.White.copy(alpha = 0.6f), fontSize = 13.sp)
+                    IconButton(
+                        onClick = { viewModel.syncShift() },
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Refresh",
+                            tint = Cyan.copy(alpha = 0.7f),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
                 if (shift != null) {
                     Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                         StatItem(label = "Total", value = shift.totalStops.toString(), color = Color.White)

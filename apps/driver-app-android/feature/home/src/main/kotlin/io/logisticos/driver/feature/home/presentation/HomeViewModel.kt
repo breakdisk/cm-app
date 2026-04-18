@@ -8,6 +8,7 @@ import io.logisticos.driver.core.location.LocationRepository
 import io.logisticos.driver.core.network.service.DriverOpsApiService
 import io.logisticos.driver.core.network.service.UpdateLocationRequest
 import io.logisticos.driver.feature.home.data.ShiftRepository
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.time.Instant
@@ -40,13 +41,26 @@ class HomeViewModel @Inject constructor(
             }
         }
         syncShift()
+        startPolling()
+    }
+
+    private fun startPolling() {
+        viewModelScope.launch {
+            while (true) {
+                delay(30_000L)
+                if (_uiState.value.isOnline) {
+                    runCatching { repo.syncShift() }
+                }
+            }
+        }
     }
 
     fun syncShift() {
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true) }
+            _uiState.update { it.copy(isLoading = true, error = null) }
             runCatching { repo.syncShift() }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message, isOfflineMode = true) } }
+                .onSuccess { _uiState.update { it.copy(isOfflineMode = false) } }
             _uiState.update { it.copy(isLoading = false) }
         }
     }
