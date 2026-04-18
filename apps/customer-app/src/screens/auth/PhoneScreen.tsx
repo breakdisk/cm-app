@@ -14,7 +14,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useDispatch } from "react-redux";
 import { authActions } from "../../store";
 import type { AppDispatch } from "../../store";
-import { verifyOTP, verifyPhone } from "../../services/api/auth";
+import { verifyOTP, verifyPhone, getStoredProviderSlug } from "../../services/api/auth";
 import { registerForPushNotifications } from "../../services/notifications";
 
 const CANVAS = "#050810";
@@ -70,6 +70,7 @@ export function PhoneScreen() {
   const [countryCode,  setCountryCode]  = useState(COUNTRY_CODES[0]); // default: +971
   const [showPicker,   setShowPicker]   = useState(false);
   const [autoDetected, setAutoDetected] = useState(false);
+  const [providerSlug, setProviderSlug] = useState("");
 
   // Auto-detect country from device timezone
   useEffect(() => {
@@ -82,6 +83,12 @@ export function PhoneScreen() {
       }
     } catch { /* Intl not available — keep default */ }
   }, []);
+
+  // Prefill the last-used provider slug (or the build-time default) so
+  // returning customers don't retype it every sign-in.
+  useEffect(() => {
+    getStoredProviderSlug().then((slug) => { if (slug) setProviderSlug(slug); });
+  }, []);
   const [phone,       setPhone]       = useState("");
   const [otp,         setOtp]         = useState(["", "", "", "", "", ""]);
   const [error,       setError]       = useState("");
@@ -93,14 +100,23 @@ export function PhoneScreen() {
   const otpRefs = useRef<(TextInput | null)[]>([]);
 
   async function handleSendOtp() {
+    if (!providerSlug.trim()) { setError("Enter your logistics provider code"); return; }
     if (phone.trim().length < 7) { setError("Enter a valid mobile number"); return; }
     setError("");
     setSending(true);
     const fullNum = `${countryCode.code}${phone}`;
     try {
-      await verifyPhone(fullNum);
-    } catch {
-      // Backend unreachable — proceed in demo mode
+      await verifyPhone(fullNum, providerSlug);
+    } catch (e: unknown) {
+      // A wrong provider slug returns 404 — surface it instead of silently
+      // dropping the user into demo mode. Generic network errors fall through
+      // to the demo OTP path below.
+      const status = (e as { response?: { status?: number } })?.response?.status;
+      if (status === 404) {
+        setError(`Unknown provider code "${providerSlug.trim()}". Check with your merchant.`);
+        setSending(false);
+        return;
+      }
     }
     setSending(false);
     setOtp(DEMO_OTP.split(""));
@@ -119,16 +135,28 @@ export function PhoneScreen() {
   async function handleVerify() {
     const code = otp.join("");
     if (code.length < 6) { setError("Enter the 6-digit code"); return; }
+    if (!providerSlug.trim()) { setError("Provider code missing — go back and enter one"); return; }
     setError("");
     setSending(true);
     const fullPhone = `${countryCode.code}${phone}`;
     try {
-      await verifyOTP(fullPhone, code);
+      await verifyOTP(fullPhone, code, providerSlug);
       // Register for push notifications after successful login (non-blocking)
       registerForPushNotifications().catch((err) =>
         console.warn("Push registration failed:", err)
       );
-    } catch {
+    } catch (e: unknown) {
+      const status = (e as { response?: { status?: number } })?.response?.status;
+      if (status === 404) {
+        setError(`Unknown provider code "${providerSlug.trim()}". Check with your merchant.`);
+        setSending(false);
+        return;
+      }
+      if (status === 401) {
+        setError("Invalid or expired OTP.");
+        setSending(false);
+        return;
+      }
       // Backend unreachable — proceed in demo mode
     } finally {
       setSending(false);
@@ -165,6 +193,20 @@ export function PhoneScreen() {
 
           {stage === "phone" ? (
             <>
+              {/* Provider code — scopes the sign-in to a specific logistics
+                  operator. The merchant gives this code to their customers
+                  (printed on invoices, tracking pages, deep-link URLs). */}
+              <Text style={s.label}>Logistics Provider Code</Text>
+              <TextInput
+                value={providerSlug}
+                onChangeText={(t) => { setProviderSlug(t); setError(""); }}
+                placeholder="e.g. cargomarket-ph"
+                placeholderTextColor="rgba(255,255,255,0.2)"
+                autoCapitalize="none"
+                autoCorrect={false}
+                style={s.providerInput}
+              />
+
               <Text style={s.label}>Mobile Number</Text>
 
               {/* Country code picker trigger */}
@@ -225,8 +267,8 @@ export function PhoneScreen() {
 
               <Pressable
                 onPress={handleSendOtp}
-                disabled={sending || phone.trim().length < 7}
-                style={({ pressed }) => [{ opacity: pressed || sending || phone.trim().length < 7 ? 0.5 : 1 }]}
+                disabled={sending || phone.trim().length < 7 || !providerSlug.trim()}
+                style={({ pressed }) => [{ opacity: pressed || sending || phone.trim().length < 7 || !providerSlug.trim() ? 0.5 : 1 }]}
               >
                 <LinearGradient colors={[CYAN, PURPLE]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.btn}>
                   <Text style={s.btnText}>{sending ? "Sending…" : "Send OTP"}</Text>
@@ -298,6 +340,8 @@ const s = StyleSheet.create({
   countryList:    { backgroundColor: "rgba(5,8,16,0.98)", borderWidth: 1, borderColor: BORDER, borderRadius: 12, overflow: "hidden", marginTop: -6 },
   countryRow:     { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14, paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: BORDER },
   countryRowActive: { backgroundColor: "rgba(0,229,255,0.07)" },
+
+  providerInput:  { backgroundColor: "rgba(255,255,255,0.03)", borderWidth: 1, borderColor: BORDER, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, color: "#FFF", fontFamily: "JetBrainsMono-Regular", letterSpacing: 1 },
 
   phoneRow:       { flexDirection: "row", gap: 10, alignItems: "center" },
   prefixBadge:    { backgroundColor: "rgba(0,229,255,0.08)", borderWidth: 1, borderColor: "rgba(0,229,255,0.2)", borderRadius: 10, paddingHorizontal: 12, paddingVertical: 12 },

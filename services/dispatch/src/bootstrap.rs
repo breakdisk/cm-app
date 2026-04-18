@@ -32,7 +32,12 @@ pub async fn run() -> anyhow::Result<()> {
         .max_connections(cfg.database.max_connections)
         .acquire_timeout(std::time::Duration::from_secs(5))
         .after_connect(|conn, _meta| Box::pin(async move {
-            sqlx::query("SET search_path TO dispatch, public")
+            // driver_ops included so PostGIS types (geography, geometry) resolve.
+            // PostGIS was created while connected with search_path = driver_ops,public
+            // so its types live in driver_ops and can't be relocated (ALTER EXTENSION
+            // postgis SET SCHEMA is unsupported). dispatch still owns its own tables —
+            // dispatch comes first, so unqualified writes land in dispatch.
+            sqlx::query("SET search_path TO dispatch, driver_ops, public")
                 .execute(&mut *conn)
                 .await?;
             Ok(())

@@ -37,18 +37,6 @@ interface Shipment {
   eta?: string;
 }
 
-// ── Mock data ──────────────────────────────────────────────────────────────────
-
-const MOCK_SHIPMENTS: Shipment[] = [
-  { id: "1", tracking_number: "CM-PH1-S0000001A", recipient_name: "Maria Santos",      destination: "Makati City",      status: "out_for_delivery", cod_amount: 1500,  created_at: "2026-03-17", eta: "Today 2-4PM" },
-  { id: "2", tracking_number: "CM-PH1-E0000002B", recipient_name: "Jose Reyes",        destination: "Quezon City",      status: "in_transit",       cod_amount: 2200,  created_at: "2026-03-17" },
-  { id: "3", tracking_number: "CM-PH1-S0000003C", recipient_name: "Ana Cruz",          destination: "Pasig City",       status: "delivered",                           created_at: "2026-03-16" },
-  { id: "4", tracking_number: "CM-PH1-S0000004D", recipient_name: "Pedro Gonzales",    destination: "Taguig City",      status: "pending",          cod_amount: 850,   created_at: "2026-03-17" },
-  { id: "5", tracking_number: "CM-PH1-D0000005E", recipient_name: "Luz Ramos",         destination: "Mandaluyong",      status: "at_hub",                              created_at: "2026-03-17" },
-  { id: "6", tracking_number: "CM-PH1-S0000006F", recipient_name: "Carlo Dela Torre",  destination: "Las Piñas City",   status: "failed",                              created_at: "2026-03-16" },
-  { id: "7", tracking_number: "CM-PH1-B0000007G", recipient_name: "Rowena Bautista",   destination: "Caloocan City",    status: "picked_up",        cod_amount: 3100,  created_at: "2026-03-17" },
-  { id: "8", tracking_number: "CM-PH1-N0000008H", recipient_name: "Dennis Villanueva", destination: "Parañaque City",   status: "delivered",                           created_at: "2026-03-15" },
-];
 
 const STATUS_MAP: Partial<Record<ShipmentStatus, { label: string; variant: BadgeVariant }>> = {
   pending:            { label: "Pending",           variant: "amber"  },
@@ -78,12 +66,21 @@ const STATUS_FILTERS: Array<{ label: string; value: ShipmentStatus | "all" }> = 
 
 // ── Summary stats ──────────────────────────────────────────────────────────────
 
-const STATS = [
-  { label: "Total",    value: 1284, color: "cyan"   as const },
-  { label: "Active",   value: 847,  color: "purple" as const },
-  { label: "Delivered",value: 392,  color: "green"  as const },
-  { label: "Failed",   value: 45,   color: "red"    as const },
-];
+const DELIVERED_STATUSES: ReadonlySet<ShipmentStatus> = new Set(["delivered", "partial_delivery"]);
+const FAILED_STATUSES:    ReadonlySet<ShipmentStatus> = new Set(["failed", "cancelled", "returned"]);
+
+function computeStats(shipments: Shipment[]) {
+  const total     = shipments.length;
+  const delivered = shipments.filter(s => DELIVERED_STATUSES.has(s.status)).length;
+  const failed    = shipments.filter(s => FAILED_STATUSES.has(s.status)).length;
+  const active    = total - delivered - failed;
+  return [
+    { label: "Total",     value: total,     color: "cyan"   as const },
+    { label: "Active",    value: active,    color: "purple" as const },
+    { label: "Delivered", value: delivered, color: "green"  as const },
+    { label: "Failed",    value: failed,    color: "red"    as const },
+  ];
+}
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 
@@ -860,7 +857,9 @@ function ShipmentsContent() {
   const [selected,    setSelected]    = useState<Set<string>>(new Set());
   const [showNewShipment, setShowNewShipment] = useState(false);
   const [showBulkUpload,  setShowBulkUpload]  = useState(false);
-  const [shipments,   setShipments]   = useState<Shipment[]>(MOCK_SHIPMENTS);
+  const [shipments,   setShipments]   = useState<Shipment[]>([]);
+  const [loadError,   setLoadError]   = useState<string | null>(null);
+  const [isLoading,   setIsLoading]   = useState(true);
 
   // Auto-open modals from dashboard CTAs
   useEffect(() => {
@@ -875,9 +874,15 @@ function ShipmentsContent() {
   }, [searchParams, router]);
 
   const fetchShipments = useCallback(async () => {
+    setIsLoading(true);
     try {
       const res = await authFetch(`${ORDER_INTAKE_URL}/v1/shipments`);
-      if (!res.ok) return;
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        setLoadError(`Failed to load shipments (HTTP ${res.status})${body ? `: ${body.slice(0, 200)}` : ""}`);
+        setShipments([]);
+        return;
+      }
       const json = await res.json();
       const rows = (json.shipments ?? []).map((s: {
         id: string;
@@ -898,8 +903,14 @@ function ShipmentsContent() {
         cod_amount:       s.cod_amount?.amount ? s.cod_amount.amount / 100 : s.cod_amount_cents ? s.cod_amount_cents / 100 : undefined,
         created_at:       s.created_at,
       }));
-      if (rows.length > 0) setShipments(rows);
-    } catch { /* retain current data */ }
+      setShipments(rows);
+      setLoadError(null);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "Network error loading shipments");
+      setShipments([]);
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
 
   useEffect(() => { fetchShipments(); }, [fetchShipments]);
@@ -937,7 +948,9 @@ function ShipmentsContent() {
       <motion.div variants={variants.fadeInUp} className="flex items-center justify-between">
         <div>
           <h1 className="font-heading text-2xl font-bold text-white">Shipments</h1>
-          <p className="text-sm text-white/40 font-mono mt-0.5">March 2026 · 1,284 shipments</p>
+          <p className="text-sm text-white/40 font-mono mt-0.5">
+            {shipments.length.toLocaleString()} {shipments.length === 1 ? "shipment" : "shipments"}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <button className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors">
@@ -961,7 +974,7 @@ function ShipmentsContent() {
 
       {/* Summary stats */}
       <motion.div variants={variants.fadeInUp} className="grid grid-cols-4 gap-3">
-        {STATS.map((s) => (
+        {computeStats(shipments).map((s) => (
           <GlassCard key={s.label} size="sm" glow={s.color}>
             <p className="text-2xs font-mono text-white/40 uppercase tracking-wider">{s.label}</p>
             <p className={`font-heading text-2xl font-bold mt-1 ${
@@ -1035,6 +1048,30 @@ function ShipmentsContent() {
             ))}
           </div>
 
+          {/* Load error */}
+          {loadError && (
+            <div className="mx-4 my-3 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300 flex items-start gap-2">
+              <AlertCircle size={14} className="mt-0.5 flex-shrink-0" />
+              <span className="font-mono">{loadError}</span>
+            </div>
+          )}
+
+          {/* Loading state */}
+          {isLoading && !loadError && shipments.length === 0 && (
+            <div className="px-4 py-8 text-center text-xs font-mono text-white/40">
+              Loading shipments…
+            </div>
+          )}
+
+          {/* Empty state */}
+          {!isLoading && !loadError && filtered.length === 0 && (
+            <div className="px-4 py-8 text-center text-xs font-mono text-white/40">
+              {shipments.length === 0
+                ? "No shipments yet. Customer bookings and merchant shipments will appear here."
+                : "No shipments match the current filter."}
+            </div>
+          )}
+
           {/* Rows */}
           {filtered.map((shipment) => {
             const { label, variant } = STATUS_MAP[shipment.status] ?? { label: shipment.status, variant: "cyan" as BadgeVariant };
@@ -1067,7 +1104,7 @@ function ShipmentsContent() {
 
           {/* Pagination */}
           <div className="flex items-center justify-between px-4 py-3">
-            <span className="text-2xs font-mono text-white/30">Showing {filtered.length} of 1,284</span>
+            <span className="text-2xs font-mono text-white/30">Showing {filtered.length} of {shipments.length}</span>
             <div className="flex items-center gap-1">
               <button className="rounded p-1 text-white/30 hover:text-white hover:bg-glass-200 transition-colors"><ChevronLeft size={14} /></button>
               {[1,2,3,"…",43].map((p) => (
