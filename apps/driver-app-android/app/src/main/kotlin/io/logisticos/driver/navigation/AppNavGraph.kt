@@ -22,6 +22,7 @@ fun AppNavGraph() {
         authNavGraph(
             navController = navController,
             onAuthenticated = {
+                mainVm.onAuthSuccess()
                 navController.navigate(SHIFT_GRAPH) {
                     popUpTo(AUTH_GRAPH) { inclusive = true }
                 }
