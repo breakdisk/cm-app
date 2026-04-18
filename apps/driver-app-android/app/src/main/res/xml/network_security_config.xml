@@ -4,12 +4,9 @@
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="false">75.119.138.135</domain>
     </domain-config>
-    <!-- Production: HTTPS only, cert-pinned -->
+    <!-- Production domain: HTTPS only; cert pinning is enforced in code (NetworkModule)
+         for release builds, so no XML pin-set here — avoids breaking debug builds. -->
     <domain-config cleartextTrafficPermitted="false">
         <domain includeSubdomains="true">os-api.cargomarket.net</domain>
-        <pin-set>
-            <pin digest="SHA-256">y7xVm0TVJNahMr2sZydE2jQH8SquXV9yLF9seROHHHU=</pin>
-            <pin digest="SHA-256">YLh1dUR9y6Kja30RrAn7JKnbQG/uEtLMkBgFF2Fuihg=</pin>
-        </pin-set>
     </domain-config>
 </network-security-config>
