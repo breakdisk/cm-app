@@ -20,6 +20,9 @@ import { Image } from "react-native";
 import type { RootState, AppDispatch } from "../../store";
 import { taskActions, earningsActions } from "../../store";
 import { deliveryQueue } from "../../services/storage/delivery_queue";
+import { podApi } from "../../services/api/pod";
+import { tasksApi } from "../../services/api/tasks";
+import { tokenRef } from "../_layout";
 
 // ── Design tokens ─────────────────────────────────────────────────────────────
 const CANVAS = "#050810";
@@ -175,6 +178,26 @@ export default function PODScreen() {
         codBonus:    parseFloat(codBonus.toFixed(2)),
         total:       parseFloat((baseAmt + codBonus).toFixed(2)),
       }));
+
+      // Non-fatal live sync: triggers pod.captured → invoice.generated → customer push notification.
+      // If offline, the deliveryQueue above ensures eventual consistency via offline-sync.
+      const token = tokenRef.current;
+      if (token) {
+        try {
+          const { data: pod } = await podApi.initiate(
+            { shipment_id: task.shipment_id, driver_lat: 0, driver_lng: 0 },
+            token,
+          );
+          await podApi.attachSignature(pod.id, signature, token);
+          await podApi.submit(pod.id, {
+            recipient_name: task.recipient_name,
+            cod_collected_cents: task.cod_amount ? Math.round(task.cod_amount * 100) : 0,
+          }, token);
+          await tasksApi.complete(task.id, { pod_id: pod.id }, token);
+        } catch {
+          // Swallowed: offline queue replays on reconnect
+        }
+      }
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setDone(true);
