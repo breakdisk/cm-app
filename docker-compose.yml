@@ -444,6 +444,7 @@ services:
       start_period: 10s
   driver-ops:
     image: ghcr.io/breakdisk/logisticos-service-driver-ops:latest
+    pull_policy: always
     container_name: logisticos-driver-ops
     restart: unless-stopped
     ports:
