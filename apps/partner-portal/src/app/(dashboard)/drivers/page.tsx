@@ -4,11 +4,12 @@
  * Set driver type (part-time / full-time) and commission rates per driver.
  */
 import { useState, useEffect } from "react";
-import { motion } from "framer-motion";
+import { useRouter } from "next/navigation";
+import { motion, AnimatePresence } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
-import { Users, Clock, Briefcase, Search, ChevronDown, Check, Pencil, X } from "lucide-react";
+import { Users, Clock, Briefcase, Search, Check, Pencil, X, UserPlus, Loader2 } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 import { ComplianceBadge, canAssign } from "@/components/compliance/compliance-badge";
 import { authFetch } from "@/lib/auth/auth-fetch";
@@ -16,6 +17,7 @@ import { authFetch } from "@/lib/auth/auth-fetch";
 // ── API helpers ────────────────────────────────────────────────────────────────
 
 const DRIVER_OPS_URL = process.env.NEXT_PUBLIC_DRIVER_OPS_URL ?? "http://localhost:8006";
+const API_BASE       = process.env.NEXT_PUBLIC_API_URL        ?? "http://localhost:8000";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -90,18 +92,62 @@ async function patchDriver(id: string, patch: Record<string, unknown>): Promise<
   }
 }
 
-// ── Mock data ──────────────────────────────────────────────────────────────────
+/**
+ * Two-step driver registration: invite user in identity (returns user_id +
+ * temp password), then register the driver profile in driver-ops under that
+ * user_id. The temp password is surfaced to the admin so they can hand it
+ * off until out-of-band email delivery is wired up.
+ */
+interface RegisterResult {
+  driverId:     string;
+  tempPassword: string | null;
+  error?:       string;
+}
 
-const INITIAL_DRIVERS: Driver[] = [
-  { id: "DRV-001", name: "Juan Dela Cruz",   phone: "+63 917 123 4567", zone: "Makati CBD",       driverType: "full_time",  commissionRate: 0,    codCommissionRate: 0,    deliveriesToday: 18, deliveriesWeek: 94,  earningsToday: 0,    status: "on_delivery", compliance_status: "compliant"                                              },
-  { id: "DRV-002", name: "Maria Santos",     phone: "+63 918 234 5678", zone: "BGC / Taguig",     driverType: "part_time",  commissionRate: 55,   codCommissionRate: 0.02, deliveriesToday: 12, deliveriesWeek: 48,  earningsToday: 660,  status: "active",      compliance_status: "expiring_soon",   compliance_detail: "License · 18d left"       },
-  { id: "DRV-003", name: "Ricardo Reyes",    phone: "+63 919 345 6789", zone: "Pasig / Ortigas",  driverType: "part_time",  commissionRate: 50,   codCommissionRate: 0.015,deliveriesToday: 9,  deliveriesWeek: 37,  earningsToday: 450,  status: "on_delivery", compliance_status: "suspended",        compliance_detail: "LTO License expired"      },
-  { id: "DRV-004", name: "Ana Torres",       phone: "+63 920 456 7890", zone: "Quezon City N",    driverType: "full_time",  commissionRate: 0,    codCommissionRate: 0,    deliveriesToday: 22, deliveriesWeek: 110, earningsToday: 0,    status: "on_delivery", compliance_status: "compliant"                                              },
-  { id: "DRV-005", name: "Pedro Villanueva", phone: "+63 921 567 8901", zone: "Caloocan",         driverType: "part_time",  commissionRate: 45,   codCommissionRate: 0.02, deliveriesToday: 7,  deliveriesWeek: 29,  earningsToday: 315,  status: "offline",     compliance_status: "under_review"                                           },
-  { id: "DRV-006", name: "Liza Navarro",     phone: "+63 922 678 9012", zone: "Mandaluyong",      driverType: "full_time",  commissionRate: 0,    codCommissionRate: 0,    deliveriesToday: 15, deliveriesWeek: 77,  earningsToday: 0,    status: "active",      compliance_status: "compliant"                                              },
-  { id: "DRV-007", name: "Marco Bautista",   phone: "+63 923 789 0123", zone: "Pasay / Parañaque",driverType: "part_time",  commissionRate: 60,   codCommissionRate: 0.025,deliveriesToday: 14, deliveriesWeek: 56,  earningsToday: 840,  status: "on_delivery", compliance_status: "pending_submission"                                      },
-  { id: "DRV-008", name: "Grace Fernandez",  phone: "+63 924 890 1234", zone: "Las Piñas",        driverType: "full_time",  commissionRate: 0,    codCommissionRate: 0,    deliveriesToday: 19, deliveriesWeek: 88,  earningsToday: 0,    status: "active",      compliance_status: "compliant"                                              },
-];
+async function registerDriverApi(input: {
+  email:      string;
+  firstName:  string;
+  lastName:   string;
+  phone:      string;
+}): Promise<RegisterResult> {
+  try {
+    const inviteRes = await authFetch(`${API_BASE}/v1/users`, {
+      method: "POST",
+      body: JSON.stringify({
+        email:      input.email,
+        first_name: input.firstName,
+        last_name:  input.lastName,
+        roles:      ["driver"],
+      }),
+    });
+    if (!inviteRes.ok) {
+      const body = await inviteRes.text();
+      return { driverId: "", tempPassword: null, error: `Identity error: ${body || inviteRes.status}` };
+    }
+    const inviteJson = await inviteRes.json();
+    const userId       = inviteJson?.data?.user_id;
+    const tempPassword = inviteJson?.data?.temp_password ?? null;
+    if (!userId) return { driverId: "", tempPassword: null, error: "Identity did not return a user_id" };
+
+    const regRes = await authFetch(`${DRIVER_OPS_URL}/v1/drivers`, {
+      method: "POST",
+      body: JSON.stringify({
+        user_id:    userId,
+        first_name: input.firstName,
+        last_name:  input.lastName,
+        phone:      input.phone,
+      }),
+    });
+    if (!regRes.ok) {
+      const body = await regRes.text();
+      return { driverId: "", tempPassword, error: `Driver profile error: ${body || regRes.status}` };
+    }
+    const regJson = await regRes.json();
+    return { driverId: regJson?.data?.driver_id ?? userId, tempPassword };
+  } catch (e) {
+    return { driverId: "", tempPassword: null, error: (e as Error).message };
+  }
+}
 
 const fmt = (n: number) =>
   `₱${n.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`;
@@ -280,7 +326,7 @@ function EditDrawer({
 
 // ── Driver row ─────────────────────────────────────────────────────────────────
 
-function DriverRow({ driver, onEdit }: { driver: Driver; onEdit: () => void }) {
+function DriverRow({ driver, onEdit, onAssign }: { driver: Driver; onEdit: () => void; onAssign: () => void }) {
   const isPartTime  = driver.driverType === "part_time";
   const statusCfg   = STATUS_CONFIG[driver.status];
 
@@ -351,6 +397,7 @@ function DriverRow({ driver, onEdit }: { driver: Driver; onEdit: () => void }) {
         <div className="flex items-center justify-end gap-2 opacity-0 transition-all group-hover:opacity-100">
           <button
             disabled={!canAssign(driver.compliance_status)}
+            onClick={onAssign}
             className={cn(
               "inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-all",
               canAssign(driver.compliance_status)
@@ -373,19 +420,167 @@ function DriverRow({ driver, onEdit }: { driver: Driver; onEdit: () => void }) {
   );
 }
 
+// ── Register-driver modal ──────────────────────────────────────────────────────
+
+function RegisterModal({ onClose, onRegistered }: { onClose: () => void; onRegistered: () => void }) {
+  const [firstName, setFirstName] = useState("");
+  const [lastName,  setLastName]  = useState("");
+  const [email,     setEmail]     = useState("");
+  const [phone,     setPhone]     = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [result,    setResult]    = useState<RegisterResult | null>(null);
+
+  const canSubmit = firstName.trim() && lastName.trim() && email.trim() && phone.trim() && !submitting;
+
+  async function handleSubmit() {
+    if (!canSubmit) return;
+    setSubmitting(true);
+    const res = await registerDriverApi({ firstName, lastName, email, phone });
+    setSubmitting(false);
+    setResult(res);
+    if (!res.error) onRegistered();
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 12 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 12 }}
+        transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+        className="w-full max-w-md rounded-2xl border border-glass-border bg-canvas-100 p-6 shadow-2xl"
+        style={{ boxShadow: "0 0 40px rgba(0,229,255,0.08), 0 24px 48px rgba(0,0,0,0.6)" }}
+      >
+        <div className="flex items-start justify-between mb-6">
+          <div>
+            <h2 className="font-heading text-base font-semibold text-white">Register New Driver</h2>
+            <p className="text-xs text-white/40 mt-0.5">Creates an identity user and driver profile.</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="flex h-8 w-8 items-center justify-center rounded-lg border border-glass-border text-white/40 hover:text-white/70 hover:bg-glass-200 transition-all"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        {!result?.tempPassword && (
+          <div className="space-y-3 mb-6">
+            <div className="grid grid-cols-2 gap-3">
+              <LabeledInput label="First Name"  value={firstName} onChange={setFirstName} placeholder="Juan" />
+              <LabeledInput label="Last Name"   value={lastName}  onChange={setLastName}  placeholder="dela Cruz" />
+            </div>
+            <LabeledInput label="Email"          value={email} onChange={setEmail} placeholder="driver@example.com" type="email" />
+            <LabeledInput label="Phone"          value={phone} onChange={setPhone} placeholder="+63 917 123 4567" />
+            {result?.error && (
+              <p className="text-xs text-red-400 font-mono">{result.error}</p>
+            )}
+          </div>
+        )}
+
+        {result?.tempPassword && !result.error && (
+          <div className="mb-6 rounded-xl border border-green-signal/30 bg-green-signal/10 p-4 space-y-2">
+            <p className="text-xs text-green-signal">Driver registered. Share these credentials securely:</p>
+            <div className="text-xs font-mono text-white/80">
+              <div>Email: {email}</div>
+              <div>Temporary password: <span className="text-amber-400">{result.tempPassword}</span></div>
+            </div>
+            <p className="text-xs text-white/40">Driver must change it on first login.</p>
+          </div>
+        )}
+
+        <div className="flex gap-3">
+          <button
+            onClick={onClose}
+            className="flex-1 rounded-xl border border-glass-border bg-glass-100 py-2.5 text-sm text-white/50 hover:text-white/70 hover:bg-glass-200 transition-all"
+          >
+            {result?.tempPassword ? "Close" : "Cancel"}
+          </button>
+          {!result?.tempPassword && (
+            <button
+              onClick={handleSubmit}
+              disabled={!canSubmit}
+              className={cn(
+                "flex-1 rounded-xl py-2.5 text-sm font-semibold transition-all flex items-center justify-center gap-2",
+                canSubmit
+                  ? "bg-green-signal/15 border border-green-signal/40 text-green-signal hover:bg-green-signal/25 hover:shadow-[0_0_12px_rgba(0,255,136,0.25)]"
+                  : "bg-glass-100 border border-glass-border text-white/30 cursor-not-allowed"
+              )}
+            >
+              {submitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              {submitting ? "Creating..." : "Create Driver"}
+            </button>
+          )}
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function LabeledInput({ label, value, onChange, placeholder, type = "text" }: {
+  label:       string;
+  value:       string;
+  onChange:    (v: string) => void;
+  placeholder: string;
+  type?:       string;
+}) {
+  return (
+    <div>
+      <label className="block text-xs font-mono text-white/40 uppercase tracking-wider mb-2">{label}</label>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className={cn(
+          "w-full rounded-xl border border-glass-border bg-glass-100 px-4 py-2.5",
+          "font-mono text-sm text-white placeholder-white/20",
+          "focus:outline-none focus:border-cyan-signal/50 focus:bg-glass-200 transition-all",
+        )}
+      />
+    </div>
+  );
+}
+
 // ── Page ───────────────────────────────────────────────────────────────────────
 
 export default function DriversPage() {
-  const [drivers, setDrivers]       = useState<Driver[]>(INITIAL_DRIVERS);
+  const router                      = useRouter();
+  const [drivers, setDrivers]       = useState<Driver[]>([]);
+  const [loading, setLoading]       = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [editingDriver, setEditing] = useState<Driver | null>(null);
+  const [registerOpen, setRegisterOpen] = useState(false);
   const [search, setSearch]         = useState("");
   const [filter, setFilter]         = useState<"all" | DriverType>("all");
 
+  async function loadDrivers() {
+    setLoading(true);
+    setFetchError(null);
+    const data = await fetchDriversFromApi();
+    if (data === null) {
+      setFetchError("Could not reach driver-ops. Check your connection and try again.");
+      setDrivers([]);
+    } else {
+      setDrivers(data);
+    }
+    setLoading(false);
+  }
+
   useEffect(() => {
-    fetchDriversFromApi().then((data) => {
-      if (data && data.length > 0) setDrivers(data);
-    });
+    loadDrivers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  function handleAssign(driverId: string) {
+    router.push(`/orders?assignTo=${encodeURIComponent(driverId)}`);
+  }
 
   const partTimeCount = drivers.filter((d) => d.driverType === "part_time").length;
   const fullTimeCount = drivers.filter((d) => d.driverType === "full_time").length;
@@ -500,6 +695,18 @@ export default function DriversPage() {
                   </button>
                 ))}
               </div>
+              {/* Register */}
+              <button
+                onClick={() => setRegisterOpen(true)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-all",
+                  "border-green-signal/40 bg-green-signal/10 text-green-signal",
+                  "hover:bg-green-signal/20 hover:shadow-[0_0_12px_rgba(0,255,136,0.25)]"
+                )}
+              >
+                <UserPlus className="h-3.5 w-3.5" />
+                Register Driver
+              </button>
             </div>
           </div>
 
@@ -523,14 +730,60 @@ export default function DriversPage() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((driver) => (
+                {!loading && !fetchError && filtered.map((driver) => (
                   <DriverRow
                     key={driver.id}
                     driver={driver}
                     onEdit={() => setEditing(driver)}
+                    onAssign={() => handleAssign(driver.id)}
                   />
                 ))}
-                {filtered.length === 0 && (
+                {loading && (
+                  <tr>
+                    <td colSpan={9} className="py-12 text-center">
+                      <div className="flex items-center justify-center gap-2 text-sm text-white/40 font-mono">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Loading drivers...
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                {!loading && fetchError && (
+                  <tr>
+                    <td colSpan={9} className="py-12 text-center">
+                      <div className="space-y-2">
+                        <p className="text-sm text-amber-400 font-mono">{fetchError}</p>
+                        <button
+                          onClick={loadDrivers}
+                          className="text-xs text-cyan-signal hover:text-cyan-signal/70 font-mono underline"
+                        >
+                          Retry
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                {!loading && !fetchError && drivers.length === 0 && (
+                  <tr>
+                    <td colSpan={9} className="py-12 text-center">
+                      <div className="space-y-3">
+                        <p className="text-sm text-white/30 font-mono">No drivers registered yet.</p>
+                        <button
+                          onClick={() => setRegisterOpen(true)}
+                          className={cn(
+                            "inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-all",
+                            "border-green-signal/40 bg-green-signal/10 text-green-signal",
+                            "hover:bg-green-signal/20"
+                          )}
+                        >
+                          <UserPlus className="h-3.5 w-3.5" />
+                          Register your first driver
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                {!loading && !fetchError && drivers.length > 0 && filtered.length === 0 && (
                   <tr>
                     <td colSpan={9} className="py-12 text-center text-sm text-white/25 font-mono">
                       No drivers match your search
@@ -549,14 +802,26 @@ export default function DriversPage() {
         </GlassCard>
       </motion.div>
 
-      {/* Edit drawer */}
-      {editingDriver && (
-        <EditDrawer
-          driver={editingDriver}
-          onSave={handleSave}
-          onClose={() => setEditing(null)}
-        />
-      )}
+      {/* Modals */}
+      <AnimatePresence>
+        {editingDriver && (
+          <EditDrawer
+            key="edit-drawer"
+            driver={editingDriver}
+            onSave={handleSave}
+            onClose={() => setEditing(null)}
+          />
+        )}
+        {registerOpen && (
+          <RegisterModal
+            key="register-modal"
+            onClose={() => setRegisterOpen(false)}
+            onRegistered={() => {
+              loadDrivers();
+            }}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
