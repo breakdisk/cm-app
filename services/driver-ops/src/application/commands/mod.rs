@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
+use crate::domain::entities::DriverType;
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct RegisterDriverCommand {
@@ -12,6 +13,28 @@ pub struct RegisterDriverCommand {
     #[validate(length(min = 7, max = 20))]
     pub phone: String,
     pub vehicle_id: Option<Uuid>,
+}
+
+/// Partial-update command from the partner portal. Every field is optional;
+/// only provided fields are written to the driver record.
+#[derive(Debug, Deserialize, Validate)]
+pub struct UpdateDriverCommand {
+    #[validate(length(min = 1, max = 100))]
+    pub first_name: Option<String>,
+    #[validate(length(min = 1, max = 100))]
+    pub last_name: Option<String>,
+    #[validate(length(min = 7, max = 20))]
+    pub phone: Option<String>,
+    pub driver_type: Option<DriverType>,
+    #[validate(range(min = 0, max = 10_000_00))]
+    pub per_delivery_rate_cents: Option<i32>,
+    #[validate(range(min = 0, max = 10_000))]
+    pub cod_commission_rate_bps: Option<i32>,
+    #[validate(length(max = 100))]
+    pub zone: Option<String>,
+    #[validate(length(max = 50))]
+    pub vehicle_type: Option<String>,
+    pub is_active: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

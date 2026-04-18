@@ -6,7 +6,7 @@ use logisticos_events::{producer::KafkaProducer, topics, envelope::Event};
 use crate::{
     application::commands::UpdateLocationCommand,
     domain::{
-        entities::{Driver, DriverLocation, DriverStatus},
+        entities::{Driver, DriverLocation, DriverStatus, DriverType},
         events::DriverLocationUpdated,
         repositories::{DriverRepository, LocationRepository},
         value_objects::STALE_LOCATION_THRESHOLD_MINUTES,
@@ -131,20 +131,25 @@ impl LocationService {
         }
         let now = chrono::Utc::now();
         let driver = Driver {
-            id:               user_id.clone(),
-            tenant_id:        tenant_id.clone(),
-            user_id:          user_id.inner(),
-            first_name:       "Driver".into(),
-            last_name:        String::new(),
-            phone:            String::new(),
-            status:           DriverStatus::Offline,
-            current_location: None,
-            last_location_at: None,
-            vehicle_id:       None,
-            active_route_id:  None,
-            is_active:        true,
-            created_at:       now,
-            updated_at:       now,
+            id:                      user_id.clone(),
+            tenant_id:               tenant_id.clone(),
+            user_id:                 user_id.inner(),
+            first_name:              "Driver".into(),
+            last_name:               String::new(),
+            phone:                   String::new(),
+            status:                  DriverStatus::Offline,
+            current_location:        None,
+            last_location_at:        None,
+            vehicle_id:              None,
+            active_route_id:         None,
+            is_active:               true,
+            driver_type:             DriverType::FullTime,
+            per_delivery_rate_cents: 0,
+            cod_commission_rate_bps: 0,
+            zone:                    None,
+            vehicle_type:            None,
+            created_at:              now,
+            updated_at:              now,
         };
         self.driver_repo.save(&driver).await.map_err(AppError::Internal)?;
         tracing::info!(driver_id = %user_id, "Auto-created driver profile on first login");
