@@ -70,8 +70,7 @@ impl LocationService {
         self.location_repo.record(&location).await.map_err(AppError::Internal)?;
 
         // Update driver's live position in the main drivers table
-        let mut driver = self.driver_repo.find_by_id(driver_id).await.map_err(AppError::Internal)?
-            .ok_or_else(|| AppError::NotFound { resource: "Driver", id: driver_id.inner().to_string() })?;
+        let mut driver = self.load_driver(driver_id).await?;
 
         driver.update_location(Coordinates { lat: cmd.lat, lng: cmd.lng });
         self.driver_repo.save(&driver).await.map_err(AppError::Internal)?;
@@ -118,8 +117,10 @@ impl LocationService {
         Ok(())
     }
 
-    async fn load_driver(&self, driver_id: &DriverId) -> AppResult<Driver> {
-        self.driver_repo.find_by_id(driver_id).await.map_err(AppError::Internal)?
-            .ok_or_else(|| AppError::NotFound { resource: "Driver", id: driver_id.inner().to_string() })
+    async fn load_driver(&self, user_id: &DriverId) -> AppResult<Driver> {
+        // HTTP handlers always pass claims.user_id as driver_id; use find_by_user_id so
+        // this works even when drivers.id was generated differently (e.g. via POST /v1/drivers).
+        self.driver_repo.find_by_user_id(user_id.inner()).await.map_err(AppError::Internal)?
+            .ok_or_else(|| AppError::NotFound { resource: "Driver", id: user_id.inner().to_string() })
     }
 }
