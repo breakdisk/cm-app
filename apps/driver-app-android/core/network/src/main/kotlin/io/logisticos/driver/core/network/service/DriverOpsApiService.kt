@@ -75,11 +75,11 @@ interface DriverOpsApiService {
     @POST("v1/location")
     suspend fun updateLocation(@Body body: UpdateLocationRequest)
 
-    /** PUT /v1/drivers/me/online */
-    @PUT("v1/drivers/me/online")
+    /** POST /v1/drivers/go-online */
+    @POST("v1/drivers/go-online")
     suspend fun goOnline()
 
-    /** PUT /v1/drivers/me/offline */
-    @PUT("v1/drivers/me/offline")
+    /** POST /v1/drivers/go-offline */
+    @POST("v1/drivers/go-offline")
     suspend fun goOffline()
 }
