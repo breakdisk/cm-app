@@ -10,6 +10,7 @@ import { useSelector } from "react-redux";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import type { RootState } from "../store";
+import { navigationRef } from "./navigationRef";
 
 import { HomeScreen }             from "../screens/home/HomeScreen";
 import { TrackingScreen }         from "../screens/tracking/TrackingScreen";
@@ -122,18 +123,24 @@ export function AppNavigator() {
   // Show onboarding until complete
   const showOnboarding = isGuest || onboardingStep !== "complete";
 
-  // Deep-link configuration — logisticos://invoices/:invoiceId → InvoiceDetail
-  // Note: only the top-level screens of the root navigator are listed here.
-  // Nested screens (InvoiceDetail, Receipt) are navigated to programmatically
-  // from AuthenticatedNavigator via useEffect + Linking.getInitialURL.
   const linking = {
     prefixes: ["logisticos://"],
+    config: {
+      screens: {
+        Main: {
+          screens: {
+            // logisticos://invoices/:id → InvoiceDetailScreen
+            InvoiceDetail: "invoices/:id",
+          },
+        },
+      },
+    },
   };
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: CANVAS }} edges={["left", "right"]}>
       <StatusBar style="light" backgroundColor={CANVAS} />
-      <NavigationContainer linking={linking}>
+      <NavigationContainer ref={navigationRef} linking={linking}>
         <Stack.Navigator id="RootStack" screenOptions={{ headerShown: false, contentStyle: { backgroundColor: CANVAS }, animation: "fade" }}>
           {showOnboarding ? (
             <Stack.Screen name="Onboarding" component={OnboardingNavigator} />

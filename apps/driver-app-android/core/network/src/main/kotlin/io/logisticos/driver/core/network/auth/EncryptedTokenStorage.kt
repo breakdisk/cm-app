@@ -1,11 +1,14 @@
 package io.logisticos.driver.core.network.auth
 
 import android.content.Context
+import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
+
+private const val PREFS_FILE = "logisticos_secure_prefs"
 
 @Singleton
 class EncryptedTokenStorage @Inject constructor(
@@ -13,12 +16,23 @@ class EncryptedTokenStorage @Inject constructor(
 ) : TokenStorage {
 
     private val prefs by lazy {
+        try {
+            openPrefs()
+        } catch (_: Exception) {
+            // Keystore key was rotated (e.g. APK reinstall). Wipe stale ciphertext and
+            // start fresh — the user will be taken to the login screen automatically.
+            context.deleteSharedPreferences(PREFS_FILE)
+            openPrefs()
+        }
+    }
+
+    private fun openPrefs(): SharedPreferences {
         val masterKey = MasterKey.Builder(context)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
             .build()
-        EncryptedSharedPreferences.create(
+        return EncryptedSharedPreferences.create(
             context,
-            "logisticos_secure_prefs",
+            PREFS_FILE,
             masterKey,
             EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM

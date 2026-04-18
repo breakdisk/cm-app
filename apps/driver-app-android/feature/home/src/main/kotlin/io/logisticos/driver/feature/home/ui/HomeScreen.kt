@@ -4,6 +4,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -37,6 +40,62 @@ fun HomeScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // ── Online / Offline toggle ───────────────────────────────────────────
+        val statusColor = if (state.isOnline) Green else Color.White.copy(alpha = 0.4f)
+        val statusLabel = if (state.isOnline) "ONLINE" else "OFFLINE"
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (state.isOnline) Green.copy(alpha = 0.10f) else Glass
+            ),
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp,
+                if (state.isOnline) Green.copy(alpha = 0.5f) else Border
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = statusLabel,
+                        color = statusColor,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 2.sp
+                    )
+                    Text(
+                        text = if (state.isOnline) "Accepting jobs" else "Not accepting jobs",
+                        color = Color.White.copy(alpha = 0.5f),
+                        fontSize = 12.sp
+                    )
+                }
+                if (state.isTogglingStatus) {
+                    CircularProgressIndicator(
+                        color = if (state.isOnline) Green else Cyan,
+                        modifier = Modifier.size(28.dp),
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Switch(
+                        checked = state.isOnline,
+                        onCheckedChange = { viewModel.toggleOnlineStatus() },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Canvas,
+                            checkedTrackColor = Green,
+                            uncheckedThumbColor = Color.White.copy(alpha = 0.6f),
+                            uncheckedTrackColor = Color.White.copy(alpha = 0.15f)
+                        )
+                    )
+                }
+            }
+        }
+
         if (state.isOfflineMode) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -57,6 +116,21 @@ fun HomeScreen(
             }
         }
 
+        state.error?.let { err ->
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFFF3B5C).copy(alpha = 0.12f)),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFF3B5C).copy(alpha = 0.4f))
+            ) {
+                Text(
+                    text = err,
+                    color = Color(0xFFFF3B5C),
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(12.dp)
+                )
+            }
+        }
+
         val shift = state.shift
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -64,7 +138,24 @@ fun HomeScreen(
             border = androidx.compose.foundation.BorderStroke(1.dp, Border)
         ) {
             Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Today's Shift", color = Color.White.copy(alpha = 0.6f), fontSize = 13.sp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Today's Shift", color = Color.White.copy(alpha = 0.6f), fontSize = 13.sp)
+                    IconButton(
+                        onClick = { viewModel.syncShift() },
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Refresh",
+                            tint = Cyan.copy(alpha = 0.7f),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
                 if (shift != null) {
                     Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                         StatItem(label = "Total", value = shift.totalStops.toString(), color = Color.White)

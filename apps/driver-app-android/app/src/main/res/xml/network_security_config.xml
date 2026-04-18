@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Allow cleartext to VPS IP in dev/debug builds only -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">75.119.138.135</domain>
+    </domain-config>
+    <!-- Production domain: HTTPS only; cert pinning is enforced in code (NetworkModule)
+         for release builds, so no XML pin-set here — avoids breaking debug builds. -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">os-api.cargomarket.net</domain>
+    </domain-config>
+</network-security-config>

@@ -143,7 +143,16 @@ impl TaskService {
         let task = self.task_repo.find_by_id(task_id).await.map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound { resource: "Task", id: task_id.to_string() })?;
 
-        if &task.driver_id != driver_id {
+        // driver_id from JWT is user_id; tasks.driver_id is drivers.id (may differ for
+        // API-registered drivers). Resolve actual drivers.id by user_id for the comparison.
+        let actual_driver_id = self.driver_repo
+            .find_by_user_id(driver_id.inner())
+            .await
+            .map_err(AppError::Internal)?
+            .map(|d| d.id)
+            .unwrap_or_else(|| driver_id.clone());
+
+        if task.driver_id != actual_driver_id {
             return Err(AppError::Forbidden { resource: "Task".into() });
         }
 

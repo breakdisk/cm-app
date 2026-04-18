@@ -46,7 +46,7 @@ class TokenAuthenticator @Inject constructor(
 
                 try {
                     val tokenResponse = identityApiServiceProvider.get()
-                        .refreshToken(RefreshRequest(refreshToken = refreshToken))
+                        .refreshToken(RefreshRequest(refreshToken = refreshToken)).data
                     // Token rotation: save new JWT and new Refresh Token
                     sessionManager.saveTokens(
                         jwt = tokenResponse.jwt,

@@ -3,6 +3,7 @@
  * LogisticOS customer mobile app for shipment tracking, booking, loyalty.
  */
 import { useEffect } from "react";
+import Constants, { ExecutionEnvironment } from "expo-constants";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { Provider } from "react-redux";
@@ -16,19 +17,19 @@ import { syncShipments } from "./src/db/sync";
 
 const BACKGROUND_SYNC_TASK = "background-sync-task";
 
-/**
- * Define background sync task
- * This task runs periodically (every 15 minutes) to sync pending shipments
- */
-TaskManager.defineTask(BACKGROUND_SYNC_TASK, async () => {
-  try {
-    await syncShipments();
-    return BackgroundFetch.BackgroundFetchResult.NewData;
-  } catch (error) {
-    console.error("Background sync failed:", error);
-    return BackgroundFetch.BackgroundFetchResult.Failed;
-  }
-});
+const isExpoGo = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
+
+if (!isExpoGo) {
+  TaskManager.defineTask(BACKGROUND_SYNC_TASK, async () => {
+    try {
+      await syncShipments();
+      return BackgroundFetch.BackgroundFetchResult.NewData;
+    } catch (error) {
+      console.error("Background sync failed:", error);
+      return BackgroundFetch.BackgroundFetchResult.Failed;
+    }
+  });
+}
 
 /**
  * Main App Component
@@ -50,32 +51,34 @@ function AppContent() {
 
     initDb();
 
-    // Register background fetch task for periodic syncing
-    const registerBackgroundFetch = async () => {
-      try {
-        await BackgroundFetch.registerTaskAsync(BACKGROUND_SYNC_TASK, {
-          minimumInterval: 15 * 60, // 15 minutes
-          stopOnTerminate: false,
-          startOnBoot: true,
-        });
-        console.log("Background fetch task registered successfully");
-      } catch (err) {
-        console.warn("Background fetch registration failed:", err);
-      }
-    };
+    if (!isExpoGo) {
+      const registerBackgroundFetch = async () => {
+        try {
+          await BackgroundFetch.registerTaskAsync(BACKGROUND_SYNC_TASK, {
+            minimumInterval: 15 * 60,
+            stopOnTerminate: false,
+            startOnBoot: true,
+          });
+          console.log("Background fetch task registered successfully");
+        } catch (err) {
+          console.warn("Background fetch registration failed:", err);
+        }
+      };
 
-    registerBackgroundFetch();
+      registerBackgroundFetch();
+    }
   }, []);
 
-  // Sync when network connection is restored
   useEffect(() => {
     if (isConnected) {
       const syncOnReconnect = async () => {
         try {
           await syncShipments();
-          console.log("Sync triggered on network restore");
-        } catch (err) {
-          console.error("Manual sync failed:", err);
+        } catch (err: any) {
+          const status = err?.status ?? err?.response?.status;
+          if (status !== 401 && status !== 403) {
+            console.error("Manual sync failed:", err);
+          }
         }
       };
 

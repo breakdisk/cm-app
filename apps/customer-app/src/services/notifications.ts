@@ -7,22 +7,52 @@
  */
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { Platform } from 'react-native';
 import { getIdentityClient } from './api/client';
+import { navigationRef } from '../navigation/navigationRef';
 
 const STORED_PUSH_TOKEN_KEY = 'push_token';
+const isExpoGo = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
 
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});
+if (!isExpoGo) {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: true,
+      shouldShowBanner: true,
+      shouldShowList: true,
+    }),
+  });
+
+  // Navigate to InvoiceDetailScreen when user taps a payment receipt push notification.
+  // The engagement service sets data.deep_link = "logisticos://invoices/{id}" on invoice.generated events.
+  Notifications.addNotificationResponseReceivedListener((response) => {
+    const data = response.notification.request.content.data as Record<string, unknown>;
+    const deepLink = data?.deep_link as string | undefined;
+    if (!deepLink) return;
+
+    const invoiceMatch = deepLink.match(/^logisticos:\/\/invoices\/([^/]+)$/);
+    if (invoiceMatch) {
+      const invoiceId = invoiceMatch[1];
+      if (navigationRef.isReady()) {
+        // Navigate through nested stacks: RootStack → Main → InvoiceDetail
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (navigationRef as any).navigate('Main', {
+          screen: 'InvoiceDetail',
+          params: { id: invoiceId },
+        });
+      }
+    }
+  });
+}
 
 async function getExpoPushToken(): Promise<string | null> {
+  if (isExpoGo) {
+    console.log('Push notifications unavailable in Expo Go (SDK 53+). Use a development build.');
+    return null;
+  }
   if (!Device.isDevice) {
     console.log('Push notifications require a physical device');
     return null;

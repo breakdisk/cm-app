@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use crate::application::commands::QuickDispatchCommand;
 use crate::application::services::DriverAssignmentService;
-use crate::infrastructure::db::dispatch_queue_repo::{DispatchQueueRow, PgDispatchQueueRepository};
+use crate::infrastructure::db::dispatch_queue_repo::{DispatchQueueRepository, DispatchQueueRow, PgDispatchQueueRepository};
 
 pub async fn start_shipment_consumer(
     brokers: &str,
@@ -50,7 +50,7 @@ pub async fn start_shipment_consumer(
                 match result {
                     Ok(msg) => {
                         if let Some(payload) = msg.payload() {
-                            if let Err(e) = handle_shipment_created(payload, &repo, &dispatch_service).await {
+                            if let Err(e) = handle_shipment_created(payload, &*repo, &dispatch_service).await {
                                 tracing::warn!(err = %e, "shipment consumer: handler error (skipping)");
                             }
                         }
@@ -70,7 +70,7 @@ pub async fn start_shipment_consumer(
 
 async fn handle_shipment_created(
     payload: &[u8],
-    repo: &PgDispatchQueueRepository,
+    repo: &dyn DispatchQueueRepository,
     dispatch_service: &DriverAssignmentService,
 ) -> anyhow::Result<()> {
     let event: Event<ShipmentCreated> = serde_json::from_slice(payload)?;

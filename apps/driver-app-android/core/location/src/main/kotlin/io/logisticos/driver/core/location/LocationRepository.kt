@@ -3,10 +3,14 @@ package io.logisticos.driver.core.location
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import com.google.android.gms.location.CurrentLocationRequest
 import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
+import com.google.android.gms.tasks.CancellationTokenSource
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.logisticos.driver.core.database.dao.LocationBreadcrumbDao
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -43,6 +47,29 @@ class LocationRepository @Inject constructor(
         } catch (_: Exception) {
             null
         }
+    }
+
+    /**
+     * Requests a fresh GPS fix (up to 5 s), falling back to last known.
+     * Use when an accurate position is needed immediately (e.g. go-online).
+     * Caller must ensure ACCESS_FINE_LOCATION permission is held.
+     */
+    @SuppressLint("MissingPermission")
+    suspend fun getCurrentOrLastKnownLocation(): LatLng? {
+        val cts = CancellationTokenSource()
+        val fresh = withTimeoutOrNull(5_000L) {
+            try {
+                val req = CurrentLocationRequest.Builder()
+                    .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
+                    .build()
+                val loc = fusedClient.getCurrentLocation(req, cts.token).await()
+                if (loc != null) LatLng(loc.latitude, loc.longitude) else null
+            } catch (_: Exception) {
+                null
+            }
+        }
+        cts.cancel()
+        return fresh ?: getLastKnownLocation()
     }
 
     suspend fun getUnsyncedBreadcrumbs() = breadcrumbDao.getUnsynced()

@@ -7,13 +7,13 @@ pub mod dispatch_ops;
 use axum::{Router, routing::{get, post, put}};
 use std::sync::Arc;
 use crate::application::services::DriverAssignmentService;
-use crate::infrastructure::db::{PgDispatchQueueRepository, PgDriverProfilesRepository};
+use crate::infrastructure::db::{DispatchQueueRepository, DriverProfilesRepository};
 
 pub struct AppState {
     pub dispatch_service: Arc<DriverAssignmentService>,
     pub jwt:              Arc<logisticos_auth::jwt::JwtService>,
-    pub queue_repo:       Arc<PgDispatchQueueRepository>,
-    pub drivers_repo:     Arc<PgDriverProfilesRepository>,
+    pub queue_repo:       Arc<dyn DispatchQueueRepository>,
+    pub drivers_repo:     Arc<dyn DriverProfilesRepository>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {

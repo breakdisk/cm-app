@@ -38,22 +38,33 @@ impl DriverAvailabilityRepository for PgDriverAvailabilityRepository {
         // Uses PostGIS ST_DWithin for spatial proximity filtering.
         // Joins with dispatch.driver_assignments to exclude drivers with active routes.
         // stop_count comes from dispatch.route_stops for loaded-driver awareness.
+        // Use driver_latest_locations view (DISTINCT ON driver_id, ordered by recorded_at DESC)
+        // to get each driver's most recent GPS fix. All FK references use d.user_id (identity
+        // user UUID) — drivers.id may differ for API-registered drivers.
         let rows = sqlx::query_as::<_, AvailableDriverRow>(
             r#"
             SELECT
-                d.id                    AS driver_id,
+                d.user_id               AS driver_id,
                 d.first_name,
                 d.last_name,
                 d.vehicle_type,
-                ST_Y(dl.location::geometry) AS lat,
-                ST_X(dl.location::geometry) AS lng,
-                ST_Distance(
-                    dl.location,
-                    ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography
-                ) AS distance_meters,
+                COALESCE(dl.lat, 0.0)   AS lat,
+                COALESCE(dl.lng, 0.0)   AS lng,
+                CASE
+                    WHEN dl.driver_id IS NOT NULL THEN
+                        ST_Distance(
+                            geography(ST_SetSRID(ST_MakePoint(dl.lng, dl.lat), 4326)),
+                            ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography
+                        )
+                    ELSE 999999999.0
+                END                     AS distance_meters,
                 COALESCE(stop_counts.cnt, 0) AS active_stop_count
             FROM driver_ops.drivers d
-            INNER JOIN driver_ops.driver_locations dl ON dl.driver_id = d.id
+            -- LEFT JOIN so drivers with no recent GPS fix are still returned
+            -- (they appear last in scoring due to 999999999 m distance).
+            LEFT JOIN driver_ops.driver_latest_locations dl
+                   ON dl.driver_id = d.user_id
+                  AND dl.recorded_at > NOW() - INTERVAL '10 minutes'
             LEFT JOIN (
                 SELECT da.driver_id, COUNT(rs.id) AS cnt
                 FROM dispatch.driver_assignments da
@@ -62,23 +73,24 @@ impl DriverAvailabilityRepository for PgDriverAvailabilityRepository {
                 WHERE da.status IN ('pending', 'accepted')
                   AND r.status = 'in_progress'
                 GROUP BY da.driver_id
-            ) stop_counts ON stop_counts.driver_id = d.id
+            ) stop_counts ON stop_counts.driver_id = d.user_id
             WHERE d.tenant_id = $1
               AND d.is_active = true
-              AND d.status = 'online'
-              AND ST_DWithin(
-                  dl.location,
-                  ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography,
-                  $4
+              AND d.status = 'available'
+              AND (
+                  dl.driver_id IS NULL
+                  OR ST_DWithin(
+                      geography(ST_SetSRID(ST_MakePoint(dl.lng, dl.lat), 4326)),
+                      ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography,
+                      $4
+                  )
               )
               -- Exclude drivers already assigned to an active route
               AND NOT EXISTS (
                   SELECT 1 FROM dispatch.driver_assignments da2
-                  WHERE da2.driver_id = d.id
+                  WHERE da2.driver_id = d.user_id
                     AND da2.status IN ('pending', 'accepted')
               )
-              -- Only use fresh location data (< 10 minutes old)
-              AND dl.recorded_at > NOW() - INTERVAL '10 minutes'
             ORDER BY distance_meters ASC
             "#
         )

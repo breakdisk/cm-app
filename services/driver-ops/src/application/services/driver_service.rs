@@ -30,7 +30,7 @@ impl DriverService {
 
         let now = chrono::Utc::now();
         let driver = Driver {
-            id: DriverId::new(),
+            id: DriverId::from_uuid(cmd.user_id),
             tenant_id,
             user_id: cmd.user_id,
             first_name: cmd.first_name,

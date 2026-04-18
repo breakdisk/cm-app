@@ -77,15 +77,25 @@ async fn handle_task_assigned(payload: &[u8], pool: &PgPool) -> anyhow::Result<(
     // Ensure driver row exists before inserting the task.
     // TASK_ASSIGNED may arrive before the driver has ever logged in (driver_ops.drivers is
     // populated on first app login). This guard creates a stub row so the FK doesn't fail.
-    // id = user_id = t.driver_id (both are the identity user UUID, matching dispatch's key).
+    // ON CONFLICT (user_id): a driver registered via POST /v1/drivers may have a different
+    // primary id — we must not overwrite it, just skip if user_id already exists.
     sqlx::query(
         r#"INSERT INTO driver_ops.drivers (id, user_id, tenant_id, first_name, last_name, phone, status)
            VALUES ($1, $1, $2, 'Driver', '', '', 'offline')
-           ON CONFLICT (id) DO NOTHING"#,
+           ON CONFLICT (user_id) DO NOTHING"#,
     )
     .bind(t.driver_id)
     .bind(t.tenant_id)
     .execute(pool)
+    .await?;
+
+    // The task FK references drivers.id, not user_id. If a driver was registered via the API
+    // (id = random uuid ≠ user_id), we must use the actual drivers.id here.
+    let actual_driver_id: uuid::Uuid = sqlx::query_scalar(
+        "SELECT id FROM driver_ops.drivers WHERE user_id = $1",
+    )
+    .bind(t.driver_id)
+    .fetch_one(pool)
     .await?;
 
     sqlx::query(
@@ -122,7 +132,7 @@ async fn handle_task_assigned(payload: &[u8], pool: &PgPool) -> anyhow::Result<(
         "#,
     )
     .bind(t.task_id)
-    .bind(t.driver_id)
+    .bind(actual_driver_id)
     .bind(t.route_id)
     .bind(t.shipment_id)
     .bind(task_type)                // pickup | delivery (validated above)

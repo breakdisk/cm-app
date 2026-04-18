@@ -402,7 +402,7 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8005"
       APP__ENV: development
-      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_dispatch
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_driver_ops
       DATABASE__MAX_CONNECTIONS: "5"
       KAFKA__BROKERS: kafka:29092
       KAFKA__GROUP_ID: dispatch-dev
@@ -444,6 +444,7 @@ services:
       start_period: 10s
   driver-ops:
     image: ghcr.io/breakdisk/logisticos-service-driver-ops:latest
+    pull_policy: always
     container_name: logisticos-driver-ops
     restart: unless-stopped
     ports:

@@ -118,14 +118,17 @@ impl TaskRepository for PgTaskRepository {
     }
 
     async fn list_by_driver(&self, driver_id: &DriverId) -> anyhow::Result<Vec<DriverTask>> {
+        // Join through drivers.user_id so the query works regardless of whether the driver's
+        // primary id matches the identity user_id (they may differ for API-registered drivers).
         let rows = sqlx::query_as::<_, TaskRow>(
-            r#"SELECT id, driver_id, route_id, shipment_id, task_type, sequence, status,
-                      address_line1, address_line2, city, province, postal_code, country AS country_code,
-                      lat, lng, customer_name, customer_phone, customer_email, tracking_number,
-                      cod_amount_cents, special_instructions, pod_id, started_at, completed_at, failed_reason
-               FROM driver_ops.tasks
-               WHERE driver_id = $1
-               ORDER BY sequence ASC"#
+            r#"SELECT t.id, t.driver_id, t.route_id, t.shipment_id, t.task_type, t.sequence, t.status,
+                      t.address_line1, t.address_line2, t.city, t.province, t.postal_code, t.country AS country_code,
+                      t.lat, t.lng, t.customer_name, t.customer_phone, t.customer_email, t.tracking_number,
+                      t.cod_amount_cents, t.special_instructions, t.pod_id, t.started_at, t.completed_at, t.failed_reason
+               FROM driver_ops.tasks t
+               JOIN driver_ops.drivers d ON d.id = t.driver_id
+               WHERE d.user_id = $1
+               ORDER BY t.sequence ASC"#
         )
         .bind(driver_id.inner())
         .fetch_all(&self.pool)

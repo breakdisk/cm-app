@@ -38,6 +38,10 @@ use logisticos_dispatch::{
             RouteRepository,
         },
     },
+    infrastructure::db::{
+        DispatchQueueRepository, DispatchQueueRow,
+        DriverProfilesRepository, DriverProfileRow,
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -180,6 +184,63 @@ impl DriverAvailabilityRepository for MockDriverAvailRepo {
 }
 
 // ---------------------------------------------------------------------------
+// Mock repositories — dispatch queue and driver profiles
+// ---------------------------------------------------------------------------
+
+#[derive(Default, Clone)]
+struct MockDispatchQueueRepo {
+    store: Arc<Mutex<HashMap<Uuid, DispatchQueueRow>>>,
+}
+
+#[async_trait]
+impl DispatchQueueRepository for MockDispatchQueueRepo {
+    async fn upsert(&self, row: &DispatchQueueRow) -> anyhow::Result<()> {
+        let mut guard = self.store.lock().unwrap();
+        guard.insert(row.shipment_id, row.clone());
+        Ok(())
+    }
+
+    async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<DispatchQueueRow>> {
+        let guard = self.store.lock().unwrap();
+        Ok(guard.get(&shipment_id).cloned())
+    }
+
+    async fn list_pending(&self, tenant_id: Uuid) -> anyhow::Result<Vec<DispatchQueueRow>> {
+        let guard = self.store.lock().unwrap();
+        let rows = guard
+            .values()
+            .filter(|r| r.tenant_id == tenant_id && r.status == "pending")
+            .cloned()
+            .collect();
+        Ok(rows)
+    }
+
+    async fn mark_dispatched(&self, shipment_id: Uuid) -> anyhow::Result<()> {
+        let mut guard = self.store.lock().unwrap();
+        if let Some(row) = guard.get_mut(&shipment_id) {
+            row.status = "dispatched".to_string();
+            Ok(())
+        } else {
+            anyhow::bail!("mark_dispatched: shipment_id {} not found in mock", shipment_id)
+        }
+    }
+}
+
+#[derive(Default, Clone)]
+struct MockDriverProfilesRepo;
+
+#[async_trait]
+impl DriverProfilesRepository for MockDriverProfilesRepo {
+    async fn upsert(&self, _row: &DriverProfileRow) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn list_by_tenant(&self, _tenant_id: Uuid) -> anyhow::Result<Vec<DriverProfileRow>> {
+        Ok(vec![])
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
@@ -226,17 +287,41 @@ fn build_test_app(
     assignment_repo: MockAssignmentRepo,
     avail_repo: MockDriverAvailRepo,
 ) -> Router {
+    build_test_app_with_queue(
+        route_repo,
+        assignment_repo,
+        avail_repo,
+        MockDispatchQueueRepo::default(),
+    )
+}
+
+/// Build a test `Router` with a custom dispatch queue (for quick_dispatch tests).
+fn build_test_app_with_queue(
+    route_repo: MockRouteRepo,
+    assignment_repo: MockAssignmentRepo,
+    avail_repo: MockDriverAvailRepo,
+    queue_repo: MockDispatchQueueRepo,
+) -> Router {
     let jwt = Arc::new(JwtService::new(TEST_JWT_SECRET, 3600, 86400));
     let kafka = create_noop_kafka();
+    let queue_arc: Arc<dyn DispatchQueueRepository> = Arc::new(queue_repo);
+    let profiles_arc: Arc<dyn DriverProfilesRepository> = Arc::new(MockDriverProfilesRepo);
 
     let dispatch_service = Arc::new(DriverAssignmentService::new(
         Arc::new(route_repo) as _,
         Arc::new(assignment_repo) as _,
         Arc::new(avail_repo) as _,
         kafka,
+        None,               // compliance_cache: None = always assignable in tests
+        Arc::clone(&queue_arc),
     ));
 
-    let state = Arc::new(AppState { dispatch_service, jwt });
+    let state = Arc::new(AppState {
+        dispatch_service,
+        jwt,
+        queue_repo:   queue_arc,
+        drivers_repo: profiles_arc,
+    });
     router(state)
 }
 
@@ -454,6 +539,7 @@ mod auto_assign {
             distance_km: 5.0,
             location: Coordinates { lat: 14.6400, lng: 120.9900 },
             active_stop_count: 0,
+            vehicle_type: None,
         }];
 
         let app = build_test_app(
@@ -498,6 +584,7 @@ mod auto_assign {
             distance_km: 50.0,
             location: Coordinates { lat: 15.5000, lng: 120.9842 }, // ~100km north
             active_stop_count: 0,
+            vehicle_type: None,
         }];
 
         let app = build_test_app(
@@ -563,6 +650,7 @@ mod auto_assign {
                 distance_km: 8.0,
                 location: Coordinates { lat: 14.6700, lng: 120.9842 },
                 active_stop_count: 0,
+            vehicle_type: None,
             },
             AvailableDriver {
                 driver_id: DriverId::from_uuid(close_driver_id),
@@ -570,6 +658,7 @@ mod auto_assign {
                 distance_km: 2.0,
                 location: Coordinates { lat: 14.6100, lng: 120.9842 },
                 active_stop_count: 0,
+            vehicle_type: None,
             },
         ];
 
@@ -614,6 +703,7 @@ mod auto_assign {
             distance_km: 3.0,
             location: Coordinates { lat: 14.6200, lng: 120.9842 },
             active_stop_count: 0,
+            vehicle_type: None,
         }];
 
         let app = build_test_app(
@@ -955,6 +1045,7 @@ mod route_status_transitions {
             distance_km: 4.0,
             location: Coordinates { lat: 14.6200, lng: 120.9842 },
             active_stop_count: 0,
+            vehicle_type: None,
         }]);
 
         let app = build_test_app(route_repo.clone(), assignment_repo.clone(), avail_repo);
@@ -1164,5 +1255,208 @@ mod health {
         .await;
 
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+}
+
+// ===========================================================================
+// Tests: Quick dispatch  (POST /v1/queue/:shipment_id/dispatch)
+// ===========================================================================
+
+mod quick_dispatch {
+    use super::*;
+    use logisticos_auth::rbac::permissions;
+
+    fn make_queue_item(tenant_id: Uuid, shipment_id: Uuid) -> DispatchQueueRow {
+        DispatchQueueRow {
+            id:                   Uuid::new_v4(),
+            tenant_id,
+            shipment_id,
+            customer_name:        "Test Customer".into(),
+            customer_phone:       "+63912345678".into(),
+            customer_email:       None,
+            tracking_number:      None,
+            dest_address_line1:   "456 Delivery St".into(),
+            dest_city:            "Manila".into(),
+            dest_province:        "Metro Manila".into(),
+            dest_postal_code:     "1000".into(),
+            dest_lat:             Some(14.5995),
+            dest_lng:             Some(120.9842),
+            origin_address_line1: "123 Pickup Ave".into(),
+            origin_city:          "Quezon City".into(),
+            origin_province:      "Metro Manila".into(),
+            origin_postal_code:   "1100".into(),
+            origin_lat:           Some(14.6760),
+            origin_lng:           Some(121.0437),
+            cod_amount_cents:     None,
+            special_instructions: None,
+            service_type:         "standard".into(),
+            status:               "pending".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatches_shipment_with_origin_and_marks_queue_item_dispatched() {
+        let shipment_id = Uuid::new_v4();
+        let driver_id   = Uuid::new_v4();
+        let token = mint_jwt_token(
+            Uuid::new_v4(),
+            vec![permissions::DISPATCH_ASSIGN.to_owned()],
+        );
+
+        let queue_repo = MockDispatchQueueRepo::default();
+        queue_repo.store.lock().unwrap().insert(
+            shipment_id,
+            make_queue_item(TEST_TENANT_ID, shipment_id),
+        );
+
+        let driver = AvailableDriver {
+            driver_id:         DriverId::from_uuid(driver_id),
+            name:              String::new(),
+            location:          Coordinates { lat: 14.60, lng: 120.98 },
+            active_stop_count: 0,
+            vehicle_type:      None,
+            distance_km:       0.5,
+        };
+
+        let app = build_test_app_with_queue(
+            MockRouteRepo::default(),
+            MockAssignmentRepo::default(),
+            MockDriverAvailRepo::with_drivers(vec![driver]),
+            queue_repo.clone(),
+        );
+
+        let resp = send(
+            app,
+            json_request(
+                Method::POST,
+                &format!("/v1/queue/{shipment_id}/dispatch"),
+                serde_json::json!({}),
+                &token,
+            ),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert!(json["data"]["assignment_id"].as_str().is_some(), "assignment_id missing");
+        assert_eq!(json["data"]["driver_id"].as_str().unwrap(), driver_id.to_string());
+
+        // Queue item must be marked dispatched
+        let status = queue_repo.store.lock().unwrap()
+            .get(&shipment_id)
+            .map(|r| r.status.clone());
+        assert_eq!(status, Some("dispatched".into()));
+    }
+
+    #[tokio::test]
+    async fn dispatches_shipment_without_origin_succeeds_delivery_only() {
+        let shipment_id = Uuid::new_v4();
+        let driver_id   = Uuid::new_v4();
+        let token = mint_jwt_token(
+            Uuid::new_v4(),
+            vec![permissions::DISPATCH_ASSIGN.to_owned()],
+        );
+
+        let queue_repo = MockDispatchQueueRepo::default();
+        let mut item = make_queue_item(TEST_TENANT_ID, shipment_id);
+        item.origin_address_line1 = String::new();
+        item.origin_lat           = None;
+        item.origin_lng           = None;
+        queue_repo.store.lock().unwrap().insert(shipment_id, item);
+
+        let driver = AvailableDriver {
+            driver_id:         DriverId::from_uuid(driver_id),
+            name:              String::new(),
+            location:          Coordinates { lat: 14.60, lng: 120.98 },
+            active_stop_count: 0,
+            vehicle_type:      None,
+            distance_km:       0.5,
+        };
+
+        let app = build_test_app_with_queue(
+            MockRouteRepo::default(),
+            MockAssignmentRepo::default(),
+            MockDriverAvailRepo::with_drivers(vec![driver]),
+            queue_repo.clone(),
+        );
+
+        let resp = send(
+            app,
+            json_request(
+                Method::POST,
+                &format!("/v1/queue/{shipment_id}/dispatch"),
+                serde_json::json!({}),
+                &token,
+            ),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn returns_404_when_shipment_not_in_queue() {
+        let token = mint_jwt_token(
+            Uuid::new_v4(),
+            vec![permissions::DISPATCH_ASSIGN.to_owned()],
+        );
+        let unknown_id = Uuid::new_v4();
+
+        let app = build_test_app_with_queue(
+            MockRouteRepo::default(),
+            MockAssignmentRepo::default(),
+            MockDriverAvailRepo::default(),
+            MockDispatchQueueRepo::default(),
+        );
+
+        let resp = send(
+            app,
+            json_request(
+                Method::POST,
+                &format!("/v1/queue/{unknown_id}/dispatch"),
+                serde_json::json!({}),
+                &token,
+            ),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn returns_422_when_no_driver_available() {
+        let shipment_id = Uuid::new_v4();
+        let token = mint_jwt_token(
+            Uuid::new_v4(),
+            vec![permissions::DISPATCH_ASSIGN.to_owned()],
+        );
+
+        let queue_repo = MockDispatchQueueRepo::default();
+        queue_repo.store.lock().unwrap().insert(
+            shipment_id,
+            make_queue_item(TEST_TENANT_ID, shipment_id),
+        );
+
+        // No drivers in the pool
+        let app = build_test_app_with_queue(
+            MockRouteRepo::default(),
+            MockAssignmentRepo::default(),
+            MockDriverAvailRepo::default(),
+            queue_repo,
+        );
+
+        let resp = send(
+            app,
+            json_request(
+                Method::POST,
+                &format!("/v1/queue/{shipment_id}/dispatch"),
+                serde_json::json!({}),
+                &token,
+            ),
+        )
+        .await;
+
+        // "No available drivers nearby" is a BusinessRule → 422
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 }

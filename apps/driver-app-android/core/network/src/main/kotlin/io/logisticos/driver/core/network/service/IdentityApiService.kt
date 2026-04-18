@@ -6,8 +6,13 @@ import retrofit2.http.Body
 import retrofit2.http.POST
 
 @Serializable
+data class ApiResponse<T>(val data: T)
+
+@Serializable
 data class OtpSendRequest(
-    @SerialName("phone_number") val phone: String
+    @SerialName("phone_number") val phone: String,
+    @SerialName("tenant_slug") val tenantSlug: String? = null,
+    @SerialName("role") val role: String? = "driver"
 )
 
 @Serializable
@@ -16,7 +21,9 @@ data class OtpSendResponse(val message: String)
 @Serializable
 data class OtpVerifyRequest(
     @SerialName("phone_number") val phone: String,
-    @SerialName("otp_code") val otp: String
+    @SerialName("otp_code") val otp: String,
+    @SerialName("tenant_slug") val tenantSlug: String? = null,
+    @SerialName("role") val role: String? = "driver"
 )
 
 @Serializable
@@ -35,13 +42,13 @@ data class FcmTokenRequest(
 
 interface IdentityApiService {
     @POST("v1/auth/otp/send")
-    suspend fun sendOtp(@Body request: OtpSendRequest): OtpSendResponse
+    suspend fun sendOtp(@Body request: OtpSendRequest): ApiResponse<OtpSendResponse>
 
     @POST("v1/auth/otp/verify")
-    suspend fun verifyOtp(@Body request: OtpVerifyRequest): OtpVerifyResponse
+    suspend fun verifyOtp(@Body request: OtpVerifyRequest): ApiResponse<OtpVerifyResponse>
 
     @POST("v1/auth/refresh")
-    suspend fun refreshToken(@Body request: io.logisticos.driver.core.network.model.RefreshRequest): io.logisticos.driver.core.network.model.TokenResponse
+    suspend fun refreshToken(@Body request: io.logisticos.driver.core.network.model.RefreshRequest): ApiResponse<io.logisticos.driver.core.network.model.TokenResponse>
 
     @POST("v1/auth/fcm-token")
     suspend fun registerFcmToken(@Body request: FcmTokenRequest): retrofit2.Response<Unit>
