@@ -423,8 +423,21 @@ export function BookingScreen() {
 
       setConfirmedAwb(response.awb);
       showToast(`Booked! +${earned} loyalty points earned 🎉`, "success");
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : "Failed to book shipment.", "error");
+    } catch (error: any) {
+      const status = error?.status ?? error?.response?.status;
+      const apiMsg = error?.data?.error?.message
+        ?? error?.data?.message
+        ?? error?.response?.data?.error?.message
+        ?? error?.response?.data?.message
+        ?? error?.message;
+      const friendly = status === 401
+        ? "Your session expired. Please log out and sign in again."
+        : status === 403
+          ? "You don't have permission to book shipments."
+          : status === 422 || status === 400
+            ? `Validation failed: ${apiMsg ?? "check your inputs"}`
+            : apiMsg ?? "Failed to book shipment.";
+      showToast(friendly, "error");
     } finally {
       setIsLoading(false);
     }
@@ -441,8 +454,8 @@ export function BookingScreen() {
 
   // ── Validation per step ───────────────────────────────────────────────────
 
-  const canStep1 = senderName.trim() && senderPhone.trim() && senderAddress.trim() && senderCity.trim() && senderZip.trim();
-  const canStep2 = receiverName.trim() && receiverPhone.trim() && receiverAddress.trim() && receiverCity.trim() && receiverZip.trim();
+  const canStep1 = senderName.trim().length >= 1 && senderPhone.trim().length >= 7 && senderAddress.trim().length >= 5 && senderCity.trim().length >= 2 && senderZip.trim().length >= 1;
+  const canStep2 = receiverName.trim().length >= 1 && receiverPhone.trim().length >= 7 && receiverAddress.trim().length >= 5 && receiverCity.trim().length >= 2 && receiverZip.trim().length >= 1;
   const canStep3 = isIntl
     ? boxLength.trim() && boxWidth.trim() && boxHeight.trim() && weight.trim() && declaredValue.trim()
     : weight.trim();

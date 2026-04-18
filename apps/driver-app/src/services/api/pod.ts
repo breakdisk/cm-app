@@ -1,4 +1,4 @@
-import { apiRequest } from "./client";
+import { apiRequest, POD_URL } from "./client";
 
 export interface PodSession {
   id: string;
@@ -34,62 +34,53 @@ export interface SubmitPodPayload {
 }
 
 export const podApi = {
-  /** Initiate a POD session when driver arrives at delivery location */
   initiate: (payload: InitiatePodPayload, token: string) =>
     apiRequest<{ data: PodSession }>("/v1/pod/initiate", {
       method: "POST",
       body: payload,
       token,
+      baseUrl: POD_URL,
     }),
 
-  /** Get an upload URL for a delivery photo */
   getUploadUrl: (podId: string, contentType: string, token: string) =>
-    apiRequest<{ data: UploadUrlResponse }>(
-      `/v1/pod/${podId}/photo-upload-url`,
-      {
-        method: "POST",
-        body: { content_type: contentType },
-        token,
-      }
-    ),
+    apiRequest<{ data: UploadUrlResponse }>(`/v1/pod/${podId}/photo-upload-url`, {
+      method: "POST",
+      body: { content_type: contentType },
+      token,
+      baseUrl: POD_URL,
+    }),
 
-  /** Notify the server that a photo has been uploaded (after S3 direct upload) */
-  attachPhoto: (
-    podId: string,
-    photoId: string,
-    fileSizeBytes: number,
-    token: string
-  ) =>
+  attachPhoto: (podId: string, photoId: string, fileSizeBytes: number, token: string) =>
     apiRequest<void>(`/v1/pod/${podId}/photos/${photoId}`, {
       method: "POST",
       body: { file_size_bytes: fileSizeBytes },
       token,
+      baseUrl: POD_URL,
     }),
 
-  /** Upload a signature (base64-encoded PNG, max 500KB) */
   attachSignature: (podId: string, signatureBase64: string, token: string) =>
     apiRequest<void>(`/v1/pod/${podId}/signature`, {
       method: "POST",
       body: { signature_data: signatureBase64 },
       token,
+      baseUrl: POD_URL,
     }),
 
-  /** Request an OTP be sent to the customer's phone */
   generateOtp: (podId: string, token: string) =>
     apiRequest<{ data: OtpResponse }>(`/v1/pod/${podId}/otp`, {
       method: "POST",
       token,
+      baseUrl: POD_URL,
     }),
 
-  /** Submit the completed POD (finalizes delivery) */
   submit: (podId: string, payload: SubmitPodPayload, token: string) =>
     apiRequest<{ data: PodSession }>(`/v1/pod/${podId}/submit`, {
       method: "POST",
       body: payload,
       token,
+      baseUrl: POD_URL,
     }),
 
-  /** Get the current state of a POD session */
   get: (podId: string, token: string) =>
-    apiRequest<{ data: PodSession }>(`/v1/pod/${podId}`, { token }),
+    apiRequest<{ data: PodSession }>(`/v1/pod/${podId}`, { token, baseUrl: POD_URL }),
 };

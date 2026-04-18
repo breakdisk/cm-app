@@ -1,6 +1,6 @@
 import { getDatabase } from './sqlite';
 import * as shipmentsService from '../services/api/shipments';
-import { getStoredCustomerId } from '../services/api/auth';
+import { getStoredCustomerId, getStoredToken } from '../services/api/auth';
 
 /**
  * Sync pending shipments with the server
@@ -9,13 +9,14 @@ import { getStoredCustomerId } from '../services/api/auth';
  * - Update sync metadata
  */
 export async function syncShipments(): Promise<void> {
-  const db = await getDatabase();
   const customerId = await getStoredCustomerId();
+  const token = await getStoredToken();
 
-  if (!customerId) {
-    console.warn('No customer ID found, skipping sync');
+  if (!customerId || !token) {
     return;
   }
+
+  const db = await getDatabase();
 
   try {
     // 1. Upload pending shipments created offline
@@ -97,17 +98,21 @@ export async function syncShipments(): Promise<void> {
     );
 
     console.log('Shipments sync completed successfully');
-  } catch (error) {
-    console.error('Sync failed:', error);
+  } catch (error: any) {
+    const status = error?.status ?? error?.response?.status;
+    if (status !== 401 && status !== 403) {
+      console.error('Sync failed:', error);
+    }
 
-    // Record sync failure in metadata
     await db.runAsync(
       `INSERT OR REPLACE INTO synced_metadata (resource, lastSyncedAt, syncStatus)
        VALUES (?, ?, ?)`,
       ['shipments', new Date().toISOString(), 'failed']
     );
 
-    throw error;
+    if (status !== 401 && status !== 403) {
+      throw error;
+    }
   }
 }
 

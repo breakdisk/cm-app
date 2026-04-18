@@ -5,11 +5,14 @@ export interface FormatDateOptions {
   relative?: boolean;
 }
 
-export function formatDate(date: Date, opts: FormatDateOptions = {}): string {
+export function formatDate(date: Date | string | number | null | undefined, opts: FormatDateOptions = {}): string {
+  if (date === null || date === undefined || date === '') return '—';
+  const d = date instanceof Date ? date : new Date(date);
+  if (isNaN(d.getTime())) return '—';
   if (opts.relative) {
-    return formatDistance(new Date(date), new Date(), { addSuffix: true });
+    return formatDistance(d, new Date(), { addSuffix: true });
   }
-  return format(new Date(date), opts.time ? 'MMM d, yyyy HH:mm' : 'MMM d, yyyy');
+  return format(d, opts.time ? 'MMM d, yyyy HH:mm' : 'MMM d, yyyy');
 }
 
 export function formatCurrency(amount: number, currency: 'PHP' | 'USD' = 'PHP'): string {

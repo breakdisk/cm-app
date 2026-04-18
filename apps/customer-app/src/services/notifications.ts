@@ -7,22 +7,30 @@
  */
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { Platform } from 'react-native';
 import { getIdentityClient } from './api/client';
 
 const STORED_PUSH_TOKEN_KEY = 'push_token';
+const isExpoGo = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
 
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});
+if (!isExpoGo) {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: true,
+      shouldShowBanner: true,
+      shouldShowList: true,
+    }),
+  });
+}
 
 async function getExpoPushToken(): Promise<string | null> {
+  if (isExpoGo) {
+    console.log('Push notifications unavailable in Expo Go (SDK 53+). Use a development build.');
+    return null;
+  }
   if (!Device.isDevice) {
     console.log('Push notifications require a physical device');
     return null;
