@@ -2,19 +2,30 @@
 /**
  * Admin Portal — Drivers Page
  * Live driver roster: online status, task load, GPS last-seen, performance grade.
+ *
+ * Live updates arrive via the driver-ops RosterEvent WebSocket — status toggles
+ * and GPS fixes patch the roster in place without a refetch.
  */
 import { useState, useEffect, useCallback } from "react";
-import { createDriversApi, Driver as ApiDriver, DriverSummary } from "@/lib/api/drivers";
+import { createDriversApi, Driver as ApiDriver } from "@/lib/api/drivers";
+import { useRosterEvents } from "@/hooks/useRosterEvents";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
-import { Search, MapPin, Package, Star, RefreshCw } from "lucide-react";
+import { Search, MapPin, Package, RefreshCw } from "lucide-react";
 
 // ── Types & mock data ─────────────────────────────────────────────────────────
 
-type DriverStatus = "online" | "idle" | "offline" | "on_break";
+// Matches driver-ops backend status taxonomy.
+type DriverStatus =
+  | "offline"
+  | "available"
+  | "en_route"
+  | "delivering"
+  | "returning"
+  | "on_break";
 
 interface Driver {
   id: string;
@@ -31,23 +42,25 @@ interface Driver {
 }
 
 const DRIVERS: Driver[] = [
-  { id: "1",  name: "Juan Dela Cruz",     vehicle: "Motorcycle", plate: "ABC-1234", status: "online",   tasks_total: 18, tasks_done: 11, last_location: "Makati CBD",       last_seen: "Just now",  grade: "A", cod_collected: 8400  },
-  { id: "2",  name: "Maria Santos",       vehicle: "Van",        plate: "XYZ-5678", status: "online",   tasks_total: 24, tasks_done: 16, last_location: "Taguig BGC",       last_seen: "1m ago",    grade: "A", cod_collected: 14200 },
-  { id: "3",  name: "Pedro Gonzales",     vehicle: "Motorcycle", plate: "DEF-9012", status: "on_break", tasks_total: 15, tasks_done: 9,  last_location: "Pasig City",       last_seen: "8m ago",    grade: "B", cod_collected: 5100  },
-  { id: "4",  name: "Ana Cruz",           vehicle: "Motorcycle", plate: "GHI-3456", status: "online",   tasks_total: 20, tasks_done: 14, last_location: "Quezon City",      last_seen: "Just now",  grade: "A", cod_collected: 9800  },
-  { id: "5",  name: "Carlo Reyes",        vehicle: "Van",        plate: "JKL-7890", status: "online",   tasks_total: 22, tasks_done: 8,  last_location: "Mandaluyong",      last_seen: "2m ago",    grade: "B", cod_collected: 11600 },
-  { id: "6",  name: "Luz Bautista",       vehicle: "Motorcycle", plate: "MNO-1234", status: "idle",     tasks_total: 12, tasks_done: 12, last_location: "Las Piñas",        last_seen: "5m ago",    grade: "A", cod_collected: 4200  },
-  { id: "7",  name: "Dennis Villanueva",  vehicle: "Motorcycle", plate: "PQR-5678", status: "online",   tasks_total: 19, tasks_done: 13, last_location: "Caloocan City",    last_seen: "Just now",  grade: "B", cod_collected: 6300  },
-  { id: "8",  name: "Rowena Ramos",       vehicle: "Van",        plate: "STU-9012", status: "online",   tasks_total: 26, tasks_done: 19, last_location: "Parañaque City",   last_seen: "3m ago",    grade: "A", cod_collected: 16800 },
-  { id: "9",  name: "Eduardo Torres",     vehicle: "Motorcycle", plate: "VWX-3456", status: "offline",  tasks_total: 0,  tasks_done: 0,  last_location: "Depot — Caloocan", last_seen: "2h ago",    grade: "C", cod_collected: 0     },
-  { id: "10", name: "Gloria Mendoza",     vehicle: "Motorcycle", plate: "YZA-7890", status: "online",   tasks_total: 16, tasks_done: 11, last_location: "Valenzuela",       last_seen: "Just now",  grade: "B", cod_collected: 7200  },
+  { id: "1",  name: "Juan Dela Cruz",     vehicle: "Motorcycle", plate: "ABC-1234", status: "delivering", tasks_total: 18, tasks_done: 11, last_location: "Makati CBD",       last_seen: "Just now",  grade: "A", cod_collected: 8400  },
+  { id: "2",  name: "Maria Santos",       vehicle: "Van",        plate: "XYZ-5678", status: "delivering", tasks_total: 24, tasks_done: 16, last_location: "Taguig BGC",       last_seen: "1m ago",    grade: "A", cod_collected: 14200 },
+  { id: "3",  name: "Pedro Gonzales",     vehicle: "Motorcycle", plate: "DEF-9012", status: "on_break",   tasks_total: 15, tasks_done: 9,  last_location: "Pasig City",       last_seen: "8m ago",    grade: "B", cod_collected: 5100  },
+  { id: "4",  name: "Ana Cruz",           vehicle: "Motorcycle", plate: "GHI-3456", status: "delivering", tasks_total: 20, tasks_done: 14, last_location: "Quezon City",      last_seen: "Just now",  grade: "A", cod_collected: 9800  },
+  { id: "5",  name: "Carlo Reyes",        vehicle: "Van",        plate: "JKL-7890", status: "delivering", tasks_total: 22, tasks_done: 8,  last_location: "Mandaluyong",      last_seen: "2m ago",    grade: "B", cod_collected: 11600 },
+  { id: "6",  name: "Luz Bautista",       vehicle: "Motorcycle", plate: "MNO-1234", status: "available",  tasks_total: 12, tasks_done: 12, last_location: "Las Piñas",        last_seen: "5m ago",    grade: "A", cod_collected: 4200  },
+  { id: "7",  name: "Dennis Villanueva",  vehicle: "Motorcycle", plate: "PQR-5678", status: "en_route",   tasks_total: 19, tasks_done: 13, last_location: "Caloocan City",    last_seen: "Just now",  grade: "B", cod_collected: 6300  },
+  { id: "8",  name: "Rowena Ramos",       vehicle: "Van",        plate: "STU-9012", status: "delivering", tasks_total: 26, tasks_done: 19, last_location: "Parañaque City",   last_seen: "3m ago",    grade: "A", cod_collected: 16800 },
+  { id: "9",  name: "Eduardo Torres",     vehicle: "Motorcycle", plate: "VWX-3456", status: "offline",    tasks_total: 0,  tasks_done: 0,  last_location: "Depot — Caloocan", last_seen: "2h ago",    grade: "C", cod_collected: 0     },
+  { id: "10", name: "Gloria Mendoza",     vehicle: "Motorcycle", plate: "YZA-7890", status: "available",  tasks_total: 16, tasks_done: 11, last_location: "Valenzuela",       last_seen: "Just now",  grade: "B", cod_collected: 7200  },
 ];
 
-const STATUS_CONFIG: Record<DriverStatus, { label: string; variant: "green" | "cyan" | "amber" | "red"; dot: boolean }> = {
-  online:   { label: "Online",    variant: "green", dot: true  },
-  idle:     { label: "Idle",      variant: "cyan",  dot: false },
-  on_break: { label: "On Break",  variant: "amber", dot: false },
-  offline:  { label: "Offline",   variant: "red",   dot: false },
+const STATUS_CONFIG: Record<DriverStatus, { label: string; variant: "green" | "cyan" | "amber" | "red" | "purple"; dot: boolean; isActive: boolean }> = {
+  offline:    { label: "Offline",    variant: "red",    dot: false, isActive: false },
+  available:  { label: "Online",     variant: "green",  dot: true,  isActive: true  },
+  en_route:   { label: "En Route",   variant: "cyan",   dot: true,  isActive: true  },
+  delivering: { label: "Delivering", variant: "green",  dot: true,  isActive: true  },
+  returning:  { label: "Returning",  variant: "purple", dot: false, isActive: true  },
+  on_break:   { label: "On Break",   variant: "amber",  dot: false, isActive: false },
 };
 
 const GRADE_COLOR: Record<Driver["grade"], string> = {
@@ -64,9 +77,25 @@ const KPI = [
   { label: "COD Collected",   value: 83600, trend: +11.2, color: "amber" as const, format: "currency" as const },
 ];
 
+// Coarse backend-string → UI DriverStatus mapping for fresh API payloads.
+// Unknown values fall through to 'offline' so stale clients don't crash.
+function normalizeStatus(s: string): DriverStatus {
+  switch (s) {
+    case "offline":
+    case "available":
+    case "en_route":
+    case "delivering":
+    case "returning":
+    case "on_break":
+      return s;
+    default:
+      return "offline";
+  }
+}
+
 export default function DriversPage() {
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<DriverStatus | "all">("all");
+  const [statusFilter, setStatusFilter] = useState<DriverStatus | "all" | "online">("all");
   const [drivers, setDrivers] = useState<Driver[]>(DRIVERS);
   const [kpi, setKpi] = useState(KPI);
   const [loading, setLoading] = useState(false);
@@ -79,13 +108,12 @@ export default function DriversPage() {
         api.listDrivers({ per_page: 100 }),
         api.getSummary(),
       ]);
-      // Map API shape to page Driver shape
       setDrivers(listRes.data.map((d: ApiDriver) => ({
         id:            d.id,
         name:          d.name,
         vehicle:       d.vehicle_type,
         plate:         d.vehicle_plate,
-        status:        d.status as DriverStatus,
+        status:        normalizeStatus(d.status as string),
         tasks_total:   d.tasks_total,
         tasks_done:    d.tasks_done,
         last_location: d.last_location ?? "Unknown",
@@ -109,11 +137,42 @@ export default function DriversPage() {
 
   useEffect(() => { fetchDrivers(); }, [fetchDrivers]);
 
+  // ── Live roster WS ──────────────────────────────────────────────────────────
+  // Patch driver state in-place as events arrive — no refetch, no flicker.
+  // Unknown driver_ids are ignored (roster refetch will pick up new drivers).
+  useRosterEvents((event) => {
+    setDrivers((prev) => {
+      const idx = prev.findIndex((d) => d.id === event.driver_id);
+      if (idx === -1) return prev;
+      const next = [...prev];
+      if (event.type === "status_changed") {
+        next[idx] = {
+          ...next[idx],
+          status: normalizeStatus(event.status),
+          last_seen: "Just now",
+        };
+      } else {
+        next[idx] = {
+          ...next[idx],
+          last_location: `${event.lat.toFixed(4)}, ${event.lng.toFixed(4)}`,
+          last_seen: "Just now",
+        };
+      }
+      return next;
+    });
+  });
+
   const filtered = drivers.filter((d) => {
-    const matchStatus = statusFilter === "all" || d.status === statusFilter;
+    const cfg = STATUS_CONFIG[d.status];
+    const matchStatus =
+      statusFilter === "all" ||
+      (statusFilter === "online" && cfg.isActive) ||
+      d.status === statusFilter;
     const matchSearch = !search || d.name.toLowerCase().includes(search.toLowerCase()) || d.plate.toLowerCase().includes(search.toLowerCase());
     return matchStatus && matchSearch;
   });
+
+  const onlineCount = drivers.filter((d) => STATUS_CONFIG[d.status].isActive).length;
 
   return (
     <motion.div
@@ -126,7 +185,7 @@ export default function DriversPage() {
       <motion.div variants={variants.fadeInUp} className="flex items-center justify-between">
         <div>
           <h1 className="font-heading text-2xl font-bold text-white">Drivers</h1>
-          <p className="text-sm text-white/40 font-mono mt-0.5">{drivers.filter(d => d.status === "online").length} online · {drivers.length} total roster</p>
+          <p className="text-sm text-white/40 font-mono mt-0.5">{onlineCount} online · {drivers.length} total roster</p>
         </div>
         <button
           onClick={fetchDrivers}
@@ -151,7 +210,7 @@ export default function DriversPage() {
         <GlassCard>
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-1.5">
-              {(["all", "online", "idle", "on_break", "offline"] as const).map((s) => (
+              {(["all", "online", "available", "en_route", "delivering", "on_break", "offline"] as const).map((s) => (
                 <button
                   key={s}
                   onClick={() => setStatusFilter(s)}
@@ -181,7 +240,7 @@ export default function DriversPage() {
       {/* Driver grid */}
       <motion.div variants={variants.fadeInUp} className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         {filtered.map((driver) => {
-          const { label, variant, dot } = STATUS_CONFIG[driver.status];
+          const cfg = STATUS_CONFIG[driver.status];
           const progress = driver.tasks_total > 0 ? (driver.tasks_done / driver.tasks_total) * 100 : 0;
           return (
             <GlassCard key={driver.id} className="hover:border-glass-border-bright transition-colors cursor-pointer">
@@ -191,7 +250,7 @@ export default function DriversPage() {
                     <div className="h-9 w-9 rounded-full bg-gradient-to-br from-cyan-neon/20 to-purple-plasma/20 flex items-center justify-center border border-glass-border">
                       <span className="text-sm font-bold text-white">{driver.name.split(" ").map(n => n[0]).join("").slice(0,2)}</span>
                     </div>
-                    {driver.status === "online" && (
+                    {cfg.isActive && (
                       <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-green-signal border-2 border-canvas" />
                     )}
                   </div>
@@ -202,7 +261,7 @@ export default function DriversPage() {
                 </div>
                 <div className="flex items-center gap-2">
                   <span className={`text-lg font-bold font-heading ${GRADE_COLOR[driver.grade]}`}>{driver.grade}</span>
-                  <NeonBadge variant={variant} dot={dot}>{label}</NeonBadge>
+                  <NeonBadge variant={cfg.variant} dot={cfg.dot}>{cfg.label}</NeonBadge>
                 </div>
               </div>
 
