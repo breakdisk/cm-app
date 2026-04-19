@@ -32,6 +32,8 @@ import {
   Pause,
   Play,
   ExternalLink,
+  Check,
+  XCircle,
 } from "lucide-react";
 
 import { GlassCard } from "@/components/ui/glass-card";
@@ -43,6 +45,9 @@ import {
   createListing,
   updateListing,
   deleteListing,
+  acceptBooking,
+  rejectBooking,
+  subscribeToMarketplaceUpdates,
   formatCentsPhp,
   SIZE_CLASS_CAPACITY_HINT,
   SIZE_CLASS_LABEL,
@@ -566,8 +571,34 @@ export default function MarketplacePage() {
   });
   useEffect(() => {
     const id = setInterval(refresh, 30_000);
-    return () => clearInterval(id);
+    // Cross-portal live refresh: merchant booking creation publishes to the
+    // bus (ADR-0013 §Booking flow — stand-in for `marketplace.booking_created`
+    // on Kafka); the storage event refreshes our table immediately.
+    const unsubscribe = subscribeToMarketplaceUpdates(() => refresh());
+    return () => { clearInterval(id); unsubscribe(); };
   }, [refresh]);
+
+  const [respondingTo, setRespondingTo] = useState<string | null>(null);
+
+  async function handleAccept(b: MarketplaceBooking) {
+    setRespondingTo(b.id);
+    try {
+      await acceptBooking(b.id);
+      await refresh();
+    } finally {
+      setRespondingTo(null);
+    }
+  }
+
+  async function handleReject(b: MarketplaceBooking) {
+    setRespondingTo(b.id);
+    try {
+      await rejectBooking(b.id);
+      await refresh();
+    } finally {
+      setRespondingTo(null);
+    }
+  }
 
   // KPIs
   const kpis = useMemo(() => {
@@ -915,9 +946,35 @@ export default function MarketplacePage() {
                       {fmtRelative(b.pickup_at)}
                     </td>
                     <td className="px-5 py-3">
-                      <NeonBadge variant={BOOKING_STATUS_VARIANT[b.status]} dot>
-                        {b.status.replace("_", " ")}
-                      </NeonBadge>
+                      <div className="flex items-center gap-2">
+                        <NeonBadge variant={BOOKING_STATUS_VARIANT[b.status]} dot>
+                          {b.status.replace("_", " ")}
+                        </NeonBadge>
+                        {b.status === "pending" && (
+                          // Carrier response — accept flips status + fires
+                          // downstream dispatch enqueue (ADR-0013 §Booking flow).
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => handleAccept(b)}
+                              disabled={respondingTo === b.id}
+                              className="flex h-7 items-center gap-1 rounded-md border border-green-signal/40 bg-green-surface px-2 text-2xs font-mono text-green-signal transition-all hover:shadow-[0_0_8px_rgba(0,255,136,0.4)] disabled:opacity-50"
+                              title="Accept booking"
+                            >
+                              <Check className="h-3 w-3" />
+                              Accept
+                            </button>
+                            <button
+                              onClick={() => handleReject(b)}
+                              disabled={respondingTo === b.id}
+                              className="flex h-7 items-center gap-1 rounded-md border border-red-signal/40 bg-red-surface px-2 text-2xs font-mono text-red-signal transition-all hover:bg-red-signal/15 disabled:opacity-50"
+                              title="Reject booking"
+                            >
+                              <XCircle className="h-3 w-3" />
+                              Reject
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))

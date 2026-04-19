@@ -14,7 +14,19 @@
  *   - `bookings`: filtered to the current merchant's own bookings
  *
  * Pre-backend stub. Swap to `authFetch` when the service ships.
+ *
+ * Pre-backend propagation: `createBooking` also writes to the marketplace-bus
+ * (shared localStorage) so partner-portal and admin-portal reflect the new
+ * booking on next refresh. In production this is replaced by the real service
+ * emitting `marketplace.booking_created` on Kafka (ADR-0013 §Booking flow).
  */
+
+import {
+  appendBooking as busAppend,
+  readBus,
+  subscribeToBus,
+  type BusBooking,
+} from "./marketplace-bus";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -65,6 +77,7 @@ export interface MerchantBooking {
   awb:                  string;
   partner_id:           string;
   partner_display_name: string;
+  merchant_id:          string;        // ADR-0013: business/consumer merchants both carry merchant_id
   size_class:           SizeClass;
   cargo_weight_kg:      number;
   pickup_label:         string;
@@ -74,6 +87,11 @@ export interface MerchantBooking {
   pickup_at:            string;
   created_at:           string;
 }
+
+// Pre-backend: this portal represents a single merchant session. In production
+// the merchant_id comes from the JWT `mid` claim (ADR-0013 §JWT claims).
+export const CURRENT_MERCHANT_ID   = "m2000000-0000-0000-0000-000000000001";
+export const CURRENT_MERCHANT_NAME = "Acme E-commerce";
 
 export interface MerchantMarketplaceStats {
   available_now:       number;
@@ -148,6 +166,7 @@ const MOCK_BOOKINGS: MerchantBooking[] = [
     shipment_id: "s9000000-0000-0000-0000-000000000001",
     awb: "CM-PHL-S0000301Q",
     partner_id: P_FASTSHIP.id, partner_display_name: P_FASTSHIP.name,
+    merchant_id: CURRENT_MERCHANT_ID,
     size_class: "l300", cargo_weight_kg: 640,
     pickup_label: "Pasig Warehouse", dropoff_label: "Batangas Industrial Park",
     quoted_price_cents: 212000, status: "in_transit",
@@ -159,6 +178,7 @@ const MOCK_BOOKINGS: MerchantBooking[] = [
     shipment_id: "s9000000-0000-0000-0000-000000000002",
     awb: "CM-PHL-S0000312R",
     partner_id: P_MANILA.id, partner_display_name: P_MANILA.name,
+    merchant_id: CURRENT_MERCHANT_ID,
     size_class: "van", cargo_weight_kg: 280,
     pickup_label: "Quezon City Store", dropoff_label: "Antipolo Branch",
     quoted_price_cents: 48000, status: "pending",
@@ -170,6 +190,7 @@ const MOCK_BOOKINGS: MerchantBooking[] = [
     shipment_id: "s9000000-0000-0000-0000-000000000003",
     awb: "CM-PHL-S0000287P",
     partner_id: P_NORTH.id, partner_display_name: P_NORTH.name,
+    merchant_id: CURRENT_MERCHANT_ID,
     size_class: "10wheeler", cargo_weight_kg: 8400,
     pickup_label: "Valenzuela DC", dropoff_label: "La Union Warehouse",
     quoted_price_cents: 1280000, status: "delivered",
@@ -181,12 +202,37 @@ const MOCK_BOOKINGS: MerchantBooking[] = [
     shipment_id: "s9000000-0000-0000-0000-000000000004",
     awb: "CM-PHL-S0000296T",
     partner_id: P_MANILA.id, partner_display_name: P_MANILA.name,
+    merchant_id: CURRENT_MERCHANT_ID,
     size_class: "van", cargo_weight_kg: 420,
     pickup_label: "Makati Office",  dropoff_label: "Alabang Town Center",
     quoted_price_cents: 82000, status: "disputed",
     pickup_at: iso(addHours(now(), -8)), created_at: iso(addHours(now(), -12)),
   },
 ];
+
+// Project a BusBooking (canonical cross-portal shape) into this portal's view.
+// Filters to the current merchant's own rows — RLS-equivalent for scope=merchant
+// (ADR-0013 §RLS extension: merchant scope sees only own merchant_id rows).
+function busToMerchantBooking(b: BusBooking): MerchantBooking | null {
+  if (b.merchant_id !== CURRENT_MERCHANT_ID) return null;
+  return {
+    id:                   b.id,
+    listing_id:           b.listing_id,
+    shipment_id:          b.shipment_id,
+    awb:                  b.awb,
+    partner_id:           b.partner_id,
+    partner_display_name: b.partner_display_name,
+    merchant_id:          b.merchant_id,
+    size_class:           b.size_class,
+    cargo_weight_kg:      b.cargo_weight_kg,
+    pickup_label:         b.pickup_label,
+    dropoff_label:        b.dropoff_label,
+    quoted_price_cents:   b.quoted_price_cents,
+    status:               b.status,
+    pickup_at:            b.pickup_at,
+    created_at:           b.created_at,
+  };
+}
 
 // ── API stubs ─────────────────────────────────────────────────────────────────
 
@@ -199,7 +245,16 @@ export async function fetchAvailableListings(): Promise<MerchantListing[]> {
 
 export async function fetchMyBookings(): Promise<MerchantBooking[]> {
   await latency();
-  return structuredClone(MOCK_BOOKINGS);
+  // Merge seeded mocks with bus-originated bookings; dedupe by id (bus wins).
+  const busRows = readBus()
+    .map(busToMerchantBooking)
+    .filter((b): b is MerchantBooking => b !== null);
+  const byId = new Map<string, MerchantBooking>();
+  for (const b of MOCK_BOOKINGS) byId.set(b.id, b);
+  for (const b of busRows)      byId.set(b.id, b);  // bus overrides mock (status updates from partner accept/reject)
+  return [...byId.values()].sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  );
 }
 
 export async function fetchMarketplaceStats(): Promise<MerchantMarketplaceStats> {
@@ -208,7 +263,10 @@ export async function fetchMarketplaceStats(): Promise<MerchantMarketplaceStats>
   const avgRate = active.length === 0
     ? 0
     : Math.round(active.reduce((s, l) => s + l.per_km_cents, 0) / active.length);
-  const activeBookings = MOCK_BOOKINGS.filter(
+  // Active-bookings count must include bus-originated rows (new merchant bookings
+  // that haven't been propagated back into the mock seed).
+  const merged = await fetchMyBookings();
+  const activeBookings = merged.filter(
     (b) => b.status === "pending" || b.status === "accepted" || b.status === "in_transit"
   ).length;
   return {
@@ -219,6 +277,10 @@ export async function fetchMarketplaceStats(): Promise<MerchantMarketplaceStats>
   };
 }
 
+// Re-export the bus subscriber so page code can live-refresh on cross-portal
+// updates (partner accepts → merchant sees status flip) without another import.
+export { subscribeToBus as subscribeToMarketplaceUpdates } from "./marketplace-bus";
+
 export interface CreateBookingInput {
   listing_id:      string;
   pickup_label:    string;
@@ -227,20 +289,27 @@ export interface CreateBookingInput {
   pickup_at:       string;     // ISO-8601
 }
 
-// Booking creates a shipment via order-intake; zero-loss invariant preserved.
-// Stub returns the booking + synthesized AWB the way the real endpoint will.
+// Booking creates a shipment via order-intake; zero-loss invariant preserved
+// (ADR-0013 §Booking flow). Stub synthesizes the AWB the way the real
+// CM-{TTT}-{S}{NNNNNNN}{C} generator will — partner_id/merchant_id are
+// denormalized onto the booking row for RLS, same as the real schema.
+// Also publishes to the marketplace-bus so partner-portal and admin-portal
+// see the new row on next refresh (stand-in for `marketplace.booking_created`
+// on Kafka — ADR-0013 §Booking flow).
 export async function createBooking(input: CreateBookingInput): Promise<MerchantBooking> {
   await latency(320);
   const listing = MOCK_LISTINGS.find((l) => l.id === input.listing_id);
   if (!listing) throw new Error(`Listing not found: ${input.listing_id}`);
   const quoted = listing.base_price_cents + listing.per_km_cents * 10;  // rough stub quote
+  const stamp  = Date.now();
   const booking: MerchantBooking = {
-    id:                   `b9000000-0000-0000-0000-${Date.now().toString().padStart(12, "0")}`,
+    id:                   `b9000000-0000-0000-0000-${stamp.toString().padStart(12, "0")}`,
     listing_id:           listing.id,
-    shipment_id:          `s9000000-0000-0000-0000-${Date.now().toString().padStart(12, "0")}`,
-    awb:                  `CM-PHL-S${String(Date.now()).slice(-7)}Z`,
+    shipment_id:          `s9000000-0000-0000-0000-${stamp.toString().padStart(12, "0")}`,
+    awb:                  `CM-PHL-S${String(stamp).slice(-7)}Z`,
     partner_id:           listing.partner_id,
     partner_display_name: listing.partner_display_name,
+    merchant_id:          CURRENT_MERCHANT_ID,
     size_class:           listing.size_class,
     cargo_weight_kg:      input.cargo_weight_kg,
     pickup_label:         input.pickup_label,
@@ -251,6 +320,30 @@ export async function createBooking(input: CreateBookingInput): Promise<Merchant
     created_at:           iso(now()),
   };
   MOCK_BOOKINGS.unshift(booking);
+
+  // Publish to cross-portal bus (canonical superset shape).
+  busAppend({
+    id:                   booking.id,
+    listing_id:           booking.listing_id,
+    shipment_id:          booking.shipment_id,
+    awb:                  booking.awb,
+    partner_id:           booking.partner_id,
+    partner_display_name: booking.partner_display_name,
+    merchant_id:          CURRENT_MERCHANT_ID,
+    merchant_type:        "business",
+    merchant_display:     CURRENT_MERCHANT_NAME,
+    consumer_display:     CURRENT_MERCHANT_NAME,    // business booking — no masking needed
+    size_class:           booking.size_class,
+    cargo_weight_kg:      booking.cargo_weight_kg,
+    pickup_label:         booking.pickup_label,
+    dropoff_label:        booking.dropoff_label,
+    quoted_price_cents:   booking.quoted_price_cents,
+    status:               "pending",
+    pickup_at:            booking.pickup_at,
+    created_at:           booking.created_at,
+    updated_at:           booking.created_at,
+  });
+
   return booking;
 }
 

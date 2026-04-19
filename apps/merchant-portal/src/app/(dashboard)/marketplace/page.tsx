@@ -29,6 +29,7 @@ import {
   fetchMyBookings,
   fetchMarketplaceStats,
   createBooking,
+  subscribeToMarketplaceUpdates,
   SIZE_CLASS_LABEL,
   SIZE_CLASS_CAPACITY_HINT,
   formatCentsPhp,
@@ -125,7 +126,11 @@ function MarketplacePageInner() {
   useEffect(() => {
     refresh();
     const id = setInterval(refresh, 30_000);
-    return () => clearInterval(id);
+    // Cross-portal live refresh: partner accepts/rejects fire a `storage`
+    // event in other tabs (ADR-0013 §Booking flow notification channel is
+    // Kafka in prod; localStorage stands in pre-backend).
+    const unsubscribe = subscribeToMarketplaceUpdates(() => refresh());
+    return () => { clearInterval(id); unsubscribe(); };
   }, [refresh]);
 
   // Auto-open booking drawer when arriving with ?listing=<id>

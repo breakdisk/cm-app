@@ -6,7 +6,18 @@
  * virtue of `scope=tenant` in the session GUC — no partner filter applied.
  *
  * Pre-backend stub. Swap to `authFetch` when the service ships.
+ *
+ * Cross-portal propagation (pre-backend): merchant-portal and partner-portal
+ * publish to the shared marketplace-bus; this module merges all rows in
+ * `fetchAllBookings()` without partner filter (ADR-0013 §RLS extension:
+ * scope=tenant matches any partner_id / merchant_id within the tenant).
  */
+
+import {
+  readBus,
+  subscribeToBus,
+  type BusBooking,
+} from "./marketplace-bus";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -209,10 +220,41 @@ export async function fetchAllListings(): Promise<AdminListing[]> {
   return structuredClone(MOCK_LISTINGS);
 }
 
+// Project a canonical bus row into admin's AdminBooking view. No partner
+// filter: scope=tenant sees every partner's row (ADR-0013).
+function busToAdminBooking(b: BusBooking): AdminBooking {
+  return {
+    id:                   b.id,
+    shipment_id:          b.shipment_id,
+    awb:                  b.awb,
+    partner_id:           b.partner_id,
+    partner_display_name: b.partner_display_name,
+    merchant_type:        b.merchant_type,
+    merchant_id:          b.merchant_id,
+    consumer_display:     b.merchant_display,     // admin sees unmasked merchant/consumer name
+    size_class:           b.size_class,
+    cargo_weight_kg:      b.cargo_weight_kg,
+    pickup_label:         b.pickup_label,
+    dropoff_label:        b.dropoff_label,
+    quoted_price_cents:   b.quoted_price_cents,
+    status:               b.status,
+    pickup_at:            b.pickup_at,
+    created_at:           b.created_at,
+  };
+}
+
 export async function fetchAllBookings(): Promise<AdminBooking[]> {
   await latency();
-  return structuredClone(MOCK_BOOKINGS);
+  const busRows = readBus().map(busToAdminBooking);
+  const byId = new Map<string, AdminBooking>();
+  for (const b of MOCK_BOOKINGS) byId.set(b.id, b);
+  for (const b of busRows)      byId.set(b.id, b);
+  return [...byId.values()].sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  );
 }
+
+export { subscribeToBus as subscribeToMarketplaceUpdates };
 
 export async function fetchMarketplaceStats(): Promise<MarketplaceStats> {
   await latency(150);

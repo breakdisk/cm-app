@@ -43,6 +43,7 @@ import {
   fetchMarketplaceStats,
   formatCentsPhp,
   SIZE_CLASS_LABEL,
+  subscribeToMarketplaceUpdates,
   type AdminListing,
   type AdminBooking,
   type BookingStatus,
@@ -202,7 +203,11 @@ export default function AdminMarketplacePage() {
   });
   useEffect(() => {
     const id = setInterval(refresh, 20_000);
-    return () => clearInterval(id);
+    const unsubscribe = subscribeToMarketplaceUpdates(() => refresh());
+    return () => {
+      clearInterval(id);
+      unsubscribe();
+    };
   }, [refresh]);
 
   // Distinct partners for filter dropdown

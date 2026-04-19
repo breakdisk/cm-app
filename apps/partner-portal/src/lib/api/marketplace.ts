@@ -8,7 +8,20 @@
  * Pre-backend stub: returns mock data shaped exactly as the future
  * `GET /v1/marketplace/listings` and `GET /v1/marketplace/bookings` will.
  * Swap to `authFetch` when the service ships — the caller contract is stable.
+ *
+ * Cross-portal propagation (pre-backend): merchant-portal publishes new
+ * bookings to the shared marketplace-bus; this module merges them into
+ * `fetchBookings()` filtered to this partner's scope, and writes accept/reject
+ * back through the bus. Production replaces the bus with Kafka events
+ * (ADR-0013 §Booking flow).
  */
+
+import {
+  readBus,
+  updateBookingStatus as busUpdateStatus,
+  subscribeToBus,
+  type BusBooking,
+} from "./marketplace-bus";
 
 // ── Types (ADR-0013) ──────────────────────────────────────────────────────────
 
@@ -254,10 +267,70 @@ export async function fetchListings(): Promise<VehicleListing[]> {
   return structuredClone(MOCK_LISTINGS);
 }
 
+// Project a canonical bus row into this partner's MarketplaceBooking view.
+// RLS-equivalent: filter to rows owned by this partner (ADR-0013 §RLS extension:
+// scope=partner sees only own partner_id rows).
+function busToPartnerBooking(b: BusBooking): MarketplaceBooking | null {
+  if (b.partner_id !== PARTNER_ID) return null;
+  // Pre-accept: mask consumer PII (§"Consumer PII leaks" risk R12).
+  const masked =
+    b.status === "pending" || b.status === "rejected"
+      ? b.consumer_display
+      : b.merchant_display;
+  return {
+    id:                 b.id,
+    listing_id:         b.listing_id,
+    shipment_id:        b.shipment_id,
+    awb:                b.awb,
+    consumer_name:      masked,
+    consumer_phone:     b.status === "accepted" || b.status === "in_transit" || b.status === "delivered"
+                          ? "+63 9•• ••• ••••"    // placeholder; real field decrypted on accept
+                          : null,
+    pickup_label:       b.pickup_label,
+    dropoff_label:      b.dropoff_label,
+    cargo_weight_kg:    b.cargo_weight_kg,
+    cargo_volume_m3:    null,
+    quoted_price_cents: b.quoted_price_cents,
+    status:             b.status,
+    pickup_at:          b.pickup_at,
+    created_at:         b.created_at,
+  };
+}
+
 export async function fetchBookings(): Promise<MarketplaceBooking[]> {
   await latency();
-  return structuredClone(MOCK_BOOKINGS);
+  const busRows = readBus()
+    .map(busToPartnerBooking)
+    .filter((b): b is MarketplaceBooking => b !== null);
+  const byId = new Map<string, MarketplaceBooking>();
+  for (const b of MOCK_BOOKINGS) byId.set(b.id, b);
+  for (const b of busRows)      byId.set(b.id, b);
+  return [...byId.values()].sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  );
 }
+
+/**
+ * Carrier (partner) accepts a pending booking (ADR-0013 §Booking flow:
+ * "accept → booking.status='accepted', shipment enters dispatch flow").
+ * In production, emits `marketplace.booking_accepted` via Kafka outbox;
+ * dispatch service enqueues the task; driver-ops pushes to driver-app.
+ * Pre-backend: we only flip the bus status — dispatch-queue stand-in is in
+ * admin-portal.
+ */
+export async function acceptBooking(id: string): Promise<MarketplaceBooking | null> {
+  await latency(180);
+  const updated = busUpdateStatus(id, "accepted");
+  return updated ? busToPartnerBooking(updated) : null;
+}
+
+export async function rejectBooking(id: string): Promise<MarketplaceBooking | null> {
+  await latency(180);
+  const updated = busUpdateStatus(id, "rejected");
+  return updated ? busToPartnerBooking(updated) : null;
+}
+
+export { subscribeToBus as subscribeToMarketplaceUpdates };
 
 export async function createListing(
   input: Omit<VehicleListing, "id" | "tenant_id" | "partner_id" | "vehicle_id" | "bookings_today" | "revenue_today_cents" | "created_at" | "updated_at">,

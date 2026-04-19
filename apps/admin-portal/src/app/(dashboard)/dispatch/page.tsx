@@ -12,6 +12,7 @@ import { LiveMetric } from "@/components/ui/live-metric";
 import { LiveDispatchMap } from "@/components/maps/live-dispatch-map";
 import { variants } from "@/lib/design-system/tokens";
 import { authFetch } from "@/lib/auth/auth-fetch";
+import { readBus, subscribeToBus, type BusBooking } from "@/lib/api/marketplace-bus";
 
 const DISPATCH_URL = process.env.NEXT_PUBLIC_DISPATCH_URL ?? "http://localhost:8005";
 
@@ -25,6 +26,28 @@ interface QueueItem {
   status:         string;
   cod_amount_cents?: number | null;
   tracking_number?: string | null;   // present on rows from dispatch_queue.tracking_number (migration 0005)
+  origin?:        "dispatch" | "marketplace"; // synthetic rows from accepted marketplace bookings carry origin="marketplace"
+  partner_display?: string;          // marketplace-origin: which partner accepted the job
+}
+
+// Project an accepted marketplace booking into a dispatch QueueItem.
+// Per ADR-0013 §Booking flow, accept → "shipment enters dispatch flow".
+// Until the real /v1/marketplace/bookings endpoint + order-intake mint the
+// shipment, we surface the accepted booking here so ops can see the pipeline.
+function busToQueueItem(b: BusBooking): QueueItem {
+  return {
+    id:                 `mp-${b.id}`,
+    shipment_id:        b.shipment_id,
+    customer_name:      b.merchant_display,
+    dest_address_line1: b.dropoff_label,
+    dest_city:          b.dropoff_label.split(",").pop()?.trim() ?? "—",
+    service_type:       b.size_class,
+    status:             "pending",
+    cod_amount_cents:   null,
+    tracking_number:    b.awb,
+    origin:             "marketplace",
+    partner_display:    b.partner_display_name,
+  };
 }
 
 interface DriverProfile {
@@ -49,6 +72,7 @@ export default function DispatchPage() {
   );
 
   const [queue,         setQueue]         = useState<QueueItem[]>([]);
+  const [marketplaceQueue, setMarketplaceQueue] = useState<QueueItem[]>([]);
   const [drivers,       setDrivers]       = useState<DriverProfile[]>([]);
   const [dispatching,   setDispatching]   = useState<string | null>(null);
   const [selectedDriver,setSelectedDriver]= useState<string>("");
@@ -80,6 +104,21 @@ export default function DispatchPage() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
+  // Marketplace-origin queue: accepted bookings from the bus become synthetic
+  // queue rows (dedup'd by shipment_id against the real dispatch queue).
+  const refreshMarketplaceQueue = useCallback(() => {
+    const accepted = readBus()
+      .filter((b) => b.status === "accepted")
+      .map(busToQueueItem);
+    setMarketplaceQueue(accepted);
+  }, []);
+
+  useEffect(() => {
+    refreshMarketplaceQueue();
+    const unsubscribe = subscribeToBus(refreshMarketplaceQueue);
+    return unsubscribe;
+  }, [refreshMarketplaceQueue]);
+
   // Scroll the focused queue card into view after the queue loads.
   useEffect(() => {
     if (focusOrderId && focusCardRef.current) {
@@ -107,6 +146,16 @@ export default function DispatchPage() {
     }
   }
 
+  // Dedup by shipment_id: real dispatch rows override synthetic marketplace
+  // rows. Once order-intake mints the shipment from the accepted booking, the
+  // real /v1/queue entry will naturally supersede the synthetic one.
+  const mergedQueue = useMemo(() => {
+    const byId = new Map<string, QueueItem>();
+    marketplaceQueue.forEach((q) => byId.set(q.shipment_id, q));
+    queue.forEach((q) => byId.set(q.shipment_id, q));
+    return Array.from(byId.values());
+  }, [queue, marketplaceQueue]);
+
   const mapDrivers = drivers.map((d) => ({
     driver_id:             d.id,
     driver_name:           [d.first_name, d.last_name].filter(Boolean).join(" ") || d.email,
@@ -117,7 +166,7 @@ export default function DispatchPage() {
   }));
 
   const kpiValues = [
-    { ...KPI_METRICS[0], value: queue.length },
+    { ...KPI_METRICS[0], value: mergedQueue.length },
     { ...KPI_METRICS[1], value: drivers.length },
     KPI_METRICS[2],
     KPI_METRICS[3],
@@ -204,15 +253,15 @@ export default function DispatchPage() {
 
           {/* Queue */}
           <span className="text-xs font-mono uppercase tracking-widest text-white/30">
-            Pending Queue · {queue.length}
+            Pending Queue · {mergedQueue.length}
           </span>
 
-          {queue.length === 0 && !loading && (
+          {mergedQueue.length === 0 && !loading && (
             <p className="text-xs font-mono text-white/25 text-center py-4">No pending shipments</p>
           )}
 
           <div className="flex flex-col gap-2 overflow-y-auto max-h-[400px] pr-1">
-            {queue.map((item) => {
+            {mergedQueue.map((item) => {
               const isFocused = focusOrderId === item.shipment_id || focusOrderId === item.id;
               return (
               <div key={item.id} ref={isFocused ? focusCardRef : undefined}>
@@ -223,10 +272,20 @@ export default function DispatchPage() {
                       <p className="text-sm font-medium text-white truncate">{item.customer_name}</p>
                       <p className="text-xs font-mono text-white/40 truncate">{item.dest_address_line1}</p>
                       <p className="text-xs font-mono text-white/25">{item.dest_city} · {item.service_type}</p>
+                      {item.origin === "marketplace" && item.partner_display && (
+                        <p className="text-[10px] font-mono text-cyan-neon/70 mt-1 truncate">
+                          via {item.partner_display}
+                        </p>
+                      )}
                     </div>
-                    {item.cod_amount_cents && (
-                      <NeonBadge variant="amber">COD</NeonBadge>
-                    )}
+                    <div className="flex flex-col items-end gap-1">
+                      {item.origin === "marketplace" && (
+                        <NeonBadge variant="cyan">Marketplace</NeonBadge>
+                      )}
+                      {item.cod_amount_cents && (
+                        <NeonBadge variant="amber">COD</NeonBadge>
+                      )}
+                    </div>
                   </div>
                   <div className="flex items-center gap-2">
                     <button
