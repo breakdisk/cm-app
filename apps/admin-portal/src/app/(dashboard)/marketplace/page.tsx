@@ -29,6 +29,8 @@ import {
   Zap,
   ExternalLink,
   Map as MapIcon,
+  Building2,
+  User as UserIcon,
   X,
 } from "lucide-react";
 
@@ -463,6 +465,12 @@ function dispatchDeepLink(shipmentId: string): string {
   return `/admin/dispatch?order=${encodeURIComponent(shipmentId)}`;
 }
 
+function merchantPortalDeepLink(awb: string): string {
+  // Cross-portal — jumps into the merchant's own marketplace view with the
+  // AWB surfaced for support/escalation context. Plain <a> preserves /merchant basePath.
+  return `/merchant/marketplace?awb=${encodeURIComponent(awb)}`;
+}
+
 // ── Tab button ────────────────────────────────────────────────────────────────
 
 function TabButton({
@@ -655,7 +663,7 @@ function BookingsTable({
             <tr className="border-b border-glass-border text-2xs font-mono uppercase tracking-wider text-white/40">
               <th className="px-5 py-3 font-medium">AWB</th>
               <th className="px-5 py-3 font-medium">Partner</th>
-              <th className="px-5 py-3 font-medium">Consumer</th>
+              <th className="px-5 py-3 font-medium">Booked by</th>
               <th className="px-5 py-3 font-medium">Route</th>
               <th className="px-5 py-3 font-medium">Cargo</th>
               <th className="px-5 py-3 font-medium">Quoted</th>
@@ -704,7 +712,25 @@ function BookingsTable({
                       {b.partner_display_name}
                     </a>
                   </td>
-                  <td className="px-5 py-3 text-xs text-white/80">{b.consumer_display}</td>
+                  <td className="px-5 py-3">
+                    {b.merchant_type === "business" ? (
+                      <a
+                        href={merchantPortalDeepLink(b.awb)}
+                        title="Open merchant view in Merchant Portal"
+                        className="group inline-flex items-center gap-1.5 text-xs text-white/80 transition-colors hover:text-cyan-neon"
+                      >
+                        <Building2 className="h-3 w-3 text-purple-plasma flex-shrink-0" />
+                        <span>{b.consumer_display}</span>
+                        <MapIcon className="h-2.5 w-2.5 opacity-0 transition-opacity group-hover:opacity-100" />
+                      </a>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 text-xs text-white/80">
+                        <UserIcon className="h-3 w-3 text-white/30 flex-shrink-0" />
+                        <span>{b.consumer_display}</span>
+                        <span className="text-2xs font-mono uppercase tracking-wider text-white/25">· walk-up</span>
+                      </span>
+                    )}
+                  </td>
                   <td className="px-5 py-3 text-xs text-white/70">
                     {b.pickup_label}
                     <div className="mt-0.5 text-2xs text-white/40">→ {b.dropoff_label}</div>
