@@ -3,7 +3,8 @@
  * Partner Portal — Payouts Page
  * Carrier payout history, pending remittances, COD reconciliation.
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { useRosterEvents } from "@/hooks/useRosterEvents";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
@@ -85,36 +86,45 @@ export default function PayoutsPage() {
   const [payoutHistory, setPayoutHistory] = useState<PayoutRecord[]>(PAYOUT_HISTORY_DEFAULT);
   const [pendingPayout, setPendingPayout] = useState<number>(62000);
 
-  useEffect(() => {
-    async function loadData() {
-      const [invoices, wallet] = await Promise.all([fetchInvoices(), fetchWallet()]);
+  const loadData = useCallback(async () => {
+    const [invoices, wallet] = await Promise.all([fetchInvoices(), fetchWallet()]);
 
-      if (invoices && Array.isArray(invoices) && invoices.length > 0) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const mapped: PayoutRecord[] = invoices.map((inv: any) => ({
-          id:             inv.id,
-          period:         inv.period ?? inv.billing_period ?? "—",
-          deliveries:     inv.deliveries_count ?? inv.deliveries ?? 0,
-          base_rate:      inv.base_amount ?? inv.base_rate ?? 0,
-          cod_remittance: inv.cod_amount ?? 0,
-          bonus:          inv.bonus_amount ?? inv.bonus ?? 0,
-          total:          inv.total_amount ?? inv.total ?? 0,
-          status:         inv.status ?? "pending",
-          paid_date:      inv.paid_date ?? inv.paid_at ?? undefined,
-        }));
-        setPayoutHistory(mapped);
-      }
-
-      if (wallet) {
-        const balance = wallet.pending_balance ?? wallet.balance ?? wallet.pending_payout ?? null;
-        if (balance !== null) {
-          setPendingPayout(Number(balance));
-        }
-      }
+    if (invoices && Array.isArray(invoices) && invoices.length > 0) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const mapped: PayoutRecord[] = invoices.map((inv: any) => ({
+        id:             inv.id,
+        period:         inv.period ?? inv.billing_period ?? "—",
+        deliveries:     inv.deliveries_count ?? inv.deliveries ?? 0,
+        base_rate:      inv.base_amount ?? inv.base_rate ?? 0,
+        cod_remittance: inv.cod_amount ?? 0,
+        bonus:          inv.bonus_amount ?? inv.bonus ?? 0,
+        total:          inv.total_amount ?? inv.total ?? 0,
+        status:         inv.status ?? "pending",
+        paid_date:      inv.paid_date ?? inv.paid_at ?? undefined,
+      }));
+      setPayoutHistory(mapped);
     }
 
-    loadData();
+    if (wallet) {
+      const balance = wallet.pending_balance ?? wallet.balance ?? wallet.pending_payout ?? null;
+      if (balance !== null) {
+        setPendingPayout(Number(balance));
+      }
+    }
   }, []);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  // Payout balances move when a driver completes a delivery (commission accrual)
+  // or when COD is remitted. Both correlate with driver status flips on the
+  // roster channel — so we opportunistically refetch there, with a 60s poll backstop.
+  useRosterEvents((event) => {
+    if (event.type === "status_changed") loadData();
+  });
+  useEffect(() => {
+    const id = setInterval(loadData, 60_000);
+    return () => clearInterval(id);
+  }, [loadData]);
 
   const KPI = [
     { label: "Payout MTD",        value: 421000,        trend: +14.2, color: "green"  as const, format: "currency" as const },

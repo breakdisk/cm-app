@@ -3,14 +3,15 @@
  * Admin Portal — Fleet Page
  * Vehicle roster, telemetry status, maintenance schedule.
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { createFleetApi, Vehicle as ApiVehicle } from "@/lib/api/fleet";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
-import { Truck, Fuel, Wrench, MapPin, AlertTriangle } from "lucide-react";
+import { Truck, Fuel, Wrench, MapPin, AlertTriangle, Briefcase } from "lucide-react";
 
 // ── Mock data ──────────────────────────────────────────────────────────────────
 
@@ -28,6 +29,7 @@ interface Vehicle {
   plate: string;
   type: "Motorcycle" | "Van" | "Truck";
   driver?: string;
+  driver_id?: string;
   status: VehicleStatus;
   fuel_pct: number;
   km_today: number;
@@ -61,8 +63,20 @@ const TYPE_ICON: Record<Vehicle["type"], React.ReactNode> = {
 };
 
 export default function FleetPage() {
+  const searchParams = useSearchParams();
+  // Deep-link from partner/drivers: /admin/fleet?driver=<user_id>. The fleet API
+  // returns driver_id = identity user_id, so matching is symmetric with the partner side.
+  const focusDriverId  = searchParams.get("driver");
+  const focusCardRef   = useRef<HTMLDivElement | null>(null);
+
   const [vehicles, setVehicles] = useState<Vehicle[]>(VEHICLES);
   const [kpi, setKpi] = useState(KPI);
+
+  useEffect(() => {
+    if (focusDriverId && focusCardRef.current) {
+      focusCardRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [focusDriverId, vehicles]);
 
   useEffect(() => {
     const api = createFleetApi();
@@ -73,6 +87,7 @@ export default function FleetPage() {
           plate:            v.plate,
           type:             v.type,
           driver:           v.driver_name,
+          driver_id:        v.driver_id,
           status:           v.status as VehicleStatus,
           fuel_pct:         v.fuel_pct,
           km_today:         v.km_today,
@@ -123,8 +138,10 @@ export default function FleetPage() {
         {vehicles.map((v) => {
           const { label, variant } = STATUS_CONFIG[v.status];
           const fuelColor = v.fuel_pct < 25 ? "#FF3B5C" : v.fuel_pct < 50 ? "#FFAB00" : "#00FF88";
+          const isFocused = focusDriverId != null && v.driver_id === focusDriverId;
           return (
-            <GlassCard key={v.id} className="hover:border-glass-border-bright transition-colors cursor-pointer">
+            <div key={v.id} ref={isFocused ? focusCardRef : undefined}>
+            <GlassCard className={`hover:border-glass-border-bright transition-colors cursor-pointer ${isFocused ? "ring-1 ring-cyan-neon/50" : ""}`}>
               <div className="flex items-start justify-between mb-3">
                 <div className="flex items-center gap-3">
                   <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-glass-200 border border-glass-border">
@@ -139,7 +156,21 @@ export default function FleetPage() {
               </div>
 
               {v.driver && (
-                <p className="text-xs text-white/60 mb-2">Driver: <span className="text-white">{v.driver}</span></p>
+                <div className="flex items-center gap-2 mb-2">
+                  <p className="text-xs text-white/60">Driver: <span className="text-white">{v.driver}</span></p>
+                  {/* Cross-portal — driver profile (commission, zone, SLA) lives in partner-portal.
+                      Plain <a> preserves the /partner basePath. */}
+                  {v.driver_id && (
+                    <a
+                      href={`/partner/drivers?focus=${encodeURIComponent(v.driver_id)}`}
+                      title="Open driver in Partner Portal"
+                      onClick={(e) => e.stopPropagation()}
+                      className="inline-flex items-center gap-1 rounded-md border border-glass-border bg-glass-100 px-1.5 py-0.5 text-2xs font-mono text-white/50 hover:border-purple-plasma/40 hover:text-purple-plasma transition-colors"
+                    >
+                      <Briefcase size={9} /> Partner
+                    </a>
+                  )}
+                </div>
               )}
 
               {/* Fuel bar */}
@@ -180,6 +211,7 @@ export default function FleetPage() {
                 </div>
               )}
             </GlassCard>
+            </div>
           );
         })}
       </motion.div>

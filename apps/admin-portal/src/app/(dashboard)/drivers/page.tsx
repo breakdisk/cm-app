@@ -14,7 +14,7 @@ import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
-import { Search, MapPin, Package, RefreshCw } from "lucide-react";
+import { Search, MapPin, Package, RefreshCw, Briefcase } from "lucide-react";
 
 // ── Types & mock data ─────────────────────────────────────────────────────────
 
@@ -295,6 +295,19 @@ export default function DriversPage() {
                     ₱{driver.cod_collected.toLocaleString()}
                   </span>
                 )}
+              </div>
+
+              {/* Cross-portal deep link — partner-portal owns driver commission/SLA.
+                  Plain <a> so the /partner basePath is preserved across the jump. */}
+              <div className="mt-2.5 flex items-center justify-end border-t border-glass-border/40 pt-2">
+                <a
+                  href={`/partner/drivers?focus=${encodeURIComponent(driver.id)}`}
+                  onClick={(e) => e.stopPropagation()}
+                  className="inline-flex items-center gap-1 rounded-lg border border-glass-border bg-glass-100 px-2 py-1 text-2xs text-white/50 transition-all hover:border-purple-plasma/40 hover:text-purple-plasma"
+                >
+                  <Briefcase size={10} />
+                  Manage in Partner Portal
+                </a>
               </div>
             </GlassCard>
           );

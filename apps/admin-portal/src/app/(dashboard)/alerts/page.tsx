@@ -15,7 +15,7 @@ import {
 // ── Types & data ───────────────────────────────────────────────────────────────
 
 type AlertSeverity = "critical" | "warning" | "info";
-type AlertCategory = "sla" | "driver" | "system" | "payment" | "fraud";
+type AlertCategory = "sla" | "driver" | "system" | "payment" | "fraud" | "marketplace";
 
 interface Alert {
   id: string;
@@ -36,6 +36,7 @@ const ALERTS: Alert[] = [
   { id: "A005", title: "High Failed Delivery Rate — Makati",  description: "Failed delivery rate in Makati jumped to 9.2% (avg: 4.1%) in the last 2 hours.",                 severity: "warning",  category: "sla",     timestamp: "31m ago",   resolved: false, action: "Investigate"  },
   { id: "A006", title: "Payment Gateway Timeout",             description: "PayMongo webhook response time > 10s on 3 consecutive retries. Fallback to Stripe activated.",   severity: "warning",  category: "payment", timestamp: "45m ago",   resolved: false, action: "View Billing" },
   { id: "A007", title: "New Carrier Onboarding Pending",      description: "SpeedEx PH submitted carrier application 2 days ago — requires ops manager review.",              severity: "info",     category: "system",  timestamp: "2h ago",    resolved: false, action: "Review"       },
+  { id: "A011", title: "Marketplace Booking Disputed",        description: "Consumer raised dispute on AWB CM-PHL-S0000155M (Manila MoveIt · van). Cargo weight claim mismatch — ops review required.", severity: "warning", category: "marketplace", timestamp: "38m ago", resolved: false, action: "Open Marketplace" },
   { id: "A008", title: "PostgreSQL Replication Lag",          description: "Replica lag hit 4.2 seconds on identity schema — within tolerance but monitor.",                  severity: "info",     category: "system",  timestamp: "3h ago",    resolved: false },
   { id: "A009", title: "SLA Breach — Visayas Zone",           description: "Visayas D+1 rate dropped to 34.2%. This was due to weather event (Category 1 typhoon).",        severity: "critical", category: "sla",     timestamp: "4h ago",    resolved: true  },
   { id: "A010", title: "Driver App Crash Spike",              description: "Driver app version 2.4.1 reported 42 crashes in 1 hour on Android 13. Hotfix deployed.",         severity: "warning",  category: "system",  timestamp: "6h ago",    resolved: true  },
@@ -48,11 +49,12 @@ const SEVERITY_CONFIG: Record<AlertSeverity, { icon: React.ReactNode; variant: "
 };
 
 const CATEGORY_LABEL: Record<AlertCategory, string> = {
-  sla:     "SLA",
-  driver:  "Driver",
-  system:  "System",
-  payment: "Payment",
-  fraud:   "Fraud",
+  sla:         "SLA",
+  driver:      "Driver",
+  system:      "System",
+  payment:     "Payment",
+  fraud:       "Fraud",
+  marketplace: "Marketplace",
 };
 
 const SUMMARY = {
@@ -168,7 +170,31 @@ export default function AlertsPage() {
                   <div className="flex items-center gap-3">
                     <span className="text-2xs font-mono text-white/30">{alert.timestamp}</span>
                     {alert.action && !isResolved && (
-                      <button className="text-2xs font-mono text-cyan-neon hover:underline">{alert.action}</button>
+                      // Cross-portal resolution path: SLA / driver / payment alerts are actioned
+                      // in the partner portal (SLA detail, driver profile, payout ledger).
+                      // Marketplace disputes stay inside admin (tenant oversight).
+                      // Plain <a> preserves the /partner or /admin basePath.
+                      (alert.category === "sla" || alert.category === "driver" || alert.category === "payment") ? (
+                        <a
+                          href={
+                            alert.category === "driver"  ? `/partner/drivers?alert=${encodeURIComponent(alert.id)}` :
+                            alert.category === "payment" ? `/partner/payouts?alert=${encodeURIComponent(alert.id)}` :
+                                                           `/partner/sla?alert=${encodeURIComponent(alert.id)}`
+                          }
+                          className="text-2xs font-mono text-cyan-neon hover:underline"
+                        >
+                          {alert.action} ↗
+                        </a>
+                      ) : alert.category === "marketplace" ? (
+                        <a
+                          href="/admin/marketplace?status=disputed"
+                          className="text-2xs font-mono text-cyan-neon hover:underline"
+                        >
+                          {alert.action} ↗
+                        </a>
+                      ) : (
+                        <button className="text-2xs font-mono text-cyan-neon hover:underline">{alert.action}</button>
+                      )
                     )}
                     {!isResolved && (
                       <button

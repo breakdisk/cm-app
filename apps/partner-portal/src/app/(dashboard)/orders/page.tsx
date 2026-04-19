@@ -13,6 +13,7 @@ import { LiveMetric } from "@/components/ui/live-metric";
 import { variants } from "@/lib/design-system/tokens";
 import { cn } from "@/lib/design-system/cn";
 import { authFetch } from "@/lib/auth/auth-fetch";
+import { useRosterEvents } from "@/hooks/useRosterEvents";
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 
@@ -617,9 +618,21 @@ function OrderRow({
           </div>
         )}
         {(order.status === "assigned" || order.status === "picked_up") && (
-          <div className="flex items-center gap-1.5 text-white/30 text-2xs font-mono">
-            <CheckCircle2 className="h-3 w-3 text-green-signal" />
-            Done
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 text-white/30 text-2xs font-mono">
+              <CheckCircle2 className="h-3 w-3 text-green-signal" />
+              Done
+            </div>
+            {/* Cross-portal deep link — opens the admin Dispatch console on this order.
+                Plain <a> (not next/link) to preserve the /admin basePath. */}
+            <a
+              href={`/admin/dispatch?order=${encodeURIComponent(order.id)}`}
+              title="View in Ops Dispatch"
+              className="inline-flex items-center gap-1 rounded-lg border border-glass-border bg-glass-100 px-2 py-1 text-2xs font-medium text-white/50 transition-all hover:border-cyan-neon/30 hover:text-cyan-neon"
+            >
+              <Navigation className="h-3 w-3" />
+              Dispatch
+            </a>
           </div>
         )}
       </td>
@@ -642,6 +655,19 @@ export default function OrdersPage() {
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  // Live-ish refresh: driver-ops broadcasts a RosterEvent whenever a driver's status flips
+  // (went online, accepted a route, went on break, etc). Those are strong correlated signals
+  // that a shipment's dispatch state likely changed too, so we opportunistically refetch
+  // orders + available drivers. A 20s poll backstops anything the roster channel misses.
+  // Replacing both with a dedicated dispatch/order-intake WS is a follow-up.
+  useRosterEvents((event) => {
+    if (event.type === "status_changed") loadData();
+  });
+  useEffect(() => {
+    const id = setInterval(loadData, 20_000);
+    return () => clearInterval(id);
+  }, [loadData]);
 
   const unassignedCount = orders.filter(o => o.status === "unassigned").length;
   const assigningCount  = orders.filter(o => o.status === "assigning").length;

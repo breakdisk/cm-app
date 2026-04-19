@@ -4,11 +4,12 @@
  * Shipment manifests: daily pickup/delivery lists, POD status, bulk download.
  */
 import { useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
-import { FileText, Download, Search, ChevronDown, CheckCircle2, Clock, X } from "lucide-react";
+import { FileText, Download, Search, ChevronDown, CheckCircle2, Clock, X, Building2 } from "lucide-react";
 
 // ── Types & data ───────────────────────────────────────────────────────────────
 
@@ -45,7 +46,14 @@ const STATUS_CONFIG: Record<ManifestStatus, { label: string; variant: "green" | 
 };
 
 export default function ManifestsPage() {
-  const [search, setSearch] = useState("");
+  const searchParams = useSearchParams();
+  // Deep-link support from admin-portal: ?hub=<id>, ?zone=<name>, ?driver=<name>.
+  // Zone/driver pre-populate the search box (fuzzy match). Hub shows a context
+  // banner — hub→manifest join isn't modeled client-side yet.
+  const hubParam = searchParams.get("hub");
+  const [search, setSearch] = useState(
+    searchParams.get("zone") ?? searchParams.get("driver") ?? ""
+  );
   const [typeFilter, setTypeFilter] = useState<"all" | "pickup" | "delivery">("all");
 
   const filtered = MANIFESTS.filter((m) => {
@@ -74,6 +82,21 @@ export default function ManifestsPage() {
           <Download size={12} /> Export All
         </button>
       </motion.div>
+
+      {/* Hub deep-link context banner */}
+      {hubParam && (
+        <motion.div variants={variants.fadeInUp}>
+          <div className="flex items-center gap-2 rounded-lg border border-purple-plasma/25 bg-purple-plasma/5 px-3 py-2">
+            <Building2 size={13} className="text-purple-plasma" />
+            <span className="text-xs font-mono text-white/70">
+              Scoped to hub <span className="text-purple-plasma font-bold">{hubParam}</span>
+            </span>
+            <span className="text-2xs font-mono text-white/30">
+              · manifests from admin/hubs
+            </span>
+          </div>
+        </motion.div>
+      )}
 
       {/* Filters */}
       <motion.div variants={variants.fadeInUp}>

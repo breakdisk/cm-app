@@ -3,7 +3,9 @@
  * Partner Portal — SLA Dashboard
  * Real-time SLA compliance tracking per zone, shipment type, and time window.
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useSearchParams } from "next/navigation";
+import { useRosterEvents } from "@/hooks/useRosterEvents";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
@@ -13,7 +15,7 @@ import {
   BarChart, Bar, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
-import { Star, AlertTriangle, CheckCircle2, Clock } from "lucide-react";
+import { Star, AlertTriangle, CheckCircle2, Clock, GitBranch } from "lucide-react";
 import { authFetch } from "@/lib/auth/auth-fetch";
 
 // ── API helpers ────────────────────────────────────────────────────────────────
@@ -96,6 +98,10 @@ function gradeVariant(grade: SlaGrade): "green" | "cyan" | "amber" | "red" {
 }
 
 export default function SLADashboardPage() {
+  const searchParams    = useSearchParams();
+  const focusZone       = searchParams.get("zone");
+  const focusRowRef     = useRef<HTMLDivElement | null>(null);
+
   const [overallSla, setOverallSla]       = useState<number>(94.8);
   const [onTimeCount, setOnTimeCount]     = useState<number>(8412);
   const [breachCount, setBreachCount]     = useState<number>(462);
@@ -103,28 +109,43 @@ export default function SLADashboardPage() {
   const [trendData, setTrendData]         = useState(DAILY_SLA_TREND_DEFAULT);
 
   useEffect(() => {
-    async function loadData() {
-      const [kpis, timeseries] = await Promise.all([fetchKpis(), fetchTimeseries()]);
+    if (focusZone && focusRowRef.current) {
+      focusRowRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [focusZone]);
 
-      if (kpis) {
-        if (kpis.delivery_success_rate != null)  setOverallSla(Number(kpis.delivery_success_rate));
-        if (kpis.delivered != null)              setOnTimeCount(Number(kpis.delivered));
-        if (kpis.failed != null)                 setBreachCount(Number(kpis.failed));
-        if (kpis.avg_delivery_hours != null)     setAvgDays(Number(kpis.avg_delivery_hours) / 24);
-      }
+  const loadData = useCallback(async () => {
+    const [kpis, timeseries] = await Promise.all([fetchKpis(), fetchTimeseries()]);
 
-      if (timeseries && Array.isArray(timeseries) && timeseries.length > 0) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const trend = timeseries.map((b: any) => ({
-          date: b.date,
-          rate: b.delivered > 0 ? Math.round((b.delivered / (b.delivered + b.failed)) * 100) : 100,
-        }));
-        setTrendData(trend);
-      }
+    if (kpis) {
+      if (kpis.delivery_success_rate != null)  setOverallSla(Number(kpis.delivery_success_rate));
+      if (kpis.delivered != null)              setOnTimeCount(Number(kpis.delivered));
+      if (kpis.failed != null)                 setBreachCount(Number(kpis.failed));
+      if (kpis.avg_delivery_hours != null)     setAvgDays(Number(kpis.avg_delivery_hours) / 24);
     }
 
-    loadData();
+    if (timeseries && Array.isArray(timeseries) && timeseries.length > 0) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const trend = timeseries.map((b: any) => ({
+        date: b.date,
+        rate: b.delivered > 0 ? Math.round((b.delivered / (b.delivered + b.failed)) * 100) : 100,
+      }));
+      setTrendData(trend);
+    }
   }, []);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  // SLA rate moves on every delivery completion / failure, which correlates with
+  // driver status transitions (en_route → returning/available). Refetch opportunistically
+  // on roster events, with a 60s poll backstop.
+  useRosterEvents((event) => {
+    if (event.type === "status_changed") loadData();
+  });
+  useEffect(() => {
+    const id = setInterval(loadData, 60_000);
+    return () => clearInterval(id);
+  }, [loadData]);
 
   const KPI = [
     { label: "Overall SLA",        value: overallSla,  trend: +1.2,  color: "green"  as const, format: "percent" as const },
@@ -204,13 +225,31 @@ export default function SLADashboardPage() {
 
           <div className="flex flex-col gap-2">
             {ZONE_SLA.map((z) => {
-              const grade = getSlaGrade(z.d3, z.target);
-              const v     = gradeVariant(grade);
+              const grade     = getSlaGrade(z.d3, z.target);
+              const v         = gradeVariant(grade);
+              const isFocused = focusZone && z.zone.toLowerCase().includes(focusZone.toLowerCase());
               return (
-                <div key={z.zone} className="grid grid-cols-[1fr_80px_80px_80px_80px_80px] gap-3 items-center rounded-lg bg-glass-100 px-3 py-3">
-                  <div>
-                    <p className="text-xs font-medium text-white">{z.zone}</p>
-                    <p className="text-2xs font-mono text-white/30">Target: {z.target}%</p>
+                <div
+                  key={z.zone}
+                  ref={isFocused ? focusRowRef : undefined}
+                  className={`grid grid-cols-[1fr_80px_80px_80px_80px_80px] gap-3 items-center rounded-lg bg-glass-100 px-3 py-3 transition-all ${
+                    isFocused ? "ring-1 ring-cyan-neon/50 bg-cyan-neon/5" : ""
+                  }`}
+                >
+                  <div className="flex items-start gap-2">
+                    <div>
+                      <p className="text-xs font-medium text-white">{z.zone}</p>
+                      <p className="text-2xs font-mono text-white/30">Target: {z.target}%</p>
+                    </div>
+                    {/* Cross-portal — carrier coverage + allocation lives in admin/carriers.
+                        Plain <a> preserves the /admin basePath. */}
+                    <a
+                      href={`/admin/carriers?coverage=${encodeURIComponent(z.zone)}`}
+                      title="View carriers serving this zone"
+                      className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-glass-border text-white/40 hover:text-purple-plasma hover:border-purple-plasma/30 transition-colors"
+                    >
+                      <GitBranch size={10} />
+                    </a>
                   </div>
                   {[z.d1, z.d2, z.d3].map((rate, i) => (
                     <span

@@ -3,12 +3,13 @@
  * Admin Portal — Carrier Ops Page
  * Third-party carrier management: performance, allocation, SLA contract status.
  */
+import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
-import { GitBranch, Star, TrendingUp, ExternalLink, Plus } from "lucide-react";
+import { GitBranch, Star, TrendingUp, ExternalLink, Plus, LineChart, Wallet, X, Store } from "lucide-react";
 
 // ── Mock data ──────────────────────────────────────────────────────────────────
 
@@ -58,6 +59,16 @@ const GRADE_COLOR: Record<Carrier["grade"], string> = {
 };
 
 export default function CarriersPage() {
+  const searchParams = useSearchParams();
+  // Deep-link from partner/sla: /admin/carriers?coverage=<zone>. Filter carriers
+  // whose coverage list fuzzily contains the zone name.
+  const coverageFilter = searchParams.get("coverage");
+  const visibleCarriers = coverageFilter
+    ? CARRIERS.filter((c) =>
+        c.coverage.some((z) => z.toLowerCase().includes(coverageFilter.toLowerCase())),
+      )
+    : CARRIERS;
+
   return (
     <motion.div
       variants={variants.staggerContainer}
@@ -74,10 +85,39 @@ export default function CarriersPage() {
           </h1>
           <p className="text-sm text-white/40 font-mono mt-0.5">8 carriers · AI auto-allocation active</p>
         </div>
-        <button className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-cyan-neon to-purple-plasma px-4 py-2 text-xs font-semibold text-canvas">
-          <Plus size={12} /> Onboard Carrier
-        </button>
+        <div className="flex items-center gap-2">
+          <a
+            href="/admin/marketplace"
+            title="Cross-partner marketplace oversight"
+            className="flex items-center gap-1.5 rounded-lg border border-purple-plasma/30 bg-purple-surface px-3 py-2 text-xs font-semibold text-purple-plasma transition-all hover:shadow-[0_0_12px_rgba(168,85,247,0.35)]"
+          >
+            <Store size={12} /> Marketplace
+          </a>
+          <button className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-cyan-neon to-purple-plasma px-4 py-2 text-xs font-semibold text-canvas">
+            <Plus size={12} /> Onboard Carrier
+          </button>
+        </div>
       </motion.div>
+
+      {/* Coverage filter banner (from partner/sla deep link) */}
+      {coverageFilter && (
+        <motion.div variants={variants.fadeInUp}>
+          <div className="flex items-center gap-2 rounded-lg border border-purple-plasma/25 bg-purple-plasma/5 px-3 py-2">
+            <GitBranch size={13} className="text-purple-plasma" />
+            <span className="text-xs font-mono text-white/70">
+              Filtered by coverage <span className="text-purple-plasma font-bold">{coverageFilter}</span>
+              <span className="text-white/30"> · {visibleCarriers.length} of {CARRIERS.length} carriers</span>
+            </span>
+            <a
+              href="/admin/carriers"
+              title="Clear filter"
+              className="ml-auto inline-flex h-5 w-5 items-center justify-center rounded-md text-white/40 hover:text-white transition-colors"
+            >
+              <X size={11} />
+            </a>
+          </div>
+        </motion.div>
+      )}
 
       {/* KPI row */}
       <motion.div variants={variants.fadeInUp} className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -97,7 +137,7 @@ export default function CarriersPage() {
             ))}
           </div>
 
-          {CARRIERS.map((c) => {
+          {visibleCarriers.map((c) => {
             const { label, variant } = STATUS_CONFIG[c.status];
             const slaOk = c.sla_rate >= c.sla_target;
             return (
@@ -128,7 +168,27 @@ export default function CarriersPage() {
                 <NeonBadge variant={c.integration === "API" ? "green" : c.integration === "EDI" ? "cyan" : "amber"}>
                   {c.integration}
                 </NeonBadge>
-                <NeonBadge variant={variant} dot={c.status === "active"}>{label}</NeonBadge>
+                <div className="flex items-center gap-1.5">
+                  <NeonBadge variant={variant} dot={c.status === "active"}>{label}</NeonBadge>
+                  {/* Cross-portal — partner-portal owns SLA detail + payout ledger.
+                      Plain <a> preserves the /partner basePath after the jump. */}
+                  <a
+                    href={`/partner/sla?carrier=${encodeURIComponent(c.id)}`}
+                    title="Open SLA in Partner Portal"
+                    onClick={(e) => e.stopPropagation()}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-glass-border text-white/40 hover:text-cyan-neon hover:border-cyan-neon/30 transition-colors"
+                  >
+                    <LineChart size={11} />
+                  </a>
+                  <a
+                    href={`/partner/payouts?carrier=${encodeURIComponent(c.id)}`}
+                    title="Open Payouts in Partner Portal"
+                    onClick={(e) => e.stopPropagation()}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-glass-border text-white/40 hover:text-green-signal hover:border-green-signal/30 transition-colors"
+                  >
+                    <Wallet size={11} />
+                  </a>
+                </div>
               </div>
             );
           })}

@@ -1,6 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
+import Link from "next/link";
 import {
   Target,
   Truck,
@@ -9,6 +10,9 @@ import {
   ArrowRight,
   CheckCircle2,
   AlertTriangle,
+  Store,
+  Clock,
+  Plus,
 } from "lucide-react";
 import {
   LineChart,
@@ -192,6 +196,80 @@ export default function PartnerOverviewPage() {
             </div>
           </GlassCard>
         </motion.div>
+      </motion.div>
+
+      {/* ── Marketplace strip ─────────────────────────────────────────── */}
+      {/* Surfaces idle-capacity monetization at-a-glance. Deep-links into
+          /marketplace; the ?new=1 shortcut auto-opens the listing drawer. */}
+      <motion.div variants={variants.fadeInUp}>
+        <GlassCard glow="green" accent padding="none" className="p-5">
+          <div className="flex flex-wrap items-center gap-4">
+            <div
+              className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg border border-green-signal/30 bg-green-surface"
+              style={{ boxShadow: "0 0 14px rgba(0,255,136,0.25)" }}
+            >
+              <Store className="h-4 w-4 text-green-signal" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <p className="text-sm font-semibold text-white">
+                  Marketplace Discovery
+                </p>
+                <NeonBadge variant="green" dot pulse>
+                  Live
+                </NeonBadge>
+              </div>
+              <p className="mt-0.5 text-xs text-white/50">
+                Monetize idle fleet before windows close. Consumer on-demand
+                bookings flow into order-intake like any shipment.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-5 border-l border-glass-border pl-5">
+              <div className="text-right">
+                <p className="font-mono text-2xs uppercase tracking-wider text-white/40">
+                  Idle &lt; 6h
+                </p>
+                <p
+                  className="mt-0.5 font-mono text-lg font-bold text-amber-signal"
+                  style={{ textShadow: "0 0 8px rgba(255,171,0,0.35)" }}
+                >
+                  3
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="font-mono text-2xs uppercase tracking-wider text-white/40">
+                  Revenue Today
+                </p>
+                <p
+                  className="mt-0.5 font-mono text-lg font-bold text-green-signal"
+                  style={{ textShadow: "0 0 8px rgba(0,255,136,0.35)" }}
+                >
+                  ₱14,260
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Link
+                href="/marketplace?new=1"
+                className="flex items-center gap-1.5 rounded-lg border border-green-signal/40 bg-green-surface px-3 py-2 text-xs font-medium text-green-signal transition-all hover:shadow-[0_0_12px_rgba(0,255,136,0.35)]"
+              >
+                <Plus className="h-3 w-3" />
+                List Vehicle
+              </Link>
+              <Link
+                href="/marketplace"
+                className="flex items-center gap-1 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs font-medium text-white/70 transition-colors hover:bg-glass-200 hover:text-white"
+                title="Open Marketplace"
+              >
+                <Clock className="h-3 w-3" />
+                View
+                <ArrowRight className="h-3 w-3" />
+              </Link>
+            </div>
+          </div>
+        </GlassCard>
       </motion.div>
 
       {/* ── SLA Trend + Zone table ────────────────────────────────────── */}

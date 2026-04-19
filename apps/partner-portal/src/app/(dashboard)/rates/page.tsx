@@ -7,7 +7,7 @@ import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
-import { GitBranch, Calendar, Download, ChevronDown } from "lucide-react";
+import { GitBranch, Calendar, Download, ChevronDown, BarChart3 } from "lucide-react";
 
 // ── Mock data ──────────────────────────────────────────────────────────────────
 
@@ -144,9 +144,20 @@ export default function RateCardsPage() {
 
           {ZONE_RATES.map((z) => (
             <div key={z.zone} className="grid grid-cols-[2fr_60px_80px_100px_80px_80px] gap-3 items-center px-5 py-4 border-b border-glass-border/50 hover:bg-glass-100 transition-colors">
-              <div>
-                <p className="text-sm font-semibold text-white">{z.zone}</p>
-                <p className="text-2xs font-mono text-white/30 mt-0.5">{z.description}</p>
+              <div className="flex items-start gap-2">
+                <div>
+                  <p className="text-sm font-semibold text-white">{z.zone}</p>
+                  <p className="text-2xs font-mono text-white/30 mt-0.5">{z.description}</p>
+                </div>
+                {/* Cross-portal — zone delivery performance lives in admin/analytics.
+                    Plain <a> keeps the /admin basePath after the jump. */}
+                <a
+                  href={`/admin/analytics?zone=${encodeURIComponent(z.zone)}`}
+                  title="View zone performance in Admin Analytics"
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-glass-border text-white/40 hover:text-cyan-neon hover:border-cyan-neon/30 transition-colors"
+                >
+                  <BarChart3 size={11} />
+                </a>
               </div>
               <NeonBadge variant={z.sla === "D+1" ? "green" : z.sla === "D+2" ? "cyan" : "amber"}>{z.sla}</NeonBadge>
               <span className="text-sm font-bold font-mono text-green-signal">₱{z.base.toFixed(2)}</span>

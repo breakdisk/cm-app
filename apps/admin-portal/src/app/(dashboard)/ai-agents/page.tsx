@@ -12,7 +12,7 @@ import { LiveMetric } from "@/components/ui/live-metric";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
-import { Bot, Zap, Brain, ShieldCheck, Megaphone, Headphones, Route, RefreshCw } from "lucide-react";
+import { Bot, Zap, Brain, ShieldCheck, Megaphone, Headphones, Route, RefreshCw, ArrowUpRight } from "lucide-react";
 
 // ── Types & data ───────────────────────────────────────────────────────────────
 
@@ -112,6 +112,18 @@ const AGENTS: AIAgent[] = [
     icon: <Zap size={18} className="text-purple-plasma" />,
   },
 ];
+
+// Each agent gets one "inspect" deep link to the operational surface its last
+// action most likely affected. Some cross into partner-portal (driver-centric
+// actions), others stay on admin (dispatch, fraud alerts, analytics).
+const INSPECT_LINKS: Record<string, { href: string; label: string; crossPortal: boolean }> = {
+  "dispatch":               { href: "/admin/dispatch",            label: "Dispatch queue",       crossPortal: false },
+  "support":                { href: "/admin/alerts",              label: "Alerts",               crossPortal: false },
+  "marketing":              { href: "/admin/alerts",              label: "Alerts",               crossPortal: false },
+  "fraud":                  { href: "/admin/alerts",              label: "Flagged alerts",       crossPortal: false },
+  "logistics-planner":      { href: "/partner/manifests",         label: "Manifests (partner)",  crossPortal: true  },
+  "customer-intelligence":  { href: "/admin/analytics",           label: "Analytics",            crossPortal: false },
+};
 
 const STATUS_CONFIG: Record<AgentStatus, { label: string; variant: "green" | "cyan" | "amber" | "red" | "purple" }> = {
   running:  { label: "Running",  variant: "green"  },
@@ -251,7 +263,21 @@ export default function AIAgentsPage() {
               {/* Last action */}
               <div className="rounded-lg bg-glass-100 border border-glass-border px-3 py-2">
                 <p className="text-2xs font-mono text-white/30 mb-0.5">Last action · {agent.last_action_time}</p>
-                <p className="text-xs text-white/60 line-clamp-2">{agent.last_action}</p>
+                <p className="text-xs text-white/60 line-clamp-2 mb-2">{agent.last_action}</p>
+                {INSPECT_LINKS[agent.id] && (
+                  <a
+                    href={INSPECT_LINKS[agent.id].href}
+                    onClick={(e) => e.stopPropagation()}
+                    className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-2xs font-mono transition-colors ${
+                      INSPECT_LINKS[agent.id].crossPortal
+                        ? "border-purple-plasma/30 bg-purple-plasma/10 text-purple-plasma hover:bg-purple-plasma/20"
+                        : "border-cyan-neon/30 bg-cyan-neon/10 text-cyan-neon hover:bg-cyan-neon/20"
+                    }`}
+                  >
+                    <ArrowUpRight size={10} />
+                    {INSPECT_LINKS[agent.id].label}
+                  </a>
+                )}
               </div>
             </GlassCard>
           );
