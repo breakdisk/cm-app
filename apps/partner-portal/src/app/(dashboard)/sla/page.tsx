@@ -3,7 +3,8 @@
  * Partner Portal — SLA Dashboard
  * Real-time SLA compliance tracking per zone, shipment type, and time window.
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { useRosterEvents } from "@/hooks/useRosterEvents";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
@@ -102,29 +103,38 @@ export default function SLADashboardPage() {
   const [avgDays, setAvgDays]             = useState<number>(1.8);
   const [trendData, setTrendData]         = useState(DAILY_SLA_TREND_DEFAULT);
 
-  useEffect(() => {
-    async function loadData() {
-      const [kpis, timeseries] = await Promise.all([fetchKpis(), fetchTimeseries()]);
+  const loadData = useCallback(async () => {
+    const [kpis, timeseries] = await Promise.all([fetchKpis(), fetchTimeseries()]);
 
-      if (kpis) {
-        if (kpis.delivery_success_rate != null)  setOverallSla(Number(kpis.delivery_success_rate));
-        if (kpis.delivered != null)              setOnTimeCount(Number(kpis.delivered));
-        if (kpis.failed != null)                 setBreachCount(Number(kpis.failed));
-        if (kpis.avg_delivery_hours != null)     setAvgDays(Number(kpis.avg_delivery_hours) / 24);
-      }
-
-      if (timeseries && Array.isArray(timeseries) && timeseries.length > 0) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const trend = timeseries.map((b: any) => ({
-          date: b.date,
-          rate: b.delivered > 0 ? Math.round((b.delivered / (b.delivered + b.failed)) * 100) : 100,
-        }));
-        setTrendData(trend);
-      }
+    if (kpis) {
+      if (kpis.delivery_success_rate != null)  setOverallSla(Number(kpis.delivery_success_rate));
+      if (kpis.delivered != null)              setOnTimeCount(Number(kpis.delivered));
+      if (kpis.failed != null)                 setBreachCount(Number(kpis.failed));
+      if (kpis.avg_delivery_hours != null)     setAvgDays(Number(kpis.avg_delivery_hours) / 24);
     }
 
-    loadData();
+    if (timeseries && Array.isArray(timeseries) && timeseries.length > 0) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const trend = timeseries.map((b: any) => ({
+        date: b.date,
+        rate: b.delivered > 0 ? Math.round((b.delivered / (b.delivered + b.failed)) * 100) : 100,
+      }));
+      setTrendData(trend);
+    }
   }, []);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  // SLA rate moves on every delivery completion / failure, which correlates with
+  // driver status transitions (en_route → returning/available). Refetch opportunistically
+  // on roster events, with a 60s poll backstop.
+  useRosterEvents((event) => {
+    if (event.type === "status_changed") loadData();
+  });
+  useEffect(() => {
+    const id = setInterval(loadData, 60_000);
+    return () => clearInterval(id);
+  }, [loadData]);
 
   const KPI = [
     { label: "Overall SLA",        value: overallSla,  trend: +1.2,  color: "green"  as const, format: "percent" as const },

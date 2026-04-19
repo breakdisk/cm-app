@@ -8,7 +8,7 @@ import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
-import { GitBranch, Star, TrendingUp, ExternalLink, Plus } from "lucide-react";
+import { GitBranch, Star, TrendingUp, ExternalLink, Plus, LineChart, Wallet } from "lucide-react";
 
 // ── Mock data ──────────────────────────────────────────────────────────────────
 
@@ -128,7 +128,27 @@ export default function CarriersPage() {
                 <NeonBadge variant={c.integration === "API" ? "green" : c.integration === "EDI" ? "cyan" : "amber"}>
                   {c.integration}
                 </NeonBadge>
-                <NeonBadge variant={variant} dot={c.status === "active"}>{label}</NeonBadge>
+                <div className="flex items-center gap-1.5">
+                  <NeonBadge variant={variant} dot={c.status === "active"}>{label}</NeonBadge>
+                  {/* Cross-portal — partner-portal owns SLA detail + payout ledger.
+                      Plain <a> preserves the /partner basePath after the jump. */}
+                  <a
+                    href={`/partner/sla?carrier=${encodeURIComponent(c.id)}`}
+                    title="Open SLA in Partner Portal"
+                    onClick={(e) => e.stopPropagation()}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-glass-border text-white/40 hover:text-cyan-neon hover:border-cyan-neon/30 transition-colors"
+                  >
+                    <LineChart size={11} />
+                  </a>
+                  <a
+                    href={`/partner/payouts?carrier=${encodeURIComponent(c.id)}`}
+                    title="Open Payouts in Partner Portal"
+                    onClick={(e) => e.stopPropagation()}
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-glass-border text-white/40 hover:text-green-signal hover:border-green-signal/30 transition-colors"
+                  >
+                    <Wallet size={11} />
+                  </a>
+                </div>
               </div>
             );
           })}

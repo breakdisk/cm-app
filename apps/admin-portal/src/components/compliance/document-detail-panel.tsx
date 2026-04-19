@@ -86,6 +86,17 @@ export function DocumentDetailPanel({ profileId, onApprove, onReject }: Props) {
         >
           {String(profile.overall_status ?? "").replace(/_/g, " ")}
         </span>
+        {/* Cross-portal — drivers are managed (commission, zone, SLA) in partner-portal.
+            Plain <a> so the /partner basePath persists after the jump. */}
+        {profile.entity_type === "driver" && profile.entity_id && (
+          <a
+            href={`/partner/drivers?focus=${encodeURIComponent(String(profile.entity_id))}`}
+            title="Open driver in Partner Portal"
+            className="ml-2 inline-flex items-center gap-1 rounded-md border border-glass-border bg-glass-100 px-2 py-1 text-2xs font-mono text-white/50 hover:border-purple-plasma/40 hover:text-purple-plasma transition-colors"
+          >
+            Partner ↗
+          </a>
+        )}
       </div>
 
       {/* Document list */}

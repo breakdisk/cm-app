@@ -168,7 +168,23 @@ export default function AlertsPage() {
                   <div className="flex items-center gap-3">
                     <span className="text-2xs font-mono text-white/30">{alert.timestamp}</span>
                     {alert.action && !isResolved && (
-                      <button className="text-2xs font-mono text-cyan-neon hover:underline">{alert.action}</button>
+                      // Cross-portal resolution path: SLA / driver / payment alerts are actioned
+                      // in the partner portal (SLA detail, driver profile, payout ledger).
+                      // Plain <a> preserves the /partner basePath.
+                      (alert.category === "sla" || alert.category === "driver" || alert.category === "payment") ? (
+                        <a
+                          href={
+                            alert.category === "driver"  ? `/partner/drivers?alert=${encodeURIComponent(alert.id)}` :
+                            alert.category === "payment" ? `/partner/payouts?alert=${encodeURIComponent(alert.id)}` :
+                                                           `/partner/sla?alert=${encodeURIComponent(alert.id)}`
+                          }
+                          className="text-2xs font-mono text-cyan-neon hover:underline"
+                        >
+                          {alert.action} ↗
+                        </a>
+                      ) : (
+                        <button className="text-2xs font-mono text-cyan-neon hover:underline">{alert.action}</button>
+                      )
                     )}
                     {!isResolved && (
                       <button
