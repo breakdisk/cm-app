@@ -10,7 +10,7 @@ import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
-import { Truck, Fuel, Wrench, MapPin, AlertTriangle } from "lucide-react";
+import { Truck, Fuel, Wrench, MapPin, AlertTriangle, Briefcase } from "lucide-react";
 
 // ── Mock data ──────────────────────────────────────────────────────────────────
 
@@ -28,6 +28,7 @@ interface Vehicle {
   plate: string;
   type: "Motorcycle" | "Van" | "Truck";
   driver?: string;
+  driver_id?: string;
   status: VehicleStatus;
   fuel_pct: number;
   km_today: number;
@@ -73,6 +74,7 @@ export default function FleetPage() {
           plate:            v.plate,
           type:             v.type,
           driver:           v.driver_name,
+          driver_id:        v.driver_id,
           status:           v.status as VehicleStatus,
           fuel_pct:         v.fuel_pct,
           km_today:         v.km_today,
@@ -139,7 +141,21 @@ export default function FleetPage() {
               </div>
 
               {v.driver && (
-                <p className="text-xs text-white/60 mb-2">Driver: <span className="text-white">{v.driver}</span></p>
+                <div className="flex items-center gap-2 mb-2">
+                  <p className="text-xs text-white/60">Driver: <span className="text-white">{v.driver}</span></p>
+                  {/* Cross-portal — driver profile (commission, zone, SLA) lives in partner-portal.
+                      Plain <a> preserves the /partner basePath. */}
+                  {v.driver_id && (
+                    <a
+                      href={`/partner/drivers?focus=${encodeURIComponent(v.driver_id)}`}
+                      title="Open driver in Partner Portal"
+                      onClick={(e) => e.stopPropagation()}
+                      className="inline-flex items-center gap-1 rounded-md border border-glass-border bg-glass-100 px-1.5 py-0.5 text-2xs font-mono text-white/50 hover:border-purple-plasma/40 hover:text-purple-plasma transition-colors"
+                    >
+                      <Briefcase size={9} /> Partner
+                    </a>
+                  )}
+                </div>
               )}
 
               {/* Fuel bar */}

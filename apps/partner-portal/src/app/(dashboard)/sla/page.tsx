@@ -3,7 +3,8 @@
  * Partner Portal — SLA Dashboard
  * Real-time SLA compliance tracking per zone, shipment type, and time window.
  */
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useSearchParams } from "next/navigation";
 import { useRosterEvents } from "@/hooks/useRosterEvents";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
@@ -97,11 +98,21 @@ function gradeVariant(grade: SlaGrade): "green" | "cyan" | "amber" | "red" {
 }
 
 export default function SLADashboardPage() {
+  const searchParams    = useSearchParams();
+  const focusZone       = searchParams.get("zone");
+  const focusRowRef     = useRef<HTMLDivElement | null>(null);
+
   const [overallSla, setOverallSla]       = useState<number>(94.8);
   const [onTimeCount, setOnTimeCount]     = useState<number>(8412);
   const [breachCount, setBreachCount]     = useState<number>(462);
   const [avgDays, setAvgDays]             = useState<number>(1.8);
   const [trendData, setTrendData]         = useState(DAILY_SLA_TREND_DEFAULT);
+
+  useEffect(() => {
+    if (focusZone && focusRowRef.current) {
+      focusRowRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [focusZone]);
 
   const loadData = useCallback(async () => {
     const [kpis, timeseries] = await Promise.all([fetchKpis(), fetchTimeseries()]);
@@ -214,10 +225,17 @@ export default function SLADashboardPage() {
 
           <div className="flex flex-col gap-2">
             {ZONE_SLA.map((z) => {
-              const grade = getSlaGrade(z.d3, z.target);
-              const v     = gradeVariant(grade);
+              const grade     = getSlaGrade(z.d3, z.target);
+              const v         = gradeVariant(grade);
+              const isFocused = focusZone && z.zone.toLowerCase().includes(focusZone.toLowerCase());
               return (
-                <div key={z.zone} className="grid grid-cols-[1fr_80px_80px_80px_80px_80px] gap-3 items-center rounded-lg bg-glass-100 px-3 py-3">
+                <div
+                  key={z.zone}
+                  ref={isFocused ? focusRowRef : undefined}
+                  className={`grid grid-cols-[1fr_80px_80px_80px_80px_80px] gap-3 items-center rounded-lg bg-glass-100 px-3 py-3 transition-all ${
+                    isFocused ? "ring-1 ring-cyan-neon/50 bg-cyan-neon/5" : ""
+                  }`}
+                >
                   <div>
                     <p className="text-xs font-medium text-white">{z.zone}</p>
                     <p className="text-2xs font-mono text-white/30">Target: {z.target}%</p>

@@ -14,7 +14,7 @@ import {
   AreaChart, Area, BarChart, Bar, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
-import { BarChart3, TrendingUp, Brain, Calendar } from "lucide-react";
+import { BarChart3, TrendingUp, Brain, Calendar, LineChart as LineChartIcon } from "lucide-react";
 
 // ── Mock data ──────────────────────────────────────────────────────────────────
 
@@ -166,13 +166,13 @@ export default function AnalyticsPage() {
           <div className="px-5 py-4 border-b border-glass-border">
             <h2 className="font-heading text-sm font-semibold text-white">Performance by Zone — MTD</h2>
           </div>
-          <div className="grid grid-cols-4 gap-3 px-5 py-2.5 border-b border-glass-border">
-            {["Zone", "Deliveries", "Success Rate", "Revenue"].map((h) => (
+          <div className="grid grid-cols-[1fr_100px_1fr_120px_60px] gap-3 px-5 py-2.5 border-b border-glass-border">
+            {["Zone", "Deliveries", "Success Rate", "Revenue", ""].map((h) => (
               <span key={h} className="text-2xs font-mono text-white/30 uppercase tracking-wider">{h}</span>
             ))}
           </div>
           {zonePerformance.map((z) => (
-            <div key={z.zone} className="grid grid-cols-4 gap-3 items-center px-5 py-3.5 border-b border-glass-border/50 hover:bg-glass-100 transition-colors">
+            <div key={z.zone} className="grid grid-cols-[1fr_100px_1fr_120px_60px] gap-3 items-center px-5 py-3.5 border-b border-glass-border/50 hover:bg-glass-100 transition-colors">
               <span className="text-sm font-medium text-white">{z.zone}</span>
               <span className="text-xs font-mono text-white/60">{z.deliveries.toLocaleString()}</span>
               <div>
@@ -186,6 +186,15 @@ export default function AnalyticsPage() {
                 </div>
               </div>
               <span className="text-xs font-mono text-amber-signal">₱{z.revenue.toLocaleString()}</span>
+              {/* Cross-portal — zone SLA detail lives in partner-portal.
+                  Plain <a> preserves the /partner basePath. */}
+              <a
+                href={`/partner/sla?zone=${encodeURIComponent(z.zone)}`}
+                title="Open zone SLA detail in Partner Portal"
+                className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-glass-border text-white/40 hover:text-cyan-neon hover:border-cyan-neon/30 transition-colors"
+              >
+                <LineChartIcon size={11} />
+              </a>
             </div>
           ))}
         </GlassCard>

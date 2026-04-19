@@ -9,7 +9,7 @@ import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
-import { Building2, Package, Truck, Clock, AlertTriangle } from "lucide-react";
+import { Building2, Package, Truck, Clock, AlertTriangle, FileText } from "lucide-react";
 
 // ── Mock data ──────────────────────────────────────────────────────────────────────
 
@@ -119,10 +119,20 @@ export default function HubOpsPage() {
                 <Truck size={11} className="text-white/40" />
                 <span className="text-2xs font-mono text-white/40">{hub.active_docks}/{hub.total_docks} docks active</span>
                 {hub.status === "critical" && (
-                  <div className="ml-auto flex items-center gap-1 text-2xs font-mono text-red-signal">
+                  <div className="flex items-center gap-1 text-2xs font-mono text-red-signal">
                     <AlertTriangle size={10} /> Near capacity
                   </div>
                 )}
+                {/* Cross-portal — manifests (daily pickup/delivery lists) live in partner-portal.
+                    Plain <a> preserves the /partner basePath. */}
+                <a
+                  href={`/partner/manifests?hub=${encodeURIComponent(hub.id)}`}
+                  title="Open hub manifests in Partner Portal"
+                  onClick={(e) => e.stopPropagation()}
+                  className="ml-auto inline-flex items-center gap-1 rounded-md border border-glass-border bg-glass-100 px-1.5 py-0.5 text-2xs font-mono text-white/50 hover:border-cyan-neon/40 hover:text-cyan-neon transition-colors"
+                >
+                  <FileText size={9} /> Manifests
+                </a>
               </div>
             </GlassCard>
           );
