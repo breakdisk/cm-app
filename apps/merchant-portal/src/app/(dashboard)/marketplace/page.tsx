@@ -407,7 +407,20 @@ function MarketplacePageInner() {
                             {new Date(b.pickup_at).toLocaleString("en-PH", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
                           </td>
                           <td className="py-3 pr-4">
-                            <NeonBadge variant={variant}>{label}</NeonBadge>
+                            <div className="flex items-center gap-2">
+                              <NeonBadge variant={variant}>{label}</NeonBadge>
+                              {b.status === "disputed" && (
+                                // Plain <a> crosses the /merchant → /admin basePath boundary.
+                                // Ops-escalation path — tenant-admin session required to load.
+                                <a
+                                  href={`/admin/marketplace?awb=${encodeURIComponent(b.awb)}&status=disputed`}
+                                  className="inline-flex items-center gap-1 text-2xs font-mono text-red-signal hover:underline"
+                                  title="Escalate to tenant ops"
+                                >
+                                  Escalate <ExternalLink size={10} />
+                                </a>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       );
