@@ -24,6 +24,7 @@ interface QueueItem {
   service_type:   string;
   status:         string;
   cod_amount_cents?: number | null;
+  tracking_number?: string | null;   // present on rows from dispatch_queue.tracking_number (migration 0005)
 }
 
 interface DriverProfile {
@@ -227,13 +228,26 @@ export default function DispatchPage() {
                       <NeonBadge variant="amber">COD</NeonBadge>
                     )}
                   </div>
-                  <button
-                    onClick={() => handleDispatch(item.shipment_id)}
-                    disabled={dispatching === item.shipment_id}
-                    className="w-full rounded-lg border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs font-mono text-purple-300 hover:bg-purple-500/20 transition-colors disabled:opacity-40"
-                  >
-                    {dispatching === item.shipment_id ? "Dispatching…" : "⚡ Dispatch"}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleDispatch(item.shipment_id)}
+                      disabled={dispatching === item.shipment_id}
+                      className="flex-1 rounded-lg border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs font-mono text-purple-300 hover:bg-purple-500/20 transition-colors disabled:opacity-40"
+                    >
+                      {dispatching === item.shipment_id ? "Dispatching…" : "⚡ Dispatch"}
+                    </button>
+                    {item.tracking_number && (
+                      // Cross-portal jump to merchant's own view — preserves /merchant basePath.
+                      // Useful when ops wants to see what the merchant is seeing for this shipment.
+                      <a
+                        href={`/merchant/shipments?awb=${encodeURIComponent(item.tracking_number)}`}
+                        title="Open in Merchant Portal"
+                        className="flex-shrink-0 rounded-lg border border-glass-border bg-glass-100 px-2 py-1.5 text-xs font-mono text-white/50 hover:text-cyan-neon hover:border-cyan-neon/30 transition-colors"
+                      >
+                        ↗ Merchant
+                      </a>
+                    )}
+                  </div>
                 </div>
               </GlassCard>
               </div>

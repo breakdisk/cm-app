@@ -13,7 +13,7 @@ import { NeonBadge, BadgeVariant } from "@/components/ui/neon-badge";
 import {
   Search, Download, Plus, Upload, X, Globe, Home,
   Ship, PlaneTakeoff, ArrowUpDown, ChevronLeft, ChevronRight, Check,
-  FileText, CheckCircle2, AlertCircle,
+  FileText, CheckCircle2, AlertCircle, ExternalLink,
 } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 import { authFetch } from "@/lib/auth/auth-fetch";
@@ -852,7 +852,9 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
 function ShipmentsContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const [search,      setSearch]      = useState("");
+  // Cross-portal deep-link: /merchant/shipments?awb=<awb> (admin portal escalation path).
+  const qpAwb = searchParams.get("awb");
+  const [search,      setSearch]      = useState(qpAwb ?? "");
   const [statusFilter,setStatusFilter]= useState<ShipmentStatus | "all">("all");
   const [selected,    setSelected]    = useState<Set<string>>(new Set());
   const [showNewShipment, setShowNewShipment] = useState(false);
@@ -944,6 +946,27 @@ function ShipmentsContent() {
       animate="visible"
       className="flex flex-col gap-5 p-6"
     >
+      {/* Deep-link banner (from ops/admin) */}
+      {qpAwb && (
+        <motion.div variants={variants.fadeInUp}>
+          <div className="flex items-center justify-between rounded-xl border border-cyan-neon/30 bg-cyan-surface px-4 py-2.5">
+            <div className="flex items-center gap-2.5">
+              <ExternalLink size={14} className="text-cyan-neon" />
+              <p className="text-xs text-white/80">
+                Linked from ops · <span className="font-mono text-cyan-neon">{qpAwb}</span>
+              </p>
+            </div>
+            <button
+              onClick={() => { setSearch(""); router.replace("/shipments"); }}
+              className="text-white/40 hover:text-white"
+              aria-label="Clear deep-link filter"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </motion.div>
+      )}
+
       {/* Header */}
       <motion.div variants={variants.fadeInUp} className="flex items-center justify-between">
         <div>
@@ -1075,10 +1098,12 @@ function ShipmentsContent() {
           {/* Rows */}
           {filtered.map((shipment) => {
             const { label, variant } = STATUS_MAP[shipment.status] ?? { label: shipment.status, variant: "cyan" as BadgeVariant };
+            const isDeepLinked = qpAwb && shipment.tracking_number === qpAwb;
             return (
               <div
                 key={shipment.id}
                 className={`grid grid-cols-[24px_1fr_1fr_1fr_100px_80px_100px] gap-3 px-4 py-3.5 border-b border-glass-border/50 hover:bg-glass-100 transition-colors cursor-pointer ${
+                  isDeepLinked ? "bg-cyan-neon/10 ring-1 ring-inset ring-cyan-neon/30" :
                   selected.has(shipment.id) ? "bg-cyan-surface/30" : ""
                 }`}
                 onClick={() => toggleSelect(shipment.id)}

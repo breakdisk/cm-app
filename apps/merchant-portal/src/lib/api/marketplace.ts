@@ -175,6 +175,17 @@ const MOCK_BOOKINGS: MerchantBooking[] = [
     quoted_price_cents: 1280000, status: "delivered",
     pickup_at: iso(addHours(now(), -22)), created_at: iso(addHours(now(), -26)),
   },
+  {
+    id: "b9000000-0000-0000-0000-000000000004",
+    listing_id: "l3000000-0000-0000-0000-000000000001",
+    shipment_id: "s9000000-0000-0000-0000-000000000004",
+    awb: "CM-PHL-S0000296T",
+    partner_id: P_MANILA.id, partner_display_name: P_MANILA.name,
+    size_class: "van", cargo_weight_kg: 420,
+    pickup_label: "Makati Office",  dropoff_label: "Alabang Town Center",
+    quoted_price_cents: 82000, status: "disputed",
+    pickup_at: iso(addHours(now(), -8)), created_at: iso(addHours(now(), -12)),
+  },
 ];
 
 // ── API stubs ─────────────────────────────────────────────────────────────────
