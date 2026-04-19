@@ -12,7 +12,7 @@
  * order-intake — this UI never short-circuits the shipment pipeline.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { useRosterEvents } from "@/hooks/useRosterEvents";
@@ -532,7 +532,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-export default function MarketplacePage() {
+function MarketplacePageInner() {
   const searchParams = useSearchParams();
   // Deep-link params (from /admin/marketplace, /partner/orders reverse link):
   //   ?awb=<code>   highlight a specific booking row
@@ -991,5 +991,13 @@ export default function MarketplacePage() {
         onSaved={refresh}
       />
     </div>
+  );
+}
+
+export default function MarketplacePage() {
+  return (
+    <Suspense fallback={null}>
+      <MarketplacePageInner />
+    </Suspense>
   );
 }

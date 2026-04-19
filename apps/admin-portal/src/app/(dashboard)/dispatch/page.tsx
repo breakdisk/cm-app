@@ -3,7 +3,7 @@
  * Dispatch Console — Admin Portal
  * Real-time view of the dispatch queue, available drivers, and active routes.
  */
-import { useMemo, useEffect, useState, useCallback, useRef } from "react";
+import { useMemo, useEffect, useState, useCallback, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { GlassCard } from "@/components/ui/glass-card";
@@ -65,7 +65,7 @@ const KPI_METRICS = [
   { label: "Avg Delivery Time",value: 47,  trend: -5.1, color: "purple" as const, format: "duration" as const, key: "time"  },
 ];
 
-export default function DispatchPage() {
+function DispatchPageInner() {
   const today = useMemo(
     () => new Date().toLocaleDateString("en-PH", { month: "long", day: "numeric", year: "numeric" }),
     [],
@@ -316,5 +316,13 @@ export default function DispatchPage() {
         </motion.div>
       </div>
     </motion.div>
+  );
+}
+
+export default function DispatchPage() {
+  return (
+    <Suspense fallback={null}>
+      <DispatchPageInner />
+    </Suspense>
   );
 }

@@ -6,7 +6,7 @@
  * Initial roster comes from `/v1/drivers`; live updates stream from the
  * driver-ops RosterEvent WebSocket (tenant-filtered server-side).
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
@@ -45,7 +45,7 @@ function toPinStatus(s: BackendStatus): DriverPin["status"] {
   }
 }
 
-export default function LiveMapPage() {
+function LiveMapPageInner() {
   const [drivers, setDrivers] = useState<Record<string, LiveDriver>>({});
   // Deep-link from partner-portal: /admin/map?driver=<id> highlights the row
   // and scrolls it into view once the roster loads.
@@ -244,5 +244,13 @@ export default function LiveMapPage() {
         </motion.div>
       </div>
     </motion.div>
+  );
+}
+
+export default function LiveMapPage() {
+  return (
+    <Suspense fallback={null}>
+      <LiveMapPageInner />
+    </Suspense>
   );
 }

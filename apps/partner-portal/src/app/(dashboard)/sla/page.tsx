@@ -3,7 +3,7 @@
  * Partner Portal — SLA Dashboard
  * Real-time SLA compliance tracking per zone, shipment type, and time window.
  */
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { useRosterEvents } from "@/hooks/useRosterEvents";
 import { motion } from "framer-motion";
@@ -97,7 +97,7 @@ function gradeVariant(grade: SlaGrade): "green" | "cyan" | "amber" | "red" {
   return "red";
 }
 
-export default function SLADashboardPage() {
+function SLADashboardPageInner() {
   const searchParams    = useSearchParams();
   const focusZone       = searchParams.get("zone");
   const focusRowRef     = useRef<HTMLDivElement | null>(null);
@@ -295,5 +295,13 @@ export default function SLADashboardPage() {
         </GlassCard>
       </motion.div>
     </motion.div>
+  );
+}
+
+export default function SLADashboardPage() {
+  return (
+    <Suspense fallback={null}>
+      <SLADashboardPageInner />
+    </Suspense>
   );
 }

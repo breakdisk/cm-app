@@ -3,7 +3,7 @@
  * Admin Portal — Fleet Page
  * Vehicle roster, telemetry status, maintenance schedule.
  */
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { createFleetApi, Vehicle as ApiVehicle } from "@/lib/api/fleet";
@@ -62,7 +62,7 @@ const TYPE_ICON: Record<Vehicle["type"], React.ReactNode> = {
   Truck:      <Truck size={14} className="text-amber-signal" />,
 };
 
-export default function FleetPage() {
+function FleetPageInner() {
   const searchParams = useSearchParams();
   // Deep-link from partner/drivers: /admin/fleet?driver=<user_id>. The fleet API
   // returns driver_id = identity user_id, so matching is symmetric with the partner side.
@@ -216,5 +216,13 @@ export default function FleetPage() {
         })}
       </motion.div>
     </motion.div>
+  );
+}
+
+export default function FleetPage() {
+  return (
+    <Suspense fallback={null}>
+      <FleetPageInner />
+    </Suspense>
   );
 }

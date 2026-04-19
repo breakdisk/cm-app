@@ -3,7 +3,7 @@
  * Partner Portal — Manifests Page
  * Shipment manifests: daily pickup/delivery lists, POD status, bulk download.
  */
-import { useState } from "react";
+import { useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
@@ -45,7 +45,7 @@ const STATUS_CONFIG: Record<ManifestStatus, { label: string; variant: "green" | 
   failed:      { label: "Failed",      variant: "red",   icon: <X size={10} />            },
 };
 
-export default function ManifestsPage() {
+function ManifestsPageInner() {
   const searchParams = useSearchParams();
   // Deep-link support from admin-portal: ?hub=<id>, ?zone=<name>, ?driver=<name>.
   // Zone/driver pre-populate the search box (fuzzy match). Hub shows a context
@@ -168,5 +168,13 @@ export default function ManifestsPage() {
         </GlassCard>
       </motion.div>
     </motion.div>
+  );
+}
+
+export default function ManifestsPage() {
+  return (
+    <Suspense fallback={null}>
+      <ManifestsPageInner />
+    </Suspense>
   );
 }

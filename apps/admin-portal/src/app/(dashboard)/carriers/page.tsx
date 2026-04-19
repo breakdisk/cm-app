@@ -3,6 +3,7 @@
  * Admin Portal — Carrier Ops Page
  * Third-party carrier management: performance, allocation, SLA contract status.
  */
+import { Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
@@ -58,7 +59,7 @@ const GRADE_COLOR: Record<Carrier["grade"], string> = {
   A: "text-green-signal", B: "text-cyan-neon", C: "text-amber-signal", D: "text-red-signal",
 };
 
-export default function CarriersPage() {
+function CarriersPageInner() {
   const searchParams = useSearchParams();
   // Deep-link from partner/sla: /admin/carriers?coverage=<zone>. Filter carriers
   // whose coverage list fuzzily contains the zone name.
@@ -195,5 +196,13 @@ export default function CarriersPage() {
         </GlassCard>
       </motion.div>
     </motion.div>
+  );
+}
+
+export default function CarriersPage() {
+  return (
+    <Suspense fallback={null}>
+      <CarriersPageInner />
+    </Suspense>
   );
 }

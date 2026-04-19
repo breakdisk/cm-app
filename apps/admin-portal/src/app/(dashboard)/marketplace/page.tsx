@@ -12,7 +12,7 @@
  * tracking. Read-only — mutation flows are owned by the partner portal.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { useRosterEvents } from "@/hooks/useRosterEvents";
 import {
@@ -154,7 +154,7 @@ type Tab = "listings" | "bookings";
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-export default function AdminMarketplacePage() {
+function AdminMarketplacePageInner() {
   const searchParams = useSearchParams();
   // Deep-link params (from /admin/carriers, /admin/dispatch, reverse links):
   //   ?partner=<id>   filter listings + bookings to one partner
@@ -456,6 +456,14 @@ export default function AdminMarketplacePage() {
         <BookingsTable rows={filteredBookings} total={bookings.length} loading={loading} />
       )}
     </div>
+  );
+}
+
+export default function AdminMarketplacePage() {
+  return (
+    <Suspense fallback={null}>
+      <AdminMarketplacePageInner />
+    </Suspense>
   );
 }
 
