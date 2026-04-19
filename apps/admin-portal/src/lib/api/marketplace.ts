@@ -14,6 +14,7 @@ export type ListingStatus  = "active" | "paused" | "booked" | "expired";
 export type BookingStatus  = "pending" | "accepted" | "rejected" | "in_transit" | "delivered" | "cancelled" | "disputed";
 export type SizeClass      = "motorcycle" | "sedan" | "van" | "l300" | "6wheeler" | "10wheeler" | "trailer";
 export type PartnerType    = "alliance" | "marketplace";
+export type MerchantType   = "business" | "consumer";    // ADR-0013: business = tenant merchant; consumer = walk-up booker
 
 export interface AdminListing {
   id:                   string;
@@ -40,7 +41,9 @@ export interface AdminBooking {
   awb:                  string;
   partner_id:           string;
   partner_display_name: string;
-  consumer_display:     string;             // masked merchant_type=consumer display
+  merchant_type:        MerchantType;       // business = tenant merchant; consumer = individual booker
+  merchant_id:          string | null;      // populated when merchant_type=business
+  consumer_display:     string;             // masked display, pre-accept
   size_class:           SizeClass;
   cargo_weight_kg:      number;
   pickup_label:         string;
@@ -140,6 +143,7 @@ const MOCK_BOOKINGS: AdminBooking[] = [
     shipment_id: "s1000000-0000-0000-0000-000000000001",
     awb: "CM-PHL-S0000042X",
     partner_id: P_FASTSHIP.id, partner_display_name: P_FASTSHIP.name,
+    merchant_type: "consumer", merchant_id: null,
     consumer_display: "M. Reyes",
     size_class: "motorcycle", cargo_weight_kg: 12,
     pickup_label: "Makati CBD", dropoff_label: "BGC, Taguig",
@@ -151,6 +155,7 @@ const MOCK_BOOKINGS: AdminBooking[] = [
     shipment_id: "s1000000-0000-0000-0000-000000000002",
     awb: "CM-PHL-E0000099Y",
     partner_id: P_FASTSHIP.id, partner_display_name: P_FASTSHIP.name,
+    merchant_type: "business", merchant_id: "m2000000-0000-0000-0000-000000000001",
     consumer_display: "A. Dela Cruz",
     size_class: "l300", cargo_weight_kg: 820,
     pickup_label: "Pasig Warehouse", dropoff_label: "Laguna Techno Park",
@@ -162,6 +167,7 @@ const MOCK_BOOKINGS: AdminBooking[] = [
     shipment_id: "s2000000-0000-0000-0000-000000000001",
     awb: "CM-PHL-S0000121K",
     partner_id: P_NORTH.id, partner_display_name: P_NORTH.name,
+    merchant_type: "business", merchant_id: "m2000000-0000-0000-0000-000000000002",
     consumer_display: "Sy Lumber Corp.",
     size_class: "10wheeler", cargo_weight_kg: 9400,
     pickup_label: "Valenzuela", dropoff_label: "Tarlac City",
@@ -173,6 +179,7 @@ const MOCK_BOOKINGS: AdminBooking[] = [
     shipment_id: "s3000000-0000-0000-0000-000000000001",
     awb: "CM-PHL-S0000155M",
     partner_id: P_MANILA.id, partner_display_name: P_MANILA.name,
+    merchant_type: "consumer", merchant_id: null,
     consumer_display: "R. Santos",
     size_class: "van", cargo_weight_kg: 340,
     pickup_label: "Quezon City", dropoff_label: "Antipolo",
@@ -184,6 +191,7 @@ const MOCK_BOOKINGS: AdminBooking[] = [
     shipment_id: "s4000000-0000-0000-0000-000000000001",
     awb: "CM-PHL-S0000188P",
     partner_id: P_CEBU.id, partner_display_name: P_CEBU.name,
+    merchant_type: "business", merchant_id: "m2000000-0000-0000-0000-000000000003",
     consumer_display: "Mactan Traders",
     size_class: "6wheeler", cargo_weight_kg: 4800,
     pickup_label: "Mactan Port", dropoff_label: "Cebu IT Park",

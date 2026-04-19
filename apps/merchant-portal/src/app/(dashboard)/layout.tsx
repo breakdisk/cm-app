@@ -12,6 +12,7 @@ import {
   BarChart3,
   CreditCard,
   Truck,
+  Store,
   Settings,
   Bell,
   Search,
@@ -39,25 +40,27 @@ interface DashboardLayoutProps {
 // ─── Nav config ───────────────────────────────────────────────────────────────
 
 const NAV_ITEMS: NavItem[] = [
-  { label: "Overview",  href: "/",          icon: LayoutDashboard },
-  { label: "Shipments", href: "/shipments",  icon: Package },
-  { label: "Campaigns", href: "/campaigns",  icon: Megaphone },
-  { label: "Analytics", href: "/analytics",  icon: BarChart3 },
-  { label: "Billing",   href: "/billing",    icon: CreditCard },
-  { label: "Fleet",     href: "/fleet",      icon: Truck },
-  { label: "Settings",  href: "/settings",   icon: Settings },
+  { label: "Overview",     href: "/",            icon: LayoutDashboard },
+  { label: "Shipments",    href: "/shipments",   icon: Package },
+  { label: "Marketplace",  href: "/marketplace", icon: Store },
+  { label: "Campaigns",    href: "/campaigns",   icon: Megaphone },
+  { label: "Analytics",    href: "/analytics",   icon: BarChart3 },
+  { label: "Billing",      href: "/billing",     icon: CreditCard },
+  { label: "Fleet",        href: "/fleet",       icon: Truck },
+  { label: "Settings",     href: "/settings",    icon: Settings },
 ];
 
 // ─── Page title map ───────────────────────────────────────────────────────────
 
 const PAGE_TITLE_MAP: Record<string, string> = {
-  "/":           "Overview",
-  "/shipments":  "Shipments",
-  "/campaigns":  "Campaigns",
-  "/analytics":  "Analytics",
-  "/billing":    "Billing",
-  "/fleet":      "Fleet",
-  "/settings":   "Settings",
+  "/":             "Overview",
+  "/shipments":    "Shipments",
+  "/marketplace":  "Marketplace",
+  "/campaigns":    "Campaigns",
+  "/analytics":    "Analytics",
+  "/billing":      "Billing",
+  "/fleet":        "Fleet",
+  "/settings":     "Settings",
 };
 
 function getPageTitle(pathname: string): string {

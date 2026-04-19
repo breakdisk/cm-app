@@ -1,10 +1,11 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { motion } from "framer-motion";
 import {
   Package, TrendingUp, Users, Wallet, Plus, Upload, BarChart3,
-  Megaphone, CheckCircle2, Clock, AlertCircle, Truck,
+  Megaphone, CheckCircle2, Clock, AlertCircle, Truck, Store,
   ArrowRight, MapPin, Clock3, TrendingDown, ArrowUpRight, ArrowDownRight,
   Activity, ChevronRight, Sparkles,
 } from "lucide-react";
@@ -307,6 +308,64 @@ export default function DashboardPage() {
         ))}
       </motion.div>
 
+      {/* ── 2b. MARKETPLACE STRIP ────────────────────────────────────── */}
+      <motion.div variants={variants.fadeInUp}>
+        <GlassCard className="flex flex-col md:flex-row md:items-center gap-4 md:gap-6 p-4">
+          <div className="flex items-center gap-3 min-w-0 flex-1">
+            <div
+              className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl"
+              style={{
+                background: "linear-gradient(135deg, rgba(168,85,247,0.15), rgba(0,229,255,0.12))",
+                boxShadow: "0 0 20px rgba(168,85,247,0.2)",
+              }}
+            >
+              <Store className="h-5 w-5" style={{ color: "#A855F7" }} />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 mb-0.5">
+                <p className="font-heading text-sm font-semibold text-white">Marketplace Capacity</p>
+                <NeonBadge variant="purple" dot pulse>Live</NeonBadge>
+              </div>
+              <p className="text-xs text-white/40 font-mono truncate">
+                Idle vehicles across alliance + marketplace partners
+              </p>
+            </div>
+          </div>
+
+          {/* Quick stats */}
+          <div className="flex items-center gap-5 md:gap-7 flex-shrink-0">
+            <div className="flex flex-col">
+              <span className="font-heading text-xl font-bold text-purple-plasma tabular-nums"
+                style={{ textShadow: "0 0 14px rgba(168,85,247,0.35)" }}>
+                4
+              </span>
+              <span className="text-2xs text-white/30 font-mono">available now</span>
+            </div>
+            <div className="flex flex-col">
+              <span className="font-heading text-xl font-bold text-amber-signal tabular-nums flex items-center gap-1">
+                <Clock size={13} /> 3h
+              </span>
+              <span className="text-2xs text-white/30 font-mono">fastest idle</span>
+            </div>
+            <div className="flex flex-col">
+              <span className="font-heading text-xl font-bold text-cyan-neon tabular-nums">3</span>
+              <span className="text-2xs text-white/30 font-mono">partners</span>
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <Link
+              href="/marketplace"
+              className="flex items-center gap-1.5 rounded-lg border border-purple-plasma/40 bg-purple-surface px-3 py-2 text-xs font-medium text-purple-plasma transition-all hover:bg-purple-plasma/15 hover:border-purple-plasma"
+            >
+              Browse Marketplace
+              <ArrowRight size={12} />
+            </Link>
+          </div>
+        </GlassCard>
+      </motion.div>
+
       {/* ── 3. PRIMARY CTA + QUICK ACTIONS ───────────────────────────── */}
       <motion.div variants={variants.fadeInUp}>
         <div className="flex flex-wrap gap-3 items-center">
@@ -323,7 +382,8 @@ export default function DashboardPage() {
           </button>
 
           {[
-            { label: "Bulk Upload CSV", icon: Upload,   color: "#A855F7", href: "/shipments?bulk=1" },
+            { label: "Bulk Upload CSV", icon: Upload,    color: "#A855F7", href: "/shipments?bulk=1" },
+            { label: "Book Marketplace", icon: Store,    color: "#A855F7", href: "/marketplace"      },
             { label: "Analytics",       icon: BarChart3, color: "#00FF88", href: "/analytics"        },
             { label: "New Campaign",    icon: Megaphone, color: "#FFAB00", href: "/campaigns?new=1"  },
           ].map(({ label, icon: Icon, color, href }) => (
