@@ -6,7 +6,8 @@
  * Initial roster comes from `/v1/drivers`; live updates stream from the
  * driver-ops RosterEvent WebSocket (tenant-filtered server-side).
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
@@ -15,7 +16,7 @@ import { LiveMetric } from "@/components/ui/live-metric";
 import { LiveDispatchMap, type DriverPin } from "@/components/maps/live-dispatch-map";
 import { createDriversApi } from "@/lib/api/drivers";
 import { useRosterEvents } from "@/hooks/useRosterEvents";
-import { MapPin, Navigation, Filter, Layers } from "lucide-react";
+import { MapPin, Navigation, Filter, Layers, ExternalLink } from "lucide-react";
 
 // Backend taxonomy — what the API and WS emit.
 type BackendStatus =
@@ -46,6 +47,11 @@ function toPinStatus(s: BackendStatus): DriverPin["status"] {
 
 export default function LiveMapPage() {
   const [drivers, setDrivers] = useState<Record<string, LiveDriver>>({});
+  // Deep-link from partner-portal: /admin/map?driver=<id> highlights the row
+  // and scrolls it into view once the roster loads.
+  const searchParams = useSearchParams();
+  const focusId      = searchParams.get("driver");
+  const focusRowRef  = useRef<HTMLDivElement | null>(null);
 
   // Initial fetch — populates the roster + gives us a baseline to patch.
   useEffect(() => {
@@ -122,6 +128,13 @@ export default function LiveMapPage() {
     [active],
   );
 
+  // When the focused driver row renders, scroll it into view once.
+  useEffect(() => {
+    if (focusId && focusRowRef.current) {
+      focusRowRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [focusId, drivers]);
+
   const onlineCount     = active.filter((d) => d.status === "available" || d.status === "on_break").length;
   const deliveringCount = active.filter((d) => d.status === "delivering" || d.status === "en_route").length;
   const idleCount       = active.filter((d) => d.status === "available").length;
@@ -193,8 +206,14 @@ export default function LiveMapPage() {
               <p className="p-4 text-xs text-white/40 font-mono">No drivers online.</p>
             ) : active.map((d) => {
               const isDelivering = d.status === "delivering" || d.status === "en_route";
+              const isFocused    = focusId === d.driver_id;
               return (
-                <div key={d.driver_id} className="flex flex-col gap-2 px-4 py-3 border-b border-glass-border/50 hover:bg-glass-100 transition-colors cursor-pointer">
+                <div
+                  key={d.driver_id}
+                  ref={isFocused ? focusRowRef : undefined}
+                  className={`flex flex-col gap-2 px-4 py-3 border-b border-glass-border/50 transition-colors ${
+                    isFocused ? "bg-cyan-neon/10 ring-1 ring-cyan-neon/40" : "hover:bg-glass-100"
+                  }`}>
                   <div className="flex items-center justify-between">
                     <p className="text-xs font-semibold text-white truncate">{d.driver_name}</p>
                     <NeonBadge variant={isDelivering ? "green" : "cyan"} dot={isDelivering}>
@@ -205,9 +224,19 @@ export default function LiveMapPage() {
                     <Navigation size={9} className="text-cyan-neon" />
                     {d.location_label}
                   </div>
-                  {d.deliveries_remaining > 0 && (
-                    <span className="text-2xs font-mono text-white/30">{d.deliveries_remaining} stops remaining</span>
-                  )}
+                  <div className="flex items-center justify-between">
+                    {d.deliveries_remaining > 0 ? (
+                      <span className="text-2xs font-mono text-white/30">{d.deliveries_remaining} stops remaining</span>
+                    ) : <span />}
+                    {/* Cross-portal — partner-portal owns commission/SLA. */}
+                    <a
+                      href={`/partner/drivers?focus=${encodeURIComponent(d.driver_id)}`}
+                      title="Manage in Partner Portal"
+                      className="inline-flex items-center gap-1 text-2xs font-mono text-white/40 hover:text-purple-plasma transition-colors"
+                    >
+                      <ExternalLink size={9} /> Manage
+                    </a>
+                  </div>
                 </div>
               );
             })}

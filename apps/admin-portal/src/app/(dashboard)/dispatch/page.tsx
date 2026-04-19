@@ -3,7 +3,8 @@
  * Dispatch Console — Admin Portal
  * Real-time view of the dispatch queue, available drivers, and active routes.
  */
-import { useMemo, useEffect, useState, useCallback } from "react";
+import { useMemo, useEffect, useState, useCallback, useRef } from "react";
+import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
@@ -53,6 +54,12 @@ export default function DispatchPage() {
   const [loading,       setLoading]       = useState(false);
   const [error,         setError]         = useState<string | null>(null);
 
+  // Deep-link from partner-portal: /admin/dispatch?order=<shipment_id> highlights
+  // and scrolls to the matching queue card once data lands.
+  const searchParams  = useSearchParams();
+  const focusOrderId  = searchParams.get("order");
+  const focusCardRef  = useRef<HTMLDivElement | null>(null);
+
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -71,6 +78,13 @@ export default function DispatchPage() {
   }, []);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  // Scroll the focused queue card into view after the queue loads.
+  useEffect(() => {
+    if (focusOrderId && focusCardRef.current) {
+      focusCardRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [focusOrderId, queue]);
 
   async function handleDispatch(shipmentId: string) {
     setDispatching(shipmentId);
@@ -197,8 +211,11 @@ export default function DispatchPage() {
           )}
 
           <div className="flex flex-col gap-2 overflow-y-auto max-h-[400px] pr-1">
-            {queue.map((item) => (
-              <GlassCard key={item.id} size="sm" glow="cyan">
+            {queue.map((item) => {
+              const isFocused = focusOrderId === item.shipment_id || focusOrderId === item.id;
+              return (
+              <div key={item.id} ref={isFocused ? focusCardRef : undefined}>
+              <GlassCard size="sm" glow="cyan" className={isFocused ? "ring-1 ring-cyan-neon/60" : undefined}>
                 <div className="flex flex-col gap-2">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
@@ -219,7 +236,9 @@ export default function DispatchPage() {
                   </button>
                 </div>
               </GlassCard>
-            ))}
+              </div>
+              );
+            })}
           </div>
         </motion.div>
       </div>

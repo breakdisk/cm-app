@@ -4,15 +4,16 @@
  * Set driver type (part-time / full-time) and commission rates per driver.
  */
 import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
-import { Users, Clock, Briefcase, Search, Check, Pencil, X, UserPlus, Loader2 } from "lucide-react";
+import { Users, Clock, Briefcase, Search, Check, Pencil, X, UserPlus, Loader2, MapPin } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 import { ComplianceBadge, canAssign } from "@/components/compliance/compliance-badge";
 import { authFetch } from "@/lib/auth/auth-fetch";
+import { useRosterEvents } from "@/hooks/useRosterEvents";
 
 // ── API helpers ────────────────────────────────────────────────────────────────
 
@@ -25,6 +26,8 @@ type DriverType = "full_time" | "part_time";
 
 interface Driver {
   id:                string;
+  /** Identity user_id — used to match live RosterEvent frames which key on user_id. */
+  userId:            string;
   name:              string;
   phone:             string;
   zone:              string;
@@ -49,6 +52,7 @@ function dtoToDriver(d: any): Driver {
     activeRoute ? "on_delivery" : d.is_online ? "active" : "offline";
   return {
     id:                d.id,
+    userId:            d.user_id ?? d.id,
     name:              `${d.first_name ?? ""} ${d.last_name ?? ""}`.trim() || "—",
     phone:             d.phone ?? "—",
     zone:              d.zone ?? "—",
@@ -407,6 +411,16 @@ function DriverRow({ driver, onEdit, onAssign }: { driver: Driver; onEdit: () =>
           >
             Assign Task
           </button>
+          {/* Cross-portal deep link — opens the admin Live Map focused on this driver.
+              Plain <a> (not next/link) so the basePath prefix stays as /admin/... */}
+          <a
+            href={`/admin/map?driver=${encodeURIComponent(driver.id)}`}
+            title="View on Ops Live Map"
+            className="inline-flex items-center gap-1 rounded-lg border border-glass-border bg-glass-100 px-2.5 py-1.5 text-xs text-white/50 transition-all hover:border-cyan-neon/30 hover:text-cyan-neon"
+          >
+            <MapPin className="h-3 w-3" />
+            Map
+          </a>
           <button
             onClick={onEdit}
             className="inline-flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-2.5 py-1.5 text-xs text-white/50 transition-all hover:border-cyan-signal/30 hover:bg-glass-200 hover:text-white/80"
@@ -552,12 +566,16 @@ function LabeledInput({ label, value, onChange, placeholder, type = "text" }: {
 
 export default function DriversPage() {
   const router                      = useRouter();
+  const searchParams                = useSearchParams();
+  // Deep-link from admin-portal: /partner/drivers?focus=<driver_id> pre-populates
+  // the search box so the row is visible immediately on load.
+  const focusParam                  = searchParams.get("focus") ?? "";
   const [drivers, setDrivers]       = useState<Driver[]>([]);
   const [loading, setLoading]       = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [editingDriver, setEditing] = useState<Driver | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
-  const [search, setSearch]         = useState("");
+  const [search, setSearch]         = useState(focusParam);
   const [filter, setFilter]         = useState<"all" | DriverType>("all");
 
   async function loadDrivers() {
@@ -577,6 +595,27 @@ export default function DriversPage() {
     loadDrivers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ── Live roster WS ──────────────────────────────────────────────────────────
+  // Patch status in-place from driver-ops RosterEvent frames. Matched by user_id
+  // because that's what the server emits (driver_id in the event == identity user_id).
+  // Location updates are ignored here — this page doesn't surface coordinates;
+  // the Live Map deep-link is where lat/lng matters.
+  useRosterEvents((event) => {
+    if (event.type !== "status_changed") return;
+    setDrivers((prev) => {
+      const idx = prev.findIndex((d) => d.userId === event.driver_id);
+      if (idx === -1) return prev;
+      const uiStatus: Driver["status"] = event.active_route_id
+        ? "on_delivery"
+        : event.is_online
+        ? "active"
+        : "offline";
+      const next = [...prev];
+      next[idx] = { ...next[idx], status: uiStatus };
+      return next;
+    });
+  });
 
   function handleAssign(driverId: string) {
     router.push(`/orders?assignTo=${encodeURIComponent(driverId)}`);
