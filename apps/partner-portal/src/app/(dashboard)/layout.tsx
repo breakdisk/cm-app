@@ -19,6 +19,7 @@ import {
   X,
   Users,
   PackagePlus,
+  Store,
 } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 import { NeonBadge } from "@/components/ui/neon-badge";
@@ -40,6 +41,7 @@ interface DashboardLayoutProps {
 const NAV_ITEMS: NavItem[] = [
   { label: "Overview",    href: "/",          icon: LayoutDashboard },
   { label: "New Orders",  href: "/orders",    icon: PackagePlus },
+  { label: "Marketplace", href: "/marketplace", icon: Store },
   { label: "SLA Dashboard", href: "/sla",     icon: Target },
   { label: "Payouts",     href: "/payouts",   icon: DollarSign },
   { label: "Rate Cards",  href: "/rates",     icon: Tag },
@@ -53,6 +55,7 @@ const NAV_ITEMS: NavItem[] = [
 const PAGE_TITLE_MAP: Record<string, string> = {
   "/":          "Overview",
   "/orders":    "New Orders",
+  "/marketplace": "Marketplace",
   "/sla":       "SLA Dashboard",
   "/payouts":   "Payouts",
   "/rates":     "Rate Cards",

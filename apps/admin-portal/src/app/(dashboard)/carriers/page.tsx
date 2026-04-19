@@ -9,7 +9,7 @@ import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
-import { GitBranch, Star, TrendingUp, ExternalLink, Plus, LineChart, Wallet, X } from "lucide-react";
+import { GitBranch, Star, TrendingUp, ExternalLink, Plus, LineChart, Wallet, X, Store } from "lucide-react";
 
 // ── Mock data ──────────────────────────────────────────────────────────────────
 
@@ -85,9 +85,18 @@ export default function CarriersPage() {
           </h1>
           <p className="text-sm text-white/40 font-mono mt-0.5">8 carriers · AI auto-allocation active</p>
         </div>
-        <button className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-cyan-neon to-purple-plasma px-4 py-2 text-xs font-semibold text-canvas">
-          <Plus size={12} /> Onboard Carrier
-        </button>
+        <div className="flex items-center gap-2">
+          <a
+            href="/admin/marketplace"
+            title="Cross-partner marketplace oversight"
+            className="flex items-center gap-1.5 rounded-lg border border-purple-plasma/30 bg-purple-surface px-3 py-2 text-xs font-semibold text-purple-plasma transition-all hover:shadow-[0_0_12px_rgba(168,85,247,0.35)]"
+          >
+            <Store size={12} /> Marketplace
+          </a>
+          <button className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-cyan-neon to-purple-plasma px-4 py-2 text-xs font-semibold text-canvas">
+            <Plus size={12} /> Onboard Carrier
+          </button>
+        </div>
       </motion.div>
 
       {/* Coverage filter banner (from partner/sla deep link) */}
