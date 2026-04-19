@@ -3,7 +3,8 @@
  * Admin Portal — Analytics Page
  * Network-wide delivery performance, zone heatmap, SLA trends, AI model accuracy.
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { createAnalyticsApi } from "@/lib/api/analytics";
 import { variants } from "@/lib/design-system/tokens";
@@ -58,9 +59,21 @@ const AI_METRICS = [
 ];
 
 export default function AnalyticsPage() {
+  const searchParams   = useSearchParams();
+  // Deep-link from partner/rates + partner/sla: /admin/analytics?zone=<name>
+  // Fuzzy match so "Metro Manila" matches both exact and "Metro Manila NCR" etc.
+  const focusZone      = searchParams.get("zone");
+  const focusRowRef    = useRef<HTMLDivElement | null>(null);
+
   const [kpi, setKpi] = useState(KPI);
   const [weeklyVolume, setWeeklyVolume] = useState(WEEKLY_VOLUME);
   const [zonePerformance, setZonePerformance] = useState(ZONE_PERFORMANCE);
+
+  useEffect(() => {
+    if (focusZone && focusRowRef.current) {
+      focusRowRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [focusZone, zonePerformance]);
 
   useEffect(() => {
     const api = createAnalyticsApi();
@@ -171,8 +184,18 @@ export default function AnalyticsPage() {
               <span key={h} className="text-2xs font-mono text-white/30 uppercase tracking-wider">{h}</span>
             ))}
           </div>
-          {zonePerformance.map((z) => (
-            <div key={z.zone} className="grid grid-cols-[1fr_100px_1fr_120px_60px] gap-3 items-center px-5 py-3.5 border-b border-glass-border/50 hover:bg-glass-100 transition-colors">
+          {zonePerformance.map((z) => {
+            const isFocused = focusZone != null &&
+              (z.zone.toLowerCase().includes(focusZone.toLowerCase()) ||
+               focusZone.toLowerCase().includes(z.zone.toLowerCase()));
+            return (
+            <div
+              key={z.zone}
+              ref={isFocused ? focusRowRef : undefined}
+              className={`grid grid-cols-[1fr_100px_1fr_120px_60px] gap-3 items-center px-5 py-3.5 border-b border-glass-border/50 hover:bg-glass-100 transition-colors ${
+                isFocused ? "bg-cyan-neon/5 ring-1 ring-cyan-neon/40" : ""
+              }`}
+            >
               <span className="text-sm font-medium text-white">{z.zone}</span>
               <span className="text-xs font-mono text-white/60">{z.deliveries.toLocaleString()}</span>
               <div>
@@ -196,7 +219,8 @@ export default function AnalyticsPage() {
                 <LineChartIcon size={11} />
               </a>
             </div>
-          ))}
+            );
+          })}
         </GlassCard>
       </motion.div>
 

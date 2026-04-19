@@ -3,7 +3,8 @@
  * Admin Portal — Fleet Page
  * Vehicle roster, telemetry status, maintenance schedule.
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { createFleetApi, Vehicle as ApiVehicle } from "@/lib/api/fleet";
 import { variants } from "@/lib/design-system/tokens";
@@ -62,8 +63,20 @@ const TYPE_ICON: Record<Vehicle["type"], React.ReactNode> = {
 };
 
 export default function FleetPage() {
+  const searchParams = useSearchParams();
+  // Deep-link from partner/drivers: /admin/fleet?driver=<user_id>. The fleet API
+  // returns driver_id = identity user_id, so matching is symmetric with the partner side.
+  const focusDriverId  = searchParams.get("driver");
+  const focusCardRef   = useRef<HTMLDivElement | null>(null);
+
   const [vehicles, setVehicles] = useState<Vehicle[]>(VEHICLES);
   const [kpi, setKpi] = useState(KPI);
+
+  useEffect(() => {
+    if (focusDriverId && focusCardRef.current) {
+      focusCardRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [focusDriverId, vehicles]);
 
   useEffect(() => {
     const api = createFleetApi();
@@ -125,8 +138,10 @@ export default function FleetPage() {
         {vehicles.map((v) => {
           const { label, variant } = STATUS_CONFIG[v.status];
           const fuelColor = v.fuel_pct < 25 ? "#FF3B5C" : v.fuel_pct < 50 ? "#FFAB00" : "#00FF88";
+          const isFocused = focusDriverId != null && v.driver_id === focusDriverId;
           return (
-            <GlassCard key={v.id} className="hover:border-glass-border-bright transition-colors cursor-pointer">
+            <div key={v.id} ref={isFocused ? focusCardRef : undefined}>
+            <GlassCard className={`hover:border-glass-border-bright transition-colors cursor-pointer ${isFocused ? "ring-1 ring-cyan-neon/50" : ""}`}>
               <div className="flex items-start justify-between mb-3">
                 <div className="flex items-center gap-3">
                   <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-glass-200 border border-glass-border">
@@ -196,6 +211,7 @@ export default function FleetPage() {
                 </div>
               )}
             </GlassCard>
+            </div>
           );
         })}
       </motion.div>

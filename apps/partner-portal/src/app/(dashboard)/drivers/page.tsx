@@ -9,7 +9,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
-import { Users, Clock, Briefcase, Search, Check, Pencil, X, UserPlus, Loader2, MapPin } from "lucide-react";
+import { Users, Clock, Briefcase, Search, Check, Pencil, X, UserPlus, Loader2, MapPin, Truck } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 import { ComplianceBadge, canAssign } from "@/components/compliance/compliance-badge";
 import { authFetch } from "@/lib/auth/auth-fetch";
@@ -420,6 +420,14 @@ function DriverRow({ driver, onEdit, onAssign }: { driver: Driver; onEdit: () =>
           >
             <MapPin className="h-3 w-3" />
             Map
+          </a>
+          <a
+            href={`/admin/fleet?driver=${encodeURIComponent(driver.userId)}`}
+            title="Find vehicle on Fleet page"
+            className="inline-flex items-center gap-1 rounded-lg border border-glass-border bg-glass-100 px-2.5 py-1.5 text-xs text-white/50 transition-all hover:border-amber-signal/30 hover:text-amber-signal"
+          >
+            <Truck className="h-3 w-3" />
+            Fleet
           </a>
           <button
             onClick={onEdit}

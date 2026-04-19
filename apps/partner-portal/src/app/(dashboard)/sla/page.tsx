@@ -15,7 +15,7 @@ import {
   BarChart, Bar, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
-import { Star, AlertTriangle, CheckCircle2, Clock } from "lucide-react";
+import { Star, AlertTriangle, CheckCircle2, Clock, GitBranch } from "lucide-react";
 import { authFetch } from "@/lib/auth/auth-fetch";
 
 // ── API helpers ────────────────────────────────────────────────────────────────
@@ -236,9 +236,20 @@ export default function SLADashboardPage() {
                     isFocused ? "ring-1 ring-cyan-neon/50 bg-cyan-neon/5" : ""
                   }`}
                 >
-                  <div>
-                    <p className="text-xs font-medium text-white">{z.zone}</p>
-                    <p className="text-2xs font-mono text-white/30">Target: {z.target}%</p>
+                  <div className="flex items-start gap-2">
+                    <div>
+                      <p className="text-xs font-medium text-white">{z.zone}</p>
+                      <p className="text-2xs font-mono text-white/30">Target: {z.target}%</p>
+                    </div>
+                    {/* Cross-portal — carrier coverage + allocation lives in admin/carriers.
+                        Plain <a> preserves the /admin basePath. */}
+                    <a
+                      href={`/admin/carriers?coverage=${encodeURIComponent(z.zone)}`}
+                      title="View carriers serving this zone"
+                      className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-glass-border text-white/40 hover:text-purple-plasma hover:border-purple-plasma/30 transition-colors"
+                    >
+                      <GitBranch size={10} />
+                    </a>
                   </div>
                   {[z.d1, z.d2, z.d3].map((rate, i) => (
                     <span
