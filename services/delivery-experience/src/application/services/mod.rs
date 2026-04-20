@@ -6,13 +6,31 @@ use logisticos_types::TenantId;
 
 use crate::domain::{entities::TrackingRecord, repositories::TrackingRepository};
 
+/// Abstraction over the Kafka producer so the service layer can emit events
+/// without depending on rdkafka directly. Production binding lives in
+/// [`crate::infrastructure::messaging::KafkaEventPublisher`].
+pub trait EventPublisher: Send + Sync {
+    fn publish<'a>(
+        &'a self,
+        topic: &'a str,
+        key: &'a str,
+        payload: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>>;
+}
+
 pub struct TrackingService {
     repo: Arc<dyn TrackingRepository>,
+    publisher: Option<Arc<dyn EventPublisher>>,
 }
 
 impl TrackingService {
     pub fn new(repo: Arc<dyn TrackingRepository>) -> Self {
-        Self { repo }
+        Self { repo, publisher: None }
+    }
+
+    pub fn with_publisher(mut self, publisher: Arc<dyn EventPublisher>) -> Self {
+        self.publisher = Some(publisher);
+        self
     }
 
     /// Public lookup — no auth; used for customer-facing tracking page.
@@ -133,8 +151,11 @@ impl TrackingService {
 
     /// Customer requests their shipment receipt to be emailed.
     ///
-    /// Validates the tracking number and email, then delegates to the repo
-    /// which writes to the outbox table consumed by the engagement engine.
+    /// Persists the request to `tracking.receipt_email_requests` (audit trail
+    /// + idempotency) and then publishes a `receipt.email.requested` Kafka
+    /// event which engagement consumes to actually send the mail. A publish
+    /// failure is logged but does not fail the request — the DB row remains
+    /// as evidence and can be retried by a future poller.
     pub async fn send_receipt_email(
         &self,
         tracking_number: &str,
@@ -145,7 +166,7 @@ impl TrackingService {
             return Err(AppError::Validation("A valid email address is required".into()));
         }
 
-        self.repo
+        let record = self.repo
             .find_by_tracking_number(tracking_number)
             .await
             .map_err(|e| AppError::Internal(e))?
@@ -157,7 +178,50 @@ impl TrackingService {
         self.repo
             .record_receipt_email_request(tracking_number, email)
             .await
-            .map_err(|e| AppError::Internal(e))
+            .map_err(|e| AppError::Internal(e))?;
+
+        if let Some(publisher) = &self.publisher {
+            use logisticos_events::{envelope::Event, payloads::ReceiptEmailRequested, topics};
+            let payload = ReceiptEmailRequested {
+                shipment_id:         record.shipment_id,
+                tracking_number:     record.tracking_number.clone(),
+                recipient_email:     email.to_owned(),
+                origin_address:      record.origin_address.clone(),
+                destination_address: record.destination_address.clone(),
+                customer_id:         None,
+                customer_name:       String::new(),
+            };
+            let event = Event::new(
+                "logisticos/delivery-experience",
+                "tracking.receipt.email.requested",
+                record.tenant_id.inner(),
+                payload,
+            );
+            match serde_json::to_string(&event) {
+                Ok(json) => {
+                    if let Err(e) = publisher
+                        .publish(topics::RECEIPT_EMAIL_REQUESTED, tracking_number, &json)
+                        .await
+                    {
+                        tracing::warn!(
+                            tracking_number,
+                            err = %e,
+                            "send_receipt_email: Kafka publish failed — request persisted, email not dispatched"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(tracking_number, err = %e, "send_receipt_email: event serialize failed");
+                }
+            }
+        } else {
+            tracing::warn!(
+                tracking_number,
+                "send_receipt_email: no publisher configured — email will not be dispatched"
+            );
+        }
+
+        Ok(())
     }
 
     pub async fn submit_feedback(

@@ -198,6 +198,7 @@ async fn run_kafka_consumer(
         topics::DELIVERY_FAILED,
         topics::COD_COLLECTED,
         topics::INVOICE_GENERATED,
+        topics::RECEIPT_EMAIL_REQUESTED,
     ]).expect("Engagement consumer subscription failed");
 
     loop {

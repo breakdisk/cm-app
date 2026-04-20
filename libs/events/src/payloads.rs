@@ -340,3 +340,26 @@ pub struct TaskAssigned {
     #[serde(default)]
     pub customer_email:       String,
 }
+
+/// Emitted by delivery-experience when a customer taps "Email Receipt" on the
+/// ReceiptScreen / CollectionScreen. Engagement consumes this topic and sends
+/// a single email to `recipient_email` using the shipment_confirmation
+/// template. Unlike ShipmentCreated (which fans out to WhatsApp + Email on
+/// initial booking), this is an explicit one-off email-only re-send triggered
+/// by the customer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReceiptEmailRequested {
+    pub shipment_id:         Uuid,
+    pub tracking_number:     String,
+    /// Email address the customer typed into the "Email Receipt" input.
+    /// May differ from the customer_email captured at booking time.
+    pub recipient_email:     String,
+    pub origin_address:      String,
+    pub destination_address: String,
+    /// Optional: tracking projection doesn't capture customer_id today, so
+    /// engagement falls back to shipment_id for the notification audit record.
+    #[serde(default)]
+    pub customer_id:         Option<Uuid>,
+    #[serde(default)]
+    pub customer_name:       String,
+}

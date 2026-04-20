@@ -5,9 +5,9 @@ use sqlx::postgres::PgPoolOptions;
 
 use crate::{
     api::http,
-    application::{handlers, services::TrackingService},
+    application::{handlers, services::{EventPublisher, TrackingService}},
     config::Config,
-    infrastructure::db::PgTrackingRepository,
+    infrastructure::{db::PgTrackingRepository, messaging::KafkaEventPublisher},
     AppState,
 };
 
@@ -45,7 +45,10 @@ pub async fn run() -> anyhow::Result<()> {
     logisticos_common::migrations::run(&pool, "delivery_experience", &sqlx::migrate!("./migrations")).await?;
 
     let tracking_repo = Arc::new(PgTrackingRepository::new(pool.clone()));
-    let tracking_svc  = Arc::new(TrackingService::new(tracking_repo.clone()));
+    let publisher: Arc<dyn EventPublisher> = Arc::new(KafkaEventPublisher::new(&cfg.kafka.brokers)?);
+    let tracking_svc  = Arc::new(
+        TrackingService::new(tracking_repo.clone()).with_publisher(publisher),
+    );
 
     // Kafka consumer for shipment lifecycle projections.
     let consumer: Arc<StreamConsumer> = Arc::new(

@@ -53,6 +53,9 @@ pub const NOTIFICATION_QUEUED:       &str = "logisticos.engagement.notification.
 pub const CAMPAIGN_TRIGGERED:        &str = "logisticos.marketing.campaign.triggered";
 pub const CUSTOMER_SEGMENT_UPDATED:  &str = "logisticos.cdp.segment.updated";
 
+// Tracking / customer-facing
+pub const RECEIPT_EMAIL_REQUESTED:   &str = "logisticos.tracking.receipt.email.requested";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,6 +75,7 @@ mod tests {
             COD_COLLECTED, COD_REMITTANCE_READY, WEIGHT_ADJUSTMENT_INVOICED,
             NOTIFICATION_QUEUED, CAMPAIGN_TRIGGERED, CUSTOMER_SEGMENT_UPDATED,
             TASK_ASSIGNED,
+            RECEIPT_EMAIL_REQUESTED,
         ];
         for t in topics {
             assert!(t.chars().all(|c: char| c.is_ascii_lowercase() || c == '.' || c == '_'),

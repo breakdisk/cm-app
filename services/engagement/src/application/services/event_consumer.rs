@@ -12,6 +12,7 @@
 //!   payments.cod.collected  → "cod_receipt"             → WhatsApp
 //!   payments.invoice.generated → "invoice_issued"        → Email                    (recipient_type=merchant)
 //!   payments.invoice.generated → "payment_receipt"      → WhatsApp + Email + Push  (recipient_type=customer)
+//!   tracking.receipt.email.requested → "shipment_confirmation" → Email   (customer-initiated re-send)
 
 use tracing::{error, info, warn};
 use crate::application::services::notification_service::NotificationService;
@@ -56,6 +57,11 @@ fn get_mapping(event_type: &str) -> Option<EventNotificationMapping> {
             template_id: "cod_receipt",
             priority: NotificationPriority::High,
             channels: &["whatsapp"],
+        }),
+        topics::RECEIPT_EMAIL_REQUESTED => Some(EventNotificationMapping {
+            template_id: "shipment_confirmation",
+            priority: NotificationPriority::Normal,
+            channels: &["email"],
         }),
         // INVOICE_GENERATED channels/template differ by recipient_type.
         // Routing is handled in process_event(); return a placeholder here so
@@ -154,14 +160,30 @@ pub async fn process_event(
             (merchant_id, String::new(), merchant_email, vars)
         }
     } else {
+        // RECEIPT_EMAIL_REQUESTED carries recipient_email (the address the
+        // customer typed into the form) and may omit customer_id — the
+        // tracking projection doesn't store it today. Fall back to shipment_id
+        // as the notification's audit key; that's enough for the downstream
+        // delivery log and keeps the common code path below unchanged.
+        let is_receipt_resend = event_type == topics::RECEIPT_EMAIL_REQUESTED;
+
         let customer_id = data["customer_id"].as_str()
-            .and_then(|s| s.parse::<uuid::Uuid>().ok());
+            .and_then(|s| s.parse::<uuid::Uuid>().ok())
+            .or_else(|| if is_receipt_resend {
+                data["shipment_id"].as_str().and_then(|s| s.parse::<uuid::Uuid>().ok())
+            } else {
+                None
+            });
         let Some(customer_id) = customer_id else {
             warn!(event_type, "Event missing customer_id — skipping notification");
             return;
         };
         let phone = data["customer_phone"].as_str().unwrap_or("").to_owned();
-        let email = data["customer_email"].as_str().unwrap_or("").to_owned();
+        let email = if is_receipt_resend {
+            data["recipient_email"].as_str().unwrap_or("").to_owned()
+        } else {
+            data["customer_email"].as_str().unwrap_or("").to_owned()
+        };
 
         // Format fee amounts for receipt display
         let total_fee_cents = data["total_fee_cents"].as_i64().unwrap_or(0);
