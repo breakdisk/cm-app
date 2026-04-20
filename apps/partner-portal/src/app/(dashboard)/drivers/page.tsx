@@ -3,7 +3,7 @@
  * Partner Portal — Drivers Management Page
  * Set driver type (part-time / full-time) and commission rates per driver.
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
@@ -572,7 +572,7 @@ function LabeledInput({ label, value, onChange, placeholder, type = "text" }: {
 
 // ── Page ───────────────────────────────────────────────────────────────────────
 
-export default function DriversPage() {
+function DriversPageInner() {
   const router                      = useRouter();
   const searchParams                = useSearchParams();
   // Deep-link from admin-portal: /partner/drivers?focus=<driver_id> pre-populates
@@ -870,5 +870,13 @@ export default function DriversPage() {
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+export default function DriversPage() {
+  return (
+    <Suspense fallback={null}>
+      <DriversPageInner />
+    </Suspense>
   );
 }

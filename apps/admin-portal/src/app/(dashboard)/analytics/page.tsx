@@ -3,7 +3,7 @@
  * Admin Portal — Analytics Page
  * Network-wide delivery performance, zone heatmap, SLA trends, AI model accuracy.
  */
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { createAnalyticsApi } from "@/lib/api/analytics";
@@ -58,7 +58,7 @@ const AI_METRICS = [
   { label: "Demand Forecast",     value: 91.8, color: "#FFAB00" },
 ];
 
-export default function AnalyticsPage() {
+function AnalyticsPageInner() {
   const searchParams   = useSearchParams();
   // Deep-link from partner/rates + partner/sla: /admin/analytics?zone=<name>
   // Fuzzy match so "Metro Manila" matches both exact and "Metro Manila NCR" etc.
@@ -251,5 +251,13 @@ export default function AnalyticsPage() {
         </GlassCard>
       </motion.div>
     </motion.div>
+  );
+}
+
+export default function AnalyticsPage() {
+  return (
+    <Suspense fallback={null}>
+      <AnalyticsPageInner />
+    </Suspense>
   );
 }
