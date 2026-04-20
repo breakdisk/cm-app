@@ -57,12 +57,17 @@ pub struct ShipmentCreated {
     /// Estimated delivery date/range as a human-readable string.
     #[serde(default)]
     pub estimated_delivery:   String,
-    /// True when the booking originated from the customer app. Dispatch uses
-    /// this to route the shipment to auto-dispatch (one-shot quick_dispatch)
-    /// instead of waiting for a human dispatcher. Defaults to false for
-    /// backwards compatibility with events emitted before this field existed.
+    /// True when the booking originated from the customer app. Drives billing
+    /// semantics in payments (PaymentReceipt vs merchant invoice) — NOT used
+    /// by dispatch anymore. Defaults to false for backwards compatibility.
     #[serde(default)]
     pub booked_by_customer:   bool,
+    /// True when dispatch should auto-assign a driver immediately on creation.
+    /// Set by the order-intake HTTP handler (customer + merchant roles default
+    /// true; admin defaults false). Defaults to false for backwards
+    /// compatibility with events emitted before this field existed.
+    #[serde(default)]
+    pub auto_dispatch:        bool,
 }
 
 fn default_currency() -> String { "PHP".into() }

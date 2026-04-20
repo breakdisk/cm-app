@@ -16,6 +16,10 @@ pub struct Shipment {
     /// True when the shipment was self-booked via the customer app (B2C flow).
     /// When true, a payment receipt is issued at POD instead of a merchant invoice.
     pub booked_by_customer: bool,
+    /// True when dispatch should auto-assign a driver immediately on creation.
+    /// Orthogonal to `booked_by_customer` (which is a billing signal). Customer
+    /// and merchant roles both default this to true; admin role defaults to false.
+    pub auto_dispatch: bool,
     /// Master AWB — the structured, checksummed customer-facing tracking number.
     pub awb: Awb,
     /// Number of physical pieces (1..=999). Drives child AWB generation.
@@ -115,6 +119,7 @@ mod tests {
             customer_phone:       "+63912345678".to_string(),
             customer_email:       None,
             booked_by_customer:   false,
+            auto_dispatch:        false,
             awb:                  make_awb(),
             piece_count:          1,
             status:               logisticos_types::ShipmentStatus::Pending,
@@ -145,6 +150,7 @@ mod tests {
             customer_phone:       "+63900000001".to_string(),
             customer_email:       None,
             booked_by_customer:   false,
+            auto_dispatch:        false,
             awb:                  make_awb(),
             piece_count:          1,
             status:               logisticos_types::ShipmentStatus::Pending,
