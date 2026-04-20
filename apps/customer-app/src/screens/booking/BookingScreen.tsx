@@ -199,6 +199,7 @@ export function BookingScreen() {
   const dispatch      = useDispatch<AppDispatch>();
   const navigation    = useNavigation<any>();
   const loyaltyPoints = useSelector((s: RootState) => s.auth.loyaltyPoints);
+  const authEmail     = useSelector((s: RootState) => s.auth.email);
   const shipmentCount = useSelector((s: RootState) => s.shipments.list.length);
   const { isConnected } = useNetInfo();
 
@@ -373,6 +374,7 @@ export function BookingScreen() {
       const response = await shipmentsService.createShipment({
         customer_name:  receiverName,
         customer_phone: receiverPhone,
+        customer_email: authEmail ?? undefined,
         origin: {
           line1:        senderAddress,
           city:         senderCity,

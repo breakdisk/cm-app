@@ -323,9 +323,16 @@ services:
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-dev-placeholder}
       TWILIO_WHATSAPP_FROM: ${TWILIO_WHATSAPP_FROM:-whatsapp:+15005550006}
       TWILIO_SMS_FROM: ${TWILIO_SMS_FROM:-+15005550006}
-      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-dev-placeholder}
-      SENDGRID_FROM_EMAIL: ${SENDGRID_FROM_EMAIL:-noreply@logisticos.dev}
-      SENDGRID_FROM_NAME: ${SENDGRID_FROM_NAME:-LogisticOS Dev}
+      # SES adapter reads SES_FROM_EMAIL / SES_FROM_NAME. When unset or left at
+      # the placeholder value the adapter degrades to LogChannelAdapter (prints
+      # the rendered email body to stdout — useful for CI, useless in prod).
+      # AWS credentials come from the standard provider chain
+      # (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION or IAM role).
+      SES_FROM_EMAIL: ${SES_FROM_EMAIL:-dev-placeholder}
+      SES_FROM_NAME: ${SES_FROM_NAME:-CargoMarket}
+      AWS_REGION: ${AWS_REGION:-ap-southeast-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       RUST_LOG: info
     depends_on:
       postgres:
@@ -1060,7 +1067,7 @@ services:
     depends_on:
       - kafka
     ports:
-      - ${KAFKA_PORT}:9092
+      - ${KAFKA_PORT:-9092}:9092
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092

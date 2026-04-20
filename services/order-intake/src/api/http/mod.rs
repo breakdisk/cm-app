@@ -65,6 +65,25 @@ async fn create_shipment(
     //   admin / other       → false (manual dispatch console flow)
     let auto_dispatch_effective = cmd.auto_dispatch.unwrap_or(is_customer || is_merchant);
     cmd.auto_dispatch = Some(auto_dispatch_effective);
+    // Customer-booked shipments need a deliverable email for the POD payment
+    // receipt. If the booking didn't include one, fall back to the JWT email
+    // (authenticated customer profile). Merchant-booked flows keep email
+    // optional — merchants get invoiced, not receipted.
+    if cmd.booked_by_customer {
+        let has_valid = cmd.customer_email.as_deref()
+            .map(str::trim)
+            .is_some_and(|e| !e.is_empty() && e.contains('@'));
+        if !has_valid {
+            let jwt_email = claims.email.trim();
+            if !jwt_email.is_empty() && jwt_email.contains('@') {
+                cmd.customer_email = Some(jwt_email.to_owned());
+            } else {
+                return Err(AppError::Validation(
+                    "A customer email is required for self-booked shipments (needed for payment receipt delivery)".into(),
+                ));
+            }
+        }
+    }
     tracing::info!(
         service_type   = %cmd.service_type,
         origin_country = %cmd.origin.country_code,
