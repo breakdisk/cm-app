@@ -224,6 +224,16 @@ impl DispatchQueueRepository for MockDispatchQueueRepo {
             anyhow::bail!("mark_dispatched: shipment_id {} not found in mock", shipment_id)
         }
     }
+
+    async fn record_failed_attempt(&self, shipment_id: Uuid, error: &str) -> anyhow::Result<()> {
+        let mut guard = self.store.lock().unwrap();
+        if let Some(row) = guard.get_mut(&shipment_id) {
+            row.auto_dispatch_attempts += 1;
+            row.last_dispatch_error = Some(error.to_owned());
+            row.last_attempt_at = Some(chrono::Utc::now());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Default, Clone)]
@@ -1291,6 +1301,10 @@ mod quick_dispatch {
             special_instructions: None,
             service_type:         "standard".into(),
             status:               "pending".into(),
+            auto_dispatch_attempts: 0,
+            last_dispatch_error:    None,
+            last_attempt_at:        None,
+            queued_at:              None,
         }
     }
 

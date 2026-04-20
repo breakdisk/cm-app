@@ -28,6 +28,13 @@ interface QueueItem {
   tracking_number?: string | null;   // present on rows from dispatch_queue.tracking_number (migration 0005)
   origin?:        "dispatch" | "marketplace"; // synthetic rows from accepted marketplace bookings carry origin="marketplace"
   partner_display?: string;          // marketplace-origin: which partner accepted the job
+  // Auto-dispatch attempt tracking (migration 0007). Non-zero attempts means
+  // the customer-booked auto-assign failed (no available driver, etc.) and
+  // the row is parked here awaiting ops action. Rendered as an amber warning
+  // badge so the silent-failure mode is visible at a glance.
+  auto_dispatch_attempts?: number | null;
+  last_dispatch_error?:    string | null;
+  last_attempt_at?:        string | null;
 }
 
 // Project an accepted marketplace booking into a dispatch QueueItem.
@@ -284,6 +291,16 @@ function DispatchPageInner() {
                       )}
                       {item.cod_amount_cents && (
                         <NeonBadge variant="amber">COD</NeonBadge>
+                      )}
+                      {(item.auto_dispatch_attempts ?? 0) > 0 && (
+                        <div
+                          title={item.last_dispatch_error ?? "Auto-dispatch failed — no available driver"}
+                          className="cursor-help"
+                        >
+                          <NeonBadge variant="amber">
+                            ⚠ AUTO-DISPATCH FAILED
+                          </NeonBadge>
+                        </div>
                       )}
                     </div>
                   </div>

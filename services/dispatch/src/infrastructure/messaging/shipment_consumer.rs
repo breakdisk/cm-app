@@ -110,6 +110,10 @@ async fn handle_shipment_created(
         special_instructions: None,             // TODO: ShipmentCreated payload doesn't carry special_instructions yet
         service_type:         d.service_type,
         status:               "pending".to_string(),
+        auto_dispatch_attempts: 0,
+        last_dispatch_error:    None,
+        last_attempt_at:        None,
+        queued_at:              None,
     };
 
     repo.upsert(&row).await?;
@@ -141,6 +145,18 @@ async fn handle_shipment_created(
                     err         = %e,
                     "Auto-dispatch failed — shipment remains in queue for manual dispatch"
                 );
+                // Surface the failure to ops: bump attempt counter + stash
+                // the reason so the admin dispatch console can flag the row.
+                if let Err(record_err) = repo
+                    .record_failed_attempt(shipment_id, &e.to_string())
+                    .await
+                {
+                    tracing::error!(
+                        shipment_id = %shipment_id,
+                        err         = %record_err,
+                        "Failed to record auto-dispatch attempt on dispatch_queue"
+                    );
+                }
             }
         }
     }

@@ -27,6 +27,17 @@ pub struct DispatchQueueRow {
     pub special_instructions: Option<String>,
     pub service_type:         String,
     pub status:               String,
+    /// Count of failed auto-dispatch attempts. Non-zero means the initial
+    /// auto-assign (from a customer/merchant booking) could not find a
+    /// driver — the row is parked here waiting for ops intervention.
+    #[serde(default)]
+    pub auto_dispatch_attempts: i32,
+    #[serde(default)]
+    pub last_dispatch_error:    Option<String>,
+    #[serde(default)]
+    pub last_attempt_at:        Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub queued_at:              Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[async_trait]
@@ -35,6 +46,10 @@ pub trait DispatchQueueRepository: Send + Sync {
     async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<DispatchQueueRow>>;
     async fn list_pending(&self, tenant_id: Uuid) -> anyhow::Result<Vec<DispatchQueueRow>>;
     async fn mark_dispatched(&self, shipment_id: Uuid) -> anyhow::Result<()>;
+    /// Increment attempt counter and record the reason. Called by the
+    /// shipment consumer when quick_dispatch fails so the admin console
+    /// can visually flag shipments needing manual intervention.
+    async fn record_failed_attempt(&self, shipment_id: Uuid, error: &str) -> anyhow::Result<()>;
 }
 
 pub struct PgDispatchQueueRepository {
@@ -100,7 +115,8 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
                     dest_lat, dest_lng,
                     origin_address_line1, origin_city, origin_province, origin_postal_code,
                     origin_lat, origin_lng,
-                    cod_amount_cents, special_instructions, service_type, status
+                    cod_amount_cents, special_instructions, service_type, status,
+                    auto_dispatch_attempts, last_dispatch_error, last_attempt_at, queued_at
              FROM dispatch.dispatch_queue WHERE shipment_id = $1",
         )
         .bind(shipment_id)
@@ -117,7 +133,8 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
                     dest_lat, dest_lng,
                     origin_address_line1, origin_city, origin_province, origin_postal_code,
                     origin_lat, origin_lng,
-                    cod_amount_cents, special_instructions, service_type, status
+                    cod_amount_cents, special_instructions, service_type, status,
+                    auto_dispatch_attempts, last_dispatch_error, last_attempt_at, queued_at
              FROM dispatch.dispatch_queue
              WHERE tenant_id = $1 AND status = 'pending'
              ORDER BY queued_at ASC",
@@ -141,6 +158,21 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
         if result.rows_affected() == 0 {
             anyhow::bail!("mark_dispatched: no dispatch_queue row found for shipment_id {}", shipment_id);
         }
+        Ok(())
+    }
+
+    async fn record_failed_attempt(&self, shipment_id: Uuid, error: &str) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE dispatch.dispatch_queue
+             SET auto_dispatch_attempts = auto_dispatch_attempts + 1,
+                 last_dispatch_error    = $2,
+                 last_attempt_at        = NOW()
+             WHERE shipment_id = $1",
+        )
+        .bind(shipment_id)
+        .bind(error)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 }
