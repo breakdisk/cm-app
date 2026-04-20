@@ -44,6 +44,13 @@ pub struct CreateShipmentCommand {
     /// When true, a payment receipt is issued at POD instead of a merchant invoice.
     #[serde(default)]
     pub booked_by_customer: bool,
+
+    /// True when dispatch should auto-assign a driver immediately on creation.
+    /// Orthogonal to `booked_by_customer` (billing). Wraps as `Option` so the
+    /// HTTP handler can distinguish "client didn't set it" from "client explicitly
+    /// set false" — useful for admin-role callers who may want manual dispatch.
+    #[serde(default)]
+    pub auto_dispatch: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Validate, Serialize)]

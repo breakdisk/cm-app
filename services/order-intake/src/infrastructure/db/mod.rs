@@ -32,6 +32,7 @@ struct ShipmentRow {
     customer_phone:       String,
     customer_email:       Option<String>,
     booked_by_customer:   bool,
+    auto_dispatch:        bool,
     awb:                  String,
     piece_count:          i16,
     status:               String,
@@ -136,6 +137,7 @@ impl ShipmentRow {
             customer_phone:       self.customer_phone,
             customer_email:       self.customer_email,
             booked_by_customer:   self.booked_by_customer,
+            auto_dispatch:        self.auto_dispatch,
             awb,
             piece_count:          self.piece_count as u16,
             status,
@@ -180,7 +182,7 @@ fn status_str(s: &ShipmentStatus) -> &'static str {
 
 const SHIPMENT_COLS: &str = r#"
     id, tenant_id, merchant_id, customer_id,
-    customer_name, customer_phone, customer_email, booked_by_customer,
+    customer_name, customer_phone, customer_email, booked_by_customer, auto_dispatch,
     awb, piece_count, status, service_type,
     origin_line1, origin_line2, origin_barangay, origin_city, origin_province,
     origin_postal_code, origin_country_code, origin_lat, origin_lng,
@@ -202,6 +204,7 @@ fn row_to_shipment_row(r: &sqlx::postgres::PgRow) -> ShipmentRow {
         customer_phone:       r.get("customer_phone"),
         customer_email:       r.get("customer_email"),
         booked_by_customer:   r.get("booked_by_customer"),
+        auto_dispatch:        r.get("auto_dispatch"),
         awb:                  r.get("awb"),
         piece_count:          r.get("piece_count"),
         status:               r.get("status"),
@@ -318,7 +321,7 @@ impl ShipmentRepository for PgShipmentRepository {
             sqlx::query(
                 r#"INSERT INTO order_intake.shipments (
                     id, tenant_id, merchant_id, customer_id,
-                    customer_name, customer_phone, customer_email, booked_by_customer,
+                    customer_name, customer_phone, customer_email, booked_by_customer, auto_dispatch,
                     awb, piece_count, status, service_type,
                     origin_line1, origin_line2, origin_barangay, origin_city, origin_province,
                     origin_postal_code, origin_country_code, origin_lat, origin_lng,
@@ -328,11 +331,11 @@ impl ShipmentRepository for PgShipmentRepository {
                     declared_value_cents, cod_amount_cents, special_instructions,
                     created_at, updated_at
                 ) VALUES (
-                    $1,$2,$3,$4,$5,$6,$7,$8,
-                    $9,$10,$11,$12,
-                    $13,$14,$15,$16,$17,$18,$19,$20,$21,
-                    $22,$23,$24,$25,$26,$27,$28,$29,$30,
-                    $31,$32,$33,$34,$35,$36,$37,$38,$39
+                    $1,$2,$3,$4,$5,$6,$7,$8,$9,
+                    $10,$11,$12,$13,
+                    $14,$15,$16,$17,$18,$19,$20,$21,$22,
+                    $23,$24,$25,$26,$27,$28,$29,$30,$31,
+                    $32,$33,$34,$35,$36,$37,$38,$39,$40
                 )
                 ON CONFLICT (id) DO UPDATE SET
                     status               = EXCLUDED.status,
@@ -340,6 +343,7 @@ impl ShipmentRepository for PgShipmentRepository {
                     customer_phone       = EXCLUDED.customer_phone,
                     customer_email       = EXCLUDED.customer_email,
                     booked_by_customer   = EXCLUDED.booked_by_customer,
+                    auto_dispatch        = EXCLUDED.auto_dispatch,
                     origin_lat           = EXCLUDED.origin_lat,
                     origin_lng           = EXCLUDED.origin_lng,
                     dest_lat             = EXCLUDED.dest_lat,
@@ -355,6 +359,7 @@ impl ShipmentRepository for PgShipmentRepository {
             .bind(&s.customer_phone)
             .bind(s.customer_email.as_deref())
             .bind(s.booked_by_customer)
+            .bind(s.auto_dispatch)
             .bind(s.awb.as_str())
             .bind(s.piece_count as i16)
             .bind(status)

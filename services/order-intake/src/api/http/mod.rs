@@ -53,9 +53,18 @@ async fn create_shipment(
             .to_uppercase();
     }
     // Mark as customer-booked when the JWT role is "customer" (customer app self-booking).
-    if claims.roles.contains(&"customer".to_string()) {
+    let is_customer = claims.roles.contains(&"customer".to_string());
+    let is_merchant = claims.roles.contains(&"merchant".to_string())
+        || claims.roles.contains(&"merchant_admin".to_string())
+        || claims.roles.contains(&"merchant_user".to_string());
+    if is_customer {
         cmd.booked_by_customer = true;
     }
+    // Default auto_dispatch by role unless the caller set it explicitly:
+    //   customer / merchant → true  (agentic-first: intake auto-assigns a driver)
+    //   admin / other       → false (manual dispatch console flow)
+    let auto_dispatch_effective = cmd.auto_dispatch.unwrap_or(is_customer || is_merchant);
+    cmd.auto_dispatch = Some(auto_dispatch_effective);
     tracing::info!(
         service_type   = %cmd.service_type,
         origin_country = %cmd.origin.country_code,
@@ -64,6 +73,7 @@ async fn create_shipment(
         tenant_code    = %cmd.tenant_code,
         weight_grams   = cmd.weight_grams,
         booked_by_customer = cmd.booked_by_customer,
+        auto_dispatch      = auto_dispatch_effective,
         "create_shipment handler entered",
     );
     match s.svc.create(cmd).await {
