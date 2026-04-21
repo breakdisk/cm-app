@@ -353,6 +353,17 @@ impl InvoiceService {
         Ok(invoices.into_iter().map(invoice_to_summary).collect())
     }
 
+    /// Tenant-wide merchant invoice list for the admin/ops console.
+    /// Excludes PaymentReceipt invoices (those belong to the customer app).
+    pub async fn list_for_tenant(&self, tenant_id: &TenantId) -> AppResult<Vec<InvoiceSummary>> {
+        let invoices = self.invoice_repo
+            .list_by_tenant(tenant_id)
+            .await
+            .map_err(AppError::Internal)?;
+
+        Ok(invoices.into_iter().map(invoice_to_summary).collect())
+    }
+
     /// List PaymentReceipt invoices for a B2C customer (customer app Profile → Receipts).
     pub async fn list_for_customer(&self, customer_id: &CustomerId) -> AppResult<Vec<InvoiceSummary>> {
         let invoices = self.invoice_repo

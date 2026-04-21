@@ -36,6 +36,9 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     );
     Router::new()
         .route("/invoices",                              get(invoices::list_invoices).post(invoices::generate_invoice))
+        // Static segment declared before `/invoices/:id` so axum matches this
+        // literally instead of treating "tenant" as an invoice id.
+        .route("/invoices/tenant",                       get(invoices::list_tenant_invoices))
         .route("/invoices/:id",                          get(invoices::get_invoice))
         .route("/invoices/:id/resend",                   post(invoices::resend_invoice))
         .route("/customers/:customer_id/invoices",       get(invoices::list_customer_invoices))

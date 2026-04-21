@@ -26,7 +26,7 @@ use uuid::Uuid;
 
 use logisticos_auth::{claims::Claims, jwt::JwtService};
 use logisticos_errors::AppError;
-use logisticos_types::{Currency, InvoiceId, MerchantId, Money, TenantId};
+use logisticos_types::{Currency, CustomerId, InvoiceId, MerchantId, Money, TenantId};
 
 use logisticos_payments::{
     domain::{
@@ -70,6 +70,30 @@ impl InvoiceRepository for MockInvoiceRepo {
         let list: Vec<Invoice> = guard
             .values()
             .filter(|inv| inv.merchant_id.inner() == merchant_id.inner())
+            .cloned()
+            .collect();
+        Ok(list)
+    }
+
+    async fn list_by_customer(&self, customer_id: &CustomerId) -> anyhow::Result<Vec<Invoice>> {
+        let guard = self.store.lock().unwrap();
+        let list: Vec<Invoice> = guard
+            .values()
+            .filter(|inv| inv.customer_id.as_ref().map(|c| c.inner()) == Some(customer_id.inner()))
+            .cloned()
+            .collect();
+        Ok(list)
+    }
+
+    async fn list_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<Invoice>> {
+        use logisticos_types::invoice::InvoiceType;
+        let guard = self.store.lock().unwrap();
+        let list: Vec<Invoice> = guard
+            .values()
+            .filter(|inv| {
+                inv.tenant_id.inner() == tenant_id.inner()
+                    && inv.invoice_type != InvoiceType::PaymentReceipt
+            })
             .cloned()
             .collect();
         Ok(list)

@@ -18,6 +18,20 @@ pub async fn list_invoices(
     Ok(Json(serde_json::json!({ "data": invoices })))
 }
 
+/// `GET /v1/invoices/tenant` — tenant-wide merchant invoice list for the
+/// admin/ops console. Caller must have BILLING_MANAGE (ops-tier permission).
+/// Excludes customer-facing PaymentReceipt invoices.
+/// Served via the api-gateway's `/v1/invoices` → payments route rule.
+pub async fn list_tenant_invoices(
+    AuthClaims(claims): AuthClaims,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_MANAGE);
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let invoices = state.invoice_service.list_for_tenant(&tenant_id).await?;
+    Ok(Json(serde_json::json!({ "data": invoices })))
+}
+
 pub async fn get_invoice(
     AuthClaims(claims): AuthClaims,
     Path(id): Path<Uuid>,

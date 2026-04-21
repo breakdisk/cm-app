@@ -38,6 +38,9 @@ pub mod permissions {
     // Aliases used by the payments service HTTP handlers
     pub const BILLING_VIEW:      &str = "payments:read";
     pub const BILLING_MANAGE:    &str = "payments:reconcile";
+    // Narrow self-scoped permission: a driver may read their own day's COD
+    // summary (end-of-shift cash bag) but nothing else billing-related.
+    pub const DRIVER_COD_VIEW:   &str = "payments:cod-read-own";
 
     // ── Analytics ────────────────────────────────────────────
     pub const ANALYTICS_VIEW:    &str = "analytics:view";
@@ -109,6 +112,7 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
         "driver" => vec![
             permissions::SHIPMENT_READ,
             permissions::DISPATCH_VIEW,
+            permissions::DRIVER_COD_VIEW,
         ],
         "finance" => vec![
             permissions::PAYMENTS_READ, permissions::PAYMENTS_RECONCILE,

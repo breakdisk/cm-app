@@ -160,6 +160,21 @@ impl InvoiceRepository for PgInvoiceRepository {
         Ok(rows.into_iter().map(Invoice::from).collect())
     }
 
+    async fn list_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<Invoice>> {
+        // Exclude per-shipment customer receipts — the admin oversight view
+        // is about merchant billing only.
+        let rows = sqlx::query_as::<_, InvoiceRow>(
+            &format!(
+                "{SELECT} WHERE tenant_id = $1 AND invoice_type <> 'payment_receipt' \
+                 ORDER BY issued_at DESC"
+            ),
+        )
+        .bind(tenant_id.inner())
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Invoice::from).collect())
+    }
+
     async fn save(&self, inv: &Invoice) -> anyhow::Result<()> {
         let status       = status_str(inv.status);
         let inv_type     = invoice_type_str(inv.invoice_type);

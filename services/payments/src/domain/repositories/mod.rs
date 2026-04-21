@@ -9,6 +9,10 @@ pub trait InvoiceRepository: Send + Sync {
     async fn list_by_merchant(&self, merchant_id: &MerchantId) -> anyhow::Result<Vec<Invoice>>;
     /// Lists PaymentReceipt invoices for a B2C customer (customer app inbox).
     async fn list_by_customer(&self, customer_id: &CustomerId) -> anyhow::Result<Vec<Invoice>>;
+    /// Lists all invoices for a tenant — admin/ops oversight across every merchant.
+    /// Excludes PaymentReceipt (customer-facing) invoices so the admin console
+    /// only shows B2B billing state.
+    async fn list_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<Invoice>>;
     async fn save(&self, invoice: &Invoice) -> anyhow::Result<()>;
 }
 
@@ -18,6 +22,16 @@ pub trait CodRepository: Send + Sync {
     async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<CodCollection>>;
     async fn list_pending_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<CodCollection>>;
     async fn save(&self, cod: &CodCollection) -> anyhow::Result<()>;
+
+    /// All COD rows the given driver collected on a specific UTC calendar date.
+    /// Powers the driver-app end-of-shift cash summary — so status is not filtered
+    /// (a row that has already been handed in is still part of today's activity).
+    async fn list_for_driver_on_day(
+        &self,
+        tenant_id: &TenantId,
+        driver_id: Uuid,
+        day:       chrono::NaiveDate,
+    ) -> anyhow::Result<Vec<CodCollection>>;
 
     /// Collected-but-unbatched rows for a merchant up to `cutoff` (inclusive).
     /// Status must be `collected`, `batch_id IS NULL`, `collected_at <= cutoff`.

@@ -164,6 +164,35 @@ impl CodRepository for PgCodRepository {
         Ok(res.rows_affected())
     }
 
+    async fn list_for_driver_on_day(
+        &self,
+        tenant_id: &TenantId,
+        driver_id: Uuid,
+        day:       chrono::NaiveDate,
+    ) -> anyhow::Result<Vec<CodCollection>> {
+        use chrono::{Duration, NaiveTime, TimeZone, Utc};
+        let start_utc = Utc.from_utc_datetime(&day.and_time(NaiveTime::MIN));
+        let end_utc   = Utc.from_utc_datetime(
+            &(day + Duration::days(1)).and_time(NaiveTime::MIN),
+        );
+        let sql = format!(
+            "SELECT {SELECT_COLS}
+               FROM payments.cod_collections
+              WHERE tenant_id    = $1
+                AND driver_id    = $2
+                AND collected_at >= $3
+                AND collected_at <  $4
+              ORDER BY collected_at ASC"
+        );
+        let rows = sqlx::query_as::<_, CodRow>(&sql)
+            .bind(tenant_id.inner())
+            .bind(driver_id)
+            .bind(start_utc)
+            .bind(end_utc)
+            .fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(CodCollection::from).collect())
+    }
+
     async fn mark_batch_remitted(
         &self,
         tenant_id: &TenantId,
