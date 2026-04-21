@@ -14,7 +14,9 @@ import { variants } from "@/lib/design-system/tokens";
 import { authFetch } from "@/lib/auth/auth-fetch";
 import { readBus, subscribeToBus, type BusBooking } from "@/lib/api/marketplace-bus";
 
-const DISPATCH_URL = process.env.NEXT_PUBLIC_DISPATCH_URL ?? "http://localhost:8005";
+// Route through the api-gateway (same base as every other admin-portal caller).
+// Gateway proxies /v1/queue + /v1/drivers to dispatch+driver-ops — no service-specific URL needed.
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 interface QueueItem {
   id:             string;
@@ -95,15 +97,32 @@ function DispatchPageInner() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
+    const queueUrl  = `${API_BASE}/v1/queue`;
+    const driverUrl = `${API_BASE}/v1/drivers`;
     try {
       const [qRes, dRes] = await Promise.all([
-        authFetch(`${DISPATCH_URL}/v1/queue`),
-        authFetch(`${DISPATCH_URL}/v1/drivers`),
+        authFetch(queueUrl),
+        authFetch(driverUrl),
       ]);
       if (qRes.ok) { const j = await qRes.json(); setQueue(j.data ?? []); }
+      else {
+        // eslint-disable-next-line no-console
+        console.error("[dispatch] /v1/queue HTTP", qRes.status, qRes.statusText);
+        setError(`Queue fetch failed: ${qRes.status} ${qRes.statusText} (${queueUrl})`);
+      }
       if (dRes.ok) { const j = await dRes.json(); setDrivers(j.data ?? []); }
+      else {
+        // eslint-disable-next-line no-console
+        console.error("[dispatch] /v1/drivers HTTP", dRes.status, dRes.statusText);
+      }
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to load dispatch data");
+      const msg = e instanceof Error ? e.message : "Failed to load dispatch data";
+      // Surface the attempted URL so ops can spot env-var misconfigurations
+      // (e.g. NEXT_PUBLIC_API_URL not baked into the build → fallback to
+      // http://localhost:8000 → Mixed Content block under HTTPS).
+      // eslint-disable-next-line no-console
+      console.error("[dispatch] fetchData threw:", msg, { queueUrl, driverUrl, API_BASE });
+      setError(`${msg} — tried ${queueUrl}`);
     } finally {
       setLoading(false);
     }
@@ -137,7 +156,7 @@ function DispatchPageInner() {
     setDispatching(shipmentId);
     try {
       const body = selectedDriver ? { preferred_driver_id: selectedDriver } : {};
-      const res = await authFetch(`${DISPATCH_URL}/v1/queue/${shipmentId}/dispatch`, {
+      const res = await authFetch(`${API_BASE}/v1/queue/${shipmentId}/dispatch`, {
         method: "POST",
         body: JSON.stringify(body),
       });
