@@ -228,6 +228,27 @@ fun PodScreen(
 
         Spacer(Modifier.height(12.dp))
 
+        // Surface submit-time failures so the user sees the real error instead
+        // of the old silent-enqueue-to-sync-queue behaviour.
+        state.error?.let { err ->
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp),
+                color = Red.copy(alpha = 0.12f),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Red.copy(alpha = 0.4f)),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text(
+                    text = err,
+                    color = Red,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(12.dp)
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+
         // Submit POD
         Button(
             onClick = { viewModel.submit(taskId) },

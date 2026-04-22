@@ -113,19 +113,32 @@ class PodViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isSubmitting = true, error = null) }
             val loc = locationRepo.getLastKnownLocation()
-            val podId = repo.submitPod(
-                taskId = state.taskId,
-                shipmentId = state.shipmentId,
-                recipientName = state.recipientName,
-                captureLat = loc?.lat ?: 0.0,
-                captureLng = loc?.lng ?: 0.0,
-                photoPath = state.photoPath,
-                signaturePath = state.signaturePath,
-                otpCode = state.otpToken,
-                codCollectedCents = if (state.isCod && state.codCollected)
-                    (state.codAmount * 100).toLong() else null
-            )
-            _uiState.update { it.copy(isSubmitting = false, isSubmitted = true, podId = podId) }
+            runCatching {
+                repo.submitPod(
+                    taskId = state.taskId,
+                    shipmentId = state.shipmentId,
+                    recipientName = state.recipientName,
+                    captureLat = loc?.lat ?: 0.0,
+                    captureLng = loc?.lng ?: 0.0,
+                    photoPath = state.photoPath,
+                    signaturePath = state.signaturePath,
+                    otpCode = state.otpToken,
+                    codCollectedCents = if (state.isCod && state.codCollected)
+                        (state.codAmount * 100).toLong() else null
+                )
+            }.onSuccess { podId ->
+                _uiState.update {
+                    it.copy(isSubmitting = false, isSubmitted = true, podId = podId)
+                }
+            }.onFailure { e ->
+                _uiState.update {
+                    it.copy(
+                        isSubmitting = false,
+                        isSubmitted = false,
+                        error = "${e.javaClass.simpleName}: ${e.message ?: "submit failed"}"
+                    )
+                }
+            }
         }
     }
 

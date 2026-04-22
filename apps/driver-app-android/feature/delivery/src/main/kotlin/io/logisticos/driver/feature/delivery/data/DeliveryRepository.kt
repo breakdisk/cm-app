@@ -140,7 +140,10 @@ class DeliveryRepository @Inject constructor(
 
             podId
         } catch (e: Exception) {
-            // Enqueue for retry — OutboundSyncWorker will retry with backoff
+            // Surface the failure so UI/logcat show *why* the POD didn't sync,
+            // instead of silently pretending it succeeded. The sync queue retry
+            // still runs, but the user gets a real error now.
+            android.util.Log.e("DeliveryRepository", "submitPod failed: ${e.javaClass.simpleName}: ${e.message}", e)
             syncQueueDao.enqueue(
                 SyncQueueEntity(
                     action = SyncAction.POD_SUBMIT,
@@ -148,7 +151,7 @@ class DeliveryRepository @Inject constructor(
                     createdAt = System.currentTimeMillis()
                 )
             )
-            null
+            throw e
         }
     }
 

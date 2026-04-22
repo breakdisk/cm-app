@@ -18,6 +18,10 @@ pub struct AttachSignatureCommand {
 
 #[derive(Debug, Deserialize)]
 pub struct SubmitPodCommand {
+    // Populated from the URL path (PUT /v1/pods/{id}/submit), not the body.
+    // Without #[serde(default)] axum's Json<> deserializer 422s the request
+    // because the client doesn't repeat the id in the body.
+    #[serde(default)]
     pub pod_id:               Uuid,
     pub cod_collected_cents:  Option<i64>,
     pub otp_code:             Option<String>,  // Required if shipment requires OTP verification
@@ -55,6 +59,8 @@ pub struct UploadUrlResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct AttachPhotoCommand {
+    // Populated from the URL path (POST /v1/pods/{id}/photo) — see SubmitPodCommand for rationale.
+    #[serde(default)]
     pub pod_id: Uuid,
     pub s3_key: String,
     pub content_type: String,
