@@ -1,13 +1,18 @@
 /**
  * Customer App — Notifications Screen
- * Push notification history: delivery alerts, promos, loyalty events.
+ * Shows the user's notification history from the engagement service.
+ *   GET /v1/notifications?customer_id=<me>
+ * Replaces the prior mock-data stub; falls back to an empty state if the
+ * engagement service is unreachable.
  */
-import React from "react";
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { FadeInView } from '../../components/FadeInView';
-import { View, Text, StyleSheet, FlatList, Pressable } from "react-native";
+import React, { useCallback, useEffect, useState } from "react";
+import { View, Text, StyleSheet, FlatList, Pressable, RefreshControl, ActivityIndicator } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
+
+import { FadeInView } from '../../components/FadeInView';
+import { getStoredCustomerId } from '../../services/api/auth';
+import { notificationsApi, type Notification, type NotificationChannel } from '../../services/api/notifications';
 
 const CANVAS = "#050810";
 const CYAN   = "#00E5FF";
@@ -15,53 +20,97 @@ const GREEN  = "#00FF88";
 const AMBER  = "#FFAB00";
 const PURPLE = "#A855F7";
 const RED    = "#FF3B5C";
-const GLASS  = "rgba(255,255,255,0.04)";
 const BORDER = "rgba(255,255,255,0.08)";
 
-type NotifType = "delivery" | "promo" | "loyalty" | "alert";
-
-interface Notif {
-  id:   string;
-  type: NotifType;
-  title: string;
-  body:  string;
-  time:  string;
-  read:  boolean;
-}
-
-const NOTIFS: Notif[] = [
-  { id: "N1", type: "delivery", title: "Out for Delivery!",        body: "CM-PH1-S0000001A will be delivered today between 2–4 PM. Stay at home!",                 time: "10m ago",  read: false },
-  { id: "N2", type: "delivery", title: "Package Picked Up",        body: "CM-PH1-E0000002B has been picked up from the merchant and is heading to sorting.",     time: "1h ago",   read: false },
-  { id: "N3", type: "loyalty",  title: "+50 Loyalty Points!",      body: "You earned 50 points for your last delivery. 380 more to reach Platinum.",         time: "3h ago",   read: true  },
-  { id: "N4", type: "alert",    title: "Delivery Attempt Failed",  body: "CM-PH1-S0000004D — we couldn't reach you. We'll retry tomorrow. Tap to reschedule.",   time: "Yesterday", read: true  },
-  { id: "N5", type: "promo",    title: "₱50 Off Your Next Booking", body: "Book any shipment today and get ₱50 off. Use code MARCH50. Valid until Mar 31.", time: "Yesterday", read: true  },
-  { id: "N6", type: "delivery", title: "Package Delivered ✓",      body: "CM-PH1-S0000003C was delivered and signed for by the recipient. Rate your experience.", time: "2 days ago", read: true },
-  { id: "N7", type: "promo",    title: "New: COD in Mindanao",      body: "Cash on Delivery is now available across Mindanao. Try it on your next shipment.", time: "3 days ago", read: true },
-];
-
-const TYPE_CONFIG: Record<NotifType, { icon: string; color: string }> = {
-  delivery: { icon: "cube-outline",          color: CYAN   },
-  promo:    { icon: "megaphone-outline",      color: PURPLE },
-  loyalty:  { icon: "star-outline",           color: AMBER  },
-  alert:    { icon: "alert-circle-outline",   color: RED    },
+// Channel → icon + color. Engagement service doesn't categorize notifications
+// by "delivery / promo / loyalty / alert"; we derive visual intent from the
+// channel. When a `category` field is added, switch on that instead.
+const CHANNEL_CONFIG: Record<NotificationChannel, { icon: keyof typeof Ionicons.glyphMap; color: string }> = {
+  WhatsApp: { icon: "chatbubble-outline",     color: GREEN  },
+  Sms:      { icon: "phone-portrait-outline", color: CYAN   },
+  Email:    { icon: "mail-outline",           color: PURPLE },
+  Push:     { icon: "notifications-outline",  color: AMBER  },
 };
 
-export function NotificationsScreen() {
-  const unreadCount = NOTIFS.filter(n => !n.read).length;
+function formatRelative(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "";
+  const diffMin = Math.floor((Date.now() - then) / 60_000);
+  if (diffMin < 1)    return "just now";
+  if (diffMin < 60)   return `${diffMin}m ago`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24)    return `${diffHr}h ago`;
+  const diffDay = Math.floor(diffHr / 24);
+  if (diffDay === 1)  return "Yesterday";
+  if (diffDay < 7)    return `${diffDay} days ago`;
+  return new Date(iso).toLocaleDateString();
+}
 
-  function renderItem({ item, index }: { item: Notif; index: number }) {
-    const { icon, color } = TYPE_CONFIG[item.type];
+// Engagement service doesn't track a read flag yet; treat anything within the
+// last 24h as unread. When a `read_at` column + PATCH endpoint exists, switch.
+function isUnread(n: Notification): boolean {
+  const queued = new Date(n.queued_at).getTime();
+  return !Number.isNaN(queued) && (Date.now() - queued) < 24 * 60 * 60 * 1000;
+}
+
+function deriveTitle(n: Notification): string {
+  if (n.subject && n.subject.trim().length > 0) return n.subject;
+  const firstLine = n.rendered_body.split('\n')[0] ?? '';
+  return firstLine.length > 0 ? firstLine.slice(0, 80) : 'Notification';
+}
+
+export function NotificationsScreen() {
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [loading, setLoading]             = useState(true);
+  const [refreshing, setRefreshing]       = useState(false);
+  const [error, setError]                 = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      const customerId = await getStoredCustomerId();
+      if (!customerId) {
+        setNotifications([]);
+        return;
+      }
+      const resp = await notificationsApi.list({ customerId, limit: 50 });
+      setNotifications(resp.notifications ?? []);
+    } catch (e: unknown) {
+      const err = e as { message?: string };
+      setError(err?.message ?? 'Failed to load notifications');
+    }
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      await load();
+      setLoading(false);
+    })();
+  }, [load]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  }, [load]);
+
+  const unreadCount = notifications.filter(isUnread).length;
+
+  function renderItem({ item }: { item: Notification }) {
+    const config = CHANNEL_CONFIG[item.channel] ?? CHANNEL_CONFIG.Push;
+    const unread = isUnread(item);
+    const title = deriveTitle(item);
     return (
       <FadeInView fromY={-16}>
-        <Pressable style={({ pressed }) => [s.row, !item.read && s.rowUnread, { opacity: pressed ? 0.8 : 1 }]}>
-          <View style={[s.iconWrap, { backgroundColor: color + "20" }]}>
-            <Ionicons name={icon as any} size={18} color={color} />
-            {!item.read && <View style={[s.unreadDot, { backgroundColor: color }]} />}
+        <Pressable style={({ pressed }) => [s.row, unread && s.rowUnread, { opacity: pressed ? 0.8 : 1 }]}>
+          <View style={[s.iconWrap, { backgroundColor: config.color + "20" }]}>
+            <Ionicons name={config.icon} size={18} color={config.color} />
+            {unread && <View style={[s.unreadDot, { backgroundColor: config.color }]} />}
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={[s.title, !item.read && { color: "#FFF" }]}>{item.title}</Text>
-            <Text style={s.body} numberOfLines={2}>{item.body}</Text>
-            <Text style={s.time}>{item.time}</Text>
+            <Text style={[s.title, unread && { color: "#FFF" }]}>{title}</Text>
+            <Text style={s.body} numberOfLines={2}>{item.rendered_body}</Text>
+            <Text style={s.time}>{formatRelative(item.queued_at)}</Text>
           </View>
         </Pressable>
       </FadeInView>
@@ -70,7 +119,6 @@ export function NotificationsScreen() {
 
   return (
     <View style={s.container}>
-      {/* Header */}
       <LinearGradient colors={["rgba(0,229,255,0.08)", "transparent"]} style={s.hero}>
         <Text style={s.heroTitle}>Notifications</Text>
         {unreadCount > 0 && (
@@ -78,13 +126,33 @@ export function NotificationsScreen() {
         )}
       </LinearGradient>
 
-      <FlatList
-        data={NOTIFS}
-        keyExtractor={(n) => n.id}
-        renderItem={renderItem}
-        contentContainerStyle={{ paddingBottom: 40 }}
-        ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: BORDER, marginHorizontal: 16 }} />}
-      />
+      {loading ? (
+        <View style={s.center}>
+          <ActivityIndicator color={CYAN} />
+        </View>
+      ) : error ? (
+        <View style={s.center}>
+          <Text style={s.errorText}>{error}</Text>
+          <Pressable onPress={onRefresh} style={s.retryBtn}>
+            <Text style={s.retryText}>Retry</Text>
+          </Pressable>
+        </View>
+      ) : notifications.length === 0 ? (
+        <View style={s.center}>
+          <Ionicons name="notifications-off-outline" size={40} color="rgba(255,255,255,0.25)" />
+          <Text style={s.emptyText}>No notifications yet.</Text>
+          <Text style={s.emptySub}>Updates about your shipments and receipts will appear here.</Text>
+        </View>
+      ) : (
+        <FlatList
+          data={notifications}
+          keyExtractor={(n) => n.id}
+          renderItem={renderItem}
+          contentContainerStyle={{ paddingBottom: 40 }}
+          ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: BORDER, marginHorizontal: 16 }} />}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={CYAN} />}
+        />
+      )}
     </View>
   );
 }
@@ -101,4 +169,10 @@ const s = StyleSheet.create({
   title:      { fontSize: 13, fontWeight: "600", color: "rgba(255,255,255,0.85)", marginBottom: 3 },
   body:       { fontSize: 12, color: "rgba(255,255,255,0.4)", lineHeight: 17 },
   time:       { fontSize: 10, color: "rgba(255,255,255,0.2)", fontFamily: "JetBrainsMono-Regular", marginTop: 4 },
+  center:     { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 32, gap: 12 },
+  errorText:  { color: RED, fontSize: 13, textAlign: "center" },
+  emptyText:  { color: "rgba(255,255,255,0.6)", fontSize: 15, fontWeight: "600" },
+  emptySub:   { color: "rgba(255,255,255,0.35)", fontSize: 12, textAlign: "center" },
+  retryBtn:   { paddingHorizontal: 18, paddingVertical: 8, borderRadius: 10, borderWidth: 1, borderColor: BORDER },
+  retryText:  { color: CYAN, fontSize: 13, fontWeight: "600" },
 });

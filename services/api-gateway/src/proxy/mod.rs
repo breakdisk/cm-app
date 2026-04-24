@@ -81,6 +81,9 @@ impl ProxyClient {
         // AI Intelligence Layer
         } else if path.starts_with("/v1/ai") || path.starts_with("/v1/agents") {
             Some(&self.services.ai_layer_url)
+        // Business Logic / Automation Rules
+        } else if path.starts_with("/v1/rules") {
+            Some(&self.services.business_logic_url)
         } else {
             None
         }

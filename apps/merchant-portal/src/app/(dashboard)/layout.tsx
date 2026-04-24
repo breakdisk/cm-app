@@ -22,6 +22,7 @@ import {
   Zap,
   Menu,
   X,
+  Users,
 } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 
@@ -43,6 +44,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Overview",     href: "/",            icon: LayoutDashboard },
   { label: "Shipments",    href: "/shipments",   icon: Package },
   { label: "Marketplace",  href: "/marketplace", icon: Store },
+  { label: "Customers",    href: "/customers",   icon: Users },
   { label: "Campaigns",    href: "/campaigns",   icon: Megaphone },
   { label: "Analytics",    href: "/analytics",   icon: BarChart3 },
   { label: "Billing",      href: "/billing",     icon: CreditCard },
@@ -56,6 +58,7 @@ const PAGE_TITLE_MAP: Record<string, string> = {
   "/":             "Overview",
   "/shipments":    "Shipments",
   "/marketplace":  "Marketplace",
+  "/customers":    "Customers",
   "/campaigns":    "Campaigns",
   "/analytics":    "Analytics",
   "/billing":      "Billing",
