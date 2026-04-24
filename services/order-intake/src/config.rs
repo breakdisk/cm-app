@@ -6,6 +6,8 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub redis: RedisConfig,
     pub kafka: KafkaConfig,
+    #[serde(default)]
+    pub geocoder: GeocoderConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -30,6 +32,15 @@ pub struct RedisConfig {
 pub struct KafkaConfig {
     pub brokers: String,
     pub group_id: String,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct GeocoderConfig {
+    /// Public Mapbox token (pk.*) with Geocoding scope. Set via
+    /// GEOCODER__MAPBOX_ACCESS_TOKEN. When empty, the service falls back to
+    /// PassthroughNormalizer and shipments are created with coordinates: None.
+    #[serde(default)]
+    pub mapbox_access_token: Option<String>,
 }
 
 impl Config {

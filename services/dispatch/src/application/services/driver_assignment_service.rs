@@ -338,9 +338,18 @@ impl DriverAssignmentService {
             None => {
                 // Use origin (pickup point) as anchor for driver proximity — the driver
                 // needs to travel to the origin first. Fall back to destination if no origin.
-                let anchor = Coordinates {
-                    lat: queue_item.origin_lat.or(queue_item.dest_lat).unwrap_or(14.5995),
-                    lng: queue_item.origin_lng.or(queue_item.dest_lng).unwrap_or(120.9842),
+                // Error explicitly if neither is set — a NULL-coord default (previously Manila)
+                // silently routed every undispatchable shipment to a false "no drivers nearby"
+                // response, hiding the real cause: the shipment was never geocoded on create.
+                let anchor = match (
+                    queue_item.origin_lat.or(queue_item.dest_lat),
+                    queue_item.origin_lng.or(queue_item.dest_lng),
+                ) {
+                    (Some(lat), Some(lng)) => Coordinates { lat, lng },
+                    _ => return Err(AppError::BusinessRule(
+                        "Shipment has no origin/destination coordinates — cannot dispatch. \
+                         Ensure the merchant address is geocoded before booking.".into(),
+                    )),
                 };
                 let candidates = self.driver_avail_repo
                     .find_available_near(&tenant_id, anchor, DEFAULT_DRIVER_SEARCH_RADIUS_KM)

@@ -37,6 +37,7 @@ rdkafka.workspace    = true
 tracing.workspace    = true
 rand.workspace       = true
 async-trait.workspace = true
+reqwest.workspace    = true
 
 [dev-dependencies]
 axum-test     = "19.1"

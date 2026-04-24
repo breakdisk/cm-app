@@ -8,8 +8,13 @@ use crate::application::{
     services::shipment_service::AddressNormalizer,
 };
 
+pub mod mapbox_geocoder;
+pub use mapbox_geocoder::MapboxGeocoder;
+
 /// Passthrough normalizer — maps the input fields directly without external geocoding.
-/// In production this would call a geocoding API (e.g., Google Maps, HERE).
+/// Used as a fallback when no geocoder token is configured; shipments created through
+/// this path will have `coordinates: None` and dispatch will reject them until the
+/// coords are populated out-of-band.
 pub struct PassthroughNormalizer;
 
 impl AddressNormalizer for PassthroughNormalizer {

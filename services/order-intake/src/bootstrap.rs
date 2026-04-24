@@ -6,12 +6,15 @@ use sqlx::postgres::PgPoolOptions;
 
 use crate::{
     api::http::{router, AppState},
-    application::{queries::ShipmentQueryService, services::shipment_service::ShipmentService},
+    application::{
+        queries::ShipmentQueryService,
+        services::shipment_service::{AddressNormalizer, ShipmentService},
+    },
     config::Config,
     infrastructure::{
         awb::{FallbackAwbGenerator, PostgresAwbGenerator, RedisAwbGenerator},
         db::PgShipmentRepository,
-        external::PassthroughNormalizer,
+        external::{MapboxGeocoder, PassthroughNormalizer},
         messaging::{status_consumer::start_status_consumer, KafkaEventPublisher},
     },
 };
@@ -44,7 +47,19 @@ pub async fn run() -> anyhow::Result<()> {
     // Infrastructure adapters
     let repo = Arc::new(PgShipmentRepository { pool: pool.clone() });
     let publisher = Arc::new(KafkaEventPublisher::new(&cfg.kafka.brokers)?);
-    let normalizer = Arc::new(PassthroughNormalizer);
+    let normalizer: Arc<dyn AddressNormalizer> = match cfg.geocoder.mapbox_access_token.as_deref() {
+        Some(token) if !token.is_empty() => {
+            tracing::info!("address normalizer: Mapbox geocoder");
+            Arc::new(MapboxGeocoder::new(token.to_string()))
+        }
+        _ => {
+            tracing::warn!(
+                "GEOCODER__MAPBOX_ACCESS_TOKEN not set — shipments will be created with \
+                 coordinates: None and dispatch will reject them until geocoded out-of-band"
+            );
+            Arc::new(PassthroughNormalizer)
+        }
+    };
 
     // AWB generator: Redis primary with PostgreSQL fallback
     let redis_conn = redis::Client::open(cfg.redis.url.as_str())
