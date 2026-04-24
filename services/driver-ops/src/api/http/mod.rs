@@ -74,6 +74,10 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/location", post(location::update_location))
         // Task management
         .route("/tasks",          get(tasks::list_my_tasks))
+        // Aggregated manifest — partner portal daily view. Must come
+        // before /:id patterns to avoid matchit picking up "manifest"
+        // as a task id.
+        .route("/tasks/manifest", get(tasks::list_manifest))
         .route("/tasks/:id/start",    put(tasks::start_task))
         .route("/tasks/:id/complete", put(tasks::complete_task))
         .route("/tasks/:id/fail",     put(tasks::fail_task))

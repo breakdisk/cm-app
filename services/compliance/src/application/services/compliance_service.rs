@@ -34,6 +34,48 @@ impl ComplianceService {
         Self { profiles, documents, doc_types, audit, producer }
     }
 
+    /// Idempotent — find an existing compliance profile for (tenant, entity_type,
+    /// entity_id), or create a fresh one in `PendingSubmission` status. Used on
+    /// the customer-app KYC path where no earlier event guarantees a profile
+    /// exists, and on the driver.registered event handler to avoid duplicates.
+    pub async fn ensure_profile(
+        &self,
+        tenant_id:    Uuid,
+        entity_type:  &str,
+        entity_id:    Uuid,
+        jurisdiction: &str,
+    ) -> anyhow::Result<ComplianceProfile> {
+        if let Some(p) = self.profiles.find_by_entity(tenant_id, entity_type, entity_id).await? {
+            return Ok(p);
+        }
+        let profile = ComplianceProfile {
+            id:               Uuid::new_v4(),
+            tenant_id,
+            entity_type:      entity_type.to_owned(),
+            entity_id,
+            overall_status:   ComplianceStatus::PendingSubmission,
+            jurisdiction:     jurisdiction.to_owned(),
+            last_reviewed_at: None,
+            reviewed_by:      None,
+            suspended_at:     None,
+            created_at:       Utc::now(),
+            updated_at:       Utc::now(),
+        };
+        self.profiles.save(&profile).await?;
+        self.audit.append(&ComplianceAuditLog {
+            id:                    Uuid::new_v4(),
+            tenant_id,
+            compliance_profile_id: profile.id,
+            document_id:           None,
+            event_type:            "profile_created".into(),
+            actor_id:              entity_id,
+            actor_type:            "system".into(),
+            notes:                 None,
+            created_at:            Utc::now(),
+        }).await?;
+        Ok(profile)
+    }
+
     /// Called when driver.registered Kafka event is received.
     /// Returns anyhow::Result<()> (consumer calls this and just logs errors).
     pub async fn create_profile_for_driver(

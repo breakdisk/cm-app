@@ -135,10 +135,20 @@ pub async fn upload_document(
 ) -> Result<Json<serde_json::Value>, AppError> {
     use base64::Engine as _;
 
-    let profile = state.compliance.profiles
+    // Try driver profile first (driver-app callers have one, created by the
+    // driver.registered Kafka consumer). Fall back to — and auto-create —
+    // a customer profile for customer-app KYC callers who don't emit that
+    // event. Default jurisdiction is inferred from the tenant; "PH" is the
+    // fallback since we don't thread tenant->jurisdiction through the JWT.
+    let profile = match state.compliance.profiles
         .find_by_entity(claims.tenant_id, "driver", claims.user_id)
         .await?
-        .ok_or(AppError::NotFound { resource: "ComplianceProfile", id: claims.user_id.to_string() })?;
+    {
+        Some(p) => p,
+        None => state.compliance
+            .ensure_profile(claims.tenant_id, "customer", claims.user_id, "PH")
+            .await?,
+    };
 
     // Resolve document_type_id from either the UUID or the code lookup.
     let document_type_id = match req.document_type_id {

@@ -1,7 +1,25 @@
 use async_trait::async_trait;
+use chrono::NaiveDate;
 use logisticos_types::{DriverId, TenantId};
+use serde::Serialize;
 use uuid::Uuid;
 use crate::domain::entities::{Driver, DriverTask, DriverLocation};
+
+/// One manifest row per (driver, date, task_type) tuple. Used by the partner
+/// portal to surface a daily operational summary without having to page
+/// through individual tasks. Counts are computed server-side via SQL
+/// aggregation for O(tasks) cost rather than N+1.
+#[derive(Debug, Clone, Serialize)]
+pub struct ManifestEntry {
+    pub driver_id:   Uuid,
+    pub driver_name: String,
+    pub task_type:   String,       // "pickup" | "delivery"
+    pub total:       i64,
+    pub completed:   i64,
+    pub failed:      i64,
+    pub in_progress: i64,
+    pub pending:     i64,
+}
 
 #[async_trait]
 pub trait DriverRepository: Send + Sync {
@@ -18,6 +36,16 @@ pub trait TaskRepository: Send + Sync {
     async fn list_by_route(&self, route_id: Uuid) -> anyhow::Result<Vec<DriverTask>>;
     async fn save(&self, task: &DriverTask) -> anyhow::Result<()>;
     async fn bulk_save(&self, tasks: &[DriverTask]) -> anyhow::Result<()>;
+
+    /// Aggregate tasks for a given date, optionally filtered to a single
+    /// carrier's drivers. Returns one row per (driver, task_type) with
+    /// status counts.
+    async fn list_manifest(
+        &self,
+        tenant_id: &TenantId,
+        carrier_id: Option<Uuid>,
+        date: NaiveDate,
+    ) -> anyhow::Result<Vec<ManifestEntry>>;
 }
 
 #[async_trait]

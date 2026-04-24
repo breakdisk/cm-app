@@ -59,6 +59,25 @@ export interface RateShopQuery {
   weight_kg: number;
 }
 
+/** Aggregated manifest row — one per (driver, task_type) for a given date.
+ *  Served by driver-ops /v1/tasks/manifest. */
+export interface ManifestEntry {
+  driver_id: string;
+  driver_name: string;
+  task_type: "pickup" | "delivery";
+  total: number;
+  completed: number;
+  failed: number;
+  in_progress: number;
+  pending: number;
+}
+
+export interface ManifestResponse {
+  data: ManifestEntry[];
+  date: string;
+  carrier_id: string | null;
+}
+
 // ── Client ─────────────────────────────────────────────────────────────────────
 // Cookie-JWT flow; axios interceptor stamps Authorization automatically.
 
@@ -85,6 +104,18 @@ export const carriersApi = {
       params: { service_type: q.service_type, weight_kg: q.weight_kg },
     });
     return data.quotes ?? [];
+  },
+
+  /**
+   * Daily manifest aggregation from driver-ops. Passing `carrierId` filters
+   * to that partner's drivers (via drivers.carrier_id); passing null returns
+   * the whole-tenant view (useful for admin-scoped callers).
+   */
+  async manifest(date: string, carrierId?: string | null): Promise<ManifestResponse> {
+    const { data } = await createApiClient().get<ManifestResponse>("/v1/tasks/manifest", {
+      params: { date, carrier_id: carrierId ?? undefined },
+    });
+    return data;
   },
 };
 

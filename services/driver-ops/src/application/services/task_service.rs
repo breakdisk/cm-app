@@ -29,6 +29,21 @@ impl TaskService {
     }
 
     /// Returns the driver's current task queue — pending and in-progress tasks for their active route.
+    /// Aggregated manifest for the partner portal. Delegates to the repo
+    /// which runs a single SQL group-by; the service layer exists so the
+    /// HTTP handler never touches the pool directly.
+    pub async fn list_manifest(
+        &self,
+        tenant_id: &logisticos_types::TenantId,
+        carrier_id: Option<uuid::Uuid>,
+        date: chrono::NaiveDate,
+    ) -> AppResult<Vec<crate::domain::repositories::ManifestEntry>> {
+        self.task_repo
+            .list_manifest(tenant_id, carrier_id, date)
+            .await
+            .map_err(AppError::Internal)
+    }
+
     pub async fn list_my_tasks(&self, driver_id: &DriverId) -> AppResult<Vec<TaskSummary>> {
         let tasks = self.task_repo.list_by_driver(driver_id).await.map_err(AppError::Internal)?;
         Ok(tasks.into_iter()

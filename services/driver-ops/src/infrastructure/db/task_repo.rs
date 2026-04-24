@@ -1,10 +1,11 @@
 use async_trait::async_trait;
-use sqlx::PgPool;
-use logisticos_types::{DriverId, Address, Coordinates};
+use chrono::NaiveDate;
+use sqlx::{PgPool, Row};
+use logisticos_types::{DriverId, TenantId, Address, Coordinates};
 use uuid::Uuid;
 use crate::domain::{
     entities::{DriverTask, TaskStatus, TaskType},
-    repositories::TaskRepository,
+    repositories::{ManifestEntry, TaskRepository},
 };
 
 pub struct PgTaskRepository {
@@ -204,5 +205,70 @@ impl TaskRepository for PgTaskRepository {
             self.save(task).await?;
         }
         Ok(())
+    }
+
+    async fn list_manifest(
+        &self,
+        tenant_id: &TenantId,
+        carrier_id: Option<Uuid>,
+        date: NaiveDate,
+    ) -> anyhow::Result<Vec<ManifestEntry>> {
+        // Bucket tasks by (driver, task_type) and count by status. `date`
+        // windows on the task's authoritative timestamp — completed tasks
+        // use completed_at, in-progress use started_at, everything else
+        // uses the shipment's implicit creation via route_id join (driver
+        // app shows tasks after dispatch). We simplify to: any task whose
+        // most-recent activity (started_at OR completed_at OR route day)
+        // falls within [date, date+1d).
+        //
+        // Filter precedence when carrier_id provided: drivers.carrier_id
+        // match. Otherwise: tenant_id match only (returns the full tenant
+        // manifest — useful for admin views).
+        let rows = sqlx::query(
+            r#"
+            WITH bounds AS (
+                SELECT ($1::date)::timestamptz AS day_start,
+                       (($1::date) + INTERVAL '1 day')::timestamptz AS day_end
+            )
+            SELECT
+                t.driver_id                                                          AS driver_id,
+                (d.first_name || ' ' || d.last_name)                                 AS driver_name,
+                t.task_type                                                          AS task_type,
+                COUNT(*)::bigint                                                     AS total,
+                COUNT(*) FILTER (WHERE t.status = 'completed')::bigint               AS completed,
+                COUNT(*) FILTER (WHERE t.status = 'failed')::bigint                  AS failed,
+                COUNT(*) FILTER (WHERE t.status = 'in_progress')::bigint             AS in_progress,
+                COUNT(*) FILTER (WHERE t.status = 'pending')::bigint                 AS pending
+            FROM driver_ops.tasks t
+            JOIN driver_ops.drivers d ON d.id = t.driver_id
+            CROSS JOIN bounds b
+            WHERE d.tenant_id = $2
+              AND ($3::uuid IS NULL OR d.carrier_id = $3)
+              AND (
+                  (t.completed_at IS NOT NULL AND t.completed_at >= b.day_start AND t.completed_at < b.day_end)
+               OR (t.started_at   IS NOT NULL AND t.started_at   >= b.day_start AND t.started_at   < b.day_end)
+               OR (t.completed_at IS NULL AND t.started_at IS NULL AND t.status IN ('pending','in_progress'))
+              )
+            GROUP BY t.driver_id, driver_name, t.task_type
+            ORDER BY driver_name ASC, t.task_type ASC
+            "#,
+        )
+        .bind(date)
+        .bind(tenant_id.inner())
+        .bind(carrier_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let entries = rows.into_iter().map(|r| ManifestEntry {
+            driver_id:   r.get("driver_id"),
+            driver_name: r.get("driver_name"),
+            task_type:   r.get("task_type"),
+            total:       r.get("total"),
+            completed:   r.get("completed"),
+            failed:      r.get("failed"),
+            in_progress: r.get("in_progress"),
+            pending:     r.get("pending"),
+        }).collect();
+        Ok(entries)
     }
 }
