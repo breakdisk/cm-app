@@ -161,6 +161,7 @@ services:
       SERVICES__MARKETING_URL: http://marketing:8014
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
+      SERVICES__COMPLIANCE_URL: http://compliance:8017
       RUST_LOG: info
     depends_on:
       postgres:
@@ -383,6 +384,12 @@ services:
       SERVICES__MARKETING_URL: http://marketing:8014
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
+      # Mapbox Forward Geocoding v6 — bootstraps the MapboxGeocoder
+      # AddressNormalizer. When unset or empty, order-intake falls back to
+      # PassthroughNormalizer (coordinates: None) and dispatch will reject
+      # the shipment at assignment time. Set the pk.* public token via the
+      # same env var in .env or the Dokploy service config.
+      GEOCODER__MAPBOX_ACCESS_TOKEN: ${GEOCODER__MAPBOX_ACCESS_TOKEN:-}
       RUST_LOG: info
     depends_on:
       postgres:
