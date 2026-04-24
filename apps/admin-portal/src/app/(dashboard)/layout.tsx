@@ -57,7 +57,10 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Analytics",        href: "/analytics",   icon: BarChart3 },
   { label: "AI Agents",        href: "/ai-agents",   icon: Bot },
   { label: "Automation",       href: "/automation",  icon: Workflow },
-  { label: "Alerts",           href: "/alerts",      icon: Bell, badge: 3 },
+  // Badge count will be wired once we have a lightweight `/alerts/count`
+  // endpoint; polling the full aggregator from the sidebar on every page
+  // is wasteful. Showing a static number was misleading.
+  { label: "Alerts",           href: "/alerts",      icon: Bell },
   { label: "Map View",         href: "/map",         icon: MapPin },
   { label: "Settings",         href: "/settings",    icon: Settings },
 ];
