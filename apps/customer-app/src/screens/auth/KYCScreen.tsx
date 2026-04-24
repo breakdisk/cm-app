@@ -10,14 +10,16 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FadeInView } from '../../components/FadeInView';
 import {
   View, Text, StyleSheet, Pressable, Image,
-  ScrollView, Platform, Alert,
+  ScrollView, Platform, Alert, TextInput,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
+import * as FileSystem from "expo-file-system";
 import { useDispatch, useSelector } from "react-redux";
 import { authActions } from "../../store";
 import type { RootState, AppDispatch, IdType } from "../../store";
+import { complianceApi, type ContentType } from "../../services/api/compliance";
 
 const CANVAS  = "#050810";
 const CYAN    = "#00E5FF";
@@ -26,6 +28,16 @@ const AMBER   = "#FFAB00";
 const PURPLE  = "#A855F7";
 const GLASS   = "rgba(255,255,255,0.04)";
 const BORDER  = "rgba(255,255,255,0.08)";
+
+/** Map an ImagePicker mimeType or file extension into one of the three
+ *  content-types the compliance backend accepts. Default to JPEG for
+ *  camera captures (the most common case). */
+function inferMime(hint: string): ContentType {
+  const h = hint.toLowerCase();
+  if (h.includes("png"))  return "image/png";
+  if (h.includes("pdf"))  return "application/pdf";
+  return "image/jpeg";
+}
 
 const ID_OPTIONS: Array<{
   type:     IdType;
@@ -59,6 +71,8 @@ export function KYCScreen() {
 
   const [selectedId,  setSelectedId]  = useState<IdType | null>(null);
   const [imageUri,    setImageUri]    = useState<string | null>(null);
+  const [imageMime,   setImageMime]   = useState<ContentType>("image/jpeg");
+  const [docNumber,   setDocNumber]   = useState<string>("");
   const [submitting,  setSubmitting]  = useState(false);
 
   async function pickImage() {
@@ -79,7 +93,9 @@ export function KYCScreen() {
         aspect: [4, 3],
       });
       if (!result.canceled && result.assets.length > 0) {
-        setImageUri(result.assets[0].uri);
+        const asset = result.assets[0];
+        setImageUri(asset.uri);
+        setImageMime(inferMime(asset.mimeType ?? asset.uri));
       }
     } catch (err) {
       Alert.alert("Error", "Could not open photo library. Please try again.");
@@ -100,7 +116,9 @@ export function KYCScreen() {
         aspect: [4, 3],
       });
       if (!result.canceled && result.assets.length > 0) {
-        setImageUri(result.assets[0].uri);
+        const asset = result.assets[0];
+        setImageUri(asset.uri);
+        setImageMime(inferMime(asset.mimeType ?? asset.uri));
       }
     } catch (err) {
       Alert.alert("Error", "Could not open camera. Please try again.");
@@ -108,19 +126,33 @@ export function KYCScreen() {
   }
 
   async function handleSubmit() {
-    if (!selectedId || !imageUri) return;
+    if (!selectedId || !imageUri || docNumber.trim().length === 0) return;
     setSubmitting(true);
     try {
-      // Simulate upload delay (replace with real API call)
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      // Read the selected image as base64. expo-file-system reads from the
+      // device-local URI that ImagePicker returns; no extra permission needed.
+      const fileBase64 = await FileSystem.readAsStringAsync(imageUri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      await complianceApi.uploadDocument({
+        document_type_code: selectedId,   // "passport" | "emirates_id"
+        document_number:    docNumber.trim(),
+        file_base64:        fileBase64,
+        content_type:       imageMime,
+      });
+
+      // Only mark KYC as submitted after the upload succeeds.
       dispatch(authActions.submitKyc({ idType: selectedId }));
-    } catch (err) {
-      Alert.alert("Upload failed", "Please check your connection and try again.");
+    } catch (err: unknown) {
+      const msg = (err as { message?: string })?.message ?? "Please check your connection and try again.";
+      Alert.alert("Upload failed", msg);
+    } finally {
       setSubmitting(false);
     }
   }
 
-  const canSubmit = !!selectedId && !!imageUri;
+  const canSubmit = !!selectedId && !!imageUri && docNumber.trim().length > 0;
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: CANVAS }} contentContainerStyle={{ paddingBottom: 48 }}>
@@ -168,6 +200,36 @@ export function KYCScreen() {
           ))}
         </View>
       </FadeInView>
+
+      {/* Document number — free-text, validated server-side (1-100 chars) */}
+      {selectedId && (
+        <FadeInView duration={300} style={s.section}>
+          <Text style={s.sectionLabel}>
+            {selectedId === "passport" ? "Passport Number" : "Emirates ID Number"}
+          </Text>
+          <TextInput
+            value={docNumber}
+            onChangeText={setDocNumber}
+            placeholder={selectedId === "passport" ? "e.g. P1234567A" : "784-XXXX-XXXXXXX-X"}
+            placeholderTextColor="rgba(255,255,255,0.2)"
+            autoCapitalize="characters"
+            autoCorrect={false}
+            maxLength={100}
+            style={{
+              backgroundColor: "rgba(255,255,255,0.03)",
+              borderWidth: 1,
+              borderColor: "rgba(255,255,255,0.08)",
+              borderRadius: 12,
+              paddingHorizontal: 14,
+              paddingVertical: 12,
+              color: "#FFF",
+              fontFamily: "JetBrainsMono-Regular",
+              fontSize: 14,
+              marginHorizontal: 20,
+            }}
+          />
+        </FadeInView>
+      )}
 
       {/* Upload section */}
       {selectedId && (

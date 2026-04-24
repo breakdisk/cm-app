@@ -2675,6 +2675,7 @@ dependencies = [
  "aws-sdk-s3",
  "axum 0.7.9",
  "axum-extra",
+ "base64 0.22.1",
  "chrono",
  "config",
  "dotenvy",

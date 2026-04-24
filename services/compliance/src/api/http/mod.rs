@@ -18,6 +18,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/ready",  get(health::ready))
         .route("/api/v1/compliance/me/profile",                          get(driver_routes::get_my_profile))
         .route("/api/v1/compliance/me/documents",                        post(driver_routes::submit_document))
+        .route("/api/v1/compliance/me/documents/upload",                 post(driver_routes::upload_document))
         .route("/api/v1/compliance/me/documents/:doc_id",                get(driver_routes::get_document))
         .route("/api/v1/compliance/me/documents/:doc_id/url",            get(driver_routes::get_document_url))
         .route("/api/v1/compliance/admin/queue",                          get(admin_routes::review_queue))

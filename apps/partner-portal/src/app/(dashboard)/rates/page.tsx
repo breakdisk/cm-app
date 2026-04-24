@@ -1,92 +1,53 @@
 "use client";
 /**
- * Partner Portal — Rate Cards
- * Active rate schedule, zone-based pricing, weight brackets, fuel surcharge.
+ * Partner Portal — Rate Cards + Rate Shop
+ * Surfaces the carrier service for the acting partner:
+ *   GET /v1/carriers/:id             → partner's own rate_cards (read-only)
+ *   GET /v1/carriers/rate-shop?…     → calculator showing all carriers' quotes
+ *
+ * Per-partner rate editing is intentionally omitted — rate cards are
+ * ops-managed in the current commercial model. When product enables
+ * self-serve rate edits, add `PUT /v1/carriers/:id/rate-cards` on the
+ * backend and wire an edit modal here.
  */
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
-import { GitBranch, Calendar, Download, ChevronDown, BarChart3 } from "lucide-react";
+import { GitBranch, RefreshCw, Calculator, Download } from "lucide-react";
+import {
+  carriersApi, fmtPhp,
+  type Carrier, type RateCard, type RateQuote,
+} from "@/lib/api/carriers";
+import { getCurrentPartnerId } from "@/lib/api/partner-identity";
 
-// ── Mock data ──────────────────────────────────────────────────────────────────
-
-const RATE_CARD = {
-  version: "v4.2",
-  effective: "January 1, 2026",
-  fuel_surcharge: 2.50,
-  cod_pct: 1.5,
-};
-
-const ZONE_RATES = [
-  {
-    zone: "Metro Manila",
-    description: "NCR + immediate surrounding areas",
-    sla: "D+1",
-    base: 15.00,
-    per_kg_over_1: 4.00,
-    max_kg: 30,
-    cod_eligible: true,
-  },
-  {
-    zone: "Luzon A",
-    description: "Bulacan, Cavite, Laguna, Rizal, Pampanga",
-    sla: "D+2",
-    base: 20.00,
-    per_kg_over_1: 5.00,
-    max_kg: 30,
-    cod_eligible: true,
-  },
-  {
-    zone: "Luzon B",
-    description: "All other Luzon provinces",
-    sla: "D+3",
-    base: 26.00,
-    per_kg_over_1: 6.00,
-    max_kg: 20,
-    cod_eligible: true,
-  },
-  {
-    zone: "Visayas",
-    description: "Cebu, Iloilo, Bacolod, Eastern Visayas",
-    sla: "D+3",
-    base: 38.00,
-    per_kg_over_1: 8.00,
-    max_kg: 15,
-    cod_eligible: false,
-  },
-  {
-    zone: "Mindanao",
-    description: "Davao, Cagayan de Oro, General Santos + surrounding",
-    sla: "D+4",
-    base: 45.00,
-    per_kg_over_1: 10.00,
-    max_kg: 15,
-    cod_eligible: false,
-  },
-];
-
-const WEIGHT_BRACKETS = [
-  { label: "0 – 1 kg",   note: "Base rate applies" },
-  { label: "1 – 3 kg",   note: "+₱4–10/kg depending on zone" },
-  { label: "3 – 5 kg",   note: "+₱4–10/kg"          },
-  { label: "5 – 10 kg",  note: "+₱4–10/kg + volumetric check" },
-  { label: "10 – 20 kg", note: "Heavy item surcharge: ₱50" },
-  { label: "20 – 30 kg", note: "Heavy item surcharge: ₱120" },
-  { label: "> 30 kg",    note: "Freight pricing — contact ops" },
-];
-
-const SPECIAL_SERVICES = [
-  { service: "Same-Day Delivery",       price: "+₱80",    availability: "Metro Manila only" },
-  { service: "Saturday Delivery",       price: "+₱25",    availability: "Luzon zones" },
-  { service: "Sunday / Holiday",        price: "+₱50",    availability: "Metro Manila only" },
-  { service: "Fragile Handling",        price: "+₱30",    availability: "All zones" },
-  { service: "Temperature-Controlled",  price: "+₱120",   availability: "Metro Manila only" },
-  { service: "POD — Digital Signature", price: "Included", availability: "All zones" },
-  { service: "POD — Photo Capture",     price: "Included", availability: "All zones" },
-];
+const SERVICE_TYPES = ["standard", "next_day", "same_day"] as const;
+type ServiceType = typeof SERVICE_TYPES[number];
 
 export default function RateCardsPage() {
+  const [carrier, setCarrier] = useState<Carrier | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      const id = getCurrentPartnerId();
+      const c = await carriersApi.get(id);
+      setCarrier(c);
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Failed to load rate card");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const rateCards: RateCard[] = carrier?.rate_cards ?? [];
+
   return (
     <motion.div
       variants={variants.staggerContainer}
@@ -102,111 +63,217 @@ export default function RateCardsPage() {
             Rate Cards
           </h1>
           <p className="text-sm text-white/40 font-mono mt-0.5">
-            Rate Card {RATE_CARD.version} · Effective {RATE_CARD.effective}
+            {carrier ? `${carrier.name} (${carrier.code})` : "Partner rate card"}
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <NeonBadge variant="green" dot>Active</NeonBadge>
-          <button className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors">
-            <Download size={12} /> Download PDF
+          {carrier && <NeonBadge variant={carrier.status === "active" ? "green" : "amber"} dot>{carrier.status}</NeonBadge>}
+          <button
+            onClick={load}
+            className="flex items-center gap-1.5 rounded-lg border border-glass-border px-3 py-2 text-xs text-white/60 hover:text-white transition-colors"
+            title="Refresh"
+          >
+            <RefreshCw size={12} />
           </button>
         </div>
       </motion.div>
 
-      {/* Summary chips */}
-      <motion.div variants={variants.fadeInUp} className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {[
-          { label: "Rate Version",    value: RATE_CARD.version,          color: "text-cyan-neon"    },
-          { label: "Effective Date",  value: RATE_CARD.effective,        color: "text-white"        },
-          { label: "Fuel Surcharge",  value: `₱${RATE_CARD.fuel_surcharge}/shipment`, color: "text-amber-signal" },
-          { label: "COD Fee",         value: `${RATE_CARD.cod_pct}% of COD`,           color: "text-purple-plasma" },
-        ].map((s) => (
-          <GlassCard key={s.label} size="sm">
-            <p className="text-2xs font-mono text-white/30 uppercase tracking-wider">{s.label}</p>
-            <p className={`text-sm font-bold font-mono mt-1 ${s.color}`}>{s.value}</p>
+      {error && (
+        <motion.div variants={variants.fadeInUp}>
+          <GlassCard padding="sm">
+            <p className="text-xs text-red-signal font-mono">{error}</p>
           </GlassCard>
-        ))}
+        </motion.div>
+      )}
+
+      {/* SLA summary */}
+      <motion.div variants={variants.fadeInUp} className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {loading && !carrier ? (
+          Array.from({ length: 4 }).map((_, i) => (
+            <GlassCard key={i} size="sm">
+              <div className="h-10 animate-pulse rounded bg-glass-200" />
+            </GlassCard>
+          ))
+        ) : carrier ? [
+          { label: "Service Types", value: String(rateCards.length),                         color: "text-cyan-neon"    },
+          { label: "On-Time Target", value: `${carrier.sla.on_time_target_pct.toFixed(0)}%`, color: "text-green-signal" },
+          { label: "Max Days",       value: `${carrier.sla.max_delivery_days}d`,             color: "text-white"        },
+          { label: "Breach Penalty", value: carrier.sla.penalty_per_breach > 0 ? fmtPhp(carrier.sla.penalty_per_breach) : "—", color: "text-amber-signal" },
+        ].map((m) => (
+          <GlassCard key={m.label} size="sm">
+            <p className="text-2xs font-mono text-white/30 uppercase tracking-wider">{m.label}</p>
+            <p className={`text-sm font-bold font-mono mt-1 ${m.color}`}>{m.value}</p>
+          </GlassCard>
+        )) : null}
       </motion.div>
 
-      {/* Zone rate table */}
+      {/* Rate card table — read-only; backend has no edit endpoint yet */}
       <motion.div variants={variants.fadeInUp}>
         <GlassCard padding="none">
-          <div className="px-5 py-4 border-b border-glass-border">
-            <h2 className="font-heading text-sm font-semibold text-white">Zone-Based Pricing</h2>
-            <p className="text-2xs font-mono text-white/30 mt-0.5">Base rate includes 1 kg. Additional weight per kg extra.</p>
+          <div className="flex items-center justify-between px-5 py-4 border-b border-glass-border">
+            <div>
+              <h2 className="font-heading text-sm font-semibold text-white">Rate Cards</h2>
+              <p className="text-2xs font-mono text-white/30 mt-0.5">Ops-managed pricing. Contact your account manager to update.</p>
+            </div>
+            <button
+              disabled
+              title="PDF export coming soon"
+              className="flex items-center gap-1.5 rounded-lg border border-glass-border px-3 py-2 text-xs text-white/30 cursor-not-allowed"
+            >
+              <Download size={12} /> Export
+            </button>
           </div>
 
-          <div className="grid grid-cols-[2fr_60px_80px_100px_80px_80px] gap-3 px-5 py-2.5 border-b border-glass-border">
-            {["Zone", "SLA", "Base Rate", "Add'l /kg", "Max KG", "COD"].map((h) => (
+          <div className="grid grid-cols-[2fr_100px_120px_80px_1fr] gap-3 px-5 py-2.5 border-b border-glass-border">
+            {["Service", "Base", "Per kg", "Max kg", "Coverage Zones"].map((h) => (
               <span key={h} className="text-2xs font-mono text-white/30 uppercase tracking-wider">{h}</span>
             ))}
           </div>
 
-          {ZONE_RATES.map((z) => (
-            <div key={z.zone} className="grid grid-cols-[2fr_60px_80px_100px_80px_80px] gap-3 items-center px-5 py-4 border-b border-glass-border/50 hover:bg-glass-100 transition-colors">
-              <div className="flex items-start gap-2">
-                <div>
-                  <p className="text-sm font-semibold text-white">{z.zone}</p>
-                  <p className="text-2xs font-mono text-white/30 mt-0.5">{z.description}</p>
-                </div>
-                {/* Cross-portal — zone delivery performance lives in admin/analytics.
-                    Plain <a> keeps the /admin basePath after the jump. */}
-                <a
-                  href={`/admin/analytics?zone=${encodeURIComponent(z.zone)}`}
-                  title="View zone performance in Admin Analytics"
-                  className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-glass-border text-white/40 hover:text-cyan-neon hover:border-cyan-neon/30 transition-colors"
-                >
-                  <BarChart3 size={11} />
-                </a>
-              </div>
-              <NeonBadge variant={z.sla === "D+1" ? "green" : z.sla === "D+2" ? "cyan" : "amber"}>{z.sla}</NeonBadge>
-              <span className="text-sm font-bold font-mono text-green-signal">₱{z.base.toFixed(2)}</span>
-              <span className="text-xs font-mono text-white/60">₱{z.per_kg_over_1.toFixed(2)} / kg</span>
-              <span className="text-xs font-mono text-white/60">{z.max_kg} kg</span>
-              {z.cod_eligible
-                ? <NeonBadge variant="green">Yes</NeonBadge>
-                : <NeonBadge variant="red">No</NeonBadge>
-              }
+          {loading ? (
+            <div className="px-5 py-10 text-center text-xs text-white/40 font-mono">loading…</div>
+          ) : rateCards.length === 0 ? (
+            <div className="px-5 py-10 text-center">
+              <p className="text-xs text-white/40 font-mono">
+                No rate cards configured. Contact ops to set up pricing before accepting dispatches.
+              </p>
             </div>
-          ))}
+          ) : (
+            rateCards.map((r) => (
+              <div key={r.service_type} className="grid grid-cols-[2fr_100px_120px_80px_1fr] gap-3 items-center px-5 py-3.5 border-b border-glass-border/50 hover:bg-glass-100 transition-colors">
+                <span className="text-sm font-medium text-white capitalize">{r.service_type.replace(/_/g, " ")}</span>
+                <span className="text-sm font-bold font-mono text-green-signal">{fmtPhp(r.base_rate_cents)}</span>
+                <span className="text-xs font-mono text-white/60">{fmtPhp(r.per_kg_cents)} / kg</span>
+                <span className="text-xs font-mono text-white/60">{r.max_weight_kg} kg</span>
+                <span className="text-xs text-white/40 font-mono truncate" title={r.coverage_zones.join(", ")}>
+                  {r.coverage_zones.length === 0 ? "—" : r.coverage_zones.join(", ")}
+                </span>
+              </div>
+            ))
+          )}
         </GlassCard>
       </motion.div>
 
-      {/* Weight brackets + special services */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <motion.div variants={variants.fadeInUp}>
-          <GlassCard className="h-full">
-            <h2 className="font-heading text-sm font-semibold text-white mb-4">Weight Brackets</h2>
-            <div className="flex flex-col gap-2">
-              {WEIGHT_BRACKETS.map((w) => (
-                <div key={w.label} className="flex items-center justify-between rounded-lg bg-glass-100 px-3 py-2.5">
-                  <span className="text-xs font-mono text-white">{w.label}</span>
-                  <span className="text-2xs font-mono text-white/40">{w.note}</span>
-                </div>
-              ))}
-            </div>
-          </GlassCard>
-        </motion.div>
-
-        <motion.div variants={variants.fadeInUp}>
-          <GlassCard className="h-full">
-            <h2 className="font-heading text-sm font-semibold text-white mb-4">Special Services</h2>
-            <div className="flex flex-col gap-2">
-              {SPECIAL_SERVICES.map((s) => (
-                <div key={s.service} className="flex items-center justify-between rounded-lg bg-glass-100 px-3 py-2.5">
-                  <div>
-                    <p className="text-xs text-white">{s.service}</p>
-                    <p className="text-2xs font-mono text-white/30 mt-0.5">{s.availability}</p>
-                  </div>
-                  <span className={`text-xs font-bold font-mono ${s.price === "Included" ? "text-green-signal" : "text-amber-signal"}`}>
-                    {s.price}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </GlassCard>
-        </motion.div>
-      </div>
+      {/* Rate-shop calculator */}
+      <motion.div variants={variants.fadeInUp}>
+        <RateShopCalculator />
+      </motion.div>
     </motion.div>
+  );
+}
+
+// ── Rate shop calculator ───────────────────────────────────────────────────────
+
+function RateShopCalculator() {
+  const [serviceType, setServiceType] = useState<ServiceType>("standard");
+  const [weightKg, setWeightKg]       = useState<string>("5");
+  const [quotes, setQuotes]           = useState<RateQuote[] | null>(null);
+  const [loading, setLoading]         = useState(false);
+  const [error, setError]             = useState<string | null>(null);
+
+  const weightNumber = useMemo(() => {
+    const w = parseFloat(weightKg);
+    return Number.isFinite(w) && w > 0 ? w : null;
+  }, [weightKg]);
+
+  async function handleShop() {
+    if (weightNumber === null) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const q = await carriersApi.rateShop({ service_type: serviceType, weight_kg: weightNumber });
+      setQuotes(q);
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Rate shop failed");
+      setQuotes(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <GlassCard padding="none">
+      <div className="flex items-center justify-between px-5 py-4 border-b border-glass-border">
+        <div>
+          <h2 className="font-heading text-sm font-semibold text-white flex items-center gap-2">
+            <Calculator size={14} className="text-purple-plasma" />
+            Rate Shop Calculator
+          </h2>
+          <p className="text-2xs font-mono text-white/30 mt-0.5">Compare carrier quotes for a hypothetical shipment.</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-[1fr_1fr_120px] gap-3 px-5 py-4 border-b border-glass-border">
+        <div>
+          <label className="mb-1 block text-2xs font-mono text-white/40 uppercase tracking-wider">Service</label>
+          <select
+            value={serviceType}
+            onChange={(e) => setServiceType(e.target.value as ServiceType)}
+            className="w-full rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-sm text-white outline-none focus:border-cyan-neon/40"
+          >
+            {SERVICE_TYPES.map((t) => (
+              <option key={t} value={t} style={{ background: "#0d1422" }}>{t.replace(/_/g, " ")}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-2xs font-mono text-white/40 uppercase tracking-wider">Weight (kg)</label>
+          <input
+            type="number"
+            inputMode="decimal"
+            min={0.1}
+            step={0.1}
+            value={weightKg}
+            onChange={(e) => setWeightKg(e.target.value)}
+            className="w-full rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-sm text-white outline-none focus:border-cyan-neon/40"
+          />
+        </div>
+        <div className="flex items-end">
+          <button
+            onClick={handleShop}
+            disabled={loading || weightNumber === null}
+            className="w-full rounded-lg bg-gradient-to-r from-purple-plasma to-cyan-neon px-4 py-2 text-xs font-semibold text-white disabled:opacity-40 transition-opacity"
+          >
+            {loading ? "Shopping…" : "Get Quotes"}
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <p className="px-5 py-3 text-xs text-red-signal font-mono">{error}</p>
+      )}
+
+      {quotes && (
+        <>
+          <div className="grid grid-cols-[2fr_100px_120px_1fr] gap-3 px-5 py-2.5 border-b border-glass-border">
+            {["Carrier", "Quote", "Eligible", "Reason"].map((h) => (
+              <span key={h} className="text-2xs font-mono text-white/30 uppercase tracking-wider">{h}</span>
+            ))}
+          </div>
+
+          {quotes.length === 0 ? (
+            <p className="px-5 py-10 text-center text-xs text-white/40 font-mono">
+              No carriers match this service + weight. Adjust inputs or onboard more carriers.
+            </p>
+          ) : (
+            quotes.map((q) => (
+              <div key={q.carrier_id} className="grid grid-cols-[2fr_100px_120px_1fr] gap-3 items-center px-5 py-3 border-b border-glass-border/50">
+                <span className="text-xs font-medium text-white">{q.carrier_name}</span>
+                <span className={`text-sm font-bold font-mono ${q.eligible ? "text-green-signal" : "text-white/40"}`}>
+                  {fmtPhp(q.total_cost_cents)}
+                </span>
+                <NeonBadge variant={q.eligible ? "green" : "muted"} dot>
+                  {q.eligible ? "eligible" : "ineligible"}
+                </NeonBadge>
+                <span className="text-2xs text-white/40 font-mono truncate" title={q.ineligibility_reason ?? ""}>
+                  {q.eligible ? "—" : q.ineligibility_reason ?? "—"}
+                </span>
+              </div>
+            ))
+          )}
+        </>
+      )}
+    </GlassCard>
   );
 }

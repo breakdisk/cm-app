@@ -1,110 +1,104 @@
-import { createApiClient, ApiResponse, PaginatedApiResponse } from "./client";
+import { createApiClient } from "./client";
 
-export interface CarrierProfile {
-  id: string;
-  name: string;
-  code: string;
-  status: "pending_verification" | "active" | "suspended" | "deactivated";
-  performance_grade: "excellent" | "good" | "fair" | "poor";
-  on_time_rate_pct: number;
-  total_deliveries: number;
-  created_at: string;
-}
+// ── Types ──────────────────────────────────────────────────────────────────────
+// Mirrors services/carrier/src/domain/entities/mod.rs. Backend uses tuple-struct
+// CarrierId newtypes over Uuid which serialize as either bare strings or `{0:
+// "<uuid>"}` depending on serde config; accept both.
 
-export interface SlaReport {
-  carrier_id: string;
-  period_from: string;
-  period_to: string;
-  total_shipments: number;
-  on_time: number;
-  late: number;
-  failed: number;
-  on_time_rate_pct: number;
-  sla_breaches: number;
-  avg_delivery_hours: number;
-}
+export type CarrierStatus = "pending_verification" | "active" | "suspended" | "deactivated";
+export type PerformanceGrade = "excellent" | "good" | "fair" | "poor";
 
 export interface RateCard {
-  id: string;
-  carrier_id: string;
-  service_type: string;
-  base_rate_php: number;
-  per_kg_rate_php: number;
+  service_type: string;          // "same_day" | "next_day" | "standard"
+  base_rate_cents: number;
+  per_kg_cents: number;
   max_weight_kg: number;
-  zones: string[];
+  coverage_zones: string[];
 }
 
-export interface Payout {
-  id: string;
-  carrier_id: string;
-  period_from: string;
-  period_to: string;
-  total_deliveries: number;
-  gross_amount_php: number;
-  deductions_php: number;
-  net_amount_php: number;
-  status: "pending" | "processing" | "paid";
-  paid_at?: string;
+export interface SlaCommitment {
+  on_time_target_pct: number;
+  max_delivery_days: number;
+  penalty_per_breach: number;    // cents
 }
 
-export interface Manifest {
-  id: string;
-  carrier_id: string;
-  created_at: string;
-  shipment_count: number;
-  status: "open" | "dispatched" | "completed";
-  download_url?: string;
+export interface Carrier {
+  id: string | { 0: string };
+  tenant_id: string | { 0: string };
+  name: string;
+  code: string;
+  contact_email: string;
+  contact_phone?: string | null;
+  api_endpoint?: string | null;
+  status: CarrierStatus;
+  sla: SlaCommitment;
+  rate_cards: RateCard[];
+  total_shipments: number;
+  on_time_count: number;
+  failed_count: number;
+  performance_grade: PerformanceGrade;
+  onboarded_at: string;
+  updated_at: string;
 }
+
+export interface RateQuote {
+  carrier_id: string;
+  carrier_name: string;
+  service_type: string;
+  total_cost_cents: number;
+  eligible: boolean;
+  ineligibility_reason?: string | null;
+}
+
+export interface RateShopResponse {
+  quotes: RateQuote[];
+}
+
+export interface RateShopQuery {
+  service_type: string;          // "same_day" | "next_day" | "standard"
+  weight_kg: number;
+}
+
+// ── Client ─────────────────────────────────────────────────────────────────────
+// Cookie-JWT flow; axios interceptor stamps Authorization automatically.
 
 export const carriersApi = {
-  /** Get the authenticated carrier's own profile */
-  getProfile: (token: string) =>
-    createApiClient(token)
-      .get<ApiResponse<CarrierProfile>>("/v1/carriers/me")
-      .then((r) => r.data.data),
+  /** Fetch a single carrier's full record including embedded rate_cards. */
+  async get(carrierId: string): Promise<Carrier> {
+    const { data } = await createApiClient().get<Carrier>(`/v1/carriers/${carrierId}`);
+    return data;
+  },
 
-  /** Get SLA performance report */
-  getSlaReport: (
-    params: { from: string; to: string },
-    token: string
-  ) =>
-    createApiClient(token)
-      .get<ApiResponse<SlaReport>>("/v1/carriers/me/sla", { params })
-      .then((r) => r.data.data),
+  /** List carriers for the logged-in tenant (ops view). */
+  async list(): Promise<Carrier[]> {
+    const { data } = await createApiClient().get<{ carriers: Carrier[] }>("/v1/carriers");
+    return data.carriers ?? [];
+  },
 
-  /** Get rate cards for the carrier */
-  getRateCards: (token: string) =>
-    createApiClient(token)
-      .get<ApiResponse<RateCard[]>>("/v1/carriers/me/rates")
-      .then((r) => r.data.data),
-
-  /** Update a rate card */
-  updateRateCard: (
-    rateCardId: string,
-    payload: Partial<Pick<RateCard, "base_rate_php" | "per_kg_rate_php">>,
-    token: string
-  ) =>
-    createApiClient(token)
-      .put<ApiResponse<RateCard>>(`/v1/carriers/me/rates/${rateCardId}`, payload)
-      .then((r) => r.data.data),
-
-  /** Get payout history */
-  getPayouts: (
-    params: { page?: number; per_page?: number; status?: string },
-    token: string
-  ) =>
-    createApiClient(token)
-      .get<PaginatedApiResponse<Payout>>("/v1/carriers/me/payouts", { params })
-      .then((r) => r.data),
-
-  /** Get dispatch manifests */
-  getManifests: (
-    params: { page?: number; per_page?: number; status?: string },
-    token: string
-  ) =>
-    createApiClient(token)
-      .get<PaginatedApiResponse<Manifest>>("/v1/carriers/me/manifests", {
-        params,
-      })
-      .then((r) => r.data),
+  /**
+   * Rate-shop the tenant's active carriers for a given service + weight.
+   * Returns a quote per eligible carrier, sorted by total cost ascending
+   * server-side.
+   */
+  async rateShop(q: RateShopQuery): Promise<RateQuote[]> {
+    const { data } = await createApiClient().get<RateShopResponse>("/v1/carriers/rate-shop", {
+      params: { service_type: q.service_type, weight_kg: q.weight_kg },
+    });
+    return data.quotes ?? [];
+  },
 };
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+/** Unwrap a CarrierId that may be `string` or `{0: string}`. */
+export function carrierIdOf(c: Carrier): string {
+  const raw = c.id as unknown;
+  if (typeof raw === "string") return raw;
+  if (raw && typeof raw === "object" && "0" in raw) return String((raw as { 0: string })[0]);
+  return "";
+}
+
+/** Format a cent-denominated number as ₱N,NNN (no decimals). */
+export function fmtPhp(cents: number): string {
+  return `₱${Math.round(cents / 100).toLocaleString()}`;
+}

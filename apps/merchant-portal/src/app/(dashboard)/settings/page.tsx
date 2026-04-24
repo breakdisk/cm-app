@@ -2,12 +2,22 @@
 /**
  * Merchant Portal — Settings
  * Merchant profile, pickup addresses, notification preferences, API access.
+ *
+ * Status per tab:
+ *   Profile          — display-only; backend has no PUT /v1/users/:id yet
+ *   Pickup Addresses — UI-local; no backend `saved_addresses` table yet
+ *   Notifications    — placeholder; no backend `notification_prefs` store yet
+ *   API Access       — fully wired to identity /v1/api-keys (list + create + revoke)
  */
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { variants } from "@/lib/design-system/tokens";
+import {
+  apiKeysApi, apiKeyIdOf,
+  type ApiKey, type CreateApiKeyResult,
+} from "@/lib/api/api-keys";
 
 const TABS = ["Profile", "Pickup Addresses", "Notifications", "API Access"] as const;
 type Tab = (typeof TABS)[number];
@@ -18,27 +28,8 @@ const ADDRESSES = [
   { id: "addr_3", label: "Davao Depot",     address: "Buhangin Rd, Davao City, Davao del Sur 8000",        default: false },
 ];
 
-const NOTIF_SETTINGS = [
-  { event: "Shipment Picked Up",      channels: { email: true,  sms: false, push: true  } },
-  { event: "In Transit Update",       channels: { email: false, sms: false, push: true  } },
-  { event: "Out for Delivery",        channels: { email: true,  sms: true,  push: true  } },
-  { event: "Delivery Successful",     channels: { email: true,  sms: true,  push: true  } },
-  { event: "Delivery Failed",         channels: { email: true,  sms: true,  push: true  } },
-  { event: "COD Collected",           channels: { email: true,  sms: false, push: false } },
-  { event: "Weekly Summary Report",   channels: { email: true,  sms: false, push: false } },
-];
-
 export default function MerchantSettingsPage() {
   const [activeTab, setActiveTab] = useState<Tab>("Profile");
-  const [notifs, setNotifs] = useState(NOTIF_SETTINGS);
-
-  function toggleNotif(idx: number, ch: keyof typeof NOTIF_SETTINGS[0]["channels"]) {
-    setNotifs((prev) =>
-      prev.map((n, i) =>
-        i === idx ? { ...n, channels: { ...n.channels, [ch]: !n.channels[ch] } } : n
-      )
-    );
-  }
 
   return (
     <motion.div
@@ -149,85 +140,201 @@ export default function MerchantSettingsPage() {
         </motion.div>
       )}
 
-      {/* Notifications */}
+      {/* Notifications — honest placeholder until the engagement service
+          gains a per-merchant notification_prefs store. The UI previously
+          rendered 21 toggles that did nothing server-side. */}
       {activeTab === "Notifications" && (
         <motion.div variants={variants.fadeInUp}>
-          <GlassCard padding="none">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-white/[0.08]">
-                  <th className="text-left px-4 py-3 text-xs text-white/30 uppercase tracking-widest font-mono">Event</th>
-                  {(["Email", "SMS", "Push"] as const).map((ch) => (
-                    <th key={ch} className="text-center px-4 py-3 text-xs text-white/30 uppercase tracking-widest font-mono">{ch}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {notifs.map((n, i) => (
-                  <tr key={n.event} className="border-b border-white/[0.04] hover:bg-white/[0.02]">
-                    <td className="px-4 py-3 text-white/70">{n.event}</td>
-                    {(["email", "sms", "push"] as const).map((ch) => (
-                      <td key={ch} className="px-4 py-3 text-center">
-                        <button
-                          onClick={() => toggleNotif(i, ch)}
-                          className={`w-8 h-4 rounded-full transition-colors relative ${
-                            n.channels[ch] ? "bg-[#00E5FF]/40" : "bg-white/10"
-                          }`}
-                        >
-                          <span
-                            className={`absolute top-0.5 w-3 h-3 rounded-full transition-all ${
-                              n.channels[ch] ? "left-4 bg-[#00E5FF]" : "left-0.5 bg-white/40"
-                            }`}
-                          />
-                        </button>
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <GlassCard>
+            <div className="py-6 text-center space-y-2">
+              <p className="text-sm text-white/70 font-semibold">Notification preferences — coming soon</p>
+              <p className="text-xs text-white/40 max-w-md mx-auto">
+                Per-event channel preferences (WhatsApp, SMS, Email, Push) will land with the next
+                engagement-service release. Today the platform sends all shipment-lifecycle
+                notifications by default; contact ops to disable specific events.
+              </p>
+            </div>
           </GlassCard>
         </motion.div>
       )}
 
-      {/* API Access */}
-      {activeTab === "API Access" && (
-        <motion.div variants={variants.fadeInUp} className="space-y-4">
-          <GlassCard title="Your API Key">
-            <div className="space-y-4">
-              <p className="text-sm text-white/40">Use this key to integrate LogisticOS into your order management system. Treat it like a password.</p>
-              <div className="flex items-center gap-3 bg-black/30 border border-white/[0.08] rounded-lg p-4">
-                <span className="flex-1 font-mono text-[#00FF88] text-sm">lsk_prod_•••••••••••••••••••••••••••••••••</span>
-                <button className="text-xs text-white/50 hover:text-white/80 border border-white/[0.08] rounded px-3 py-1.5">Reveal</button>
-                <button className="text-xs text-white/50 hover:text-white/80 border border-white/[0.08] rounded px-3 py-1.5">Copy</button>
-              </div>
-              <div className="flex gap-3">
-                <button className="px-4 py-2 text-sm text-[#FFAB00] border border-[#FFAB00]/20 bg-[#FFAB00]/05 rounded-lg hover:bg-[#FFAB00]/10 transition-colors">
-                  Rotate Key
-                </button>
-              </div>
-            </div>
-          </GlassCard>
+      {/* API Access — fully wired */}
+      {activeTab === "API Access" && <ApiKeysTab />}
+    </motion.div>
+  );
+}
 
-          <GlassCard title="Integration Resources">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              {[
-                { title: "API Reference",         sub: "OpenAPI 3.1 spec with all endpoints",   color: "#00E5FF" },
-                { title: "Webhook Guide",         sub: "Event types, payload schemas, retries", color: "#A855F7" },
-                { title: "Postman Collection",    sub: "Pre-built requests for all endpoints",  color: "#00FF88" },
-                { title: "Bulk Import Template",  sub: "CSV template for 500-shipment batches", color: "#FFAB00" },
-                { title: "Shopify Plugin",        sub: "Auto-sync orders from Shopify store",   color: "#00E5FF" },
-                { title: "WooCommerce Plugin",    sub: "WordPress / WooCommerce integration",   color: "#A855F7" },
-              ].map((r) => (
-                <div key={r.title} className="p-4 bg-white/[0.03] border border-white/[0.06] rounded-lg hover:border-white/20 transition-colors cursor-pointer">
-                  <p className="text-sm font-semibold text-white mb-1">{r.title}</p>
-                  <p className="text-xs text-white/40">{r.sub}</p>
+// ── API Keys tab ──────────────────────────────────────────────────────────────
+
+function ApiKeysTab() {
+  const [keys, setKeys]           = useState<ApiKey[]>([]);
+  const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState<string | null>(null);
+  const [creating, setCreating]   = useState(false);
+  const [newName, setNewName]     = useState("");
+  const [newScopes, setNewScopes] = useState("shipments:read,shipments:create");
+  const [justCreated, setJustCreated] = useState<CreateApiKeyResult | null>(null);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      const list = await apiKeysApi.list();
+      setKeys(list);
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Failed to load API keys");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleCreate() {
+    if (!newName.trim()) return;
+    setCreating(true);
+    setError(null);
+    try {
+      const result = await apiKeysApi.create({
+        name:   newName.trim(),
+        scopes: newScopes.split(",").map(s => s.trim()).filter(Boolean),
+      });
+      setJustCreated(result);
+      setNewName("");
+      await load();
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Create failed");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function handleRevoke(id: string) {
+    setRevokingId(id);
+    try {
+      await apiKeysApi.revoke(id);
+      await load();
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Revoke failed");
+    } finally {
+      setRevokingId(null);
+    }
+  }
+
+  return (
+    <motion.div variants={variants.fadeInUp} className="space-y-4">
+      {error && (
+        <GlassCard padding="sm">
+          <p className="text-xs text-red-signal font-mono">{error}</p>
+        </GlassCard>
+      )}
+
+      {/* One-time display of a newly-created key */}
+      {justCreated && (
+        <GlassCard title="New API key — copy it now, you won't see it again">
+          <div className="space-y-3">
+            <div className="flex items-center gap-3 bg-black/50 border border-green-signal/30 rounded-lg p-4">
+              <span className="flex-1 font-mono text-green-signal text-sm break-all">{justCreated.raw_key}</span>
+              <button
+                onClick={() => navigator.clipboard?.writeText(justCreated.raw_key)}
+                className="text-xs text-white/60 hover:text-white border border-white/10 rounded px-3 py-1.5"
+              >
+                Copy
+              </button>
+            </div>
+            <p className="text-xs text-white/40">
+              Key prefix <span className="font-mono text-white/60">{justCreated.key_prefix}</span>
+              {justCreated.expires_at ? ` · expires ${new Date(justCreated.expires_at).toLocaleDateString()}` : " · no expiry"}
+            </p>
+            <button
+              onClick={() => setJustCreated(null)}
+              className="px-3 py-1.5 text-xs text-white/60 border border-white/10 rounded"
+            >
+              I've saved it
+            </button>
+          </div>
+        </GlassCard>
+      )}
+
+      {/* Create form */}
+      <GlassCard title="Create new key">
+        <div className="grid grid-cols-1 md:grid-cols-[2fr_3fr_auto] gap-3">
+          <input
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="Key name — e.g. Shopify Integration"
+            maxLength={100}
+            className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white placeholder-white/25 outline-none focus:border-cyan-neon/40"
+          />
+          <input
+            value={newScopes}
+            onChange={(e) => setNewScopes(e.target.value)}
+            placeholder="Scopes (comma-separated)"
+            className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm font-mono text-white placeholder-white/25 outline-none focus:border-cyan-neon/40"
+          />
+          <button
+            onClick={handleCreate}
+            disabled={creating || !newName.trim()}
+            className="rounded-lg bg-gradient-to-r from-cyan-neon to-green-signal px-4 py-2 text-xs font-semibold text-black disabled:opacity-40"
+          >
+            {creating ? "Creating…" : "Create"}
+          </button>
+        </div>
+      </GlassCard>
+
+      {/* Existing keys list */}
+      <GlassCard padding="none">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.08]">
+          <h2 className="font-heading text-sm font-semibold text-white">Your API Keys</h2>
+          <span className="text-2xs font-mono text-white/30">
+            {loading ? "loading…" : `${keys.length} key${keys.length === 1 ? "" : "s"}`}
+          </span>
+        </div>
+        <div className="grid grid-cols-[2fr_1fr_90px_100px_80px] gap-3 px-5 py-2.5 border-b border-white/[0.08]">
+          {["Name", "Prefix", "Status", "Last Used", ""].map((h) => (
+            <span key={h} className="text-2xs font-mono text-white/30 uppercase tracking-wider">{h}</span>
+          ))}
+        </div>
+        {!loading && keys.length === 0 ? (
+          <div className="px-5 py-10 text-center text-xs text-white/40 font-mono">No API keys yet.</div>
+        ) : (
+          keys.map((k) => {
+            const id = apiKeyIdOf(k);
+            const busy = revokingId === id;
+            return (
+              <div key={id} className="grid grid-cols-[2fr_1fr_90px_100px_80px] gap-3 items-center px-5 py-3 border-b border-white/[0.04]">
+                <div>
+                  <p className="text-xs font-medium text-white">{k.name}</p>
+                  <p className="text-2xs font-mono text-white/30 mt-0.5">
+                    {k.scopes.length > 0 ? k.scopes.join(", ") : "no scopes"}
+                  </p>
                 </div>
-              ))}
-            </div>
-          </GlassCard>
-        </motion.div>
-      )}
+                <span className="text-2xs font-mono text-white/50">{k.key_prefix}…</span>
+                <NeonBadge variant={k.is_active ? "green" : "muted"} dot>
+                  {k.is_active ? "active" : "revoked"}
+                </NeonBadge>
+                <span className="text-2xs font-mono text-white/40">
+                  {k.last_used_at ? new Date(k.last_used_at).toLocaleDateString() : "never"}
+                </span>
+                <div className="text-right">
+                  {k.is_active && (
+                    <button
+                      onClick={() => handleRevoke(id)}
+                      disabled={busy}
+                      className="rounded px-2 py-1 text-2xs text-red-signal hover:bg-red-signal/10 disabled:opacity-40 transition-colors"
+                    >
+                      {busy ? "…" : "Revoke"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })
+        )}
+      </GlassCard>
     </motion.div>
   );
 }

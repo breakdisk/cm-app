@@ -102,6 +102,102 @@ pub async fn get_document(
     Ok(Json(serde_json::json!({ "data": doc })))
 }
 
+/// POST /me/documents/upload — base64 upload + submit in one call.
+///
+/// Client encodes the image/PDF to base64 and POSTs with metadata. Server
+/// decodes, uploads to S3, then creates the DriverDocument record referencing
+/// the resulting s3:// URI. The pre-existing `submit_document` handler still
+/// accepts a pre-uploaded file_url for flows where the client already has an
+/// S3 URI (e.g. admin-side bulk ingest).
+#[derive(Deserialize)]
+pub struct UploadDocumentRequest {
+    /// Accept either `document_type_id` (UUID) or `document_type_code`
+    /// (e.g. "passport"); at least one is required. Code is friendlier for
+    /// mobile clients that hardcode a known list (passport / emirates_id /
+    /// drivers_license) without looking up UUIDs first.
+    #[serde(default)]
+    pub document_type_id:   Option<Uuid>,
+    #[serde(default)]
+    pub document_type_code: Option<String>,
+    pub document_number:    String,
+    /// Base64-encoded file bytes (image/jpeg, image/png, or application/pdf).
+    pub file_base64:        String,
+    /// MIME type — validated server-side against the storage allow-list.
+    pub content_type:       String,
+    pub issue_date:         Option<String>,
+    pub expiry_date:        Option<String>,
+}
+
+pub async fn upload_document(
+    AuthClaims(claims): AuthClaims,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<UploadDocumentRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    use base64::Engine as _;
+
+    let profile = state.compliance.profiles
+        .find_by_entity(claims.tenant_id, "driver", claims.user_id)
+        .await?
+        .ok_or(AppError::NotFound { resource: "ComplianceProfile", id: claims.user_id.to_string() })?;
+
+    // Resolve document_type_id from either the UUID or the code lookup.
+    let document_type_id = match req.document_type_id {
+        Some(id) => id,
+        None => {
+            let code = req.document_type_code.as_deref().ok_or_else(|| AppError::Validation(
+                "document_type_id or document_type_code is required".into(),
+            ))?;
+            state.compliance.doc_types
+                .find_by_code(code)
+                .await?
+                .ok_or_else(|| AppError::NotFound {
+                    resource: "DocumentType",
+                    id: code.to_string(),
+                })?
+                .id
+        }
+    };
+
+    let document_number = req.document_number.trim().to_owned();
+    if document_number.is_empty() {
+        return Err(AppError::Validation("document_number cannot be empty".into()));
+    }
+    if document_number.len() > 100 {
+        return Err(AppError::Validation("document_number must be 100 characters or fewer".into()));
+    }
+
+    // Decode the base64 payload. Storage.upload() enforces size + content type.
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(req.file_base64.as_bytes())
+        .map_err(|e| AppError::Validation(format!("Invalid base64 payload: {e}")))?;
+
+    let file_url = state.storage
+        .upload(claims.tenant_id, bytes, &req.content_type)
+        .await
+        .map_err(|e| AppError::Validation(e.to_string()))?;
+
+    let parse_date = |s: Option<String>| -> Result<Option<chrono::NaiveDate>, AppError> {
+        match s {
+            None => Ok(None),
+            Some(d) => chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d")
+                .map(Some)
+                .map_err(|_| AppError::Validation(format!("Invalid date format '{}'; expected YYYY-MM-DD", d))),
+        }
+    };
+
+    let doc = state.compliance.submit_document(
+        profile.id,
+        document_type_id,
+        document_number,
+        parse_date(req.issue_date)?,
+        parse_date(req.expiry_date)?,
+        file_url,
+        claims.user_id,
+    ).await?;
+
+    Ok(Json(serde_json::json!({ "data": doc })))
+}
+
 /// GET /me/documents/:doc_id/url — returns a 15-minute presigned download URL
 pub async fn get_document_url(
     AuthClaims(claims): AuthClaims,

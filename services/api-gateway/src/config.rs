@@ -51,6 +51,7 @@ pub struct ServicesConfig {
     pub marketing_url:            String,
     pub business_logic_url:       String,
     pub ai_layer_url:             String,
+    pub compliance_url:           String,
 }
 
 #[derive(Debug, Deserialize, Clone)]

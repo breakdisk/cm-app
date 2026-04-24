@@ -84,6 +84,9 @@ impl ProxyClient {
         // Business Logic / Automation Rules
         } else if path.starts_with("/v1/rules") {
             Some(&self.services.business_logic_url)
+        // Compliance (note: uses /api/v1/compliance/* prefix, not /v1/)
+        } else if path.starts_with("/api/v1/compliance") {
+            Some(&self.services.compliance_url)
         } else {
             None
         }
