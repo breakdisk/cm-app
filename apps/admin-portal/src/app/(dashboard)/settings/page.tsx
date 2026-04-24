@@ -1,22 +1,28 @@
 "use client";
 /**
  * Admin Portal — Settings
- * Tenant configuration, API keys, webhook endpoints, role management, audit log.
+ *
+ * LIVE:   API Keys tab → identity /v1/api-keys (list/create/revoke)
+ * STATIC: General, Webhooks, Roles & Permissions, Audit Log tabs.
+ *         Backend endpoints for those don't exist yet:
+ *           - General: no PUT /v1/tenants/:id endpoint
+ *           - Webhooks: no webhook management service
+ *           - Roles: identity has /v1/users but no role-assignment endpoint
+ *           - Audit Log: no audit-log service exposed to admin portal
+ *         When those ship, wire each tab analogous to the API Keys pattern.
  */
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { variants } from "@/lib/design-system/tokens";
+import {
+  apiKeysApi, apiKeyIdOf,
+  type ApiKey, type CreateApiKeyResult,
+} from "@/lib/api/api-keys";
 
 const TABS = ["General", "API Keys", "Webhooks", "Roles & Permissions", "Audit Log"] as const;
 type Tab = (typeof TABS)[number];
-
-const API_KEYS = [
-  { id: "key_1", name: "Production API Key",  prefix: "lsk_prod_****", created: "2024-01-15", last_used: "2 minutes ago",  scopes: ["shipments:write", "dispatch:read", "webhooks:manage"] },
-  { id: "key_2", name: "Staging API Key",     prefix: "lsk_stg_****",  created: "2024-02-01", last_used: "1 hour ago",     scopes: ["shipments:write", "dispatch:read"] },
-  { id: "key_3", name: "Analytics Read-Only", prefix: "lsk_ro_****",   created: "2024-02-20", last_used: "3 days ago",     scopes: ["analytics:read"] },
-];
 
 const WEBHOOKS = [
   { id: "wh_1", url: "https://merchant.example.com/hooks/logisticos", events: ["shipment.delivered", "shipment.failed"], status: "active",   last_delivery: "1 min ago",  success_rate: 99.2 },
@@ -148,51 +154,8 @@ export default function SettingsPage() {
         </motion.div>
       )}
 
-      {/* API Keys */}
-      {activeTab === "API Keys" && (
-        <motion.div variants={variants.fadeInUp} className="space-y-4">
-          <div className="flex justify-between items-center">
-            <p className="text-sm text-white/40">API keys grant programmatic access. Rotate regularly. Store in Vault — never in code.</p>
-            <button className="px-4 py-2 text-sm font-medium text-[#050810] bg-[#00E5FF] rounded-lg hover:bg-[#00E5FF]/90 transition-colors">
-              + Generate Key
-            </button>
-          </div>
-          <GlassCard padding="none">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-white/[0.08]">
-                  {["Name", "Key Prefix", "Scopes", "Created", "Last Used", ""].map((h) => (
-                    <th key={h} className="text-left px-4 py-3 text-xs text-white/30 uppercase tracking-widest font-mono">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {API_KEYS.map((k) => (
-                  <tr key={k.id} className="border-b border-white/[0.04] hover:bg-white/[0.02]">
-                    <td className="px-4 py-3 text-white font-medium">{k.name}</td>
-                    <td className="px-4 py-3 font-mono text-[#00E5FF] text-xs">{k.prefix}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex flex-wrap gap-1">
-                        {k.scopes.map((s) => (
-                          <span key={s} className="text-[10px] px-2 py-0.5 rounded-full bg-[#A855F7]/10 text-[#A855F7] border border-[#A855F7]/20 font-mono">{s}</span>
-                        ))}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-white/40 text-xs font-mono">{k.created}</td>
-                    <td className="px-4 py-3 text-white/40 text-xs">{k.last_used}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex gap-2">
-                        <button className="text-xs text-[#FFAB00] hover:text-[#FFAB00]/70">Rotate</button>
-                        <button className="text-xs text-[#FF3B5C] hover:text-[#FF3B5C]/70">Revoke</button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </GlassCard>
-        </motion.div>
-      )}
+      {/* API Keys — live */}
+      {activeTab === "API Keys" && <ApiKeysTab />}
 
       {/* Webhooks */}
       {activeTab === "Webhooks" && (
@@ -299,6 +262,198 @@ export default function SettingsPage() {
           </GlassCard>
         </motion.div>
       )}
+    </motion.div>
+  );
+}
+
+// ── API Keys tab ──────────────────────────────────────────────────────────────
+// Live: identity /v1/api-keys list + create + revoke.
+
+function ApiKeysTab() {
+  const [keys, setKeys]               = useState<ApiKey[]>([]);
+  const [loading, setLoading]         = useState(true);
+  const [error, setError]             = useState<string | null>(null);
+  const [creating, setCreating]       = useState(false);
+  const [newName, setNewName]         = useState("");
+  const [newScopes, setNewScopes]     = useState("shipments:read,shipments:write");
+  const [justCreated, setJustCreated] = useState<CreateApiKeyResult | null>(null);
+  const [revokingId, setRevokingId]   = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      setKeys(await apiKeysApi.list());
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Failed to load API keys");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleCreate() {
+    if (!newName.trim()) return;
+    setCreating(true);
+    setError(null);
+    try {
+      const result = await apiKeysApi.create({
+        name:   newName.trim(),
+        scopes: newScopes.split(",").map((s) => s.trim()).filter(Boolean),
+      });
+      setJustCreated(result);
+      setNewName("");
+      await load();
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Create failed");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function handleRevoke(id: string) {
+    setRevokingId(id);
+    try {
+      await apiKeysApi.revoke(id);
+      await load();
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Revoke failed");
+    } finally {
+      setRevokingId(null);
+    }
+  }
+
+  return (
+    <motion.div variants={variants.fadeInUp} className="space-y-4">
+      {error && (
+        <GlassCard padding="sm">
+          <p className="text-xs text-[#FF3B5C] font-mono">{error}</p>
+        </GlassCard>
+      )}
+
+      {justCreated && (
+        <GlassCard title="New API key — copy it now, you won't see it again">
+          <div className="space-y-3">
+            <div className="flex items-center gap-3 bg-black/50 border border-[#00FF88]/30 rounded-lg p-4">
+              <span className="flex-1 font-mono text-[#00FF88] text-sm break-all">{justCreated.raw_key}</span>
+              <button
+                onClick={() => navigator.clipboard?.writeText(justCreated.raw_key)}
+                className="text-xs text-white/60 hover:text-white border border-white/10 rounded px-3 py-1.5"
+              >
+                Copy
+              </button>
+            </div>
+            <p className="text-xs text-white/40">
+              Key prefix <span className="font-mono text-white/60">{justCreated.key_prefix}</span>
+              {justCreated.expires_at ? ` · expires ${new Date(justCreated.expires_at).toLocaleDateString()}` : " · no expiry"}
+            </p>
+            <button
+              onClick={() => setJustCreated(null)}
+              className="px-3 py-1.5 text-xs text-white/60 border border-white/10 rounded"
+            >
+              I've saved it
+            </button>
+          </div>
+        </GlassCard>
+      )}
+
+      {/* Create form */}
+      <GlassCard title="Generate new API key">
+        <div className="grid grid-cols-1 md:grid-cols-[2fr_3fr_auto] gap-3">
+          <input
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="Key name — e.g. Production API Key"
+            maxLength={100}
+            className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white placeholder-white/25 outline-none focus:border-[#00E5FF]/40"
+          />
+          <input
+            value={newScopes}
+            onChange={(e) => setNewScopes(e.target.value)}
+            placeholder="Scopes (comma-separated)"
+            className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm font-mono text-white placeholder-white/25 outline-none focus:border-[#00E5FF]/40"
+          />
+          <button
+            onClick={handleCreate}
+            disabled={creating || !newName.trim()}
+            className="rounded-lg bg-[#00E5FF] px-4 py-2 text-xs font-semibold text-[#050810] disabled:opacity-40"
+          >
+            {creating ? "Creating…" : "Create"}
+          </button>
+        </div>
+      </GlassCard>
+
+      {/* Existing keys */}
+      <GlassCard padding="none">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.08]">
+          <h2 className="font-heading text-sm font-semibold text-white">Active API Keys</h2>
+          <span className="text-2xs font-mono text-white/30">
+            {loading ? "loading…" : `${keys.length} key${keys.length === 1 ? "" : "s"}`}
+          </span>
+        </div>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-white/[0.08]">
+              {["Name", "Prefix", "Scopes", "Last Used", "Status", ""].map((h) => (
+                <th key={h} className="text-left px-4 py-3 text-xs text-white/30 uppercase tracking-widest font-mono">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {!loading && keys.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="px-5 py-10 text-center text-xs text-white/40 font-mono">
+                  No API keys yet. Generate one above.
+                </td>
+              </tr>
+            ) : (
+              keys.map((k) => {
+                const id = apiKeyIdOf(k);
+                const busy = revokingId === id;
+                return (
+                  <tr key={id} className="border-b border-white/[0.04] hover:bg-white/[0.02]">
+                    <td className="px-4 py-3 text-white font-medium">{k.name}</td>
+                    <td className="px-4 py-3 font-mono text-[#00E5FF] text-xs">{k.key_prefix}…</td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-wrap gap-1">
+                        {k.scopes.length === 0 ? (
+                          <span className="text-2xs font-mono text-white/30">no scopes</span>
+                        ) : (
+                          k.scopes.map((s) => (
+                            <span key={s} className="text-[10px] px-2 py-0.5 rounded-full bg-[#A855F7]/10 text-[#A855F7] border border-[#A855F7]/20 font-mono">{s}</span>
+                          ))
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-white/40 text-xs font-mono">
+                      {k.last_used_at ? new Date(k.last_used_at).toLocaleDateString() : "never"}
+                    </td>
+                    <td className="px-4 py-3">
+                      <NeonBadge variant={k.is_active ? "green" : "red"} dot>
+                        {k.is_active ? "active" : "revoked"}
+                      </NeonBadge>
+                    </td>
+                    <td className="px-4 py-3">
+                      {k.is_active && (
+                        <button
+                          onClick={() => handleRevoke(id)}
+                          disabled={busy}
+                          className="text-xs text-[#FF3B5C] hover:text-[#FF3B5C]/70 disabled:opacity-40"
+                        >
+                          {busy ? "…" : "Revoke"}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </GlassCard>
     </motion.div>
   );
 }
