@@ -1,13 +1,53 @@
 "use client";
 
+import Link from "next/link";
 import { Zap, Twitter, Linkedin, Github, Mail } from "lucide-react";
 
-const footerLinks = {
-  Platform: ["Dispatch & Routing", "Driver App", "Customer Portal", "Analytics", "AI Agents", "Compliance"],
-  Company: ["About Us", "Careers", "Blog", "Press Kit", "Partners", "Contact"],
-  Resources: ["Documentation", "API Reference", "Changelog", "Status Page", "Community", "Webinars"],
-  Legal: ["Privacy Policy", "Terms of Service", "Cookie Policy", "GDPR", "Security", "PCI-DSS"],
+// Anchors on the landing page we already render. Unknown destinations route
+// to `/` rather than `#` so clicks at least reset to the top; replace with
+// real routes (/about, /careers, /blog, etc.) as those pages land.
+const LANDING_HOME = "/";
+const footerLinks: Record<string, Array<{ label: string; href: string }>> = {
+  Platform: [
+    { label: "Dispatch & Routing", href: `${LANDING_HOME}#features` },
+    { label: "Driver App",         href: `${LANDING_HOME}#features` },
+    { label: "Customer Portal",    href: `${LANDING_HOME}#features` },
+    { label: "Analytics",          href: `${LANDING_HOME}#features` },
+    { label: "AI Agents",          href: `${LANDING_HOME}#features` },
+    { label: "Compliance",         href: `${LANDING_HOME}#features` },
+  ],
+  Company: [
+    { label: "About Us",   href: LANDING_HOME },
+    { label: "Careers",    href: LANDING_HOME },
+    { label: "Blog",       href: LANDING_HOME },
+    { label: "Press Kit",  href: LANDING_HOME },
+    { label: "Partners",   href: LANDING_HOME },
+    { label: "Contact",    href: "mailto:support@cargomarket.net" },
+  ],
+  Resources: [
+    { label: "Documentation", href: LANDING_HOME },
+    { label: "API Reference", href: LANDING_HOME },
+    { label: "Changelog",     href: LANDING_HOME },
+    { label: "Status Page",   href: LANDING_HOME },
+    { label: "Community",     href: LANDING_HOME },
+    { label: "Webinars",      href: LANDING_HOME },
+  ],
+  Legal: [
+    { label: "Privacy Policy",    href: LANDING_HOME },
+    { label: "Terms of Service",  href: LANDING_HOME },
+    { label: "Cookie Policy",     href: LANDING_HOME },
+    { label: "GDPR",              href: LANDING_HOME },
+    { label: "Security",          href: LANDING_HOME },
+    { label: "PCI-DSS",           href: LANDING_HOME },
+  ],
 };
+
+const SOCIAL_LINKS: Array<{ Icon: typeof Twitter; href: string; label: string }> = [
+  { Icon: Twitter,  href: "https://twitter.com",  label: "Twitter"  },
+  { Icon: Linkedin, href: "https://linkedin.com", label: "LinkedIn" },
+  { Icon: Github,   href: "https://github.com",   label: "GitHub"   },
+  { Icon: Mail,     href: "mailto:support@cargomarket.net", label: "Email" },
+];
 
 export default function Footer() {
   return (
@@ -19,7 +59,7 @@ export default function Footer() {
         <div className="grid lg:grid-cols-5 gap-10 mb-12">
           {/* Brand */}
           <div className="lg:col-span-1">
-            <a href="#" className="flex items-center gap-2.5 mb-4">
+            <Link href="/" className="flex items-center gap-2.5 mb-4">
               <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-neon/30 to-purple-plasma/30 flex items-center justify-center">
                 <Zap className="w-4 h-4 text-cyan-neon" strokeWidth={2.5} />
               </div>
@@ -30,16 +70,19 @@ export default function Footer() {
                 <span className="text-gradient-brand">Cargo</span>
                 <span className="text-white">Market</span>
               </span>
-            </a>
+            </Link>
             <p className="text-xs text-slate-500 leading-relaxed mb-5">
               One AI logistics platform for small, medium & enterprise businesses.
               Ship smarter. Grow faster.
             </p>
             <div className="flex items-center gap-3">
-              {[Twitter, Linkedin, Github, Mail].map((Icon, i) => (
+              {SOCIAL_LINKS.map(({ Icon, href, label }) => (
                 <a
-                  key={i}
-                  href="#"
+                  key={label}
+                  href={href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={label}
                   className="w-8 h-8 rounded-lg glass-panel border border-white/[0.08] flex items-center justify-center text-slate-500 hover:text-cyan-neon hover:border-cyan-neon/30 transition-all duration-200"
                 >
                   <Icon className="w-3.5 h-3.5" />
@@ -58,16 +101,19 @@ export default function Footer() {
                 {group}
               </h4>
               <ul className="space-y-2.5">
-                {links.map((link) => (
-                  <li key={link}>
-                    <a
-                      href="#"
-                      className="text-xs text-slate-500 hover:text-slate-300 transition-colors duration-200"
-                    >
-                      {link}
-                    </a>
-                  </li>
-                ))}
+                {links.map(({ label, href }) => {
+                  const isExternal = href.startsWith("mailto:") || href.startsWith("http");
+                  const className = "text-xs text-slate-500 hover:text-slate-300 transition-colors duration-200";
+                  return (
+                    <li key={label}>
+                      {isExternal ? (
+                        <a href={href} className={className}>{label}</a>
+                      ) : (
+                        <Link href={href} className={className}>{label}</Link>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           ))}

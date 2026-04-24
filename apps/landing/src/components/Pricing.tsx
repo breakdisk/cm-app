@@ -186,7 +186,7 @@ export default function Pricing() {
               </ul>
 
               <a
-                href="#"
+                href={plan.cta.toLowerCase().includes("contact") ? "mailto:support@cargomarket.net?subject=Enterprise%20Inquiry" : "/setup"}
                 className={`block text-center py-3 rounded-xl text-sm transition-all duration-300 ${plan.ctaStyle}`}
               >
                 {plan.cta}

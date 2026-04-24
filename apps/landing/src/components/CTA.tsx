@@ -40,7 +40,7 @@ export default function CTA() {
             <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
           </a>
           <a
-            href="#"
+            href="mailto:support@cargomarket.net?subject=CargoMarket%20Demo%20Request"
             className="inline-flex items-center gap-2 px-8 py-4 rounded-xl text-base font-medium glass-panel border border-white/10 text-slate-300 hover:text-white hover:border-white/20 transition-all duration-300"
           >
             Schedule a Demo

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useEffect } from "react";
 import { Menu, X, Zap } from "lucide-react";
 
@@ -32,8 +33,8 @@ export default function Navbar() {
     >
       <div className="max-w-7xl mx-auto px-6 lg:px-8">
         <div className="flex items-center justify-between h-16 lg:h-18">
-          {/* Logo */}
-          <a href="#" className="flex items-center gap-2.5 group">
+          {/* Logo — click returns to landing home */}
+          <Link href="/" className="flex items-center gap-2.5 group">
             <div className="relative w-8 h-8 flex items-center justify-center">
               <div className="absolute inset-0 rounded-lg bg-gradient-to-br from-cyan-neon/30 to-purple-plasma/30 group-hover:from-cyan-neon/50 group-hover:to-purple-plasma/50 transition-all duration-300" />
               <Zap className="w-4 h-4 text-cyan-neon relative z-10" strokeWidth={2.5} />
@@ -45,7 +46,7 @@ export default function Navbar() {
               <span className="text-gradient-brand">Cargo</span>
               <span className="text-white">Market</span>
             </span>
-          </a>
+          </Link>
 
           {/* Desktop nav */}
           <div className="hidden lg:flex items-center gap-1">
