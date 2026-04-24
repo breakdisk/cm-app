@@ -32,6 +32,7 @@ import {
   Building2,
   User as UserIcon,
   X,
+  Receipt as ReceiptIcon,
 } from "lucide-react";
 
 import { GlassCard } from "@/components/ui/glass-card";
@@ -51,6 +52,9 @@ import {
   type MarketplaceStats,
   type PartnerType,
 } from "@/lib/api/marketplace";
+import { findReceiptByBookingId, type BusReceipt } from "@/lib/api/marketplace-bus";
+import { ReceiptModal, type ReceiptModalBooking } from "@/components/marketplace/ReceiptModal";
+import { authFetch } from "@/lib/auth/auth-fetch";
 
 // ── Status styling ────────────────────────────────────────────────────────────
 
@@ -168,6 +172,12 @@ function AdminMarketplacePageInner() {
   const [bookings, setBookings] = useState<AdminBooking[]>([]);
   const [stats, setStats]       = useState<MarketplaceStats | null>(null);
   const [loading, setLoading]   = useState(true);
+
+  // Oversight view — receipts issued by partners on tenant bookings. Read-only.
+  const [receiptsByBookingId, setReceiptsByBookingId] = useState<Record<string, BusReceipt>>({});
+  const [receiptModal, setReceiptModal] = useState<
+    { open: boolean; booking: ReceiptModalBooking | null; receipt: BusReceipt | null }
+  >({ open: false, booking: null, receipt: null });
   const [tab, setTab]           = useState<Tab>(qpAwb || qpStatus ? "bookings" : "listings");
   const [search, setSearch]     = useState(qpAwb ?? "");
   const [partnerFilter, setPartnerFilter]     = useState<string>(qpPartner ?? "all");
@@ -209,6 +219,39 @@ function AdminMarketplacePageInner() {
       unsubscribe();
     };
   }, [refresh]);
+
+  // Hydrate receipts for tenant-wide visible bookings.
+  useEffect(() => {
+    if (bookings.length === 0) {
+      setReceiptsByBookingId({});
+      return;
+    }
+    const next: Record<string, BusReceipt> = {};
+    for (const b of bookings) {
+      const r = findReceiptByBookingId(b.id);
+      if (r) next[b.id] = r;
+    }
+    setReceiptsByBookingId(next);
+  }, [bookings]);
+
+  function openReceiptFor(b: AdminBooking) {
+    const receipt = receiptsByBookingId[b.id] ?? null;
+    if (!receipt) return;
+    const modalBooking: ReceiptModalBooking = {
+      id:                    b.id,
+      awb:                   b.awb,
+      partner_display_name:  b.partner_display_name,
+      merchant_display:      b.consumer_display,
+      consumer_display:      b.consumer_display,
+      pickup_label:          b.pickup_label,
+      dropoff_label:         b.dropoff_label,
+      pickup_at:             b.pickup_at,
+      cargo_weight_kg:       b.cargo_weight_kg,
+      quoted_price_cents:    b.quoted_price_cents,
+      status:                b.status,
+    };
+    setReceiptModal({ open: true, booking: modalBooking, receipt });
+  }
 
   // Distinct partners for filter dropdown
   const partnerOptions = useMemo(() => {
@@ -449,12 +492,33 @@ function AdminMarketplacePageInner() {
         </div>
       </GlassCard>
 
+      {/* Shadow Marketplace — pre-service capacity oversight.
+          Cross-references each partner's active listings with their actual
+          available drivers from driver-ops. Flags "phantom" partners with
+          listings but no online drivers. See ADR-0014 — this view is what
+          the real marketplace service will replace in Phase 2. */}
+      {tab === "listings" && <ShadowMarketplacePanel listings={listings} />}
+
       {/* ── Content ───────────────────────────────────────────────────────── */}
       {tab === "listings" ? (
         <ListingsTable rows={filteredListings} total={listings.length} loading={loading} />
       ) : (
-        <BookingsTable rows={filteredBookings} total={bookings.length} loading={loading} />
+        <BookingsTable
+          rows={filteredBookings}
+          total={bookings.length}
+          loading={loading}
+          receipts={receiptsByBookingId}
+          onOpenReceipt={openReceiptFor}
+        />
       )}
+
+      {/* Shipment receipt (view-only — tenant oversight) */}
+      <ReceiptModal
+        open={receiptModal.open}
+        onClose={() => setReceiptModal({ open: false, booking: null, receipt: null })}
+        booking={receiptModal.booking}
+        receipt={receiptModal.receipt}
+      />
     </div>
   );
 }
@@ -663,10 +727,14 @@ function BookingsTable({
   rows,
   total,
   loading,
+  receipts,
+  onOpenReceipt,
 }: {
   rows: AdminBooking[];
   total: number;
   loading: boolean;
+  receipts: Record<string, BusReceipt>;
+  onOpenReceipt: (b: AdminBooking) => void;
 }) {
   return (
     <GlassCard size="sm" padding="none" accent glow="cyan">
@@ -758,12 +826,33 @@ function BookingsTable({
                     {formatCentsPhp(b.quoted_price_cents)}
                   </td>
                   <td className="px-5 py-3 text-xs text-white/70">
-                    {fmtRelative(b.pickup_at)}
+                    {b.picked_up_at ? (
+                      <>
+                        <span className="text-green-signal">Picked up {fmtRelative(b.picked_up_at)}</span>
+                        {b.picked_up_by && (
+                          <div className="mt-0.5 font-mono text-2xs text-white/40">{b.picked_up_by}</div>
+                        )}
+                      </>
+                    ) : (
+                      fmtRelative(b.pickup_at)
+                    )}
                   </td>
                   <td className="px-5 py-3">
-                    <NeonBadge variant={BOOKING_STATUS_VARIANT[b.status]} dot>
-                      {b.status.replace("_", " ")}
-                    </NeonBadge>
+                    <div className="flex items-center gap-2">
+                      <NeonBadge variant={BOOKING_STATUS_VARIANT[b.status]} dot>
+                        {b.status.replace("_", " ")}
+                      </NeonBadge>
+                      {receipts[b.id] && (
+                        <button
+                          onClick={() => onOpenReceipt(b)}
+                          className="flex h-6 items-center gap-1 rounded-md border border-cyan-neon/40 bg-cyan-surface px-1.5 text-2xs font-mono text-cyan-neon transition-all hover:shadow-[0_0_8px_rgba(0,229,255,0.4)]"
+                          title="View shipment receipt"
+                        >
+                          <ReceiptIcon className="h-3 w-3" />
+                          Receipt
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))
@@ -776,6 +865,210 @@ function BookingsTable({
         <span>Showing {rows.length} of {total} bookings</span>
         <span className="font-mono">Consumer identity masked until carrier accepts</span>
       </div>
+    </GlassCard>
+  );
+}
+
+// ── Shadow Marketplace panel ─────────────────────────────────────────────────
+// Pre-service capacity oversight (ADR-0014 Phase 0). Cross-references each
+// partner's active listings with live driver availability from driver-ops.
+// This is the aggregation pattern the real marketplace service will embody.
+
+type DriverOpsDriver = {
+  id: string;
+  user_id: string;
+  first_name?: string;
+  last_name?: string;
+  status: string;                          // 'offline' | 'available' | 'en_route' | 'delivering' | 'returning' | 'on_break'
+  is_active: boolean;
+  carrier_id?: string | null;              // migration 0007; may be NULL for tenant-own drivers
+  last_location_at?: string | null;
+};
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const HEARTBEAT_WINDOW_MIN = 5;            // Dead-Man's Switch threshold per ADR-0014
+
+interface PartnerCapacity {
+  partner_id: string;
+  partner_display: string;
+  active_listings: number;
+  drivers_total: number;     // Drivers matched to this carrier (any status)
+  drivers_online: number;    // status='available' AND last ping within HEARTBEAT_WINDOW_MIN
+  risk: "ok" | "warn" | "critical";
+}
+
+function withinHeartbeat(last: string | null | undefined): boolean {
+  if (!last) return false;
+  const age = (Date.now() - new Date(last).getTime()) / 60_000;
+  return age <= HEARTBEAT_WINDOW_MIN;
+}
+
+function ShadowMarketplacePanel({ listings }: { listings: AdminListing[] }) {
+  const [drivers, setDrivers] = useState<DriverOpsDriver[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState<string | null>(null);
+
+  const loadDrivers = useCallback(async () => {
+    setError(null);
+    try {
+      const res = await authFetch(`${API_BASE}/v1/drivers`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json() as { drivers?: DriverOpsDriver[] } | DriverOpsDriver[];
+      // driver-ops wraps in { drivers: [...] } but some endpoints return a bare array
+      const list = Array.isArray(json) ? json : (json.drivers ?? []);
+      setDrivers(list);
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Failed to load drivers");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadDrivers(); }, [loadDrivers]);
+
+  // 60s poll — matches DMS tick cadence described in ADR-0014.
+  useEffect(() => {
+    const id = setInterval(loadDrivers, 60_000);
+    return () => clearInterval(id);
+  }, [loadDrivers]);
+
+  const capacity: PartnerCapacity[] = useMemo(() => {
+    // Group drivers by carrier_id once for O(1) lookup per partner.
+    const byCarrier = new Map<string, DriverOpsDriver[]>();
+    for (const d of drivers) {
+      const k = d.carrier_id ?? "_unlinked";
+      const arr = byCarrier.get(k) ?? [];
+      arr.push(d);
+      byCarrier.set(k, arr);
+    }
+
+    // Build a per-partner row for every partner that appears in listings.
+    // (Partners with zero listings aren't shown — this is a capacity sanity
+    // check, not a full partner roster.)
+    const byPartner = new Map<string, { display: string; active_listings: number }>();
+    for (const l of listings) {
+      if (l.status !== "available") continue;
+      const existing = byPartner.get(l.partner_id);
+      if (existing) existing.active_listings += 1;
+      else byPartner.set(l.partner_id, { display: l.partner_display_name, active_listings: 1 });
+    }
+
+    const rows: PartnerCapacity[] = [];
+    byPartner.forEach((v, partner_id) => {
+      const ds = byCarrier.get(partner_id) ?? [];
+      const online = ds.filter((d) => d.is_active && d.status === "available" && withinHeartbeat(d.last_location_at)).length;
+      let risk: PartnerCapacity["risk"] = "ok";
+      if (online === 0 && v.active_listings > 0)          risk = "critical";
+      else if (online < v.active_listings)                risk = "warn";
+      rows.push({
+        partner_id,
+        partner_display: v.display,
+        active_listings: v.active_listings,
+        drivers_total:   ds.length,
+        drivers_online:  online,
+        risk,
+      });
+    });
+
+    // Criticals first, then warns, then OK. Same severity ordered by name.
+    const severity = { critical: 0, warn: 1, ok: 2 } as const;
+    rows.sort((a, b) => severity[a.risk] - severity[b.risk] || a.partner_display.localeCompare(b.partner_display));
+    return rows;
+  }, [drivers, listings]);
+
+  const unlinkedOnline = useMemo(() => {
+    return drivers.filter((d) => !d.carrier_id && d.is_active && d.status === "available" && withinHeartbeat(d.last_location_at)).length;
+  }, [drivers]);
+
+  if (loading && drivers.length === 0) {
+    return null; // Silent first load — the main table shows its own skeleton
+  }
+
+  return (
+    <GlassCard padding="none" glow={capacity.some((c) => c.risk === "critical") ? "red" : undefined}>
+      <div className="flex items-center justify-between px-5 py-3 border-b border-glass-border">
+        <div>
+          <h3 className="font-heading text-sm font-semibold text-white flex items-center gap-2">
+            <Activity size={14} className="text-cyan-neon" />
+            Capacity Oversight
+            <span className="text-2xs font-mono text-white/30">(ADR-0014 pre-service shadow)</span>
+          </h3>
+          <p className="text-2xs font-mono text-white/40 mt-0.5">
+            Listings vs live driver availability · {HEARTBEAT_WINDOW_MIN}-minute heartbeat window
+          </p>
+        </div>
+        {unlinkedOnline > 0 && (
+          <NeonBadge variant="amber">
+            {unlinkedOnline} online driver{unlinkedOnline === 1 ? "" : "s"} unlinked to a partner
+          </NeonBadge>
+        )}
+      </div>
+
+      {error && (
+        <p className="px-5 py-3 text-xs text-red-signal font-mono">{error}</p>
+      )}
+
+      {capacity.length === 0 ? (
+        <p className="px-5 py-6 text-center text-xs text-white/40 font-mono">
+          No partners currently listing vehicles.
+        </p>
+      ) : (
+        <>
+          <div className="grid grid-cols-[2fr_120px_120px_120px_120px] gap-3 px-5 py-2 border-b border-glass-border">
+            {["Partner", "Active Listings", "Online Drivers", "Coverage", "Signal"].map((h) => (
+              <span key={h} className="text-2xs font-mono text-white/30 uppercase tracking-wider">{h}</span>
+            ))}
+          </div>
+          {capacity.map((c) => {
+            const coverageRatio = c.active_listings === 0 ? 1 : c.drivers_online / c.active_listings;
+            const coveragePct   = Math.min(100, Math.round(coverageRatio * 100));
+            const riskVariant: BadgeVariant = c.risk === "critical" ? "red" : c.risk === "warn" ? "amber" : "green";
+            const riskLabel    = c.risk === "critical" ? "Phantom" : c.risk === "warn" ? "Under-staffed" : "Ready";
+            return (
+              <div
+                key={c.partner_id}
+                className={cn(
+                  "grid grid-cols-[2fr_120px_120px_120px_120px] gap-3 items-center px-5 py-3 border-b border-glass-border/50 transition-colors",
+                  c.risk === "critical" && "bg-red-signal/5",
+                )}
+              >
+                <div>
+                  <p className="text-xs font-medium text-white truncate">{c.partner_display}</p>
+                  <p className="text-2xs font-mono text-white/30 mt-0.5">{c.partner_id.slice(0, 8)}…</p>
+                </div>
+                <span className="text-sm font-mono text-white">{c.active_listings}</span>
+                <span className={cn(
+                  "text-sm font-mono font-semibold",
+                  c.drivers_online === 0 ? "text-red-signal" :
+                  c.drivers_online < c.active_listings ? "text-amber-signal" : "text-green-signal",
+                )}>
+                  {c.drivers_online}
+                  <span className="text-white/30 font-normal"> / {c.drivers_total}</span>
+                </span>
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 h-1.5 rounded-full bg-glass-300 overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all"
+                      style={{
+                        width: `${coveragePct}%`,
+                        background: c.risk === "critical" ? "#FF3B5C" : c.risk === "warn" ? "#FFAB00" : "#00FF88",
+                      }}
+                    />
+                  </div>
+                  <span className="text-2xs font-mono text-white/40">{coveragePct}%</span>
+                </div>
+                <NeonBadge variant={riskVariant} dot={c.risk !== "ok"}>{riskLabel}</NeonBadge>
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      <p className="px-5 py-2.5 text-2xs font-mono text-white/30 border-t border-glass-border">
+        Phantom = listings published but no driver available now · Under-staffed = drivers &lt; listings.
+        When the marketplace service (ADR-0014) ships, phantom listings will be auto-suspended by the Dead-Man&apos;s Switch.
+      </p>
     </GlassCard>
   );
 }
