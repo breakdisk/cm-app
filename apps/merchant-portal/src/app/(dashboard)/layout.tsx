@@ -48,7 +48,9 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Campaigns",    href: "/campaigns",   icon: Megaphone },
   { label: "Analytics",    href: "/analytics",   icon: BarChart3 },
   { label: "Billing",      href: "/billing",     icon: CreditCard },
-  { label: "Fleet",        href: "/fleet",       icon: Truck },
+  // Fleet view removed — vehicles are tenant-ops concern, not merchant.
+  // The page at /fleet is retained for now to avoid 404s on stale bookmarks;
+  // delete in a follow-up once analytics confirm no inbound traffic.
   { label: "Settings",     href: "/settings",    icon: Settings },
 ];
 

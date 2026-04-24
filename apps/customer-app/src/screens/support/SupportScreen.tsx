@@ -7,7 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FadeInView } from '../../components/FadeInView';
 import {
   View, Text, StyleSheet, ScrollView, Pressable,
-  TextInput, KeyboardAvoidingView, Platform,
+  TextInput, KeyboardAvoidingView, Platform, Linking, Alert,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
@@ -217,19 +217,37 @@ export function SupportScreen() {
             </FadeInView>
           ))}
 
-          {/* Contact strip */}
+          {/* Contact strip — Live Chat jumps to the AI chat tab (same screen);
+              Email opens the OS mail composer via Linking. Engagement service
+              doesn't have a support-ticket concept yet, so email is the
+              system of record for human escalation. */}
           <FadeInView delay={200} fromY={16} style={s.contactRow}>
-            <View style={s.contactItem}>
+            <Pressable
+              onPress={() => setTab("chat")}
+              style={({ pressed }) => [s.contactItem, { opacity: pressed ? 0.7 : 1 }]}
+            >
               <Ionicons name="chatbubble-outline" size={18} color={CYAN} />
-              <Text style={s.contactLabel}>Live Chat</Text>
-              <Text style={s.contactSub}>Available 8AM–10PM</Text>
-            </View>
+              <Text style={s.contactLabel}>AI Chat</Text>
+              <Text style={s.contactSub}>Instant answers</Text>
+            </Pressable>
             <View style={[s.contactDivider]} />
-            <View style={s.contactItem}>
+            <Pressable
+              onPress={async () => {
+                const url = "mailto:support@cargomarket.net?subject=CargoMarket%20App%20Support";
+                try {
+                  const can = await Linking.canOpenURL(url);
+                  if (can) await Linking.openURL(url);
+                  else throw new Error("No mail app available");
+                } catch {
+                  Alert.alert("Email support", "Send a message to support@cargomarket.net");
+                }
+              }}
+              style={({ pressed }) => [s.contactItem, { opacity: pressed ? 0.7 : 1 }]}
+            >
               <Ionicons name="mail-outline" size={18} color={PURPLE} />
               <Text style={s.contactLabel}>Email</Text>
-              <Text style={s.contactSub}>support@logisticos.ph</Text>
-            </View>
+              <Text style={s.contactSub}>support@cargomarket.net</Text>
+            </Pressable>
           </FadeInView>
         </ScrollView>
       )}

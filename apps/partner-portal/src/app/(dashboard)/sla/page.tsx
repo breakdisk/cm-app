@@ -15,7 +15,7 @@ import {
   BarChart, Bar, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
-import { Star, AlertTriangle, CheckCircle2, Clock, GitBranch } from "lucide-react";
+import { Star, AlertTriangle, CheckCircle2, Clock, GitBranch, Download } from "lucide-react";
 import { authFetch } from "@/lib/auth/auth-fetch";
 
 // ── API helpers ────────────────────────────────────────────────────────────────
@@ -79,6 +79,27 @@ const DAILY_SLA_TREND_DEFAULT = [
   { date: "Mar 13", rate: 96.1 }, { date: "Mar 15", rate: 95.2 },
   { date: "Mar 17", rate: 94.8 },
 ];
+
+/**
+ * Trigger a client-side CSV download of the current SLA trend. No server
+ * round-trip — the data is already loaded. Used by the Export button in
+ * the header.
+ */
+function exportTrendCsv(rows: Array<{ date: string; rate: number }>) {
+  if (rows.length === 0) return;
+  const header = "date,sla_rate_pct";
+  const lines = rows.map((r) => `${r.date},${r.rate.toFixed(2)}`);
+  const csv = [header, ...lines].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `sla-trend-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
 
 type SlaGrade = "Excellent" | "Good" | "Fair" | "At Risk";
 
@@ -170,7 +191,17 @@ function SLADashboardPageInner() {
           </h1>
           <p className="text-sm text-white/40 font-mono mt-0.5">FastLine Couriers · March 2026 · Contract SLA: 95% on-time</p>
         </div>
-        <NeonBadge variant="green" dot>Live</NeonBadge>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => exportTrendCsv(trendData)}
+            disabled={trendData.length === 0}
+            className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors disabled:opacity-40"
+            title="Download 30-day SLA trend as CSV"
+          >
+            <Download size={12} /> Export CSV
+          </button>
+          <NeonBadge variant="green" dot>Live</NeonBadge>
+        </div>
       </motion.div>
 
       {/* KPI row */}
