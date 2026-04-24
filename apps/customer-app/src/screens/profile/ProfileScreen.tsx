@@ -16,6 +16,7 @@ import type { RootState, AppDispatch } from "../../store";
 import { authActions, prefsActions } from "../../store";
 import type { KycStatus } from "../../store";
 import { unregisterPushToken } from "../../services/notifications";
+import { logout as logoutApi } from "../../services/api/auth";
 import { getTier, getNextTier, ptsToNextTier, tierProgress, ptsToPhp, REDEMPTION_MIN } from "../../utils/loyalty";
 
 const CANVAS  = "#050810";
@@ -217,8 +218,17 @@ export function ProfileScreen() {
       {
         text: "Sign Out",
         style: "destructive",
-        onPress: () => {
+        onPress: async () => {
+          // Order matters: unregister push first (still have a valid token),
+          // then call identity /v1/auth/logout + wipe SecureStore, then reset
+          // Redux. If the network call fails logoutApi still clears local
+          // storage so the user is definitely signed out on-device.
           unregisterPushToken().catch(() => {});
+          try {
+            await logoutApi();
+          } catch {
+            // SecureStore is cleared inside logoutApi's finally block regardless.
+          }
           dispatch(authActions.logout());
         },
       },

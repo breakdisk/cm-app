@@ -175,10 +175,12 @@ export function HistoryScreen({ navigation }: { navigation: any }) {
   const { list: hookShipments, loading } = useShipments();
   const reduxShipments = useSelector((s: RootState) => s.shipments.list);
 
-  // Use hook shipments if available, otherwise fall back to Redux, otherwise use demo data
-  const shipments = hookShipments.length > 0
-    ? hookShipments as ShipmentRecord[]
-    : (reduxShipments.length > 0 ? reduxShipments : DEMO_SHIPMENTS);
+  // Prefer the hook's live list, fall back to Redux cache, else empty.
+  // DEMO_SHIPMENTS retained above for Storybook/local dev but never shown to
+  // real users — an empty backend response must render the empty state.
+  const shipments: ShipmentRecord[] = hookShipments.length > 0
+    ? (hookShipments as ShipmentRecord[])
+    : reduxShipments;
 
   const [filter,  setFilter]  = useState<FilterTab>("all");
   const [qrAwb,   setQrAwb]   = useState<string | null>(null);
