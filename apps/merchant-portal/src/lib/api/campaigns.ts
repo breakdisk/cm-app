@@ -1,196 +1,117 @@
-import { createApiClient, ApiResponse, PaginatedApiResponse } from "./client";
+import { createApiClient } from "./client";
+
+// ── Types ──────────────────────────────────────────────────────────────────────
+// Shapes match services/marketing — Channel/CampaignStatus are snake_case on the
+// wire per `#[serde(rename_all = "snake_case")]` in domain/entities/mod.rs.
+
+export type Channel = "whatsapp" | "sms" | "email" | "push";
+
+export type CampaignStatus =
+  | "draft"      // not yet scheduled / activated
+  | "scheduled"  // queued for future send
+  | "sending"    // send in progress (no pause on backend; only cancel)
+  | "completed"  // all sends dispatched
+  | "cancelled"
+  | "failed";
+
+/** Per-channel message payload. template_id refers to the engagement-service template registry. */
+export interface MessageTemplate {
+  template_id: string;
+  subject?: string | null; // email only
+  variables: Record<string, unknown>;
+}
+
+/** CDP-driven recipient filter — resolved server-side at activation time. */
+export interface TargetingRule {
+  min_clv_score?: number | null;
+  last_active_days?: number | null;
+  customer_ids: string[];
+  estimated_reach: number;
+}
 
 export interface Campaign {
   id: string;
   tenant_id: string;
   name: string;
-  description: string;
+  description?: string | null;
+
+  channel: Channel;
+  template: MessageTemplate;
+  targeting: TargetingRule;
+
   status: CampaignStatus;
-  channel: CampaignChannel;
-  template_id: string;
-  audience: CampaignAudience;
-  schedule?: CampaignSchedule;
-  stats?: CampaignStats;
-  ab_test?: AbTestConfig;
-  created_at: string;
-  started_at?: string;
-  completed_at?: string;
-}
+  scheduled_at?: string | null;
+  sent_at?: string | null;
+  completed_at?: string | null;
 
-export type CampaignStatus =
-  | "draft"
-  | "scheduled"
-  | "running"
-  | "paused"
-  | "completed"
-  | "cancelled";
-
-export type CampaignChannel = "whatsapp" | "sms" | "email" | "push";
-
-export interface CampaignAudience {
-  type: "segment" | "all_customers" | "manual_list";
-  segment_id?: string;
-  customer_ids?: string[];
-  estimated_reach?: number;
-}
-
-export interface CampaignSchedule {
-  send_at?: string;
-  timezone: string;
-  optimal_send_time?: boolean;
-}
-
-export interface CampaignStats {
   total_sent: number;
-  delivered: number;
-  opened: number;
-  clicked: number;
-  converted: number;
-  failed: number;
-  delivery_rate_pct: number;
-  open_rate_pct: number;
-  conversion_rate_pct: number;
-}
+  total_delivered: number;
+  total_failed: number;
 
-export interface AbTestConfig {
-  variant_a_template_id: string;
-  variant_b_template_id: string;
-  split_pct: number;
-  winner_metric: "open_rate" | "click_rate" | "conversion_rate";
-  winner_declared?: "a" | "b";
-}
-
-export interface MessageTemplate {
-  id: string;
-  tenant_id: string;
-  name: string;
-  channel: CampaignChannel;
-  body: string;
-  variables: string[];
-  preview_url?: string;
-  whatsapp_template_name?: string;
+  created_by: string;
   created_at: string;
+  updated_at: string;
 }
 
 export interface CreateCampaignPayload {
   name: string;
   description?: string;
-  channel: CampaignChannel;
-  template_id: string;
-  audience: CampaignAudience;
-  schedule?: CampaignSchedule;
-  ab_test?: Pick<
-    AbTestConfig,
-    "variant_a_template_id" | "variant_b_template_id" | "split_pct" | "winner_metric"
-  >;
+  channel: Channel;
+  template: MessageTemplate;
+  targeting: TargetingRule;
 }
 
-export const campaignsApi = {
-  // ── Campaigns ─────────────────────────────────────────────────
+export interface ScheduleCampaignPayload {
+  scheduled_at: string; // ISO 8601
+}
 
-  /** List campaigns with optional status filter */
-  list: (
-    params: {
-      status?: CampaignStatus;
-      channel?: CampaignChannel;
-      page?: number;
-      per_page?: number;
+export interface ListCampaignsResponse {
+  campaigns: Campaign[];
+  count: number;
+}
+
+// ── Client ─────────────────────────────────────────────────────────────────────
+// Cookie-JWT flow — the axios interceptor in client.ts injects the Authorization
+// header on every request, so callers don't pass tokens explicitly.
+
+export function createCampaignsApi() {
+  const http = createApiClient();
+
+  return {
+    async list(limit = 50, offset = 0): Promise<ListCampaignsResponse> {
+      const { data } = await http.get<ListCampaignsResponse>("/v1/campaigns", {
+        params: { limit, offset },
+      });
+      return data;
     },
-    token: string
-  ) =>
-    createApiClient(token)
-      .get<PaginatedApiResponse<Campaign>>("/v1/campaigns", { params })
-      .then((r) => r.data),
 
-  /** Get a single campaign with full stats */
-  get: (campaignId: string, token: string) =>
-    createApiClient(token)
-      .get<ApiResponse<Campaign>>(`/v1/campaigns/${campaignId}`)
-      .then((r) => r.data.data),
+    async get(id: string): Promise<Campaign> {
+      const { data } = await http.get<Campaign>(`/v1/campaigns/${id}`);
+      return data;
+    },
 
-  /** Create a new campaign (starts in draft) */
-  create: (payload: CreateCampaignPayload, token: string) =>
-    createApiClient(token)
-      .post<ApiResponse<Campaign>>("/v1/campaigns", payload)
-      .then((r) => r.data.data),
+    async create(payload: CreateCampaignPayload): Promise<Campaign> {
+      const { data } = await http.post<Campaign>("/v1/campaigns", payload);
+      return data;
+    },
 
-  /** Update a draft campaign */
-  update: (
-    campaignId: string,
-    payload: Partial<CreateCampaignPayload>,
-    token: string
-  ) =>
-    createApiClient(token)
-      .put<ApiResponse<Campaign>>(`/v1/campaigns/${campaignId}`, payload)
-      .then((r) => r.data.data),
+    async schedule(id: string, payload: ScheduleCampaignPayload): Promise<Campaign> {
+      const { data } = await http.post<Campaign>(`/v1/campaigns/${id}/schedule`, payload);
+      return data;
+    },
 
-  /** Launch a draft or scheduled campaign immediately */
-  launch: (campaignId: string, token: string) =>
-    createApiClient(token)
-      .post<ApiResponse<Campaign>>(`/v1/campaigns/${campaignId}/launch`)
-      .then((r) => r.data.data),
+    /** Start send immediately. Publishes CAMPAIGN_TRIGGERED → engagement service. */
+    async activate(id: string): Promise<Campaign> {
+      const { data } = await http.post<Campaign>(`/v1/campaigns/${id}/activate`);
+      return data;
+    },
 
-  /** Pause a running campaign */
-  pause: (campaignId: string, token: string) =>
-    createApiClient(token)
-      .post<ApiResponse<Campaign>>(`/v1/campaigns/${campaignId}/pause`)
-      .then((r) => r.data.data),
+    /** Cancel draft/scheduled. Backend rejects cancel on `sending` status. */
+    async cancel(id: string): Promise<Campaign> {
+      const { data } = await http.post<Campaign>(`/v1/campaigns/${id}/cancel`);
+      return data;
+    },
+  };
+}
 
-  /** Cancel a campaign (draft, scheduled, or running) */
-  cancel: (campaignId: string, token: string) =>
-    createApiClient(token)
-      .post<void>(`/v1/campaigns/${campaignId}/cancel`)
-      .then((r) => r.data),
-
-  /** Get real-time campaign stats */
-  getStats: (campaignId: string, token: string) =>
-    createApiClient(token)
-      .get<ApiResponse<CampaignStats>>(`/v1/campaigns/${campaignId}/stats`)
-      .then((r) => r.data.data),
-
-  // ── Templates ─────────────────────────────────────────────────
-
-  /** List message templates */
-  listTemplates: (
-    params: { channel?: CampaignChannel; page?: number; per_page?: number },
-    token: string
-  ) =>
-    createApiClient(token)
-      .get<PaginatedApiResponse<MessageTemplate>>("/v1/campaigns/templates", {
-        params,
-      })
-      .then((r) => r.data),
-
-  /** Get a single template */
-  getTemplate: (templateId: string, token: string) =>
-    createApiClient(token)
-      .get<ApiResponse<MessageTemplate>>(
-        `/v1/campaigns/templates/${templateId}`
-      )
-      .then((r) => r.data.data),
-
-  /** Create a new message template */
-  createTemplate: (
-    payload: Pick<
-      MessageTemplate,
-      "name" | "channel" | "body" | "whatsapp_template_name"
-    >,
-    token: string
-  ) =>
-    createApiClient(token)
-      .post<ApiResponse<MessageTemplate>>("/v1/campaigns/templates", payload)
-      .then((r) => r.data.data),
-
-  /** Update an existing template */
-  updateTemplate: (
-    templateId: string,
-    payload: Partial<Pick<MessageTemplate, "name" | "body">>,
-    token: string
-  ) =>
-    createApiClient(token)
-      .put<ApiResponse<MessageTemplate>>(
-        `/v1/campaigns/templates/${templateId}`,
-        payload
-      )
-      .then((r) => r.data.data),
-};
+export type CampaignsApi = ReturnType<typeof createCampaignsApi>;

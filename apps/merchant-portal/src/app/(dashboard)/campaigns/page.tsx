@@ -2,8 +2,15 @@
 /**
  * Merchant Portal — Campaigns Page
  * Marketing automation: active campaigns, performance, campaign builder CTA.
+ *
+ * Data flow:
+ *   GET  /v1/campaigns            → marketing::list
+ *   POST /v1/campaigns            → marketing::create
+ *   POST /v1/campaigns/:id/activate → emits CAMPAIGN_TRIGGERED → engagement
+ *   POST /v1/campaigns/:id/cancel → marketing::cancel
+ * The page polls every 30s while active, and reloads after any mutation.
  */
-import { useState, useEffect, Suspense } from "react";
+import { useCallback, useState, useEffect, useMemo, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
@@ -14,65 +21,48 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import {
-  Megaphone, Plus, Zap, MessageSquare, Mail, Smartphone, Play, Pause,
-  BarChart2, X, ChevronDown, CheckCircle2,
+  Megaphone, Plus, Zap, MessageSquare, Mail, Smartphone, Play, X,
+  BarChart2, ChevronDown, CheckCircle2, RefreshCw,
 } from "lucide-react";
+import {
+  createCampaignsApi,
+  type Campaign,
+  type Channel,
+  type CampaignStatus,
+  type CreateCampaignPayload,
+} from "@/lib/api/campaigns";
 
-// ── Mock data ──────────────────────────────────────────────────────────────────
-
-const KPI_METRICS = [
-  { label: "Active Campaigns",  value: 7,      trend: +2,    color: "cyan"   as const, format: "number"  as const },
-  { label: "Messages Sent MTD", value: 84200,  trend: +31.4, color: "purple" as const, format: "number"  as const },
-  { label: "Avg Open Rate",     value: 38.7,   trend: +4.2,  color: "green"  as const, format: "percent" as const },
-  { label: "Conversions MTD",   value: 1840,   trend: +22.1, color: "amber"  as const, format: "number"  as const },
-];
-
-const SEND_TREND = [
-  { day: "Mon", whatsapp: 1400, sms: 820,  email: 340 },
-  { day: "Tue", whatsapp: 1620, sms: 910,  email: 410 },
-  { day: "Wed", whatsapp: 1380, sms: 780,  email: 370 },
-  { day: "Thu", whatsapp: 1750, sms: 960,  email: 490 },
-  { day: "Fri", whatsapp: 2100, sms: 1140, email: 580 },
-  { day: "Sat", whatsapp: 1560, sms: 870,  email: 310 },
-  { day: "Sun", whatsapp: 1200, sms: 640,  email: 220 },
-];
-
-type CampaignStatus = "active" | "paused" | "draft" | "completed";
-
-interface Campaign {
-  id: string;
-  name: string;
-  type: "whatsapp" | "sms" | "email" | "push";
-  status: CampaignStatus;
-  sent: number;
-  open_rate: number;
-  conversions: number;
-  trigger: string;
-}
-
-const CAMPAIGNS: Campaign[] = [
-  { id: "1", name: "Post-Delivery Upsell",    type: "whatsapp", status: "active",    sent: 12400, open_rate: 44.2, conversions: 380, trigger: "On: delivered"      },
-  { id: "2", name: "Delivery ETA Reminder",   type: "sms",      status: "active",    sent: 8200,  open_rate: 71.3, conversions: 0,   trigger: "4h before ETA"      },
-  { id: "3", name: "Failed Delivery Rescue",  type: "whatsapp", status: "active",    sent: 1840,  open_rate: 58.4, conversions: 290, trigger: "On: failed delivery" },
-  { id: "4", name: "Win-back Lapsed Senders", type: "email",    status: "active",    sent: 4100,  open_rate: 22.8, conversions: 64,  trigger: "30-day inactive"     },
-  { id: "5", name: "Balikbayan Box Promo",    type: "push",     status: "paused",    sent: 6300,  open_rate: 31.0, conversions: 210, trigger: "Manual / Scheduled"  },
-  { id: "6", name: "Loyalty Points Reminder", type: "sms",      status: "draft",     sent: 0,     open_rate: 0,    conversions: 0,   trigger: "On: 500pts reached"  },
-  { id: "7", name: "Merchant Re-engagement",  type: "email",    status: "completed", sent: 3800,  open_rate: 19.4, conversions: 41,  trigger: "Manual blast"        },
-];
-
-const CHANNEL_ICON: Record<Campaign["type"], React.ReactNode> = {
+const CHANNEL_ICON: Record<Channel, React.ReactNode> = {
   whatsapp: <MessageSquare size={12} className="text-green-signal" />,
   sms:      <Smartphone    size={12} className="text-cyan-neon"    />,
   email:    <Mail          size={12} className="text-purple-plasma" />,
   push:     <Zap           size={12} className="text-amber-signal" />,
 };
 
-const STATUS_VARIANT: Record<CampaignStatus, "green" | "amber" | "purple" | "red"> = {
-  active:    "green",
-  paused:    "amber",
+const STATUS_VARIANT: Record<CampaignStatus, "green" | "amber" | "purple" | "red" | "cyan"> = {
   draft:     "purple",
+  scheduled: "cyan",
+  sending:   "green",
   completed: "red",
+  cancelled: "amber",
+  failed:    "red",
 };
+
+/**
+ * The backend does not yet expose a per-day message-volume timeseries, so the
+ * chart is left as a visual placeholder until an analytics endpoint exists.
+ * When analytics/engagement ship `/v1/analytics/campaign-sends?range=week`,
+ * swap this constant for a `useQuery`.
+ */
+const SEND_TREND = [
+  { day: "Mon", whatsapp: 0, sms: 0, email: 0 },
+  { day: "Tue", whatsapp: 0, sms: 0, email: 0 },
+  { day: "Wed", whatsapp: 0, sms: 0, email: 0 },
+  { day: "Thu", whatsapp: 0, sms: 0, email: 0 },
+  { day: "Fri", whatsapp: 0, sms: 0, email: 0 },
+  { day: "Sat", whatsapp: 0, sms: 0, email: 0 },
+  { day: "Sun", whatsapp: 0, sms: 0, email: 0 },
+];
 
 // ── NewCampaignModal ───────────────────────────────────────────────────────────
 
@@ -95,22 +85,47 @@ const TRIGGER_OPTIONS = [
 
 function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreated?: () => void }) {
   const [name,    setName]    = useState("");
-  const [channel, setChannel] = useState<"whatsapp" | "sms" | "email" | "push">("whatsapp");
+  const [channel, setChannel] = useState<Channel>("whatsapp");
   const [trigger, setTrigger] = useState(TRIGGER_OPTIONS[0]);
   const [message, setMessage] = useState("");
   const [saving,  setSaving]  = useState(false);
   const [done,    setDone]    = useState(false);
+  const [error,   setError]   = useState<string | null>(null);
 
   const charMax = channel === "sms" ? 160 : 1000;
 
   async function handleCreate() {
     if (!name.trim() || !message.trim()) return;
     setSaving(true);
-    // Wire to POST /v1/campaigns in production
-    await new Promise((r) => setTimeout(r, 1000));
-    setSaving(false);
-    setDone(true);
-    onCreated?.();
+    setError(null);
+    try {
+      // Marketing service's CreateCampaignCommand shape: name, description,
+      // channel, template{template_id, subject?, variables}, targeting.
+      // The `trigger` drop-down is a UX label and is stored as description
+      // until the engagement service exposes a distinct trigger catalog.
+      const payload: CreateCampaignPayload = {
+        name: name.trim(),
+        description: trigger,
+        channel,
+        template: {
+          template_id: `inline_${Date.now()}`,
+          subject: channel === "email" ? name.trim() : null,
+          variables: { body: message.trim() },
+        },
+        targeting: {
+          customer_ids: [],
+          estimated_reach: 0,
+        },
+      };
+      await createCampaignsApi().create(payload);
+      setDone(true);
+      onCreated?.();
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Failed to create campaign");
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -211,6 +226,12 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
               <p className="mt-1 text-2xs text-white/25">Variables: {'{{name}}'}, {'{{awb}}'}, {'{{eta}}'}, {'{{cod_amount}}'}</p>
             </div>
 
+            {error && (
+              <p className="rounded-lg border border-red-signal/30 bg-red-signal/10 px-3 py-2 text-xs text-red-signal">
+                {error}
+              </p>
+            )}
+
             {/* Footer */}
             <div className="flex justify-end gap-2 pt-1">
               <button onClick={onClose} className="rounded-lg border border-glass-border px-4 py-2 text-sm text-white/50 hover:text-white transition-colors">
@@ -260,6 +281,35 @@ function CampaignsContent() {
   const router = useRouter();
   const [showNew, setShowNew] = useState(false);
 
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState<string | null>(null);
+  const [mutatingId, setMutatingId] = useState<string | null>(null);
+
+  const api = useMemo(() => createCampaignsApi(), []);
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      const resp = await api.list();
+      setCampaigns(resp.campaigns ?? []);
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Failed to load campaigns");
+    } finally {
+      setLoading(false);
+    }
+  }, [api]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Poll while the tab is active — campaigns change status as the engagement
+  // service processes sends. 30s is coarse enough to avoid load spikes.
+  useEffect(() => {
+    const id = setInterval(load, 30_000);
+    return () => clearInterval(id);
+  }, [load]);
+
   // Auto-open from dashboard CTA
   useEffect(() => {
     if (searchParams.get("new") === "1") {
@@ -267,6 +317,47 @@ function CampaignsContent() {
       router.replace("/campaigns");
     }
   }, [searchParams, router]);
+
+  async function handleActivate(id: string) {
+    setMutatingId(id);
+    try {
+      await api.activate(id);
+      await load();
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Failed to activate campaign");
+    } finally {
+      setMutatingId(null);
+    }
+  }
+
+  async function handleCancel(id: string) {
+    setMutatingId(id);
+    try {
+      await api.cancel(id);
+      await load();
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Failed to cancel campaign");
+    } finally {
+      setMutatingId(null);
+    }
+  }
+
+  // KPIs derived from live list. Open/conversion rates require per-send analytics
+  // (engagement service `/v1/notifications` aggregation) — shown as — until wired.
+  const kpis = useMemo(() => {
+    const active = campaigns.filter(c => c.status === "sending" || c.status === "scheduled").length;
+    const sent   = campaigns.reduce((n, c) => n + (c.total_sent ?? 0), 0);
+    const delivered = campaigns.reduce((n, c) => n + (c.total_delivered ?? 0), 0);
+    const deliveryRate = sent > 0 ? (delivered / sent) * 100 : 0;
+    return [
+      { label: "Active Campaigns", value: active,       trend: 0, color: "cyan"   as const, format: "number"  as const },
+      { label: "Messages Sent",    value: sent,         trend: 0, color: "purple" as const, format: "number"  as const },
+      { label: "Delivery Rate",    value: deliveryRate, trend: 0, color: "green"  as const, format: "percent" as const },
+      { label: "Total Campaigns",  value: campaigns.length, trend: 0, color: "amber" as const, format: "number" as const },
+    ];
+  }, [campaigns]);
 
   return (
     <>
@@ -283,19 +374,38 @@ function CampaignsContent() {
             <Megaphone size={22} className="text-purple-plasma" />
             Campaigns
           </h1>
-          <p className="text-sm text-white/40 font-mono mt-0.5">Engagement Engine · 7 active automations</p>
+          <p className="text-sm text-white/40 font-mono mt-0.5">
+            Engagement Engine · {kpis[0].value} active, {campaigns.length} total
+          </p>
         </div>
-        <button
-          onClick={() => setShowNew(true)}
-          className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-purple-plasma to-cyan-neon px-4 py-2 text-xs font-semibold text-white hover:opacity-90 transition-opacity"
-        >
-          <Plus size={13} /> New Campaign
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={load}
+            className="flex items-center gap-1.5 rounded-lg border border-glass-border px-3 py-2 text-xs text-white/60 hover:text-white transition-colors"
+            title="Refresh"
+          >
+            <RefreshCw size={13} />
+          </button>
+          <button
+            onClick={() => setShowNew(true)}
+            className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-purple-plasma to-cyan-neon px-4 py-2 text-xs font-semibold text-white hover:opacity-90 transition-opacity"
+          >
+            <Plus size={13} /> New Campaign
+          </button>
+        </div>
       </motion.div>
+
+      {error && (
+        <motion.div variants={variants.fadeInUp}>
+          <GlassCard padding="sm">
+            <p className="text-xs text-red-signal font-mono">{error}</p>
+          </GlassCard>
+        </motion.div>
+      )}
 
       {/* KPI row */}
       <motion.div variants={variants.fadeInUp} className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {KPI_METRICS.map((m) => (
+        {kpis.map((m) => (
           <GlassCard key={m.label} size="sm" glow={m.color} accent>
             <LiveMetric label={m.label} value={m.value} trend={m.trend} color={m.color} format={m.format} />
           </GlassCard>
@@ -348,46 +458,79 @@ function CampaignsContent() {
         <GlassCard padding="none">
           <div className="flex items-center justify-between px-5 py-4 border-b border-glass-border">
             <h2 className="font-heading text-sm font-semibold text-white">All Campaigns</h2>
-            <span className="text-2xs font-mono text-white/30">{CAMPAIGNS.length} campaigns</span>
+            <span className="text-2xs font-mono text-white/30">
+              {loading ? "loading…" : `${campaigns.length} campaign${campaigns.length === 1 ? "" : "s"}`}
+            </span>
           </div>
 
           {/* Header row */}
-          <div className="grid grid-cols-[2fr_80px_80px_80px_80px_1fr_80px] gap-3 px-5 py-2.5 border-b border-glass-border">
-            {["Name", "Channel", "Status", "Sent", "Open %", "Trigger", ""].map((h) => (
+          <div className="grid grid-cols-[2fr_80px_100px_80px_100px_1fr_80px] gap-3 px-5 py-2.5 border-b border-glass-border">
+            {["Name", "Channel", "Status", "Sent", "Delivered %", "Trigger", ""].map((h) => (
               <span key={h} className="text-2xs font-mono text-white/30 uppercase tracking-wider">{h}</span>
             ))}
           </div>
 
-          {CAMPAIGNS.map((c) => (
-            <div key={c.id} className="grid grid-cols-[2fr_80px_80px_80px_80px_1fr_80px] gap-3 items-center px-5 py-3.5 border-b border-glass-border/50 hover:bg-glass-100 transition-colors">
-              <div>
-                <p className="text-xs font-medium text-white">{c.name}</p>
-                <p className="text-2xs font-mono text-white/30 mt-0.5">{c.conversions > 0 ? `${c.conversions} conversions` : "No conversions yet"}</p>
-              </div>
-              <div className="flex items-center gap-1.5">
-                {CHANNEL_ICON[c.type]}
-                <span className="text-xs text-white/60 capitalize">{c.type}</span>
-              </div>
-              <NeonBadge variant={STATUS_VARIANT[c.status]} dot>{c.status}</NeonBadge>
-              <span className="text-xs font-mono text-white/60">{c.sent > 0 ? c.sent.toLocaleString() : "—"}</span>
-              <span className={`text-xs font-mono font-semibold ${c.open_rate > 40 ? "text-green-signal" : c.open_rate > 20 ? "text-cyan-neon" : "text-white/40"}`}>
-                {c.open_rate > 0 ? `${c.open_rate}%` : "—"}
-              </span>
-              <span className="text-xs text-white/40 font-mono">{c.trigger}</span>
-              <div className="flex items-center gap-1">
-                {c.status === "active" && (
-                  <button className="rounded p-1.5 text-white/30 hover:text-amber-signal hover:bg-glass-200 transition-colors" title="Pause">
-                    <Pause size={12} />
-                  </button>
-                )}
-                {c.status === "paused" && (
-                  <button className="rounded p-1.5 text-white/30 hover:text-green-signal hover:bg-glass-200 transition-colors" title="Resume">
-                    <Play size={12} />
-                  </button>
-                )}
-              </div>
+          {!loading && campaigns.length === 0 && (
+            <div className="px-5 py-10 text-center">
+              <p className="text-xs text-white/40 font-mono">
+                No campaigns yet. Click <span className="text-purple-plasma">New Campaign</span> to create one.
+              </p>
             </div>
-          ))}
+          )}
+
+          {campaigns.map((c) => {
+            const deliveryRate = c.total_sent > 0 ? (c.total_delivered / c.total_sent) * 100 : 0;
+            const trigger = c.description?.trim() || "Manual / Scheduled";
+            const busy = mutatingId === c.id;
+            return (
+              <div key={c.id} className="grid grid-cols-[2fr_80px_100px_80px_100px_1fr_80px] gap-3 items-center px-5 py-3.5 border-b border-glass-border/50 hover:bg-glass-100 transition-colors">
+                <div>
+                  <p className="text-xs font-medium text-white">{c.name}</p>
+                  <p className="text-2xs font-mono text-white/30 mt-0.5">
+                    {c.total_delivered > 0 ? `${c.total_delivered.toLocaleString()} delivered` : "No sends yet"}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  {CHANNEL_ICON[c.channel]}
+                  <span className="text-xs text-white/60 capitalize">{c.channel}</span>
+                </div>
+                <NeonBadge variant={STATUS_VARIANT[c.status]} dot>{c.status}</NeonBadge>
+                <span className="text-xs font-mono text-white/60">
+                  {c.total_sent > 0 ? c.total_sent.toLocaleString() : "—"}
+                </span>
+                <span className={`text-xs font-mono font-semibold ${
+                  deliveryRate > 80 ? "text-green-signal" :
+                  deliveryRate > 40 ? "text-cyan-neon" :
+                  "text-white/40"
+                }`}>
+                  {c.total_sent > 0 ? `${deliveryRate.toFixed(1)}%` : "—"}
+                </span>
+                <span className="text-xs text-white/40 font-mono truncate" title={trigger}>{trigger}</span>
+                <div className="flex items-center gap-1">
+                  {(c.status === "draft" || c.status === "scheduled") && (
+                    <button
+                      onClick={() => handleActivate(c.id)}
+                      disabled={busy}
+                      className="rounded p-1.5 text-white/30 hover:text-green-signal hover:bg-glass-200 transition-colors disabled:opacity-40"
+                      title="Activate (start sending)"
+                    >
+                      {busy ? <span className="block h-3 w-3 animate-spin rounded-full border-2 border-white/30 border-t-white" /> : <Play size={12} />}
+                    </button>
+                  )}
+                  {(c.status === "draft" || c.status === "scheduled") && (
+                    <button
+                      onClick={() => handleCancel(c.id)}
+                      disabled={busy}
+                      className="rounded p-1.5 text-white/30 hover:text-red-signal hover:bg-glass-200 transition-colors disabled:opacity-40"
+                      title="Cancel"
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </GlassCard>
       </motion.div>
     </motion.div>
@@ -395,7 +538,10 @@ function CampaignsContent() {
     {/* New Campaign Modal */}
     <AnimatePresence>
       {showNew && (
-        <NewCampaignModal onClose={() => setShowNew(false)} />
+        <NewCampaignModal
+          onClose={() => setShowNew(false)}
+          onCreated={load}
+        />
       )}
     </AnimatePresence>
     </>
