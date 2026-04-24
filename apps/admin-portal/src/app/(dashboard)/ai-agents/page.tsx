@@ -1,9 +1,16 @@
 "use client";
 /**
  * Admin Portal — AI Agents Page
- * Live status of all LogisticOS AI agents: dispatch, support, marketing, fraud.
+ *
+ * LIVE:  Escalated sessions section (GET /v1/agents/sessions/escalated)
+ *        — these require human review; ops resolves via the Resolve button.
+ * STATIC: Agent-type KPI cards + invocation trend chart below — ai-layer
+ *        doesn't yet expose per-agent-type counters or hourly buckets, so
+ *        those values stay mock until backend ships the aggregation.
+ *        When it does, replace AGENTS / INVOCATION_TREND / KPI with live
+ *        fetches analogous to the escalated section's pattern.
  */
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
@@ -12,7 +19,21 @@ import { LiveMetric } from "@/components/ui/live-metric";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
-import { Bot, Zap, Brain, ShieldCheck, Megaphone, Headphones, Route, RefreshCw, ArrowUpRight } from "lucide-react";
+import { Bot, Zap, Brain, ShieldCheck, Megaphone, Headphones, Route, RefreshCw, ArrowUpRight, AlertCircle, CheckCircle2 } from "lucide-react";
+import { authFetch } from "@/lib/auth/auth-fetch";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+interface EscalatedSession {
+  id: string;
+  agent_type: string;
+  status: string;
+  outcome?: string;
+  escalation_reason?: string;
+  confidence_score: number;
+  actions_taken: number;
+  started_at: string;
+}
 
 // ── Types & data ───────────────────────────────────────────────────────────────
 
@@ -149,6 +170,52 @@ const INVOCATION_TREND = Array.from({ length: 24 }, (_, i) => ({
 export default function AIAgentsPage() {
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
 
+  const [escalated, setEscalated] = useState<EscalatedSession[]>([]);
+  const [loadingEsc, setLoadingEsc] = useState(true);
+  const [escError, setEscError]   = useState<string | null>(null);
+  const [resolvingId, setResolvingId] = useState<string | null>(null);
+
+  const loadEscalated = useCallback(async () => {
+    setEscError(null);
+    try {
+      const res = await authFetch(`${API_BASE}/v1/agents/sessions/escalated`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json() as { escalated?: EscalatedSession[]; count?: number };
+      setEscalated(json.escalated ?? []);
+    } catch (e) {
+      const err = e as { message?: string };
+      setEscError(err?.message ?? "Failed to load escalated sessions");
+    } finally {
+      setLoadingEsc(false);
+    }
+  }, []);
+
+  useEffect(() => { loadEscalated(); }, [loadEscalated]);
+
+  // Poll every 30s — escalations are human-review-critical, stale data is
+  // worse than a mild API load increase.
+  useEffect(() => {
+    const id = setInterval(loadEscalated, 30_000);
+    return () => clearInterval(id);
+  }, [loadEscalated]);
+
+  async function handleResolve(sessionId: string) {
+    setResolvingId(sessionId);
+    try {
+      await authFetch(`${API_BASE}/v1/agents/sessions/${sessionId}/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resolution_notes: "Resolved via admin portal" }),
+      });
+      await loadEscalated();
+    } catch (e) {
+      const err = e as { message?: string };
+      setEscError(err?.message ?? "Failed to resolve session");
+    } finally {
+      setResolvingId(null);
+    }
+  }
+
   return (
     <motion.div
       variants={variants.staggerContainer}
@@ -165,9 +232,64 @@ export default function AIAgentsPage() {
           </h1>
           <p className="text-sm text-white/40 font-mono mt-0.5">Agentic runtime · MCP tool dispatch · claude-opus-4-6</p>
         </div>
-        <button className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors">
+        <button
+          onClick={loadEscalated}
+          className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors"
+        >
           <RefreshCw size={12} /> Refresh
         </button>
+      </motion.div>
+
+      {/* LIVE — Escalated sessions needing human review */}
+      <motion.div variants={variants.fadeInUp}>
+        <GlassCard padding="none">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-glass-border">
+            <div className="flex items-center gap-2">
+              <AlertCircle size={14} className="text-red-signal" />
+              <h2 className="font-heading text-sm font-semibold text-white">Escalated Sessions — Need Review</h2>
+            </div>
+            <NeonBadge variant={escalated.length > 0 ? "red" : "green"} dot>
+              {loadingEsc ? "loading" : `${escalated.length} pending`}
+            </NeonBadge>
+          </div>
+
+          {escError && (
+            <p className="px-5 py-3 text-xs text-red-signal font-mono">{escError}</p>
+          )}
+
+          {!loadingEsc && escalated.length === 0 && !escError ? (
+            <div className="px-5 py-8 text-center">
+              <CheckCircle2 size={24} className="text-green-signal mx-auto mb-2" />
+              <p className="text-xs text-white/50 font-mono">All agent sessions resolved automatically.</p>
+            </div>
+          ) : (
+            escalated.map((s) => (
+              <div key={s.id} className="grid grid-cols-[2fr_140px_80px_100px] gap-3 items-center px-5 py-3 border-b border-glass-border/50">
+                <div>
+                  <p className="text-xs font-medium text-white">
+                    {s.agent_type} · <span className="text-white/50">{s.id.slice(0, 8)}</span>
+                  </p>
+                  <p className="text-2xs font-mono text-white/40 mt-0.5 line-clamp-1" title={s.escalation_reason ?? ""}>
+                    {s.escalation_reason ?? "No reason provided"}
+                  </p>
+                </div>
+                <span className="text-2xs font-mono text-white/50">
+                  {new Date(s.started_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                </span>
+                <span className="text-2xs font-mono text-white/60">
+                  conf {Math.round(s.confidence_score * 100)}%
+                </span>
+                <button
+                  onClick={() => handleResolve(s.id)}
+                  disabled={resolvingId === s.id}
+                  className="rounded-md border border-green-signal/30 bg-green-signal/10 px-2.5 py-1 text-2xs font-mono text-green-signal hover:bg-green-signal/20 disabled:opacity-40 transition-colors"
+                >
+                  {resolvingId === s.id ? "…" : "Resolve"}
+                </button>
+              </div>
+            ))
+          )}
+        </GlassCard>
       </motion.div>
 
       {/* KPI row */}
