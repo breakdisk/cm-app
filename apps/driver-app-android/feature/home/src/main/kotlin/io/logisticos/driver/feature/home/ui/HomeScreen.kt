@@ -1,5 +1,9 @@
 package io.logisticos.driver.feature.home.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -12,9 +16,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import io.logisticos.driver.feature.home.presentation.HomeViewModel
 
@@ -31,6 +37,82 @@ fun HomeScreen(
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
+
+    // Permissions checklist on Home entry:
+    //   ACCESS_FINE / COARSE_LOCATION — dispatch proximity scoring + GPS
+    //     heartbeat. Without a runtime grant, FusedLocationProvider throws
+    //     SecurityException and pushFreshLocation silently no-ops, leaving
+    //     driver_locations empty and the driver un-discoverable by dispatch.
+    //   POST_NOTIFICATIONS (API 33+) — FCM pushes for new task assignments
+    //     fail silently without it. Driver wouldn't know about new dispatches
+    //     until they manually pull-to-refresh.
+    //   ACCESS_BACKGROUND_LOCATION — must be requested SEPARATELY after
+    //     foreground is granted (Android 10+ rule). Skipped here in the
+    //     initial bundle; requested at end of LaunchedEffect once foreground
+    //     is confirmed.
+    val context = LocalContext.current
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        val fineGranted = grants[Manifest.permission.ACCESS_FINE_LOCATION] == true
+        val coarseGranted = grants[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        if (fineGranted || coarseGranted) {
+            viewModel.onLocationPermissionGranted()
+        }
+        // POST_NOTIFICATIONS not actionable from the VM yet; the FCM token
+        // pipeline (DriverMessagingService) handles delivery once granted.
+    }
+    val backgroundLocationLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ /* granted */ ->
+        // Background grant is best-effort. If denied, GPS pings stop when
+        // the screen locks; foreground heartbeat still works. No retry —
+        // the OS auto-denies subsequent prompts after one rejection.
+    }
+    LaunchedEffect(Unit) {
+        val fine = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        val coarse = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+
+        // Build the initial bundle: foreground location always, +
+        // POST_NOTIFICATIONS on API 33+.
+        val needed = mutableListOf<String>()
+        if (!fine && !coarse) {
+            needed += Manifest.permission.ACCESS_FINE_LOCATION
+            needed += Manifest.permission.ACCESS_COARSE_LOCATION
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            val notif = ContextCompat.checkSelfPermission(
+                context, Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!notif) needed += Manifest.permission.POST_NOTIFICATIONS
+        }
+
+        if (needed.isNotEmpty()) {
+            permissionLauncher.launch(needed.toTypedArray())
+        } else {
+            viewModel.onLocationPermissionGranted()
+        }
+
+        // Background-location escalation, after foreground is granted.
+        // Android 10+ rule: cannot bundle background with foreground in one
+        // dialog — must be a follow-up request, and the OS shows a separate
+        // settings-style screen rather than a popup.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            val foregroundOk = ContextCompat.checkSelfPermission(
+                context, Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+            val backgroundOk = ContextCompat.checkSelfPermission(
+                context, Manifest.permission.ACCESS_BACKGROUND_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+            if (foregroundOk && !backgroundOk) {
+                backgroundLocationLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+            }
+        }
+    }
 
     Column(
         modifier = Modifier
