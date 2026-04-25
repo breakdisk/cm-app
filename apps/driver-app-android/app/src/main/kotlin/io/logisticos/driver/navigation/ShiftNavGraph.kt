@@ -22,6 +22,7 @@ import io.logisticos.driver.feature.notifications.ui.NotificationsScreen
 import io.logisticos.driver.feature.pickup.ui.PickupScreen
 import io.logisticos.driver.feature.pod.ui.PodScreen
 import io.logisticos.driver.feature.profile.presentation.ProfileViewModel
+import io.logisticos.driver.feature.profile.ui.ComplianceScreen
 import io.logisticos.driver.feature.profile.ui.ProfileScreen
 import io.logisticos.driver.feature.route.ui.RouteScreen
 import io.logisticos.driver.feature.scanner.ui.ScannerScreen
@@ -32,6 +33,7 @@ private const val ROUTE_ROUTE         = "route"
 private const val SCAN_ROUTE          = "scan"
 private const val NOTIFICATIONS_ROUTE = "notifications"
 private const val PROFILE_ROUTE       = "profile"
+private const val COMPLIANCE_ROUTE    = "compliance"
 private const val NAVIGATE_TO_STOP_ROUTE = "navigate/{taskId}"
 private const val ARRIVAL_ROUTE       = "arrival/{taskId}"
 private const val PICKUP_ROUTE        = "pickup/{taskId}"
@@ -94,6 +96,9 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                 ProfileScreen(
                     sessionManager = vm.sessionManager,
                     isOfflineMode = vm.isOfflineMode,
+                    onNavigateToCompliance = {
+                        shiftNavController.navigate(COMPLIANCE_ROUTE)
+                    },
                     onLogout = {
                         vm.sessionManager.clearSession()
                         rootNavController.navigate(io.logisticos.driver.feature.auth.AUTH_GRAPH) {
@@ -101,6 +106,10 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                         }
                     }
                 )
+            }
+
+            composable(COMPLIANCE_ROUTE) {
+                ComplianceScreen(onBack = { shiftNavController.popBackStack() })
             }
 
             // ── Deep task destinations ────────────────────────────────────

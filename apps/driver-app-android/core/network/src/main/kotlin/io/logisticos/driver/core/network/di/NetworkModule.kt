@@ -8,6 +8,7 @@ import dagger.hilt.components.SingletonComponent
 import io.logisticos.driver.core.network.authenticator.TokenAuthenticator
 import io.logisticos.driver.core.network.interceptor.AuthInterceptor
 import io.logisticos.driver.core.network.interceptor.TenantInterceptor
+import io.logisticos.driver.core.network.service.ComplianceApiService
 import io.logisticos.driver.core.network.service.DirectionsApiService
 import io.logisticos.driver.core.network.service.DriverOpsApiService
 import io.logisticos.driver.core.network.service.IdentityApiService
@@ -97,4 +98,8 @@ object NetworkModule {
     @Provides @Singleton
     fun provideTrackingApiService(retrofit: Retrofit): TrackingApiService =
         retrofit.create(TrackingApiService::class.java)
+
+    @Provides @Singleton
+    fun provideComplianceApiService(retrofit: Retrofit): ComplianceApiService =
+        retrofit.create(ComplianceApiService::class.java)
 }
