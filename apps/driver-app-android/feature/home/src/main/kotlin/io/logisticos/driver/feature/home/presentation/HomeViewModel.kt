@@ -3,6 +3,7 @@ package io.logisticos.driver.feature.home.presentation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.logisticos.driver.core.database.dao.SyncQueueDao
 import io.logisticos.driver.core.database.entity.ShiftEntity
 import io.logisticos.driver.core.location.LocationRepository
 import io.logisticos.driver.core.network.service.DriverOpsApiService
@@ -22,14 +23,23 @@ data class HomeUiState(
     val isOnline: Boolean = false,
     val isTogglingStatus: Boolean = false,
     val error: String? = null,
-    val isOfflineMode: Boolean = false
+    val isOfflineMode: Boolean = false,
+    /** Number of items waiting in the local outbound sync queue. Surfaces
+     *  silent retry state to the driver — without this the screen lies
+     *  ("submitted ✓") while the actual server hand-off is still pending. */
+    val pendingSyncCount: Int = 0,
+    /** True after the user has explicitly denied location permission at
+     *  runtime (Android 11+ "Don't ask again" path). Drives the rationale
+     *  card on the home screen. */
+    val locationDenied: Boolean = false,
 )
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     private val repo: ShiftRepository,
     private val api: DriverOpsApiService,
-    private val locationRepo: LocationRepository
+    private val locationRepo: LocationRepository,
+    private val syncQueueDao: SyncQueueDao,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(HomeUiState())
@@ -43,9 +53,21 @@ class HomeViewModel @Inject constructor(
                 _uiState.update { it.copy(shift = shift) }
             }
         }
+        // Reactive — Room emits a new value any time enqueue/remove run.
+        viewModelScope.launch {
+            syncQueueDao.getPendingCount().collect { n ->
+                _uiState.update { it.copy(pendingSyncCount = n) }
+            }
+        }
         syncShift()
         startPolling()
         autoGoOnline()
+    }
+
+    /** Called from HomeScreen when the OS reports a location-permission denial.
+     *  Surfaces a rationale card; the user can retry from there. */
+    fun onLocationPermissionDenied() {
+        _uiState.update { it.copy(locationDenied = true) }
     }
 
     private fun startPolling() {
@@ -128,6 +150,19 @@ class HomeViewModel @Inject constructor(
                 startLocationHeartbeat()
             }
             // On failure we stay offline-in-UI; the manual toggle is still there.
+        }
+    }
+
+    /**
+     * Called from HomeScreen once ACCESS_FINE/COARSE_LOCATION is granted at runtime.
+     * Pushes a fresh fix immediately so the driver is discoverable by dispatch
+     * without waiting up to 60 s for the next heartbeat tick.
+     */
+    fun onLocationPermissionGranted() {
+        // Granting clears any prior denial banner.
+        _uiState.update { it.copy(locationDenied = false) }
+        viewModelScope.launch {
+            runCatching { pushFreshLocation() }
         }
     }
 

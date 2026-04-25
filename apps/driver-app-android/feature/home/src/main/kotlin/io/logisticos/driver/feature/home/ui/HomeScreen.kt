@@ -58,6 +58,12 @@ fun HomeScreen(
         val coarseGranted = grants[Manifest.permission.ACCESS_COARSE_LOCATION] == true
         if (fineGranted || coarseGranted) {
             viewModel.onLocationPermissionGranted()
+        } else if (grants.containsKey(Manifest.permission.ACCESS_FINE_LOCATION)
+                || grants.containsKey(Manifest.permission.ACCESS_COARSE_LOCATION)) {
+            // Driver was prompted for location specifically and said no —
+            // surface a rationale card. (Skip when only POST_NOTIFICATIONS
+            // was requested.)
+            viewModel.onLocationPermissionDenied()
         }
         // POST_NOTIFICATIONS not actionable from the VM yet; the FCM token
         // pipeline (DriverMessagingService) handles delivery once granted.
@@ -174,6 +180,75 @@ fun HomeScreen(
                             uncheckedTrackColor = Color.White.copy(alpha = 0.15f)
                         )
                     )
+                }
+            }
+        }
+
+        // Pending sync items \u2014 silent retries get a visible signal so the
+        // driver knows a POD/scan/COD entry hasn't yet hit the server.
+        if (state.pendingSyncCount > 0) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Cyan.copy(alpha = 0.10f)),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Cyan.copy(alpha = 0.35f))
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(
+                        color = Cyan,
+                        modifier = Modifier.size(14.dp),
+                        strokeWidth = 1.5.dp,
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = if (state.pendingSyncCount == 1) "1 item syncing"
+                                   else "${state.pendingSyncCount} items syncing",
+                            color = Cyan, fontSize = 13.sp, fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            "Will retry automatically when online",
+                            color = Color.White.copy(alpha = 0.5f), fontSize = 11.sp
+                        )
+                    }
+                }
+            }
+        }
+
+        // Location permission denied \u2014 link to OS settings; the OS won't show
+        // an in-app prompt again after one rejection on Android 11+.
+        if (state.locationDenied) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFFF3B5C).copy(alpha = 0.12f)),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFF3B5C).copy(alpha = 0.40f))
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Location access required",
+                        color = Color(0xFFFF3B5C),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "Dispatch can't see you without location. " +
+                            "Open Settings to grant access \u2014 without it you won't receive new tasks.",
+                        color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp
+                    )
+                    TextButton(
+                        onClick = {
+                            val intent = android.content.Intent(
+                                android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                android.net.Uri.fromParts("package", context.packageName, null),
+                            )
+                            context.startActivity(intent)
+                        },
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                    ) {
+                        Text("Open Settings", color = Color(0xFFFF3B5C), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    }
                 }
             }
         }
