@@ -141,6 +141,46 @@ pub async fn run() -> anyhow::Result<()> {
         }
     });
 
+    // Orphan-assignment cleanup tick. Drivers reinstall the app, lose their
+    // session, leave a `pending` row in dispatch.driver_assignments behind.
+    // The unique index `uq_driver_active_assignment` then blocks every new
+    // dispatch to that driver. Cancel any pending assignment older than
+    // 30 minutes that was never accepted.
+    //
+    // 30 min is generous — a real driver who accepted a route but hasn't
+    // started moving toward it should not be cleaned up. Tune via
+    // ORPHAN_CLEANUP_AGE_MINUTES env var if needed.
+    let pool_for_cleanup = pool.clone();
+    let cleanup_age_minutes: i64 = std::env::var("ORPHAN_CLEANUP_AGE_MINUTES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(30);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            tick.tick().await;
+            let res = sqlx::query(
+                "UPDATE dispatch.driver_assignments
+                 SET    status = 'cancelled', rejection_reason = 'orphaned: pending > stale threshold'
+                 WHERE  status = 'pending'
+                   AND  accepted_at IS NULL
+                   AND  assigned_at < NOW() - make_interval(mins => $1)"
+            )
+            .bind(cleanup_age_minutes)
+            .execute(&pool_for_cleanup)
+            .await;
+            match res {
+                Ok(r) if r.rows_affected() > 0 => tracing::info!(
+                    rows = r.rows_affected(),
+                    age_minutes = cleanup_age_minutes,
+                    "orphan-cleanup: cancelled stale pending assignments"
+                ),
+                Err(e) => tracing::warn!(err = %e, "orphan-cleanup: query failed"),
+                _ => {}
+            }
+        }
+    });
+
     let state = Arc::new(AppState {
         dispatch_service,
         jwt:          Arc::clone(&jwt),

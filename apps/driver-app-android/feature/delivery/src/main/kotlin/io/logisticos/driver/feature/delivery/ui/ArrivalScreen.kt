@@ -35,7 +35,12 @@ private val Border  = Color(0x14FFFFFF)
 @Composable
 fun ArrivalScreen(
     taskId: String,
-    onStartTask: (taskId: String, requiresPhoto: Boolean, requiresSignature: Boolean, requiresOtp: Boolean, isCod: Boolean, codAmount: Double) -> Unit,
+    /** Carries the taskType so the nav graph can route pickups to PickupScreen
+     *  and deliveries (or returns / hub-drops) to PodScreen. Without this
+     *  branch, pickup tasks landed on PodScreen with all requires-* false
+     *  and the driver saw a screen with no capture UI — the "no POD prompt"
+     *  bug operations reported. */
+    onStartTask: (taskId: String, taskType: TaskType, requiresPhoto: Boolean, requiresSignature: Boolean, requiresOtp: Boolean, isCod: Boolean, codAmount: Double) -> Unit,
     onBack: () -> Unit = {},
     viewModel: ArrivalViewModel = hiltViewModel()
 ) {
@@ -284,6 +289,7 @@ fun ArrivalScreen(
                         viewModel.startTask(taskId) {
                             onStartTask(
                                 taskId,
+                                task.taskType,
                                 task.requiresPhoto,
                                 task.requiresSignature,
                                 task.requiresOtp,

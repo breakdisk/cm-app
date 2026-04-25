@@ -13,6 +13,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navigation
+import io.logisticos.driver.core.database.entity.TaskType
 import io.logisticos.driver.feature.delivery.ui.ArrivalScreen
 import io.logisticos.driver.feature.home.ui.HomeScreen
 import io.logisticos.driver.feature.navigation.ui.NavigationScreen
@@ -119,10 +120,19 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                 val taskId = backStack.arguments?.getString("taskId") ?: ""
                 ArrivalScreen(
                     taskId = taskId,
-                    onStartTask = { id, photo, sig, otp, isCod, codAmount ->
-                        shiftNavController.navigate(
-                            "pod/$id/$photo/$sig/$otp/$isCod/$codAmount"
-                        )
+                    onStartTask = { id, taskType, photo, sig, otp, isCod, codAmount ->
+                        // Pickup tasks → PickupScreen (parcel-collection confirmation flow).
+                        // Delivery / Return / Hub-drop → PodScreen (capture photo/sig/OTP/COD).
+                        // Without this branch, pickups landed on PodScreen with all
+                        // requires-* false and the driver saw an empty capture screen.
+                        when (taskType) {
+                            TaskType.PICKUP -> shiftNavController.navigate(
+                                PICKUP_ROUTE.replace("{taskId}", id)
+                            )
+                            else -> shiftNavController.navigate(
+                                "pod/$id/$photo/$sig/$otp/$isCod/$codAmount"
+                            )
+                        }
                     },
                     onBack = { shiftNavController.popBackStack() },
                 )
