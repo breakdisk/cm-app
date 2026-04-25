@@ -32,6 +32,11 @@ data class HomeUiState(
      *  runtime (Android 11+ "Don't ask again" path). Drives the rationale
      *  card on the home screen. */
     val locationDenied: Boolean = false,
+    /** Set true when the driver has just transitioned online → offline
+     *  (manual toggle), and `shift` has data worth showing. The screen
+     *  renders an end-of-shift summary dialog and calls dismissShiftSummary()
+     *  on close. NOT set on initial offline state — only on the toggle. */
+    val showShiftSummary: Boolean = false,
 )
 
 @HiltViewModel
@@ -104,13 +109,25 @@ class HomeViewModel @Inject constructor(
                     api.goOffline()
                 }
             }.onSuccess {
-                _uiState.update { it.copy(isOnline = goingOnline) }
+                _uiState.update {
+                    it.copy(
+                        isOnline = goingOnline,
+                        // Trigger end-of-shift summary on the online → offline edge.
+                        // Skip the dialog if there's no shift loaded (cold app
+                        // start, going offline before any work) — nothing to show.
+                        showShiftSummary = !goingOnline && it.shift != null,
+                    )
+                }
                 if (goingOnline) startLocationHeartbeat() else stopLocationHeartbeat()
             }.onFailure { e ->
                 _uiState.update { it.copy(error = e.message) }
             }
             _uiState.update { it.copy(isTogglingStatus = false) }
         }
+    }
+
+    fun dismissShiftSummary() {
+        _uiState.update { it.copy(showShiftSummary = false) }
     }
 
     // ── Availability ─────────────────────────────────────────────────────────

@@ -26,6 +26,7 @@ private val Amber = Color(0xFFFFAB00)
 private val Glass = Color(0x0AFFFFFF)
 private val Border = Color(0x14FFFFFF)
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RouteScreen(
     shiftId: String,
@@ -35,6 +36,12 @@ fun RouteScreen(
         creationCallback = { factory: RouteViewModel.Factory -> factory.create(shiftId) }
     )
     val state by viewModel.uiState.collectAsState()
+
+    // Selected completed task for the detail bottom-sheet. Read-only —
+    // we don't yet store completed_at / pod_id on TaskEntity, so the
+    // sheet shows what's locally known. When TaskEntity gains those
+    // fields (migration 0008+), pull POD photo URL via /v1/pods/:id.
+    var selectedCompletedTask by remember { mutableStateOf<TaskEntity?>(null) }
 
     Column(
         modifier = Modifier
@@ -79,11 +86,79 @@ fun RouteScreen(
                     )
                 }
                 itemsIndexed(state.completedTasks, key = { _, task -> task.id }) { _, task ->
-                    // Completed tasks are immutable — no tap target.
-                    TaskStopCard(task = task, stopNumber = null, onClick = null)
+                    // Completed tasks: tap opens a read-only detail sheet so
+                    // drivers can review what they delivered without losing
+                    // the immutable visual cue.
+                    TaskStopCard(
+                        task = task,
+                        stopNumber = null,
+                        onClick = { selectedCompletedTask = task },
+                    )
                 }
             }
         }
+    }
+
+    selectedCompletedTask?.let { task ->
+        ModalBottomSheet(
+            onDismissRequest = { selectedCompletedTask = null },
+            containerColor = Color(0xFF0A0E1A),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    when (task.status) {
+                        TaskStatus.COMPLETED -> "Delivery completed"
+                        TaskStatus.FAILED, TaskStatus.ATTEMPTED -> "Delivery attempted"
+                        TaskStatus.RETURNED -> "Returned"
+                        else -> "Stop details"
+                    },
+                    color = when (task.status) {
+                        TaskStatus.COMPLETED -> Green
+                        TaskStatus.FAILED, TaskStatus.ATTEMPTED, TaskStatus.RETURNED -> Amber
+                        else -> Color.White
+                    },
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp,
+                )
+                Text(task.awb, color = Cyan, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                DetailRow("Recipient", task.recipientName)
+                DetailRow("Phone", task.recipientPhone)
+                DetailRow("Address", task.address)
+                if (task.isCod) DetailRow("COD", "₱${task.codAmount.toInt()}")
+                if (task.attemptCount > 0) {
+                    DetailRow("Attempts", task.attemptCount.toString())
+                }
+                if (!task.failureReason.isNullOrBlank()) {
+                    DetailRow("Reason", task.failureReason!!, valueColor = Amber)
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Photo and signature, when captured, are stored on the server. " +
+                    "Open the admin portal to view full POD records.",
+                    color = Color.White.copy(alpha = 0.4f),
+                    fontSize = 11.sp,
+                )
+                Spacer(Modifier.navigationBarsPadding().height(16.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailRow(label: String, value: String, valueColor: Color = Color.White) {
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(
+            label,
+            color = Color.White.copy(alpha = 0.4f),
+            fontSize = 12.sp,
+            modifier = Modifier.width(90.dp),
+        )
+        Text(value, color = valueColor, fontSize = 12.sp)
     }
 }
 

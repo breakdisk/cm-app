@@ -339,6 +339,42 @@ fun HomeScreen(
             Text("View Route", color = Canvas, fontWeight = FontWeight.Bold, fontSize = 16.sp)
         }
     }
+
+    // End-of-shift summary — fires once on the online → offline toggle.
+    if (state.showShiftSummary && state.shift != null) {
+        val s = state.shift!!
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissShiftSummary() },
+            confirmButton = {
+                TextButton(onClick = { viewModel.dismissShiftSummary() }) {
+                    Text("Done", color = Cyan, fontWeight = FontWeight.SemiBold)
+                }
+            },
+            containerColor = Color(0xFF0A0E1A),
+            title = {
+                Text("Shift summary", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                        StatItem(label = "Total",  value = s.totalStops.toString(),     color = Color.White)
+                        StatItem(label = "Done",   value = s.completedStops.toString(), color = Green)
+                        StatItem(label = "Failed", value = s.failedStops.toString(),    color = Color(0xFFFF3B5C))
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                        StatItem(label = "COD", value = "₱${s.totalCodCollected.toInt()}", color = Cyan)
+                        val rate = if (s.totalStops > 0)
+                            (s.completedStops * 100 / s.totalStops) else 0
+                        StatItem(label = "Success rate", value = "${rate}%", color = Green)
+                    }
+                    Text(
+                        "You're now offline. Toggle Online when you're ready to receive new tasks.",
+                        color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp,
+                    )
+                }
+            },
+        )
+    }
 }
 
 @Composable
