@@ -35,6 +35,7 @@ private val Border  = Color(0x14FFFFFF)
 fun ArrivalScreen(
     taskId: String,
     onStartTask: (taskId: String, requiresPhoto: Boolean, requiresSignature: Boolean, requiresOtp: Boolean, isCod: Boolean, codAmount: Double) -> Unit,
+    onBack: () -> Unit = {},
     viewModel: ArrivalViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -47,6 +48,24 @@ fun ArrivalScreen(
             .background(Canvas),
         contentAlignment = Alignment.BottomCenter
     ) {
+        // Back affordance — drivers who tap the wrong stop must always have
+        // a way out. Same TopStart pattern as NavigationScreen.
+        androidx.compose.material3.IconButton(
+            onClick = onBack,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(16.dp)
+                .size(44.dp),
+            colors = androidx.compose.material3.IconButtonDefaults.iconButtonColors(
+                containerColor = androidx.compose.ui.graphics.Color(0xE6050810),
+                contentColor = androidx.compose.ui.graphics.Color.White,
+            ),
+        ) {
+            androidx.compose.material3.Icon(
+                imageVector = androidx.compose.material.icons.Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = "Back to route list",
+            )
+        }
         // Background pulse ring
         Box(
             modifier = Modifier

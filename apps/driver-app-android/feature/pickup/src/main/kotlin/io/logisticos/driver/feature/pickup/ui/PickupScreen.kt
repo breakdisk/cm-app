@@ -39,6 +39,7 @@ private val Border  = Color(0x14FFFFFF)
 fun PickupScreen(
     taskId: String,
     onCompleted: () -> Unit,
+    onBack: () -> Unit = {},
     viewModel: PickupViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -96,9 +97,24 @@ fun PickupScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
-                Text("FIRST MILE", color = Purple, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-                Text("Pickup Confirmation", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                androidx.compose.material3.IconButton(
+                    onClick = onBack,
+                    modifier = Modifier.size(36.dp),
+                    colors = androidx.compose.material3.IconButtonDefaults.iconButtonColors(
+                        contentColor = Color.White.copy(alpha = 0.7f),
+                    ),
+                ) {
+                    androidx.compose.material3.Icon(
+                        imageVector = androidx.compose.material.icons.Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+                Column {
+                    Text("FIRST MILE", color = Purple, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                    Text("Pickup Confirmation", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                }
             }
             Box(
                 modifier = Modifier

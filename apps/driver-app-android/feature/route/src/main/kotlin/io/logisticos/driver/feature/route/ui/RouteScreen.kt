@@ -79,7 +79,8 @@ fun RouteScreen(
                     )
                 }
                 itemsIndexed(state.completedTasks, key = { _, task -> task.id }) { _, task ->
-                    TaskStopCard(task = task, stopNumber = null, onClick = {})
+                    // Completed tasks are immutable — no tap target.
+                    TaskStopCard(task = task, stopNumber = null, onClick = null)
                 }
             }
         }
@@ -87,64 +88,82 @@ fun RouteScreen(
 }
 
 @Composable
-private fun TaskStopCard(task: TaskEntity, stopNumber: Int?, onClick: () -> Unit) {
+private fun TaskStopCard(task: TaskEntity, stopNumber: Int?, onClick: (() -> Unit)?) {
     val statusColor = when (task.status) {
         TaskStatus.COMPLETED -> Green
         TaskStatus.ATTEMPTED, TaskStatus.FAILED -> Amber
         TaskStatus.EN_ROUTE, TaskStatus.ARRIVED, TaskStatus.IN_PROGRESS -> Cyan
         else -> Color.White.copy(alpha = 0.6f)
     }
-    Card(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Glass),
-        border = androidx.compose.foundation.BorderStroke(1.dp, Border)
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically
+    // When onClick is null, use the non-clickable Card overload — completed
+    // tasks shouldn't render with a ripple on tap. Material 3 has two
+    // separate Card composables, so we branch here.
+    if (onClick != null) {
+        Card(
+            onClick = onClick,
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = Glass),
+            border = androidx.compose.foundation.BorderStroke(1.dp, Border)
         ) {
-            if (stopNumber != null) {
-                Box(
-                    modifier = Modifier
-                        .size(32.dp)
-                        .background(Cyan.copy(alpha = 0.15f), shape = MaterialTheme.shapes.small),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        "$stopNumber",
-                        color = Cyan,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp
-                    )
-                }
-            }
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
+            TaskStopCardBody(task, stopNumber, statusColor)
+        }
+    } else {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = Glass.copy(alpha = 0.5f)),
+            border = androidx.compose.foundation.BorderStroke(1.dp, Border)
+        ) {
+            TaskStopCardBody(task, stopNumber, statusColor)
+        }
+    }
+}
+
+@Composable
+private fun TaskStopCardBody(task: TaskEntity, stopNumber: Int?, statusColor: Color) {
+    Row(
+        modifier = Modifier.padding(16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (stopNumber != null) {
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .background(Cyan.copy(alpha = 0.15f), shape = MaterialTheme.shapes.small),
+                contentAlignment = Alignment.Center
             ) {
                 Text(
-                    task.recipientName,
-                    color = Color.White,
-                    fontWeight = FontWeight.Medium,
-                    fontSize = 15.sp
-                )
-                Text(
-                    task.address,
-                    color = Color.White.copy(alpha = 0.5f),
-                    fontSize = 12.sp,
-                    maxLines = 1
-                )
-                Text(task.awb, color = statusColor, fontSize = 11.sp)
-            }
-            if (stopNumber != null) {
-                Icon(
-                    Icons.Default.Menu,
-                    contentDescription = "Drag",
-                    tint = Color.White.copy(alpha = 0.3f)
+                    "$stopNumber",
+                    color = Cyan,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp
                 )
             }
+        }
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                task.recipientName,
+                color = Color.White,
+                fontWeight = FontWeight.Medium,
+                fontSize = 15.sp
+            )
+            Text(
+                task.address,
+                color = Color.White.copy(alpha = 0.5f),
+                fontSize = 12.sp,
+                maxLines = 1
+            )
+            Text(task.awb, color = statusColor, fontSize = 11.sp)
+        }
+        if (stopNumber != null) {
+            Icon(
+                Icons.Default.Menu,
+                contentDescription = "Drag",
+                tint = Color.White.copy(alpha = 0.3f)
+            )
         }
     }
 }

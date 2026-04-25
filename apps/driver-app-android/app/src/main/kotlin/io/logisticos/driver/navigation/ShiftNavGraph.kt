@@ -110,7 +110,8 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                     taskId = taskId,
                     onArrived = {
                         shiftNavController.navigate(ARRIVAL_ROUTE.replace("{taskId}", taskId))
-                    }
+                    },
+                    onBack = { shiftNavController.popBackStack() }
                 )
             }
 
@@ -122,7 +123,8 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                         shiftNavController.navigate(
                             "pod/$id/$photo/$sig/$otp/$isCod/$codAmount"
                         )
-                    }
+                    },
+                    onBack = { shiftNavController.popBackStack() },
                 )
             }
 
@@ -134,7 +136,8 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                         shiftNavController.navigate(HOME_ROUTE) {
                             popUpTo(HOME_ROUTE) { inclusive = true }
                         }
-                    }
+                    },
+                    onBack = { shiftNavController.popBackStack() },
                 )
             }
 
@@ -162,7 +165,8 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                         shiftNavController.navigate(HOME_ROUTE) {
                             popUpTo(HOME_ROUTE) { inclusive = true }
                         }
-                    }
+                    },
+                    onBack = { shiftNavController.popBackStack() },
                 )
             }
         }

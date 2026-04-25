@@ -57,6 +57,7 @@ fun PodScreen(
     codAmount: Double = 0.0,
     onCompleted: () -> Unit,
     onFailed: (reason: String) -> Unit = {},
+    onBack: () -> Unit = {},
     viewModel: PodViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -144,9 +145,22 @@ fun PodScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
-                Text("PROOF OF DELIVERY", color = Cyan, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-                Text("Capture evidence", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                IconButton(
+                    onClick = onBack,
+                    modifier = Modifier.size(36.dp),
+                    colors = IconButtonDefaults.iconButtonColors(contentColor = Color.White.copy(alpha = 0.7f)),
+                ) {
+                    Icon(
+                        imageVector = androidx.compose.material.icons.Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+                Column {
+                    Text("PROOF OF DELIVERY", color = Cyan, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                    Text("Capture evidence", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                }
             }
             // Step indicators
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
