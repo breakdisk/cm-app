@@ -8,6 +8,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -50,19 +51,19 @@ fun ArrivalScreen(
     ) {
         // Back affordance — drivers who tap the wrong stop must always have
         // a way out. Same TopStart pattern as NavigationScreen.
-        androidx.compose.material3.IconButton(
+        IconButton(
             onClick = onBack,
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .padding(16.dp)
                 .size(44.dp),
-            colors = androidx.compose.material3.IconButtonDefaults.iconButtonColors(
-                containerColor = androidx.compose.ui.graphics.Color(0xE6050810),
-                contentColor = androidx.compose.ui.graphics.Color.White,
+            colors = IconButtonDefaults.iconButtonColors(
+                containerColor = Color(0xE6050810),
+                contentColor = Color.White,
             ),
         ) {
-            androidx.compose.material3.Icon(
-                imageVector = androidx.compose.material.icons.Icons.AutoMirrored.Filled.ArrowBack,
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                 contentDescription = "Back to route list",
             )
         }
