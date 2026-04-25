@@ -1,16 +1,21 @@
 package io.logisticos.driver.feature.pickup.ui
 
+import android.graphics.Bitmap
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.QrCodeScanner
@@ -20,12 +25,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import io.logisticos.driver.feature.pickup.presentation.PickupViewModel
+import java.io.File
+import java.io.FileOutputStream
 
 private val Canvas  = Color(0xFF050810)
 private val Cyan    = Color(0xFF00E5FF)
@@ -258,7 +266,23 @@ fun PickupScreen(
 
         Spacer(Modifier.height(16.dp))
 
-        // Photo section
+        // Photo section. System-camera launcher returns a thumbnail Bitmap.
+        // We persist it to filesDir and forward the absolute path to the
+        // ViewModel; matches the PodScreen photo flow without dragging
+        // CameraX into this module.
+        val context = LocalContext.current
+        val cameraLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.TakePicturePreview(),
+        ) { bitmap: Bitmap? ->
+            if (bitmap != null) {
+                val file = File(context.filesDir, "pickup_${taskId}.jpg")
+                FileOutputStream(file).use { out ->
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+                }
+                viewModel.onPhotoCaptured(file.absolutePath)
+            }
+        }
+
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -286,27 +310,47 @@ fun PickupScreen(
                 )
             }
 
-            // Photo placeholder — CameraX handled in PodScreen; here we use the same saveBitmap pattern
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(120.dp)
                     .clip(RoundedCornerShape(10.dp))
                     .background(Color(0x08FFFFFF))
-                    .border(1.dp, Border, RoundedCornerShape(10.dp)),
+                    .border(1.dp, Border, RoundedCornerShape(10.dp))
+                    .clickable { cameraLauncher.launch(null) },
                 contentAlignment = Alignment.Center
             ) {
                 if (state.photoPath != null) {
-                    Text("📷  Photo captured", color = Green, fontSize = 14.sp)
+                    Text("📷  Photo captured — tap to retake", color = Green, fontSize = 14.sp)
                 } else {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Text("📷", fontSize = 28.sp)
-                        Text("Tap camera to capture parcel photo", color = Color.White.copy(alpha = 0.3f), fontSize = 12.sp)
+                        Text("Tap to capture parcel photo", color = Color.White.copy(alpha = 0.3f), fontSize = 12.sp)
                     }
                 }
+            }
+
+            Button(
+                onClick = { cameraLauncher.launch(null) },
+                modifier = Modifier.fillMaxWidth().height(44.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Cyan.copy(alpha = 0.12f)),
+                shape = RoundedCornerShape(10.dp),
+            ) {
+                Icon(
+                    Icons.Default.CameraAlt,
+                    contentDescription = null,
+                    tint = Cyan,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (state.photoPath != null) "Retake Photo" else "Open Camera",
+                    color = Cyan,
+                    fontSize = 14.sp,
+                )
             }
         }
 

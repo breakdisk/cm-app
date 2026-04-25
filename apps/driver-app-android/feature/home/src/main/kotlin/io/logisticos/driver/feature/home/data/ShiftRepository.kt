@@ -62,12 +62,21 @@ class ShiftRepository @Inject constructor(
                     "hub_drop" -> TaskType.HUB_DROP
                     else       -> TaskType.DELIVERY
                 },
-                awb = "",                   // not in TaskSummary; set later if needed
+                // Server now returns tracking_number for the AWB scan check.
+                // Falls back to shipmentId so PickupScreen still shows
+                // *something* in the "Expected" row instead of blank if a
+                // legacy task pre-dates the migration.
+                awb = t.trackingNumber ?: t.shipmentId,
                 recipientName = t.customerName,
-                recipientPhone = "",        // not in TaskSummary
+                recipientPhone = t.customerPhone,
                 address = t.address,
+                lat = t.lat ?: 0.0,
+                lng = t.lng ?: 0.0,
                 status = existing?.status ?: TaskStatus.ASSIGNED,
                 stopOrder = existing?.stopOrder ?: t.sequence,
+                requiresPhoto = t.requiresPhoto,
+                requiresSignature = t.requiresSignature,
+                requiresOtp = t.requiresOtp,
                 isCod = (t.codAmountCents ?: 0L) > 0L,
                 codAmount = (t.codAmountCents ?: 0L) / 100.0,
                 syncedAt = System.currentTimeMillis()

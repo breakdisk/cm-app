@@ -77,6 +77,17 @@ pub struct TaskSummary {
     pub status: String,
     pub task_type: String,
     pub customer_name: String,
+    pub customer_phone: String,
     pub address: String,
+    pub tracking_number: Option<String>,
     pub cod_amount_cents: Option<i64>,
+    pub lat: Option<f64>,
+    pub lng: Option<f64>,
+    /// Capture requirements derived from task_type — driver app uses these to
+    /// decide which sections of POD/Pickup screens to render. Pickup always
+    /// needs the parcel photo + AWB scan; delivery additionally needs a
+    /// signature, plus OTP/COD as applicable.
+    pub requires_photo: bool,
+    pub requires_signature: bool,
+    pub requires_otp: bool,
 }

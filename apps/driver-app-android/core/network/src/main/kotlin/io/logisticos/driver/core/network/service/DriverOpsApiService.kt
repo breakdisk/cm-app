@@ -13,14 +13,21 @@ data class TaskListResponse(
 
 @Serializable
 data class TaskItem(
-    @SerialName("task_id")          val taskId: String,
-    @SerialName("shipment_id")      val shipmentId: String,
+    @SerialName("task_id")            val taskId: String,
+    @SerialName("shipment_id")        val shipmentId: String,
     val sequence: Int,
-    val status: String,              // "pending" | "inprogress"
-    @SerialName("task_type")        val taskType: String,    // "pickup" | "delivery"
-    @SerialName("customer_name")    val customerName: String,
+    val status: String,                // "pending" | "inprogress"
+    @SerialName("task_type")          val taskType: String,    // "pickup" | "delivery"
+    @SerialName("customer_name")      val customerName: String,
+    @SerialName("customer_phone")     val customerPhone: String = "",
     val address: String,
-    @SerialName("cod_amount_cents") val codAmountCents: Long? = null
+    @SerialName("tracking_number")    val trackingNumber: String? = null,
+    @SerialName("cod_amount_cents")   val codAmountCents: Long? = null,
+    val lat: Double? = null,
+    val lng: Double? = null,
+    @SerialName("requires_photo")     val requiresPhoto: Boolean = false,
+    @SerialName("requires_signature") val requiresSignature: Boolean = false,
+    @SerialName("requires_otp")       val requiresOtp: Boolean = false,
 )
 
 @Serializable

@@ -51,9 +51,27 @@ impl PodService {
         delivery_lat: f64,
         delivery_lng: f64,
     ) -> AppResult<ProofOfDelivery> {
-        // Idempotency: one POD per shipment
+        // Idempotency: one *active* POD per shipment per driver. If a POD
+        // already exists for this shipment, return it only when the calling
+        // driver owns it — same driver hitting Submit twice or replaying
+        // initiate after a network blip should not create duplicates.
+        //
+        // If the existing POD belongs to a *different* driver (e.g. the
+        // shipment was reassigned after a stale orphan-pending assignment was
+        // cancelled and re-dispatched), the prior draft is now stranded.
+        // Returning it would route the new driver's submit to a row owned
+        // by the old driver and the ownership check on submit would 403.
+        // Instead we error out and let an operator delete the stale draft —
+        // surfacing the inconsistency rather than silently overwriting it.
         if let Some(existing) = self.pod_repo.find_by_shipment(cmd.shipment_id).await.map_err(AppError::Internal)? {
-            return Ok(existing);
+            if existing.driver_id == driver_id.inner() {
+                return Ok(existing);
+            }
+            return Err(AppError::BusinessRule(format!(
+                "POD for shipment {} already initiated by another driver ({}). \
+                 Ask ops to clear the stale draft before retrying.",
+                cmd.shipment_id, existing.driver_id
+            )));
         }
 
         // Geofence check — driver must be at the delivery address
