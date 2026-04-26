@@ -10,7 +10,7 @@
  *        When it does, replace AGENTS / INVOCATION_TREND / KPI with live
  *        fetches analogous to the escalated section's pattern.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
@@ -167,6 +167,20 @@ const INVOCATION_TREND = Array.from({ length: 24 }, (_, i) => ({
   fraud:    Math.floor(200 + Math.sin(i / 5) * 80 + Math.random() * 30),
 }));
 
+interface AggregateStats {
+  total_today:      number;
+  completed_today:  number;
+  escalated_today:  number;
+  failed_today:     number;
+  success_rate_pct: number;
+  by_type_today:    Record<string, number>;
+  hourly_24h: Array<{
+    hour:    number;
+    total:   number;
+    by_type: Record<string, number>;
+  }>;
+}
+
 export default function AIAgentsPage() {
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
 
@@ -174,6 +188,40 @@ export default function AIAgentsPage() {
   const [loadingEsc, setLoadingEsc] = useState(true);
   const [escError, setEscError]   = useState<string | null>(null);
   const [resolvingId, setResolvingId] = useState<string | null>(null);
+
+  // Aggregate KPIs + 24h invocation breakdown — single round-trip.
+  // Falls back to the static KPI/INVOCATION_TREND constants on failure
+  // so the page degrades gracefully if ai-layer is unreachable.
+  const [agg, setAgg] = useState<AggregateStats | null>(null);
+  useEffect(() => {
+    authFetch(`${API_BASE}/v1/agents/aggregate`)
+      .then((res) => res.ok ? res.json() : null)
+      .then((json) => { if (json?.data) setAgg(json.data); })
+      .catch(() => { /* keep mock */ });
+  }, []);
+
+  const liveKpi = useMemo(() => {
+    if (!agg) return KPI;
+    return [
+      // Active Agents = count of distinct agent_types seen today (proxy
+      // for "what's actually doing work right now"). Falls back to 0 if
+      // the tenant hasn't run anything today.
+      { label: "Active Agents",     value: Object.keys(agg.by_type_today).length, trend: 0, color: "green"  as const, format: "number"  as const },
+      { label: "Invocations Today", value: agg.total_today,                       trend: 0, color: "cyan"   as const, format: "number"  as const },
+      { label: "Escalated Today",   value: agg.escalated_today,                   trend: 0, color: "purple" as const, format: "number"  as const },
+      { label: "Success Rate",      value: agg.success_rate_pct,                  trend: 0, color: "amber"  as const, format: "percent" as const },
+    ];
+  }, [agg]);
+
+  const liveInvocationTrend = useMemo(() => {
+    if (!agg) return INVOCATION_TREND;
+    return agg.hourly_24h.map((b) => ({
+      hour:     `${b.hour}:00`,
+      dispatch: b.by_type["dispatch"] ?? 0,
+      support:  b.by_type["on_demand"] ?? 0,  // chatbot lives under on_demand for now
+      fraud:    b.by_type["anomaly"] ?? 0,
+    }));
+  }, [agg]);
 
   const loadEscalated = useCallback(async () => {
     setEscError(null);
@@ -294,7 +342,7 @@ export default function AIAgentsPage() {
 
       {/* KPI row */}
       <motion.div variants={variants.fadeInUp} className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {KPI.map((m) => (
+        {liveKpi.map((m) => (
           <GlassCard key={m.label} size="sm" glow={m.color} accent>
             <LiveMetric label={m.label} value={m.value} trend={m.trend} color={m.color} format={m.format} />
           </GlassCard>
@@ -311,7 +359,7 @@ export default function AIAgentsPage() {
             </div>
           </div>
           <ResponsiveContainer width="100%" height={160}>
-            <AreaChart data={INVOCATION_TREND} margin={{ top: 0, right: 0, bottom: 0, left: -24 }}>
+            <AreaChart data={liveInvocationTrend} margin={{ top: 0, right: 0, bottom: 0, left: -24 }}>
               <defs>
                 <linearGradient id="grad-disp" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%"  stopColor="#00E5FF" stopOpacity={0.25} />

@@ -19,8 +19,27 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/analytics/kpis",              get(delivery_kpis))
         .route("/v1/analytics/timeseries",        get(daily_timeseries))
+        .route("/v1/analytics/sla-trend",         get(sla_trend))
         .route("/v1/analytics/driver-performance", get(driver_performance))
         .route("/v1/analytics/dashboard",          get(get_dashboard))
+}
+
+#[derive(Debug, Deserialize)]
+struct SlaTrendQuery {
+    /// Days of history to return (1..=180). Defaults to 30 — matches the
+    /// admin dashboard SLA chart and the partner-portal overview tile.
+    days: Option<i64>,
+}
+
+async fn sla_trend(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Query(q): Query<SlaTrendQuery>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::ANALYTICS_VIEW)?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let series = state.query_svc.sla_trend(&tenant_id, q.days.unwrap_or(30)).await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "data": series, "count": series.len() }))))
 }
 
 #[derive(Debug, Deserialize)]

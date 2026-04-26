@@ -96,6 +96,19 @@ pub struct DashboardData {
     pub zone_performance: Vec<ZonePerformance>,
 }
 
+/// One day of SLA performance, returned by /v1/analytics/sla-trend.
+/// Source: analytics.daily_kpis (refreshed nightly via refresh_daily_kpis).
+/// Days without an aggregate row report 0% so the chart line stays visible
+/// through quiet periods rather than skipping points.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SlaTrendPoint {
+    pub date:          chrono::NaiveDate,
+    /// 0..100 — already in percent so the chart axis doesn't have to scale.
+    pub on_time_pct:   f64,
+    pub delivered:     i64,
+    pub on_time_count: i64,
+}
+
 /// Aggregate event row stored in the analytics schema (append-only).
 /// Written by Kafka handlers on every relevant event.
 #[derive(Debug, Clone, Serialize, Deserialize)]

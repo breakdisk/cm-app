@@ -7,7 +7,7 @@ use logisticos_types::TenantId;
 
 use crate::domain::entities::{
     DailyBucket, DashboardData, DashboardMetrics, DeliveryKpis, DriverPerformance,
-    SlaBreakdown, WeeklyVolumeDay, ZonePerformance,
+    SlaBreakdown, SlaTrendPoint, WeeklyVolumeDay, ZonePerformance,
 };
 use crate::infrastructure::db::AnalyticsDb;
 
@@ -50,6 +50,20 @@ impl QueryService {
         }
         self.db
             .daily_timeseries(tenant_id.inner(), from, to)
+            .await
+            .map_err(AppError::internal)
+    }
+
+    /// Last N days of on-time-delivery rate (cap 180). Sourced from the
+    /// pre-computed analytics.daily_kpis aggregate so this is cheap even
+    /// over the full 6-month window.
+    pub async fn sla_trend(
+        &self,
+        tenant_id: &TenantId,
+        days: i64,
+    ) -> AppResult<Vec<SlaTrendPoint>> {
+        self.db
+            .sla_trend(tenant_id.inner(), days)
             .await
             .map_err(AppError::internal)
     }

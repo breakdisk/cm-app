@@ -114,22 +114,7 @@ export default function SettingsPage() {
       {/* General */}
       {activeTab === "General" && (
         <motion.div variants={variants.fadeInUp} className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <GlassCard title="Tenant Profile">
-            <div className="space-y-4">
-              {[
-                { label: "Tenant Name",   value: "LogisticOS Demo Tenant" },
-                { label: "Tenant ID",     value: "tenant-a1b2c3d4",      mono: true },
-                { label: "Plan",          value: "Enterprise"             },
-                { label: "Region",        value: "ap-southeast-1 (PH)"   },
-                { label: "SLA Policy",    value: "Standard (D+2)"         },
-              ].map((row) => (
-                <div key={row.label} className="flex justify-between items-center py-2 border-b border-white/[0.06]">
-                  <span className="text-xs text-white/40 uppercase tracking-widest font-mono">{row.label}</span>
-                  <span className={`text-sm text-white font-medium ${row.mono ? "font-mono text-[#00E5FF]" : ""}`}>{row.value}</span>
-                </div>
-              ))}
-            </div>
-          </GlassCard>
+          <TenantProfileCard />
 
           <GlassCard title="Notification Channels">
             <div className="space-y-3">
@@ -553,6 +538,143 @@ function RolesTab() {
         · descriptions mirror libs/auth/src/rbac.rs::default_permissions_for_role.
       </p>
     </motion.div>
+  );
+}
+
+// ── Tenant Profile (General tab) ─────────────────────────────────────────────
+// Backed by GET /v1/tenants/me (read) + PUT /v1/tenants/:id (write).
+// Slug + tier + status are intentionally read-only — those have first-class
+// endpoints with cross-service side-effects.
+
+interface TenantSnapshot {
+  id:                string | { 0: string };
+  name:              string;
+  slug:              string;
+  subscription_tier: string;
+  status:            string;
+  is_active:         boolean;
+  owner_email:       string;
+  created_at:        string;
+  updated_at:        string;
+}
+
+function tenantIdOf(t: TenantSnapshot): string {
+  const raw = t.id as unknown;
+  if (typeof raw === "string") return raw;
+  if (raw && typeof raw === "object" && "0" in raw) return String((raw as { 0: string })[0]);
+  return "";
+}
+
+function TenantProfileCard() {
+  const [tenant,  setTenant]  = useState<TenantSnapshot | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState<string | null>(null);
+  const [saving,  setSaving]  = useState(false);
+  const [saved,   setSaved]   = useState(false);
+  const [form, setForm] = useState<{ name: string; owner_email: string } | null>(null);
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      const res = await authFetch(`${API_BASE}/v1/tenants/me`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      const t: TenantSnapshot = json.data;
+      setTenant(t);
+      setForm({ name: t.name, owner_email: t.owner_email });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load tenant");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleSave() {
+    if (!tenant || !form) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await authFetch(`${API_BASE}/v1/tenants/${tenantIdOf(tenant)}`, {
+        method: "PUT",
+        body: JSON.stringify({ name: form.name, owner_email: form.owner_email }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error?.message ?? `HTTP ${res.status}`);
+      }
+      const j = await res.json();
+      setTenant(j.data);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <GlassCard title="Tenant Profile">
+      <div className="space-y-3">
+        {loading && !tenant ? (
+          <p className="text-xs text-white/40 font-mono py-4 text-center">loading tenant…</p>
+        ) : tenant && form ? (
+          <>
+            <label className="block">
+              <span className="text-xs text-white/40 uppercase tracking-widest font-mono block mb-1">Tenant Name</span>
+              <input
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                className="w-full rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-sm text-white focus:border-cyan-neon/50 focus:outline-none"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-white/40 uppercase tracking-widest font-mono block mb-1">Owner Email</span>
+              <input
+                type="email"
+                value={form.owner_email}
+                onChange={(e) => setForm({ ...form, owner_email: e.target.value })}
+                className="w-full rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-sm text-white focus:border-cyan-neon/50 focus:outline-none"
+              />
+            </label>
+            {/* Read-only metadata. Slug is immutable by design (cross-service
+                key); tier + status flow through dedicated billing endpoints. */}
+            <div className="pt-2 space-y-2">
+              <ReadRow label="Tenant ID" value={tenantIdOf(tenant)} mono />
+              <ReadRow label="Slug"      value={tenant.slug}        mono />
+              <ReadRow label="Plan"      value={tenant.subscription_tier} />
+              <ReadRow label="Status"    value={tenant.status}            />
+              <ReadRow label="Active"    value={tenant.is_active ? "yes" : "no"} />
+              <ReadRow label="Created"   value={new Date(tenant.created_at).toLocaleDateString()} />
+            </div>
+            {error && <p className="text-xs text-red-signal font-mono">{error}</p>}
+            <div className="flex items-center justify-end gap-2 pt-2">
+              {saved && <span className="text-xs text-green-signal font-mono">✓ Saved</span>}
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                className="px-3 py-1.5 text-xs font-medium text-green-signal border border-green-signal/30 bg-green-signal/10 rounded-lg hover:border-green-signal/60 transition-colors disabled:opacity-40"
+              >
+                {saving ? "Saving…" : "Save Changes"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <p className="text-xs text-red-signal font-mono">{error ?? "Tenant unavailable"}</p>
+        )}
+      </div>
+    </GlassCard>
+  );
+}
+
+function ReadRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="flex justify-between items-center py-1.5 border-b border-white/[0.06]">
+      <span className="text-xs text-white/40 uppercase tracking-widest font-mono">{label}</span>
+      <span className={`text-sm text-white ${mono ? "font-mono text-white/70" : ""} truncate max-w-[220px]`}>{value}</span>
+    </div>
   );
 }
 

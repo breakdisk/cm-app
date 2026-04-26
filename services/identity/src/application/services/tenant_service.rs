@@ -81,6 +81,11 @@ impl TenantService {
         Arc::clone(&self.user_repo)
     }
 
+    /// Expose the tenant repo for read-only paths (e.g. GET /v1/tenants/me).
+    pub fn tenant_repo_ref(&self) -> Arc<dyn crate::domain::repositories::TenantRepository> {
+        Arc::clone(&self.tenant_repo)
+    }
+
     /// Promote the caller's own tenant from `draft` to `active`. Called via
     /// `POST /v1/tenants/me/finalize` from the lazy-onboarding `/setup` flow.
     /// Idempotent for already-active tenants — re-calling just updates the
@@ -125,6 +130,40 @@ impl TenantService {
         // setup) currently react to `tenant.created` which is already fired
         // for draft tenants at provision time.
 
+        Ok(tenant)
+    }
+
+    /// Tenant self-edit — partial update of name + owner_email. Subscription
+    /// tier and is_active are NOT exposed here; those go through dedicated
+    /// /upgrade-tier and /suspend endpoints (with billing/ops side-effects).
+    /// Slug is intentionally immutable: cross-service references (auth-bridge,
+    /// driver-app TENANT_ID, marketplace partner_slug) all key off it.
+    pub async fn update_tenant(
+        &self,
+        tenant_id: &logisticos_types::TenantId,
+        cmd: crate::application::commands::UpdateTenantCommand,
+    ) -> AppResult<Tenant> {
+        use validator::Validate;
+        cmd.validate().map_err(|e| AppError::Validation(e.to_string()))?;
+
+        let mut tenant = self.tenant_repo
+            .find_by_id(tenant_id).await
+            .map_err(AppError::Internal)?
+            .ok_or_else(|| AppError::NotFound {
+                resource: "Tenant",
+                id: tenant_id.inner().to_string(),
+            })?;
+
+        if let Some(name) = cmd.name {
+            tenant.name = name;
+        }
+        if let Some(email) = cmd.owner_email {
+            tenant.owner_email = email;
+        }
+        tenant.updated_at = chrono::Utc::now();
+        self.tenant_repo.save(&tenant).await.map_err(AppError::Internal)?;
+
+        tracing::info!(tenant_id = %tenant.id, "Tenant profile updated");
         Ok(tenant)
     }
 

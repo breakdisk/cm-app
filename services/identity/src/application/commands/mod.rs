@@ -167,6 +167,19 @@ pub struct FinalizeTenantCommand {
     pub region: String,
 }
 
+/// Partial-update command for PUT /v1/tenants/:id. Slug + tier + status are
+/// intentionally not editable here — those have first-class endpoints with
+/// side-effects (cross-service slug rewrites, billing flips, ops audit).
+#[derive(Debug, Deserialize, Validate)]
+pub struct UpdateTenantCommand {
+    #[validate(length(min = 2, max = 100))]
+    #[serde(default)]
+    pub name: Option<String>,
+    #[validate(email)]
+    #[serde(default)]
+    pub owner_email: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ExchangedUser {
     pub id:                   String,

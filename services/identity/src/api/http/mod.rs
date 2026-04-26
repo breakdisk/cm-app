@@ -5,7 +5,7 @@ pub mod api_keys;
 pub mod health;
 pub mod push_tokens;
 
-use axum::{Router, routing::{get, post, delete}};
+use axum::{Router, routing::{get, post, put, delete}};
 use std::sync::Arc;
 use crate::api::middleware::{require_internal_secret, InternalSecret};
 use crate::application::services::{auth_service::AuthService, tenant_service::TenantService, api_key_service::ApiKeyService};
@@ -78,7 +78,9 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/api-keys",        get(api_keys::list).post(api_keys::create))
         .route("/api-keys/:id",    delete(api_keys::revoke))
         .route("/push-tokens",     post(push_tokens::register_push_token).delete(push_tokens::delete_push_token))
-        // Tenant self-management (draft-tenant onboarding exit)
+        // Tenant self-management
+        .route("/tenants/me",          get(tenants::get_self))
         .route("/tenants/me/finalize", post(tenants::finalize_self))
+        .route("/tenants/:id",         put(tenants::update_tenant))
         .layer(auth_layer)
 }

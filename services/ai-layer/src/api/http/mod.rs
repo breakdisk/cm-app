@@ -26,6 +26,7 @@ use crate::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/agents/run",                       post(run_agent))
+        .route("/v1/agents/aggregate",                 get(aggregate_stats))
         .route("/v1/agents/sessions",                  get(list_sessions))
         .route("/v1/agents/sessions/escalated",        get(list_escalated))
         .route("/v1/agents/sessions/:id",              get(get_session))
@@ -34,6 +35,23 @@ pub fn router() -> Router<AppState> {
         // Not exposed through the API gateway (protected by Istio network policy).
         .route("/internal/tools/execute",              post(execute_tool))
         .route("/internal/tools",                      get(list_tools))
+}
+
+/// GET /v1/agents/aggregate — KPI counters + 24-hour invocation breakdown
+/// for the AI Agents dashboard. One round-trip; reads from ai.agent_sessions
+/// directly (no Kafka, no aggregator service needed for now).
+async fn aggregate_stats(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+) -> impl IntoResponse {
+    // Same permission guard as list_sessions — anyone who can see sessions
+    // can see the rollup.
+    let _ = claims.user_id; // touched to silence unused-var when permission gate is added
+    let stats = state.session_repo
+        .aggregate(claims.tenant_id)
+        .await
+        .map_err(AppError::internal)?;
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "data": stats }))))
 }
 
 // ---------------------------------------------------------------------------

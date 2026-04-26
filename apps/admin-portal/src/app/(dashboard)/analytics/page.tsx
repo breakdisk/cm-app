@@ -7,6 +7,7 @@ import { useState, useEffect, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { createAnalyticsApi } from "@/lib/api/analytics";
+import { authFetch } from "@/lib/auth/auth-fetch";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
@@ -68,6 +69,7 @@ function AnalyticsPageInner() {
   const [kpi, setKpi] = useState(KPI);
   const [weeklyVolume, setWeeklyVolume] = useState(WEEKLY_VOLUME);
   const [zonePerformance, setZonePerformance] = useState(ZONE_PERFORMANCE);
+  const [slaTrend, setSlaTrend] = useState(SLA_TREND);
 
   useEffect(() => {
     if (focusZone && focusRowRef.current) {
@@ -89,6 +91,26 @@ function AnalyticsPageInner() {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       if (res.data.zone_performance?.length) setZonePerformance(res.data.zone_performance as any);
     }).catch(() => { /* retain mock on error */ });
+  }, []);
+
+  // SLA trend — pull last 30 days of pre-aggregated on-time rate from
+  // analytics.daily_kpis. Falls back to the static mock if the endpoint
+  // 404s (e.g. older analytics image without /v1/analytics/sla-trend).
+  useEffect(() => {
+    const base = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+    authFetch(`${base}/v1/analytics/sla-trend?days=30`)
+      .then((res) => res.ok ? res.json() : null)
+      .then((json) => {
+        if (!json?.data?.length) return;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const points = (json.data as Array<{ date: string; on_time_pct: number }>).map((p) => ({
+          date:   p.date.slice(5).replace("-", "/"),  // MM/DD label keeps the X axis tight
+          rate:   Number(p.on_time_pct.toFixed(1)),
+          target: 95,
+        }));
+        setSlaTrend(points);
+      })
+      .catch(() => { /* keep mock */ });
   }, []);
 
   return (
@@ -157,7 +179,7 @@ function AnalyticsPageInner() {
               </div>
             </div>
             <ResponsiveContainer width="100%" height={180}>
-              <LineChart data={SLA_TREND} margin={{ top: 10, right: 10, bottom: 0, left: -24 }}>
+              <LineChart data={slaTrend} margin={{ top: 10, right: 10, bottom: 0, left: -24 }}>
                 <CartesianGrid stroke="rgba(255,255,255,0.04)" strokeDasharray="4 4" vertical={false} />
                 <XAxis dataKey="date" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 11, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
                 <YAxis domain={[88, 100]} tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />

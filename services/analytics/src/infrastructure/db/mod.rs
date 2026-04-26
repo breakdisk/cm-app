@@ -2,7 +2,15 @@ use chrono::NaiveDate;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::domain::entities::{DailyBucket, DeliveryKpis, DriverPerformance, ShipmentEvent};
+use crate::domain::entities::{DailyBucket, DeliveryKpis, DriverPerformance, ShipmentEvent, SlaTrendPoint};
+
+#[derive(sqlx::FromRow)]
+struct SlaTrendRow {
+    date:          NaiveDate,
+    on_time_rate:  f64,
+    delivered:     i64,
+    on_time_count: i64,
+}
 
 pub struct AnalyticsDb {
     pool: PgPool,
@@ -138,6 +146,54 @@ impl AnalyticsDb {
             cod_collection_rate:   cod_rate,
             computed_at:           chrono::Utc::now(),
         })
+    }
+
+    /// Daily on-time rate for the last N days, sourced from the pre-computed
+    /// analytics.daily_kpis aggregate (refreshed nightly). Returns ascending
+    /// by date with rate already in 0..1; the API layer renders as percent.
+    /// Days without an aggregate row appear with rate=0 — that matches the
+    /// "no deliveries logged" state the dashboard wants to show flat.
+    pub async fn sla_trend(
+        &self,
+        tenant_id: Uuid,
+        days: i64,
+    ) -> anyhow::Result<Vec<SlaTrendPoint>> {
+        let days_clamped = days.clamp(1, 180);
+        let rows = sqlx::query_as::<_, SlaTrendRow>(
+            r#"
+            WITH series AS (
+                SELECT generate_series(
+                    (CURRENT_DATE - ($1::int - 1) * INTERVAL '1 day')::date,
+                    CURRENT_DATE,
+                    INTERVAL '1 day'
+                )::date AS day
+            )
+            SELECT
+                series.day                                  AS date,
+                COALESCE(k.on_time_rate, 0.0)               AS on_time_rate,
+                COALESCE(k.delivered, 0)                    AS delivered,
+                COALESCE(k.on_time_count, 0)                AS on_time_count
+            FROM series
+            LEFT JOIN analytics.daily_kpis k
+              ON k.tenant_id = $2 AND k.date = series.day
+            ORDER BY series.day ASC
+            "#,
+        )
+        .bind(days_clamped as i32)
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| SlaTrendPoint {
+                date:          r.date,
+                // Render as percent so the chart's Y axis is human-friendly.
+                on_time_pct:   r.on_time_rate * 100.0,
+                delivered:     r.delivered,
+                on_time_count: r.on_time_count,
+            })
+            .collect())
     }
 
     pub async fn daily_timeseries(
