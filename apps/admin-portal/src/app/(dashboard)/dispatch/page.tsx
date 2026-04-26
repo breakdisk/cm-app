@@ -68,6 +68,10 @@ interface DriverProfile {
   last_name:  string;
   email:      string;
   tenant_id:  string;
+  status?:    string;        // "available" | "offline" | "en_route" | "delivering" | "returning" | "on_break"
+  is_online?: boolean;
+  active_route_id?: string | null;
+  last_location_at?: string | null;
 }
 
 const KPI_METRICS = [
@@ -91,6 +95,7 @@ function DispatchPageInner() {
   const [loading,       setLoading]       = useState(false);
   const [error,         setError]         = useState<string | null>(null);
   const [queueFilter,   setQueueFilter]   = useState<QueueFilter>("pending");
+  const [togglingDriver,setTogglingDriver]= useState<string | null>(null);
 
   // Deep-link from partner-portal: /admin/dispatch?order=<shipment_id> highlights
   // and scrolls to the matching queue card once data lands.
@@ -155,6 +160,30 @@ function DispatchPageInner() {
       focusCardRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, [focusOrderId, queue]);
+
+  // Admin override — flip a driver's status. Backed by FLEET_MANAGE on
+  // PUT /v1/drivers/:id/status (driver-ops). Used to pull idle drivers
+  // out of the auto-dispatch pool for testing or to mark a no-show offline.
+  async function handleToggleDriver(driver: DriverProfile) {
+    const isAvailable = driver.status === "available";
+    const next = isAvailable ? "offline" : "available";
+    setTogglingDriver(driver.id);
+    try {
+      const res = await authFetch(`${API_BASE}/v1/drivers/${driver.id}/status`, {
+        method: "PUT",
+        body: JSON.stringify({ status: next }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error?.message ?? `Status flip failed (${res.status})`);
+      }
+      await fetchData();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Driver status flip failed");
+    } finally {
+      setTogglingDriver(null);
+    }
+  }
 
   async function handleDispatch(shipmentId: string) {
     setDispatching(shipmentId);
@@ -281,6 +310,59 @@ function DispatchPageInner() {
                   </option>
                 ))}
               </select>
+            </div>
+          )}
+
+          {/* Driver Roster — admin override (FLEET_MANAGE). Status dot
+              + force-online/offline button per driver. Used to pull idle
+              drivers out of the auto-dispatch pool, e.g. for a focused
+              test loop on a single device. Disabled while a driver is
+              en_route — they need their route cancelled first. */}
+          {drivers.length > 0 && (
+            <div>
+              <span className="text-xs font-mono uppercase tracking-widest text-white/30 mb-1 block">
+                Driver Roster · {drivers.length}
+              </span>
+              <div className="flex flex-col gap-1.5 overflow-y-auto max-h-[180px] pr-1">
+                {drivers.map((d) => {
+                  const name = [d.first_name, d.last_name].filter(Boolean).join(" ") || d.email;
+                  const isAvailable = d.status === "available";
+                  const isOffline   = d.status === "offline";
+                  const isOnRoute   = !!d.active_route_id;
+                  const dotColor =
+                    isAvailable ? "bg-green-400" :
+                    isOnRoute   ? "bg-cyan-400"  :
+                    isOffline   ? "bg-white/20"  :
+                                  "bg-amber-400";
+                  return (
+                    <div
+                      key={d.id}
+                      className="flex items-center justify-between gap-2 rounded-md border border-white/5 bg-white/[0.02] px-2 py-1.5"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className={`h-2 w-2 rounded-full ${dotColor}`} />
+                        <span className="text-xs text-white/80 truncate">{name}</span>
+                      </div>
+                      <button
+                        onClick={() => handleToggleDriver(d)}
+                        disabled={togglingDriver === d.id || isOnRoute}
+                        title={isOnRoute ? "Cancel route before changing status" : ""}
+                        className={`text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+                          isAvailable
+                            ? "text-amber-300 hover:bg-amber-500/15 border border-amber-500/30"
+                            : "text-green-300 hover:bg-green-500/15 border border-green-500/30"
+                        }`}
+                      >
+                        {togglingDriver === d.id
+                          ? "…"
+                          : isAvailable
+                            ? "→ Offline"
+                            : "→ Online"}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
 

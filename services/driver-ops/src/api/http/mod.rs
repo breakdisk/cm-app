@@ -67,6 +67,8 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         // Drivers (fleet management — dispatcher role)
         .route("/drivers",       get(drivers::list_drivers).post(drivers::register_driver))
         .route("/drivers/:id",   get(drivers::get_driver).patch(drivers::update_driver))
+        // Admin override: force a driver's status (FLEET_MANAGE permission)
+        .route("/drivers/:id/status", put(drivers::set_driver_status))
         // Driver self-service (mobile app) — flat paths avoid matchit ambiguity with /:id
         .route("/drivers/go-online",  post(drivers::go_online))
         .route("/drivers/go-offline", post(drivers::go_offline))

@@ -109,4 +109,48 @@ impl DriverService {
         self.driver_repo.save(&driver).await.map_err(AppError::Internal)?;
         Ok(())
     }
+
+    /// Admin override — set a driver's status directly. Used by the Dispatch
+    /// Console (and ops scripts) to take a driver out of the auto-dispatch
+    /// pool without requiring the driver to toggle in their own app.
+    ///
+    /// Reachable only with FLEET_MANAGE permission (admin role). We guard
+    /// the en-route case explicitly: forcing offline a driver who's mid-route
+    /// would orphan an in-progress assignment, so the admin must cancel the
+    /// route first. For idle drivers (Available/Offline) the transition is
+    /// immediate.
+    pub async fn set_status(
+        &self,
+        tenant_id: &TenantId,
+        driver_id: &DriverId,
+        new_status: DriverStatus,
+        actor_id: Uuid,
+    ) -> AppResult<Driver> {
+        let mut driver = self.get(driver_id).await?;
+        if driver.tenant_id.inner() != tenant_id.inner() {
+            return Err(AppError::NotFound { resource: "Driver", id: driver_id.inner().to_string() });
+        }
+
+        // Refuse to flip a driver mid-route — the active route would be
+        // stranded with no driver. Admin must cancel the route first
+        // (separate dispatch endpoint).
+        if driver.active_route_id.is_some() && new_status != DriverStatus::EnRoute {
+            return Err(AppError::BusinessRule(
+                "Driver has an active route — cancel the route before changing status".into()
+            ));
+        }
+
+        let prior = driver.status;
+        driver.status = new_status;
+        driver.updated_at = chrono::Utc::now();
+        self.driver_repo.save(&driver).await.map_err(AppError::Internal)?;
+        tracing::info!(
+            driver_id = %driver_id,
+            actor_id  = %actor_id,
+            from      = ?prior,
+            to        = ?new_status,
+            "Admin set driver status"
+        );
+        Ok(driver)
+    }
 }

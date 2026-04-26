@@ -163,3 +163,50 @@ pub async fn go_offline(
     });
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
+
+#[derive(Debug, serde::Deserialize)]
+pub struct SetStatusRequest {
+    /// "available" | "offline" | "on_break". Other transitions (en_route /
+    /// delivering / returning) are state-machine driven and not exposed
+    /// here — admins shouldn't manually flip a driver into mid-trip states.
+    pub status: String,
+}
+
+/// Admin override: PUT /v1/drivers/:id/status — flip a driver's status
+/// directly, e.g. ops marks a driver offline who walked off shift without
+/// toggling the app, or pulls an idle driver out of the auto-dispatch pool
+/// for testing. Authority lives with admin (FLEET_MANAGE) only —
+/// dispatchers are read-only on driver state per ADR-0003 RBAC.
+pub async fn set_driver_status(
+    AuthClaims(claims): AuthClaims,
+    Path(id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SetStatusRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_permission!(claims, logisticos_auth::rbac::permissions::FLEET_MANAGE);
+
+    let new_status = match req.status.as_str() {
+        "available" => DriverStatus::Available,
+        "offline"   => DriverStatus::Offline,
+        "on_break"  => DriverStatus::OnBreak,
+        other => return Err(AppError::Validation(format!(
+            "Status '{other}' is not admin-settable. Allowed: available, offline, on_break."
+        ))),
+    };
+
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let driver_id = DriverId::from_uuid(id);
+    let driver = state.driver_service
+        .set_status(&tenant_id, &driver_id, new_status, claims.user_id)
+        .await?;
+
+    let _ = state.roster_tx.send(RosterEvent::StatusChanged {
+        driver_id: id,
+        tenant_id: claims.tenant_id,
+        status:    status_str(new_status).into(),
+        is_online: matches!(new_status, DriverStatus::Available | DriverStatus::OnBreak),
+        active_route_id: driver.active_route_id,
+    });
+
+    Ok(Json(serde_json::json!({ "data": DriverDto::from(&driver) })))
+}
