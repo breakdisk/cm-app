@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
+import { clearAuthCache } from "@/lib/auth/auth-fetch";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   LayoutDashboard,
@@ -151,6 +152,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const pathname = usePathname();
+  const router = useRouter();
   const pageTitle = getPageTitle(pathname);
 
   // Close mobile menu on navigation
@@ -288,6 +290,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           </div>
 
           <button
+            onClick={() => { clearAuthCache(); router.push("/auth/login"); }}
             className={cn(
               "group flex w-full items-center gap-3 rounded-lg px-3 py-2",
               "text-xs text-white/40 transition-all hover:bg-red-surface hover:text-red-signal",
