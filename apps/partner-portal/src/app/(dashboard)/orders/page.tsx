@@ -170,37 +170,89 @@ const MOCK_DRIVERS: Driver[] = [
 
 // ── API fetch functions ───────────────────────────────────────────────────────
 
+// Source the orders page from the dispatch queue (`/v1/queue?status=all`) —
+// the same operational source the Admin Dispatch Console reads. /v1/shipments
+// is order-intake's view of the whole shipment lifecycle (including completed
+// and cancelled), which is too broad for what a partner actually acts on.
+// The queue gives us pending + dispatched in one call, dedup'd by shipment.
 async function fetchOrders(): Promise<IncomingOrder[]> {
   try {
-    const res = await authFetch(`${ORDER_INTAKE_URL}/v1/shipments`);
-    if (!res.ok) return MOCK_ORDERS;
+    const res = await authFetch(`${DISPATCH_URL}/v1/queue?status=all`);
+    if (!res.ok) {
+      // Fall back to /v1/shipments + finally MOCK so the page still renders
+      // for partners on environments where dispatch isn't reachable.
+      const fallback = await authFetch(`${ORDER_INTAKE_URL}/v1/shipments`);
+      if (!fallback.ok) return MOCK_ORDERS;
+      const j = await fallback.json();
+      const items = j.data?.items ?? j.data ?? [];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return items.map(mapShipmentRow);
+    }
     const json = await res.json();
-    const items = json.data?.items ?? json.data ?? [];
+    const items = json.data ?? [];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return items.map((s: any) => ({
-      id:           s.id,
-      awb:          s.awb ?? s.tracking_number ?? s.id,
-      type:         s.shipment_type === "international" ? "balikbayan" : "local",
-      freightMode:  s.freight_mode ?? undefined,
-      status:       s.status === "pending" ? "unassigned" : s.status,
-      assignedTo:   s.assigned_driver_name ?? undefined,
-      senderName:   s.sender_name ?? s.sender?.name ?? "—",
-      pickupAddr:   s.pickup_address?.line1 ?? s.pickup_address ?? "—",
-      pickupCity:   s.pickup_address?.city  ?? "—",
-      receiverName: s.recipient_name ?? s.recipient?.name ?? "—",
-      destAddr:     s.delivery_address?.line1 ?? s.delivery_address ?? "—",
-      destCity:     s.delivery_address?.city  ?? "—",
-      destCountry:  s.delivery_address?.country ?? undefined,
-      description:  s.description ?? "—",
-      weight:       String(s.weight_kg ?? s.weight ?? "—"),
-      isCOD:        !!s.cod_amount,
-      codAmount:    s.cod_amount ?? undefined,
-      totalFee:     s.total_fee ?? s.base_rate ?? 0,
-      bookedAt:     s.created_at ? new Date(s.created_at).toLocaleString() : "—",
-    }));
+    return items.map(mapQueueRow);
   } catch {
     return MOCK_ORDERS;
   }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapQueueRow(q: any): IncomingOrder {
+  // Queue → page model. dispatch.dispatch_queue carries origin (pickup)
+  // and dest (delivery) but not sender_name or description — those live
+  // on order_intake.shipments. Partners typically care about the AWB,
+  // pickup/drop, COD, and current status, all of which are present.
+  const codCents = q.cod_amount_cents ?? null;
+  const status: OrderStatus =
+    q.status === "dispatched" ? "assigned" :
+    q.status === "pending"    ? "unassigned" :
+                                "unassigned";
+  return {
+    id:           q.shipment_id ?? q.id,
+    awb:          q.tracking_number ?? q.shipment_id ?? q.id,
+    type:         q.service_type === "international" ? "balikbayan" : "local",
+    status,
+    senderName:   q.origin_address_line1 ? "Merchant" : "—",
+    pickupAddr:   q.origin_address_line1 ?? "—",
+    pickupCity:   q.origin_city ?? "—",
+    receiverName: q.customer_name ?? "—",
+    destAddr:     q.dest_address_line1 ?? "—",
+    destCity:     q.dest_city ?? "—",
+    description:  q.special_instructions ?? "—",
+    weight:       "—",
+    isCOD:        !!codCents,
+    codAmount:    codCents ? codCents / 100 : undefined,
+    totalFee:     0,
+    bookedAt:     q.queued_at
+                    ? new Date(q.queued_at).toLocaleString()
+                    : (q.dispatched_at ? new Date(q.dispatched_at).toLocaleString() : "—"),
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mapShipmentRow(s: any): IncomingOrder {
+  return {
+    id:           s.id,
+    awb:          s.awb ?? s.tracking_number ?? s.id,
+    type:         s.shipment_type === "international" ? "balikbayan" : "local",
+    freightMode:  s.freight_mode ?? undefined,
+    status:       s.status === "pending" ? "unassigned" : s.status,
+    assignedTo:   s.assigned_driver_name ?? undefined,
+    senderName:   s.sender_name ?? s.sender?.name ?? "—",
+    pickupAddr:   s.pickup_address?.line1 ?? s.pickup_address ?? "—",
+    pickupCity:   s.pickup_address?.city  ?? "—",
+    receiverName: s.recipient_name ?? s.recipient?.name ?? "—",
+    destAddr:     s.delivery_address?.line1 ?? s.delivery_address ?? "—",
+    destCity:     s.delivery_address?.city  ?? "—",
+    destCountry:  s.delivery_address?.country ?? undefined,
+    description:  s.description ?? "—",
+    weight:       String(s.weight_kg ?? s.weight ?? "—"),
+    isCOD:        !!s.cod_amount,
+    codAmount:    s.cod_amount ?? undefined,
+    totalFee:     s.total_fee ?? s.base_rate ?? 0,
+    bookedAt:     s.created_at ? new Date(s.created_at).toLocaleString() : "—",
+  };
 }
 
 async function fetchAvailableDrivers(): Promise<Driver[]> {
