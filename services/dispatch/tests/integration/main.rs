@@ -206,10 +206,21 @@ impl DispatchQueueRepository for MockDispatchQueueRepo {
     }
 
     async fn list_pending(&self, tenant_id: Uuid) -> anyhow::Result<Vec<DispatchQueueRow>> {
+        self.list_by_status(tenant_id, Some("pending")).await
+    }
+
+    async fn list_by_status(
+        &self,
+        tenant_id: Uuid,
+        status: Option<&str>,
+    ) -> anyhow::Result<Vec<DispatchQueueRow>> {
         let guard = self.store.lock().unwrap();
         let rows = guard
             .values()
-            .filter(|r| r.tenant_id == tenant_id && r.status == "pending")
+            .filter(|r| {
+                r.tenant_id == tenant_id
+                    && status.map_or(true, |s| r.status == s)
+            })
             .cloned()
             .collect();
         Ok(rows)
@@ -1305,6 +1316,7 @@ mod quick_dispatch {
             last_dispatch_error:    None,
             last_attempt_at:        None,
             queued_at:              None,
+            dispatched_at:          None,
         }
     }
 

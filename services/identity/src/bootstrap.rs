@@ -3,7 +3,7 @@ use sqlx::postgres::PgPoolOptions;
 use anyhow::Context;
 use crate::config::Config;
 use crate::application::services::{AuthService, TenantService, ApiKeyService};
-use crate::infrastructure::db::{PgTenantRepository, PgUserRepository, PgApiKeyRepository, PgPasswordResetTokenRepository, PgEmailVerificationTokenRepository, PgAuthIdentityRepository};
+use crate::infrastructure::db::{PgTenantRepository, PgUserRepository, PgApiKeyRepository, PgPasswordResetTokenRepository, PgEmailVerificationTokenRepository, PgAuthIdentityRepository, PgAuditLogRepository};
 use crate::api::http::{router, AppState};
 use logisticos_auth::jwt::JwtService;
 use logisticos_events::producer::KafkaProducer;
@@ -77,6 +77,7 @@ pub async fn run() -> anyhow::Result<()> {
     let email_verification_token_repo = Arc::new(PgEmailVerificationTokenRepository::new(pool.clone()));
     let push_token_repo = Arc::new(crate::infrastructure::db::PgPushTokenRepository::new(pool.clone()));
     let auth_identity_repo = Arc::new(PgAuthIdentityRepository::new(pool.clone()));
+    let audit_log = Arc::new(PgAuditLogRepository::new(pool.clone()));
 
     // 9. Application services — depend only on repository traits, not DB types
     let auth_service = Arc::new(AuthService::new(
@@ -108,6 +109,7 @@ pub async fn run() -> anyhow::Result<()> {
         reset_token_repo,
         email_verification_token_repo,
         push_token_repo,
+        audit_log,
     });
 
     use tower_http::cors::CorsLayer;

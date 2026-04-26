@@ -4,10 +4,9 @@
  *
  * LIVE:   API Keys → identity /v1/api-keys (list/create/revoke)
  *         Roles & Permissions → identity /v1/users grouped by role
- *         Audit Log → CSV export (client-side blob download from current view)
- * STATIC: General (needs PUT /v1/tenants/:id)
- *         Webhooks (needs a webhook management service — buttons gated as "coming soon")
- *         Audit Log table data (needs a tenant-scoped /v1/audit-log endpoint)
+ *         General → identity /v1/tenants/me + PUT /v1/tenants/:id
+ *         Webhooks → /v1/webhooks CRUD
+ *         Audit Log → identity /v1/audit-log (100 most recent mutations)
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
@@ -49,27 +48,26 @@ const ROLE_ORDER = ["admin", "dispatcher", "merchant", "driver", "finance", "rea
 const TABS = ["General", "API Keys", "Webhooks", "Roles & Permissions", "Audit Log"] as const;
 type Tab = (typeof TABS)[number];
 
-// Webhooks are now loaded live from /v1/webhooks (see WebhooksTab below).
-// The mock list was removed when the backend service shipped.
-
-// Removed — Roles tab now derives counts from a live /v1/users fetch. The
-// permission description per role is a UI concern (see ROLE_DESCRIPTIONS).
-
-const AUDIT_LOG = [
-  { ts: "2026-03-17 14:32:11", actor: "admin@logisticos.io",   action: "api_key.created",        resource: "Production API Key v2",      ip: "118.177.32.1"  },
-  { ts: "2026-03-17 13:15:44", actor: "ops@logisticos.io",     action: "webhook.disabled",        resource: "wh_3 old.system.internal",   ip: "112.200.5.88"  },
-  { ts: "2026-03-17 11:00:02", actor: "admin@logisticos.io",   action: "role.user_assigned",      resource: "Dispatcher → jdelacruz",     ip: "118.177.32.1"  },
-  { ts: "2026-03-16 18:44:59", actor: "finance@logisticos.io", action: "billing.invoice_exported",resource: "INV-2026-02-0045",           ip: "203.177.91.22" },
-  { ts: "2026-03-16 16:20:33", actor: "ops@logisticos.io",     action: "shipment.manual_override",resource: "CM-PH1-S0000001A → delivered",    ip: "112.200.5.88"  },
-  { ts: "2026-03-15 09:05:17", actor: "admin@logisticos.io",   action: "tenant.settings_updated", resource: "SLA policy D+1 → D+2",       ip: "118.177.32.1"  },
-];
+interface AuditEntry {
+  id:          string;
+  tenant_id:   string;
+  actor_id?:   string | null;
+  actor_email?: string | null;
+  action:      string;
+  resource:    string;
+  ip?:         string | null;
+  created_at:  string;
+}
 
 const ACTION_COLOR: Record<string, string> = {
   "api_key.created":          "cyan",
+  "api_key.revoked":          "red",
+  "webhook.created":          "cyan",
   "webhook.disabled":         "amber",
   "role.user_assigned":       "purple",
   "billing.invoice_exported": "green",
   "shipment.manual_override": "amber",
+  "tenant.updated":           "cyan",
   "tenant.settings_updated":  "cyan",
 };
 
@@ -167,48 +165,8 @@ export default function SettingsPage() {
       {/* Roles — derived from identity /v1/users grouped by role. */}
       {activeTab === "Roles & Permissions" && <RolesTab />}
 
-      {/* Audit Log — table data still needs a tenant-scoped /v1/audit-log
-          endpoint, but the Export CSV button now produces a proper blob
-          download from whatever is currently rendered. */}
-      {activeTab === "Audit Log" && (
-        <motion.div variants={variants.fadeInUp} className="space-y-4">
-          <div className="flex justify-between items-center">
-            <p className="text-sm text-white/40">All mutations — actor, action, resource, IP. Immutable. Retained 90 days.</p>
-            <button
-              onClick={() => downloadAuditCsv(AUDIT_LOG)}
-              className="px-4 py-2 text-sm font-medium text-white/70 border border-white/[0.08] rounded-lg hover:bg-white/[0.05] transition-colors"
-            >
-              Export CSV
-            </button>
-          </div>
-          <GlassCard padding="none">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-white/[0.08]">
-                  {["Timestamp", "Actor", "Action", "Resource", "IP"].map((h) => (
-                    <th key={h} className="text-left px-4 py-3 text-xs text-white/30 uppercase tracking-widest font-mono">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {AUDIT_LOG.map((entry, i) => (
-                  <tr key={i} className="border-b border-white/[0.04] hover:bg-white/[0.02]">
-                    <td className="px-4 py-3 font-mono text-xs text-white/40">{entry.ts}</td>
-                    <td className="px-4 py-3 text-xs text-[#00E5FF] font-mono">{entry.actor}</td>
-                    <td className="px-4 py-3">
-                      <NeonBadge variant={ACTION_COLOR[entry.action] as any ?? "cyan"}>
-                        {entry.action}
-                      </NeonBadge>
-                    </td>
-                    <td className="px-4 py-3 text-xs text-white/60">{entry.resource}</td>
-                    <td className="px-4 py-3 font-mono text-xs text-white/30">{entry.ip}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </GlassCard>
-        </motion.div>
-      )}
+      {/* Audit Log — live from identity /v1/audit-log (100 most recent). */}
+      {activeTab === "Audit Log" && <AuditLogTab />}
     </motion.div>
   );
 }
@@ -945,14 +903,89 @@ function WebhooksTab() {
   );
 }
 
+// ── Audit Log tab — live from identity /v1/audit-log ─────────────────────────
+
+function AuditLogTab() {
+  const [entries,  setEntries]  = useState<AuditEntry[]>([]);
+  const [loading,  setLoading]  = useState(true);
+  const [error,    setError]    = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      const res = await authFetch(`${API_BASE}/v1/audit-log`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      setEntries(Array.isArray(json.data) ? json.data : []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load audit log");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  return (
+    <motion.div variants={variants.fadeInUp} className="space-y-4">
+      <div className="flex justify-between items-center">
+        <p className="text-sm text-white/40">All mutations — actor, action, resource. Immutable. Retained 90 days.</p>
+        <div className="flex items-center gap-2">
+          {error && <span className="text-2xs font-mono text-amber-signal">{error}</span>}
+          <button
+            onClick={() => downloadAuditCsv(entries)}
+            disabled={entries.length === 0}
+            className="px-4 py-2 text-sm font-medium text-white/70 border border-white/[0.08] rounded-lg hover:bg-white/[0.05] transition-colors disabled:opacity-40"
+          >
+            Export CSV
+          </button>
+        </div>
+      </div>
+      <GlassCard padding="none">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-white/[0.08]">
+              {["Timestamp", "Actor", "Action", "Resource"].map((h) => (
+                <th key={h} className="text-left px-4 py-3 text-xs text-white/30 uppercase tracking-widest font-mono">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={4} className="px-4 py-8 text-center text-xs text-white/30 font-mono">loading audit log…</td></tr>
+            ) : entries.length === 0 ? (
+              <tr><td colSpan={4} className="px-4 py-8 text-center text-xs text-white/30 font-mono">No audit events yet. Actions like API key creation will appear here.</td></tr>
+            ) : entries.map((entry) => (
+              <tr key={entry.id} className="border-b border-white/[0.04] hover:bg-white/[0.02]">
+                <td className="px-4 py-3 font-mono text-xs text-white/40">
+                  {new Date(entry.created_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                </td>
+                <td className="px-4 py-3 text-xs text-[#00E5FF] font-mono">{entry.actor_email ?? entry.actor_id ?? "system"}</td>
+                <td className="px-4 py-3">
+                  <NeonBadge variant={(ACTION_COLOR[entry.action] ?? "cyan") as Parameters<typeof NeonBadge>[0]["variant"]}>
+                    {entry.action}
+                  </NeonBadge>
+                </td>
+                <td className="px-4 py-3 text-xs text-white/60">{entry.resource}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </GlassCard>
+    </motion.div>
+  );
+}
+
 // ── Audit log CSV export ─────────────────────────────────────────────────────
 
-interface AuditEntry { ts: string; actor: string; action: string; resource: string; ip: string; }
-
 function downloadAuditCsv(entries: readonly AuditEntry[]) {
-  const header = ["timestamp", "actor", "action", "resource", "ip"];
-  const rows = entries.map((e) => [e.ts, e.actor, e.action, e.resource, e.ip]);
-  // RFC 4180 escaping — wrap in quotes, double internal quotes.
+  const header = ["timestamp", "actor", "action", "resource"];
+  const rows = entries.map((e) => [
+    new Date(e.created_at).toISOString(),
+    e.actor_email ?? e.actor_id ?? "system",
+    e.action,
+    e.resource,
+  ]);
   const csv = [header, ...rows]
     .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
     .join("\n");
