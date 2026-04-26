@@ -49,11 +49,8 @@ const ROLE_ORDER = ["admin", "dispatcher", "merchant", "driver", "finance", "rea
 const TABS = ["General", "API Keys", "Webhooks", "Roles & Permissions", "Audit Log"] as const;
 type Tab = (typeof TABS)[number];
 
-const WEBHOOKS = [
-  { id: "wh_1", url: "https://merchant.example.com/hooks/logisticos", events: ["shipment.delivered", "shipment.failed"], status: "active",   last_delivery: "1 min ago",  success_rate: 99.2 },
-  { id: "wh_2", url: "https://erp.acme.co/api/logistics-events",      events: ["shipment.created", "shipment.picked_up"], status: "active",   last_delivery: "5 min ago",  success_rate: 98.7 },
-  { id: "wh_3", url: "https://old.system.internal/callback",           events: ["shipment.delivered"],                    status: "disabled", last_delivery: "2 days ago", success_rate: 71.0 },
-];
+// Webhooks are now loaded live from /v1/webhooks (see WebhooksTab below).
+// The mock list was removed when the backend service shipped.
 
 // Removed — Roles tab now derives counts from a live /v1/users fetch. The
 // permission description per role is a UI concern (see ROLE_DESCRIPTIONS).
@@ -162,54 +159,10 @@ export default function SettingsPage() {
       {/* API Keys — live */}
       {activeTab === "API Keys" && <ApiKeysTab />}
 
-      {/* Webhooks — gated until a webhook management service ships.
-          Buttons stay visible so the surface is discoverable, but disabled
-          + tooltipped so admins don't think they're broken. */}
-      {activeTab === "Webhooks" && (
-        <motion.div variants={variants.fadeInUp} className="space-y-4">
-          <div className="flex justify-between items-center gap-3">
-            <p className="text-sm text-white/40">Webhooks deliver real-time events to your systems. Signed with HMAC-SHA256.</p>
-            <div className="flex items-center gap-2">
-              <NeonBadge variant="amber" dot>preview</NeonBadge>
-              <button
-                disabled
-                title="Webhook management service not yet deployed"
-                className="px-4 py-2 text-sm font-medium text-white/40 bg-white/[0.03] border border-white/[0.08] rounded-lg cursor-not-allowed"
-              >
-                + Add Webhook
-              </button>
-            </div>
-          </div>
-          <div className="space-y-3">
-            {WEBHOOKS.map((wh) => (
-              <GlassCard key={wh.id}>
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-3 mb-2">
-                      <NeonBadge variant={wh.status === "active" ? "green" : "red"}>{wh.status}</NeonBadge>
-                      <span className="font-mono text-sm text-white truncate">{wh.url}</span>
-                    </div>
-                    <div className="flex flex-wrap gap-1 mb-2">
-                      {wh.events.map((e) => (
-                        <span key={e} className="text-[10px] px-2 py-0.5 rounded-full bg-[#00E5FF]/10 text-[#00E5FF] border border-[#00E5FF]/20 font-mono">{e}</span>
-                      ))}
-                    </div>
-                    <div className="flex gap-6 text-xs text-white/40">
-                      <span>Last delivery: {wh.last_delivery}</span>
-                      <span>Success rate: <span className={wh.success_rate > 95 ? "text-[#00FF88]" : "text-[#FFAB00]"}>{wh.success_rate}%</span></span>
-                    </div>
-                  </div>
-                  <div className="flex gap-2 shrink-0">
-                    <button disabled title="Coming soon" className="text-xs text-white/30 cursor-not-allowed">Edit</button>
-                    <button disabled title="Coming soon" className="text-xs text-white/30 cursor-not-allowed">Test</button>
-                    <button disabled title="Coming soon" className="text-xs text-white/30 cursor-not-allowed">Delete</button>
-                  </div>
-                </div>
-              </GlassCard>
-            ))}
-          </div>
-        </motion.div>
-      )}
+      {/* Webhooks — backed by /v1/webhooks (CRUD) on the new webhooks
+          service. The signing secret is returned exactly once at create
+          time; the modal surfaces it for copy-paste. */}
+      {activeTab === "Webhooks" && <WebhooksTab />}
 
       {/* Roles — derived from identity /v1/users grouped by role. */}
       {activeTab === "Roles & Permissions" && <RolesTab />}
@@ -675,6 +628,320 @@ function ReadRow({ label, value, mono = false }: { label: string; value: string;
       <span className="text-xs text-white/40 uppercase tracking-widest font-mono">{label}</span>
       <span className={`text-sm text-white ${mono ? "font-mono text-white/70" : ""} truncate max-w-[220px]`}>{value}</span>
     </div>
+  );
+}
+
+// ── Webhooks tab — live from /v1/webhooks (CRUD on webhooks service) ────────
+
+interface WebhookRow {
+  id:                 string;
+  url:                string;
+  events:             string[];
+  status:             string;
+  description?:       string | null;
+  success_count:      number;
+  fail_count:         number;
+  last_delivery_at?:  string | null;
+  last_status_code?:  number | null;
+  created_at:         string;
+  updated_at:         string;
+}
+
+const KNOWN_EVENT_TYPES = [
+  "*",
+  "shipment.created",
+  "shipment.confirmed",
+  "shipment.cancelled",
+  "driver.assigned",
+  "pickup.completed",
+  "delivery.completed",
+  "delivery.failed",
+  "invoice.finalized",
+  "cod.remittance_ready",
+];
+
+function WebhooksTab() {
+  const [webhooks, setWebhooks] = useState<WebhookRow[]>([]);
+  const [loading,  setLoading]  = useState(true);
+  const [error,    setError]    = useState<string | null>(null);
+  const [busyId,   setBusyId]   = useState<string | null>(null);
+
+  // New-webhook modal state — opens on +Add and on success surfaces the
+  // one-time signing secret.
+  const [showCreate, setShowCreate]   = useState(false);
+  const [newUrl,     setNewUrl]       = useState("");
+  const [newEvents,  setNewEvents]    = useState<string[]>([]);
+  const [newDesc,    setNewDesc]      = useState("");
+  const [creating,   setCreating]     = useState(false);
+  const [revealedSecret, setRevealedSecret] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      const res = await authFetch(`${API_BASE}/v1/webhooks`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      setWebhooks(json.data ?? []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load webhooks");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  function toggleEvent(ev: string) {
+    setNewEvents((prev) => prev.includes(ev) ? prev.filter((x) => x !== ev) : [...prev, ev]);
+  }
+
+  async function handleCreate() {
+    if (!newUrl.trim() || newEvents.length === 0) return;
+    setCreating(true);
+    setError(null);
+    try {
+      const res = await authFetch(`${API_BASE}/v1/webhooks`, {
+        method: "POST",
+        body: JSON.stringify({
+          url:         newUrl.trim(),
+          events:      newEvents,
+          description: newDesc.trim() || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error?.message ?? `HTTP ${res.status}`);
+      }
+      const j = await res.json();
+      setRevealedSecret(j.secret);
+      setNewUrl(""); setNewEvents([]); setNewDesc("");
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Create failed");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function handleToggleStatus(w: WebhookRow) {
+    setBusyId(w.id);
+    try {
+      const next = w.status === "active" ? "disabled" : "active";
+      const res = await authFetch(`${API_BASE}/v1/webhooks/${w.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ status: next }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Toggle failed");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function handleDelete(w: WebhookRow) {
+    if (!confirm(`Delete webhook to ${w.url}?`)) return;
+    setBusyId(w.id);
+    try {
+      const res = await authFetch(`${API_BASE}/v1/webhooks/${w.id}`, { method: "DELETE" });
+      if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Delete failed");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <motion.div variants={variants.fadeInUp} className="space-y-4">
+      <div className="flex justify-between items-center gap-3">
+        <p className="text-sm text-white/40">
+          Webhooks deliver real-time platform events to your systems.
+          Each request is signed with HMAC-SHA256 — verify the
+          <span className="font-mono text-cyan-neon mx-1">x-logisticos-signature</span>
+          header against your stored secret.
+        </p>
+        <button
+          onClick={() => setShowCreate(true)}
+          className="px-4 py-2 text-sm font-medium text-[#050810] bg-[#00FF88] rounded-lg hover:bg-[#00FF88]/90 transition-colors"
+        >
+          + Add Webhook
+        </button>
+      </div>
+
+      {error && <p className="text-xs text-red-signal font-mono">{error}</p>}
+
+      <div className="space-y-3">
+        {loading && webhooks.length === 0 ? (
+          <p className="text-xs text-white/40 font-mono py-4 text-center">loading webhooks…</p>
+        ) : webhooks.length === 0 ? (
+          <p className="text-xs text-white/40 font-mono py-4 text-center">
+            No webhooks yet. Tap + Add Webhook to subscribe to platform events.
+          </p>
+        ) : webhooks.map((wh) => {
+          const total = wh.success_count + wh.fail_count;
+          const rate  = total > 0 ? (wh.success_count / total) * 100 : null;
+          return (
+            <GlassCard key={wh.id}>
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-3 mb-2">
+                    <NeonBadge variant={wh.status === "active" ? "green" : "red"}>{wh.status}</NeonBadge>
+                    <span className="font-mono text-sm text-white truncate">{wh.url}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1 mb-2">
+                    {wh.events.map((e) => (
+                      <span key={e} className="text-[10px] px-2 py-0.5 rounded-full bg-[#00E5FF]/10 text-[#00E5FF] border border-[#00E5FF]/20 font-mono">{e}</span>
+                    ))}
+                  </div>
+                  <div className="flex gap-6 text-xs text-white/40">
+                    <span>Last delivery: {wh.last_delivery_at ? new Date(wh.last_delivery_at).toLocaleString() : "never"}</span>
+                    <span>
+                      Success rate:{" "}
+                      <span className={rate === null ? "text-white/30" : rate > 95 ? "text-[#00FF88]" : "text-[#FFAB00]"}>
+                        {rate === null ? "—" : `${rate.toFixed(1)}% (${wh.success_count}/${total})`}
+                      </span>
+                    </span>
+                    {wh.last_status_code != null && (
+                      <span>Last HTTP: <span className="font-mono">{wh.last_status_code}</span></span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex gap-3 shrink-0">
+                  <button
+                    onClick={() => handleToggleStatus(wh)}
+                    disabled={busyId === wh.id}
+                    className="text-xs text-[#FFAB00] hover:text-[#FFAB00]/70 disabled:opacity-40"
+                  >
+                    {wh.status === "active" ? "Disable" : "Enable"}
+                  </button>
+                  <button
+                    onClick={() => handleDelete(wh)}
+                    disabled={busyId === wh.id}
+                    className="text-xs text-[#FF3B5C] hover:text-[#FF3B5C]/70 disabled:opacity-40"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+            </GlassCard>
+          );
+        })}
+      </div>
+
+      {/* Create modal — minimal: URL + event chips + optional description.
+          Server returns the signing secret exactly once on success. */}
+      {showCreate && (
+        <div className="fixed inset-0 bg-canvas/80 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-canvas border border-white/10 rounded-xl p-6 w-full max-w-lg space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-white">Add Webhook</h3>
+              <button
+                onClick={() => { setShowCreate(false); setRevealedSecret(null); }}
+                className="text-white/40 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            {revealedSecret ? (
+              <>
+                <div className="rounded-md border border-amber-signal/30 bg-amber-signal/5 p-3">
+                  <p className="text-xs text-amber-signal font-mono">
+                    Save this signing secret now — you won&apos;t see it again.
+                    Use it to verify the
+                    <span className="text-cyan-neon mx-1">x-logisticos-signature</span>
+                    header on every delivery.
+                  </p>
+                </div>
+                <div className="rounded-md bg-white/[0.03] border border-white/10 p-3 break-all font-mono text-xs text-white">
+                  {revealedSecret}
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button
+                    onClick={() => navigator.clipboard.writeText(revealedSecret)}
+                    className="text-xs text-cyan-neon hover:text-cyan-neon/70"
+                  >
+                    Copy
+                  </button>
+                  <button
+                    onClick={() => { setShowCreate(false); setRevealedSecret(null); }}
+                    className="px-4 py-2 text-sm font-medium text-[#050810] bg-[#00FF88] rounded-lg hover:bg-[#00FF88]/90 transition-colors"
+                  >
+                    Done
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <label className="block">
+                  <span className="text-xs text-white/40 uppercase tracking-widest font-mono block mb-1">URL</span>
+                  <input
+                    type="url"
+                    value={newUrl}
+                    onChange={(e) => setNewUrl(e.target.value)}
+                    placeholder="https://your-app.example.com/webhooks/logisticos"
+                    className="w-full rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-sm text-white font-mono focus:border-cyan-neon/50 focus:outline-none"
+                  />
+                </label>
+
+                <div>
+                  <span className="text-xs text-white/40 uppercase tracking-widest font-mono block mb-1">Events</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {KNOWN_EVENT_TYPES.map((ev) => (
+                      <button
+                        key={ev}
+                        onClick={() => toggleEvent(ev)}
+                        className={`text-[10px] px-2 py-0.5 rounded-full font-mono transition-colors ${
+                          newEvents.includes(ev)
+                            ? "bg-cyan-neon/20 text-cyan-neon border border-cyan-neon/40"
+                            : "bg-white/[0.03] text-white/40 border border-white/10"
+                        }`}
+                      >
+                        {ev}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-2xs font-mono text-white/30 mt-1">
+                    {newEvents.length === 0 ? "Select at least one." : `${newEvents.length} subscribed`}
+                  </p>
+                </div>
+
+                <label className="block">
+                  <span className="text-xs text-white/40 uppercase tracking-widest font-mono block mb-1">Description (optional)</span>
+                  <input
+                    type="text"
+                    value={newDesc}
+                    onChange={(e) => setNewDesc(e.target.value)}
+                    placeholder="e.g. Production billing system"
+                    className="w-full rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-sm text-white focus:border-cyan-neon/50 focus:outline-none"
+                  />
+                </label>
+
+                <div className="flex justify-end gap-2">
+                  <button
+                    onClick={() => setShowCreate(false)}
+                    disabled={creating}
+                    className="px-3 py-1.5 text-xs text-white/60 hover:text-white"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleCreate}
+                    disabled={creating || !newUrl.trim() || newEvents.length === 0}
+                    className="px-4 py-2 text-sm font-medium text-[#050810] bg-[#00FF88] rounded-lg hover:bg-[#00FF88]/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {creating ? "Creating…" : "Create webhook"}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </motion.div>
   );
 }
 

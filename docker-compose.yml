@@ -162,6 +162,7 @@ services:
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
       SERVICES__COMPLIANCE_URL: http://compliance:8017
+      SERVICES__WEBHOOKS_URL: http://webhooks:8018
       RUST_LOG: info
     depends_on:
       postgres:
@@ -1066,6 +1067,38 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+  webhooks:
+    image: ghcr.io/breakdisk/logisticos-service-webhooks:latest
+    container_name: logisticos-webhooks
+    restart: unless-stopped
+    ports:
+      - 8018:8018
+    environment:
+      APP__HOST: "0.0.0.0"
+      APP__PORT: "8018"
+      APP__ENV: development
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_webhooks
+      DATABASE__MAX_CONNECTIONS: "5"
+      KAFKA__BROKERS: kafka:29092
+      KAFKA__GROUP_ID: webhooks-dev
+      AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
+      RUST_LOG: info,sqlx=warn
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    networks:
+      - logisticos
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:8018/health || exit 1
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: logisticos-kafka-ui

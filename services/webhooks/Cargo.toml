@@ -1,0 +1,40 @@
+[package]
+name        = "logisticos-webhooks"
+description = "Outbound webhook delivery — tenant-scoped subscriptions to platform events"
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+rust-version.workspace = true
+
+[[bin]]
+name = "webhooks"
+path = "src/main.rs"
+
+[dependencies]
+logisticos-common.workspace  = true
+logisticos-errors.workspace  = true
+logisticos-auth.workspace    = true
+logisticos-tracing.workspace = true
+logisticos-types.workspace   = true
+logisticos-events.workspace  = true
+tokio.workspace      = true
+axum.workspace       = true
+tower-http.workspace = true
+sqlx.workspace       = true
+serde.workspace      = true
+serde_json.workspace = true
+thiserror.workspace  = true
+anyhow.workspace     = true
+uuid.workspace       = true
+chrono.workspace     = true
+config.workspace     = true
+dotenvy.workspace    = true
+validator.workspace  = true
+rdkafka.workspace    = true
+tracing.workspace    = true
+async-trait.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"

@@ -87,6 +87,9 @@ impl ProxyClient {
         // Compliance (note: uses /api/v1/compliance/* prefix, not /v1/)
         } else if path.starts_with("/api/v1/compliance") {
             Some(&self.services.compliance_url)
+        // Webhooks management (admin portal Settings → Webhooks tab)
+        } else if path.starts_with("/v1/webhooks") {
+            Some(&self.services.webhooks_url)
         } else {
             None
         }

@@ -32,6 +32,7 @@ members = [
     "services/business-logic",
     "services/ai-layer",
     "services/api-gateway",
+    "services/webhooks",
 ]
 
 [workspace.package]

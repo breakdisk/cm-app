@@ -75,6 +75,10 @@ pub mod permissions {
     // ── Compliance ───────────────────────────────────────────
     pub const COMPLIANCE_REVIEW: &str = "compliance:review";
     pub const COMPLIANCE_ADMIN:  &str = "compliance:admin";
+
+    // ── Webhooks ─────────────────────────────────────────────
+    pub const WEBHOOKS_READ:     &str = "webhooks:read";
+    pub const WEBHOOKS_MANAGE:   &str = "webhooks:manage";
 }
 
 /// Predefined role → permissions mappings applied at tenant setup.
@@ -97,6 +101,7 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::CARRIERS_MANAGE, permissions::CARRIERS_READ,
             permissions::CUSTOMERS_VIEW, permissions::CUSTOMERS_MANAGE,
             permissions::COMPLIANCE_REVIEW, permissions::COMPLIANCE_ADMIN,
+            permissions::WEBHOOKS_READ, permissions::WEBHOOKS_MANAGE,
         ],
         "dispatcher" => vec![
             permissions::SHIPMENT_READ, permissions::SHIPMENT_UPDATE,
