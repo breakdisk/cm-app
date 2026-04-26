@@ -1,11 +1,15 @@
 "use client";
+/**
+ * Merchant Portal — Billing Page
+ * Invoice history, wallet balance, and pricing plan — backed by live billingApi.
+ */
 import { useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
-import { Receipt, Download, CreditCard, RefreshCw } from "lucide-react";
+import { Receipt, CreditCard, RefreshCw } from "lucide-react";
 import { billingApi, type Invoice, type Wallet } from "@/lib/api/billing";
 
 type FilterTab = "all" | "issued" | "paid" | "overdue";
@@ -34,6 +38,7 @@ export default function BillingPage() {
   const [tab,      setTab]      = useState<FilterTab>("all");
 
   const load = useCallback(async () => {
+    setLoading(true);
     setError(null);
     try {
       const [invRes, walletData] = await Promise.all([
