@@ -11,6 +11,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
@@ -36,7 +37,8 @@ function fmtPhp(cents: number): string {
 }
 
 export default function CustomersPage() {
-  const api = useMemo(() => createCdpApi(), []);
+  const api    = useMemo(() => createCdpApi(), []);
+  const router = useRouter();
 
   const [profiles, setProfiles] = useState<CustomerProfile[]>([]);
   const [top, setTop]           = useState<CustomerProfile[]>([]);
@@ -163,7 +165,8 @@ export default function CustomersPage() {
               return (
                 <div
                   key={p.external_customer_id}
-                  className="grid grid-cols-[2fr_90px_90px_90px_1fr] gap-3 items-center px-5 py-3 border-b border-glass-border/50 hover:bg-glass-100 transition-colors"
+                  onClick={() => router.push(`/customers/${p.external_customer_id}`)}
+                  className="grid grid-cols-[2fr_90px_90px_90px_1fr] gap-3 items-center px-5 py-3 border-b border-glass-border/50 hover:bg-glass-100 transition-colors cursor-pointer"
                 >
                   <div className="min-w-0">
                     <p className="text-xs font-medium text-white truncate">{p.name ?? "Unnamed customer"}</p>

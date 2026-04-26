@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
-import { usePathname } from "next/navigation";
+import { useState, useEffect, useRef, type ReactNode } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { clearAuthCache } from "@/lib/auth/auth-fetch";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
@@ -150,12 +150,49 @@ function NavLink({
 
 // ─── Layout ───────────────────────────────────────────────────────────────────
 
+// ── Static notification seed (replaced by real API when notification service is ready) ──
+const NOTIF_SEED = [
+  { id: "n1", title: "Delivery failed",       body: "CM-PH1-S0000845C — Ana Garcia, Taguig BGC",  time: "35m ago",  color: "#FF3B5C" },
+  { id: "n2", title: "New booking",            body: "CM-PH1-B0000848F — Ahmad Hassan, Dubai → PH", time: "1h ago",   color: "#00E5FF" },
+  { id: "n3", title: "Payment received",       body: "₱12,400 COD remitted for March batch",        time: "2h ago",   color: "#00FF88" },
+  { id: "n4", title: "SLA breach risk",        body: "3 shipments at risk — ETA exceeded by 2h",    time: "3h ago",   color: "#FFAB00" },
+];
+
 export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [readIds, setReadIds] = useState<Set<string>>(new Set());
+  const notifRef = useRef<HTMLDivElement>(null);
   const pathname = usePathname();
+  const router   = useRouter();
   const pageTitle = getPageTitle(pathname);
+
+  // ⌘K / Ctrl+K → jump to shipments search
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        router.push("/shipments");
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [router]);
+
+  // Close notification panel when clicking outside
+  useEffect(() => {
+    function onClickOutside(e: MouseEvent) {
+      if (notifRef.current && !notifRef.current.contains(e.target as Node)) {
+        setShowNotifications(false);
+      }
+    }
+    if (showNotifications) document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [showNotifications]);
+
+  const unreadCount = NOTIF_SEED.filter(n => !readIds.has(n.id)).length;
 
   async function handleSignOut() {
     setSigningOut(true);
@@ -404,6 +441,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           <div className="flex items-center gap-2 md:gap-3">
             {/* Search trigger */}
             <button
+              onClick={() => router.push("/shipments")}
               className={cn(
                 "flex h-9 items-center gap-2 rounded-lg border border-glass-border px-3",
                 "bg-glass-100 text-xs text-white/40 transition-all",
@@ -418,26 +456,69 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             </button>
 
             {/* Notification bell */}
-            <button
-              className={cn(
-                "relative flex h-9 w-9 items-center justify-center rounded-lg",
-                "border border-glass-border bg-glass-100 text-white/50",
-                "transition-all hover:border-cyan-neon/30 hover:bg-glass-200 hover:text-white/80"
-              )}
-              aria-label="Notifications"
-            >
-              <Bell className="h-4 w-4" />
-              {/* Badge */}
-              <span
-                className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full text-2xs font-bold text-white"
-                style={{
-                  background: "#FF3B5C",
-                  boxShadow: "0 0 8px rgba(255,59,92,0.6)",
-                }}
+            <div ref={notifRef} className="relative">
+              <button
+                onClick={() => setShowNotifications(v => !v)}
+                className={cn(
+                  "relative flex h-9 w-9 items-center justify-center rounded-lg",
+                  "border border-glass-border bg-glass-100 text-white/50",
+                  "transition-all hover:border-cyan-neon/30 hover:bg-glass-200 hover:text-white/80"
+                )}
+                aria-label="Notifications"
               >
-                4
-              </span>
-            </button>
+                <Bell className="h-4 w-4" />
+                {unreadCount > 0 && (
+                  <span
+                    className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full text-2xs font-bold text-white"
+                    style={{ background: "#FF3B5C", boxShadow: "0 0 8px rgba(255,59,92,0.6)" }}
+                  >
+                    {unreadCount}
+                  </span>
+                )}
+              </button>
+
+              {/* Notification panel */}
+              <AnimatePresence>
+                {showNotifications && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -8, scale: 0.97 }}
+                    animate={{ opacity: 1, y: 0,  scale: 1 }}
+                    exit={{ opacity: 0, y: -8, scale: 0.97 }}
+                    transition={{ duration: 0.18 }}
+                    className="absolute right-0 top-11 z-50 w-80 rounded-xl border border-glass-border bg-canvas-100 shadow-glass backdrop-blur-md"
+                  >
+                    <div className="flex items-center justify-between border-b border-glass-border px-4 py-3">
+                      <p className="text-xs font-semibold text-white">Notifications</p>
+                      <button
+                        onClick={() => setReadIds(new Set(NOTIF_SEED.map(n => n.id)))}
+                        className="text-2xs text-white/40 hover:text-cyan-neon transition-colors"
+                      >
+                        Mark all read
+                      </button>
+                    </div>
+                    <div className="flex flex-col divide-y divide-glass-border/50">
+                      {NOTIF_SEED.map(n => {
+                        const isRead = readIds.has(n.id);
+                        return (
+                          <button
+                            key={n.id}
+                            onClick={() => setReadIds(prev => new Set([...prev, n.id]))}
+                            className="flex items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-glass-100"
+                          >
+                            <span className="mt-1 h-2 w-2 flex-shrink-0 rounded-full" style={{ background: isRead ? "transparent" : n.color, boxShadow: isRead ? "none" : `0 0 6px ${n.color}` }} />
+                            <div className="min-w-0">
+                              <p className={`text-xs font-medium ${isRead ? "text-white/40" : "text-white"}`}>{n.title}</p>
+                              <p className="mt-0.5 text-2xs font-mono text-white/30 truncate">{n.body}</p>
+                              <p className="mt-1 text-2xs text-white/20">{n.time}</p>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
           </div>
         </header>
 

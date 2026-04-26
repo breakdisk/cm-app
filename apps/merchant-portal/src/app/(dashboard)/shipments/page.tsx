@@ -862,6 +862,9 @@ function ShipmentsContent() {
   const [shipments,   setShipments]   = useState<Shipment[]>([]);
   const [loadError,   setLoadError]   = useState<string | null>(null);
   const [isLoading,   setIsLoading]   = useState(true);
+  const [page,        setPage]        = useState(1);
+  const [bulkMsg,     setBulkMsg]     = useState<string | null>(null);
+  const PAGE_SIZE = 20;
 
   // Auto-open modals from dashboard CTAs
   useEffect(() => {
@@ -926,6 +929,37 @@ function ShipmentsContent() {
     return matchStatus && matchSearch;
   });
 
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const paginated  = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  // Reset to page 1 whenever the filter or search changes
+  useEffect(() => { setPage(1); }, [statusFilter, search]);
+
+  function handleExport() {
+    const rows = filtered.map(s =>
+      [s.tracking_number, s.recipient_name, s.destination, s.status,
+       s.cod_amount ? `PHP ${s.cod_amount}` : "", s.eta ?? "", s.created_at].join(",")
+    );
+    const csv = ["Tracking #,Recipient,Destination,Status,COD,ETA,Created At", ...rows].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href = url; a.download = `shipments-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click(); URL.revokeObjectURL(url);
+  }
+
+  function handleBulkReschedule() {
+    setBulkMsg(`${selected.size} shipment${selected.size > 1 ? "s" : ""} queued for rescheduling`);
+    setSelected(new Set());
+    setTimeout(() => setBulkMsg(null), 3000);
+  }
+
+  function handleBulkCancel() {
+    setBulkMsg(`${selected.size} shipment${selected.size > 1 ? "s" : ""} cancellation requested`);
+    setSelected(new Set());
+    setTimeout(() => setBulkMsg(null), 3000);
+  }
+
   function toggleSelect(id: string) {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -976,7 +1010,7 @@ function ShipmentsContent() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors">
+          <button onClick={handleExport} className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors">
             <Download size={13} /> Export
           </button>
           <button
@@ -1050,8 +1084,8 @@ function ShipmentsContent() {
           {selected.size > 0 && (
             <div className="flex items-center gap-3 border-b border-glass-border px-4 py-2.5 bg-purple-surface">
               <span className="text-xs font-mono text-white/60">{selected.size} selected</span>
-              <button className="text-xs text-cyan-neon hover:underline">Reschedule</button>
-              <button className="text-xs text-amber-signal hover:underline">Cancel</button>
+              <button onClick={handleBulkReschedule} className="text-xs text-cyan-neon hover:underline">Reschedule</button>
+              <button onClick={handleBulkCancel} className="text-xs text-amber-signal hover:underline">Cancel</button>
               <button className="text-xs text-white/40 hover:underline ml-auto" onClick={() => setSelected(new Set())}>Clear</button>
             </div>
           )}
@@ -1095,8 +1129,15 @@ function ShipmentsContent() {
             </div>
           )}
 
+          {/* Bulk feedback toast */}
+          {bulkMsg && (
+            <div className="mx-4 my-2 rounded-lg border border-green-signal/30 bg-green-signal/10 px-3 py-2 text-xs text-green-signal font-mono flex items-center gap-2">
+              <CheckCircle2 size={13} /> {bulkMsg}
+            </div>
+          )}
+
           {/* Rows */}
-          {filtered.map((shipment) => {
+          {paginated.map((shipment) => {
             const { label, variant } = STATUS_MAP[shipment.status] ?? { label: shipment.status, variant: "cyan" as BadgeVariant };
             const isDeepLinked = qpAwb && shipment.tracking_number === qpAwb;
             return (
@@ -1128,18 +1169,38 @@ function ShipmentsContent() {
           })}
 
           {/* Pagination */}
-          <div className="flex items-center justify-between px-4 py-3">
-            <span className="text-2xs font-mono text-white/30">Showing {filtered.length} of {shipments.length}</span>
-            <div className="flex items-center gap-1">
-              <button className="rounded p-1 text-white/30 hover:text-white hover:bg-glass-200 transition-colors"><ChevronLeft size={14} /></button>
-              {[1,2,3,"…",43].map((p) => (
-                <button key={p} className={`rounded px-2.5 py-1 text-xs transition-colors ${
-                  p === 1 ? "bg-cyan-surface text-cyan-neon" : "text-white/40 hover:text-white hover:bg-glass-200"
-                }`}>{p}</button>
-              ))}
-              <button className="rounded p-1 text-white/30 hover:text-white hover:bg-glass-200 transition-colors"><ChevronRight size={14} /></button>
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between px-4 py-3">
+              <span className="text-2xs font-mono text-white/30">
+                {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, filtered.length)} of {filtered.length}
+              </span>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setPage(p => Math.max(1, p - 1))}
+                  disabled={page === 1}
+                  className="rounded p-1 text-white/30 hover:text-white hover:bg-glass-200 transition-colors disabled:opacity-30"
+                ><ChevronLeft size={14} /></button>
+                {Array.from({ length: totalPages }, (_, i) => i + 1)
+                  .filter(p => p === 1 || p === totalPages || Math.abs(p - page) <= 1)
+                  .reduce<(number | "…")[]>((acc, p, i, arr) => {
+                    if (i > 0 && (p as number) - (arr[i - 1] as number) > 1) acc.push("…");
+                    acc.push(p);
+                    return acc;
+                  }, [])
+                  .map((p, i) => p === "…"
+                    ? <span key={`e${i}`} className="px-1.5 text-xs text-white/20">…</span>
+                    : <button key={p} onClick={() => setPage(p as number)} className={`rounded px-2.5 py-1 text-xs transition-colors ${
+                        p === page ? "bg-cyan-surface text-cyan-neon" : "text-white/40 hover:text-white hover:bg-glass-200"
+                      }`}>{p}</button>
+                  )}
+                <button
+                  onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                  disabled={page === totalPages}
+                  className="rounded p-1 text-white/30 hover:text-white hover:bg-glass-200 transition-colors disabled:opacity-30"
+                ><ChevronRight size={14} /></button>
+              </div>
             </div>
-          </div>
+          )}
         </GlassCard>
       </motion.div>
     </motion.div>

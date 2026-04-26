@@ -471,7 +471,7 @@ export default function DashboardPage() {
                 <p className="font-heading text-sm font-semibold text-white">Live Activity</p>
                 <p className="text-2xs text-white/30 mt-0.5 font-mono">Updating every 30s</p>
               </div>
-              <button className="flex items-center gap-1 rounded-lg border border-glass-border px-2.5 py-1.5 text-2xs text-white/40 transition-colors hover:text-cyan-neon hover:border-cyan-neon/30">
+              <button onClick={() => router.push("/shipments")} className="flex items-center gap-1 rounded-lg border border-glass-border px-2.5 py-1.5 text-2xs text-white/40 transition-colors hover:text-cyan-neon hover:border-cyan-neon/30">
                 All <ChevronRight className="h-3 w-3" />
               </button>
             </div>
