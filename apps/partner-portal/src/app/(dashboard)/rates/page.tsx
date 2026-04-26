@@ -18,10 +18,9 @@ import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { GitBranch, RefreshCw, Calculator, Download, Pencil, Plus, Trash2, Save, X } from "lucide-react";
 import {
-  carriersApi, fmtPhp,
+  carriersApi, carrierIdOf, fmtPhp,
   type Carrier, type RateCard, type RateQuote,
 } from "@/lib/api/carriers";
-import { getCurrentPartnerId } from "@/lib/api/partner-identity";
 
 const SERVICE_TYPES = ["standard", "next_day", "same_day"] as const;
 type ServiceType = typeof SERVICE_TYPES[number];
@@ -45,8 +44,7 @@ export default function RateCardsPage() {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const id = getCurrentPartnerId();
-      const c = await carriersApi.get(id);
+      const c = await carriersApi.me();
       setCarrier(c);
     } catch (e) {
       const err = e as { message?: string };
@@ -112,7 +110,7 @@ export default function RateCardsPage() {
     setSaving(true);
     setError(null);
     try {
-      const updated = await carriersApi.update(getCurrentPartnerId(), { rate_cards: editing });
+      const updated = await carriersApi.update(carrierIdOf(carrier), { rate_cards: editing });
       setCarrier(updated);
       setEditing(null);
       setSaved(true);

@@ -83,6 +83,16 @@ impl CarrierRepository for PgCarrierRepository {
         row.map(Carrier::try_from).transpose()
     }
 
+    async fn find_by_contact_email(&self, tenant_id: &TenantId, email: &str) -> anyhow::Result<Option<Carrier>> {
+        let row = sqlx::query_as::<_, CarrierRow>(
+            "SELECT id, tenant_id, name, code, contact_email, contact_phone, api_endpoint, api_key_hash, \
+             status, sla, rate_cards, total_shipments, on_time_count, failed_count, performance_grade, \
+             onboarded_at, updated_at FROM carrier.carriers \
+             WHERE tenant_id = $1 AND lower(contact_email) = lower($2)"
+        ).bind(tenant_id.inner()).bind(email).fetch_optional(&self.pool).await?;
+        row.map(Carrier::try_from).transpose()
+    }
+
     async fn list(&self, tenant_id: &TenantId, limit: i64, offset: i64) -> anyhow::Result<Vec<Carrier>> {
         let rows = sqlx::query_as::<_, CarrierRow>(
             "SELECT id, tenant_id, name, code, contact_email, contact_phone, api_endpoint, api_key_hash, \

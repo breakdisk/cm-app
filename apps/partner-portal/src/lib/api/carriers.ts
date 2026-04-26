@@ -92,6 +92,15 @@ export interface UpdateCarrierBody {
 }
 
 export const carriersApi = {
+  /**
+   * Returns the carrier that matches the authenticated user's email.
+   * Use this in the partner portal instead of a hardcoded carrier ID.
+   */
+  async me(): Promise<Carrier> {
+    const { data } = await createApiClient().get<Carrier>("/v1/carriers/me");
+    return data;
+  },
+
   /** Fetch a single carrier's full record including embedded rate_cards. */
   async get(carrierId: string): Promise<Carrier> {
     const { data } = await createApiClient().get<Carrier>(`/v1/carriers/${carrierId}`);
