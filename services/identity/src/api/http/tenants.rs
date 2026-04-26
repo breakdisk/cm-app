@@ -7,6 +7,7 @@ use logisticos_errors::AppError;
 use crate::{
     api::http::AppState,
     application::commands::{CreateTenantCommand, FinalizeTenantCommand, UpdateTenantCommand},
+    infrastructure::db::NewAuditEntry,
 };
 
 pub async fn create_tenant(
@@ -77,5 +78,14 @@ pub async fn update_tenant(
     }
     let tenant_id = logisticos_types::TenantId::from_uuid(id);
     let tenant = state.tenant_service.update_tenant(&tenant_id, cmd).await?;
+    let audit = Arc::clone(&state.audit_log);
+    let entry = NewAuditEntry {
+        tenant_id:   claims.tenant_id,
+        actor_id:    claims.user_id,
+        actor_email: claims.email.clone(),
+        action:      "tenant.updated".into(),
+        resource:    tenant.name.clone(),
+    };
+    tokio::spawn(async move { let _ = audit.append(&entry).await; });
     Ok(Json(serde_json::json!({ "data": tenant })))
 }

@@ -2,6 +2,7 @@ pub mod auth;
 pub mod tenants;
 pub mod users;
 pub mod api_keys;
+pub mod audit_log;
 pub mod health;
 pub mod push_tokens;
 
@@ -18,6 +19,7 @@ pub struct AppState {
     pub reset_token_repo: Arc<crate::infrastructure::db::user_repo::PgPasswordResetTokenRepository>,
     pub email_verification_token_repo: Arc<crate::infrastructure::db::user_repo::PgEmailVerificationTokenRepository>,
     pub push_token_repo: Arc<crate::infrastructure::db::push_token_repo::PgPushTokenRepository>,
+    pub audit_log: Arc<crate::infrastructure::db::audit_log_repo::PgAuditLogRepository>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -82,5 +84,6 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/tenants/me",          get(tenants::get_self))
         .route("/tenants/me/finalize", post(tenants::finalize_self))
         .route("/tenants/:id",         put(tenants::update_tenant))
+        .route("/audit-log",           get(audit_log::list))
         .layer(auth_layer)
 }
