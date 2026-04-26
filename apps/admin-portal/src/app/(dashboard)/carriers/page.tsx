@@ -2,53 +2,144 @@
 /**
  * Admin Portal — Carrier Ops Page
  * Third-party carrier management: performance, allocation, SLA contract status.
+ *
+ * Sourced from carrier service `GET /v1/carriers` (proxied by api-gateway).
+ * Each row reflects a real carrier in this tenant — performance grade,
+ * lifetime on-time count, and rate-card coverage zones come straight from
+ * the domain entity. KPIs are derived totals so this page stays useful
+ * even before a dedicated /v1/carriers/aggregate endpoint exists.
  */
-import { Suspense } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
-import { GitBranch, Star, TrendingUp, ExternalLink, Plus, LineChart, Wallet, X, Store } from "lucide-react";
+import { GitBranch, Plus, LineChart, Wallet, X, Store, RefreshCw } from "lucide-react";
+import { authFetch } from "@/lib/auth/auth-fetch";
 
-// ── Mock data ──────────────────────────────────────────────────────────────────
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-const KPI = [
-  { label: "Active Carriers",   value: 8,    trend: +1,    color: "cyan"   as const, format: "number"  as const },
-  { label: "Shipments via 3PL", value: 2840, trend: +18.4, color: "purple" as const, format: "number"  as const },
-  { label: "Avg 3PL SLA",       value: 91.2, trend: +2.1,  color: "green"  as const, format: "percent" as const },
-  { label: "3PL Cost MTD",      value: 284000, trend: +12.4, color: "amber" as const, format: "currency" as const },
-];
+// ── Server types — mirror services/carrier/src/domain/entities/mod.rs ──
 
-type CarrierStatus = "active" | "probation" | "suspended" | "pending";
+type CarrierStatus = "pending_verification" | "active" | "suspended" | "deactivated";
+type PerformanceGrade = "excellent" | "good" | "fair" | "poor";
+
+interface RateCard {
+  service_type: string;
+  base_rate_cents: number;
+  per_kg_cents: number;
+  max_weight_kg: number;
+  coverage_zones: string[];
+}
+
+interface SlaCommitment {
+  on_time_target_pct: number;
+  max_delivery_days: number;
+  penalty_per_breach: number;
+}
+
+interface ServerCarrier {
+  id:                string | { 0: string };
+  tenant_id:         string | { 0: string };
+  name:              string;
+  code:              string;
+  contact_email:     string;
+  contact_phone?:    string | null;
+  api_endpoint?:     string | null;
+  status:            CarrierStatus;
+  sla:               SlaCommitment;
+  rate_cards:        RateCard[];
+  total_shipments:   number;
+  on_time_count:     number;
+  failed_count:      number;
+  performance_grade: PerformanceGrade;
+  onboarded_at:      string;
+  updated_at:        string;
+}
+
+// ── Page-local view model ───────────────────────────────────────────────────────
+
+type RowStatus = "active" | "probation" | "suspended" | "pending";
 
 interface Carrier {
   id: string;
   name: string;
+  code: string;
   coverage: string[];
-  status: CarrierStatus;
+  status: RowStatus;
   sla_rate: number;
   sla_target: number;
   shipments_mtd: number;
   cost_per_shipment: number;
   integration: "API" | "Manual" | "EDI";
   grade: "A" | "B" | "C" | "D";
-  ai_allocated: boolean;
 }
 
-const CARRIERS: Carrier[] = [
-  { id: "C01", name: "FastLine Couriers",  coverage: ["Metro Manila", "Luzon A"],   status: "active",    sla_rate: 94.8, sla_target: 93, shipments_mtd: 8420, cost_per_shipment: 50,  integration: "API",    grade: "A", ai_allocated: true  },
-  { id: "C02", name: "SpeedEx PH",         coverage: ["Luzon B", "Visayas"],        status: "active",    sla_rate: 89.2, sla_target: 87, shipments_mtd: 1840, cost_per_shipment: 68,  integration: "API",    grade: "B", ai_allocated: true  },
-  { id: "C03", name: "IslandLink Express", coverage: ["Visayas", "Mindanao"],       status: "active",    sla_rate: 86.4, sla_target: 85, shipments_mtd: 920,  cost_per_shipment: 95,  integration: "Manual", grade: "B", ai_allocated: false },
-  { id: "C04", name: "NorthlinkLogistics", coverage: ["Luzon B (North)"],           status: "active",    sla_rate: 91.8, sla_target: 88, shipments_mtd: 640,  cost_per_shipment: 72,  integration: "EDI",    grade: "A", ai_allocated: true  },
-  { id: "C05", name: "SouthStar Delivery", coverage: ["Mindanao"],                  status: "probation", sla_rate: 78.4, sla_target: 85, shipments_mtd: 280,  cost_per_shipment: 82,  integration: "Manual", grade: "D", ai_allocated: false },
-  { id: "C06", name: "MegaMover PH",       coverage: ["Metro Manila"],              status: "active",    sla_rate: 96.1, sla_target: 95, shipments_mtd: 1240, cost_per_shipment: 45,  integration: "API",    grade: "A", ai_allocated: true  },
-  { id: "C07", name: "VisMinLog",          coverage: ["Visayas", "Mindanao"],       status: "active",    sla_rate: 88.2, sla_target: 85, shipments_mtd: 480,  cost_per_shipment: 88,  integration: "API",    grade: "B", ai_allocated: true  },
-  { id: "C08", name: "QuickShip Cebu",     coverage: ["Cebu Metro"],               status: "pending",   sla_rate: 0,    sla_target: 90, shipments_mtd: 0,    cost_per_shipment: 62,  integration: "API",    grade: "A", ai_allocated: false },
+function carrierIdOf(c: ServerCarrier): string {
+  const raw = c.id as unknown;
+  if (typeof raw === "string") return raw;
+  if (raw && typeof raw === "object" && "0" in raw) return String((raw as { 0: string })[0]);
+  return "";
+}
+
+function gradeLetter(g: PerformanceGrade): "A" | "B" | "C" | "D" {
+  return g === "excellent" ? "A" : g === "good" ? "B" : g === "fair" ? "C" : "D";
+}
+
+// Maps server status → page status. probation is a UI-only intermediate
+// state we render when SLA% is below target on an otherwise active carrier;
+// the server doesn't carry "probation" as a first-class status.
+function rowStatus(s: CarrierStatus, slaOk: boolean): RowStatus {
+  if (s === "active")               return slaOk ? "active" : "probation";
+  if (s === "suspended")            return "suspended";
+  if (s === "pending_verification") return "pending";
+  return "suspended";
+}
+
+function mapCarrier(c: ServerCarrier): Carrier {
+  const slaOk = c.total_shipments === 0
+    ? true
+    : (c.on_time_count / c.total_shipments) * 100 >= c.sla.on_time_target_pct;
+  const sla_rate = c.total_shipments === 0
+    ? 0
+    : Math.round((c.on_time_count / c.total_shipments) * 1000) / 10;
+  const allZones = Array.from(new Set(c.rate_cards.flatMap((r) => r.coverage_zones)));
+  const baseRates = c.rate_cards.map((r) => r.base_rate_cents).filter((n) => n > 0);
+  const avgCost = baseRates.length > 0
+    ? Math.round(baseRates.reduce((a, b) => a + b, 0) / baseRates.length / 100)
+    : 0;
+  return {
+    id:                carrierIdOf(c),
+    name:              c.name,
+    code:              c.code,
+    coverage:          allZones,
+    status:            rowStatus(c.status, slaOk),
+    sla_rate,
+    sla_target:        c.sla.on_time_target_pct,
+    shipments_mtd:     c.total_shipments,
+    cost_per_shipment: avgCost,
+    integration:       c.api_endpoint ? "API" : "Manual",
+    grade:             gradeLetter(c.performance_grade),
+  };
+}
+
+// Mock list kept only as a fallback for environments where the carrier
+// service is unreachable — the page falls through to it after a failed
+// fetch so the UI still renders something useful.
+const CARRIERS_FALLBACK: Carrier[] = [
+  { id: "C01", name: "FastLine Couriers",  code: "FAST", coverage: ["Metro Manila", "Luzon A"],   status: "active",    sla_rate: 94.8, sla_target: 93, shipments_mtd: 8420, cost_per_shipment: 50,  integration: "API",    grade: "A" },
+  { id: "C02", name: "SpeedEx PH",         code: "SPDX", coverage: ["Luzon B", "Visayas"],        status: "active",    sla_rate: 89.2, sla_target: 87, shipments_mtd: 1840, cost_per_shipment: 68,  integration: "API",    grade: "B" },
+  { id: "C03", name: "IslandLink Express", code: "ILE",  coverage: ["Visayas", "Mindanao"],       status: "active",    sla_rate: 86.4, sla_target: 85, shipments_mtd: 920,  cost_per_shipment: 95,  integration: "Manual", grade: "B" },
+  { id: "C04", name: "NorthlinkLogistics", code: "NORL", coverage: ["Luzon B (North)"],           status: "active",    sla_rate: 91.8, sla_target: 88, shipments_mtd: 640,  cost_per_shipment: 72,  integration: "EDI",    grade: "A" },
+  { id: "C05", name: "SouthStar Delivery", code: "SSD",  coverage: ["Mindanao"],                  status: "probation", sla_rate: 78.4, sla_target: 85, shipments_mtd: 280,  cost_per_shipment: 82,  integration: "Manual", grade: "D" },
+  { id: "C06", name: "MegaMover PH",       code: "MEGA", coverage: ["Metro Manila"],              status: "active",    sla_rate: 96.1, sla_target: 95, shipments_mtd: 1240, cost_per_shipment: 45,  integration: "API",    grade: "A" },
+  { id: "C07", name: "VisMinLog",          code: "VML",  coverage: ["Visayas", "Mindanao"],       status: "active",    sla_rate: 88.2, sla_target: 85, shipments_mtd: 480,  cost_per_shipment: 88,  integration: "API",    grade: "B" },
+  { id: "C08", name: "QuickShip Cebu",     code: "QSC",  coverage: ["Cebu Metro"],                status: "pending",   sla_rate: 0,    sla_target: 90, shipments_mtd: 0,    cost_per_shipment: 62,  integration: "API",    grade: "A" },
 ];
 
-const STATUS_CONFIG: Record<CarrierStatus, { label: string; variant: "green" | "cyan" | "amber" | "red" }> = {
+const STATUS_CONFIG: Record<RowStatus, { label: string; variant: "green" | "cyan" | "amber" | "red" }> = {
   active:    { label: "Active",    variant: "green" },
   probation: { label: "Probation", variant: "red"   },
   suspended: { label: "Suspended", variant: "red"   },
@@ -61,14 +152,55 @@ const GRADE_COLOR: Record<Carrier["grade"], string> = {
 
 function CarriersPageInner() {
   const searchParams = useSearchParams();
-  // Deep-link from partner/sla: /admin/carriers?coverage=<zone>. Filter carriers
-  // whose coverage list fuzzily contains the zone name.
   const coverageFilter = searchParams.get("coverage");
-  const visibleCarriers = coverageFilter
-    ? CARRIERS.filter((c) =>
+
+  const [carriers, setCarriers] = useState<Carrier[]>([]);
+  const [loading,  setLoading]  = useState(true);
+  const [error,    setError]    = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await authFetch(`${API_BASE}/v1/carriers`);
+      if (!res.ok) throw new Error(`Carriers fetch failed: ${res.status} ${res.statusText}`);
+      const json = await res.json();
+      const list: ServerCarrier[] = json.carriers ?? json.data ?? [];
+      setCarriers(list.map(mapCarrier));
+    } catch (e) {
+      // Fall back to the canned list so the page still renders something
+      // useful in dev or when the carrier service is briefly unreachable.
+      setError(e instanceof Error ? e.message : "Failed to load carriers");
+      setCarriers(CARRIERS_FALLBACK);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const visibleCarriers = useMemo(() => coverageFilter
+    ? carriers.filter((c) =>
         c.coverage.some((z) => z.toLowerCase().includes(coverageFilter.toLowerCase())),
       )
-    : CARRIERS;
+    : carriers,
+  [carriers, coverageFilter]);
+
+  const kpis = useMemo(() => {
+    const active = carriers.filter((c) => c.status === "active");
+    const totalShipments = carriers.reduce((a, c) => a + c.shipments_mtd, 0);
+    // Shipment-weighted SLA average — gives big carriers proper weight.
+    const slaWeighted = totalShipments > 0
+      ? carriers.reduce((a, c) => a + c.sla_rate * c.shipments_mtd, 0) / totalShipments
+      : 0;
+    const costMtd = carriers.reduce((a, c) => a + c.cost_per_shipment * c.shipments_mtd, 0);
+    return [
+      { label: "Active Carriers",   value: active.length, trend: 0,  color: "cyan"   as const, format: "number"   as const },
+      { label: "Shipments via 3PL", value: totalShipments,trend: 0,  color: "purple" as const, format: "number"   as const },
+      { label: "Avg 3PL SLA",       value: slaWeighted,   trend: 0,  color: "green"  as const, format: "percent"  as const },
+      { label: "3PL Cost MTD",      value: costMtd,       trend: 0,  color: "amber"  as const, format: "currency" as const },
+    ];
+  }, [carriers]);
 
   return (
     <motion.div
@@ -84,7 +216,11 @@ function CarriersPageInner() {
             <GitBranch size={22} className="text-cyan-neon" />
             Carrier Ops
           </h1>
-          <p className="text-sm text-white/40 font-mono mt-0.5">8 carriers · AI auto-allocation active</p>
+          <p className="text-sm text-white/40 font-mono mt-0.5">
+            {loading
+              ? "loading…"
+              : `${carriers.length} carrier${carriers.length === 1 ? "" : "s"} · ${carriers.filter((c) => c.status === "active").length} active`}
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <a
@@ -94,11 +230,26 @@ function CarriersPageInner() {
           >
             <Store size={12} /> Marketplace
           </a>
+          <button
+            onClick={load}
+            title="Refresh"
+            className="flex items-center gap-1 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors"
+          >
+            <RefreshCw size={12} />
+          </button>
           <button className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-cyan-neon to-purple-plasma px-4 py-2 text-xs font-semibold text-canvas">
             <Plus size={12} /> Onboard Carrier
           </button>
         </div>
       </motion.div>
+
+      {error && (
+        <motion.div variants={variants.fadeInUp}>
+          <div className="rounded-lg border border-amber-signal/30 bg-amber-signal/5 px-3 py-2">
+            <span className="text-2xs font-mono text-amber-signal">{error} — showing cached data</span>
+          </div>
+        </motion.div>
+      )}
 
       {/* Coverage filter banner (from partner/sla deep link) */}
       {coverageFilter && (
@@ -107,7 +258,7 @@ function CarriersPageInner() {
             <GitBranch size={13} className="text-purple-plasma" />
             <span className="text-xs font-mono text-white/70">
               Filtered by coverage <span className="text-purple-plasma font-bold">{coverageFilter}</span>
-              <span className="text-white/30"> · {visibleCarriers.length} of {CARRIERS.length} carriers</span>
+              <span className="text-white/30"> · {visibleCarriers.length} of {carriers.length} carriers</span>
             </span>
             <a
               href="/admin/carriers"
@@ -120,9 +271,11 @@ function CarriersPageInner() {
         </motion.div>
       )}
 
-      {/* KPI row */}
+      {/* KPI row — derived from the carrier list. trend stays at 0 until
+          a /v1/carriers/aggregate endpoint exposes period-over-period
+          deltas; the value is what matters today. */}
       <motion.div variants={variants.fadeInUp} className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {KPI.map((m) => (
+        {kpis.map((m) => (
           <GlassCard key={m.label} size="sm" glow={m.color} accent>
             <LiveMetric label={m.label} value={m.value} trend={m.trend} color={m.color} format={m.format} />
           </GlassCard>
@@ -147,10 +300,9 @@ function CarriersPageInner() {
                   <div>
                     <p className="text-xs font-semibold text-white">{c.name}</p>
                     <div className="flex items-center gap-1 mt-0.5">
-                      {c.ai_allocated && (
-                        <span className="text-2xs font-mono text-purple-plasma">AI</span>
-                      )}
-                      <span className="text-2xs font-mono text-white/30">{c.id}</span>
+                      <span className="text-2xs font-mono text-cyan-neon/70">{c.code}</span>
+                      <span className="text-2xs font-mono text-white/20">·</span>
+                      <span className="text-2xs font-mono text-white/30 truncate max-w-[120px]">{c.id}</span>
                     </div>
                   </div>
                 </div>

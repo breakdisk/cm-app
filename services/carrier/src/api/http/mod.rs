@@ -2,7 +2,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
-    routing::{get, post},
+    routing::{get, post, put},
     Router,
 };
 use serde::Deserialize;
@@ -12,14 +12,14 @@ use logisticos_auth::middleware::AuthClaims;
 use logisticos_auth::rbac::permissions;
 use logisticos_errors::AppError;
 
-use crate::application::services::{OnboardCarrierCommand};
+use crate::application::services::{OnboardCarrierCommand, UpdateCarrierCommand};
 use crate::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/carriers",                  get(list_carriers).post(onboard_carrier))
         .route("/v1/carriers/rate-shop",        get(rate_shop))
-        .route("/v1/carriers/:id",              get(get_carrier))
+        .route("/v1/carriers/:id",              get(get_carrier).put(update_carrier))
         .route("/v1/carriers/:id/activate",     post(activate_carrier))
         .route("/v1/carriers/:id/suspend",      post(suspend_carrier))
 }
@@ -59,6 +59,26 @@ async fn get_carrier(
 ) -> impl IntoResponse {
     claims.require_permission(permissions::CARRIERS_READ)?;
     let carrier = state.carrier_svc.get(id).await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(carrier)))
+}
+
+async fn update_carrier(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+    Json(cmd): Json<UpdateCarrierCommand>,
+) -> impl IntoResponse {
+    use logisticos_types::TenantId;
+    claims.require_permission(permissions::CARRIERS_MANAGE)?;
+    // Tenant guard: refuse cross-tenant updates even if a leaked admin
+    // token was used. Same shape as get_carrier returning 404 instead of
+    // 403 to avoid leaking carrier existence to other tenants.
+    let existing = state.carrier_svc.get(id).await?;
+    let claim_tenant = TenantId::from_uuid(claims.tenant_id);
+    if existing.tenant_id.inner() != claim_tenant.inner() {
+        return Err(AppError::NotFound { resource: "Carrier", id: id.to_string() });
+    }
+    let carrier = state.carrier_svc.update(id, cmd).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(carrier)))
 }
 

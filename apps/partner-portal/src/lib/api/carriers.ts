@@ -81,10 +81,27 @@ export interface ManifestResponse {
 // ── Client ─────────────────────────────────────────────────────────────────────
 // Cookie-JWT flow; axios interceptor stamps Authorization automatically.
 
+/** Partial update payload for PUT /v1/carriers/:id. */
+export interface UpdateCarrierBody {
+  name?:           string;
+  contact_email?:  string;
+  contact_phone?:  string;
+  api_endpoint?:   string;
+  sla?:            SlaCommitment;
+  rate_cards?:     RateCard[];
+}
+
 export const carriersApi = {
   /** Fetch a single carrier's full record including embedded rate_cards. */
   async get(carrierId: string): Promise<Carrier> {
     const { data } = await createApiClient().get<Carrier>(`/v1/carriers/${carrierId}`);
+    return data;
+  },
+
+  /** Apply a partial update to the carrier — name/contact/sla/rate_cards.
+   *  Server clamps SLA target to [0, 100] and floors max_delivery_days at 1. */
+  async update(carrierId: string, body: UpdateCarrierBody): Promise<Carrier> {
+    const { data } = await createApiClient().put<Carrier>(`/v1/carriers/${carrierId}`, body);
     return data;
   },
 

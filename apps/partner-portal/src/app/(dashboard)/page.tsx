@@ -1,5 +1,6 @@
 "use client";
 
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import Link from "next/link";
 import {
@@ -26,27 +27,39 @@ import {
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { variants } from "@/lib/design-system/tokens";
+import { authFetch } from "@/lib/auth/auth-fetch";
+import { carriersApi, fmtPhp } from "@/lib/api/carriers";
+import { getCurrentPartnerId } from "@/lib/api/partner-identity";
 
-// ─── Static data ──────────────────────────────────────────────────────────────
+const DISPATCH_URL    = process.env.NEXT_PUBLIC_DISPATCH_URL    ?? "http://localhost:8005";
+const PAYMENTS_URL    = process.env.NEXT_PUBLIC_PAYMENTS_URL    ?? "http://localhost:8012";
+const DRIVER_OPS_URL  = process.env.NEXT_PUBLIC_DRIVER_OPS_URL  ?? "http://localhost:8006";
 
-// 30-day SLA trend (last 30 days, daily %)
-const SLA_TREND_DATA = Array.from({ length: 30 }, (_, i) => ({
+// 30-day SLA trend chart isn't backed by an endpoint yet — keep the visual
+// scaffolding so the page lays out the same once carriers exposes a
+// /v1/carriers/:id/sla-trend route (TODO). Static placeholder values keep
+// the line readable until then.
+const SLA_TREND_PLACEHOLDER = Array.from({ length: 30 }, (_, i) => ({
   day: i + 1,
-  sla: parseFloat((94 + Math.sin(i * 0.4) * 2.5 + Math.random() * 1.5).toFixed(1)),
+  sla: parseFloat((94 + Math.sin(i * 0.4) * 2.5).toFixed(1)),
 }));
-
-const TOP_ZONES = [
-  { rank: 1, zone: "Quezon City",   delivered: 89, total: 91, rate: 97.8 },
-  { rank: 2, zone: "Makati CBD",    delivered: 74, total: 76, rate: 97.4 },
-  { rank: 3, zone: "Taguig",        delivered: 67, total: 70, rate: 95.7 },
-  { rank: 4, zone: "Pasig",         delivered: 45, total: 48, rate: 93.8 },
-  { rank: 5, zone: "Mandaluyong",   delivered: 37, total: 40, rate: 92.5 },
-];
 
 const CURRENT_MONTH = new Intl.DateTimeFormat("en-US", {
   month: "long",
   year: "numeric",
 }).format(new Date());
+
+interface PartnerKpis {
+  slaPct:           number | null;
+  slaTarget:        number | null;
+  activeRoutes:     number;          // unique routes today (drivers with active_route_id)
+  todayDeliveries:  number;          // tasks completed today (manifest aggregation)
+  pendingRemittance:number;          // outstanding invoices in cents
+  grossEarnings:    number;          // billed MTD
+  platformFee:      number;          // estimated 10% — refine when invoice line items expose fee_cents
+  netEarnings:      number;
+  alreadyPaid:      number;
+}
 
 // ─── Custom Tooltip ───────────────────────────────────────────────────────────
 
@@ -83,6 +96,125 @@ function SlaTooltip({
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function PartnerOverviewPage() {
+  const [kpis, setKpis] = useState<PartnerKpis>({
+    slaPct: null, slaTarget: null,
+    activeRoutes: 0, todayDeliveries: 0,
+    pendingRemittance: 0, grossEarnings: 0,
+    platformFee: 0, netEarnings: 0, alreadyPaid: 0,
+  });
+  const [loading, setLoading] = useState(true);
+  const [topZones, setTopZones] = useState<Array<{ rank: number; zone: string; delivered: number; total: number; rate: number }>>([]);
+
+  // Pull every metric from sources we already expose. SLA % is derived from
+  // the carrier's lifetime on_time_count / total_shipments — a true 30-day
+  // window needs a new endpoint. Same caveat for top zones: derived from a
+  // best-effort manifest aggregation grouped by city of the assigned tasks
+  // (defaults to whole-tenant when the partner is logged in as admin).
+  const load = useCallback(async () => {
+    setLoading(true);
+    const carrierId = getCurrentPartnerId();
+    const today = new Date().toISOString().slice(0, 10);
+
+    const [carrierRes, queueRes, driversRes, manifestRes, invRes, walletRes] =
+      await Promise.allSettled([
+        carriersApi.get(carrierId),
+        authFetch(`${DISPATCH_URL}/v1/queue?status=all`),
+        authFetch(`${DRIVER_OPS_URL}/v1/drivers`),
+        carriersApi.manifest(today, carrierId),
+        authFetch(`${PAYMENTS_URL}/v1/invoices`),
+        authFetch(`${PAYMENTS_URL}/v1/wallet`),
+      ]);
+
+    const carrier = carrierRes.status === "fulfilled" ? carrierRes.value : null;
+    const totalShipments = carrier?.total_shipments ?? 0;
+    const onTime = carrier?.on_time_count ?? 0;
+    const slaPct = totalShipments > 0 ? (onTime / totalShipments) * 100 : null;
+
+    let activeRoutes = 0;
+    if (driversRes.status === "fulfilled" && driversRes.value.ok) {
+      const j = await driversRes.value.json();
+      const list: Array<{ active_route_id?: string | null }> = j.data ?? [];
+      activeRoutes = list.filter((d) => d.active_route_id).length;
+    }
+
+    let todayDeliveries = 0;
+    const zoneCounts = new Map<string, { delivered: number; total: number }>();
+    if (manifestRes.status === "fulfilled") {
+      const m = manifestRes.value.data ?? [];
+      for (const row of m) {
+        if (row.task_type === "delivery") todayDeliveries += row.completed;
+      }
+    }
+    // Best-effort: query the dispatch queue for delivered/total per dest_city.
+    // The queue carries dest_city + status; partner sees their own tenant rows.
+    if (queueRes.status === "fulfilled" && queueRes.value.ok) {
+      const j = await queueRes.value.json();
+      const items: Array<{ dest_city?: string; status?: string }> = j.data ?? [];
+      for (const it of items) {
+        const city = (it.dest_city ?? "").trim() || "Unknown";
+        const e = zoneCounts.get(city) ?? { delivered: 0, total: 0 };
+        e.total += 1;
+        if (it.status === "dispatched") e.delivered += 1;
+        zoneCounts.set(city, e);
+      }
+    }
+    const zones = Array.from(zoneCounts.entries())
+      .map(([city, c]) => ({
+        zone:      city,
+        delivered: c.delivered,
+        total:     c.total,
+        rate:      c.total > 0 ? (c.delivered / c.total) * 100 : 0,
+      }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 5)
+      .map((z, i) => ({ rank: i + 1, ...z }));
+    setTopZones(zones);
+
+    let billedMtd = 0, paid = 0, outstanding = 0;
+    if (invRes.status === "fulfilled" && invRes.value.ok) {
+      const j = await invRes.value.json();
+      const list: Array<{ status?: string; total_cents?: number; billing_period?: string }> = j.data ?? [];
+      const now = new Date();
+      const monthKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+      for (const inv of list) {
+        const cents = inv.total_cents ?? 0;
+        if (inv.billing_period === monthKey) billedMtd += cents;
+        if (inv.status === "paid")    paid        += cents;
+        if (inv.status === "issued"
+         || inv.status === "overdue") outstanding += cents;
+      }
+    }
+    let walletBalance = 0;
+    if (walletRes.status === "fulfilled" && walletRes.value.ok) {
+      const j = await walletRes.value.json();
+      walletBalance = j.data?.balance_cents ?? 0;
+    }
+    const platformFee = Math.round(billedMtd * 0.10);
+    const netEarnings = billedMtd - platformFee;
+
+    setKpis({
+      slaPct,
+      slaTarget:        carrier?.sla.on_time_target_pct ?? null,
+      activeRoutes,
+      todayDeliveries,
+      pendingRemittance: Math.max(outstanding, walletBalance),
+      grossEarnings:    billedMtd,
+      platformFee,
+      netEarnings,
+      alreadyPaid:      paid,
+    });
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const slaBadge = useMemo(() => {
+    if (kpis.slaPct == null || kpis.slaTarget == null) return { label: "No data", variant: "muted" as const };
+    return kpis.slaPct >= kpis.slaTarget
+      ? { label: "Above target", variant: "green"  as const }
+      : { label: "Below target", variant: "amber"  as const };
+  }, [kpis.slaPct, kpis.slaTarget]);
+
   return (
     <motion.div
       variants={variants.staggerContainer}
@@ -95,7 +227,8 @@ export default function PartnerOverviewPage() {
         variants={variants.staggerContainer}
         className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4"
       >
-        {/* SLA Rate */}
+        {/* SLA Rate — derived from carrier.on_time_count / total_shipments
+             (lifetime). True 30-day window pending /v1/carriers/:id/sla-trend. */}
         <motion.div variants={variants.fadeInUp}>
           <GlassCard glow="green" accent className="flex flex-col gap-3">
             <div className="flex items-center justify-between">
@@ -107,28 +240,29 @@ export default function PartnerOverviewPage() {
                 className="font-heading text-3xl font-bold tabular-nums text-white"
                 style={{ textShadow: "0 0 16px rgba(0,255,136,0.3)" }}
               >
-                96.8%
+                {kpis.slaPct == null ? "—" : `${kpis.slaPct.toFixed(1)}%`}
               </span>
-              <NeonBadge variant="green" dot pulse>
-                Above target
+              <NeonBadge variant={slaBadge.variant} dot pulse={slaBadge.variant === "green"}>
+                {slaBadge.label}
               </NeonBadge>
             </div>
-            {/* Mini progress bar */}
             <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-glass-200">
               <div
                 className="h-full rounded-full"
                 style={{
-                  width: "96.8%",
+                  width: `${kpis.slaPct ?? 0}%`,
                   background: "linear-gradient(90deg, #00CC6A, #00FF88)",
                   boxShadow: "0 0 6px rgba(0,255,136,0.4)",
                 }}
               />
             </div>
-            <p className="text-2xs text-white/30 font-mono">Target: 95.0%</p>
+            <p className="text-2xs text-white/30 font-mono">
+              Target: {kpis.slaTarget == null ? "—" : `${kpis.slaTarget.toFixed(1)}%`}
+            </p>
           </GlassCard>
         </motion.div>
 
-        {/* Active Routes */}
+        {/* Active Routes — count of drivers with an active_route_id. */}
         <motion.div variants={variants.fadeInUp}>
           <GlassCard glow="cyan" accent className="flex flex-col gap-3">
             <div className="flex items-center justify-between">
@@ -142,16 +276,16 @@ export default function PartnerOverviewPage() {
                 className="font-heading text-3xl font-bold tabular-nums text-white"
                 style={{ textShadow: "0 0 16px rgba(0,229,255,0.3)" }}
               >
-                23
+                {kpis.activeRoutes}
               </span>
               <NeonBadge variant="cyan">
-                5 completing
+                {loading ? "syncing…" : "live"}
               </NeonBadge>
             </div>
           </GlassCard>
         </motion.div>
 
-        {/* Today's Deliveries */}
+        {/* Today's Deliveries — sum of completed delivery tasks from manifest. */}
         <motion.div variants={variants.fadeInUp}>
           <GlassCard glow="purple" accent className="flex flex-col gap-3">
             <div className="flex items-center justify-between">
@@ -165,16 +299,14 @@ export default function PartnerOverviewPage() {
                 className="font-heading text-3xl font-bold tabular-nums text-white"
                 style={{ textShadow: "0 0 16px rgba(168,85,247,0.3)" }}
               >
-                312
+                {kpis.todayDeliveries}
               </span>
-              <NeonBadge variant="purple">
-                +8% today
-              </NeonBadge>
+              <NeonBadge variant="purple">today</NeonBadge>
             </div>
           </GlassCard>
         </motion.div>
 
-        {/* Pending Remittance */}
+        {/* Pending Remittance — outstanding invoices (issued + overdue). */}
         <motion.div variants={variants.fadeInUp}>
           <GlassCard glow="amber" accent className="flex flex-col gap-3">
             <div className="flex items-center justify-between">
@@ -188,11 +320,9 @@ export default function PartnerOverviewPage() {
                 className="font-heading text-3xl font-bold tabular-nums text-white"
                 style={{ textShadow: "0 0 16px rgba(255,171,0,0.3)" }}
               >
-                ₱54,200
+                {fmtPhp(kpis.pendingRemittance)}
               </span>
-              <NeonBadge variant="amber">
-                Due Fri
-              </NeonBadge>
+              <NeonBadge variant="amber">due</NeonBadge>
             </div>
           </GlassCard>
         </motion.div>
@@ -291,7 +421,7 @@ export default function PartnerOverviewPage() {
             <div className="h-52">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart
-                  data={SLA_TREND_DATA}
+                  data={SLA_TREND_PLACEHOLDER}
                   margin={{ top: 4, right: 4, left: -24, bottom: 0 }}
                 >
                   <XAxis
@@ -345,7 +475,10 @@ export default function PartnerOverviewPage() {
               </button>
             </div>
             <div className="space-y-2">
-              {TOP_ZONES.map((zone) => (
+              {topZones.length === 0 && !loading && (
+                <p className="text-2xs font-mono text-white/25 py-3 text-center">No zone activity yet</p>
+              )}
+              {topZones.map((zone) => (
                 <div
                   key={zone.zone}
                   className="flex items-center gap-3 rounded-lg px-3 py-2 transition-colors hover:bg-glass-100"
@@ -358,7 +491,7 @@ export default function PartnerOverviewPage() {
                       {zone.zone}
                     </p>
                     <p className="text-2xs text-white/30 font-mono">
-                      {zone.delivered}/{zone.total} delivered
+                      {zone.delivered}/{zone.total} dispatched
                     </p>
                   </div>
                   <span
@@ -367,7 +500,7 @@ export default function PartnerOverviewPage() {
                       color: zone.rate >= 97 ? "#00FF88" : zone.rate >= 95 ? "#00E5FF" : "#FFAB00",
                     }}
                   >
-                    {zone.rate}%
+                    {zone.rate.toFixed(0)}%
                   </span>
                 </div>
               ))}
@@ -398,10 +531,10 @@ export default function PartnerOverviewPage() {
 
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {[
-              { label: "Gross Earnings",   value: "₱128,400", color: "#00FF88",  icon: TrendingUp },
-              { label: "Platform Fee",     value: "₱12,840",  color: "#FF3B5C",  icon: AlertTriangle },
-              { label: "Net Earnings",     value: "₱115,560", color: "#00E5FF",  icon: DollarSign },
-              { label: "Already Paid",     value: "₱61,360",  color: "#A855F7",  icon: CheckCircle2 },
+              { label: "Gross Earnings", value: fmtPhp(kpis.grossEarnings), color: "#00FF88", icon: TrendingUp     },
+              { label: "Platform Fee",   value: fmtPhp(kpis.platformFee),   color: "#FF3B5C", icon: AlertTriangle  },
+              { label: "Net Earnings",   value: fmtPhp(kpis.netEarnings),   color: "#00E5FF", icon: DollarSign     },
+              { label: "Already Paid",   value: fmtPhp(kpis.alreadyPaid),   color: "#A855F7", icon: CheckCircle2   },
             ].map(({ label, value, color, icon: Icon }) => (
               <div
                 key={label}
@@ -430,21 +563,23 @@ export default function PartnerOverviewPage() {
             <div className="flex items-center justify-between text-xs">
               <span className="text-white/40">Payout progress</span>
               <span className="font-mono text-white/60">
-                ₱61,360 / ₱115,560
+                {fmtPhp(kpis.alreadyPaid)} / {fmtPhp(kpis.netEarnings)}
               </span>
             </div>
             <div className="h-1.5 w-full overflow-hidden rounded-full bg-glass-200">
               <div
                 className="h-full rounded-full"
                 style={{
-                  width: "53%",
+                  width: kpis.netEarnings > 0
+                    ? `${Math.min(100, Math.round((kpis.alreadyPaid / kpis.netEarnings) * 100))}%`
+                    : "0%",
                   background: "linear-gradient(90deg, #00CC6A, #00FF88)",
                   boxShadow: "0 0 6px rgba(0,255,136,0.4)",
                 }}
               />
             </div>
             <p className="text-2xs text-white/30 font-mono">
-              ₱54,200 remaining — disbursement scheduled Friday
+              {fmtPhp(Math.max(0, kpis.netEarnings - kpis.alreadyPaid))} remaining
             </p>
           </div>
         </GlassCard>

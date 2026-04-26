@@ -19,6 +19,21 @@ pub struct OnboardCarrierCommand {
     pub max_delivery_days: u8,
 }
 
+/// Partial update applied to an existing carrier — fields left None are
+/// preserved. Used by partner-portal Settings (profile fields) and Rates
+/// (rate_cards). Per ADR-0013 draft a future partner role will scope this
+/// to the partner's own carrier_id; today the gateway requires CARRIERS_MANAGE
+/// which only the admin role holds, so partners log in with admin tokens.
+#[derive(Debug, Deserialize)]
+pub struct UpdateCarrierCommand {
+    pub name:           Option<String>,
+    pub contact_email:  Option<String>,
+    pub contact_phone:  Option<String>,
+    pub api_endpoint:   Option<String>,
+    pub sla:            Option<SlaCommitment>,
+    pub rate_cards:     Option<Vec<RateCard>>,
+}
+
 /// Rate shopping result — returned to the dispatch service to choose carrier for a shipment.
 #[derive(Debug, serde::Serialize)]
 pub struct CarrierQuote {
@@ -63,6 +78,29 @@ impl CarrierService {
     pub async fn suspend(&self, id: Uuid, reason: String) -> AppResult<Carrier> {
         let mut carrier = self.get(id).await?;
         carrier.suspend(&reason);
+        self.repo.save(&carrier).await.map_err(AppError::internal)?;
+        Ok(carrier)
+    }
+
+    /// Apply a partial update — name/contact/sla/rate_cards. Tenant
+    /// isolation is enforced by the caller (the HTTP handler asserts
+    /// claims.tenant_id == carrier.tenant_id before invoking).
+    pub async fn update(&self, id: Uuid, cmd: UpdateCarrierCommand) -> AppResult<Carrier> {
+        let mut carrier = self.get(id).await?;
+        if let Some(v) = cmd.name           { carrier.name = v; }
+        if let Some(v) = cmd.contact_email  { carrier.contact_email = v; }
+        if let Some(v) = cmd.contact_phone  { carrier.contact_phone = Some(v); }
+        if let Some(v) = cmd.api_endpoint   { carrier.api_endpoint = Some(v); }
+        if let Some(v) = cmd.sla {
+            // Clamp + sanity so a slip in the UI can't post 110% targets.
+            carrier.sla = SlaCommitment {
+                on_time_target_pct: v.on_time_target_pct.clamp(0.0, 100.0),
+                max_delivery_days:  v.max_delivery_days.max(1),
+                penalty_per_breach: v.penalty_per_breach.max(0),
+            };
+        }
+        if let Some(v) = cmd.rate_cards { carrier.rate_cards = v; }
+        carrier.updated_at = chrono::Utc::now();
         self.repo.save(&carrier).await.map_err(AppError::internal)?;
         Ok(carrier)
     }
