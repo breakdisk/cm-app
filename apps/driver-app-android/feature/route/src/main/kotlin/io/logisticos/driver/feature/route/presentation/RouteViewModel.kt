@@ -10,6 +10,7 @@ import io.logisticos.driver.core.database.dao.ShiftDao
 import io.logisticos.driver.core.database.entity.TaskEntity
 import io.logisticos.driver.core.database.entity.TaskStatus
 import io.logisticos.driver.feature.route.data.RouteRepository
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
@@ -20,6 +21,7 @@ data class RouteUiState(
     val isLoading: Boolean = false
 )
 
+@OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel(assistedFactory = RouteViewModel.Factory::class)
 class RouteViewModel @AssistedInject constructor(
     private val repo: RouteRepository,
@@ -40,13 +42,21 @@ class RouteViewModel @AssistedInject constructor(
 
     init {
         viewModelScope.launch {
-            // If shiftId is empty, resolve to active shift first
-            val resolvedShiftId = if (shiftId.isEmpty()) {
-                shiftDao.getActiveShiftOnce()?.id ?: ""
+            // Resolve shift_id reactively so a sync that completes *after*
+            // RouteScreen mounts (race when the user lands on Route before
+            // HomeViewModel.syncShift inserts the synthetic shift) still wires
+            // the task observer correctly. Previously this called
+            // getActiveShiftOnce() which returned a snapshot — null at
+            // construction → observed shift_id="" forever, so tasks inserted
+            // a moment later never reached the screen.
+            val shiftIdFlow = if (shiftId.isEmpty()) {
+                shiftDao.getActiveShift().filterNotNull().map { it.id }
             } else {
-                shiftId
+                flowOf(shiftId)
             }
-            repo.observeTasks(resolvedShiftId).collect { tasks ->
+            shiftIdFlow.flatMapLatest { id ->
+                repo.observeTasks(id)
+            }.collect { tasks ->
                 val active = tasks.filter {
                     it.status !in listOf(
                         TaskStatus.COMPLETED,

@@ -38,6 +38,10 @@ pub struct DispatchQueueRow {
     pub last_attempt_at:        Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default)]
     pub queued_at:              Option<chrono::DateTime<chrono::Utc>>,
+    /// NULL while the row is `pending`; set by mark_dispatched when the
+    /// shipment is auto-assigned or manually dispatched. Surfaced so the
+    /// admin console can show "Dispatched" rows distinct from pending.
+    pub dispatched_at:          Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[async_trait]
@@ -45,6 +49,13 @@ pub trait DispatchQueueRepository: Send + Sync {
     async fn upsert(&self, row: &DispatchQueueRow) -> anyhow::Result<()>;
     async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<DispatchQueueRow>>;
     async fn list_pending(&self, tenant_id: Uuid) -> anyhow::Result<Vec<DispatchQueueRow>>;
+    /// Filter by status — pass `Some("dispatched")` for the Dispatched tab,
+    /// `Some("pending")` for the queue, or `None` for the All tab.
+    async fn list_by_status(
+        &self,
+        tenant_id: Uuid,
+        status: Option<&str>,
+    ) -> anyhow::Result<Vec<DispatchQueueRow>>;
     async fn mark_dispatched(&self, shipment_id: Uuid) -> anyhow::Result<()>;
     /// Increment attempt counter and record the reason. Called by the
     /// shipment consumer when quick_dispatch fails so the admin console
@@ -126,22 +137,50 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
     }
 
     async fn list_pending(&self, tenant_id: Uuid) -> anyhow::Result<Vec<DispatchQueueRow>> {
-        let rows = sqlx::query_as::<_, DispatchQueueRow>(
-            "SELECT id, tenant_id, shipment_id, customer_name, customer_phone,
-                    customer_email, tracking_number,
-                    dest_address_line1, dest_city, dest_province, dest_postal_code,
-                    dest_lat, dest_lng,
-                    origin_address_line1, origin_city, origin_province, origin_postal_code,
-                    origin_lat, origin_lng,
-                    cod_amount_cents, special_instructions, service_type, status,
-                    auto_dispatch_attempts, last_dispatch_error, last_attempt_at, queued_at
-             FROM dispatch.dispatch_queue
-             WHERE tenant_id = $1 AND status = 'pending'
-             ORDER BY queued_at ASC",
-        )
-        .bind(tenant_id)
-        .fetch_all(&self.pool)
-        .await?;
+        self.list_by_status(tenant_id, Some("pending")).await
+    }
+
+    async fn list_by_status(
+        &self,
+        tenant_id: Uuid,
+        status: Option<&str>,
+    ) -> anyhow::Result<Vec<DispatchQueueRow>> {
+        let base = "SELECT id, tenant_id, shipment_id, customer_name, customer_phone,
+                           customer_email, tracking_number,
+                           dest_address_line1, dest_city, dest_province, dest_postal_code,
+                           dest_lat, dest_lng,
+                           origin_address_line1, origin_city, origin_province, origin_postal_code,
+                           origin_lat, origin_lng,
+                           cod_amount_cents, special_instructions, service_type, status,
+                           auto_dispatch_attempts, last_dispatch_error, last_attempt_at,
+                           queued_at, dispatched_at
+                    FROM dispatch.dispatch_queue
+                    WHERE tenant_id = $1";
+        // Pending stays FIFO (oldest first) so dispatchers naturally work
+        // the queue head; dispatched/all show newest activity first since
+        // that's the more useful "what just happened" view.
+        let rows = match status {
+            Some("pending") => sqlx::query_as::<_, DispatchQueueRow>(
+                &format!("{base} AND status = $2 ORDER BY queued_at ASC"),
+            )
+            .bind(tenant_id)
+            .bind("pending")
+            .fetch_all(&self.pool)
+            .await?,
+            Some(s) => sqlx::query_as::<_, DispatchQueueRow>(
+                &format!("{base} AND status = $2 ORDER BY COALESCE(dispatched_at, queued_at) DESC"),
+            )
+            .bind(tenant_id)
+            .bind(s)
+            .fetch_all(&self.pool)
+            .await?,
+            None => sqlx::query_as::<_, DispatchQueueRow>(
+                &format!("{base} ORDER BY COALESCE(dispatched_at, queued_at) DESC"),
+            )
+            .bind(tenant_id)
+            .fetch_all(&self.pool)
+            .await?,
+        };
         Ok(rows)
     }
 

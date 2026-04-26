@@ -37,7 +37,10 @@ interface QueueItem {
   auto_dispatch_attempts?: number | null;
   last_dispatch_error?:    string | null;
   last_attempt_at?:        string | null;
+  dispatched_at?:          string | null;
 }
+
+type QueueFilter = "pending" | "dispatched" | "all";
 
 // Project an accepted marketplace booking into a dispatch QueueItem.
 // Per ADR-0013 §Booking flow, accept → "shipment enters dispatch flow".
@@ -87,6 +90,7 @@ function DispatchPageInner() {
   const [selectedDriver,setSelectedDriver]= useState<string>("");
   const [loading,       setLoading]       = useState(false);
   const [error,         setError]         = useState<string | null>(null);
+  const [queueFilter,   setQueueFilter]   = useState<QueueFilter>("pending");
 
   // Deep-link from partner-portal: /admin/dispatch?order=<shipment_id> highlights
   // and scrolls to the matching queue card once data lands.
@@ -97,7 +101,7 @@ function DispatchPageInner() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
-    const queueUrl  = `${API_BASE}/v1/queue`;
+    const queueUrl  = `${API_BASE}/v1/queue?status=${queueFilter}`;
     const driverUrl = `${API_BASE}/v1/drivers`;
     try {
       const [qRes, dRes] = await Promise.all([
@@ -126,7 +130,7 @@ function DispatchPageInner() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [queueFilter]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -173,14 +177,17 @@ function DispatchPageInner() {
   }
 
   // Dedup by shipment_id: real dispatch rows override synthetic marketplace
-  // rows. Once order-intake mints the shipment from the accepted booking, the
-  // real /v1/queue entry will naturally supersede the synthetic one.
+  // rows. Marketplace bookings only join the merged list under the Pending
+  // tab — they're synthetic "awaiting dispatch" rows and have no meaning
+  // under Dispatched/All views, which read straight from the queue table.
   const mergedQueue = useMemo(() => {
     const byId = new Map<string, QueueItem>();
-    marketplaceQueue.forEach((q) => byId.set(q.shipment_id, q));
+    if (queueFilter === "pending") {
+      marketplaceQueue.forEach((q) => byId.set(q.shipment_id, q));
+    }
     queue.forEach((q) => byId.set(q.shipment_id, q));
     return Array.from(byId.values());
-  }, [queue, marketplaceQueue]);
+  }, [queue, marketplaceQueue, queueFilter]);
 
   const mapDrivers = drivers.map((d) => ({
     driver_id:             d.id,
@@ -277,13 +284,38 @@ function DispatchPageInner() {
             </div>
           )}
 
-          {/* Queue */}
+          {/* Queue tabs — Pending = unassigned, Dispatched = already on a
+              driver, All = both (read-only). Auto-dispatched merchant
+              shipments go straight to Dispatched, so without this tab they
+              vanish from the console even though they're alive in the system. */}
+          <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.02] p-1">
+            {(["pending", "dispatched", "all"] as const).map((t) => (
+              <button
+                key={t}
+                onClick={() => setQueueFilter(t)}
+                className={`flex-1 rounded-md px-2 py-1.5 text-[11px] font-mono uppercase tracking-wider transition-colors ${
+                  queueFilter === t
+                    ? "bg-cyan-500/15 text-cyan-300 ring-1 ring-cyan-500/40"
+                    : "text-white/40 hover:text-white/70"
+                }`}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+
           <span className="text-xs font-mono uppercase tracking-widest text-white/30">
-            Pending Queue · {mergedQueue.length}
+            {queueFilter === "pending" ? "Pending Queue" :
+             queueFilter === "dispatched" ? "Dispatched" :
+             "All Shipments"} · {mergedQueue.length}
           </span>
 
           {mergedQueue.length === 0 && !loading && (
-            <p className="text-xs font-mono text-white/25 text-center py-4">No pending shipments</p>
+            <p className="text-xs font-mono text-white/25 text-center py-4">
+              {queueFilter === "pending"    ? "No pending shipments"    :
+               queueFilter === "dispatched" ? "No dispatched shipments" :
+                                              "No shipments"}
+            </p>
           )}
 
           <div className="flex flex-col gap-2 overflow-y-auto max-h-[400px] pr-1">
@@ -308,6 +340,9 @@ function DispatchPageInner() {
                       {item.origin === "marketplace" && (
                         <NeonBadge variant="cyan">Marketplace</NeonBadge>
                       )}
+                      {item.status === "dispatched" && (
+                        <NeonBadge variant="green">Dispatched</NeonBadge>
+                      )}
                       {item.cod_amount_cents && (
                         <NeonBadge variant="amber">COD</NeonBadge>
                       )}
@@ -323,13 +358,24 @@ function DispatchPageInner() {
                       )}
                     </div>
                   </div>
+                  {item.dispatched_at && (
+                    <p className="text-[10px] font-mono text-white/35">
+                      Dispatched {new Date(item.dispatched_at).toLocaleString("en-PH", {
+                        month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+                      })}
+                    </p>
+                  )}
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => handleDispatch(item.shipment_id)}
-                      disabled={dispatching === item.shipment_id}
-                      className="flex-1 rounded-lg border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs font-mono text-purple-300 hover:bg-purple-500/20 transition-colors disabled:opacity-40"
+                      disabled={dispatching === item.shipment_id || item.status === "dispatched"}
+                      className="flex-1 rounded-lg border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs font-mono text-purple-300 hover:bg-purple-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                     >
-                      {dispatching === item.shipment_id ? "Dispatching…" : "⚡ Dispatch"}
+                      {item.status === "dispatched"
+                        ? "✓ Already Dispatched"
+                        : dispatching === item.shipment_id
+                          ? "Dispatching…"
+                          : "⚡ Dispatch"}
                     </button>
                     {item.tracking_number && (
                       // Cross-portal jump to merchant's own view — preserves /merchant basePath.

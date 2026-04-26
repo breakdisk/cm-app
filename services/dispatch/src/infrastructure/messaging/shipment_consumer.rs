@@ -114,6 +114,7 @@ async fn handle_shipment_created(
         last_dispatch_error:    None,
         last_attempt_at:        None,
         queued_at:              None,
+        dispatched_at:          None,
     };
 
     repo.upsert(&row).await?;
