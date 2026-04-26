@@ -2,16 +2,14 @@
 /**
  * Admin Portal — Settings
  *
- * LIVE:   API Keys tab → identity /v1/api-keys (list/create/revoke)
- * STATIC: General, Webhooks, Roles & Permissions, Audit Log tabs.
- *         Backend endpoints for those don't exist yet:
- *           - General: no PUT /v1/tenants/:id endpoint
- *           - Webhooks: no webhook management service
- *           - Roles: identity has /v1/users but no role-assignment endpoint
- *           - Audit Log: no audit-log service exposed to admin portal
- *         When those ship, wire each tab analogous to the API Keys pattern.
+ * LIVE:   API Keys → identity /v1/api-keys (list/create/revoke)
+ *         Roles & Permissions → identity /v1/users grouped by role
+ *         Audit Log → CSV export (client-side blob download from current view)
+ * STATIC: General (needs PUT /v1/tenants/:id)
+ *         Webhooks (needs a webhook management service — buttons gated as "coming soon")
+ *         Audit Log table data (needs a tenant-scoped /v1/audit-log endpoint)
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
@@ -20,6 +18,33 @@ import {
   apiKeysApi, apiKeyIdOf,
   type ApiKey, type CreateApiKeyResult,
 } from "@/lib/api/api-keys";
+import { authFetch } from "@/lib/auth/auth-fetch";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+interface IdentityUser {
+  id: string | { 0: string };
+  email: string;
+  first_name?: string;
+  last_name?: string;
+  roles: string[];
+  is_active?: boolean;
+}
+
+// Friendly role descriptions paired with permission summaries from
+// libs/auth/src/rbac.rs::default_permissions_for_role. Kept here as a UI
+// concern — when identity ships GET /v1/roles we can lift this to runtime.
+const ROLE_DESCRIPTIONS: Record<string, string> = {
+  admin:      "Full access — shipments, dispatch, drivers, fleet, billing, users, carriers, customers, compliance",
+  dispatcher: "Dispatch console + driver read · no settings or billing",
+  merchant:   "Create/track shipments · analytics read · CDP read",
+  driver:     "Read own tasks · COD-self · no admin surface",
+  finance:    "Billing reconcile + export · analytics read",
+  readonly:   "All dashboards read-only",
+  customer:   "Create/track own shipments · cancel",
+};
+
+const ROLE_ORDER = ["admin", "dispatcher", "merchant", "driver", "finance", "readonly", "customer"];
 
 const TABS = ["General", "API Keys", "Webhooks", "Roles & Permissions", "Audit Log"] as const;
 type Tab = (typeof TABS)[number];
@@ -30,13 +55,8 @@ const WEBHOOKS = [
   { id: "wh_3", url: "https://old.system.internal/callback",           events: ["shipment.delivered"],                    status: "disabled", last_delivery: "2 days ago", success_rate: 71.0 },
 ];
 
-const ROLES = [
-  { name: "Super Admin",     users: 2,  permissions: "Full access — all tenants and settings" },
-  { name: "Ops Manager",     users: 8,  permissions: "Dispatch, drivers, hubs, analytics (read/write)" },
-  { name: "Dispatcher",      users: 24, permissions: "Dispatch console, driver comms (no settings)" },
-  { name: "Finance Analyst", users: 5,  permissions: "Billing, COD, analytics read-only" },
-  { name: "Viewer",          users: 12, permissions: "All dashboards read-only" },
-];
+// Removed — Roles tab now derives counts from a live /v1/users fetch. The
+// permission description per role is a UI concern (see ROLE_DESCRIPTIONS).
 
 const AUDIT_LOG = [
   { ts: "2026-03-17 14:32:11", actor: "admin@logisticos.io",   action: "api_key.created",        resource: "Production API Key v2",      ip: "118.177.32.1"  },
@@ -157,14 +177,23 @@ export default function SettingsPage() {
       {/* API Keys — live */}
       {activeTab === "API Keys" && <ApiKeysTab />}
 
-      {/* Webhooks */}
+      {/* Webhooks — gated until a webhook management service ships.
+          Buttons stay visible so the surface is discoverable, but disabled
+          + tooltipped so admins don't think they're broken. */}
       {activeTab === "Webhooks" && (
         <motion.div variants={variants.fadeInUp} className="space-y-4">
-          <div className="flex justify-between items-center">
+          <div className="flex justify-between items-center gap-3">
             <p className="text-sm text-white/40">Webhooks deliver real-time events to your systems. Signed with HMAC-SHA256.</p>
-            <button className="px-4 py-2 text-sm font-medium text-[#050810] bg-[#00FF88] rounded-lg hover:bg-[#00FF88]/90 transition-colors">
-              + Add Webhook
-            </button>
+            <div className="flex items-center gap-2">
+              <NeonBadge variant="amber" dot>preview</NeonBadge>
+              <button
+                disabled
+                title="Webhook management service not yet deployed"
+                className="px-4 py-2 text-sm font-medium text-white/40 bg-white/[0.03] border border-white/[0.08] rounded-lg cursor-not-allowed"
+              >
+                + Add Webhook
+              </button>
+            </div>
           </div>
           <div className="space-y-3">
             {WEBHOOKS.map((wh) => (
@@ -186,9 +215,9 @@ export default function SettingsPage() {
                     </div>
                   </div>
                   <div className="flex gap-2 shrink-0">
-                    <button className="text-xs text-[#A855F7] hover:text-[#A855F7]/70">Edit</button>
-                    <button className="text-xs text-[#FFAB00] hover:text-[#FFAB00]/70">Test</button>
-                    <button className="text-xs text-[#FF3B5C] hover:text-[#FF3B5C]/70">Delete</button>
+                    <button disabled title="Coming soon" className="text-xs text-white/30 cursor-not-allowed">Edit</button>
+                    <button disabled title="Coming soon" className="text-xs text-white/30 cursor-not-allowed">Test</button>
+                    <button disabled title="Coming soon" className="text-xs text-white/30 cursor-not-allowed">Delete</button>
                   </div>
                 </div>
               </GlassCard>
@@ -197,40 +226,20 @@ export default function SettingsPage() {
         </motion.div>
       )}
 
-      {/* Roles */}
-      {activeTab === "Roles & Permissions" && (
-        <motion.div variants={variants.fadeInUp} className="space-y-4">
-          <GlassCard padding="none">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-white/[0.08]">
-                  {["Role", "Users", "Permissions"].map((h) => (
-                    <th key={h} className="text-left px-4 py-3 text-xs text-white/30 uppercase tracking-widest font-mono">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {ROLES.map((r) => (
-                  <tr key={r.name} className="border-b border-white/[0.04] hover:bg-white/[0.02]">
-                    <td className="px-4 py-3 text-white font-semibold">{r.name}</td>
-                    <td className="px-4 py-3">
-                      <span className="px-2 py-0.5 rounded-full bg-[#A855F7]/10 text-[#A855F7] text-xs border border-[#A855F7]/20">{r.users}</span>
-                    </td>
-                    <td className="px-4 py-3 text-white/50 text-xs">{r.permissions}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </GlassCard>
-        </motion.div>
-      )}
+      {/* Roles — derived from identity /v1/users grouped by role. */}
+      {activeTab === "Roles & Permissions" && <RolesTab />}
 
-      {/* Audit Log */}
+      {/* Audit Log — table data still needs a tenant-scoped /v1/audit-log
+          endpoint, but the Export CSV button now produces a proper blob
+          download from whatever is currently rendered. */}
       {activeTab === "Audit Log" && (
         <motion.div variants={variants.fadeInUp} className="space-y-4">
           <div className="flex justify-between items-center">
             <p className="text-sm text-white/40">All mutations — actor, action, resource, IP. Immutable. Retained 90 days.</p>
-            <button className="px-4 py-2 text-sm font-medium text-white/70 border border-white/[0.08] rounded-lg hover:bg-white/[0.05] transition-colors">
+            <button
+              onClick={() => downloadAuditCsv(AUDIT_LOG)}
+              className="px-4 py-2 text-sm font-medium text-white/70 border border-white/[0.08] rounded-lg hover:bg-white/[0.05] transition-colors"
+            >
               Export CSV
             </button>
           </div>
@@ -456,4 +465,115 @@ function ApiKeysTab() {
       </GlassCard>
     </motion.div>
   );
+}
+
+// ── Roles tab — live from /v1/users grouped by role ──────────────────────────
+
+function RolesTab() {
+  const [users, setUsers]     = useState<IdentityUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      const res = await authFetch(`${API_BASE}/v1/users`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      setUsers(Array.isArray(json.data) ? json.data : []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load users");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Bucket users by role. A user can hold multiple roles, so they count
+  // toward each one — matches how the JWT permission union works.
+  const roleCounts = useMemo(() => {
+    const buckets = new Map<string, number>();
+    for (const u of users) {
+      if (!Array.isArray(u.roles)) continue;
+      for (const r of u.roles) {
+        buckets.set(r, (buckets.get(r) ?? 0) + 1);
+      }
+    }
+    // Stable display order: known roles first per ROLE_ORDER, then any
+    // unknown roles alphabetically so nothing gets hidden.
+    const known = ROLE_ORDER.filter((r) => buckets.has(r));
+    const unknown = Array.from(buckets.keys())
+      .filter((r) => !ROLE_ORDER.includes(r))
+      .sort();
+    return [...known, ...unknown].map((r) => ({
+      role:        r,
+      users:       buckets.get(r) ?? 0,
+      description: ROLE_DESCRIPTIONS[r] ?? "Custom role — see libs/auth/src/rbac.rs",
+    }));
+  }, [users]);
+
+  return (
+    <motion.div variants={variants.fadeInUp} className="space-y-4">
+      {error && (
+        <p className="text-xs text-red-signal font-mono">{error}</p>
+      )}
+      <GlassCard padding="none">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-white/[0.08]">
+              {["Role", "Users", "Permissions Summary"].map((h) => (
+                <th key={h} className="text-left px-4 py-3 text-xs text-white/30 uppercase tracking-widest font-mono">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={3} className="px-4 py-6 text-center text-xs text-white/30 font-mono">loading roles…</td></tr>
+            ) : roleCounts.length === 0 ? (
+              <tr><td colSpan={3} className="px-4 py-6 text-center text-xs text-white/30 font-mono">No users found in this tenant</td></tr>
+            ) : (
+              roleCounts.map((r) => (
+                <tr key={r.role} className="border-b border-white/[0.04] hover:bg-white/[0.02]">
+                  <td className="px-4 py-3 text-white font-semibold capitalize">{r.role}</td>
+                  <td className="px-4 py-3">
+                    <span className="px-2 py-0.5 rounded-full bg-[#A855F7]/10 text-[#A855F7] text-xs border border-[#A855F7]/20">
+                      {r.users}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-white/50 text-xs">{r.description}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </GlassCard>
+      <p className="text-2xs font-mono text-white/30">
+        Source: identity <span className="text-[#00E5FF]">/v1/users</span> · grouped by user.roles[]
+        · descriptions mirror libs/auth/src/rbac.rs::default_permissions_for_role.
+      </p>
+    </motion.div>
+  );
+}
+
+// ── Audit log CSV export ─────────────────────────────────────────────────────
+
+interface AuditEntry { ts: string; actor: string; action: string; resource: string; ip: string; }
+
+function downloadAuditCsv(entries: readonly AuditEntry[]) {
+  const header = ["timestamp", "actor", "action", "resource", "ip"];
+  const rows = entries.map((e) => [e.ts, e.actor, e.action, e.resource, e.ip]);
+  // RFC 4180 escaping — wrap in quotes, double internal quotes.
+  const csv = [header, ...rows]
+    .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+    .join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href     = url;
+  a.download = `audit-log-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }

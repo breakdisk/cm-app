@@ -62,12 +62,33 @@ export default function CompliancePage() {
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  function handleApprove(docId: string) {
+  // Approve/reject were drag-only on local state — the panel buttons looked
+  // like they worked but the server-side compliance.documents row stayed
+  // `submitted` forever. Now they actually hit POST /v1/compliance/admin/
+  // documents/:id/{approve|reject} and refresh the queue + profile list so
+  // the KPI strip reflects the new status (e.g. flips a profile to compliant).
+  async function handleApprove(docId: string) {
+    // Optimistic remove so the queue feels snappy; refresh re-syncs in case
+    // the server flips additional state (profile.overall_status).
     setQueue((prev) => prev.filter((d) => d.id !== docId));
+    try {
+      await approveDocument(docId);
+    } catch {
+      // Refresh to restore the row if the call failed.
+    } finally {
+      refresh();
+    }
   }
 
-  function handleReject(docId: string, _reason: string) {
+  async function handleReject(docId: string, reason: string) {
     setQueue((prev) => prev.filter((d) => d.id !== docId));
+    try {
+      await rejectDocument(docId, reason);
+    } catch {
+      // refresh restores the row if the call failed.
+    } finally {
+      refresh();
+    }
   }
 
   return (
