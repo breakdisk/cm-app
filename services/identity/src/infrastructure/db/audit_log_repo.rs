@@ -1,4 +1,4 @@
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 pub struct NewAuditEntry {
@@ -50,18 +50,26 @@ impl PgAuditLogRepository {
         tenant_id: Uuid,
         limit: i64,
     ) -> anyhow::Result<Vec<AuditEntry>> {
-        let rows = sqlx::query_as!(
-            AuditEntry,
+        let rows = sqlx::query(
             r#"SELECT id, tenant_id, actor_id, actor_email, action, resource, ip, created_at
                FROM identity.tenant_audit_log
                WHERE tenant_id = $1
                ORDER BY created_at DESC
                LIMIT $2"#,
-            tenant_id,
-            limit,
         )
+        .bind(tenant_id)
+        .bind(limit)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows)
+        Ok(rows.iter().map(|r| AuditEntry {
+            id:          r.get("id"),
+            tenant_id:   r.get("tenant_id"),
+            actor_id:    r.get("actor_id"),
+            actor_email: r.get("actor_email"),
+            action:      r.get("action"),
+            resource:    r.get("resource"),
+            ip:          r.get("ip"),
+            created_at:  r.get("created_at"),
+        }).collect())
     }
 }
