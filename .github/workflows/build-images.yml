@@ -94,6 +94,7 @@ jobs:
             business-logic:     'services/business-logic/**'
             ai-layer:           'services/ai-layer/**'
             compliance:         'services/compliance/**'
+            webhooks:           'services/webhooks/**'
             admin-portal:       'apps/admin-portal/**'
             merchant-portal:    'apps/merchant-portal/**'
             customer-portal:    'apps/customer-portal/**'
@@ -134,6 +135,7 @@ jobs:
           BUSINESS_LOGIC:      ${{ steps.per_image.outputs.business-logic }}
           AI_LAYER:            ${{ steps.per_image.outputs.ai-layer }}
           COMPLIANCE:          ${{ steps.per_image.outputs.compliance }}
+          WEBHOOKS:            ${{ steps.per_image.outputs.webhooks }}
           ADMIN_PORTAL:        ${{ steps.per_image.outputs.admin-portal }}
           MERCHANT_PORTAL:     ${{ steps.per_image.outputs.merchant-portal }}
           CUSTOMER_PORTAL:     ${{ steps.per_image.outputs.customer-portal }}
@@ -144,7 +146,7 @@ jobs:
           services=()
           portals=()
           if [ "$BUILD_ALL" = "true" ]; then
-            services=('"api-gateway"' '"identity"' '"cdp"' '"engagement"' '"order-intake"' '"dispatch"' '"driver-ops"' '"delivery-experience"' '"fleet"' '"hub-ops"' '"carrier"' '"pod"' '"payments"' '"analytics"' '"marketing"' '"business-logic"' '"ai-layer"' '"compliance"')
+            services=('"api-gateway"' '"identity"' '"cdp"' '"engagement"' '"order-intake"' '"dispatch"' '"driver-ops"' '"delivery-experience"' '"fleet"' '"hub-ops"' '"carrier"' '"pod"' '"payments"' '"analytics"' '"marketing"' '"business-logic"' '"ai-layer"' '"compliance"' '"webhooks"')
             portals=('"admin-portal"' '"merchant-portal"' '"customer-portal"' '"partner-portal"' '"landing"')
           else
             [ "$API_GATEWAY"         = "true" ] && services+=('"api-gateway"') || true
@@ -165,6 +167,7 @@ jobs:
             [ "$BUSINESS_LOGIC"      = "true" ] && services+=('"business-logic"') || true
             [ "$AI_LAYER"            = "true" ] && services+=('"ai-layer"') || true
             [ "$COMPLIANCE"          = "true" ] && services+=('"compliance"') || true
+            [ "$WEBHOOKS"            = "true" ] && services+=('"webhooks"') || true
             [ "$ADMIN_PORTAL"        = "true" ] && portals+=('"admin-portal"') || true
             [ "$MERCHANT_PORTAL"     = "true" ] && portals+=('"merchant-portal"') || true
             [ "$CUSTOMER_PORTAL"     = "true" ] && portals+=('"customer-portal"') || true
