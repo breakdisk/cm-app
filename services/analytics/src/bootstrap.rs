@@ -2,6 +2,8 @@ use std::{net::SocketAddr, sync::Arc};
 use rdkafka::{consumer::StreamConsumer, ClientConfig};
 use sqlx::postgres::PgPoolOptions;
 
+use anyhow::Context;
+use logisticos_auth::jwt::JwtService;
 use crate::{
     api::http,
     application::{handlers, queries::QueryService},
@@ -50,7 +52,11 @@ pub async fn run() -> anyhow::Result<()> {
         handlers::run_consumer(consumer, consumer_db).await;
     });
 
-    let state = AppState { query_svc };
+    let jwt_secret = std::env::var("AUTH__JWT_SECRET")
+        .context("AUTH__JWT_SECRET env var not set")?;
+    let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
+
+    let state = AppState { query_svc, jwt: Arc::clone(&jwt) };
 
     use tower_http::cors::CorsLayer;
     use axum::http::{HeaderName, HeaderValue, Method};
@@ -72,6 +78,7 @@ pub async fn run() -> anyhow::Result<()> {
         ]);
 
     let app = http::router()
+        .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state);
