@@ -18,6 +18,7 @@ use crate::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/carriers",                  get(list_carriers).post(onboard_carrier))
+        .route("/v1/carriers/me",               get(get_my_carrier))
         .route("/v1/carriers/rate-shop",        get(rate_shop))
         .route("/v1/carriers/:id",              get(get_carrier).put(update_carrier))
         .route("/v1/carriers/:id/activate",     post(activate_carrier))
@@ -50,6 +51,20 @@ async fn onboard_carrier(
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let carrier = state.carrier_svc.onboard(&tenant_id, cmd).await?;
     Ok::<_, AppError>((StatusCode::CREATED, Json(carrier)))
+}
+
+/// GET /v1/carriers/me — returns the carrier whose contact_email matches
+/// the authenticated user's JWT email. Used by the partner portal so it
+/// doesn't need to know its own carrier UUID.
+async fn get_my_carrier(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+) -> impl IntoResponse {
+    use logisticos_types::TenantId;
+    claims.require_permission(permissions::CARRIERS_READ)?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let carrier = state.carrier_svc.get_by_email(&tenant_id, &claims.email).await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(carrier)))
 }
 
 async fn get_carrier(

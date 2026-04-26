@@ -10,8 +10,7 @@ import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { RefreshCw, Save } from "lucide-react";
 import { variants } from "@/lib/design-system/tokens";
-import { carriersApi, fmtPhp, type Carrier } from "@/lib/api/carriers";
-import { getCurrentPartnerId } from "@/lib/api/partner-identity";
+import { carriersApi, carrierIdOf, fmtPhp, type Carrier } from "@/lib/api/carriers";
 
 function gradeBadge(grade: string): "green" | "cyan" | "amber" | "red" {
   switch (grade) {
@@ -54,7 +53,7 @@ export default function PartnerSettingsPage() {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const c = await carriersApi.get(getCurrentPartnerId());
+      const c = await carriersApi.me();
       setCarrier(c);
       setForm({
         name:               c.name,
@@ -80,7 +79,7 @@ export default function PartnerSettingsPage() {
     setSaving(true);
     setError(null);
     try {
-      const updated = await carriersApi.update(getCurrentPartnerId(), {
+      const updated = await carriersApi.update(carrierIdOf(carrier), {
         name:          form.name,
         contact_email: form.contact_email,
         contact_phone: form.contact_phone || undefined,

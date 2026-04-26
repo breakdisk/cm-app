@@ -113,6 +113,16 @@ impl CarrierService {
             .ok_or_else(|| AppError::NotFound { resource: "Carrier", id: id.to_string() })
     }
 
+    /// Look up the carrier whose contact_email matches the authenticated user's
+    /// email — used by the partner portal's GET /v1/carriers/me endpoint.
+    pub async fn get_by_email(&self, tenant_id: &TenantId, email: &str) -> AppResult<Carrier> {
+        self.repo
+            .find_by_contact_email(tenant_id, email)
+            .await
+            .map_err(AppError::internal)?
+            .ok_or_else(|| AppError::NotFound { resource: "Carrier", id: email.to_string() })
+    }
+
     pub async fn list(&self, tenant_id: &TenantId, limit: i64, offset: i64) -> AppResult<Vec<Carrier>> {
         self.repo.list(tenant_id, limit.clamp(1, 100), offset.max(0)).await.map_err(AppError::internal)
     }
