@@ -1,5 +1,7 @@
 use std::{net::SocketAddr, sync::Arc};
+use anyhow::Context;
 use sqlx::postgres::PgPoolOptions;
+use logisticos_auth::jwt::JwtService;
 use crate::{api::http, application::services::CarrierService, config::Config, infrastructure::db::PgCarrierRepository, AppState};
 
 pub async fn run() -> anyhow::Result<()> {
@@ -28,9 +30,17 @@ pub async fn run() -> anyhow::Result<()> {
     let carrier_repo = Arc::new(PgCarrierRepository::new(pool));
     let carrier_svc  = Arc::new(CarrierService::new(carrier_repo));
 
-    let state = AppState { carrier_svc };
+    let jwt_secret = std::env::var("AUTH__JWT_SECRET")
+        .context("AUTH__JWT_SECRET env var not set")?;
+    let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
 
+    let state = AppState { carrier_svc, jwt: Arc::clone(&jwt) };
+
+    // Mount require_auth ahead of the carrier routes so AuthClaims extracts
+    // properly. Without this layer every handler 500s with
+    // "Auth middleware not mounted" — see libs/auth/src/middleware.rs.
     let app = http::router()
+        .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state);
 
