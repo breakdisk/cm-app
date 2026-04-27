@@ -22,6 +22,26 @@ export type BusBookingStatus =
   | "cancelled"
   | "disputed";
 
+export interface BusReceipt {
+  id:                   string;
+  booking_id:           string;
+  receipt_no:           string;
+  awb:                  string;
+  partner_display_name: string;
+  issued_by_name:       string;
+  merchant_display:     string;
+  consumer_display:     string;
+  pickup_label:         string;
+  dropoff_label:        string;
+  pickup_at:            string;
+  cargo_weight_kg:      number;
+  size_class:           BusSizeClass;
+  quoted_price_cents:   number;
+  issued_at:            string;
+  signed_by?:           string;
+  notes?:               string;
+}
+
 export type BusSizeClass =
   | "motorcycle"
   | "sedan"
@@ -102,4 +122,27 @@ export function subscribeToBus(cb: () => void): () => void {
   };
   window.addEventListener("storage", handler);
   return () => window.removeEventListener("storage", handler);
+}
+
+// ── Receipt bus ───────────────────────────────────────────────────────────────
+// Partner portal writes receipts; admin portal reads them for oversight.
+// Production: receipts live in the marketplace service DB and are fetched
+// via GET /v1/marketplace/receipts/by-booking/{id}.
+
+const RECEIPT_KEY = "cm:marketplace:receipts:v1";
+
+function safeParseReceipts(raw: string | null): BusReceipt[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as BusReceipt[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function findReceiptByBookingId(bookingId: string): BusReceipt | null {
+  if (typeof window === "undefined") return null;
+  const receipts = safeParseReceipts(window.localStorage.getItem(RECEIPT_KEY));
+  return receipts.find((r) => r.booking_id === bookingId) ?? null;
 }
