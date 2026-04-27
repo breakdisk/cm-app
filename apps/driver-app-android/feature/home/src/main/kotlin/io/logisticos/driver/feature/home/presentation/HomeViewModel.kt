@@ -3,6 +3,7 @@ package io.logisticos.driver.feature.home.presentation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.logisticos.driver.core.common.TaskSyncBus
 import io.logisticos.driver.core.database.dao.SyncQueueDao
 import io.logisticos.driver.core.database.entity.ShiftEntity
 import io.logisticos.driver.core.location.LocationRepository
@@ -67,6 +68,7 @@ class HomeViewModel @Inject constructor(
         syncShift()
         startPolling()
         autoGoOnline()
+        collectSyncBus()
     }
 
     /** Called from HomeScreen when the OS reports a location-permission denial.
@@ -79,9 +81,15 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             while (true) {
                 delay(30_000L)
-                if (_uiState.value.isOnline) {
-                    runCatching { repo.syncShift() }
-                }
+                runCatching { repo.syncShift() }
+            }
+        }
+    }
+
+    private fun collectSyncBus() {
+        viewModelScope.launch {
+            TaskSyncBus.events.collect {
+                runCatching { repo.syncShift() }
             }
         }
     }

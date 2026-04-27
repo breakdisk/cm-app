@@ -8,6 +8,7 @@ import androidx.core.app.NotificationCompat
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import dagger.hilt.android.AndroidEntryPoint
+import io.logisticos.driver.core.common.TaskSyncBus
 import io.logisticos.driver.feature.notifications.data.NotificationRepository
 import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
@@ -27,6 +28,9 @@ class DriverMessagingService : FirebaseMessagingService() {
         val body = message.notification?.body ?: message.data["body"] ?: ""
 
         notificationRepo.saveNotification(type = type, title = title, body = body)
+        if (type == "dispatch_message" || type == "task_assigned") {
+            TaskSyncBus.requestSync()
+        }
         showSystemNotification(title, body, type)
     }
 
