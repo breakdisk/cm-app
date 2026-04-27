@@ -1,0 +1,27 @@
+# Auto detect text files and normalize line endings to LF
+* text=auto
+
+# Shell scripts and executable files must use LF
+*.sh eol=lf
+gradlew eol=lf
+*.bash eol=lf
+*.zsh eol=lf
+
+# Batch files can use CRLF
+*.bat eol=crlf
+*.cmd eol=crlf
+
+# Ensure binary files are not modified
+*.jar binary
+*.apk binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.mov binary
+*.mp4 binary
+*.mp3 binary
+*.gz binary
+*.zip binary
+*.7z binary
