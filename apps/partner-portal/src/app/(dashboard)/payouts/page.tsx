@@ -1,10 +1,10 @@
 "use client";
 /**
  * Partner Portal — Payouts Page
- * Carrier payout history, pending remittances, COD reconciliation.
+ * Live wallet balance, withdrawal modal, transaction history, and invoice table.
+ * Backed by paymentsApi (wallet, transactions, invoices).
  */
-import { useState, useEffect, useCallback } from "react";
-import { useRosterEvents } from "@/hooks/useRosterEvents";
+import { useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
@@ -13,37 +13,16 @@ import { LiveMetric } from "@/components/ui/live-metric";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
-import { CreditCard, Download, CheckCircle2, Clock, AlertCircle } from "lucide-react";
-import { authFetch } from "@/lib/auth/auth-fetch";
+import { CreditCard, Download, X } from "lucide-react";
+import {
+  paymentsApi,
+  type Wallet,
+  type WalletTransaction,
+  type Invoice,
+  type InvoiceStatus,
+} from "@/lib/api/payments";
 
-// ── API helpers ────────────────────────────────────────────────────────────────
-
-const PAYMENTS_URL = process.env.NEXT_PUBLIC_PAYMENTS_URL ?? "http://localhost:8008";
-
-async function fetchInvoices() {
-  try {
-    const res = await authFetch(`${PAYMENTS_URL}/v1/invoices`);
-    if (!res.ok) return null;
-    const json = await res.json();
-    return json.data ?? json.invoices ?? null;
-  } catch {
-    return null;
-  }
-}
-
-async function fetchWallet() {
-  try {
-    const res = await authFetch(`${PAYMENTS_URL}/v1/wallet`);
-    if (!res.ok) return null;
-    const json = await res.json();
-    return json.data ?? null;
-  } catch {
-    return null;
-  }
-}
-
-// ── Mock data ──────────────────────────────────────────────────────────────────
-
+// ── Static chart data (no backend endpoint for monthly breakdown) ─────────────
 const MONTHLY_PAYOUTS = [
   { month: "Oct", base: 310000, cod: 190000, bonus: 12000 },
   { month: "Nov", base: 328000, cod: 212000, bonus: 18000 },
@@ -53,190 +32,318 @@ const MONTHLY_PAYOUTS = [
   { month: "Mar", base: 421000, cod: 284000, bonus: 22000 },
 ];
 
-type PayoutStatus = "paid" | "processing" | "pending" | "disputed";
-
-interface PayoutRecord {
-  id: string;
-  period: string;
-  deliveries: number;
-  base_rate: number;
-  cod_remittance: number;
-  bonus: number;
-  total: number;
-  status: PayoutStatus;
-  paid_date?: string;
-}
-
-const PAYOUT_HISTORY_DEFAULT: PayoutRecord[] = [
-  { id: "P-2026-03", period: "March 2026 (MTD)", deliveries: 8420, base_rate: 280000, cod_remittance: 284000, bonus: 22000, total: 421000, status: "processing" },
-  { id: "P-2026-02", period: "February 2026",     deliveries: 7840, base_rate: 241000, cod_remittance: 241000, bonus: 14000, total: 362000, status: "paid",       paid_date: "Mar 5, 2026" },
-  { id: "P-2026-01", period: "January 2026",       deliveries: 7120, base_rate: 218000, cod_remittance: 218000, bonus: 8000,  total: 335000, status: "paid",       paid_date: "Feb 5, 2026" },
-  { id: "P-2025-12", period: "December 2025",      deliveries: 9840, base_rate: 268000, cod_remittance: 268000, bonus: 42000, total: 401000, status: "paid",       paid_date: "Jan 5, 2026" },
-  { id: "P-2025-11", period: "November 2025",      deliveries: 7320, base_rate: 212000, cod_remittance: 212000, bonus: 18000, total: 328000, status: "paid",       paid_date: "Dec 5, 2025" },
-];
-
-const STATUS_CONFIG: Record<PayoutStatus, { label: string; variant: "green" | "cyan" | "amber" | "red"; icon: React.ReactNode }> = {
-  paid:       { label: "Paid",        variant: "green", icon: <CheckCircle2 size={11} /> },
-  processing: { label: "Processing",  variant: "amber", icon: <Clock size={11} />        },
-  pending:    { label: "Pending",     variant: "cyan",  icon: <Clock size={11} />        },
-  disputed:   { label: "Disputed",    variant: "red",   icon: <AlertCircle size={11} /> },
+const STATUS_VARIANT: Record<InvoiceStatus, { label: string; variant: "green" | "amber" | "red" | "cyan" | "muted" }> = {
+  paid:      { label: "Paid",      variant: "green" },
+  issued:    { label: "Pending",   variant: "amber" },
+  overdue:   { label: "Overdue",   variant: "red"   },
+  draft:     { label: "Draft",     variant: "cyan"  },
+  cancelled: { label: "Cancelled", variant: "muted" },
 };
 
-export default function PayoutsPage() {
-  const [payoutHistory, setPayoutHistory] = useState<PayoutRecord[]>(PAYOUT_HISTORY_DEFAULT);
-  const [pendingPayout, setPendingPayout] = useState<number>(62000);
+// ── Withdrawal modal ──────────────────────────────────────────────────────────
+function WithdrawModal({
+  wallet,
+  onClose,
+  onSuccess,
+}: {
+  wallet: Wallet;
+  onClose: () => void;
+  onSuccess: (updated: Wallet) => void;
+}) {
+  const [amount, setAmount]   = useState("");
+  const [saving, setSaving]   = useState(false);
+  const [error,  setError]    = useState<string | null>(null);
 
-  const loadData = useCallback(async () => {
-    const [invoices, wallet] = await Promise.all([fetchInvoices(), fetchWallet()]);
-
-    if (invoices && Array.isArray(invoices) && invoices.length > 0) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const mapped: PayoutRecord[] = invoices.map((inv: any) => ({
-        id:             inv.id,
-        period:         inv.period ?? inv.billing_period ?? "—",
-        deliveries:     inv.deliveries_count ?? inv.deliveries ?? 0,
-        base_rate:      inv.base_amount ?? inv.base_rate ?? 0,
-        cod_remittance: inv.cod_amount ?? 0,
-        bonus:          inv.bonus_amount ?? inv.bonus ?? 0,
-        total:          inv.total_amount ?? inv.total ?? 0,
-        status:         inv.status ?? "pending",
-        paid_date:      inv.paid_date ?? inv.paid_at ?? undefined,
-      }));
-      setPayoutHistory(mapped);
+  async function handleSubmit() {
+    const php = parseFloat(amount);
+    if (Number.isNaN(php) || php <= 0) {
+      setError("Enter a valid amount");
+      return;
     }
+    if (php > wallet.available_php) {
+      setError(`Exceeds available balance of ₱${wallet.available_php.toLocaleString()}`);
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const updated = await paymentsApi.withdraw({ amount_php: php });
+      onSuccess(updated);
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Withdrawal failed");
+    } finally {
+      setSaving(false);
+    }
+  }
 
-    if (wallet) {
-      const balance = wallet.pending_balance ?? wallet.balance ?? wallet.pending_payout ?? null;
-      if (balance !== null) {
-        setPendingPayout(Number(balance));
-      }
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="w-full max-w-sm rounded-xl border border-glass-border bg-[#0A0E1A] p-6 shadow-xl">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-heading text-sm font-semibold text-white">Request Withdrawal</h3>
+          <button onClick={onClose} className="text-white/40 hover:text-white transition-colors">
+            <X size={16} />
+          </button>
+        </div>
+        <p className="text-xs font-mono text-white/40 mb-1">
+          Available: ₱{wallet.available_php.toLocaleString()}
+        </p>
+        <input
+          type="number"
+          min={1}
+          max={wallet.available_php}
+          placeholder="Amount in ₱"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+          className="w-full rounded-md border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white font-mono placeholder-white/20 focus:border-green-signal/50 focus:outline-none mb-3"
+        />
+        {error && (
+          <p className="text-xs text-red-signal font-mono mb-3">{error}</p>
+        )}
+        <div className="flex gap-2">
+          <button
+            onClick={onClose}
+            className="flex-1 rounded-lg border border-glass-border px-3 py-2 text-xs text-white/60 hover:text-white transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSubmit}
+            disabled={saving}
+            className="flex-1 rounded-lg bg-green-surface border border-green-signal/30 px-3 py-2 text-xs font-medium text-green-signal hover:border-green-signal/60 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {saving ? "Submitting…" : "Confirm"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Page ─────────────────────────────────────────────────────────────────────
+export default function PayoutsPage() {
+  const [wallet,       setWallet]       = useState<Wallet | null>(null);
+  const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
+  const [invoices,     setInvoices]     = useState<Invoice[]>([]);
+  const [loading,      setLoading]      = useState(true);
+  const [error,        setError]        = useState<string | null>(null);
+  const [showWithdraw, setShowWithdraw] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [w, txs, invs] = await Promise.all([
+        paymentsApi.getWallet(),
+        paymentsApi.getTransactions(),
+        paymentsApi.getInvoices(),
+      ]);
+      setWallet(w);
+      setTransactions(txs);
+      setInvoices(invs);
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Failed to load payout data");
+    } finally {
+      setLoading(false);
     }
   }, []);
 
-  useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => { load(); }, [load]);
 
-  // Payout balances move when a driver completes a delivery (commission accrual)
-  // or when COD is remitted. Both correlate with driver status flips on the
-  // roster channel — so we opportunistically refetch there, with a 60s poll backstop.
-  useRosterEvents((event) => {
-    if (event.type === "status_changed") loadData();
-  });
-  useEffect(() => {
-    const id = setInterval(loadData, 60_000);
-    return () => clearInterval(id);
-  }, [loadData]);
+  const pendingTotal = invoices
+    .filter(i => i.status === "issued" || i.status === "overdue")
+    .reduce((s, i) => s + i.total_php, 0);
 
-  const KPI = [
-    { label: "Payout MTD",        value: 421000,        trend: +14.2, color: "green"  as const, format: "currency" as const },
-    { label: "COD Remitted",      value: 284000,        trend: +9.8,  color: "amber"  as const, format: "currency" as const },
-    { label: "Pending Payout",    value: pendingPayout, trend: -4.1,  color: "cyan"   as const, format: "currency" as const },
-    { label: "Deliveries Billed", value: 8420,          trend: +14.2, color: "purple" as const, format: "number"  as const },
-  ];
+  const paidMtd = invoices
+    .filter(i => {
+      if (i.status !== "paid" || !i.paid_at) return false;
+      const d = new Date(i.paid_at);
+      const now = new Date();
+      return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+    })
+    .reduce((s, i) => s + i.total_php, 0);
 
   return (
-    <motion.div
-      variants={variants.staggerContainer}
-      initial="hidden"
-      animate="visible"
-      className="flex flex-col gap-5 p-6"
-    >
-      {/* Header */}
-      <motion.div variants={variants.fadeInUp} className="flex items-center justify-between">
-        <div>
-          <h1 className="font-heading text-2xl font-bold text-white flex items-center gap-2">
-            <CreditCard size={20} className="text-green-signal" />
-            Payouts
-          </h1>
-          <p className="text-sm text-white/40 font-mono mt-0.5">FastLine Couriers · Payout schedule: 5th of each month</p>
-        </div>
-        <button className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors">
-          <Download size={12} /> Export CSV
-        </button>
-      </motion.div>
+    <>
+      {showWithdraw && wallet && (
+        <WithdrawModal
+          wallet={wallet}
+          onClose={() => setShowWithdraw(false)}
+          onSuccess={(updated) => {
+            setWallet(updated);
+            setShowWithdraw(false);
+          }}
+        />
+      )}
 
-      {/* KPI row */}
-      <motion.div variants={variants.fadeInUp} className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {KPI.map((m) => (
-          <GlassCard key={m.label} size="sm" glow={m.color} accent>
-            <LiveMetric label={m.label} value={m.value} trend={m.trend} color={m.color} format={m.format} />
+      <motion.div
+        variants={variants.staggerContainer}
+        initial="hidden"
+        animate="visible"
+        className="flex flex-col gap-5 p-6"
+      >
+        {/* Header */}
+        <motion.div variants={variants.fadeInUp} className="flex items-center justify-between">
+          <div>
+            <h1 className="font-heading text-2xl font-bold text-white flex items-center gap-2">
+              <CreditCard size={20} className="text-green-signal" />
+              Payouts
+            </h1>
+            <p className="text-sm text-white/40 font-mono mt-0.5">Payout schedule: 5th of each month</p>
+          </div>
+          <button className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors">
+            <Download size={12} /> Export CSV
+          </button>
+        </motion.div>
+
+        {error && (
+          <motion.div variants={variants.fadeInUp}>
+            <GlassCard padding="none">
+              <p className="text-xs text-red-signal font-mono">{error}</p>
+            </GlassCard>
+          </motion.div>
+        )}
+
+        {/* KPI row */}
+        <motion.div variants={variants.fadeInUp} className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <GlassCard size="sm" glow="green" accent>
+            <LiveMetric label="Wallet Balance" value={wallet?.balance_php ?? 0} trend={0} color="green" format="currency" />
           </GlassCard>
-        ))}
-      </motion.div>
+          <GlassCard size="sm" glow="amber" accent>
+            <LiveMetric label="Pending Invoices" value={pendingTotal} trend={0} color="amber" format="currency" />
+          </GlassCard>
+          <GlassCard size="sm" glow="cyan" accent>
+            <LiveMetric label="Paid MTD" value={paidMtd} trend={0} color="cyan" format="currency" />
+          </GlassCard>
+        </motion.div>
 
-      {/* Payout trend chart */}
-      <motion.div variants={variants.fadeInUp}>
-        <GlassCard glow="green">
-          <div className="flex items-center justify-between mb-5">
-            <div>
-              <h2 className="font-heading text-sm font-semibold text-white">Monthly Payout Breakdown</h2>
-              <p className="text-2xs font-mono text-white/30">Base · COD Remittance · Bonus</p>
+        {/* Wallet card */}
+        <motion.div variants={variants.fadeInUp}>
+          <GlassCard glow="green">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-2xs font-mono text-white/40 uppercase tracking-wider mb-1">Available Balance</p>
+                <p className="font-heading text-4xl font-bold text-green-signal">
+                  ₱{(wallet?.available_php ?? 0).toLocaleString()}
+                </p>
+                {wallet && wallet.reserved_php > 0 && (
+                  <p className="text-xs font-mono text-white/30 mt-1">
+                    ₱{wallet.reserved_php.toLocaleString()} reserved
+                  </p>
+                )}
+              </div>
+              <button
+                onClick={() => setShowWithdraw(true)}
+                disabled={!wallet || wallet.available_php <= 0}
+                className="flex items-center gap-1.5 rounded-lg border border-green-signal/30 bg-green-surface px-4 py-2 text-xs font-medium text-green-signal hover:border-green-signal/60 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Request Withdrawal
+              </button>
             </div>
-            <NeonBadge variant="green">₱421K MTD</NeonBadge>
-          </div>
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={MONTHLY_PAYOUTS} margin={{ top: 0, right: 0, bottom: 0, left: -24 }}>
-              <CartesianGrid stroke="rgba(255,255,255,0.04)" strokeDasharray="4 4" vertical={false} />
-              <XAxis dataKey="month" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 11, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
-              <Tooltip
-                contentStyle={{ background: "rgba(13,20,34,0.95)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, fontFamily: "JetBrains Mono", fontSize: 11 }}
-                formatter={(v) => [`₱${Number(v).toLocaleString()}`, ""]}
-              />
-              <Bar dataKey="base"          fill="#00FF88" radius={[0,0,0,0]} fillOpacity={0.85} stackId="a" />
-              <Bar dataKey="cod"           fill="#00E5FF" radius={[0,0,0,0]} fillOpacity={0.7}  stackId="a" />
-              <Bar dataKey="bonus"         fill="#A855F7" radius={[4,4,0,0]} fillOpacity={0.8}  stackId="a" />
-            </BarChart>
-          </ResponsiveContainer>
-          <div className="flex items-center gap-4 mt-3">
-            {[["Base Rate", "#00FF88"], ["COD Remittance", "#00E5FF"], ["Bonus", "#A855F7"]].map(([label, color]) => (
-              <div key={label} className="flex items-center gap-1.5">
-                <div className="h-2 w-2 rounded-full" style={{ background: color }} />
-                <span className="text-2xs font-mono text-white/40">{label}</span>
+          </GlassCard>
+        </motion.div>
+
+        {/* Payout trend chart (static) */}
+        <motion.div variants={variants.fadeInUp}>
+          <GlassCard glow="green">
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <h2 className="font-heading text-sm font-semibold text-white">Monthly Payout Breakdown</h2>
+                <p className="text-2xs font-mono text-white/30">Base · COD Remittance · Bonus (illustrative)</p>
               </div>
-            ))}
-          </div>
-        </GlassCard>
-      </motion.div>
+            </div>
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={MONTHLY_PAYOUTS} margin={{ top: 0, right: 0, bottom: 0, left: -24 }}>
+                <CartesianGrid stroke="rgba(255,255,255,0.04)" strokeDasharray="4 4" vertical={false} />
+                <XAxis dataKey="month" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 11, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
+                <Tooltip
+                  contentStyle={{ background: "rgba(13,20,34,0.95)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, fontFamily: "JetBrains Mono", fontSize: 11 }}
+                  formatter={(v) => [`₱${Number(v).toLocaleString()}`, ""]}
+                />
+                <Bar dataKey="base"  fill="#00FF88" radius={[0,0,0,0]} fillOpacity={0.85} stackId="a" />
+                <Bar dataKey="cod"   fill="#00E5FF" radius={[0,0,0,0]} fillOpacity={0.7}  stackId="a" />
+                <Bar dataKey="bonus" fill="#A855F7" radius={[4,4,0,0]} fillOpacity={0.8}  stackId="a" />
+              </BarChart>
+            </ResponsiveContainer>
+          </GlassCard>
+        </motion.div>
 
-      {/* Payout history table */}
-      <motion.div variants={variants.fadeInUp}>
-        <GlassCard padding="none">
-          <div className="flex items-center justify-between px-5 py-4 border-b border-glass-border">
-            <h2 className="font-heading text-sm font-semibold text-white">Payout History</h2>
-          </div>
-
-          {/* Header */}
-          <div className="grid grid-cols-[2fr_80px_100px_100px_80px_100px_100px] gap-3 px-5 py-2.5 border-b border-glass-border">
-            {["Period", "Deliveries", "Base Rate", "COD", "Bonus", "Total", "Status"].map((h) => (
-              <span key={h} className="text-2xs font-mono text-white/30 uppercase tracking-wider">{h}</span>
-            ))}
-          </div>
-
-          {payoutHistory.map((p) => {
-            const cfg = STATUS_CONFIG[p.status] ?? STATUS_CONFIG["pending"];
-            const { label, variant, icon } = cfg;
-            return (
-              <div key={p.id} className="grid grid-cols-[2fr_80px_100px_100px_80px_100px_100px] gap-3 items-center px-5 py-4 border-b border-glass-border/50 hover:bg-glass-100 transition-colors">
-                <div>
-                  <p className="text-xs font-medium text-white">{p.period}</p>
-                  <p className="text-2xs font-mono text-white/30 mt-0.5">{p.id}</p>
-                </div>
-                <span className="text-xs font-mono text-white/60">{p.deliveries.toLocaleString()}</span>
-                <span className="text-xs font-mono text-white/60">₱{p.base_rate.toLocaleString()}</span>
-                <span className="text-xs font-mono text-amber-signal">₱{p.cod_remittance.toLocaleString()}</span>
-                <span className="text-xs font-mono text-purple-plasma">₱{p.bonus.toLocaleString()}</span>
-                <span className="text-sm font-bold font-heading text-green-signal">₱{p.total.toLocaleString()}</span>
-                <div className="flex flex-col gap-0.5">
-                  <NeonBadge variant={variant}>
-                    <span className="flex items-center gap-1">{icon}{label}</span>
-                  </NeonBadge>
-                  {p.paid_date && <span className="text-2xs font-mono text-white/30">{p.paid_date}</span>}
-                </div>
+        {/* Transactions */}
+        {transactions.length > 0 && (
+          <motion.div variants={variants.fadeInUp}>
+            <GlassCard padding="none">
+              <div className="px-5 py-4 border-b border-glass-border">
+                <h2 className="font-heading text-sm font-semibold text-white">Recent Transactions</h2>
               </div>
-            );
-          })}
-        </GlassCard>
+              {transactions.map((tx) => (
+                <div
+                  key={tx.id}
+                  className="flex items-center justify-between px-5 py-3.5 border-b border-glass-border/50 hover:bg-glass-100 transition-colors"
+                >
+                  <div>
+                    <p className="text-xs text-white font-mono">{tx.description}</p>
+                    <p className="text-2xs text-white/30 font-mono mt-0.5">
+                      {new Date(tx.created_at).toLocaleDateString()}
+                    </p>
+                  </div>
+                  <span className={`text-sm font-bold font-mono ${tx.type === "credit" ? "text-green-signal" : "text-red-signal"}`}>
+                    {tx.type === "credit" ? "+" : "-"}₱{tx.amount_php.toLocaleString()}
+                  </span>
+                </div>
+              ))}
+            </GlassCard>
+          </motion.div>
+        )}
+
+        {/* Invoice history */}
+        <motion.div variants={variants.fadeInUp}>
+          <GlassCard padding="none">
+            <div className="px-5 py-4 border-b border-glass-border">
+              <h2 className="font-heading text-sm font-semibold text-white">Invoice History</h2>
+            </div>
+            {loading ? (
+              <div className="py-10 text-center">
+                <p className="text-xs text-white/30 font-mono">loading…</p>
+              </div>
+            ) : invoices.length === 0 ? (
+              <div className="py-10 text-center">
+                <p className="text-xs text-white/30 font-mono">No invoices yet.</p>
+              </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-[1fr_120px_100px_100px] gap-3 px-5 py-2.5 border-b border-glass-border">
+                  {["Invoice", "Period", "Total", "Status"].map((h) => (
+                    <span key={h} className="text-2xs font-mono text-white/30 uppercase tracking-wider">{h}</span>
+                  ))}
+                </div>
+                {invoices.map((inv) => {
+                  const cfg = STATUS_VARIANT[inv.status] ?? { label: inv.status, variant: "muted" as const };
+                  return (
+                    <div key={inv.id} className="grid grid-cols-[1fr_120px_100px_100px] gap-3 items-center px-5 py-3.5 border-b border-glass-border/50 hover:bg-glass-100 transition-colors">
+                      <div>
+                        <p className="text-xs font-mono text-cyan-neon">{inv.invoice_number}</p>
+                        <p className="text-2xs font-mono text-white/30 mt-0.5">
+                          Due {new Date(inv.due_date).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <span className="text-xs font-mono text-white/60">
+                        {new Date(inv.period_from).toLocaleDateString()} – {new Date(inv.period_to).toLocaleDateString()}
+                      </span>
+                      <span className="text-sm font-bold font-heading text-green-signal">
+                        ₱{inv.total_php.toLocaleString()}
+                      </span>
+                      <NeonBadge variant={cfg.variant}>{cfg.label}</NeonBadge>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+          </GlassCard>
+        </motion.div>
       </motion.div>
-    </motion.div>
+    </>
   );
 }
