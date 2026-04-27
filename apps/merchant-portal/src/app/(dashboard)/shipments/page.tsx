@@ -13,7 +13,7 @@ import { NeonBadge, BadgeVariant } from "@/components/ui/neon-badge";
 import {
   Search, Download, Plus, Upload, X, Globe, Home,
   Ship, PlaneTakeoff, ArrowUpDown, ChevronLeft, ChevronRight, Check,
-  FileText, CheckCircle2, AlertCircle, ExternalLink, Copy, Share2, QrCode,
+  FileText, CheckCircle2, AlertCircle, ExternalLink, Copy, Share2, QrCode, Phone, User,
 } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 import { authFetch } from "@/lib/auth/auth-fetch";
@@ -35,6 +35,9 @@ interface Shipment {
   cod_amount?: number;
   created_at: string;
   eta?: string;
+  // Enriched client-side from dispatch queue + driver roster.
+  driver_name?: string;
+  driver_phone?: string;
 }
 
 
@@ -1114,15 +1117,25 @@ function ShipmentsContent() {
   const fetchShipments = useCallback(async () => {
     setIsLoading(true);
     try {
-      const res = await authFetch(`${ORDER_INTAKE_URL}/v1/shipments`);
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        setLoadError(`Failed to load shipments (HTTP ${res.status})${body ? `: ${body.slice(0, 200)}` : ""}`);
+      // Batch: shipments + dispatch queue (for assigned_driver_id) + drivers (for name/phone).
+      const [shipmentsRes, queueRes, driversRes] = await Promise.allSettled([
+        authFetch(`${ORDER_INTAKE_URL}/v1/shipments`),
+        authFetch(`${ORDER_INTAKE_URL}/v1/queue?status=all`),
+        authFetch(`${ORDER_INTAKE_URL}/v1/drivers`),
+      ]);
+
+      if (shipmentsRes.status === "rejected" || !shipmentsRes.value.ok) {
+        const body = shipmentsRes.status === "fulfilled"
+          ? await shipmentsRes.value.text().catch(() => "")
+          : String(shipmentsRes.reason);
+        const code = shipmentsRes.status === "fulfilled" ? shipmentsRes.value.status : 0;
+        setLoadError(`Failed to load shipments (HTTP ${code})${body ? `: ${body.slice(0, 200)}` : ""}`);
         setShipments([]);
         return;
       }
-      const json = await res.json();
-      const rows = (json.shipments ?? []).map((s: {
+
+      const json = await shipmentsRes.value.json();
+      const rows: Shipment[] = (json.shipments ?? []).map((s: {
         id: string;
         awb?: string;
         tracking_number?: string;
@@ -1133,15 +1146,50 @@ function ShipmentsContent() {
         cod_amount_cents?: number | null;
         created_at: string;
       }) => ({
-        id:               s.id,
-        tracking_number:  s.awb ?? s.tracking_number ?? "",
-        recipient_name:   s.customer_name,
-        destination:      s.destination?.city ?? "",
-        status:           s.status as ShipmentStatus,
-        cod_amount:       s.cod_amount?.amount ? s.cod_amount.amount / 100 : s.cod_amount_cents ? s.cod_amount_cents / 100 : undefined,
-        created_at:       s.created_at,
+        id:              s.id,
+        tracking_number: s.awb ?? s.tracking_number ?? "",
+        recipient_name:  s.customer_name,
+        destination:     s.destination?.city ?? "",
+        status:          s.status as ShipmentStatus,
+        cod_amount:      s.cod_amount?.amount ? s.cod_amount.amount / 100 : s.cod_amount_cents ? s.cod_amount_cents / 100 : undefined,
+        created_at:      s.created_at,
       }));
-      setShipments(rows);
+
+      // Build shipment_id → assigned_driver_id map from the dispatch queue.
+      const shipmentToDriver = new Map<string, string>();
+      if (queueRes.status === "fulfilled" && queueRes.value.ok) {
+        const qj = await queueRes.value.json().catch(() => ({ data: [] }));
+        for (const q of (qj.data ?? [])) {
+          if (q.shipment_id && q.assigned_driver_id) {
+            shipmentToDriver.set(q.shipment_id, q.assigned_driver_id);
+          }
+        }
+      }
+
+      // Build driver_id → { name, phone } map from the driver list.
+      const driverInfo = new Map<string, { name: string; phone: string }>();
+      if (driversRes.status === "fulfilled" && driversRes.value.ok) {
+        const dj = await driversRes.value.json().catch(() => ({ data: [] }));
+        for (const d of (dj.data ?? [])) {
+          const name = `${d.first_name ?? ""} ${d.last_name ?? ""}`.trim() || "—";
+          driverInfo.set(d.id, { name, phone: d.phone ?? "" });
+        }
+      }
+
+      // Enrich rows with driver name + phone for statuses that have an active driver.
+      const DRIVER_VISIBLE: ReadonlySet<string> = new Set([
+        "pickup_assigned", "picked_up", "in_transit", "out_for_delivery", "delivery_attempted",
+      ]);
+      const enriched = rows.map((s) => {
+        if (!DRIVER_VISIBLE.has(s.status)) return s;
+        const driverId = shipmentToDriver.get(s.id);
+        if (!driverId) return s;
+        const info = driverInfo.get(driverId);
+        if (!info) return s;
+        return { ...s, driver_name: info.name, driver_phone: info.phone };
+      });
+
+      setShipments(enriched);
       setLoadError(null);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : "Network error loading shipments");
@@ -1390,7 +1438,18 @@ function ShipmentsContent() {
                   className="accent-cyan-neon"
                 />
                 <span className="font-mono text-xs text-cyan-neon">{shipment.tracking_number}</span>
-                <span className="text-xs text-white truncate">{shipment.recipient_name}</span>
+                <div className="flex flex-col gap-0.5 min-w-0">
+                  <span className="text-xs text-white truncate">{shipment.recipient_name}</span>
+                  {shipment.driver_name && (
+                    <span className="flex items-center gap-1 text-2xs font-mono text-cyan-neon/60 truncate" title={`Driver: ${shipment.driver_name}${shipment.driver_phone ? ` · ${shipment.driver_phone}` : ""}`}>
+                      <User size={8} className="shrink-0" />
+                      {shipment.driver_name}
+                      {shipment.driver_phone && (
+                        <><Phone size={8} className="shrink-0 ml-0.5" />{shipment.driver_phone}</>
+                      )}
+                    </span>
+                  )}
+                </div>
                 <span className="text-xs text-white/60 truncate">{shipment.destination}</span>
                 <NeonBadge variant={variant}>{label}</NeonBadge>
                 <span className="text-xs text-white/60 font-mono">

@@ -226,10 +226,11 @@ impl DispatchQueueRepository for MockDispatchQueueRepo {
         Ok(rows)
     }
 
-    async fn mark_dispatched(&self, shipment_id: Uuid) -> anyhow::Result<()> {
+    async fn mark_dispatched(&self, shipment_id: Uuid, driver_id: Uuid) -> anyhow::Result<()> {
         let mut guard = self.store.lock().unwrap();
         if let Some(row) = guard.get_mut(&shipment_id) {
             row.status = "dispatched".to_string();
+            row.assigned_driver_id = Some(driver_id);
             Ok(())
         } else {
             anyhow::bail!("mark_dispatched: shipment_id {} not found in mock", shipment_id)
@@ -1317,6 +1318,7 @@ mod quick_dispatch {
             last_attempt_at:        None,
             queued_at:              None,
             dispatched_at:          None,
+            assigned_driver_id:     None,
         }
     }
 

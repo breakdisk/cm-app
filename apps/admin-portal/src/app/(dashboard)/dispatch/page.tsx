@@ -38,6 +38,8 @@ interface QueueItem {
   last_dispatch_error?:    string | null;
   last_attempt_at?:        string | null;
   dispatched_at?:          string | null;
+  // Set by migration 0008 — the driver who was assigned when dispatched.
+  assigned_driver_id?:     string | null;
 }
 
 type QueueFilter = "pending" | "dispatched" | "all";
@@ -63,15 +65,19 @@ function busToQueueItem(b: BusBooking): QueueItem {
 }
 
 interface DriverProfile {
-  id:         string;
-  first_name: string;
-  last_name:  string;
-  email:      string;
-  tenant_id:  string;
-  status?:    string;        // "available" | "offline" | "en_route" | "delivering" | "returning" | "on_break"
-  is_online?: boolean;
-  active_route_id?: string | null;
-  last_location_at?: string | null;
+  id:           string;
+  first_name:   string;
+  last_name:    string;
+  email:        string;
+  phone:        string;
+  tenant_id:    string;
+  vehicle_type: string;
+  status?:      string;        // "available" | "offline" | "en_route" | "delivering" | "returning" | "on_break"
+  is_online?:   boolean;
+  lat?:         number | null;
+  lng?:         number | null;
+  active_route_id?:   string | null;
+  last_location_at?:  string | null;
 }
 
 const KPI_METRICS = [
@@ -218,14 +224,36 @@ function DispatchPageInner() {
     return Array.from(byId.values());
   }, [queue, marketplaceQueue, queueFilter]);
 
-  const mapDrivers = drivers.map((d) => ({
-    driver_id:             d.id,
-    driver_name:           [d.first_name, d.last_name].filter(Boolean).join(" ") || d.email,
-    lat:                   14.5995,
-    lng:                   120.9842,
-    status:                "idle" as const,
-    deliveries_remaining:  0,
-  }));
+  // Map backend status → DriverPin status accepted by LiveDispatchMap.
+  function toMapStatus(s: string | undefined): "idle" | "en_route" | "delivering" | "returning" {
+    switch (s) {
+      case "en_route":   return "en_route";
+      case "delivering": return "delivering";
+      case "returning":  return "returning";
+      default:           return "idle";
+    }
+  }
+
+  const mapDrivers = drivers
+    .filter((d) => d.lat != null && d.lng != null)
+    .map((d) => ({
+      driver_id:            d.id,
+      driver_name:          [d.first_name, d.last_name].filter(Boolean).join(" ") || d.email,
+      lat:                  d.lat as number,
+      lng:                  d.lng as number,
+      status:               toMapStatus(d.status),
+      deliveries_remaining: 0,
+    }));
+
+  // Build a id→name lookup so dispatched queue cards can show the driver name.
+  const driverNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    drivers.forEach((d) => {
+      const name = [d.first_name, d.last_name].filter(Boolean).join(" ") || d.email;
+      m.set(d.id, name);
+    });
+    return m;
+  }, [drivers]);
 
   const kpiValues = [
     { ...KPI_METRICS[0], value: mergedQueue.length },
@@ -441,11 +469,18 @@ function DispatchPageInner() {
                     </div>
                   </div>
                   {item.dispatched_at && (
-                    <p className="text-[10px] font-mono text-white/35">
-                      Dispatched {new Date(item.dispatched_at).toLocaleString("en-PH", {
-                        month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
-                      })}
-                    </p>
+                    <div className="flex flex-col gap-0.5">
+                      <p className="text-[10px] font-mono text-white/35">
+                        Dispatched {new Date(item.dispatched_at).toLocaleString("en-PH", {
+                          month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+                        })}
+                      </p>
+                      {item.assigned_driver_id && (
+                        <p className="text-[10px] font-mono text-cyan-neon/70 truncate">
+                          👤 {driverNameById.get(item.assigned_driver_id) ?? item.assigned_driver_id}
+                        </p>
+                      )}
+                    </div>
                   )}
                   <div className="flex items-center gap-2">
                     <button
@@ -454,7 +489,9 @@ function DispatchPageInner() {
                       className="flex-1 rounded-lg border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs font-mono text-purple-300 hover:bg-purple-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       {item.status === "dispatched"
-                        ? "✓ Already Dispatched"
+                        ? (item.assigned_driver_id && driverNameById.get(item.assigned_driver_id)
+                            ? `✓ ${driverNameById.get(item.assigned_driver_id)}`
+                            : "✓ Dispatched")
                         : dispatching === item.shipment_id
                           ? "Dispatching…"
                           : "⚡ Dispatch"}

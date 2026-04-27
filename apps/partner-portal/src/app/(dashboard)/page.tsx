@@ -34,7 +34,8 @@ import { getCurrentPartnerId } from "@/lib/api/partner-identity";
 
 const DISPATCH_URL    = process.env.NEXT_PUBLIC_DISPATCH_URL    ?? "http://localhost:8005";
 const PAYMENTS_URL    = process.env.NEXT_PUBLIC_PAYMENTS_URL    ?? "http://localhost:8012";
-const DRIVER_OPS_URL  = process.env.NEXT_PUBLIC_DRIVER_OPS_URL  ?? "http://localhost:8006";
+// Driver list goes through the API gateway to avoid direct service exposure.
+const API_BASE        = process.env.NEXT_PUBLIC_API_URL          ?? "http://localhost:8000";
 
 // 30-day SLA trend chart isn't backed by an endpoint yet — keep the visual
 // scaffolding so the page lays out the same once carriers exposes a
@@ -121,7 +122,7 @@ export default function PartnerOverviewPage() {
       await Promise.allSettled([
         carriersApi.get(carrierId),
         authFetch(`${DISPATCH_URL}/v1/queue?status=all`),
-        authFetch(`${DRIVER_OPS_URL}/v1/drivers`),
+        authFetch(`${API_BASE}/v1/drivers`),
         carriersApi.manifest(today, carrierId),
         authFetch(`${PAYMENTS_URL}/v1/invoices`),
         authFetch(`${PAYMENTS_URL}/v1/wallet`),
