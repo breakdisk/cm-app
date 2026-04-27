@@ -35,9 +35,11 @@ data class OtpVerifyResponse(
 )
 
 @Serializable
-data class FcmTokenRequest(
-    @SerialName("fcm_token") val fcmToken: String,
-    @SerialName("driver_id") val driverId: String
+data class RegisterPushTokenRequest(
+    val token: String,
+    val platform: String = "android",
+    val app: String = "driver",
+    @SerialName("device_id") val deviceId: String? = null,
 )
 
 interface IdentityApiService {
@@ -50,6 +52,6 @@ interface IdentityApiService {
     @POST("v1/auth/refresh")
     suspend fun refreshToken(@Body request: io.logisticos.driver.core.network.model.RefreshRequest): ApiResponse<io.logisticos.driver.core.network.model.TokenResponse>
 
-    @POST("v1/auth/fcm-token")
-    suspend fun registerFcmToken(@Body request: FcmTokenRequest): retrofit2.Response<Unit>
+    @POST("v1/push-tokens")
+    suspend fun registerPushToken(@Body request: RegisterPushTokenRequest): retrofit2.Response<Unit>
 }

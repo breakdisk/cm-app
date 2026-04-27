@@ -6,6 +6,27 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub redis: RedisConfig,
     pub kafka: KafkaConfig,
+    /// Internal HTTP base URL for the identity service, e.g. http://identity:8080
+    /// Used to fetch FCM push tokens before notifying drivers.
+    #[serde(default)]
+    pub identity: IdentityConfig,
+    /// Firebase Cloud Messaging configuration for driver push notifications.
+    /// Optional — if absent, FCM push is skipped (tasks still appear via polling).
+    #[serde(default)]
+    pub fcm: FcmConfig,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct IdentityConfig {
+    pub internal_url: String,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct FcmConfig {
+    pub project_id: String,
+    /// Full Firebase service account JSON, base64-encoded.
+    /// Set via DRIVER_OPS_FCM__SERVICE_ACCOUNT_JSON env var.
+    pub service_account_json: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
