@@ -492,6 +492,13 @@ services:
       SERVICES__MARKETING_URL: http://marketing:8014
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
+      # FCM push notifications — set secrets via Dokploy env vars or VPS .env
+      # IDENTITY__INTERNAL_URL: where driver-ops fetches FCM push tokens
+      # FCM__PROJECT_ID: Firebase project ID (from Firebase console)
+      # FCM__SERVICE_ACCOUNT_JSON: base64-encoded Firebase service-account JSON
+      IDENTITY__INTERNAL_URL: http://identity:8001
+      FCM__PROJECT_ID: ${FCM_PROJECT_ID:-}
+      FCM__SERVICE_ACCOUNT_JSON: ${FCM_SERVICE_ACCOUNT_JSON:-}
       RUST_LOG: info
     depends_on:
       postgres:

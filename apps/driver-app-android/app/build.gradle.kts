@@ -32,15 +32,32 @@ android {
         buildConfigField("String", "MAPBOX_ACCESS_TOKEN", "\"$mapboxAccessToken\"")
     }
 
+    signingConfigs {
+        create("release") {
+            val keystoreB64 = System.getenv("KEYSTORE_BASE64")
+            if (keystoreB64 != null) {
+                val keystoreFile = rootProject.file("keystore.jks")
+                keystoreFile.writeBytes(android.util.Base64.decode(keystoreB64, android.util.Base64.DEFAULT))
+                storeFile = keystoreFile
+                storePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
+                keyAlias = System.getenv("KEY_ALIAS") ?: ""
+                keyPassword = System.getenv("KEY_PASSWORD") ?: ""
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isDebuggable = true
-            // Debug uses BASE_URL from the active product flavor
         }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            val keystoreB64 = System.getenv("KEYSTORE_BASE64")
+            if (keystoreB64 != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 

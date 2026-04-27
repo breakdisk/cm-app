@@ -22,6 +22,26 @@ export type BusBookingStatus =
   | "cancelled"
   | "disputed";
 
+export interface BusReceipt {
+  id:                   string;
+  booking_id:           string;
+  receipt_no:           string;
+  awb:                  string;
+  partner_display_name: string;
+  issued_by_name:       string;
+  merchant_display:     string;
+  consumer_display:     string;
+  pickup_label:         string;
+  dropoff_label:        string;
+  pickup_at:            string;
+  cargo_weight_kg:      number;
+  size_class:           BusSizeClass;
+  quoted_price_cents:   number;
+  issued_at:            string;
+  signed_by?:           string;
+  notes?:               string;
+}
+
 export type BusSizeClass =
   | "motorcycle"
   | "sedan"

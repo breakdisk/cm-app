@@ -6,6 +6,7 @@ use crate::config::Config;
 use crate::application::services::{DriverService, TaskService, LocationService};
 use crate::infrastructure::db::{PgDriverRepository, PgTaskRepository, PgLocationRepository};
 use crate::infrastructure::messaging::start_task_consumer;
+use crate::infrastructure::external::FcmClient;
 use crate::api::http::{router, AppState, RosterEvent};
 use logisticos_auth::jwt::JwtService;
 use logisticos_events::producer::KafkaProducer;
@@ -47,6 +48,19 @@ pub async fn run() -> anyhow::Result<()> {
     // Shutdown watch channel — broadcast to all background consumers.
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
+    // Build FCM client — optional; logs a warning if env vars are not set.
+    let fcm_client = FcmClient::new(
+        cfg.identity.internal_url.clone(),
+        cfg.fcm.project_id.clone(),
+        &cfg.fcm.service_account_json,
+    ).map(std::sync::Arc::new);
+    if fcm_client.is_none() {
+        tracing::warn!(
+            "FCM push disabled: set IDENTITY__INTERNAL_URL, FCM__PROJECT_ID, \
+             FCM__SERVICE_ACCOUNT_JSON to enable driver push notifications"
+        );
+    }
+
     // Spawn TASK_ASSIGNED consumer — creates driver_ops.tasks rows on dispatch.
     let pool_for_tasks    = pool.clone();
     let brokers_for_tasks = cfg.kafka.brokers.clone();
@@ -57,6 +71,7 @@ pub async fn run() -> anyhow::Result<()> {
             &brokers_for_tasks,
             &group_for_tasks,
             pool_for_tasks,
+            fcm_client,
             shutdown_rx_tasks,
         ).await {
             tracing::error!("Task consumer crashed: {e}");

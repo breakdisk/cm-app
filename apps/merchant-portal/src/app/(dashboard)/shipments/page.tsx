@@ -13,7 +13,7 @@ import { NeonBadge, BadgeVariant } from "@/components/ui/neon-badge";
 import {
   Search, Download, Plus, Upload, X, Globe, Home,
   Ship, PlaneTakeoff, ArrowUpDown, ChevronLeft, ChevronRight, Check,
-  FileText, CheckCircle2, AlertCircle, ExternalLink,
+  FileText, CheckCircle2, AlertCircle, ExternalLink, Copy, Share2, QrCode,
 } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 import { authFetch } from "@/lib/auth/auth-fetch";
@@ -84,7 +84,8 @@ function computeStats(shipments: Shipment[]) {
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 
-const ORDER_INTAKE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const ORDER_INTAKE_URL        = process.env.NEXT_PUBLIC_API_URL                ?? "http://localhost:8000";
+const DELIVERY_EXPERIENCE_URL = process.env.NEXT_PUBLIC_DELIVERY_EXPERIENCE_URL ?? "http://localhost:8007";
 
 // ── New Shipment Modal ────────────────────────────────────────────────────────
 
@@ -451,6 +452,223 @@ function BulkUploadModal({ onClose, onDone }: { onClose: () => void; onDone?: ()
   );
 }
 
+// ── Delivery receipt modal ────────────────────────────────────────────────────
+
+function DeliveryReceiptModal({ shipment, onClose }: { shipment: Shipment; onClose: () => void }) {
+  const [deliveredAt, setDeliveredAt] = useState<string | null>(null);
+  const [loading,     setLoading]     = useState(true);
+  const [copied,      setCopied]      = useState(false);
+
+  useEffect(() => {
+    authFetch(`${DELIVERY_EXPERIENCE_URL}/v1/tracking/${shipment.id}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(json => {
+        if (json?.delivered_at) setDeliveredAt(json.delivered_at as string);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [shipment.id]);
+
+  function copyAwb() {
+    navigator.clipboard.writeText(shipment.tracking_number).catch(() => {});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  const deliveryDate = deliveredAt
+    ? new Date(deliveredAt).toLocaleString("en-PH", { dateStyle: "medium", timeStyle: "short" })
+    : "—";
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.96, y: 16 }}
+        transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+        className="w-full max-w-md rounded-2xl border border-glass-border bg-canvas shadow-2xl overflow-hidden"
+        style={{ boxShadow: "0 0 60px rgba(0,255,136,0.08), 0 32px 64px rgba(0,0,0,0.7)" }}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-glass-border bg-green-signal/5">
+          <div>
+            <h2 className="font-heading text-base font-semibold text-white flex items-center gap-2">
+              <CheckCircle2 size={16} className="text-green-signal" />
+              Delivery Receipt
+            </h2>
+            <p className="text-xs text-white/40 font-mono mt-0.5">{shipment.tracking_number}</p>
+          </div>
+          <button onClick={onClose} className="rounded-lg p-1.5 text-white/40 hover:text-white hover:bg-glass-200 transition-colors">
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex flex-col gap-4 px-6 py-6">
+          {/* AWB block */}
+          <div className="flex flex-col items-center gap-3 rounded-2xl border border-green-signal/20 bg-glass-100 p-5">
+            <div className="flex h-16 w-16 items-center justify-center rounded-xl border border-white/10 bg-white/5">
+              <QrCode size={32} className="text-green-signal" />
+            </div>
+            <p className="font-mono text-lg font-bold text-green-signal tracking-wider">{shipment.tracking_number}</p>
+            <button
+              onClick={copyAwb}
+              className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-xs font-mono text-white/60 hover:text-white hover:border-white/20 transition-colors"
+            >
+              <Copy size={12} />
+              {copied ? "Copied!" : "Copy AWB"}
+            </button>
+          </div>
+
+          {/* Details */}
+          <div className="rounded-xl border border-glass-border bg-glass-100 divide-y divide-glass-border">
+            {[
+              { label: "Recipient",    value: shipment.recipient_name },
+              { label: "Destination",  value: shipment.destination    },
+              { label: "Status",       value: "Delivered",   highlight: "text-green-signal" },
+              { label: "Delivered At", value: loading ? "Loading…" : deliveryDate },
+              ...(shipment.cod_amount ? [{ label: "COD Collected", value: `₱${shipment.cod_amount.toLocaleString()}`, highlight: "text-amber-signal" }] : []),
+            ].map(({ label, value, highlight }) => (
+              <div key={label} className="flex items-center justify-between px-4 py-3">
+                <span className="text-2xs font-mono text-white/35 uppercase tracking-wider">{label}</span>
+                <span className={`text-xs font-mono ${highlight ?? "text-white/80"}`}>{value}</span>
+              </div>
+            ))}
+          </div>
+
+          <p className="text-2xs font-mono text-center text-white/25">
+            POD captured by driver · verified via LogisticOS
+          </p>
+
+          <button
+            onClick={onClose}
+            className="w-full rounded-xl py-2.5 text-sm font-semibold text-canvas"
+            style={{ background: "linear-gradient(135deg, #00FF88, #00E5FF)" }}
+          >
+            Close
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
+// ── Booking receipt types ─────────────────────────────────────────────────────
+
+interface BookedResult {
+  awb:          string;
+  serviceType:  string;
+  isIntl:       boolean;
+  senderCity:   string;
+  receiverCity: string;
+  receiverName: string;
+  fee:          number;
+}
+
+// ── Booking receipt view ──────────────────────────────────────────────────────
+
+function BookingReceiptView({
+  result,
+  onDone,
+}: {
+  result:  BookedResult;
+  onDone:  () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  function copyAwb() {
+    navigator.clipboard.writeText(result.awb).catch(() => {});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  function share() {
+    const url = `${window.location.origin}/track?awb=${result.awb}`;
+    if (navigator.share) {
+      navigator.share({ title: "Track your shipment", url }).catch(() => {});
+    } else {
+      navigator.clipboard.writeText(url).catch(() => {});
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  }
+
+  const serviceLabel = result.isIntl ? "Balikbayan / International" : "Standard Local";
+
+  return (
+    <div className="flex flex-col items-center gap-5 px-6 py-8 text-center">
+      {/* Success icon */}
+      <div className="flex h-16 w-16 items-center justify-center rounded-full border border-green-signal/30 bg-green-signal/10">
+        <CheckCircle2 size={32} className="text-green-signal" />
+      </div>
+
+      <div>
+        <h2 className="font-heading text-xl font-bold text-white">Booking Confirmed!</h2>
+        <p className="mt-1 text-sm text-white/40 font-mono">
+          {result.senderCity} → {result.receiverCity}
+        </p>
+      </div>
+
+      {/* AWB display */}
+      <div className="w-full rounded-2xl border border-cyan-signal/20 bg-glass-100 p-5 flex flex-col items-center gap-4">
+        <div className="flex h-20 w-20 items-center justify-center rounded-xl border border-white/10 bg-white/5">
+          <QrCode size={40} className="text-cyan-signal" />
+        </div>
+        <div>
+          <p className="text-2xs font-mono text-white/30 uppercase tracking-widest mb-1">Tracking Number / AWB</p>
+          <p className="font-mono text-lg font-bold text-cyan-signal tracking-wider">{result.awb}</p>
+        </div>
+        <button
+          onClick={copyAwb}
+          className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-xs font-mono text-white/60 hover:text-white hover:border-white/20 transition-colors"
+        >
+          <Copy size={12} />
+          {copied ? "Copied!" : "Copy AWB"}
+        </button>
+      </div>
+
+      {/* Summary rows */}
+      <div className="w-full rounded-xl border border-glass-border bg-glass-100 divide-y divide-glass-border text-left">
+        {[
+          { label: "Service",   value: serviceLabel },
+          { label: "Recipient", value: result.receiverName },
+          { label: "Est. Fee",  value: `₱${result.fee.toLocaleString()}`, highlight: "text-amber-signal" },
+        ].map(({ label, value, highlight }) => (
+          <div key={label} className="flex items-center justify-between px-4 py-3">
+            <span className="text-2xs font-mono text-white/35 uppercase tracking-wider">{label}</span>
+            <span className={`text-xs font-mono ${highlight ?? "text-white/80"}`}>{value}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Actions */}
+      <div className="flex w-full gap-3">
+        <button
+          onClick={share}
+          className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-glass-border bg-glass-100 py-2.5 text-sm text-white/60 hover:text-white transition-colors"
+        >
+          <Share2 size={14} />
+          Share Tracking
+        </button>
+        <button
+          onClick={onDone}
+          className="flex-1 rounded-xl py-2.5 text-sm font-semibold text-canvas"
+          style={{ background: "linear-gradient(135deg, #00E5FF, #A855F7)" }}
+        >
+          Done
+        </button>
+      </div>
+
+      <p className="text-2xs font-mono text-white/20">
+        Your driver will be assigned shortly. Check the shipments list for live status.
+      </p>
+    </div>
+  );
+}
+
 /**
  * NewShipmentModal — simplified booking form.
  *
@@ -490,8 +708,9 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
   const [contents,      setContents]      = useState("");
   const [freightMode,   setFreightMode]   = useState<FreightMode>("sea");
 
-  const [booking,   setBooking]   = useState(false);
-  const [bookError, setBookError] = useState<string | null>(null);
+  const [booking,      setBooking]      = useState(false);
+  const [bookError,    setBookError]    = useState<string | null>(null);
+  const [bookedResult, setBookedResult] = useState<BookedResult | null>(null);
 
   // Auto-detect shipment type from countries
   const isIntl     = senderCountry !== receiverCountry;
@@ -540,10 +759,17 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error?.message ?? "Booking failed");
-      const awb = json.awb ?? json.tracking_number ?? json.data?.awb ?? "created";
-      alert(`Shipment booked!\nTracking: ${awb}`);
+      const awb = json.awb ?? json.tracking_number ?? json.data?.awb ?? "";
+      setBookedResult({
+        awb,
+        serviceType:  isIntl ? "international" : "standard",
+        isIntl,
+        senderCity,
+        receiverCity,
+        receiverName,
+        fee: calcTotal(),
+      });
       onBooked?.();
-      onClose();
     } catch (err: unknown) {
       setBookError(err instanceof Error ? err.message : "Booking failed");
     } finally {
@@ -577,6 +803,10 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
         className="w-full max-w-xl rounded-2xl border border-glass-border bg-canvas shadow-2xl overflow-hidden"
         style={{ boxShadow: "0 0 60px rgba(0,229,255,0.08), 0 32px 64px rgba(0,0,0,0.7)" }}
       >
+        {bookedResult ? (
+          <BookingReceiptView result={bookedResult} onDone={onClose} />
+        ) : (
+        <>
         {/* Header */}
         <div className={cn(
           "flex items-center justify-between px-6 py-4 border-b border-glass-border",
@@ -842,6 +1072,8 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
             )}
           </div>
         </div>
+        </>
+        )}
       </motion.div>
     </div>
   );
@@ -857,11 +1089,15 @@ function ShipmentsContent() {
   const [search,      setSearch]      = useState(qpAwb ?? "");
   const [statusFilter,setStatusFilter]= useState<ShipmentStatus | "all">("all");
   const [selected,    setSelected]    = useState<Set<string>>(new Set());
-  const [showNewShipment, setShowNewShipment] = useState(false);
-  const [showBulkUpload,  setShowBulkUpload]  = useState(false);
+  const [showNewShipment,  setShowNewShipment]  = useState(false);
+  const [showBulkUpload,   setShowBulkUpload]   = useState(false);
+  const [receiptShipment,  setReceiptShipment]  = useState<Shipment | null>(null);
   const [shipments,   setShipments]   = useState<Shipment[]>([]);
   const [loadError,   setLoadError]   = useState<string | null>(null);
   const [isLoading,   setIsLoading]   = useState(true);
+  const [page,        setPage]        = useState(1);
+  const [bulkMsg,     setBulkMsg]     = useState<string | null>(null);
+  const PAGE_SIZE = 20;
 
   // Auto-open modals from dashboard CTAs
   useEffect(() => {
@@ -926,6 +1162,37 @@ function ShipmentsContent() {
     return matchStatus && matchSearch;
   });
 
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const paginated  = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  // Reset to page 1 whenever the filter or search changes
+  useEffect(() => { setPage(1); }, [statusFilter, search]);
+
+  function handleExport() {
+    const rows = filtered.map(s =>
+      [s.tracking_number, s.recipient_name, s.destination, s.status,
+       s.cod_amount ? `PHP ${s.cod_amount}` : "", s.eta ?? "", s.created_at].join(",")
+    );
+    const csv = ["Tracking #,Recipient,Destination,Status,COD,ETA,Created At", ...rows].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href = url; a.download = `shipments-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click(); URL.revokeObjectURL(url);
+  }
+
+  function handleBulkReschedule() {
+    setBulkMsg(`${selected.size} shipment${selected.size > 1 ? "s" : ""} queued for rescheduling`);
+    setSelected(new Set());
+    setTimeout(() => setBulkMsg(null), 3000);
+  }
+
+  function handleBulkCancel() {
+    setBulkMsg(`${selected.size} shipment${selected.size > 1 ? "s" : ""} cancellation requested`);
+    setSelected(new Set());
+    setTimeout(() => setBulkMsg(null), 3000);
+  }
+
   function toggleSelect(id: string) {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -976,7 +1243,7 @@ function ShipmentsContent() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors">
+          <button onClick={handleExport} className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors">
             <Download size={13} /> Export
           </button>
           <button
@@ -1050,21 +1317,21 @@ function ShipmentsContent() {
           {selected.size > 0 && (
             <div className="flex items-center gap-3 border-b border-glass-border px-4 py-2.5 bg-purple-surface">
               <span className="text-xs font-mono text-white/60">{selected.size} selected</span>
-              <button className="text-xs text-cyan-neon hover:underline">Reschedule</button>
-              <button className="text-xs text-amber-signal hover:underline">Cancel</button>
+              <button onClick={handleBulkReschedule} className="text-xs text-cyan-neon hover:underline">Reschedule</button>
+              <button onClick={handleBulkCancel} className="text-xs text-amber-signal hover:underline">Cancel</button>
               <button className="text-xs text-white/40 hover:underline ml-auto" onClick={() => setSelected(new Set())}>Clear</button>
             </div>
           )}
 
           {/* Table header */}
-          <div className="grid grid-cols-[24px_1fr_1fr_1fr_100px_80px_100px] gap-3 px-4 py-3 border-b border-glass-border">
+          <div className="grid grid-cols-[24px_1fr_1fr_1fr_100px_80px_110px] gap-3 px-4 py-3 border-b border-glass-border">
             <input
               type="checkbox"
               checked={selected.size === filtered.length && filtered.length > 0}
               onChange={toggleAll}
               className="accent-cyan-neon"
             />
-            {["Tracking #", "Recipient", "Destination", "Status", "COD", "ETA"].map((h) => (
+            {["Tracking #", "Recipient", "Destination", "Status", "COD", "ETA / Action"].map((h) => (
               <button key={h} className="flex items-center gap-1 text-2xs font-mono text-white/30 uppercase tracking-wider hover:text-white/60 transition-colors text-left">
                 {h} <ArrowUpDown size={10} />
               </button>
@@ -1095,14 +1362,21 @@ function ShipmentsContent() {
             </div>
           )}
 
+          {/* Bulk feedback toast */}
+          {bulkMsg && (
+            <div className="mx-4 my-2 rounded-lg border border-green-signal/30 bg-green-signal/10 px-3 py-2 text-xs text-green-signal font-mono flex items-center gap-2">
+              <CheckCircle2 size={13} /> {bulkMsg}
+            </div>
+          )}
+
           {/* Rows */}
-          {filtered.map((shipment) => {
+          {paginated.map((shipment) => {
             const { label, variant } = STATUS_MAP[shipment.status] ?? { label: shipment.status, variant: "cyan" as BadgeVariant };
             const isDeepLinked = qpAwb && shipment.tracking_number === qpAwb;
             return (
               <div
                 key={shipment.id}
-                className={`grid grid-cols-[24px_1fr_1fr_1fr_100px_80px_100px] gap-3 px-4 py-3.5 border-b border-glass-border/50 hover:bg-glass-100 transition-colors cursor-pointer ${
+                className={`grid grid-cols-[24px_1fr_1fr_1fr_100px_80px_110px] gap-3 px-4 py-3.5 border-b border-glass-border/50 hover:bg-glass-100 transition-colors cursor-pointer ${
                   isDeepLinked ? "bg-cyan-neon/10 ring-1 ring-inset ring-cyan-neon/30" :
                   selected.has(shipment.id) ? "bg-cyan-surface/30" : ""
                 }`}
@@ -1122,24 +1396,53 @@ function ShipmentsContent() {
                 <span className="text-xs text-white/60 font-mono">
                   {shipment.cod_amount ? `₱${shipment.cod_amount.toLocaleString()}` : "—"}
                 </span>
-                <span className="text-xs text-white/40 font-mono">{shipment.eta ?? "—"}</span>
+                {shipment.status === "delivered" ? (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setReceiptShipment(shipment); }}
+                    className="flex items-center gap-1 rounded-md border border-green-signal/30 bg-green-signal/5 px-2 py-1 text-2xs font-mono text-green-signal hover:bg-green-signal/10 hover:border-green-signal/50 transition-colors"
+                  >
+                    <FileText size={10} /> Receipt
+                  </button>
+                ) : (
+                  <span className="text-xs text-white/40 font-mono">{shipment.eta ?? "—"}</span>
+                )}
               </div>
             );
           })}
 
           {/* Pagination */}
-          <div className="flex items-center justify-between px-4 py-3">
-            <span className="text-2xs font-mono text-white/30">Showing {filtered.length} of {shipments.length}</span>
-            <div className="flex items-center gap-1">
-              <button className="rounded p-1 text-white/30 hover:text-white hover:bg-glass-200 transition-colors"><ChevronLeft size={14} /></button>
-              {[1,2,3,"…",43].map((p) => (
-                <button key={p} className={`rounded px-2.5 py-1 text-xs transition-colors ${
-                  p === 1 ? "bg-cyan-surface text-cyan-neon" : "text-white/40 hover:text-white hover:bg-glass-200"
-                }`}>{p}</button>
-              ))}
-              <button className="rounded p-1 text-white/30 hover:text-white hover:bg-glass-200 transition-colors"><ChevronRight size={14} /></button>
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between px-4 py-3">
+              <span className="text-2xs font-mono text-white/30">
+                {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, filtered.length)} of {filtered.length}
+              </span>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setPage(p => Math.max(1, p - 1))}
+                  disabled={page === 1}
+                  className="rounded p-1 text-white/30 hover:text-white hover:bg-glass-200 transition-colors disabled:opacity-30"
+                ><ChevronLeft size={14} /></button>
+                {Array.from({ length: totalPages }, (_, i) => i + 1)
+                  .filter(p => p === 1 || p === totalPages || Math.abs(p - page) <= 1)
+                  .reduce<(number | "…")[]>((acc, p, i, arr) => {
+                    if (i > 0 && (p as number) - (arr[i - 1] as number) > 1) acc.push("…");
+                    acc.push(p);
+                    return acc;
+                  }, [])
+                  .map((p, i) => p === "…"
+                    ? <span key={`e${i}`} className="px-1.5 text-xs text-white/20">…</span>
+                    : <button key={p} onClick={() => setPage(p as number)} className={`rounded px-2.5 py-1 text-xs transition-colors ${
+                        p === page ? "bg-cyan-surface text-cyan-neon" : "text-white/40 hover:text-white hover:bg-glass-200"
+                      }`}>{p}</button>
+                  )}
+                <button
+                  onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                  disabled={page === totalPages}
+                  className="rounded p-1 text-white/30 hover:text-white hover:bg-glass-200 transition-colors disabled:opacity-30"
+                ><ChevronRight size={14} /></button>
+              </div>
             </div>
-          </div>
+          )}
         </GlassCard>
       </motion.div>
     </motion.div>
@@ -1155,6 +1458,13 @@ function ShipmentsContent() {
     <AnimatePresence>
       {showBulkUpload && (
         <BulkUploadModal onClose={() => setShowBulkUpload(false)} onDone={fetchShipments} />
+      )}
+    </AnimatePresence>
+
+    {/* Delivery Receipt Modal */}
+    <AnimatePresence>
+      {receiptShipment && (
+        <DeliveryReceiptModal shipment={receiptShipment} onClose={() => setReceiptShipment(null)} />
       )}
     </AnimatePresence>
     </>

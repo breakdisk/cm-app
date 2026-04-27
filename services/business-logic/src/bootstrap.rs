@@ -166,6 +166,7 @@ pub async fn run() -> anyhow::Result<()> {
     };
 
     let app = router()
+        .layer(axum::middleware::from_fn_with_state(Arc::clone(&jwt), logisticos_auth::middleware::require_auth))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state);
 

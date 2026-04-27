@@ -22,6 +22,8 @@ dependencies {
     implementation(project(":core:network"))
     implementation(project(":core:common"))
     implementation(platform(libs.compose.bom))
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging)
     implementation(libs.bundles.compose)
     implementation(libs.hilt.android)
     implementation(libs.hilt.navigation.compose)

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, Suspense } from "react";
+import { useState, useEffect, useCallback, useMemo, Suspense, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -338,17 +338,21 @@ function AssignModal({
   drivers,
   onClose,
   onAssign,
+  preSelectDriverId,
 }: {
   order: IncomingOrder;
   drivers: Driver[];
   onClose: () => void;
   onAssign: (orderId: string, driverId: string, driverName: string) => void;
+  preSelectDriverId?: string | null;
 }) {
   const required = recommendVehicle(order);
   const bestDriver = drivers
     .filter(d => d.status === "available" && vehicleSuitability(d.vehicleClass, required) !== "mismatch")
     .sort((a, b) => a.distanceKm - b.distanceKm)[0];
-  const [selected, setSelected] = useState<string | null>(bestDriver?.id ?? drivers[0]?.id ?? null);
+  const [selected, setSelected] = useState<string | null>(
+    preSelectDriverId ?? bestDriver?.id ?? drivers[0]?.id ?? null
+  );
   const isIntl = order.type === "balikbayan";
 
   return (
@@ -689,16 +693,13 @@ function OrderRow({
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 function OrdersPageInner() {
-  const searchParams = useSearchParams();
-  // Deep-link from drivers page: ?assignTo=<driverId> pre-selects a driver in
-  // the assign modal for the first unassigned order, or holds the pre-selection
-  // open until an order is explicitly chosen.
-  const preselectedDriverId = searchParams.get("assignTo") ?? null;
-
   const [orders,       setOrders]       = useState<IncomingOrder[]>(MOCK_ORDERS);
   const [drivers,      setDrivers]      = useState<Driver[]>(MOCK_DRIVERS);
   const [assignTarget, setAssignTarget] = useState<IncomingOrder | null>(null);
   const [filter,       setFilter]       = useState<"all" | "unassigned" | "assigned" | "picked_up">("all");
+  const searchParams    = useSearchParams();
+  const assignToParam   = searchParams.get("assignTo");
+  const didAutoOpen     = useRef(false);
 
   const loadData = useCallback(async () => {
     const [apiOrders, apiDrivers] = await Promise.all([fetchOrders(), fetchAvailableDrivers()]);
@@ -708,16 +709,22 @@ function OrdersPageInner() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  // When a driver deep-links here via ?assignTo=<id>, open the assign modal for
-  // the first unassigned order automatically so they can assign right away.
+  // If navigated from the drivers page with ?assignTo=<driverId>, open the
+  // assign panel for the first unassigned order with that driver pre-selected.
   useEffect(() => {
-    if (!preselectedDriverId) return;
-    const first = orders.find(o => o.status === "unassigned");
-    if (first) setAssignTarget(first);
-  // Only fire once after the first real order load (not on every re-render).
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [preselectedDriverId, orders.length]);
+    if (!assignToParam || didAutoOpen.current || orders.length === 0) return;
+    const firstUnassigned = orders.find(o => o.status === "unassigned");
+    if (firstUnassigned) {
+      setAssignTarget(firstUnassigned);
+      didAutoOpen.current = true;
+    }
+  }, [assignToParam, orders]);
 
+  // Live-ish refresh: driver-ops broadcasts a RosterEvent whenever a driver's status flips
+  // (went online, accepted a route, went on break, etc). Those are strong correlated signals
+  // that a shipment's dispatch state likely changed too, so we opportunistically refetch
+  // orders + available drivers. A 20s poll backstops anything the roster channel misses.
+  // Replacing both with a dedicated dispatch/order-intake WS is a follow-up.
   useRosterEvents((event) => {
     if (event.type === "status_changed") loadData();
   });
@@ -950,6 +957,7 @@ function OrdersPageInner() {
             }
             onClose={() => setAssignTarget(null)}
             onAssign={handleManualAssign}
+            preSelectDriverId={assignToParam}
           />
         )}
       </AnimatePresence>

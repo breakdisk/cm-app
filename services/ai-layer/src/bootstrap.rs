@@ -3,6 +3,8 @@ use std::{net::SocketAddr, sync::Arc};
 use rdkafka::{consumer::StreamConsumer, ClientConfig};
 use sqlx::postgres::PgPoolOptions;
 
+use anyhow::Context;
+use logisticos_auth::jwt::JwtService;
 use crate::{
     api::http,
     application::{agent::AgentRunner, triggers::run_trigger_consumer},
@@ -27,7 +29,7 @@ pub async fn run() -> anyhow::Result<()> {
     let pool = PgPoolOptions::new()
         .max_connections(cfg.database.max_connections)
         .after_connect(|conn, _meta| Box::pin(async move {
-            sqlx::query("SET search_path TO ai_layer, public")
+            sqlx::query("SET search_path TO ai, public")
                 .execute(&mut *conn)
                 .await?;
             Ok(())
@@ -35,7 +37,7 @@ pub async fn run() -> anyhow::Result<()> {
         .connect(&cfg.database.url)
         .await?;
 
-    logisticos_common::migrations::run(&pool, "ai_layer", &sqlx::migrate!("./migrations")).await?;
+    logisticos_common::migrations::run(&pool, "ai", &sqlx::migrate!("./migrations")).await?;
 
     // Claude API client
     let claude = Arc::new(ClaudeClient::new(cfg.anthropic.api_key.clone()));
@@ -78,9 +80,14 @@ pub async fn run() -> anyhow::Result<()> {
         run_trigger_consumer(consumer, trigger_runner).await;
     });
 
-    let state = AppState { runner, session_repo, tools };
+    let jwt_secret = std::env::var("AUTH__JWT_SECRET")
+        .context("AUTH__JWT_SECRET env var not set")?;
+    let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
+
+    let state = AppState { runner, session_repo, tools, jwt: Arc::clone(&jwt) };
 
     let app = http::router()
+        .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state);
 
