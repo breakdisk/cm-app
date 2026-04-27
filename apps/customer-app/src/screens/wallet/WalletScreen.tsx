@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, FlatList,
   Pressable, TextInput, ActivityIndicator, Animated,
+  KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -42,8 +43,10 @@ function WithdrawSheet({
     if (visible) {
       setAmount('');
       setError(null);
+      slideY.stopAnimation();
       Animated.spring(slideY, { toValue: 0, useNativeDriver: true, tension: 80, friction: 10 }).start();
     } else {
+      slideY.stopAnimation();
       Animated.timing(slideY, { toValue: 400, duration: 200, useNativeDriver: true }).start();
     }
   }, [visible, slideY]);
@@ -77,32 +80,34 @@ function WithdrawSheet({
   return (
     <View style={ws.overlay}>
       <Pressable style={ws.backdrop} onPress={onClose} />
-      <Animated.View style={[ws.sheet, { transform: [{ translateY: slideY }] }] as any}>
-        <View style={ws.handle} />
-        <Text style={ws.title}>Request Withdrawal</Text>
-        <Text style={ws.avail}>Available: {fmtPhp(wallet.available_cents)}</Text>
-        <TextInput
-          style={ws.input}
-          placeholder="Amount in ₱"
-          placeholderTextColor="rgba(255,255,255,0.2)"
-          keyboardType="decimal-pad"
-          value={amount}
-          onChangeText={setAmount}
-        />
-        {error ? <Text style={ws.error}>{error}</Text> : null}
-        <View style={ws.btnRow}>
-          <Pressable onPress={onClose} style={[ws.btn, ws.btnCancel]}>
-            <Text style={ws.btnCancelText}>Cancel</Text>
-          </Pressable>
-          <Pressable
-            onPress={() => { void handleConfirm(); }}
-            disabled={saving}
-            style={[ws.btn, ws.btnConfirm, saving && { opacity: 0.5 }]}
-          >
-            <Text style={ws.btnConfirmText}>{saving ? 'Submitting…' : 'Confirm'}</Text>
-          </Pressable>
-        </View>
-      </Animated.View>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        <Animated.View style={[ws.sheet, { transform: [{ translateY: slideY }] }] as any}>
+          <View style={ws.handle} />
+          <Text style={ws.title}>Request Withdrawal</Text>
+          <Text style={ws.avail}>Available: {fmtPhp(wallet.available_cents)}</Text>
+          <TextInput
+            style={ws.input}
+            placeholder="Amount in ₱"
+            placeholderTextColor="rgba(255,255,255,0.2)"
+            keyboardType="decimal-pad"
+            value={amount}
+            onChangeText={setAmount}
+          />
+          {error ? <Text style={ws.error}>{error}</Text> : null}
+          <View style={ws.btnRow}>
+            <Pressable onPress={onClose} style={[ws.btn, ws.btnCancel]}>
+              <Text style={ws.btnCancelText}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => { void handleConfirm(); }}
+              disabled={saving}
+              style={[ws.btn, ws.btnConfirm, saving && { opacity: 0.5 }]}
+            >
+              <Text style={ws.btnConfirmText}>{saving ? 'Submitting…' : 'Confirm'}</Text>
+            </Pressable>
+          </View>
+        </Animated.View>
+      </KeyboardAvoidingView>
     </View>
   );
 }
@@ -256,6 +261,10 @@ export function WalletScreen() {
           onSuccess={(updated) => {
             setWallet(updated);
             setShowWithdraw(false);
+            // Reload transactions so the new debit appears immediately
+            paymentsApi.getTransactions().then(res => {
+              setTransactions(res.data.data ?? []);
+            }).catch(() => { /* silent — wallet already updated */ });
           }}
         />
       )}
