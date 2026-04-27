@@ -165,6 +165,18 @@ export default function PayoutsPage() {
     })
     .reduce((s, i) => s + i.total_php, 0);
 
+  // Derive monthly bar chart from live invoices; fall back to static seed data.
+  const monthlyChart = (() => {
+    const paid = invoices.filter(i => i.status === "paid" && i.paid_at);
+    if (paid.length === 0) return MONTHLY_PAYOUTS;
+    const byMonth: Record<string, number> = {};
+    paid.forEach(inv => {
+      const key = new Date(inv.paid_at!).toLocaleString("en", { month: "short" });
+      byMonth[key] = (byMonth[key] ?? 0) + inv.total_php;
+    });
+    return Object.entries(byMonth).slice(-6).map(([month, base]) => ({ month, base, cod: 0, bonus: 0 }));
+  })();
+
   return (
     <>
       {showWithdraw && wallet && (
@@ -245,17 +257,17 @@ export default function PayoutsPage() {
           </GlassCard>
         </motion.div>
 
-        {/* Payout trend chart (static) */}
+        {/* Payout trend chart (live data from invoices, fallback to seed) */}
         <motion.div variants={variants.fadeInUp}>
           <GlassCard glow="green">
             <div className="flex items-center justify-between mb-5">
               <div>
                 <h2 className="font-heading text-sm font-semibold text-white">Monthly Payout Breakdown</h2>
-                <p className="text-2xs font-mono text-white/30">Base · COD Remittance · Bonus (illustrative)</p>
+                <p className="text-2xs font-mono text-white/30">Base · COD Remittance · Bonus</p>
               </div>
             </div>
             <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={MONTHLY_PAYOUTS} margin={{ top: 0, right: 0, bottom: 0, left: -24 }}>
+              <BarChart data={monthlyChart} margin={{ top: 0, right: 0, bottom: 0, left: -24 }}>
                 <CartesianGrid stroke="rgba(255,255,255,0.04)" strokeDasharray="4 4" vertical={false} />
                 <XAxis dataKey="month" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 11, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
@@ -268,6 +280,14 @@ export default function PayoutsPage() {
                 <Bar dataKey="bonus" fill="#A855F7" radius={[4,4,0,0]} fillOpacity={0.8}  stackId="a" />
               </BarChart>
             </ResponsiveContainer>
+            <div className="flex items-center gap-4 mt-3">
+              {[["Base Rate", "#00FF88"], ["COD Remittance", "#00E5FF"], ["Bonus", "#A855F7"]].map(([label, color]) => (
+                <div key={label} className="flex items-center gap-1.5">
+                  <div className="h-2 w-2 rounded-full" style={{ background: color }} />
+                  <span className="text-2xs font-mono text-white/40">{label}</span>
+                </div>
+              ))}
+            </div>
           </GlassCard>
         </motion.div>
 

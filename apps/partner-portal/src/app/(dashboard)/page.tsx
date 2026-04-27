@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   Target,
   Truck,
@@ -96,6 +97,7 @@ function SlaTooltip({
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function PartnerOverviewPage() {
+  const router = useRouter();
   const [kpis, setKpis] = useState<PartnerKpis>({
     slaPct: null, slaTarget: null,
     activeRoutes: 0, todayDeliveries: 0,
@@ -470,7 +472,7 @@ export default function PartnerOverviewPage() {
           <GlassCard padding="none" className="p-5 h-full">
             <div className="mb-4 flex items-center justify-between">
               <p className="text-sm font-semibold text-white">Top Zones</p>
-              <button className="flex items-center gap-1 text-xs text-green-signal/70 transition-colors hover:text-green-signal">
+              <button onClick={() => router.push("/sla")} className="flex items-center gap-1 text-xs text-green-signal/70 transition-colors hover:text-green-signal">
                 All zones <ArrowRight className="h-3 w-3" />
               </button>
             </div>
@@ -522,6 +524,7 @@ export default function PartnerOverviewPage() {
               </p>
             </div>
             <button
+              onClick={() => router.push("/payouts")}
               className="flex items-center gap-1.5 rounded-lg border border-green-signal/30 bg-green-surface px-3 py-1.5 text-xs font-medium text-green-signal transition-all hover:border-green-signal/60"
             >
               <DollarSign className="h-3.5 w-3.5" />

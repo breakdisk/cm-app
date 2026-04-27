@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Package, Globe, MapPin, Clock, Zap, User, Truck,
@@ -344,17 +345,21 @@ function AssignModal({
   drivers,
   onClose,
   onAssign,
+  preSelectDriverId,
 }: {
   order: IncomingOrder;
   drivers: Driver[];
   onClose: () => void;
   onAssign: (orderId: string, driverId: string, driverName: string) => void;
+  preSelectDriverId?: string | null;
 }) {
   const required = recommendVehicle(order);
   const bestDriver = drivers
     .filter(d => d.status === "available" && vehicleSuitability(d.vehicleClass, required) !== "mismatch")
     .sort((a, b) => a.distanceKm - b.distanceKm)[0];
-  const [selected, setSelected] = useState<string | null>(bestDriver?.id ?? drivers[0]?.id ?? null);
+  const [selected, setSelected] = useState<string | null>(
+    preSelectDriverId ?? bestDriver?.id ?? drivers[0]?.id ?? null
+  );
   const isIntl = order.type === "balikbayan";
 
   return (
@@ -699,6 +704,9 @@ export default function OrdersPage() {
   const [drivers,      setDrivers]      = useState<Driver[]>(MOCK_DRIVERS);
   const [assignTarget, setAssignTarget] = useState<IncomingOrder | null>(null);
   const [filter,       setFilter]       = useState<"all" | "unassigned" | "assigned" | "picked_up">("all");
+  const searchParams    = useSearchParams();
+  const assignToParam   = searchParams.get("assignTo");
+  const didAutoOpen     = useRef(false);
 
   const loadData = useCallback(async () => {
     const [apiOrders, apiDrivers] = await Promise.all([fetchOrders(), fetchAvailableDrivers()]);
@@ -707,6 +715,17 @@ export default function OrdersPage() {
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  // If navigated from the drivers page with ?assignTo=<driverId>, open the
+  // assign panel for the first unassigned order with that driver pre-selected.
+  useEffect(() => {
+    if (!assignToParam || didAutoOpen.current || orders.length === 0) return;
+    const firstUnassigned = orders.find(o => o.status === "unassigned");
+    if (firstUnassigned) {
+      setAssignTarget(firstUnassigned);
+      didAutoOpen.current = true;
+    }
+  }, [assignToParam, orders]);
 
   // Live-ish refresh: driver-ops broadcasts a RosterEvent whenever a driver's status flips
   // (went online, accepted a route, went on break, etc). Those are strong correlated signals
@@ -913,6 +932,7 @@ export default function OrdersPage() {
             drivers={drivers}
             onClose={() => setAssignTarget(null)}
             onAssign={handleManualAssign}
+            preSelectDriverId={assignToParam}
           />
         )}
       </AnimatePresence>
