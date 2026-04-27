@@ -12,7 +12,8 @@ use infrastructure::tools::ToolRegistry;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub runner:      Arc<AgentRunner>,
+    pub runner:       Arc<AgentRunner>,
     pub session_repo: Arc<dyn SessionRepository>,
-    pub tools:       Arc<ToolRegistry>,
+    pub tools:        Arc<ToolRegistry>,
+    pub jwt:          Arc<logisticos_auth::jwt::JwtService>,
 }
