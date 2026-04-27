@@ -111,46 +111,9 @@ export default function SettingsPage() {
         <motion.div variants={variants.fadeInUp} className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <TenantProfileCard />
 
-          <GlassCard title="Notification Channels">
-            <div className="space-y-3">
-              {[
-                { ch: "WhatsApp",  enabled: true,  rate: "98.4%"  },
-                { ch: "SMS",       enabled: true,  rate: "99.1%"  },
-                { ch: "Email",     enabled: true,  rate: "97.8%"  },
-                { ch: "Push",      enabled: true,  rate: "94.2%"  },
-                { ch: "Viber",     enabled: false, rate: "—"      },
-              ].map((row) => (
-                <div key={row.ch} className="flex items-center justify-between p-3 bg-white/[0.03] rounded-lg border border-white/[0.06]">
-                  <div className="flex items-center gap-3">
-                    <div className={`w-2 h-2 rounded-full ${row.enabled ? "bg-[#00FF88]" : "bg-white/20"}`} />
-                    <span className="text-sm text-white">{row.ch}</span>
-                  </div>
-                  <span className="text-xs text-white/40 font-mono">{row.enabled ? `Delivery rate: ${row.rate}` : "Disabled"}</span>
-                </div>
-              ))}
-            </div>
-          </GlassCard>
+          <NotificationChannelsCard />
 
-          <GlassCard title="Feature Flags" className="lg:col-span-2">
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-              {[
-                { flag: "AI Dispatch Agent",          enabled: true  },
-                { flag: "AI Support Agent",           enabled: true  },
-                { flag: "COD Auto-Reconciliation",    enabled: true  },
-                { flag: "Balikbayan Box Service",     enabled: true  },
-                { flag: "Same-Day Delivery",          enabled: false },
-                { flag: "Real-Time Driver Tracking",  enabled: true  },
-                { flag: "Loyalty Program",            enabled: true  },
-                { flag: "Dynamic Pricing",            enabled: false },
-                { flag: "Enterprise MCP Extension",   enabled: false },
-              ].map((f) => (
-                <div key={f.flag} className="flex items-center justify-between p-3 bg-white/[0.03] border border-white/[0.06] rounded-lg">
-                  <span className="text-xs text-white/70">{f.flag}</span>
-                  <NeonBadge variant={f.enabled ? "green" : "red"}>{f.enabled ? "ON" : "OFF"}</NeonBadge>
-                </div>
-              ))}
-            </div>
-          </GlassCard>
+          <FeatureFlagsCard />
         </motion.div>
       )}
 
@@ -168,6 +131,178 @@ export default function SettingsPage() {
       {/* Audit Log — live from identity /v1/audit-log (100 most recent). */}
       {activeTab === "Audit Log" && <AuditLogTab />}
     </motion.div>
+  );
+}
+
+// ── Notification Channels card (General tab) ────────────────────────────────
+// Live: engagement /v1/templates — counts active templates per channel as the
+// "configured" signal. A channel with zero active templates can't dispatch
+// anything, so it's the right gating signal in the absence of a dedicated
+// per-channel health endpoint. When engagement ships /v1/channels/health
+// (delivery rates), swap the rate column to that.
+
+const ENGAGEMENT_URL = process.env.NEXT_PUBLIC_ENGAGEMENT_URL ?? "http://localhost:8003";
+
+interface TemplateRow {
+  id:         string;
+  channel:    string;   // "WhatsApp" | "Sms" | "Email" | "Push"
+  is_active:  boolean;
+  language:   string;
+  template_id: string;
+}
+
+const KNOWN_CHANNELS: Array<{ key: string; label: string }> = [
+  { key: "WhatsApp", label: "WhatsApp" },
+  { key: "Sms",      label: "SMS"      },
+  { key: "Email",    label: "Email"    },
+  { key: "Push",     label: "Push"     },
+];
+
+function NotificationChannelsCard() {
+  const [rows, setRows]       = useState<TemplateRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await authFetch(`${ENGAGEMENT_URL}/v1/templates`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json() as { templates?: TemplateRow[] };
+        setRows(json.templates ?? []);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Failed to load templates");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const byChannel = useMemo(() => {
+    const m = new Map<string, { active: number; total: number }>();
+    for (const t of rows) {
+      const cur = m.get(t.channel) ?? { active: 0, total: 0 };
+      cur.total += 1;
+      if (t.is_active) cur.active += 1;
+      m.set(t.channel, cur);
+    }
+    return m;
+  }, [rows]);
+
+  return (
+    <GlassCard title="Notification Channels">
+      {error && <p className="text-xs text-red-signal font-mono mb-2">{error}</p>}
+      <div className="space-y-3">
+        {loading ? (
+          <p className="text-xs text-white/40 font-mono py-4 text-center">loading channels…</p>
+        ) : (
+          KNOWN_CHANNELS.map(({ key, label }) => {
+            const stats = byChannel.get(key);
+            const enabled = !!stats && stats.active > 0;
+            return (
+              <div key={key} className="flex items-center justify-between p-3 bg-white/[0.03] rounded-lg border border-white/[0.06]">
+                <div className="flex items-center gap-3">
+                  <div className={`w-2 h-2 rounded-full ${enabled ? "bg-[#00FF88]" : "bg-white/20"}`} />
+                  <span className="text-sm text-white">{label}</span>
+                </div>
+                <span className="text-xs text-white/40 font-mono">
+                  {stats
+                    ? `${stats.active} active · ${stats.total} template${stats.total === 1 ? "" : "s"}`
+                    : "No templates"}
+                </span>
+              </div>
+            );
+          })
+        )}
+      </div>
+      <p className="text-2xs font-mono text-white/30 mt-3">
+        Source: engagement <span className="text-[#00E5FF]">/v1/templates</span> ·
+        a channel is &quot;enabled&quot; when ≥1 active template exists.
+      </p>
+    </GlassCard>
+  );
+}
+
+// ── Feature Flags card (General tab) ────────────────────────────────────────
+// Driven by tenant.subscription_tier (free | starter | business | enterprise).
+// The platform doesn't yet ship a dedicated feature-flags service; gating
+// today is tier-based at the API layer (see services/identity middleware).
+// This panel makes the effective tier-derived flag set visible so ops can
+// confirm a tenant has the entitlements they expect.
+
+type TenantTier = "free" | "starter" | "business" | "enterprise";
+
+interface TierFlag {
+  flag:    string;
+  /** Lowest tier that grants this feature. */
+  minTier: TenantTier;
+}
+
+const TIER_RANK: Record<TenantTier, number> = {
+  free: 0, starter: 1, business: 2, enterprise: 3,
+};
+
+const TIER_FLAGS: TierFlag[] = [
+  { flag: "AI Dispatch Agent",         minTier: "starter"    },
+  { flag: "AI Recovery Agent",         minTier: "business"   },
+  { flag: "COD Auto-Reconciliation",   minTier: "starter"    },
+  { flag: "Balikbayan Box Service",    minTier: "starter"    },
+  { flag: "Same-Day Delivery",         minTier: "business"   },
+  { flag: "Real-Time Driver Tracking", minTier: "starter"    },
+  { flag: "Loyalty Program",           minTier: "business"   },
+  { flag: "Dynamic Pricing",           minTier: "business"   },
+  { flag: "Enterprise MCP Extension",  minTier: "enterprise" },
+];
+
+function FeatureFlagsCard() {
+  const [tier, setTier]       = useState<TenantTier | null>(null);
+  const [error, setError]     = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await authFetch(`${API_BASE}/v1/tenants/me`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        const t = json?.data?.subscription_tier;
+        setTier((t as TenantTier) ?? "starter");
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Failed to load tenant tier");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  return (
+    <GlassCard title="Feature Flags" className="lg:col-span-2">
+      {error && <p className="text-xs text-red-signal font-mono mb-2">{error}</p>}
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-xs text-white/40">Effective tier:</span>
+        <NeonBadge variant="purple">
+          {loading ? "loading…" : (tier ?? "unknown")}
+        </NeonBadge>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+        {TIER_FLAGS.map((f) => {
+          const enabled = tier !== null && TIER_RANK[tier] >= TIER_RANK[f.minTier];
+          return (
+            <div key={f.flag} className="flex items-center justify-between p-3 bg-white/[0.03] border border-white/[0.06] rounded-lg">
+              <div className="flex flex-col">
+                <span className="text-xs text-white/70">{f.flag}</span>
+                <span className="text-2xs font-mono text-white/30">requires {f.minTier}+</span>
+              </div>
+              <NeonBadge variant={enabled ? "green" : "red"}>{enabled ? "ON" : "OFF"}</NeonBadge>
+            </div>
+          );
+        })}
+      </div>
+      <p className="text-2xs font-mono text-white/30 mt-3">
+        Driven by <span className="text-[#00E5FF]">tenant.subscription_tier</span>.
+        Tier upgrades flow through the billing service.
+      </p>
+    </GlassCard>
   );
 }
 

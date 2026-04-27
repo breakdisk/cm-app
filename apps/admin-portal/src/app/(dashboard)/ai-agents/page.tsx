@@ -2,13 +2,16 @@
 /**
  * Admin Portal — AI Agents Page
  *
- * LIVE:  Escalated sessions section (GET /v1/agents/sessions/escalated)
- *        — these require human review; ops resolves via the Resolve button.
- * STATIC: Agent-type KPI cards + invocation trend chart below — ai-layer
- *        doesn't yet expose per-agent-type counters or hourly buckets, so
- *        those values stay mock until backend ships the aggregation.
- *        When it does, replace AGENTS / INVOCATION_TREND / KPI with live
- *        fetches analogous to the escalated section's pattern.
+ * Fully live. Three round-trips populate the page:
+ *   1. GET /v1/agents/aggregate            → KPI counters + 24h chart buckets
+ *   2. GET /v1/agents/sessions?limit=200   → derived per-agent metrics
+ *      (last action, success rate, avg latency)
+ *   3. GET /v1/agents/sessions/escalated   → human-review queue
+ *
+ * The static AGENT_CATALOG in this file mirrors AgentType from
+ * services/ai-layer/src/domain/entities/mod.rs — name, description, icon,
+ * default model, inspect deep-link. Everything else is computed from
+ * the session/aggregate APIs above.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
@@ -19,7 +22,7 @@ import { LiveMetric } from "@/components/ui/live-metric";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
-import { Bot, Zap, Brain, ShieldCheck, Megaphone, Headphones, Route, RefreshCw, ArrowUpRight, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Bot, Zap, Brain, ShieldCheck, Headphones, Route, RefreshCw, ArrowUpRight, AlertCircle, CheckCircle2, Sparkles } from "lucide-react";
 import { authFetch } from "@/lib/auth/auth-fetch";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -35,136 +38,137 @@ interface EscalatedSession {
   started_at: string;
 }
 
-// ── Types & data ───────────────────────────────────────────────────────────────
-
-type AgentStatus = "running" | "idle" | "error" | "training";
-
-interface AIAgent {
-  id: string;
-  name: string;
-  description: string;
-  status: AgentStatus;
-  model: string;
-  invocations_today: number;
-  avg_latency_ms: number;
-  success_rate: number;
-  last_action: string;
-  last_action_time: string;
-  icon: React.ReactNode;
+/** Session summary as returned by GET /v1/agents/sessions. */
+interface SessionSummary {
+  id:                string;
+  agent_type:        string;
+  status:            string;   // "running" | "completed" | "human_escalated" | "failed"
+  outcome?:          string | null;
+  escalation_reason?: string | null;
+  confidence_score:  number;
+  actions_taken:     number;
+  started_at:        string;
+  completed_at?:     string | null;
 }
 
-const AGENTS: AIAgent[] = [
+// ── Types & data ───────────────────────────────────────────────────────────────
+
+type AgentStatus = "running" | "idle" | "error";
+
+/** Static catalog — descriptions, icons, and inspect links for each backend
+ *  AgentType (see services/ai-layer/src/domain/entities/mod.rs). All metrics
+ *  (invocations, latency, success, last action) are derived live from sessions. */
+interface AgentCatalogEntry {
+  /** Snake-case agent_type from the backend (matches AgentType enum serde). */
+  type:        string;
+  name:        string;
+  description: string;
+  /** Default model — ai-layer doesn't expose this per session yet, so it's
+   *  shown as the configured default until the field flows through. */
+  model:       string;
+  icon:        React.ReactNode;
+  inspect:     { href: string; label: string; crossPortal: boolean };
+}
+
+const AGENT_CATALOG: AgentCatalogEntry[] = [
   {
-    id: "dispatch",
+    type: "dispatch",
     name: "Dispatch Agent",
-    description: "Smart driver assignment, VRP optimization, re-routing on delays",
-    status: "running",
+    description: "Watches shipment.created → assigns optimal driver, optimizes routes, reroutes on delays",
     model: "claude-opus-4-6 + ONNX VRP",
-    invocations_today: 2840,
-    avg_latency_ms: 320,
-    success_rate: 99.1,
-    last_action: "Assigned driver JDC to route R-2847 (18 stops, Makati)",
-    last_action_time: "12s ago",
     icon: <Route size={18} className="text-cyan-neon" />,
+    inspect: { href: "/dispatch", label: "Dispatch queue", crossPortal: false },
   },
   {
-    id: "support",
-    name: "Support Agent",
-    description: "WhatsApp & chat support, reschedule requests, complaint triage",
-    status: "running",
+    type: "recovery",
+    name: "Recovery Agent",
+    description: "Watches delivery.failed → reschedules, notifies, applies SLA penalties",
     model: "claude-sonnet-4-6",
-    invocations_today: 1240,
-    avg_latency_ms: 890,
-    success_rate: 96.4,
-    last_action: "Rescheduled delivery for LS-A1B2C3 to March 18 (customer request)",
-    last_action_time: "2m ago",
     icon: <Headphones size={18} className="text-purple-plasma" />,
+    inspect: { href: "/alerts", label: "Failed deliveries", crossPortal: false },
   },
   {
-    id: "marketing",
-    name: "Marketing Agent",
-    description: "Campaign copy generation, send-time optimization, A/B test selection",
-    status: "running",
+    type: "reconciliation",
+    name: "Reconciliation Agent",
+    description: "Detects COD collections un-credited > 24h, triggers wallet credit",
     model: "claude-sonnet-4-6",
-    invocations_today: 84,
-    avg_latency_ms: 1240,
-    success_rate: 100,
-    last_action: "Generated 3 WhatsApp variants for 'Post-Delivery Upsell' campaign",
-    last_action_time: "15m ago",
-    icon: <Megaphone size={18} className="text-amber-signal" />,
+    icon: <Sparkles size={18} className="text-green-signal" />,
+    inspect: { href: "/finance", label: "COD reconciliation", crossPortal: false },
   },
   {
-    id: "fraud",
-    name: "Fraud Detection Agent",
-    description: "Payment fraud scoring, COD refusal patterns, shipment anomaly detection",
-    status: "running",
+    type: "anomaly",
+    name: "Anomaly Detection Agent",
+    description: "Streams analytics → flags unusual patterns, pages ops team",
     model: "ONNX GradientBoost + claude-haiku-4-5",
-    invocations_today: 8420,
-    avg_latency_ms: 45,
-    success_rate: 99.8,
-    last_action: "Flagged shipment SH-992 for COD fraud review (score: 0.94)",
-    last_action_time: "34s ago",
     icon: <ShieldCheck size={18} className="text-red-signal" />,
+    inspect: { href: "/alerts", label: "Flagged alerts", crossPortal: false },
   },
   {
-    id: "logistics-planner",
-    name: "Logistics Planner",
-    description: "Daily route planning, hub capacity optimization, demand forecasting",
-    status: "idle",
-    model: "claude-opus-4-6 + ONNX Forecast",
-    invocations_today: 12,
-    avg_latency_ms: 2800,
-    success_rate: 100,
-    last_action: "Generated tomorrow's route plan: 47 drivers, 1,320 stops across Metro Manila",
-    last_action_time: "2h ago",
-    icon: <Brain size={18} className="text-green-signal" />,
+    type: "merchant_support",
+    name: "Merchant Support Agent",
+    description: "Answers merchant queries about shipments, billing, performance",
+    model: "claude-sonnet-4-6",
+    icon: <Brain size={18} className="text-amber-signal" />,
+    inspect: { href: "/analytics", label: "Analytics", crossPortal: false },
   },
   {
-    id: "customer-intelligence",
-    name: "Customer Intelligence",
-    description: "CLV scoring, churn prediction, delivery preference modeling",
-    status: "training",
-    model: "ONNX XGBoost (retraining)",
-    invocations_today: 0,
-    avg_latency_ms: 0,
-    success_rate: 0,
-    last_action: "Model retraining on 90-day behavioral dataset (ETA: 23min)",
-    last_action_time: "now",
+    type: "on_demand",
+    name: "On-Demand Agent",
+    description: "Free-form agent triggered by humans or API callers",
+    model: "claude-opus-4-6",
     icon: <Zap size={18} className="text-purple-plasma" />,
+    inspect: { href: "/ai-agents", label: "Sessions", crossPortal: false },
   },
 ];
 
-// Each agent gets one "inspect" deep link to the operational surface its last
-// action most likely affected. Some cross into partner-portal (driver-centric
-// actions), others stay on admin (dispatch, fraud alerts, analytics).
-const INSPECT_LINKS: Record<string, { href: string; label: string; crossPortal: boolean }> = {
-  "dispatch":               { href: "/admin/dispatch",            label: "Dispatch queue",       crossPortal: false },
-  "support":                { href: "/admin/alerts",              label: "Alerts",               crossPortal: false },
-  "marketing":              { href: "/admin/alerts",              label: "Alerts",               crossPortal: false },
-  "fraud":                  { href: "/admin/alerts",              label: "Flagged alerts",       crossPortal: false },
-  "logistics-planner":      { href: "/partner/manifests",         label: "Manifests (partner)",  crossPortal: true  },
-  "customer-intelligence":  { href: "/admin/analytics",           label: "Analytics",            crossPortal: false },
-};
+interface DerivedAgentStats {
+  invocations_today: number;
+  avg_latency_ms:    number;   // -1 if no completed sessions yet
+  success_rate:      number;   // -1 if no terminal sessions yet
+  last_action:       string;
+  last_action_time:  string;   // human-friendly "12s ago"
+  status:            AgentStatus;
+}
+
+function statusFromSessions(invocations: number, anyRunning: boolean, anyFailed: boolean): AgentStatus {
+  if (anyRunning) return "running";
+  if (anyFailed && invocations === 0) return "error";
+  if (invocations === 0) return "idle";
+  return "running";
+}
+
+/** "12s ago" / "5m ago" / "2h ago" / "3d ago" — kept short for table cells. */
+function relTimeLabel(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 0) return "now";
+  const s = Math.round(ms / 1000);
+  if (s < 60)   return `${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60)   return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24)   return `${h}h ago`;
+  const d = Math.round(h / 24);
+  return `${d}d ago`;
+}
 
 const STATUS_CONFIG: Record<AgentStatus, { label: string; variant: "green" | "cyan" | "amber" | "red" | "purple" }> = {
   running:  { label: "Running",  variant: "green"  },
   idle:     { label: "Idle",     variant: "cyan"   },
   error:    { label: "Error",    variant: "red"    },
-  training: { label: "Training", variant: "purple" },
 };
 
-const KPI = [
-  { label: "Active Agents",      value: 4,     trend: 0,    color: "green"  as const, format: "number"  as const },
-  { label: "Invocations Today",  value: 12600, trend: +18.4, color: "cyan"   as const, format: "number"  as const },
-  { label: "Avg Latency P99",    value: 890,   trend: -12.0, color: "purple" as const, format: "number"  as const },
-  { label: "Avg Success Rate",   value: 98.8,  trend: +0.4,  color: "amber"  as const, format: "percent" as const },
+/** Empty-KPI fallback shown until the first /v1/agents/aggregate response lands.
+ *  Values are placeholders rendered as "—" if 0; trend is 0 so no arrow paints. */
+const EMPTY_KPI = [
+  { label: "Active Agents",     value: 0, trend: 0, color: "green"  as const, format: "number"  as const },
+  { label: "Invocations Today", value: 0, trend: 0, color: "cyan"   as const, format: "number"  as const },
+  { label: "Escalated Today",   value: 0, trend: 0, color: "purple" as const, format: "number"  as const },
+  { label: "Success Rate",      value: 0, trend: 0, color: "amber"  as const, format: "percent" as const },
 ];
 
-const INVOCATION_TREND = Array.from({ length: 24 }, (_, i) => ({
-  hour: `${i}:00`,
-  dispatch: Math.floor(80 + Math.sin(i / 4) * 40 + Math.random() * 20),
-  support:  Math.floor(30 + Math.sin(i / 3) * 20 + Math.random() * 10),
-  fraud:    Math.floor(200 + Math.sin(i / 5) * 80 + Math.random() * 30),
+/** Empty 24-bucket placeholder so the chart paints axes while data loads. */
+const EMPTY_INVOCATION_TREND = Array.from({ length: 24 }, (_, i) => ({
+  hour: `${i}:00`, dispatch: 0, support: 0, fraud: 0,
 }));
 
 interface AggregateStats {
@@ -190,18 +194,43 @@ export default function AIAgentsPage() {
   const [resolvingId, setResolvingId] = useState<string | null>(null);
 
   // Aggregate KPIs + 24h invocation breakdown — single round-trip.
-  // Falls back to the static KPI/INVOCATION_TREND constants on failure
-  // so the page degrades gracefully if ai-layer is unreachable.
+  // Falls back to empty placeholders on failure so the page degrades
+  // gracefully if ai-layer is unreachable.
   const [agg, setAgg] = useState<AggregateStats | null>(null);
-  useEffect(() => {
-    authFetch(`${API_BASE}/v1/agents/aggregate`)
-      .then((res) => res.ok ? res.json() : null)
-      .then((json) => { if (json?.data) setAgg(json.data); })
-      .catch(() => { /* keep mock */ });
+
+  // Recent sessions — used to derive per-agent live metrics (last action,
+  // success rate, average latency). Capped at 200; backfills on every
+  // aggregate refresh. Set to empty on failure so all agent cards still
+  // render their static descriptions.
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+
+  const refreshAggregate = useCallback(async () => {
+    try {
+      const [aggRes, sessRes] = await Promise.all([
+        authFetch(`${API_BASE}/v1/agents/aggregate`),
+        authFetch(`${API_BASE}/v1/agents/sessions?limit=200`),
+      ]);
+      if (aggRes.ok) {
+        const j = await aggRes.json();
+        if (j?.data) setAgg(j.data);
+      }
+      if (sessRes.ok) {
+        const j = await sessRes.json() as { sessions?: SessionSummary[] };
+        setSessions(j.sessions ?? []);
+      }
+    } catch {
+      /* swallow — empty fallback already set */
+    }
   }, []);
 
+  useEffect(() => { refreshAggregate(); }, [refreshAggregate]);
+  useEffect(() => {
+    const id = setInterval(refreshAggregate, 30_000);
+    return () => clearInterval(id);
+  }, [refreshAggregate]);
+
   const liveKpi = useMemo(() => {
-    if (!agg) return KPI;
+    if (!agg) return EMPTY_KPI;
     return [
       // Active Agents = count of distinct agent_types seen today (proxy
       // for "what's actually doing work right now"). Falls back to 0 if
@@ -214,14 +243,53 @@ export default function AIAgentsPage() {
   }, [agg]);
 
   const liveInvocationTrend = useMemo(() => {
-    if (!agg) return INVOCATION_TREND;
+    if (!agg) return EMPTY_INVOCATION_TREND;
     return agg.hourly_24h.map((b) => ({
       hour:     `${b.hour}:00`,
       dispatch: b.by_type["dispatch"] ?? 0,
-      support:  b.by_type["on_demand"] ?? 0,  // chatbot lives under on_demand for now
+      support:  (b.by_type["merchant_support"] ?? 0) + (b.by_type["recovery"] ?? 0),
       fraud:    b.by_type["anomaly"] ?? 0,
     }));
   }, [agg]);
+
+  /** Per-agent metrics derived from `sessions` + `agg.by_type_today`. The
+   *  sessions list is the source of truth for the "last action" and average
+   *  latency; the aggregate gives today's invocation counts (sessions may
+   *  be capped at 200, so prefer the aggregate for raw counts). */
+  const agentStats: Record<string, DerivedAgentStats> = useMemo(() => {
+    const out: Record<string, DerivedAgentStats> = {};
+    for (const cat of AGENT_CATALOG) {
+      const mine = sessions.filter((s) => s.agent_type === cat.type);
+      const completed = mine.filter((s) => s.status === "completed" && s.completed_at);
+      const terminal  = mine.filter((s) => s.status === "completed" || s.status === "failed");
+      const failed    = mine.filter((s) => s.status === "failed");
+      const running   = mine.filter((s) => s.status === "running");
+
+      const totalLatencyMs = completed.reduce((acc, s) => {
+        const dur = new Date(s.completed_at!).getTime() - new Date(s.started_at).getTime();
+        return acc + Math.max(0, dur);
+      }, 0);
+      const avgLatency = completed.length > 0 ? Math.round(totalLatencyMs / completed.length) : -1;
+      const successRate = terminal.length > 0
+        ? Math.round((terminal.length - failed.length) / terminal.length * 1000) / 10
+        : -1;
+
+      const last = mine[0]; // backend orders by started_at DESC
+      const invocations = agg?.by_type_today[cat.type] ?? mine.length;
+
+      out[cat.type] = {
+        invocations_today: invocations,
+        avg_latency_ms:    avgLatency,
+        success_rate:      successRate,
+        last_action:       last?.outcome
+          ?? last?.escalation_reason
+          ?? (last ? `Session ${last.id.slice(0, 8)} · ${last.status}` : "No activity recorded yet"),
+        last_action_time:  last ? relTimeLabel(last.started_at) : "—",
+        status:            statusFromSessions(invocations, running.length > 0, failed.length > 0),
+      };
+    }
+    return out;
+  }, [sessions, agg]);
 
   const loadEscalated = useCallback(async () => {
     setEscError(null);
@@ -281,7 +349,7 @@ export default function AIAgentsPage() {
           <p className="text-sm text-white/40 font-mono mt-0.5">Agentic runtime · MCP tool dispatch · claude-opus-4-6</p>
         </div>
         <button
-          onClick={loadEscalated}
+          onClick={() => { void loadEscalated(); void refreshAggregate(); }}
           className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors"
         >
           <RefreshCw size={12} /> Refresh
@@ -391,15 +459,20 @@ export default function AIAgentsPage() {
 
       {/* Agent cards */}
       <motion.div variants={variants.fadeInUp} className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        {AGENTS.map((agent) => {
-          const { label, variant } = STATUS_CONFIG[agent.status];
-          const isSelected = selectedAgent === agent.id;
+        {AGENT_CATALOG.map((agent) => {
+          const stats = agentStats[agent.type] ?? {
+            invocations_today: 0, avg_latency_ms: -1, success_rate: -1,
+            last_action: "No activity recorded yet", last_action_time: "—",
+            status: "idle" as AgentStatus,
+          };
+          const { label, variant } = STATUS_CONFIG[stats.status];
+          const isSelected = selectedAgent === agent.type;
           return (
             <GlassCard
-              key={agent.id}
+              key={agent.type}
               className={`cursor-pointer transition-all ${isSelected ? "border-purple-plasma/40" : "hover:border-glass-border-bright"}`}
               glow={isSelected ? "purple" : undefined}
-              onClick={() => setSelectedAgent(isSelected ? null : agent.id)}
+              onClick={() => setSelectedAgent(isSelected ? null : agent.type)}
             >
               <div className="flex items-start gap-3 mb-3">
                 <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl bg-glass-200 border border-glass-border">
@@ -408,7 +481,7 @@ export default function AIAgentsPage() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-sm font-semibold text-white truncate">{agent.name}</p>
-                    <NeonBadge variant={variant} dot={agent.status === "running"}>{label}</NeonBadge>
+                    <NeonBadge variant={variant} dot={stats.status === "running"}>{label}</NeonBadge>
                   </div>
                   <p className="text-2xs font-mono text-white/40 mt-0.5 truncate">{agent.model}</p>
                 </div>
@@ -416,12 +489,12 @@ export default function AIAgentsPage() {
 
               <p className="text-xs text-white/50 mb-3">{agent.description}</p>
 
-              {/* Stats row */}
+              {/* Stats row — derived live from /v1/agents/sessions */}
               <div className="grid grid-cols-3 gap-2 mb-3">
                 {[
-                  { label: "Invocations", value: agent.invocations_today > 0 ? agent.invocations_today.toLocaleString() : "—" },
-                  { label: "Avg Latency", value: agent.avg_latency_ms > 0 ? `${agent.avg_latency_ms}ms` : "—" },
-                  { label: "Success",     value: agent.success_rate > 0 ? `${agent.success_rate}%` : "—" },
+                  { label: "Invocations", value: stats.invocations_today > 0 ? stats.invocations_today.toLocaleString() : "—" },
+                  { label: "Avg Latency", value: stats.avg_latency_ms >= 0 ? `${stats.avg_latency_ms}ms` : "—" },
+                  { label: "Success",     value: stats.success_rate >= 0 ? `${stats.success_rate}%` : "—" },
                 ].map((s) => (
                   <div key={s.label} className="rounded-lg bg-glass-100 px-2.5 py-2">
                     <p className="text-2xs font-mono text-white/30 uppercase">{s.label}</p>
@@ -432,20 +505,20 @@ export default function AIAgentsPage() {
 
               {/* Last action */}
               <div className="rounded-lg bg-glass-100 border border-glass-border px-3 py-2">
-                <p className="text-2xs font-mono text-white/30 mb-0.5">Last action · {agent.last_action_time}</p>
-                <p className="text-xs text-white/60 line-clamp-2 mb-2">{agent.last_action}</p>
-                {INSPECT_LINKS[agent.id] && (
+                <p className="text-2xs font-mono text-white/30 mb-0.5">Last action · {stats.last_action_time}</p>
+                <p className="text-xs text-white/60 line-clamp-2 mb-2">{stats.last_action}</p>
+                {agent.inspect && (
                   <a
-                    href={INSPECT_LINKS[agent.id].href}
+                    href={agent.inspect.href}
                     onClick={(e) => e.stopPropagation()}
                     className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-2xs font-mono transition-colors ${
-                      INSPECT_LINKS[agent.id].crossPortal
+                      agent.inspect.crossPortal
                         ? "border-purple-plasma/30 bg-purple-plasma/10 text-purple-plasma hover:bg-purple-plasma/20"
                         : "border-cyan-neon/30 bg-cyan-neon/10 text-cyan-neon hover:bg-cyan-neon/20"
                     }`}
                   >
                     <ArrowUpRight size={10} />
-                    {INSPECT_LINKS[agent.id].label}
+                    {agent.inspect.label}
                   </a>
                 )}
               </div>
