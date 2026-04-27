@@ -41,11 +41,13 @@ export interface WithdrawRequest {
 // ── API ───────────────────────────────────────────────────────────────────────
 
 export const paymentsApi = {
+  /** Get the carrier wallet balance (available, reserved, total). */
   async getWallet(): Promise<Wallet> {
     const { data } = await createApiClient().get<{ data: Wallet }>("/v1/wallet");
     return data.data;
   },
 
+  /** List recent wallet transactions, newest first. Default limit: 20. */
   async getTransactions(limit = 20): Promise<WalletTransaction[]> {
     const { data } = await createApiClient().get<{ data: WalletTransaction[] }>(
       "/v1/wallet/transactions",
@@ -54,15 +56,17 @@ export const paymentsApi = {
     return data.data ?? [];
   },
 
+  /** List invoices for the authenticated carrier's tenant. */
   async getInvoices(): Promise<Invoice[]> {
     const { data } = await createApiClient().get<{ data: Invoice[] }>("/v1/invoices");
     return data.data ?? [];
   },
 
-  async withdraw(amount_php: number): Promise<Wallet> {
+  /** Request a withdrawal from the carrier wallet. Returns the updated wallet. */
+  async withdraw(req: WithdrawRequest): Promise<Wallet> {
     const { data } = await createApiClient().post<{ data: Wallet }>(
       "/v1/wallet/withdraw",
-      { amount_php }
+      req
     );
     return data.data;
   },
