@@ -419,8 +419,8 @@ export function ProfileScreen() {
         <Text style={s.sectionTitle}>Account</Text>
         {[
           { icon: "receipt-outline",          label: "Payment Receipts", sub: "View delivery receipts",              color: CYAN,   onPress: () => navigation.navigate("Invoices") },
+          { icon: "cash-outline",             label: "Wallet",           sub: "Balance & withdrawals",               color: GREEN,  onPress: () => navigation.navigate("Wallet") },
           { icon: "card-outline",             label: "Saved Addresses",  sub: `${shipments.length} locations used`,  color: PURPLE, onPress: undefined },
-          { icon: "wallet-outline",           label: "Payment Methods",  sub: "Add credit/debit card",               color: GREEN,  onPress: undefined },
           { icon: "shield-checkmark-outline", label: "Security",         sub: `Tier: ${verificationTier.replace("_"," ")}`, color: AMBER, onPress: undefined },
         ].map((item) => (
           <Pressable key={item.label} onPress={item.onPress} style={({ pressed }) => [s.menuRow, { opacity: pressed ? 0.7 : 1 }]}>

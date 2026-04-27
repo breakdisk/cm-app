@@ -26,6 +26,7 @@ import { KYCScreen }              from "../screens/auth/KYCScreen";
 import { InvoicesScreen }         from "../screens/invoices/InvoicesScreen";
 import { InvoiceDetailScreen }    from "../screens/invoices/InvoiceDetailScreen";
 import { CollectionScreen }       from "../screens/collection/CollectionScreen";
+import { WalletScreen }          from "../screens/wallet/WalletScreen";
 
 // ── Design tokens ───────────────────────────────────────────────────────────────
 const CANVAS = "#050810";
@@ -111,6 +112,7 @@ function AuthenticatedNavigator() {
       <Stack.Screen name="Collection"    component={CollectionScreen}     />
       <Stack.Screen name="Invoices"      component={InvoicesScreen}       />
       <Stack.Screen name="InvoiceDetail" component={InvoiceDetailScreen}  />
+      <Stack.Screen name="Wallet"        component={WalletScreen}         />
     </Stack.Navigator>
   );
 }
