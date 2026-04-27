@@ -200,7 +200,7 @@ export default function PayoutsPage() {
 
         {error && (
           <motion.div variants={variants.fadeInUp}>
-            <GlassCard padding="none">
+            <GlassCard padding="sm">
               <p className="text-xs text-red-signal font-mono">{error}</p>
             </GlassCard>
           </motion.div>
@@ -272,13 +272,21 @@ export default function PayoutsPage() {
         </motion.div>
 
         {/* Transactions */}
-        {transactions.length > 0 && (
-          <motion.div variants={variants.fadeInUp}>
-            <GlassCard padding="none">
-              <div className="px-5 py-4 border-b border-glass-border">
-                <h2 className="font-heading text-sm font-semibold text-white">Recent Transactions</h2>
+        <motion.div variants={variants.fadeInUp}>
+          <GlassCard padding="none">
+            <div className="px-5 py-4 border-b border-glass-border">
+              <h2 className="font-heading text-sm font-semibold text-white">Recent Transactions</h2>
+            </div>
+            {loading ? (
+              <div className="py-6 text-center">
+                <p className="text-xs text-white/30 font-mono">loading…</p>
               </div>
-              {transactions.map((tx) => (
+            ) : transactions.length === 0 ? (
+              <div className="py-6 text-center">
+                <p className="text-xs text-white/30 font-mono">No transactions yet.</p>
+              </div>
+            ) : (
+              transactions.map((tx) => (
                 <div
                   key={tx.id}
                   className="flex items-center justify-between px-5 py-3.5 border-b border-glass-border/50 hover:bg-glass-100 transition-colors"
@@ -293,10 +301,10 @@ export default function PayoutsPage() {
                     {tx.type === "credit" ? "+" : "-"}₱{tx.amount_php.toLocaleString()}
                   </span>
                 </div>
-              ))}
-            </GlassCard>
-          </motion.div>
-        )}
+              ))
+            )}
+          </GlassCard>
+        </motion.div>
 
         {/* Invoice history */}
         <motion.div variants={variants.fadeInUp}>
