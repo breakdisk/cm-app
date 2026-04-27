@@ -42,6 +42,9 @@ pub struct DispatchQueueRow {
     /// shipment is auto-assigned or manually dispatched. Surfaced so the
     /// admin console can show "Dispatched" rows distinct from pending.
     pub dispatched_at:          Option<chrono::DateTime<chrono::Utc>>,
+    /// The driver that was assigned to this shipment. NULL until dispatched.
+    #[serde(default)]
+    pub assigned_driver_id:     Option<Uuid>,
 }
 
 #[async_trait]
@@ -56,7 +59,7 @@ pub trait DispatchQueueRepository: Send + Sync {
         tenant_id: Uuid,
         status: Option<&str>,
     ) -> anyhow::Result<Vec<DispatchQueueRow>>;
-    async fn mark_dispatched(&self, shipment_id: Uuid) -> anyhow::Result<()>;
+    async fn mark_dispatched(&self, shipment_id: Uuid, driver_id: Uuid) -> anyhow::Result<()>;
     /// Increment attempt counter and record the reason. Called by the
     /// shipment consumer when quick_dispatch fails so the admin console
     /// can visually flag shipments needing manual intervention.
@@ -127,7 +130,8 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
                     origin_address_line1, origin_city, origin_province, origin_postal_code,
                     origin_lat, origin_lng,
                     cod_amount_cents, special_instructions, service_type, status,
-                    auto_dispatch_attempts, last_dispatch_error, last_attempt_at, queued_at
+                    auto_dispatch_attempts, last_dispatch_error, last_attempt_at, queued_at,
+                    dispatched_at, assigned_driver_id
              FROM dispatch.dispatch_queue WHERE shipment_id = $1",
         )
         .bind(shipment_id)
@@ -153,7 +157,7 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
                            origin_lat, origin_lng,
                            cod_amount_cents, special_instructions, service_type, status,
                            auto_dispatch_attempts, last_dispatch_error, last_attempt_at,
-                           queued_at, dispatched_at
+                           queued_at, dispatched_at, assigned_driver_id
                     FROM dispatch.dispatch_queue
                     WHERE tenant_id = $1";
         // Pending stays FIFO (oldest first) so dispatchers naturally work
@@ -184,13 +188,14 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
         Ok(rows)
     }
 
-    async fn mark_dispatched(&self, shipment_id: Uuid) -> anyhow::Result<()> {
+    async fn mark_dispatched(&self, shipment_id: Uuid, driver_id: Uuid) -> anyhow::Result<()> {
         let result = sqlx::query(
             "UPDATE dispatch.dispatch_queue
-             SET status = 'dispatched', dispatched_at = NOW()
+             SET status = 'dispatched', dispatched_at = NOW(), assigned_driver_id = $2
              WHERE shipment_id = $1",
         )
         .bind(shipment_id)
+        .bind(driver_id)
         .execute(&self.pool)
         .await?;
 

@@ -503,8 +503,8 @@ impl DriverAssignmentService {
         self.kafka.publish_event(topics::DRIVER_ASSIGNED, &legacy_event).await
             .map_err(AppError::Internal)?;
 
-        // 8. Mark queue item as dispatched
-        self.queue_repo.mark_dispatched(cmd.shipment_id).await
+        // 8. Mark queue item as dispatched (record the assigned driver)
+        self.queue_repo.mark_dispatched(cmd.shipment_id, driver_id.inner()).await
             .map_err(|e| AppError::Internal(e.into()))?;
 
         tracing::info!(

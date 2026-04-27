@@ -17,8 +17,8 @@ import { useRosterEvents } from "@/hooks/useRosterEvents";
 
 // ── API helpers ────────────────────────────────────────────────────────────────
 
-const DRIVER_OPS_URL = process.env.NEXT_PUBLIC_DRIVER_OPS_URL ?? "http://localhost:8006";
-const API_BASE       = process.env.NEXT_PUBLIC_API_URL        ?? "http://localhost:8000";
+// All driver-ops calls route through the API gateway — no direct service URL.
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -70,7 +70,7 @@ function dtoToDriver(d: any): Driver {
 
 async function fetchDriversFromApi(): Promise<Driver[] | null> {
   try {
-    const res = await authFetch(`${DRIVER_OPS_URL}/v1/drivers`);
+    const res = await authFetch(`${API_BASE}/v1/drivers`);
     if (!res.ok) return null;
     const json = await res.json();
     const items = json.data ?? [];
@@ -83,7 +83,7 @@ async function fetchDriversFromApi(): Promise<Driver[] | null> {
 
 async function patchDriver(id: string, patch: Record<string, unknown>): Promise<Driver | null> {
   try {
-    const res = await authFetch(`${DRIVER_OPS_URL}/v1/drivers/${id}`, {
+    const res = await authFetch(`${API_BASE}/v1/drivers/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
@@ -133,7 +133,7 @@ async function registerDriverApi(input: {
     const tempPassword = inviteJson?.data?.temp_password ?? null;
     if (!userId) return { driverId: "", tempPassword: null, error: "Identity did not return a user_id" };
 
-    const regRes = await authFetch(`${DRIVER_OPS_URL}/v1/drivers`, {
+    const regRes = await authFetch(`${API_BASE}/v1/drivers`, {
       method: "POST",
       body: JSON.stringify({
         user_id:    userId,
