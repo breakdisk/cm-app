@@ -1,8 +1,6 @@
 "use client";
 
-export const dynamic = "force-dynamic";
-
-import { useState, useEffect, useCallback, useRef } from "react";
+import { Suspense, useState, useEffect, useCallback, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -701,7 +699,7 @@ function OrderRow({
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-export default function OrdersPage() {
+function OrdersPageInner() {
   const [orders,       setOrders]       = useState<IncomingOrder[]>(MOCK_ORDERS);
   const [drivers,      setDrivers]      = useState<Driver[]>(MOCK_DRIVERS);
   const [assignTarget, setAssignTarget] = useState<IncomingOrder | null>(null);
@@ -939,5 +937,13 @@ export default function OrdersPage() {
         )}
       </AnimatePresence>
     </>
+  );
+}
+
+export default function OrdersPage() {
+  return (
+    <Suspense>
+      <OrdersPageInner />
+    </Suspense>
   );
 }
