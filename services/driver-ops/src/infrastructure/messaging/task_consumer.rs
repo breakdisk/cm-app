@@ -1,5 +1,6 @@
 //! Consumes TASK_ASSIGNED events → creates DriverTask rows in driver_ops.tasks.
 
+use std::sync::Arc;
 use logisticos_events::{envelope::Event, payloads::TaskAssigned, topics};
 use rdkafka::{
     consumer::{CommitMode, Consumer, StreamConsumer},
@@ -8,11 +9,13 @@ use rdkafka::{
 };
 use sqlx::PgPool;
 use tokio::sync::watch;
+use crate::infrastructure::external::FcmClient;
 
 pub async fn start_task_consumer(
     brokers: &str,
     group_id: &str,
     pool: PgPool,
+    fcm: Option<Arc<FcmClient>>,
     mut shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let consumer: StreamConsumer = ClientConfig::new()
@@ -38,7 +41,7 @@ pub async fn start_task_consumer(
                 match result {
                     Ok(msg) => {
                         if let Some(payload) = msg.payload() {
-                            if let Err(e) = handle_task_assigned(payload, &pool).await {
+                            if let Err(e) = handle_task_assigned(payload, &pool, fcm.clone()).await {
                                 tracing::warn!(err = %e, "task consumer: handler error (skipping)");
                             }
                         }
@@ -55,7 +58,7 @@ pub async fn start_task_consumer(
     Ok(())
 }
 
-async fn handle_task_assigned(payload: &[u8], pool: &PgPool) -> anyhow::Result<()> {
+async fn handle_task_assigned(payload: &[u8], pool: &PgPool, fcm: Option<Arc<FcmClient>>) -> anyhow::Result<()> {
     let event: Event<TaskAssigned> = serde_json::from_slice(payload)?;
     let t = event.data;
 
@@ -160,6 +163,17 @@ async fn handle_task_assigned(payload: &[u8], pool: &PgPool) -> anyhow::Result<(
         task_type  = task_type,
         "task consumer: task created for driver"
     );
+
+    // Fire-and-forget FCM push — does not block task creation or Kafka commit.
+    // t.driver_id is the driver's user_id (identity-service UUID), which is what
+    // identity.push_tokens.user_id indexes on.
+    if let Some(fcm) = fcm {
+        let driver_user_id = t.driver_id;
+        tokio::spawn(async move {
+            fcm.notify_driver(driver_user_id).await;
+        });
+    }
+
     Ok(())
 }
 
