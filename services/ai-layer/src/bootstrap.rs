@@ -29,7 +29,7 @@ pub async fn run() -> anyhow::Result<()> {
     let pool = PgPoolOptions::new()
         .max_connections(cfg.database.max_connections)
         .after_connect(|conn, _meta| Box::pin(async move {
-            sqlx::query("SET search_path TO ai_layer, public")
+            sqlx::query("SET search_path TO ai, public")
                 .execute(&mut *conn)
                 .await?;
             Ok(())
@@ -37,7 +37,7 @@ pub async fn run() -> anyhow::Result<()> {
         .connect(&cfg.database.url)
         .await?;
 
-    logisticos_common::migrations::run(&pool, "ai_layer", &sqlx::migrate!("./migrations")).await?;
+    logisticos_common::migrations::run(&pool, "ai", &sqlx::migrate!("./migrations")).await?;
 
     // Claude API client
     let claude = Arc::new(ClaudeClient::new(cfg.anthropic.api_key.clone()));

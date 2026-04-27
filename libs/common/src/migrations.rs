@@ -28,6 +28,12 @@ pub async fn run(
 ) -> Result<(), sqlx::Error> {
     validate_schema_ident(schema)?;
 
+    // Schema must exist before we can create the tracking table inside it.
+    // Migration 0001 typically creates the schema, but it can't run until
+    // the migrator has somewhere to record its state — chicken/egg.
+    let create_schema = format!(r#"CREATE SCHEMA IF NOT EXISTS "{schema}""#);
+    sqlx::query(&create_schema).execute(pool).await?;
+
     let ddl = format!(
         r#"CREATE TABLE IF NOT EXISTS "{schema}"._sqlx_migrations (
             version BIGINT PRIMARY KEY,
