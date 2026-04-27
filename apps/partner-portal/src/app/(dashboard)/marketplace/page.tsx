@@ -34,6 +34,7 @@ import {
   ExternalLink,
   Check,
   XCircle,
+  Receipt as ReceiptIcon,
 } from "lucide-react";
 
 import { GlassCard } from "@/components/ui/glass-card";
@@ -47,6 +48,8 @@ import {
   deleteListing,
   acceptBooking,
   rejectBooking,
+  issueReceipt,
+  recordPickup,
   subscribeToMarketplaceUpdates,
   formatCentsPhp,
   SIZE_CLASS_CAPACITY_HINT,
@@ -57,6 +60,16 @@ import {
   type SizeClass,
   type VehicleListing,
 } from "@/lib/api/marketplace";
+import { findReceiptByBookingId, type BusReceipt } from "@/lib/api/marketplace-bus";
+import { ReceiptModal, type ReceiptModalBooking } from "@/components/marketplace/ReceiptModal";
+import { PickupModal, type PickupModalBooking } from "@/components/marketplace/PickupModal";
+import {
+  emitIdentityChanged,
+  getCurrentPartnerId,
+  listKnownPartners,
+  setCurrentPartnerId,
+  subscribeToIdentityChanges,
+} from "@/lib/api/partner-identity";
 
 // ── Status styling ────────────────────────────────────────────────────────────
 
@@ -550,6 +563,8 @@ function MarketplacePageInner() {
   const [search, setSearch]     = useState("");
   const [statusFilter, setStatusFilter] = useState<ListingStatus | "all">(qpStatus ?? "all");
   const [drawer, setDrawer] = useState<DrawerMode>(qpNew ? { kind: "create" } : { kind: "closed" });
+  const [actingPartnerId, setActingPartnerId] = useState<string>(getCurrentPartnerId());
+  const knownPartners = listKnownPartners();
 
   const refresh = useCallback(async () => {
     const [l, b] = await Promise.all([fetchListings(), fetchBookings()]);
@@ -574,11 +589,103 @@ function MarketplacePageInner() {
     // Cross-portal live refresh: merchant booking creation publishes to the
     // bus (ADR-0013 §Booking flow — stand-in for `marketplace.booking_created`
     // on Kafka); the storage event refreshes our table immediately.
-    const unsubscribe = subscribeToMarketplaceUpdates(() => refresh());
-    return () => { clearInterval(id); unsubscribe(); };
+    const unsubscribeBus = subscribeToMarketplaceUpdates(() => refresh());
+    // Acting-as switcher changes reshape what this partner sees.
+    const unsubscribeIdentity = subscribeToIdentityChanges(() => {
+      setActingPartnerId(getCurrentPartnerId());
+      refresh();
+    });
+    return () => {
+      clearInterval(id);
+      unsubscribeBus();
+      unsubscribeIdentity();
+    };
   }, [refresh]);
 
+  function handleSwitchPartner(id: string) {
+    setCurrentPartnerId(id);
+    setActingPartnerId(id);
+    emitIdentityChanged();
+    refresh();
+  }
+
   const [respondingTo, setRespondingTo] = useState<string | null>(null);
+  const [receiptsByBookingId, setReceiptsByBookingId] = useState<Record<string, BusReceipt>>({});
+  const [receiptModal, setReceiptModal] = useState<
+    { open: boolean; booking: ReceiptModalBooking | null; receipt: BusReceipt | null }
+  >({ open: false, booking: null, receipt: null });
+  const [pickupModal, setPickupModal] = useState<
+    { open: boolean; booking: PickupModalBooking | null }
+  >({ open: false, booking: null });
+
+  // Hydrate receipt lookup whenever the bookings list changes. Cheap — same
+  // localStorage the bus lives in; O(bookings) + O(receipts).
+  useEffect(() => {
+    const next: Record<string, BusReceipt> = {};
+    bookings.forEach((b) => {
+      const r = findReceiptByBookingId(b.id);
+      if (r) next[b.id] = r;
+    });
+    setReceiptsByBookingId(next);
+  }, [bookings]);
+
+  function openReceiptFor(b: MarketplaceBooking) {
+    const receipt = receiptsByBookingId[b.id] ?? null;
+    const modalBooking: ReceiptModalBooking = {
+      id:                   b.id,
+      awb:                  b.awb,
+      partner_display_name: knownPartners.find((p) => p.id === actingPartnerId)?.name ?? "Carrier",
+      merchant_display:     b.consumer_name,  // partner's pre-accept mask; admin/merchant see real merchant_display
+      consumer_display:     b.consumer_name,
+      pickup_label:         b.pickup_label,
+      dropoff_label:        b.dropoff_label,
+      pickup_at:            b.pickup_at,
+      cargo_weight_kg:      b.cargo_weight_kg,
+      quoted_price_cents:   b.quoted_price_cents,
+      status:               b.status,
+    };
+    setReceiptModal({ open: true, booking: modalBooking, receipt });
+  }
+
+  async function handleIssueReceipt(input: { signed_by: string; notes: string }) {
+    if (!receiptModal.booking) return;
+    const created = await issueReceipt({
+      booking_id: receiptModal.booking.id,
+      signed_by:  input.signed_by || null,
+      notes:      input.notes     || null,
+    });
+    if (created) {
+      setReceiptsByBookingId((prev) => ({ ...prev, [created.booking_id]: created }));
+      setReceiptModal((prev) => ({ ...prev, receipt: created }));
+    }
+  }
+
+  function openPickupFor(b: MarketplaceBooking) {
+    setPickupModal({
+      open: true,
+      booking: {
+        id:              b.id,
+        awb:             b.awb,
+        pickup_label:    b.pickup_label,
+        dropoff_label:   b.dropoff_label,
+        pickup_at:       b.pickup_at,
+        cargo_weight_kg: b.cargo_weight_kg,
+      },
+    });
+  }
+
+  async function handleRecordPickup(input: { picked_up_by: string; pickup_notes: string }) {
+    if (!pickupModal.booking) return;
+    const updated = await recordPickup({
+      booking_id:   pickupModal.booking.id,
+      picked_up_by: input.picked_up_by || null,
+      pickup_notes: input.pickup_notes || null,
+    });
+    if (updated) {
+      setPickupModal({ open: false, booking: null });
+      await refresh();
+    }
+  }
 
   async function handleAccept(b: MarketplaceBooking) {
     setRespondingTo(b.id);
@@ -651,17 +758,40 @@ function MarketplacePageInner() {
             weight, and distance — accepted bookings enter order-intake like any shipment.
           </p>
         </div>
-        <button
-          onClick={() => setDrawer({ kind: "create" })}
-          className={cn(
-            "flex items-center gap-2 rounded-lg border border-green-signal/40 bg-green-surface px-4 py-2",
-            "text-sm font-medium text-green-signal transition-all",
-            "hover:shadow-[0_0_14px_rgba(0,255,136,0.4)]"
-          )}
-        >
-          <Plus className="h-4 w-4" />
-          New Listing
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Pre-backend identity switcher. Production: read-only badge showing
+              the carrier derived from the JWT `pid` claim (ADR-0013 §Auth). */}
+          <div
+            className="flex items-center gap-2 rounded-lg border border-purple-plasma/30 bg-purple-surface px-3 py-1.5"
+            title="Pre-backend demo — switch which carrier this session represents"
+          >
+            <span className="font-mono text-2xs uppercase tracking-wider text-purple-plasma">
+              Acting as
+            </span>
+            <select
+              value={actingPartnerId}
+              onChange={(e) => handleSwitchPartner(e.target.value)}
+              className="bg-transparent text-xs font-medium text-white outline-none"
+            >
+              {knownPartners.map((p) => (
+                <option key={p.id} value={p.id} className="bg-canvas-100 text-white">
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <button
+            onClick={() => setDrawer({ kind: "create" })}
+            className={cn(
+              "flex items-center gap-2 rounded-lg border border-green-signal/40 bg-green-surface px-4 py-2",
+              "text-sm font-medium text-green-signal transition-all",
+              "hover:shadow-[0_0_14px_rgba(0,255,136,0.4)]"
+            )}
+          >
+            <Plus className="h-4 w-4" />
+            New Listing
+          </button>
+        </div>
       </div>
 
       {/* ── Deep-link banner ─────────────────────────────────────────────── */}
@@ -943,7 +1073,18 @@ function MarketplacePageInner() {
                       {formatCentsPhp(b.quoted_price_cents)}
                     </td>
                     <td className="px-5 py-3 text-xs text-white/70">
-                      {fmtRelative(b.pickup_at)}
+                      {b.picked_up_at ? (
+                        <>
+                          <span className="text-green-signal">Picked up {fmtRelative(b.picked_up_at)}</span>
+                          {b.picked_up_by && (
+                            <div className="mt-0.5 font-mono text-2xs text-white/40">
+                              {b.picked_up_by}
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        fmtRelative(b.pickup_at)
+                      )}
                     </td>
                     <td className="px-5 py-3">
                       <div className="flex items-center gap-2">
@@ -974,6 +1115,37 @@ function MarketplacePageInner() {
                             </button>
                           </div>
                         )}
+                        {b.status === "accepted" && !b.picked_up_at && (
+                          <button
+                            onClick={() => openPickupFor(b)}
+                            className="flex h-7 items-center gap-1 rounded-md border border-green-signal/40 bg-green-surface px-2 text-2xs font-mono text-green-signal transition-all hover:shadow-[0_0_8px_rgba(0,255,136,0.4)]"
+                            title="Record cargo collected — flips status to in_transit"
+                          >
+                            <Truck className="h-3 w-3" />
+                            Record Pickup
+                          </button>
+                        )}
+                        {b.status !== "pending" && b.status !== "rejected" && b.status !== "cancelled" && (
+                          receiptsByBookingId[b.id] ? (
+                            <button
+                              onClick={() => openReceiptFor(b)}
+                              className="flex h-7 items-center gap-1 rounded-md border border-cyan-neon/40 bg-cyan-surface px-2 text-2xs font-mono text-cyan-neon transition-all hover:shadow-[0_0_8px_rgba(0,229,255,0.4)]"
+                              title="View shipment receipt"
+                            >
+                              <ReceiptIcon className="h-3 w-3" />
+                              View Receipt
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => openReceiptFor(b)}
+                              className="flex h-7 items-center gap-1 rounded-md border border-green-signal/40 bg-green-surface px-2 text-2xs font-mono text-green-signal transition-all hover:shadow-[0_0_8px_rgba(0,255,136,0.4)]"
+                              title="Issue shipment receipt to customer"
+                            >
+                              <ReceiptIcon className="h-3 w-3" />
+                              Issue Receipt
+                            </button>
+                          )
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -989,6 +1161,23 @@ function MarketplacePageInner() {
         mode={drawer}
         onClose={() => setDrawer({ kind: "closed" })}
         onSaved={refresh}
+      />
+
+      {/* ── Shipment Receipt modal ────────────────────────────────────────── */}
+      <ReceiptModal
+        open={receiptModal.open}
+        onClose={() => setReceiptModal({ open: false, booking: null, receipt: null })}
+        booking={receiptModal.booking}
+        receipt={receiptModal.receipt}
+        onIssue={handleIssueReceipt}
+      />
+
+      {/* ── Pickup transition modal ──────────────────────────────────────── */}
+      <PickupModal
+        open={pickupModal.open}
+        onClose={() => setPickupModal({ open: false, booking: null })}
+        booking={pickupModal.booking}
+        onConfirm={handleRecordPickup}
       />
     </div>
   );

@@ -25,8 +25,12 @@ import {
   appendBooking as busAppend,
   readBus,
   subscribeToBus,
+  findReceiptByBookingId as busFindReceiptByBookingId,
   type BusBooking,
+  type BusReceipt,
 } from "./marketplace-bus";
+
+export type { BusReceipt } from "./marketplace-bus";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -86,6 +90,9 @@ export interface MerchantBooking {
   status:               BookingStatus;
   pickup_at:            string;
   created_at:           string;
+  picked_up_at:         string | null;
+  picked_up_by:         string | null;
+  pickup_notes:         string | null;
 }
 
 // Pre-backend: this portal represents a single merchant session. In production
@@ -171,6 +178,8 @@ const MOCK_BOOKINGS: MerchantBooking[] = [
     pickup_label: "Pasig Warehouse", dropoff_label: "Batangas Industrial Park",
     quoted_price_cents: 212000, status: "in_transit",
     pickup_at: iso(addHours(now(), -1.2)), created_at: iso(addHours(now(), -3)),
+    picked_up_at: iso(addHours(now(), -1.1)),
+    picked_up_by: "Driver R. Villanueva", pickup_notes: null,
   },
   {
     id: "b9000000-0000-0000-0000-000000000002",
@@ -183,6 +192,7 @@ const MOCK_BOOKINGS: MerchantBooking[] = [
     pickup_label: "Quezon City Store", dropoff_label: "Antipolo Branch",
     quoted_price_cents: 48000, status: "pending",
     pickup_at: iso(addHours(now(), 2)), created_at: iso(addHours(now(), -0.4)),
+    picked_up_at: null, picked_up_by: null, pickup_notes: null,
   },
   {
     id: "b9000000-0000-0000-0000-000000000003",
@@ -195,6 +205,8 @@ const MOCK_BOOKINGS: MerchantBooking[] = [
     pickup_label: "Valenzuela DC", dropoff_label: "La Union Warehouse",
     quoted_price_cents: 1280000, status: "delivered",
     pickup_at: iso(addHours(now(), -22)), created_at: iso(addHours(now(), -26)),
+    picked_up_at: iso(addHours(now(), -21.5)),
+    picked_up_by: "Driver E. Ocampo", pickup_notes: null,
   },
   {
     id: "b9000000-0000-0000-0000-000000000004",
@@ -207,6 +219,8 @@ const MOCK_BOOKINGS: MerchantBooking[] = [
     pickup_label: "Makati Office",  dropoff_label: "Alabang Town Center",
     quoted_price_cents: 82000, status: "disputed",
     pickup_at: iso(addHours(now(), -8)), created_at: iso(addHours(now(), -12)),
+    picked_up_at: iso(addHours(now(), -7.5)),
+    picked_up_by: "Driver P. Mendoza", pickup_notes: null,
   },
 ];
 
@@ -231,6 +245,9 @@ function busToMerchantBooking(b: BusBooking): MerchantBooking | null {
     status:               b.status,
     pickup_at:            b.pickup_at,
     created_at:           b.created_at,
+    picked_up_at:         b.picked_up_at,
+    picked_up_by:         b.picked_up_by,
+    pickup_notes:         b.pickup_notes,
   };
 }
 
@@ -280,6 +297,12 @@ export async function fetchMarketplaceStats(): Promise<MerchantMarketplaceStats>
 // Re-export the bus subscriber so page code can live-refresh on cross-portal
 // updates (partner accepts → merchant sees status flip) without another import.
 export { subscribeToBus as subscribeToMarketplaceUpdates } from "./marketplace-bus";
+
+// Fetch the shipment receipt for a booking, if one has been issued. The merchant
+// only reads — the partner (or admin override) issues receipts.
+export async function fetchReceiptForBooking(bookingId: string): Promise<BusReceipt | null> {
+  return busFindReceiptByBookingId(bookingId);
+}
 
 export interface CreateBookingInput {
   listing_id:      string;

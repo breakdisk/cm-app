@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Package, Globe, MapPin, Clock, Zap, User, Truck,
@@ -328,14 +329,7 @@ const STATUS_CONFIG: Record<OrderStatus, { label: string; badge: "cyan" | "amber
   picked_up:  { label: "Picked Up",   badge: "purple", dot: true  },
 };
 
-// ── KPI data ──────────────────────────────────────────────────────────────────
-
-const KPIS = [
-  { label: "New Orders",      value: 2,    trend: +5,   color: "cyan"   as const, format: "number" as const, live: true  },
-  { label: "Awaiting Driver", value: 2,    trend: 0,    color: "amber"  as const, format: "number" as const, live: true  },
-  { label: "Assigned Today",  value: 2,    trend: +12,  color: "green"  as const, format: "number" as const             },
-  { label: "Avg Assign Time", value: 3.4,  trend: -0.8, color: "purple" as const, format: "number" as const, unit: "min" },
-];
+// KPIS are computed from live orders in the component — no hardcoded values.
 
 // ── Assign Driver Modal ───────────────────────────────────────────────────────
 
@@ -694,7 +688,13 @@ function OrderRow({
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-export default function OrdersPage() {
+function OrdersPageInner() {
+  const searchParams = useSearchParams();
+  // Deep-link from drivers page: ?assignTo=<driverId> pre-selects a driver in
+  // the assign modal for the first unassigned order, or holds the pre-selection
+  // open until an order is explicitly chosen.
+  const preselectedDriverId = searchParams.get("assignTo") ?? null;
+
   const [orders,       setOrders]       = useState<IncomingOrder[]>(MOCK_ORDERS);
   const [drivers,      setDrivers]      = useState<Driver[]>(MOCK_DRIVERS);
   const [assignTarget, setAssignTarget] = useState<IncomingOrder | null>(null);
@@ -708,11 +708,16 @@ export default function OrdersPage() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  // Live-ish refresh: driver-ops broadcasts a RosterEvent whenever a driver's status flips
-  // (went online, accepted a route, went on break, etc). Those are strong correlated signals
-  // that a shipment's dispatch state likely changed too, so we opportunistically refetch
-  // orders + available drivers. A 20s poll backstops anything the roster channel misses.
-  // Replacing both with a dedicated dispatch/order-intake WS is a follow-up.
+  // When a driver deep-links here via ?assignTo=<id>, open the assign modal for
+  // the first unassigned order automatically so they can assign right away.
+  useEffect(() => {
+    if (!preselectedDriverId) return;
+    const first = orders.find(o => o.status === "unassigned");
+    if (first) setAssignTarget(first);
+  // Only fire once after the first real order load (not on every re-render).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preselectedDriverId, orders.length]);
+
   useRosterEvents((event) => {
     if (event.type === "status_changed") loadData();
   });
@@ -723,17 +728,41 @@ export default function OrdersPage() {
 
   const unassignedCount = orders.filter(o => o.status === "unassigned").length;
   const assigningCount  = orders.filter(o => o.status === "assigning").length;
+  const assignedCount   = orders.filter(o => o.status === "assigned" || o.status === "picked_up").length;
 
-  function handleAutoAssign(orderId: string) {
-    // Simulate AI auto-assignment: assigning → assigned (with AI-recommended driver)
+  // Computed KPIs derived from live orders state — no hardcoded values.
+  const kpis = useMemo(() => [
+    { label: "New Orders",      value: unassignedCount,                color: "cyan"   as const, format: "number" as const, live: true },
+    { label: "Awaiting Driver", value: unassignedCount + assigningCount, color: "amber" as const, format: "number" as const, live: true },
+    { label: "Assigned Today",  value: assignedCount,                  color: "green"  as const, format: "number" as const             },
+    { label: "Total Orders",    value: orders.length,                  color: "purple" as const, format: "number" as const             },
+  ], [unassignedCount, assigningCount, assignedCount, orders.length]);
+
+  async function handleAutoAssign(orderId: string) {
+    // Optimistic: flip to "assigning" immediately for responsiveness.
     setOrders(prev => prev.map(o =>
       o.id === orderId ? { ...o, status: "assigning" } : o
     ));
-    setTimeout(() => {
-      setOrders(prev => prev.map(o =>
-        o.id === orderId ? { ...o, status: "assigned", assignedTo: "Rodel Bautista", etaPickup: "~6 min" } : o
-      ));
-    }, 2000);
+    // Pick the AI-recommended driver from the loaded list (nearest compatible).
+    const order = orders.find(o => o.id === orderId);
+    const recommended = order
+      ? drivers
+          .filter(d => d.status === "available")
+          .sort((a, b) => a.distanceKm - b.distanceKm)[0]
+      : null;
+    const driverId = recommended?.id ?? "";
+    const driverName = recommended?.name ?? "Auto-assigned";
+
+    const ok = driverId ? await dispatchOrder(orderId, driverId) : false;
+    setOrders(prev => prev.map(o =>
+      o.id === orderId
+        ? { ...o, status: ok ? "assigned" : "unassigned", assignedTo: ok ? driverName : undefined, etaPickup: ok ? "~6 min" : undefined }
+        : o
+    ));
+    if (!ok) {
+      // Backend dispatch failed — log and let the user retry manually.
+      console.warn(`Auto-assign failed for order ${orderId}`);
+    }
   }
 
   function handleManualAssign(orderId: string, driverId: string, driverName: string) {
@@ -764,14 +793,13 @@ export default function OrdersPage() {
           variants={variants.staggerContainer}
           className="grid grid-cols-2 gap-4 xl:grid-cols-4"
         >
-          {KPIS.map((kpi) => (
+          {kpis.map((kpi) => (
             <motion.div key={kpi.label} variants={variants.fadeInUp}>
               <GlassCard glow={kpi.color}>
                 <LiveMetric
                   label={kpi.label}
                   value={kpi.value}
-                  unit={kpi.unit}
-                  trend={kpi.trend}
+                  trend={0}
                   color={kpi.color}
                   format={kpi.format}
                   live={kpi.live}
@@ -910,12 +938,29 @@ export default function OrdersPage() {
         {assignTarget && (
           <AssignModal
             order={assignTarget}
-            drivers={drivers}
+            drivers={
+              // If deep-linked with ?assignTo, pre-sort the driver list so
+              // the recommended driver appears first — UX shortcut.
+              preselectedDriverId
+                ? [
+                    ...drivers.filter(d => d.id === preselectedDriverId),
+                    ...drivers.filter(d => d.id !== preselectedDriverId),
+                  ]
+                : drivers
+            }
             onClose={() => setAssignTarget(null)}
             onAssign={handleManualAssign}
           />
         )}
       </AnimatePresence>
     </>
+  );
+}
+
+export default function OrdersPage() {
+  return (
+    <Suspense fallback={null}>
+      <OrdersPageInner />
+    </Suspense>
   );
 }

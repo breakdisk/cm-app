@@ -17,6 +17,7 @@ import {
 } from "recharts";
 import { Star, AlertTriangle, CheckCircle2, Clock, GitBranch, Download } from "lucide-react";
 import { authFetch } from "@/lib/auth/auth-fetch";
+import { carriersApi, carrierIdOf, type ZoneSlaRow } from "@/lib/api/carriers";
 
 // ── API helpers ────────────────────────────────────────────────────────────────
 
@@ -55,14 +56,10 @@ async function fetchTimeseries() {
   }
 }
 
-// ── Mock data ──────────────────────────────────────────────────────────────────
+// ── Constants / fallbacks ──────────────────────────────────────────────────────
 
-const ZONE_SLA = [
-  { zone: "Metro Manila",    d1: 82.4, d2: 96.2, d3: 99.1, breach: 18,  target: 95 },
-  { zone: "Luzon Provinces", d1: 54.1, d2: 87.4, d3: 94.1, breach: 42,  target: 90 },
-  { zone: "Visayas",         d1: 38.2, d2: 76.8, d3: 91.8, breach: 64,  target: 88 },
-  { zone: "Mindanao",        d1: 21.4, d2: 61.3, d3: 88.4, breach: 112, target: 85 },
-];
+/** SLA target per zone — used when the carrier's global SLA pct isn't zone-specific. */
+const DEFAULT_ZONE_TARGET = 90;
 
 const BREACH_REASONS = [
   { reason: "Traffic / Road closure", count: 184 },
@@ -128,6 +125,8 @@ function SLADashboardPageInner() {
   const [breachCount, setBreachCount]     = useState<number>(462);
   const [avgDays, setAvgDays]             = useState<number>(1.8);
   const [trendData, setTrendData]         = useState(DAILY_SLA_TREND_DEFAULT);
+  const [zoneSla, setZoneSla]             = useState<ZoneSlaRow[]>([]);
+  const [slaTarget, setSlaTarget]         = useState<number>(DEFAULT_ZONE_TARGET);
 
   useEffect(() => {
     if (focusZone && focusRowRef.current) {
@@ -136,6 +135,8 @@ function SLADashboardPageInner() {
   }, [focusZone]);
 
   const loadData = useCallback(async () => {
+    // Fetch analytics KPIs + timeseries + zone SLA in parallel.
+    // Zone SLA needs the carrier ID from /me first — run it independently.
     const [kpis, timeseries] = await Promise.all([fetchKpis(), fetchTimeseries()]);
 
     if (kpis) {
@@ -152,6 +153,26 @@ function SLADashboardPageInner() {
         rate: b.delivered > 0 ? Math.round((b.delivered / (b.delivered + b.failed)) * 100) : 100,
       }));
       setTrendData(trend);
+    }
+
+    // Zone SLA — resolve carrier ID from /me then fetch summary for last 30 days.
+    try {
+      const carrier = await carriersApi.me();
+      const cid = carrierIdOf(carrier);
+      setSlaTarget(carrier.sla.on_time_target_pct);
+      if (cid) {
+        const from = new Date();
+        from.setDate(from.getDate() - 30);
+        const zones = await carriersApi.slaSummary(
+          cid,
+          from.toISOString(),
+          new Date().toISOString(),
+        );
+        if (zones.length > 0) setZoneSla(zones);
+      }
+    } catch (e) {
+      // Non-fatal — zone table will show empty state or retain previous data.
+      console.warn("Failed to load zone SLA data:", e);
     }
   }, []);
 
@@ -248,57 +269,60 @@ function SLADashboardPageInner() {
           </div>
 
           {/* Table header */}
-          <div className="grid grid-cols-[1fr_80px_80px_80px_80px_80px] gap-3 mb-2 px-1">
-            {["Zone", "D+1", "D+2", "D+3", "Breaches", "Grade"].map((h) => (
+          <div className="grid grid-cols-[1fr_72px_72px_72px_88px_80px] gap-3 mb-2 px-1">
+            {["Zone", "Total", "On-Time", "Failed", "Rate", "Grade"].map((h) => (
               <span key={h} className="text-2xs font-mono text-white/30 uppercase tracking-wider">{h}</span>
             ))}
           </div>
 
-          <div className="flex flex-col gap-2">
-            {ZONE_SLA.map((z) => {
-              const grade     = getSlaGrade(z.d3, z.target);
-              const v         = gradeVariant(grade);
-              const isFocused = focusZone && z.zone.toLowerCase().includes(focusZone.toLowerCase());
-              return (
-                <div
-                  key={z.zone}
-                  ref={isFocused ? focusRowRef : undefined}
-                  className={`grid grid-cols-[1fr_80px_80px_80px_80px_80px] gap-3 items-center rounded-lg bg-glass-100 px-3 py-3 transition-all ${
-                    isFocused ? "ring-1 ring-cyan-neon/50 bg-cyan-neon/5" : ""
-                  }`}
-                >
-                  <div className="flex items-start gap-2">
-                    <div>
-                      <p className="text-xs font-medium text-white">{z.zone}</p>
-                      <p className="text-2xs font-mono text-white/30">Target: {z.target}%</p>
+          {zoneSla.length === 0 ? (
+            <p className="text-xs font-mono text-white/30 py-6 text-center">
+              No SLA data yet — records populate as shipments complete.
+            </p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {zoneSla.map((z) => {
+                const grade     = getSlaGrade(z.on_time_rate, slaTarget);
+                const v         = gradeVariant(grade);
+                const isFocused = focusZone && z.zone.toLowerCase().includes(focusZone.toLowerCase());
+                return (
+                  <div
+                    key={z.zone}
+                    ref={isFocused ? focusRowRef : undefined}
+                    className={`grid grid-cols-[1fr_72px_72px_72px_88px_80px] gap-3 items-center rounded-lg bg-glass-100 px-3 py-3 transition-all ${
+                      isFocused ? "ring-1 ring-cyan-neon/50 bg-cyan-neon/5" : ""
+                    }`}
+                  >
+                    <div className="flex items-start gap-2">
+                      <div>
+                        <p className="text-xs font-medium text-white">{z.zone}</p>
+                        <p className="text-2xs font-mono text-white/30">Target: {slaTarget}%</p>
+                      </div>
+                      <a
+                        href={`/admin/carriers?coverage=${encodeURIComponent(z.zone)}`}
+                        title="View carriers serving this zone"
+                        className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-glass-border text-white/40 hover:text-purple-plasma hover:border-purple-plasma/30 transition-colors"
+                      >
+                        <GitBranch size={10} />
+                      </a>
                     </div>
-                    {/* Cross-portal — carrier coverage + allocation lives in admin/carriers.
-                        Plain <a> preserves the /admin basePath. */}
-                    <a
-                      href={`/admin/carriers?coverage=${encodeURIComponent(z.zone)}`}
-                      title="View carriers serving this zone"
-                      className="inline-flex h-5 w-5 items-center justify-center rounded-md border border-glass-border text-white/40 hover:text-purple-plasma hover:border-purple-plasma/30 transition-colors"
-                    >
-                      <GitBranch size={10} />
-                    </a>
-                  </div>
-                  {[z.d1, z.d2, z.d3].map((rate, i) => (
+                    <span className="text-xs font-mono text-white/60">{z.total}</span>
+                    <span className="text-xs font-mono text-green-signal">{z.on_time}</span>
+                    <span className="text-xs font-mono text-red-signal">{z.failed}</span>
                     <span
-                      key={i}
                       className={`text-xs font-mono font-bold ${
-                        rate >= z.target     ? "text-green-signal" :
-                        rate >= z.target - 3 ? "text-amber-signal" : "text-red-signal"
+                        z.on_time_rate >= slaTarget       ? "text-green-signal" :
+                        z.on_time_rate >= slaTarget - 3   ? "text-amber-signal" : "text-red-signal"
                       }`}
                     >
-                      {rate}%
+                      {z.on_time_rate.toFixed(1)}%
                     </span>
-                  ))}
-                  <span className="text-xs font-mono text-red-signal">{z.breach}</span>
-                  <NeonBadge variant={v}>{grade}</NeonBadge>
-                </div>
-              );
-            })}
-          </div>
+                    <NeonBadge variant={v}>{grade}</NeonBadge>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </GlassCard>
       </motion.div>
 

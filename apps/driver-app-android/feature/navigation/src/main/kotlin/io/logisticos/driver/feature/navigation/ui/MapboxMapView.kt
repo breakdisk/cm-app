@@ -2,6 +2,7 @@ package io.logisticos.driver.feature.navigation.ui
 
 import android.graphics.Color as AndroidColor
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,6 +36,13 @@ fun MapboxMapView(
 ) {
     var mapViewRef by remember { mutableStateOf<MapView?>(null) }
 
+    // MapView holds an EGL context and a native renderer — leaving it attached
+    // across navigation transitions can block input dispatch to sibling Compose
+    // content (e.g. bottom nav tabs). Release it explicitly on dispose.
+    DisposableEffect(Unit) {
+        onDispose { mapViewRef?.onDestroy() }
+    }
+
     AndroidView(
         modifier = modifier,
         factory = { context ->
@@ -61,11 +69,14 @@ fun MapboxMapView(
             }
         },
         update = { mapView ->
+            val hasDriverFix = driverLat != 0.0 || driverLng != 0.0
+            val centerLat = if (hasDriverFix) driverLat else stopLat
+            val centerLng = if (hasDriverFix) driverLng else stopLng
             mapView.mapboxMap.setCamera(
                 CameraOptions.Builder()
-                    .center(Point.fromLngLat(driverLng, driverLat))
-                    .zoom(15.0)
-                    .bearing(driverBearing.toDouble())
+                    .center(Point.fromLngLat(centerLng, centerLat))
+                    .zoom(if (hasDriverFix) 15.0 else 14.0)
+                    .bearing(if (hasDriverFix) driverBearing.toDouble() else 0.0)
                     .build()
             )
         }

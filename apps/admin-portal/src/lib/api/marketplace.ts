@@ -16,8 +16,12 @@
 import {
   readBus,
   subscribeToBus,
+  findReceiptByBookingId as busFindReceiptByBookingId,
   type BusBooking,
+  type BusReceipt,
 } from "./marketplace-bus";
+
+export type { BusReceipt } from "./marketplace-bus";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -63,6 +67,9 @@ export interface AdminBooking {
   status:               BookingStatus;
   pickup_at:            string;
   created_at:           string;
+  picked_up_at:         string | null;
+  picked_up_by:         string | null;
+  pickup_notes:         string | null;
 }
 
 export interface MarketplaceStats {
@@ -160,6 +167,8 @@ const MOCK_BOOKINGS: AdminBooking[] = [
     pickup_label: "Makati CBD", dropoff_label: "BGC, Taguig",
     quoted_price_cents: 14500, status: "in_transit",
     pickup_at: iso(addHours(now(), -0.5)), created_at: iso(addHours(now(), -1)),
+    picked_up_at: iso(addHours(now(), -0.4)),
+    picked_up_by: "Driver J. Santos", pickup_notes: null,
   },
   {
     id: "b1000000-0000-0000-0000-000000000002",
@@ -172,6 +181,7 @@ const MOCK_BOOKINGS: AdminBooking[] = [
     pickup_label: "Pasig Warehouse", dropoff_label: "Laguna Techno Park",
     quoted_price_cents: 285000, status: "pending",
     pickup_at: iso(addHours(now(), 1.5)), created_at: iso(addHours(now(), -0.3)),
+    picked_up_at: null, picked_up_by: null, pickup_notes: null,
   },
   {
     id: "b2000000-0000-0000-0000-000000000001",
@@ -184,6 +194,7 @@ const MOCK_BOOKINGS: AdminBooking[] = [
     pickup_label: "Valenzuela", dropoff_label: "Tarlac City",
     quoted_price_cents: 1420000, status: "accepted",
     pickup_at: iso(addHours(now(), 4)), created_at: iso(addHours(now(), -2)),
+    picked_up_at: null, picked_up_by: null, pickup_notes: null,
   },
   {
     id: "b3000000-0000-0000-0000-000000000001",
@@ -196,6 +207,8 @@ const MOCK_BOOKINGS: AdminBooking[] = [
     pickup_label: "Quezon City", dropoff_label: "Antipolo",
     quoted_price_cents: 54000, status: "disputed",
     pickup_at: iso(addHours(now(), -3)), created_at: iso(addHours(now(), -4)),
+    picked_up_at: iso(addHours(now(), -2.8)),
+    picked_up_by: "Driver L. Tan", pickup_notes: null,
   },
   {
     id: "b4000000-0000-0000-0000-000000000001",
@@ -208,6 +221,8 @@ const MOCK_BOOKINGS: AdminBooking[] = [
     pickup_label: "Mactan Port", dropoff_label: "Cebu IT Park",
     quoted_price_cents: 380000, status: "delivered",
     pickup_at: iso(addHours(now(), -6)), created_at: iso(addHours(now(), -8)),
+    picked_up_at: iso(addHours(now(), -5.5)),
+    picked_up_by: "Driver M. Yu", pickup_notes: null,
   },
 ];
 
@@ -240,6 +255,9 @@ function busToAdminBooking(b: BusBooking): AdminBooking {
     status:               b.status,
     pickup_at:            b.pickup_at,
     created_at:           b.created_at,
+    picked_up_at:         b.picked_up_at,
+    picked_up_by:         b.picked_up_by,
+    pickup_notes:         b.pickup_notes,
   };
 }
 
@@ -255,6 +273,10 @@ export async function fetchAllBookings(): Promise<AdminBooking[]> {
 }
 
 export { subscribeToBus as subscribeToMarketplaceUpdates };
+
+export async function fetchReceiptForBooking(bookingId: string): Promise<BusReceipt | null> {
+  return busFindReceiptByBookingId(bookingId);
+}
 
 export async function fetchMarketplaceStats(): Promise<MarketplaceStats> {
   await latency(150);

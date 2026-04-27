@@ -25,6 +25,34 @@ import {
 const SERVICE_TYPES = ["standard", "next_day", "same_day"] as const;
 type ServiceType = typeof SERVICE_TYPES[number];
 
+/**
+ * Client-side CSV export of the partner's rate cards. No server round-trip —
+ * data is already loaded. Triggers a browser download.
+ */
+function exportRateCardsCsv(carrierName: string, cards: RateCard[]) {
+  if (cards.length === 0) return;
+  const header = "service_type,base_rate_php,per_kg_php,max_weight_kg,coverage_zones";
+  const rows = cards.map((r) =>
+    [
+      r.service_type,
+      (r.base_rate_cents / 100).toFixed(2),
+      (r.per_kg_cents   / 100).toFixed(2),
+      r.max_weight_kg.toFixed(1),
+      `"${r.coverage_zones.join("; ")}"`,
+    ].join(",")
+  );
+  const csv  = [header, ...rows].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href     = url;
+  a.download = `rate-cards-${carrierName.replace(/\s+/g, "-").toLowerCase()}-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 function emptyRateCard(): RateCard {
   return { service_type: "standard", base_rate_cents: 0, per_kg_cents: 0, max_weight_kg: 25, coverage_zones: [] };
 }
@@ -217,11 +245,12 @@ export default function RateCardsPage() {
               ) : (
                 <>
                   <button
-                    disabled
-                    title="PDF export coming soon"
-                    className="flex items-center gap-1.5 rounded-lg border border-glass-border px-3 py-2 text-xs text-white/30 cursor-not-allowed"
+                    onClick={() => exportRateCardsCsv(carrier?.name ?? "carrier", rateCards)}
+                    disabled={rateCards.length === 0}
+                    title="Download rate cards as CSV"
+                    className="flex items-center gap-1.5 rounded-lg border border-glass-border px-3 py-2 text-xs text-white/60 hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                   >
-                    <Download size={12} /> Export
+                    <Download size={12} /> Export CSV
                   </button>
                   <button
                     onClick={startEdit}

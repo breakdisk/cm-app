@@ -8,8 +8,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -28,7 +35,8 @@ import io.logisticos.driver.feature.navigation.presentation.NavigationViewModel
 @Composable
 fun NavigationScreen(
     taskId: String,
-    onArrived: () -> Unit
+    onArrived: () -> Unit,
+    onBack: () -> Unit = {}
 ) {
     val viewModel: NavigationViewModel = hiltViewModel(
         creationCallback = { factory: NavigationViewModel.Factory -> factory.create(taskId) }
@@ -45,6 +53,23 @@ fun NavigationScreen(
             stopLat = state.task?.lat ?: 0.0,
             stopLng = state.task?.lng ?: 0.0
         )
+
+        IconButton(
+            onClick = onBack,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(16.dp)
+                .size(44.dp),
+            colors = IconButtonDefaults.iconButtonColors(
+                containerColor = Color(0xE6050810),
+                contentColor = Color.White
+            )
+        ) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = "Back to route list"
+            )
+        }
 
         if (state.nextInstruction.isNotEmpty()) {
             Surface(

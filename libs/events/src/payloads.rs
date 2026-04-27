@@ -363,3 +363,45 @@ pub struct ReceiptEmailRequested {
     #[serde(default)]
     pub customer_name:       String,
 }
+
+// ── Carrier events ────────────────────────────────────────────────────────────
+
+/// Emitted by carrier service when a new carrier is onboarded (saved with
+/// status = pending_verification). Consumed by: analytics, compliance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CarrierOnboarded {
+    pub carrier_id:    Uuid,
+    pub tenant_id:     Uuid,
+    pub name:          String,
+    pub code:          String,
+    pub contact_email: String,
+}
+
+/// Emitted by carrier service when a carrier's status changes
+/// (activate, suspend, deactivate). Consumed by: dispatch (cache invalidation),
+/// analytics, compliance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CarrierStatusChanged {
+    pub carrier_id:  Uuid,
+    pub tenant_id:   Uuid,
+    pub old_status:  String,
+    pub new_status:  String,
+    /// Human-readable reason, e.g. suspension reason. Empty string if none.
+    pub reason:      String,
+}
+
+/// Emitted by carrier service when dispatch records a carrier allocation for a
+/// shipment (POST /v1/internal/sla-records). Consumed by: analytics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CarrierAllocated {
+    pub carrier_id:       Uuid,
+    pub tenant_id:        Uuid,
+    pub shipment_id:      Uuid,
+    pub zone:             String,
+    pub service_level:    String,
+    pub total_cost_cents: i64,
+    /// ISO-8601 datetime string — when delivery is expected by.
+    pub promised_by:      String,
+    /// "rate_shop" (auto-selected cheapest) | "manual" (operator chose).
+    pub method:           String,
+}

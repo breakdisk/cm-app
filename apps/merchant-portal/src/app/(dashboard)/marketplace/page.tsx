@@ -20,6 +20,7 @@ import { motion } from "framer-motion";
 import {
   Store, Truck, Clock, Search, Star, X, Check, ExternalLink,
   Gauge, Package, MapPin, Calendar,
+  Receipt as ReceiptIcon,
 } from "lucide-react";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
@@ -41,6 +42,8 @@ import {
   type BookingStatus,
   type PartnerType,
 } from "@/lib/api/marketplace";
+import { findReceiptByBookingId, type BusReceipt } from "@/lib/api/marketplace-bus";
+import { ReceiptModal, type ReceiptModalBooking } from "@/components/marketplace/ReceiptModal";
 
 // ── Status → badge mapping ────────────────────────────────────────────────────
 
@@ -111,6 +114,12 @@ function MarketplacePageInner() {
   const [search,        setSearch]        = useState(qpPartner ? qpPartner : "");
   const [bookingFor,    setBookingFor]    = useState<MerchantListing | null>(null);
 
+  // Receipts issued by partner for this merchant's bookings (read-only view).
+  const [receiptsByBookingId, setReceiptsByBookingId] = useState<Record<string, BusReceipt>>({});
+  const [receiptModal, setReceiptModal] = useState<
+    { open: boolean; booking: ReceiptModalBooking | null; receipt: BusReceipt | null }
+  >({ open: false, booking: null, receipt: null });
+
   const refresh = useCallback(async () => {
     const [l, b, s] = await Promise.all([
       fetchAvailableListings(),
@@ -139,6 +148,39 @@ function MarketplacePageInner() {
     const l = listings.find((x) => x.id === qpListing);
     if (l && l.status === "active") setBookingFor(l);
   }, [qpListing, listings]);
+
+  // Hydrate receipts for visible bookings from the cross-portal bus.
+  useEffect(() => {
+    if (bookings.length === 0) {
+      setReceiptsByBookingId({});
+      return;
+    }
+    const next: Record<string, BusReceipt> = {};
+    for (const b of bookings) {
+      const r = findReceiptByBookingId(b.id);
+      if (r) next[b.id] = r;
+    }
+    setReceiptsByBookingId(next);
+  }, [bookings]);
+
+  function openReceiptFor(b: MerchantBooking) {
+    const receipt = receiptsByBookingId[b.id] ?? null;
+    if (!receipt) return;
+    const modalBooking: ReceiptModalBooking = {
+      id:                    b.id,
+      awb:                   b.awb,
+      partner_display_name:  b.partner_display_name,
+      merchant_display:      b.partner_display_name,
+      consumer_display:      "Customer",
+      pickup_label:          b.pickup_label,
+      dropoff_label:         b.dropoff_label,
+      pickup_at:             b.pickup_at,
+      cargo_weight_kg:       b.cargo_weight_kg,
+      quoted_price_cents:    b.quoted_price_cents,
+      status:                b.status,
+    };
+    setReceiptModal({ open: true, booking: modalBooking, receipt });
+  }
 
   const visibleListings = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -409,11 +451,32 @@ function MarketplacePageInner() {
                             {formatCentsPhp(b.quoted_price_cents)}
                           </td>
                           <td className="py-3 pr-4 font-mono text-xs text-white/60">
-                            {new Date(b.pickup_at).toLocaleString("en-PH", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                            {b.picked_up_at ? (
+                              <>
+                                <span className="text-green-signal">
+                                  Picked up {new Date(b.picked_up_at).toLocaleString("en-PH", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                                </span>
+                                {b.picked_up_by && (
+                                  <div className="mt-0.5 text-2xs text-white/40">{b.picked_up_by}</div>
+                                )}
+                              </>
+                            ) : (
+                              new Date(b.pickup_at).toLocaleString("en-PH", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+                            )}
                           </td>
                           <td className="py-3 pr-4">
                             <div className="flex items-center gap-2">
                               <NeonBadge variant={variant}>{label}</NeonBadge>
+                              {receiptsByBookingId[b.id] && (
+                                <button
+                                  onClick={() => openReceiptFor(b)}
+                                  className="inline-flex items-center gap-1 rounded-md border border-cyan-neon/40 bg-cyan-surface px-2 py-0.5 text-2xs font-mono text-cyan-neon transition-all hover:shadow-[0_0_8px_rgba(0,229,255,0.4)]"
+                                  title="View shipment receipt"
+                                >
+                                  <ReceiptIcon size={10} />
+                                  Receipt
+                                </button>
+                              )}
                               {b.status === "disputed" && (
                                 // Plain <a> crosses the /merchant → /admin basePath boundary.
                                 // Ops-escalation path — tenant-admin session required to load.
@@ -446,6 +509,14 @@ function MarketplacePageInner() {
           onSubmit={handleBook}
         />
       )}
+
+      {/* Shipment receipt (view-only — partner issues in partner-portal) */}
+      <ReceiptModal
+        open={receiptModal.open}
+        onClose={() => setReceiptModal({ open: false, booking: null, receipt: null })}
+        booking={receiptModal.booking}
+        receipt={receiptModal.receipt}
+      />
     </motion.div>
   );
 }

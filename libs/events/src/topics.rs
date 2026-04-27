@@ -1,3 +1,8 @@
+// Carrier / Partner
+pub const CARRIER_ONBOARDED:         &str = "logisticos.carrier.onboarded";
+pub const CARRIER_STATUS_CHANGED:    &str = "logisticos.carrier.status_changed";
+pub const CARRIER_ALLOCATED:         &str = "logisticos.carrier.allocated";
+
 // Identity
 pub const TENANT_CREATED:            &str = "logisticos.identity.tenant.created";
 pub const USER_INVITED:              &str = "logisticos.identity.user.invited";
@@ -63,6 +68,7 @@ mod tests {
     #[test]
     fn all_topics_are_lowercase_dot_separated() {
         let topics: &[&str] = &[
+            CARRIER_ONBOARDED, CARRIER_STATUS_CHANGED, CARRIER_ALLOCATED,
             TENANT_CREATED, USER_CREATED, USER_INVITED,
             SHIPMENT_CREATED, SHIPMENT_CONFIRMED, SHIPMENT_CANCELLED,
             AWB_ISSUED, PIECE_SCANNED, WEIGHT_DISCREPANCY_FOUND,

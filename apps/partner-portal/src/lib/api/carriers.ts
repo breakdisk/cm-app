@@ -59,6 +59,19 @@ export interface RateShopQuery {
   weight_kg: number;
 }
 
+/** Zone-level SLA aggregate row — returned by GET /v1/carriers/:id/sla-summary */
+export interface ZoneSlaRow {
+  zone:         string;
+  total:        number;
+  on_time:      number;
+  failed:       number;
+  on_time_rate: number;   // 0–100
+}
+
+export interface SlaSummaryResponse {
+  zones: ZoneSlaRow[];
+}
+
 /** Aggregated manifest row — one per (driver, task_type) for a given date.
  *  Served by driver-ops /v1/tasks/manifest. */
 export interface ManifestEntry {
@@ -130,6 +143,18 @@ export const carriersApi = {
       params: { service_type: q.service_type, weight_kg: q.weight_kg },
     });
     return data.quotes ?? [];
+  },
+
+  /**
+   * Zone-level SLA aggregate for a carrier over a time window.
+   * Backed by `GET /v1/carriers/:id/sla-summary?from=&to=`.
+   */
+  async slaSummary(carrierId: string, from: string, to: string): Promise<ZoneSlaRow[]> {
+    const { data } = await createApiClient().get<SlaSummaryResponse>(
+      `/v1/carriers/${carrierId}/sla-summary`,
+      { params: { from, to } },
+    );
+    return data.zones ?? [];
   },
 
   /**

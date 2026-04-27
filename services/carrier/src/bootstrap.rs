@@ -1,8 +1,20 @@
 use std::{net::SocketAddr, sync::Arc};
 use anyhow::Context;
 use sqlx::postgres::PgPoolOptions;
+use tokio::sync::watch;
 use logisticos_auth::jwt::JwtService;
-use crate::{api::http, application::services::CarrierService, config::Config, infrastructure::db::PgCarrierRepository, AppState};
+use logisticos_events::producer::KafkaProducer;
+
+use crate::{
+    api::http,
+    application::services::CarrierService,
+    config::Config,
+    infrastructure::{
+        db::{PgCarrierRepository, PgSlaRecordRepository},
+        messaging::{start_delivery_consumer, CarrierPublisher},
+    },
+    AppState,
+};
 
 pub async fn run() -> anyhow::Result<()> {
     let cfg = Config::load()?;
@@ -27,8 +39,37 @@ pub async fn run() -> anyhow::Result<()> {
 
     logisticos_common::migrations::run(&pool, "carrier", &sqlx::migrate!("./migrations")).await?;
 
-    let carrier_repo = Arc::new(PgCarrierRepository::new(pool));
-    let carrier_svc  = Arc::new(CarrierService::new(carrier_repo));
+    // Repositories
+    let carrier_repo = Arc::new(PgCarrierRepository::new(pool.clone()));
+    let sla_repo     = Arc::new(PgSlaRecordRepository::new(pool));
+
+    // Kafka producer + publisher
+    let kafka_producer = Arc::new(KafkaProducer::new(&cfg.kafka.brokers)?);
+    let publisher      = Arc::new(CarrierPublisher::new(Arc::clone(&kafka_producer)));
+
+    // Application service
+    let carrier_svc = Arc::new(CarrierService::new(
+        Arc::clone(&carrier_repo) as Arc<dyn crate::domain::repositories::CarrierRepository>,
+        Arc::clone(&sla_repo)     as Arc<dyn crate::domain::repositories::SlaRecordRepository>,
+        Arc::clone(&publisher),
+    ));
+
+    // Graceful shutdown channel
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    // Spawn delivery outcome consumer
+    {
+        let brokers    = cfg.kafka.brokers.clone();
+        let group_id   = cfg.kafka.group_id.clone();
+        let c_repo     = Arc::clone(&carrier_repo);
+        let s_repo     = Arc::clone(&sla_repo) as Arc<dyn crate::domain::repositories::SlaRecordRepository>;
+        let rx         = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = start_delivery_consumer(&brokers, &group_id, c_repo, s_repo, rx).await {
+                tracing::error!("Delivery consumer exited with error: {e}");
+            }
+        });
+    }
 
     let jwt_secret = std::env::var("AUTH__JWT_SECRET")
         .context("AUTH__JWT_SECRET env var not set")?;
@@ -48,11 +89,13 @@ pub async fn run() -> anyhow::Result<()> {
     tracing::info!(addr = %addr, "carrier service listening");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(shutdown_tx))
+        .await?;
     Ok(())
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(shutdown_tx: watch::Sender<bool>) {
     use tokio::signal;
     let ctrl_c = async { signal::ctrl_c().await.expect("ctrl-c") };
     #[cfg(unix)]
@@ -62,4 +105,6 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
     tokio::select! { _ = ctrl_c => {}, _ = terminate => {} }
+    // Signal background consumers to stop
+    let _ = shutdown_tx.send(true);
 }

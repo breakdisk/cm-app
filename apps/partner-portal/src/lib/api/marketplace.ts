@@ -19,9 +19,14 @@
 import {
   readBus,
   updateBookingStatus as busUpdateStatus,
+  markPickedUp as busMarkPickedUp,
   subscribeToBus,
+  appendReceipt as busAppendReceipt,
+  findReceiptByBookingId as busFindReceiptByBookingId,
   type BusBooking,
+  type BusReceipt,
 } from "./marketplace-bus";
+import { getCurrentPartner, getCurrentPartnerId } from "./partner-identity";
 
 // ── Types (ADR-0013) ──────────────────────────────────────────────────────────
 
@@ -83,12 +88,17 @@ export interface MarketplaceBooking {
   status:               BookingStatus;
   pickup_at:            string;       // ISO-8601
   created_at:           string;
+  picked_up_at:         string | null;
+  picked_up_by:         string | null;
+  pickup_notes:         string | null;
 }
 
 // ── Mock data ─────────────────────────────────────────────────────────────────
 
 const TENANT_ID  = "00000000-0000-0000-0000-000000000001";
-const PARTNER_ID = "a1b2c3d4-0000-0000-0000-000000000001"; // FastShip Co.
+// PARTNER_ID is resolved per-call via getCurrentPartnerId() so the demo can
+// flip which carrier this session is "acting as". When backend auth lands,
+// this becomes `claims.pid` from the JWT (ADR-0013 §Auth).
 
 const now = () => new Date();
 const iso = (d: Date) => d.toISOString();
@@ -98,7 +108,7 @@ const MOCK_LISTINGS: VehicleListing[] = [
   {
     id:                           "l1000000-0000-0000-0000-000000000001",
     tenant_id:                    TENANT_ID,
-    partner_id:                   PARTNER_ID,
+    partner_id:                   "__current__", // re-tagged on fetch
     vehicle_id:                   "v1000000-0000-0000-0000-000000000001",
     vehicle_plate:                "NKT-4821",
     size_class:                   "l300",
@@ -120,7 +130,7 @@ const MOCK_LISTINGS: VehicleListing[] = [
   {
     id:                           "l1000000-0000-0000-0000-000000000002",
     tenant_id:                    TENANT_ID,
-    partner_id:                   PARTNER_ID,
+    partner_id:                   "__current__", // re-tagged on fetch
     vehicle_id:                   "v1000000-0000-0000-0000-000000000002",
     vehicle_plate:                "JBX-9930",
     size_class:                   "motorcycle",
@@ -142,7 +152,7 @@ const MOCK_LISTINGS: VehicleListing[] = [
   {
     id:                           "l1000000-0000-0000-0000-000000000003",
     tenant_id:                    TENANT_ID,
-    partner_id:                   PARTNER_ID,
+    partner_id:                   "__current__", // re-tagged on fetch
     vehicle_id:                   "v1000000-0000-0000-0000-000000000003",
     vehicle_plate:                "TKL-5501",
     size_class:                   "6wheeler",
@@ -164,7 +174,7 @@ const MOCK_LISTINGS: VehicleListing[] = [
   {
     id:                           "l1000000-0000-0000-0000-000000000004",
     tenant_id:                    TENANT_ID,
-    partner_id:                   PARTNER_ID,
+    partner_id:                   "__current__", // re-tagged on fetch
     vehicle_id:                   "v1000000-0000-0000-0000-000000000004",
     vehicle_plate:                "VAN-3372",
     size_class:                   "van",
@@ -186,7 +196,7 @@ const MOCK_LISTINGS: VehicleListing[] = [
   {
     id:                           "l1000000-0000-0000-0000-000000000005",
     tenant_id:                    TENANT_ID,
-    partner_id:                   PARTNER_ID,
+    partner_id:                   "__current__", // re-tagged on fetch
     vehicle_id:                   "v1000000-0000-0000-0000-000000000005",
     vehicle_plate:                "SDN-1105",
     size_class:                   "sedan",
@@ -223,6 +233,9 @@ const MOCK_BOOKINGS: MarketplaceBooking[] = [
     status:             "in_transit",
     pickup_at:          iso(addHours(now(), -0.5)),
     created_at:         iso(addHours(now(), -1)),
+    picked_up_at:       iso(addHours(now(), -0.4)),
+    picked_up_by:       "Driver J. Santos",
+    pickup_notes:       null,
   },
   {
     id:                 "b1000000-0000-0000-0000-000000000002",
@@ -239,6 +252,9 @@ const MOCK_BOOKINGS: MarketplaceBooking[] = [
     status:             "pending",
     pickup_at:          iso(addHours(now(), 1.5)),
     created_at:         iso(addHours(now(), -0.3)),
+    picked_up_at:       null,
+    picked_up_by:       null,
+    pickup_notes:       null,
   },
   {
     id:                 "b1000000-0000-0000-0000-000000000003",
@@ -255,6 +271,9 @@ const MOCK_BOOKINGS: MarketplaceBooking[] = [
     status:             "accepted",
     pickup_at:          iso(addHours(now(), 4)),
     created_at:         iso(addHours(now(), -2)),
+    picked_up_at:       null,
+    picked_up_by:       null,
+    pickup_notes:       null,
   },
 ];
 
@@ -264,14 +283,15 @@ const latency = (ms = 220) => new Promise((r) => setTimeout(r, ms));
 
 export async function fetchListings(): Promise<VehicleListing[]> {
   await latency();
-  return structuredClone(MOCK_LISTINGS);
+  const pid = getCurrentPartnerId();
+  return MOCK_LISTINGS.map((l) => ({ ...l, partner_id: pid }));
 }
 
 // Project a canonical bus row into this partner's MarketplaceBooking view.
 // RLS-equivalent: filter to rows owned by this partner (ADR-0013 §RLS extension:
 // scope=partner sees only own partner_id rows).
 function busToPartnerBooking(b: BusBooking): MarketplaceBooking | null {
-  if (b.partner_id !== PARTNER_ID) return null;
+  if (b.partner_id !== getCurrentPartnerId()) return null;
   // Pre-accept: mask consumer PII (§"Consumer PII leaks" risk R12).
   const masked =
     b.status === "pending" || b.status === "rejected"
@@ -294,6 +314,9 @@ function busToPartnerBooking(b: BusBooking): MarketplaceBooking | null {
     status:             b.status,
     pickup_at:          b.pickup_at,
     created_at:         b.created_at,
+    picked_up_at:       b.picked_up_at,
+    picked_up_by:       b.picked_up_by,
+    pickup_notes:       b.pickup_notes,
   };
 }
 
@@ -330,7 +353,100 @@ export async function rejectBooking(id: string): Promise<MarketplaceBooking | nu
   return updated ? busToPartnerBooking(updated) : null;
 }
 
+export interface RecordPickupInput {
+  booking_id:   string;
+  picked_up_by?: string | null;
+  pickup_notes?: string | null;
+}
+
+/**
+ * Carrier records cargo collected from pickup point (ADR-0013 §Booking flow:
+ * "pickup → booking.status='in_transit', tracking channel activates").
+ * In production this emits `shipment.picked_up` on Kafka; the engagement engine
+ * triggers the customer "driver has your package" notification and the
+ * tracking page starts streaming ETA updates. Pre-backend: flip bus status +
+ * stamp metadata, partner scope enforced below.
+ */
+export async function recordPickup(input: RecordPickupInput): Promise<MarketplaceBooking | null> {
+  await latency(180);
+  const booking = readBus().find((b) => b.id === input.booking_id);
+  if (!booking) return null;
+  if (booking.partner_id !== getCurrentPartnerId()) {
+    // RLS-equivalent: a partner can only transition their own bookings.
+    throw new Error("Booking does not belong to the acting partner");
+  }
+  const updated = busMarkPickedUp(input.booking_id, {
+    picked_up_by: input.picked_up_by ?? null,
+    pickup_notes: input.pickup_notes ?? null,
+  });
+  return updated ? busToPartnerBooking(updated) : null;
+}
+
 export { subscribeToBus as subscribeToMarketplaceUpdates };
+
+// ── Receipts ─────────────────────────────────────────────────────────────────
+
+export interface IssueReceiptInput {
+  booking_id: string;
+  signed_by?: string | null;
+  notes?:     string | null;
+}
+
+/**
+ * Carrier issues the shipment receipt for a booking (ADR-0013 §Booking flow:
+ * receipt is the handover artifact to the consumer after pickup). In production
+ * this triggers `shipment.receipt_issued` on Kafka; the engagement engine
+ * forwards the receipt to the consumer via their preferred channel. Pre-backend
+ * we write a canonical `BusReceipt` row keyed on booking_id so every portal
+ * renders the same artifact.
+ */
+export async function issueReceipt(input: IssueReceiptInput): Promise<BusReceipt | null> {
+  await latency(180);
+  const booking = readBus().find((b) => b.id === input.booking_id);
+  if (!booking) return null;
+  const partner = getCurrentPartner();
+  if (booking.partner_id !== partner.id) {
+    // RLS-equivalent: a partner can only issue receipts for their own bookings.
+    throw new Error("Booking does not belong to the acting partner");
+  }
+  const existing = busFindReceiptByBookingId(input.booking_id);
+  if (existing) return existing;
+
+  const issuedAt = new Date();
+  const yyyy = issuedAt.getUTCFullYear();
+  const mm   = String(issuedAt.getUTCMonth() + 1).padStart(2, "0");
+  const dd   = String(issuedAt.getUTCDate()).padStart(2, "0");
+  const seq  = String(issuedAt.getTime()).slice(-4);
+  const receipt: BusReceipt = {
+    id:                   `r9000000-0000-0000-0000-${issuedAt.getTime().toString().padStart(12, "0")}`,
+    receipt_no:           `R-${yyyy}${mm}${dd}-${seq}`,
+    booking_id:           booking.id,
+    awb:                  booking.awb,
+    shipment_id:          booking.shipment_id,
+    partner_id:           booking.partner_id,
+    partner_display_name: booking.partner_display_name,
+    merchant_id:          booking.merchant_id,
+    merchant_display:     booking.merchant_display,
+    consumer_display:     booking.consumer_display,
+    pickup_label:         booking.pickup_label,
+    dropoff_label:        booking.dropoff_label,
+    pickup_at:            booking.pickup_at,
+    size_class:           booking.size_class,
+    cargo_weight_kg:      booking.cargo_weight_kg,
+    quoted_price_cents:   booking.quoted_price_cents,
+    issued_by:            "partner",
+    issued_by_name:       partner.name,
+    signed_by:            input.signed_by ?? null,
+    notes:                input.notes ?? null,
+    issued_at:            issuedAt.toISOString(),
+  };
+  busAppendReceipt(receipt);
+  return receipt;
+}
+
+export async function fetchReceiptForBooking(bookingId: string): Promise<BusReceipt | null> {
+  return busFindReceiptByBookingId(bookingId);
+}
 
 export async function createListing(
   input: Omit<VehicleListing, "id" | "tenant_id" | "partner_id" | "vehicle_id" | "bookings_today" | "revenue_today_cents" | "created_at" | "updated_at">,
@@ -340,7 +456,7 @@ export async function createListing(
     ...input,
     id:                  `l1000000-0000-0000-0000-${Date.now().toString().padStart(12, "0")}`,
     tenant_id:           TENANT_ID,
-    partner_id:          PARTNER_ID,
+    partner_id:          getCurrentPartnerId(),
     vehicle_id:          `v1000000-0000-0000-0000-${Date.now().toString().padStart(12, "0")}`,
     bookings_today:      0,
     revenue_today_cents: 0,

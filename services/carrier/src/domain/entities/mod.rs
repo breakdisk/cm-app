@@ -1,4 +1,4 @@
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -167,4 +167,100 @@ impl Carrier {
             .find(|r| r.service_type == service_type && r.max_weight_kg >= weight_kg)
             .map(|r| r.base_rate_cents + (r.per_kg_cents as f32 * weight_kg) as i64)
     }
+}
+
+// ── SLA record ────────────────────────────────────────────────────────────────
+
+/// Status of a carrier's SLA commitment for a specific shipment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SlaStatus {
+    InTransit,
+    Delivered,
+    Failed,
+}
+
+impl SlaStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::InTransit => "in_transit",
+            Self::Delivered => "delivered",
+            Self::Failed    => "failed",
+        }
+    }
+}
+
+/// Per-shipment SLA commitment record.
+/// Created by dispatch when a carrier is allocated to a shipment.
+/// Updated by the carrier Kafka consumer when delivery.completed/failed fires.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlaRecord {
+    pub id:             Uuid,
+    pub tenant_id:      Uuid,
+    pub carrier_id:     Uuid,
+    pub shipment_id:    Uuid,
+    /// Destination zone, e.g. "Metro Manila", "Visayas". Used for zone-level SLA reporting.
+    pub zone:           String,
+    pub service_level:  String,   // "standard" | "next_day" | "same_day"
+    /// When the carrier committed to deliver by.
+    pub promised_by:    DateTime<Utc>,
+    /// Actual delivery time — None while in-transit.
+    pub delivered_at:   Option<DateTime<Utc>>,
+    pub status:         SlaStatus,
+    /// True = delivered on or before promised_by. None = still in transit.
+    pub on_time:        Option<bool>,
+    pub failure_reason: Option<String>,
+    pub created_at:     DateTime<Utc>,
+}
+
+impl SlaRecord {
+    pub fn new(
+        tenant_id: Uuid,
+        carrier_id: Uuid,
+        shipment_id: Uuid,
+        zone: String,
+        service_level: String,
+        promised_by: DateTime<Utc>,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4(),
+            tenant_id,
+            carrier_id,
+            shipment_id,
+            zone,
+            service_level,
+            promised_by,
+            delivered_at: None,
+            status: SlaStatus::InTransit,
+            on_time: None,
+            failure_reason: None,
+            created_at: now,
+        }
+    }
+
+    /// Mark this record as delivered, computing on_time from promised_by.
+    pub fn mark_delivered(&mut self, delivered_at: DateTime<Utc>) {
+        self.delivered_at = Some(delivered_at);
+        self.on_time = Some(delivered_at <= self.promised_by);
+        self.status = SlaStatus::Delivered;
+    }
+
+    /// Mark this record as failed (undeliverable).
+    pub fn mark_failed(&mut self, reason: &str) {
+        self.status = SlaStatus::Failed;
+        self.on_time = Some(false);
+        self.failure_reason = Some(reason.to_owned());
+    }
+}
+
+/// Aggregated SLA row per zone — returned by `GET /v1/carriers/:id/sla-summary`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZoneSlaRow {
+    pub zone:         String,
+    pub total:        i64,
+    pub on_time:      i64,
+    pub failed:       i64,
+    /// on_time / total * 100, or 0.0 if total == 0.
+    pub on_time_rate: f64,
 }

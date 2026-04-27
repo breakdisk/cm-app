@@ -28,6 +28,8 @@ android {
         val mapsApiKey = localProps.getProperty("GOOGLE_MAPS_API_KEY") ?: ""
         manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
         buildConfigField("String", "MAPS_API_KEY", "\"$mapsApiKey\"")
+        val mapboxAccessToken = localProps.getProperty("MAPBOX_ACCESS_TOKEN") ?: ""
+        buildConfigField("String", "MAPBOX_ACCESS_TOKEN", "\"$mapboxAccessToken\"")
     }
 
     buildTypes {
@@ -103,6 +105,7 @@ dependencies {
     implementation(project(":feature:profile"))
 
     implementation(libs.material)
+    implementation(libs.mapbox.maps)
     implementation(libs.okhttp.logging)
     implementation(platform(libs.compose.bom))
     implementation(libs.bundles.compose)
