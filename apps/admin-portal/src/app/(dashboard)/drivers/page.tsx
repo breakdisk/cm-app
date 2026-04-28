@@ -112,7 +112,7 @@ export default function DriversPage() {
       ]);
       setDrivers(listRes.data.map((d: ApiDriver) => ({
         id:            d.id,
-        name:          d.name,
+        name:          d.name || `${d.first_name} ${d.last_name}`.trim(),
         vehicle:       d.vehicle_type,
         plate:         d.vehicle_plate,
         status:        normalizeStatus(d.status as string),
