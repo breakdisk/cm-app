@@ -159,14 +159,14 @@ pub async fn run() -> anyhow::Result<()> {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             tick.tick().await;
-            // $1 * INTERVAL avoids make_interval's INTEGER-only named-param restriction
-            // (sqlx binds i32 as INTEGER which is compatible).
+            // Use INTERVAL '1 minute' * $1 (standard PostgreSQL multiplication order).
+            // This avoids make_interval function which may not be available in all PG versions.
             let res = sqlx::query(
                 "UPDATE dispatch.driver_assignments
                  SET    status = 'cancelled', rejection_reason = 'orphaned: pending > stale threshold'
                  WHERE  status = 'pending'
                    AND  accepted_at IS NULL
-                   AND  assigned_at < NOW() - ($1 * INTERVAL '1 minute')"
+                   AND  assigned_at < NOW() - (INTERVAL '1 minute' * $1)"
             )
             .bind(cleanup_age_minutes)
             .execute(&pool_for_cleanup)
