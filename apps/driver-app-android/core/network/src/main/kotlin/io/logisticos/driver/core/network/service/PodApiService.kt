@@ -8,13 +8,15 @@ import retrofit2.http.*
 
 @Serializable
 data class InitiatePodRequest(
-    @SerialName("shipment_id")    val shipmentId: String,
-    @SerialName("task_id")        val taskId: String,
-    @SerialName("recipient_name") val recipientName: String,
-    @SerialName("capture_lat")    val captureLat: Double,
-    @SerialName("capture_lng")    val captureLng: Double,
-    @SerialName("delivery_lat")   val deliveryLat: Double,
-    @SerialName("delivery_lng")   val deliveryLng: Double
+    @SerialName("shipment_id")      val shipmentId: String,
+    @SerialName("task_id")          val taskId: String,
+    @SerialName("recipient_name")   val recipientName: String,
+    @SerialName("capture_lat")      val captureLat: Double,
+    @SerialName("capture_lng")      val captureLng: Double,
+    @SerialName("delivery_lat")     val deliveryLat: Double,
+    @SerialName("delivery_lng")     val deliveryLng: Double,
+    @SerialName("requires_photo")   val requiresPhoto: Boolean = true,
+    @SerialName("requires_signature") val requiresSignature: Boolean = true,
 )
 
 @Serializable

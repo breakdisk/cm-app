@@ -124,7 +124,9 @@ class PodViewModel @Inject constructor(
                     signaturePath = state.signaturePath,
                     otpCode = state.otpToken,
                     codCollectedCents = if (state.isCod && state.codCollected)
-                        (state.codAmount * 100).toLong() else null
+                        (state.codAmount * 100).toLong() else null,
+                    requiresPhoto = state.requiresPhoto,
+                    requiresSignature = state.requiresSignature,
                 )
             }.onSuccess { podId ->
                 _uiState.update {

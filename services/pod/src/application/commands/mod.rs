@@ -8,7 +8,16 @@ pub struct InitiatePodCommand {
     pub recipient_name: String,
     pub capture_lat: f64,
     pub capture_lng: f64,
+    /// Whether the task requires a delivery photo. Defaults to true for backward
+    /// compatibility — older clients that don't send this field still enforce evidence.
+    #[serde(default = "default_true")]
+    pub requires_photo: bool,
+    /// Whether the task requires a recipient signature. Defaults to true.
+    #[serde(default = "default_true")]
+    pub requires_signature: bool,
 }
+
+fn default_true() -> bool { true }
 
 #[derive(Debug, Deserialize)]
 pub struct AttachSignatureCommand {

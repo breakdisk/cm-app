@@ -32,6 +32,8 @@ struct PodRow {
     otp_verified:        bool,
     otp_id:              Option<Uuid>,
     cod_collected_cents: Option<i64>,
+    requires_photo:      bool,
+    requires_signature:  bool,
     captured_at:         chrono::DateTime<chrono::Utc>,
     created_at:          chrono::DateTime<chrono::Utc>,
 }
@@ -73,6 +75,8 @@ impl From<PodRow> for ProofOfDelivery {
             otp_verified: r.otp_verified,
             otp_id: r.otp_id,
             cod_collected_cents: r.cod_collected_cents,
+            requires_photo: r.requires_photo,
+            requires_signature: r.requires_signature,
             captured_at: r.captured_at,
             created_at: r.created_at,
         }
@@ -87,6 +91,7 @@ impl PodRepository for PgPodRepository {
                       signature_data, recipient_name, photos,
                       capture_lat, capture_lng, geofence_verified,
                       otp_verified, otp_id, cod_collected_cents,
+                      requires_photo, requires_signature,
                       captured_at, created_at
                FROM pod.proofs WHERE id = $1"#
         )
@@ -102,6 +107,7 @@ impl PodRepository for PgPodRepository {
                       signature_data, recipient_name, photos,
                       capture_lat, capture_lng, geofence_verified,
                       otp_verified, otp_id, cod_collected_cents,
+                      requires_photo, requires_signature,
                       captured_at, created_at
                FROM pod.proofs WHERE shipment_id = $1
                ORDER BY created_at DESC LIMIT 1"#
@@ -121,8 +127,9 @@ impl PodRepository for PgPodRepository {
                     signature_data, recipient_name, photos,
                     capture_lat, capture_lng, geofence_verified,
                     otp_verified, otp_id, cod_collected_cents,
+                    requires_photo, requires_signature,
                     captured_at, created_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
                ON CONFLICT (id) DO UPDATE SET
                    status              = EXCLUDED.status,
                    signature_data      = EXCLUDED.signature_data,
@@ -146,6 +153,8 @@ impl PodRepository for PgPodRepository {
         .bind(pod.otp_verified)
         .bind(pod.otp_id)
         .bind(pod.cod_collected_cents)
+        .bind(pod.requires_photo)
+        .bind(pod.requires_signature)
         .bind(pod.captured_at)
         .bind(pod.created_at)
         .execute(&self.pool)

@@ -15,11 +15,33 @@ fi
 
 echo "Using Kafka container: $KAFKA_CONTAINER"
 
+# Auto-detect the kafka-topics binary path (differs between image flavors)
+KAFKA_BIN=""
+for candidate in \
+    "/usr/bin/kafka-topics" \
+    "/opt/kafka/bin/kafka-topics.sh" \
+    "/opt/bitnami/kafka/bin/kafka-topics.sh" \
+    "/usr/local/bin/kafka-topics" \
+    "$(docker exec "$KAFKA_CONTAINER" find /opt /usr -name 'kafka-topics*' -type f 2>/dev/null | head -1)"; do
+  if docker exec "$KAFKA_CONTAINER" test -x "$candidate" 2>/dev/null; then
+    KAFKA_BIN="$candidate"
+    break
+  fi
+done
+
+if [ -z "$KAFKA_BIN" ]; then
+  echo "ERROR: Could not find kafka-topics binary in container."
+  echo "Run: docker exec $KAFKA_CONTAINER find / -name 'kafka-topics*' 2>/dev/null"
+  exit 1
+fi
+
+echo "Kafka binary: $KAFKA_BIN"
+
 create_topic() {
   local TOPIC="$1"
   local PARTITIONS="${2:-3}"
   local REPLICATION="${3:-1}"
-  docker exec "$KAFKA_CONTAINER" kafka-topics.sh \
+  docker exec "$KAFKA_CONTAINER" "$KAFKA_BIN" \
     --bootstrap-server "$BOOTSTRAP" \
     --create \
     --if-not-exists \
@@ -93,5 +115,5 @@ create_topic "compliance"
 
 echo ""
 echo "=== Done. Verify with: ==="
-echo "docker exec $KAFKA_CONTAINER kafka-topics.sh --bootstrap-server localhost:9092 --list"
+echo "docker exec $KAFKA_CONTAINER $KAFKA_BIN --bootstrap-server localhost:9092 --list"
 echo ""

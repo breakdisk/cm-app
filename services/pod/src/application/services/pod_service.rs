@@ -96,6 +96,8 @@ impl PodService {
             cmd.capture_lat,
             cmd.capture_lng,
             geofence_verified,
+            cmd.requires_photo,
+            cmd.requires_signature,
         );
 
         self.pod_repo.save(&pod).await.map_err(AppError::Internal)?;

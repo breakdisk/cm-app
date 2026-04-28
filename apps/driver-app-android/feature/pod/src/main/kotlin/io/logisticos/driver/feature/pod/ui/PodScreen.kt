@@ -408,57 +408,89 @@ private fun PhotoSection(
         }
 
         if (showCamera) {
+            var cameraError by remember { mutableStateOf<String?>(null) }
+
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(240.dp)
                     .clip(RoundedCornerShape(10.dp))
             ) {
-                AndroidView(
-                    factory = { ctx ->
-                        val previewView = PreviewView(ctx)
-                        val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
-                        cameraProviderFuture.addListener({
-                            val cameraProvider = cameraProviderFuture.get()
-                            val preview = Preview.Builder().build().also {
-                                it.setSurfaceProvider(previewView.surfaceProvider)
+                if (cameraError != null) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color(0xFF1A0A0A))
+                            .border(1.dp, Red.copy(alpha = 0.4f), RoundedCornerShape(10.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.padding(16.dp)
+                        ) {
+                            Text("Camera unavailable", color = Red, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                            Text(cameraError ?: "", color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp)
+                            TextButton(onClick = { showCamera = false; cameraError = null }) {
+                                Text("Dismiss", color = Cyan)
                             }
-                            cameraProvider.unbindAll()
-                            cameraProvider.bindToLifecycle(
-                                lifecycleOwner,
-                                CameraSelector.DEFAULT_BACK_CAMERA,
-                                preview,
-                                imageCapture
-                            )
-                        }, ContextCompat.getMainExecutor(ctx))
-                        previewView
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
-
-                Button(
-                    onClick = {
-                        val file = File(context.filesDir, "photo_$taskId.jpg")
-                        val outputOptions = ImageCapture.OutputFileOptions.Builder(file).build()
-                        imageCapture.takePicture(
-                            outputOptions,
-                            Executors.newSingleThreadExecutor(),
-                            object : ImageCapture.OnImageSavedCallback {
-                                override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                                    showCamera = false
-                                    onCaptured(file.absolutePath)
+                        }
+                    }
+                } else {
+                    AndroidView(
+                        factory = { ctx ->
+                            val previewView = PreviewView(ctx)
+                            val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
+                            cameraProviderFuture.addListener({
+                                try {
+                                    val cameraProvider = cameraProviderFuture.get()
+                                    val preview = Preview.Builder().build().also {
+                                        it.setSurfaceProvider(previewView.surfaceProvider)
+                                    }
+                                    cameraProvider.unbindAll()
+                                    cameraProvider.bindToLifecycle(
+                                        lifecycleOwner,
+                                        CameraSelector.DEFAULT_BACK_CAMERA,
+                                        preview,
+                                        imageCapture
+                                    )
+                                } catch (e: Exception) {
+                                    android.util.Log.e("PodScreen", "Camera bind failed: ${e.message}", e)
+                                    cameraError = e.message ?: "Camera failed to start"
                                 }
-                                override fun onError(exc: ImageCaptureException) { /* keep camera open */ }
-                            }
-                        )
-                    },
-                    modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp).fillMaxWidth().height(48.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Cyan),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Icon(Icons.Default.CameraAlt, contentDescription = null, tint = Canvas, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Capture", color = Canvas, fontWeight = FontWeight.Bold)
+                            }, ContextCompat.getMainExecutor(ctx))
+                            previewView
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+
+                    Button(
+                        onClick = {
+                            val file = File(context.filesDir, "photo_$taskId.jpg")
+                            val outputOptions = ImageCapture.OutputFileOptions.Builder(file).build()
+                            imageCapture.takePicture(
+                                outputOptions,
+                                Executors.newSingleThreadExecutor(),
+                                object : ImageCapture.OnImageSavedCallback {
+                                    override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                                        showCamera = false
+                                        onCaptured(file.absolutePath)
+                                    }
+                                    override fun onError(exc: ImageCaptureException) {
+                                        android.util.Log.e("PodScreen", "Photo capture failed: ${exc.message}", exc)
+                                        cameraError = "Capture failed: ${exc.message}"
+                                    }
+                                }
+                            )
+                        },
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp).fillMaxWidth().height(48.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Cyan),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.Default.CameraAlt, contentDescription = null, tint = Canvas, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Capture", color = Canvas, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         } else {

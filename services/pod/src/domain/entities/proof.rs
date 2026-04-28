@@ -32,9 +32,19 @@ pub struct ProofOfDelivery {
     // COD collection record
     pub cod_collected_cents: Option<i64>,
 
+    // Task-level evidence requirements — set at initiation time from the dispatch task config.
+    // When both are false (e.g. OTP-only or low-risk deliveries), geofence alone satisfies
+    // completeness and the driver is not blocked for missing photos/signature.
+    #[serde(default = "default_true")]
+    pub requires_photo: bool,
+    #[serde(default = "default_true")]
+    pub requires_signature: bool,
+
     pub captured_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
 }
+
+fn default_true() -> bool { true }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum PodStatus {
@@ -63,6 +73,8 @@ impl ProofOfDelivery {
         capture_lat: f64,
         capture_lng: f64,
         geofence_verified: bool,
+        requires_photo: bool,
+        requires_signature: bool,
     ) -> Self {
         let now = Utc::now();
         Self {
@@ -81,6 +93,8 @@ impl ProofOfDelivery {
             otp_verified: false,
             otp_id: None,
             cod_collected_cents: None,
+            requires_photo,
+            requires_signature,
             captured_at: now,
             created_at: now,
         }
@@ -103,16 +117,20 @@ impl ProofOfDelivery {
         self.cod_collected_cents = Some(amount_cents);
     }
 
-    /// Business rule: a POD is complete when it has at least one photo OR a signature,
-    /// and geofence was verified. OTP is required only for high-value shipments (enforced by caller).
+    /// Business rule: a POD is complete when geofence is verified and all required
+    /// evidence types are present. When neither photo nor signature was required by the
+    /// task (e.g. OTP-only or low-risk deliveries), geofence alone is sufficient.
     pub fn is_complete(&self) -> bool {
-        let has_evidence = self.signature_data.is_some() || !self.photos.is_empty();
-        has_evidence && self.geofence_verified
+        let evidence_satisfied = match (self.requires_photo, self.requires_signature) {
+            (false, false) => true,
+            _ => self.signature_data.is_some() || !self.photos.is_empty(),
+        };
+        evidence_satisfied && self.geofence_verified
     }
 
     pub fn submit(&mut self) -> Result<(), &'static str> {
         if !self.is_complete() {
-            return Err("POD is incomplete: requires evidence (signature or photo) and geofence verification");
+            return Err("POD is incomplete: missing required evidence or geofence not verified");
         }
         self.status = PodStatus::Submitted;
         Ok(())

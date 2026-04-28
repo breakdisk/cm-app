@@ -101,7 +101,9 @@ class DeliveryRepository @Inject constructor(
         photoPath: String?,
         signaturePath: String?,
         otpCode: String?,
-        codCollectedCents: Long?
+        codCollectedCents: Long?,
+        requiresPhoto: Boolean = true,
+        requiresSignature: Boolean = true,
     ): String? {
         // Persist locally first
         podDao.insert(
@@ -114,6 +116,12 @@ class DeliveryRepository @Inject constructor(
             )
         )
 
+        // GPS unavailable (0,0) means the backend geofence check will fail. Surface
+        // the error immediately rather than letting the server return 422.
+        if (captureLat == 0.0 && captureLng == 0.0) {
+            throw IllegalStateException("GPS location is unavailable. Move to an area with signal and try again.")
+        }
+
         return try {
             // 1. Initiate
             val initiateResp = podApi.initiate(
@@ -124,10 +132,19 @@ class DeliveryRepository @Inject constructor(
                     captureLat = captureLat,
                     captureLng = captureLng,
                     deliveryLat = captureLat,
-                    deliveryLng = captureLng
+                    deliveryLng = captureLng,
+                    requiresPhoto = requiresPhoto,
+                    requiresSignature = requiresSignature,
                 )
             )
             val podId = initiateResp.data.podId
+
+            // Geofence check: backend compares captureLat/Lng against the stored
+            // delivery address. If the driver is too far away the submit step will
+            // 422. Fail early with a clear message so the driver knows to move closer.
+            if (!initiateResp.data.geofenceVerified) {
+                throw IllegalStateException("You are not close enough to the delivery address. Move within 200 m and try again.")
+            }
 
             // 2. Attach signature if provided (base64-encode from file)
             if (signaturePath != null) {

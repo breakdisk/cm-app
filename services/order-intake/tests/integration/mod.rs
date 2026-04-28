@@ -284,7 +284,7 @@ mod create_shipment {
             .post("/v1/shipments")
             .add_header(
                 axum::http::header::AUTHORIZATION,
-                format!("Bearer {token}").parse().unwrap(),
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
             )
             .json(&valid_shipment_body())
             .await;
@@ -316,7 +316,7 @@ mod create_shipment {
             .post("/v1/shipments")
             .add_header(
                 axum::http::header::AUTHORIZATION,
-                format!("Bearer {token}").parse().unwrap(),
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
             )
             .json(&body)
             .await;
@@ -349,7 +349,7 @@ mod create_shipment {
             .post("/v1/shipments")
             .add_header(
                 axum::http::header::AUTHORIZATION,
-                format!("Bearer {token}").parse().unwrap(),
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
             )
             .json(&body)
             .await;
@@ -382,7 +382,7 @@ mod create_shipment {
             .post("/v1/shipments")
             .add_header(
                 axum::http::header::AUTHORIZATION,
-                format!("Bearer {token}").parse().unwrap(),
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
             )
             .json(&body)
             .await;
@@ -405,7 +405,7 @@ mod create_shipment {
             .post("/v1/shipments")
             .add_header(
                 axum::http::header::AUTHORIZATION,
-                format!("Bearer {token}").parse().unwrap(),
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
             )
             .json(&valid_shipment_body()) // no cod_amount_cents field
             .await;
@@ -445,7 +445,7 @@ mod create_shipment {
             .post("/v1/shipments")
             .add_header(
                 axum::http::header::AUTHORIZATION,
-                format!("Bearer {token}").parse().unwrap(),
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
             )
             .json(&body)
             .await;
@@ -478,7 +478,7 @@ mod get_shipment {
             .get(&format!("/v1/shipments/{shipment_id}"))
             .add_header(
                 axum::http::header::AUTHORIZATION,
-                format!("Bearer {token}").parse().unwrap(),
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
             )
             .await;
 
@@ -505,7 +505,7 @@ mod get_shipment {
             .get(&format!("/v1/shipments/{nonexistent_id}"))
             .add_header(
                 axum::http::header::AUTHORIZATION,
-                format!("Bearer {token}").parse().unwrap(),
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
             )
             .await;
 
@@ -540,7 +540,7 @@ mod list_shipments {
             .get("/v1/shipments")
             .add_header(
                 axum::http::header::AUTHORIZATION,
-                format!("Bearer {token}").parse().unwrap(),
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
             )
             .await;
 
@@ -573,7 +573,7 @@ mod list_shipments {
             .get("/v1/shipments?status=Pending")
             .add_header(
                 axum::http::header::AUTHORIZATION,
-                format!("Bearer {token}").parse().unwrap(),
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
             )
             .await;
 
@@ -605,7 +605,7 @@ mod cancel_shipment {
             .post(&format!("/v1/shipments/{shipment_id}/cancel"))
             .add_header(
                 axum::http::header::AUTHORIZATION,
-                format!("Bearer {token}").parse().unwrap(),
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
             )
             .json(&json!({ "reason": "Customer requested cancellation" }))
             .await;
@@ -635,7 +635,7 @@ mod cancel_shipment {
             .post(&format!("/v1/shipments/{shipment_id}/cancel"))
             .add_header(
                 axum::http::header::AUTHORIZATION,
-                format!("Bearer {token}").parse().unwrap(),
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
             )
             .json(&json!({ "reason": "Merchant decided to hold" }))
             .await;
@@ -660,7 +660,7 @@ mod cancel_shipment {
             .post(&format!("/v1/shipments/{shipment_id}/cancel"))
             .add_header(
                 axum::http::header::AUTHORIZATION,
-                format!("Bearer {token}").parse().unwrap(),
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
             )
             .json(&json!({ "reason": "Too late to cancel" }))
             .await;
@@ -682,7 +682,7 @@ mod cancel_shipment {
             .post(&format!("/v1/shipments/{ghost_id}/cancel"))
             .add_header(
                 axum::http::header::AUTHORIZATION,
-                format!("Bearer {token}").parse().unwrap(),
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
             )
             .json(&json!({ "reason": "Irrelevant" }))
             .await;
@@ -784,7 +784,7 @@ mod status_transitions {
             .post(&format!("/v1/shipments/{shipment_id}/cancel"))
             .add_header(
                 axum::http::header::AUTHORIZATION,
-                format!("Bearer {token}").parse().unwrap(),
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
             )
             .json(&json!({ "reason": "Test cancel" }))
             .await
@@ -815,7 +815,7 @@ mod status_transitions {
             .post(&format!("/v1/shipments/{shipment_id}/cancel"))
             .add_header(
                 axum::http::header::AUTHORIZATION,
-                format!("Bearer {token}").parse().unwrap(),
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
             )
             .json(&json!({ "reason": "Should fail" }))
             .await
@@ -911,7 +911,7 @@ mod bulk_create_shipments {
             .post("/v1/shipments/bulk")
             .add_header(
                 axum::http::header::AUTHORIZATION,
-                format!("Bearer {token}").parse().unwrap(),
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
             )
             .json(&json!({ "rows": rows }))
             .await;
@@ -966,7 +966,7 @@ mod bulk_create_shipments {
             .post("/v1/shipments/bulk")
             .add_header(
                 axum::http::header::AUTHORIZATION,
-                format!("Bearer {token}").parse().unwrap(),
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
             )
             .json(&json!({ "rows": [bad_row.clone(), bad_row] }))
             .await;
@@ -1015,7 +1015,7 @@ mod tracking_number_format {
                 .post("/v1/shipments")
                 .add_header(
                     axum::http::header::AUTHORIZATION,
-                    format!("Bearer {token}").parse().unwrap(),
+                    format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
                 )
                 .json(&valid_shipment_body())
                 .await;
@@ -1057,7 +1057,7 @@ mod volumetric_weight {
             .post("/v1/shipments")
             .add_header(
                 axum::http::header::AUTHORIZATION,
-                format!("Bearer {token}").parse().unwrap(),
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
             )
             .json(&body)
             .await;
@@ -1094,7 +1094,7 @@ mod volumetric_weight {
             .post("/v1/shipments")
             .add_header(
                 axum::http::header::AUTHORIZATION,
-                format!("Bearer {token}").parse().unwrap(),
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
             )
             .json(&body)
             .await;
@@ -1106,5 +1106,334 @@ mod volumetric_weight {
             5000u32,
             "actual weight should win when larger than volumetric"
         );
+    }
+}
+
+mod e2e_flow {
+    use super::*;
+    use chrono::Timelike;
+
+    #[tokio::test]
+    async fn e2e_happy_path_single_shipment_creation_and_persistence() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = build_test_server(Arc::clone(&repo));
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let merchant_id = uuid::Uuid::new_v4();
+        let token = mint_merchant_token(&jwt, tenant_id, merchant_id);
+
+        let resp = server
+            .post("/v1/shipments")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&valid_shipment_body())
+            .await;
+
+        assert_eq!(resp.status_code(), 201, "shipment creation should succeed");
+        let body: Value = resp.json();
+        let shipment_id = body["id"].as_str().expect("id must be present").to_string();
+        let tracking = body["tracking_number"].as_str().expect("tracking_number must be present");
+
+        assert!(tracking.starts_with("CMPH"), "tracking number must start with CMPH");
+        assert_eq!(body["status"], "Pending", "initial status must be Pending");
+
+        let store = repo.shipments.lock().unwrap();
+        let stored = store
+            .iter()
+            .find(|s| s.id.inner().to_string() == shipment_id)
+            .expect("shipment must be persisted in repository");
+
+        assert_eq!(stored.status, ShipmentStatus::Pending, "persisted shipment must have Pending status");
+        assert_eq!(stored.tenant_id.inner(), tenant_id);
+        assert_eq!(stored.merchant_id.inner(), merchant_id);
+    }
+
+    #[tokio::test]
+    async fn e2e_bulk_shipment_creation_generates_unique_awbs() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = build_test_server(Arc::clone(&repo));
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let merchant_id = uuid::Uuid::new_v4();
+        let token = mint_merchant_token(&jwt, tenant_id, merchant_id);
+
+        let rows = json!([
+            {
+                "customer_name": "Customer One",
+                "customer_phone": "+639171111111",
+                "merchant_reference": "BULK-001",
+                "origin": {
+                    "line1": "Warehouse A", "city": "Manila",
+                    "province": "Metro Manila", "postal_code": "1000", "country_code": "PH"
+                },
+                "destination": {
+                    "line1": "Address One", "city": "Quezon City",
+                    "province": "Metro Manila", "postal_code": "1100", "country_code": "PH"
+                },
+                "service_type": "standard",
+                "weight_grams": 500u32
+            },
+            {
+                "customer_name": "Customer Two",
+                "customer_phone": "+639172222222",
+                "merchant_reference": "BULK-002",
+                "origin": {
+                    "line1": "Warehouse B", "city": "Makati",
+                    "province": "Metro Manila", "postal_code": "1200", "country_code": "PH"
+                },
+                "destination": {
+                    "line1": "Address Two", "city": "Taguig",
+                    "province": "Metro Manila", "postal_code": "1600", "country_code": "PH"
+                },
+                "service_type": "express",
+                "weight_grams": 1000u32
+            },
+            {
+                "customer_name": "Customer Three",
+                "customer_phone": "+639173333333",
+                "merchant_reference": "BULK-003",
+                "origin": {
+                    "line1": "Warehouse C", "city": "Pasig",
+                    "province": "Metro Manila", "postal_code": "1605", "country_code": "PH"
+                },
+                "destination": {
+                    "line1": "Address Three", "city": "Antipolo",
+                    "province": "Rizal", "postal_code": "1870", "country_code": "PH"
+                },
+                "service_type": "same_day",
+                "weight_grams": 750u32
+            }
+        ]);
+
+        let resp = server
+            .post("/v1/shipments/bulk")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&json!({ "rows": rows }))
+            .await;
+
+        assert_eq!(resp.status_code(), 207, "bulk should return multi-status");
+        let body: Value = resp.json();
+        let created = body["created"].as_array().expect("created must be an array");
+        assert_eq!(created.len(), 3, "all three shipments should be created");
+
+        let mut tracking_numbers = std::collections::HashSet::new();
+        for shipment in created {
+            let tn = shipment["tracking_number"].as_str().expect("tracking_number must be present");
+            tracking_numbers.insert(tn.to_string());
+        }
+        assert_eq!(tracking_numbers.len(), 3, "all tracking numbers must be unique");
+
+        let store = repo.shipments.lock().unwrap();
+        assert_eq!(store.len(), 3, "all three shipments should be persisted");
+    }
+
+    #[tokio::test]
+    async fn e2e_same_day_cutoff_prevents_late_bookings() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = build_test_server(Arc::clone(&repo));
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let merchant_id = uuid::Uuid::new_v4();
+        let token = mint_merchant_token(&jwt, tenant_id, merchant_id);
+
+        // Check current UTC hour to determine if we're before or after 14:00
+        let now_utc = chrono::Utc::now();
+        let current_hour = now_utc.hour();
+
+        if current_hour >= 14 {
+            // We're after 14:00 UTC — same-day booking should fail
+            let mut body = valid_shipment_body();
+            body["service_type"] = json!("same_day");
+
+            let resp = server
+                .post("/v1/shipments")
+                .add_header(
+                    axum::http::header::AUTHORIZATION,
+                    format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+                )
+                .json(&body)
+                .await;
+
+            assert_eq!(resp.status_code(), 422, "same-day booking after 14:00 UTC should fail");
+            let resp_body: Value = resp.json();
+            assert_eq!(resp_body["error"]["code"], "BUSINESS_RULE_VIOLATION");
+        } else {
+            // We're before 14:00 UTC — same-day booking should succeed
+            let mut body = valid_shipment_body();
+            body["service_type"] = json!("same_day");
+
+            let resp = server
+                .post("/v1/shipments")
+                .add_header(
+                    axum::http::header::AUTHORIZATION,
+                    format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+                )
+                .json(&body)
+                .await;
+
+            assert_eq!(resp.status_code(), 201, "same-day booking before 14:00 UTC should succeed");
+        }
+    }
+
+    #[tokio::test]
+    async fn e2e_cod_validation_prevents_exceeding_declared_value() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = build_test_server(Arc::clone(&repo));
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let merchant_id = uuid::Uuid::new_v4();
+        let token = mint_merchant_token(&jwt, tenant_id, merchant_id);
+
+        // COD exceeds declared value — should fail
+        let mut body = valid_shipment_body();
+        body["declared_value_cents"] = json!(10000i64); // PHP 100.00
+        body["cod_amount_cents"] = json!(25000i64);     // PHP 250.00 — exceeds declared
+
+        let resp = server
+            .post("/v1/shipments")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&body)
+            .await;
+
+        assert_eq!(resp.status_code(), 422, "COD exceeding declared value should be rejected");
+        let resp_body: Value = resp.json();
+        assert_eq!(resp_body["error"]["code"], "BUSINESS_RULE_VIOLATION");
+        assert!(
+            resp_body["error"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains("cod"),
+            "error message should reference COD violation"
+        );
+
+        let store = repo.shipments.lock().unwrap();
+        assert_eq!(store.len(), 0, "invalid shipment should not be persisted");
+    }
+
+    #[tokio::test]
+    async fn e2e_valid_cod_under_declared_value_is_accepted() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = build_test_server(Arc::clone(&repo));
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let merchant_id = uuid::Uuid::new_v4();
+        let token = mint_merchant_token(&jwt, tenant_id, merchant_id);
+
+        // COD is less than declared value — should succeed
+        let mut body = valid_shipment_body();
+        body["declared_value_cents"] = json!(50000i64); // PHP 500.00
+        body["cod_amount_cents"] = json!(45000i64);     // PHP 450.00 — valid
+
+        let resp = server
+            .post("/v1/shipments")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&body)
+            .await;
+
+        assert_eq!(resp.status_code(), 201, "valid COD should be accepted");
+        let resp_body: Value = resp.json();
+        assert!(!resp_body["cod_amount"].is_null(), "cod_amount must be populated");
+        assert_eq!(resp_body["cod_amount"]["amount"], 45000i64);
+
+        let store = repo.shipments.lock().unwrap();
+        assert_eq!(store.len(), 1, "valid shipment should be persisted");
+    }
+
+    #[tokio::test]
+    async fn e2e_error_case_mixed_bulk_upload() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = build_test_server(Arc::clone(&repo));
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let merchant_id = uuid::Uuid::new_v4();
+        let token = mint_merchant_token(&jwt, tenant_id, merchant_id);
+
+        // Mix of valid and invalid rows
+        let rows = json!([
+            {
+                "customer_name": "Valid Customer",
+                "customer_phone": "+639171234567",
+                "merchant_reference": "VALID-001",
+                "origin": {
+                    "line1": "Origin St", "city": "Manila",
+                    "province": "Metro Manila", "postal_code": "1000", "country_code": "PH"
+                },
+                "destination": {
+                    "line1": "Dest St", "city": "Quezon City",
+                    "province": "Metro Manila", "postal_code": "1100", "country_code": "PH"
+                },
+                "service_type": "standard",
+                "weight_grams": 500u32
+            },
+            {
+                "customer_name": "Invalid COD",
+                "customer_phone": "+639179876543",
+                "merchant_reference": "INVALID-002",
+                "origin": {
+                    "line1": "Origin St", "city": "Manila",
+                    "province": "Metro Manila", "postal_code": "1000", "country_code": "PH"
+                },
+                "destination": {
+                    "line1": "Dest St", "city": "Quezon City",
+                    "province": "Metro Manila", "postal_code": "1100", "country_code": "PH"
+                },
+                "service_type": "standard",
+                "weight_grams": 500u32,
+                "declared_value_cents": 1000i64,
+                "cod_amount_cents": 5000i64  // COD exceeds declared → fail
+            },
+            {
+                "customer_name": "Another Valid",
+                "customer_phone": "+639175551234",
+                "merchant_reference": "VALID-003",
+                "origin": {
+                    "line1": "Origin St", "city": "Manila",
+                    "province": "Metro Manila", "postal_code": "1000", "country_code": "PH"
+                },
+                "destination": {
+                    "line1": "Dest St", "city": "Makati",
+                    "province": "Metro Manila", "postal_code": "1200", "country_code": "PH"
+                },
+                "service_type": "express",
+                "weight_grams": 2000u32
+            }
+        ]);
+
+        let resp = server
+            .post("/v1/shipments/bulk")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&json!({ "rows": rows }))
+            .await;
+
+        assert_eq!(resp.status_code(), 207, "should return mixed status for partial success");
+        let body: Value = resp.json();
+
+        let created = body["created"].as_array().expect("created must exist");
+        let failed = body["failed"].as_array().expect("failed must exist");
+
+        assert_eq!(created.len(), 2, "two valid shipments should be created");
+        assert_eq!(failed.len(), 1, "one invalid shipment should fail");
+
+        let failed_row = &failed[0];
+        assert_eq!(failed_row["row_index"], 1, "failed row should be at index 1");
+        assert_eq!(failed_row["merchant_reference"], "INVALID-002");
+
+        let store = repo.shipments.lock().unwrap();
+        assert_eq!(store.len(), 2, "only valid shipments should be persisted");
     }
 }
