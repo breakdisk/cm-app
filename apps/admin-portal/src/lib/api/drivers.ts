@@ -8,24 +8,28 @@ export interface Driver {
   user_id: string;
   first_name: string;
   last_name: string;
-  name: string;
+  /** Not returned by backend DTO — callers must compute from first_name + last_name */
+  name?: string;
   phone: string;
   vehicle_type: string;
-  vehicle_plate: string;
+  /** Not in current DriverDto — may be absent */
+  vehicle_plate?: string;
   status: DriverStatus;
   driver_type: DriverType;
   zone?: string;
   per_delivery_rate_cents: number;
   cod_commission_rate_bps: number;
   is_active: boolean;
-  tasks_total: number;
-  tasks_done: number;
+  /** Not in current DriverDto — absent from list responses */
+  tasks_total?: number;
+  tasks_done?: number;
   lat?: number;
   lng?: number;
   last_location?: string;
   last_seen_at?: string;
-  performance_grade: "A" | "B" | "C" | "D";
-  cod_collected: number;
+  /** Not in current DriverDto — absent from list responses */
+  performance_grade?: "A" | "B" | "C" | "D";
+  cod_collected?: number;
 }
 
 export interface DriverSummary {

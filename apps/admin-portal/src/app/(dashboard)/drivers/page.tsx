@@ -112,16 +112,23 @@ export default function DriversPage() {
       ]);
       setDrivers(listRes.data.map((d: ApiDriver) => ({
         id:            d.id,
-        name:          d.name,
-        vehicle:       d.vehicle_type,
-        plate:         d.vehicle_plate,
+        // Backend DTO returns first_name + last_name, not a pre-joined name field.
+        name:          (d.first_name && d.last_name)
+                         ? `${d.first_name} ${d.last_name}`
+                         : (d.name ?? "Unknown Driver"),
+        vehicle:       d.vehicle_type ?? "Unknown",
+        // DriverDto has no plate column yet — show vehicle type as fallback.
+        plate:         d.vehicle_plate ?? d.vehicle_type ?? "—",
         status:        normalizeStatus(d.status as string),
-        tasks_total:   d.tasks_total,
-        tasks_done:    d.tasks_done,
-        last_location: d.last_location ?? "Unknown",
+        tasks_total:   d.tasks_total   ?? 0,
+        tasks_done:    d.tasks_done    ?? 0,
+        last_location: d.last_location
+                         ?? (d.lat != null && d.lng != null
+                               ? `${d.lat.toFixed(4)}, ${d.lng.toFixed(4)}`
+                               : "Unknown"),
         last_seen:     d.last_seen_at ? new Date(d.last_seen_at).toLocaleTimeString() : "—",
-        grade:         d.performance_grade,
-        cod_collected: d.cod_collected,
+        grade:         (d.performance_grade ?? "C") as "A" | "B" | "C" | "D",
+        cod_collected: d.cod_collected ?? 0,
       })));
       const s = summaryRes.data;
       setKpi([
