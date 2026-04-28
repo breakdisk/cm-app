@@ -13,6 +13,10 @@ pub struct User {
     pub roles: Vec<String>,
     pub is_active: bool,
     pub email_verified: bool,
+    /// E.164-normalised phone number, e.g. `+639171234567`.
+    /// Set when a driver is pre-registered by a Partner portal admin so the
+    /// Driver App OTP login can resolve the correct identity user by phone.
+    pub phone_number: Option<String>,
     pub last_login_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -38,6 +42,7 @@ impl User {
             roles,
             is_active: true,
             email_verified: false,
+            phone_number: None,
             last_login_at: None,
             created_at: now,
             updated_at: now,

@@ -38,6 +38,9 @@ pub struct InviteUserCommand {
     pub first_name: String,
     pub last_name: String,
     pub roles: Vec<String>,
+    /// Optional E.164 phone number. Required for drivers so the Driver App
+    /// OTP login can resolve this identity user by phone number.
+    pub phone_number: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

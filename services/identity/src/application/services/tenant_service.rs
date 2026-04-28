@@ -187,7 +187,7 @@ impl TenantService {
         let password_hash = hash_password(&temp_password)
             .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
 
-        let user = User::new(
+        let mut user = User::new(
             tenant_id.clone(),
             cmd.email.clone(),
             password_hash,
@@ -195,6 +195,10 @@ impl TenantService {
             cmd.last_name,
             cmd.roles,
         );
+
+        // Normalise and store the phone number when provided (required for
+        // Driver App OTP login so the app can resolve this user by phone).
+        user.phone_number = cmd.phone_number.map(|p| normalise_phone(&p));
 
         self.user_repo.save(&user).await.map_err(AppError::Internal)?;
 
@@ -226,4 +230,20 @@ fn generate_temp_password() -> String {
         .take(16)
         .map(char::from)
         .collect()
+}
+
+/// Normalise a phone number to E.164 form: keep only `+` and digits, strip
+/// spaces / dashes / parentheses. E.g. `+63 917 123 4567` → `+639171234567`.
+/// If the input has no leading `+`, one is prepended.
+pub fn normalise_phone(raw: &str) -> String {
+    let digits_and_plus: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '+')
+        .collect();
+
+    if digits_and_plus.starts_with('+') {
+        digits_and_plus
+    } else {
+        format!("+{digits_and_plus}")
+    }
 }

@@ -363,41 +363,63 @@ impl AuthService {
             .map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound { resource: "Tenant", id: tenant_slug.to_owned() })?;
 
-        // Derive a synthetic email from the phone number (digits only)
-        let digits: String = cmd.phone_number.chars().filter(|c| c.is_ascii_digit()).collect();
         let role = cmd.role.as_deref().unwrap_or("driver");
-        let (email, password, first_name) = match role {
-            "customer" => (
-                format!("{digits}@customer.logisticos.app"),
-                format!("Cust{digits}!Lgx"),
-                "Customer".to_owned(),
-            ),
-            _ => (
-                format!("{digits}@driver.logisticos.app"),
-                format!("Drv{digits}!Lgx"),
-                "Driver".to_owned(),
-            ),
-        };
 
-        // Find-or-create user
-        let user = match self.user_repo.find_by_email(&tenant.id, &email).await.map_err(AppError::Internal)? {
-            Some(u) => u,
-            None => {
-                // Auto-register
-                let password_hash = logisticos_auth::password::hash_password(&password)
-                    .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
-                let mut new_user = crate::domain::entities::User::new(
-                    tenant.id.clone(),
-                    email.clone(),
-                    password_hash,
-                    first_name,
-                    digits.clone(),
-                    vec![role.to_owned()],
-                );
-                new_user.email_verified = true; // OTP-verified phone = verified identity
-                self.user_repo.save(&new_user).await.map_err(AppError::Internal)?;
-                tracing::info!(user_id = %new_user.id, phone = %cmd.phone_number, role = %role, "Auto-registered user via OTP");
-                new_user
+        // Normalise the phone number to E.164 before any lookup.
+        let normalised_phone = crate::application::services::tenant_service::normalise_phone(&cmd.phone_number);
+
+        // ── Step 1: try to find a pre-registered user by phone ───────────────
+        // Partner portal admin registers drivers with a real email + phone.
+        // The phone is stored on identity.users so the Driver App can log in
+        // without the driver ever knowing their email address.
+        let user = if let Some(pre_registered) = self.user_repo
+            .find_by_phone(&tenant.id, &normalised_phone)
+            .await
+            .map_err(AppError::Internal)?
+        {
+            tracing::info!(
+                user_id = %pre_registered.id,
+                phone = %normalised_phone,
+                "OTP login: resolved pre-registered user by phone"
+            );
+            pre_registered
+        } else {
+            // ── Step 2: fall back to synthetic-email find-or-create ──────────
+            // Handles self-registering customers and dev/test drivers that were
+            // never pre-registered through the Partner portal.
+            let digits: String = normalised_phone.chars().filter(|c| c.is_ascii_digit()).collect();
+            let (email, password, first_name) = match role {
+                "customer" => (
+                    format!("{digits}@customer.logisticos.app"),
+                    format!("Cust{digits}!Lgx"),
+                    "Customer".to_owned(),
+                ),
+                _ => (
+                    format!("{digits}@driver.logisticos.app"),
+                    format!("Drv{digits}!Lgx"),
+                    "Driver".to_owned(),
+                ),
+            };
+
+            match self.user_repo.find_by_email(&tenant.id, &email).await.map_err(AppError::Internal)? {
+                Some(u) => u,
+                None => {
+                    let password_hash = logisticos_auth::password::hash_password(&password)
+                        .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
+                    let mut new_user = crate::domain::entities::User::new(
+                        tenant.id.clone(),
+                        email.clone(),
+                        password_hash,
+                        first_name,
+                        digits.clone(),
+                        vec![role.to_owned()],
+                    );
+                    new_user.email_verified = true; // OTP-verified phone = verified identity
+                    new_user.phone_number = Some(normalised_phone.clone());
+                    self.user_repo.save(&new_user).await.map_err(AppError::Internal)?;
+                    tracing::info!(user_id = %new_user.id, phone = %normalised_phone, role = %role, "Auto-registered user via OTP");
+                    new_user
+                }
             }
         };
 

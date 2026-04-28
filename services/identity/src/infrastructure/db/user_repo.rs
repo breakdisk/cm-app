@@ -22,6 +22,7 @@ struct UserRow {
     roles:          Vec<String>,
     is_active:      bool,
     email_verified: bool,
+    phone_number:   Option<String>,
     last_login_at:  Option<chrono::DateTime<chrono::Utc>>,
     created_at:     chrono::DateTime<chrono::Utc>,
     updated_at:     chrono::DateTime<chrono::Utc>,
@@ -39,6 +40,7 @@ impl From<UserRow> for User {
             roles:          r.roles,
             is_active:      r.is_active,
             email_verified: r.email_verified,
+            phone_number:   r.phone_number,
             last_login_at:  r.last_login_at,
             created_at:     r.created_at,
             updated_at:     r.updated_at,
@@ -51,7 +53,8 @@ impl UserRepository for PgUserRepository {
     async fn find_by_id(&self, id: &UserId) -> anyhow::Result<Option<User>> {
         let row = sqlx::query_as::<_, UserRow>(
             r#"SELECT id, tenant_id, email, password_hash, first_name, last_name,
-                      roles, is_active, email_verified, last_login_at, created_at, updated_at
+                      roles, is_active, email_verified, phone_number,
+                      last_login_at, created_at, updated_at
                FROM identity.users WHERE id = $1"#
         )
         .bind(id.inner())
@@ -63,7 +66,8 @@ impl UserRepository for PgUserRepository {
     async fn find_by_email(&self, tenant_id: &TenantId, email: &str) -> anyhow::Result<Option<User>> {
         let row = sqlx::query_as::<_, UserRow>(
             r#"SELECT id, tenant_id, email, password_hash, first_name, last_name,
-                      roles, is_active, email_verified, last_login_at, created_at, updated_at
+                      roles, is_active, email_verified, phone_number,
+                      last_login_at, created_at, updated_at
                FROM identity.users WHERE tenant_id = $1 AND email = $2"#
         )
         .bind(tenant_id.inner())
@@ -73,12 +77,27 @@ impl UserRepository for PgUserRepository {
         Ok(row.map(User::from))
     }
 
+    async fn find_by_phone(&self, tenant_id: &TenantId, phone: &str) -> anyhow::Result<Option<User>> {
+        let row = sqlx::query_as::<_, UserRow>(
+            r#"SELECT id, tenant_id, email, password_hash, first_name, last_name,
+                      roles, is_active, email_verified, phone_number,
+                      last_login_at, created_at, updated_at
+               FROM identity.users WHERE tenant_id = $1 AND phone_number = $2"#
+        )
+        .bind(tenant_id.inner())
+        .bind(phone)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(User::from))
+    }
+
     async fn save(&self, user: &User) -> anyhow::Result<()> {
         sqlx::query(
             r#"INSERT INTO identity.users
                    (id, tenant_id, email, password_hash, first_name, last_name,
-                    roles, is_active, email_verified, last_login_at, created_at, updated_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                    roles, is_active, email_verified, phone_number,
+                    last_login_at, created_at, updated_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
                ON CONFLICT (id) DO UPDATE SET
                    email          = EXCLUDED.email,
                    password_hash  = EXCLUDED.password_hash,
@@ -87,6 +106,7 @@ impl UserRepository for PgUserRepository {
                    roles          = EXCLUDED.roles,
                    is_active      = EXCLUDED.is_active,
                    email_verified = EXCLUDED.email_verified,
+                   phone_number   = EXCLUDED.phone_number,
                    last_login_at  = EXCLUDED.last_login_at,
                    updated_at     = EXCLUDED.updated_at"#
         )
@@ -99,6 +119,7 @@ impl UserRepository for PgUserRepository {
         .bind(&user.roles)
         .bind(user.is_active)
         .bind(user.email_verified)
+        .bind(&user.phone_number)
         .bind(user.last_login_at)
         .bind(user.created_at)
         .bind(user.updated_at)
@@ -110,7 +131,8 @@ impl UserRepository for PgUserRepository {
     async fn list_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<User>> {
         let rows = sqlx::query_as::<_, UserRow>(
             r#"SELECT id, tenant_id, email, password_hash, first_name, last_name,
-                      roles, is_active, email_verified, last_login_at, created_at, updated_at
+                      roles, is_active, email_verified, phone_number,
+                      last_login_at, created_at, updated_at
                FROM identity.users WHERE tenant_id = $1 ORDER BY created_at ASC"#
         )
         .bind(tenant_id.inner())
