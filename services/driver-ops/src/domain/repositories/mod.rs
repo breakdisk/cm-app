@@ -5,6 +5,15 @@ use serde::Serialize;
 use uuid::Uuid;
 use crate::domain::entities::{Driver, DriverTask, DriverLocation};
 
+/// Tenant-wide task counts for the admin summary KPI strip.
+#[derive(Debug, Clone, Serialize)]
+pub struct TenantTaskSummary {
+    pub total_assigned:  i64,
+    pub total_completed: i64,
+    pub total_failed:    i64,
+    pub cod_collected_cents: i64,
+}
+
 /// One manifest row per (driver, date, task_type) tuple. Used by the partner
 /// portal to surface a daily operational summary without having to page
 /// through individual tasks. Counts are computed server-side via SQL
@@ -46,6 +55,9 @@ pub trait TaskRepository: Send + Sync {
         carrier_id: Option<Uuid>,
         date: NaiveDate,
     ) -> anyhow::Result<Vec<ManifestEntry>>;
+
+    /// Tenant-wide task summary for today — drives the admin KPI strip.
+    async fn tenant_summary(&self, tenant_id: &TenantId, date: NaiveDate) -> anyhow::Result<TenantTaskSummary>;
 }
 
 #[async_trait]

@@ -92,6 +92,39 @@ pub async fn list_drivers(
     Ok(Json(serde_json::json!({ "data": dtos })))
 }
 
+/// GET /v1/drivers/summary — aggregated KPI strip for the admin roster page.
+/// Returns driver status counts (online/offline/break) + today's task throughput.
+pub async fn get_summary(
+    AuthClaims(claims): AuthClaims,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_permission!(claims, logisticos_auth::rbac::permissions::FLEET_VIEW);
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+
+    let (drivers, task_summary) = tokio::try_join!(
+        state.driver_service.list_by_tenant(&tenant_id),
+        state.task_service.tenant_summary(&tenant_id),
+    )?;
+
+    let online    = drivers.iter().filter(|d| d.status != DriverStatus::Offline).count() as i64;
+    let idle      = drivers.iter().filter(|d| d.status == DriverStatus::Available).count() as i64;
+    let on_break  = drivers.iter().filter(|d| d.status == DriverStatus::OnBreak).count() as i64;
+    let offline   = drivers.iter().filter(|d| d.status == DriverStatus::Offline).count() as i64;
+
+    Ok(Json(serde_json::json!({
+        "data": {
+            "online": online,
+            "idle": idle,
+            "on_break": on_break,
+            "offline": offline,
+            "total_tasks_assigned": task_summary.total_assigned,
+            "total_tasks_completed": task_summary.total_completed,
+            "total_tasks_failed": task_summary.total_failed,
+            "total_cod_collected": task_summary.cod_collected_cents,
+        }
+    })))
+}
+
 pub async fn get_driver(
     AuthClaims(claims): AuthClaims,
     Path(id): Path<Uuid>,

@@ -9,7 +9,7 @@ use crate::{
     domain::{
         entities::{DriverTask, TaskStatus, TaskType},
         events::{TaskCompleted, TaskFailed},
-        repositories::{TaskRepository, DriverRepository},
+        repositories::{TaskRepository, DriverRepository, TenantTaskSummary},
     },
 };
 
@@ -32,6 +32,14 @@ impl TaskService {
     /// Aggregated manifest for the partner portal. Delegates to the repo
     /// which runs a single SQL group-by; the service layer exists so the
     /// HTTP handler never touches the pool directly.
+    pub async fn tenant_summary(&self, tenant_id: &TenantId) -> AppResult<TenantTaskSummary> {
+        let today = chrono::Utc::now().date_naive();
+        self.task_repo
+            .tenant_summary(tenant_id, today)
+            .await
+            .map_err(AppError::Internal)
+    }
+
     pub async fn list_manifest(
         &self,
         tenant_id: &logisticos_types::TenantId,
