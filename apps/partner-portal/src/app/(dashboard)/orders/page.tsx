@@ -948,10 +948,10 @@ function OrdersPageInner() {
             drivers={
               // If deep-linked with ?assignTo, pre-sort the driver list so
               // the recommended driver appears first — UX shortcut.
-              preselectedDriverId
+              assignToParam
                 ? [
-                    ...drivers.filter(d => d.id === preselectedDriverId),
-                    ...drivers.filter(d => d.id !== preselectedDriverId),
+                    ...drivers.filter(d => d.id === assignToParam),
+                    ...drivers.filter(d => d.id !== assignToParam),
                   ]
                 : drivers
             }

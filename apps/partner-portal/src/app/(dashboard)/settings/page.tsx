@@ -142,7 +142,7 @@ export default function PartnerSettingsPage() {
 
       {error && (
         <motion.div variants={variants.fadeInUp}>
-          <GlassCard padding="sm">
+          <GlassCard>
             <p className="text-xs text-red-signal font-mono">{error}</p>
           </GlassCard>
         </motion.div>
@@ -150,7 +150,7 @@ export default function PartnerSettingsPage() {
 
       {loading && !carrier ? (
         <motion.div variants={variants.fadeInUp}>
-          <GlassCard padding="sm">
+          <GlassCard>
             <p className="text-xs text-white/40 font-mono text-center py-6">loading carrier profile…</p>
           </GlassCard>
         </motion.div>
