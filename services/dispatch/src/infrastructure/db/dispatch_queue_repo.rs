@@ -127,7 +127,8 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
                     origin_address_line1, origin_city, origin_province, origin_postal_code,
                     origin_lat, origin_lng,
                     cod_amount_cents, special_instructions, service_type, status,
-                    auto_dispatch_attempts, last_dispatch_error, last_attempt_at, queued_at
+                    auto_dispatch_attempts, last_dispatch_error, last_attempt_at,
+                    queued_at, dispatched_at
              FROM dispatch.dispatch_queue WHERE shipment_id = $1",
         )
         .bind(shipment_id)
