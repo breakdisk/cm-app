@@ -126,7 +126,7 @@ export default function AutomationPage() {
 
       {error && (
         <motion.div variants={variants.fadeInUp}>
-          <GlassCard padding="sm">
+          <GlassCard>
             <p className="text-xs text-white/60 font-mono">{error}</p>
           </GlassCard>
         </motion.div>

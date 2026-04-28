@@ -18,19 +18,32 @@ class ShiftRepository @Inject constructor(
     fun observeActiveShift(): Flow<ShiftEntity?> = shiftDao.getActiveShift()
 
     /**
-     * Fetches tasks from GET /v1/tasks and upserts into local DB.
+     * Fetches tasks from GET /v1/tasks and reconciles the local DB against
+     * the authoritative server payload.
+     *
      * The backend doesn't have a shift concept on this endpoint, so we use a
      * synthetic shift keyed by driver+date to satisfy the local schema.
+     *
+     * Reconciliation rules:
+     *  - Server is the source of truth for *which* tasks belong to the driver
+     *    today. Tasks the server omits (completed/cancelled/reassigned) are
+     *    pruned from local Room — without this they linger forever and the
+     *    route screen shows ghost stops.
+     *  - Local-side mutations (status, stopOrder) survive a re-sync — the
+     *    driver's in-flight work isn't clobbered by the server payload.
+     *  - Empty payload is a valid state, not a no-op: the driver simply has
+     *    no work today, and any leftover local tasks must go.
      */
     suspend fun syncShift() {
         val response = api.listMyTasks()
         val tasks = response.data
 
-        if (tasks.isEmpty()) return
-
-        // Create / update a synthetic shift record so the shift UI still works
         val syntheticShiftId = "local-${System.currentTimeMillis() / 86_400_000}"
         val existingShift = shiftDao.getShiftById(syntheticShiftId)
+
+        // Always keep the shift row in sync with the server's task count, even
+        // when the count is zero. Otherwise the home screen keeps reporting
+        // yesterday's stop totals.
         shiftDao.insert(
             ShiftEntity(
                 id = syntheticShiftId,
@@ -38,7 +51,7 @@ class ShiftRepository @Inject constructor(
                 tenantId = "",
                 startedAt = existingShift?.startedAt,
                 endedAt = null,
-                isActive = true,
+                isActive = tasks.isNotEmpty(),
                 totalStops = tasks.size,
                 completedStops = existingShift?.completedStops ?: 0,
                 failedStops = existingShift?.failedStops ?: 0,
@@ -47,10 +60,15 @@ class ShiftRepository @Inject constructor(
             )
         )
 
+        if (tasks.isEmpty()) {
+            taskDao.deleteForShift(syntheticShiftId)
+            return
+        }
+
         // Preserve locally-modified statuses — don't overwrite in-progress work
         val existingStatusMap = taskDao.getTasksForShiftOnce(syntheticShiftId).associateBy { it.id }
 
-        val entities = tasks.mapIndexed { idx, t ->
+        val entities = tasks.map { t ->
             val existing = existingStatusMap[t.taskId]
             TaskEntity(
                 id = t.taskId,
@@ -82,6 +100,10 @@ class ShiftRepository @Inject constructor(
                 syncedAt = System.currentTimeMillis()
             )
         }
+        // Prune locally-known tasks that the server no longer reports for
+        // this shift, then upsert the authoritative set. Order matters:
+        // pruning before upsert is safe because insertAll is REPLACE-on-conflict.
+        taskDao.pruneShiftTasks(syntheticShiftId, entities.map { it.id })
         taskDao.insertAll(entities)
     }
 }

@@ -2,10 +2,13 @@ package io.logisticos.driver.core.database.worker
 
 import android.content.Context
 import androidx.hilt.work.HiltWorker
+import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
@@ -123,23 +126,53 @@ class OutboundSyncWorker @AssistedInject constructor(
 
                 podDao.markSynced(taskId)
             }
-            else -> Unit
+            // Actions with no backend wiring (SCAN_EVENT, SHIFT_START, SHIFT_END,
+            // and historically COD_CONFIRM — whose value is actually delivered via
+            // completeTask.codCollectedCents). Log and drop deliberately so they
+            // don't block the queue forever — but keep this branch loud so a
+            // future enum addition is caught in code review, not in production
+            // silent data loss.
+            else -> {
+                android.util.Log.w(
+                    "OutboundSyncWorker",
+                    "no handler for ${item.action}; dropping queue id=${item.id}"
+                )
+            }
         }
     }
 
     companion object {
-        const val WORK_NAME = "outbound_sync"
+        const val WORK_NAME           = "outbound_sync"
+        const val ONE_SHOT_WORK_NAME  = "outbound_sync_one_shot"
 
+        private fun networkConstraints() = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+
+        /** Periodic safety net — fires every 15 min while online. Drains
+         *  anything kickOnce missed (app killed mid-flight, doze deferral, etc). */
         fun schedule(context: Context) {
             val request = PeriodicWorkRequestBuilder<OutboundSyncWorker>(15, TimeUnit.MINUTES)
-                .setConstraints(
-                    Constraints.Builder()
-                        .setRequiredNetworkType(NetworkType.CONNECTED)
-                        .build()
-                )
+                .setConstraints(networkConstraints())
                 .build()
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 WORK_NAME, ExistingPeriodicWorkPolicy.KEEP, request
+            )
+        }
+
+        /**
+         * Immediate retry trigger — call after enqueueing into SyncQueueDao so
+         * the item ships within seconds of network return rather than waiting
+         * up to 15 min for the next periodic tick. WorkManager dedupes by name
+         * (REPLACE), so multiple rapid enqueues collapse into one run.
+         */
+        fun kickOnce(context: Context) {
+            val request = OneTimeWorkRequestBuilder<OutboundSyncWorker>()
+                .setConstraints(networkConstraints())
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+                .build()
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                ONE_SHOT_WORK_NAME, ExistingWorkPolicy.REPLACE, request
             )
         }
     }

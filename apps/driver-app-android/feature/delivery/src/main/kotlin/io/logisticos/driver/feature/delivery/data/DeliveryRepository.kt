@@ -1,6 +1,8 @@
 package io.logisticos.driver.feature.delivery.data
 
+import android.content.Context
 import android.util.Base64
+import dagger.hilt.android.qualifiers.ApplicationContext
 import io.logisticos.driver.core.database.dao.PodDao
 import io.logisticos.driver.core.database.dao.ShiftDao
 import io.logisticos.driver.core.database.dao.SyncQueueDao
@@ -10,6 +12,7 @@ import io.logisticos.driver.core.database.entity.SyncAction
 import io.logisticos.driver.core.database.entity.SyncQueueEntity
 import io.logisticos.driver.core.database.entity.TaskEntity
 import io.logisticos.driver.core.database.entity.TaskStatus
+import io.logisticos.driver.core.database.worker.OutboundSyncWorker
 import io.logisticos.driver.core.network.service.AttachSignatureRequest
 import io.logisticos.driver.core.network.service.CompleteTaskRequest
 import io.logisticos.driver.core.network.service.DriverOpsApiService
@@ -24,6 +27,7 @@ import java.io.File
 import javax.inject.Inject
 
 class DeliveryRepository @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val taskDao: TaskDao,
     private val podDao: PodDao,
     private val shiftDao: ShiftDao,
@@ -31,6 +35,14 @@ class DeliveryRepository @Inject constructor(
     private val driverOpsApi: DriverOpsApiService,
     private val podApi: PodApiService
 ) {
+    /** Enqueue an item AND immediately kick a one-time worker so it ships
+     *  within seconds of network return — not 15 min later on the next
+     *  periodic tick. */
+    private suspend fun enqueueAndKick(item: SyncQueueEntity) {
+        syncQueueDao.enqueue(item)
+        OutboundSyncWorker.kickOnce(context)
+    }
+
     fun observeTask(taskId: String): Flow<TaskEntity?> = taskDao.getByIdAsFlow(taskId)
 
     /**
@@ -49,7 +61,7 @@ class DeliveryRepository @Inject constructor(
                 else -> Unit // COMPLETED handled by submitPod; FAILED by failTask
             }
         } catch (e: Exception) {
-            syncQueueDao.enqueue(
+            enqueueAndKick(
                 SyncQueueEntity(
                     action = SyncAction.TASK_STATUS_UPDATE,
                     payloadJson = Json.encodeToString(
@@ -144,7 +156,7 @@ class DeliveryRepository @Inject constructor(
             // instead of silently pretending it succeeded. The sync queue retry
             // still runs, but the user gets a real error now.
             android.util.Log.e("DeliveryRepository", "submitPod failed: ${e.javaClass.simpleName}: ${e.message}", e)
-            syncQueueDao.enqueue(
+            enqueueAndKick(
                 SyncQueueEntity(
                     action = SyncAction.POD_SUBMIT,
                     payloadJson = Json.encodeToString(mapOf("taskId" to taskId)),
@@ -175,7 +187,7 @@ class DeliveryRepository @Inject constructor(
         try {
             driverOpsApi.failTask(taskId, io.logisticos.driver.core.network.service.FailTaskRequest(reason = reason))
         } catch (e: Exception) {
-            syncQueueDao.enqueue(
+            enqueueAndKick(
                 SyncQueueEntity(
                     action = SyncAction.TASK_STATUS_UPDATE,
                     payloadJson = Json.encodeToString(
@@ -190,14 +202,15 @@ class DeliveryRepository @Inject constructor(
         if (shift != null) shiftDao.incrementFailed(shift.id)
     }
 
+    /**
+     * Records that the driver collected COD locally so the home screen
+     * running-total updates immediately. The actual COD value is sent to the
+     * backend as `cod_collected_cents` on the completeTask call inside
+     * submitPod — no separate sync action is needed (and the previous
+     * COD_CONFIRM enqueue had no backend handler, so it was being silently
+     * dropped by OutboundSyncWorker).
+     */
     suspend fun confirmCod(shiftId: String, taskId: String, amount: Double) {
         shiftDao.addCodCollected(shiftId, amount)
-        syncQueueDao.enqueue(
-            SyncQueueEntity(
-                action = SyncAction.COD_CONFIRM,
-                payloadJson = Json.encodeToString(mapOf("taskId" to taskId, "amount" to amount.toString())),
-                createdAt = System.currentTimeMillis()
-            )
-        )
     }
 }

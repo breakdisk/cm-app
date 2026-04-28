@@ -1,3 +1,4 @@
+import java.util.Base64
 import java.util.Properties
 
 plugins {
@@ -37,7 +38,10 @@ android {
             val keystoreB64 = System.getenv("KEYSTORE_BASE64")
             if (keystoreB64 != null) {
                 val keystoreFile = rootProject.file("keystore.jks")
-                keystoreFile.writeBytes(android.util.Base64.decode(keystoreB64, android.util.Base64.DEFAULT))
+                // java.util.Base64.getMimeDecoder tolerates whitespace/newlines, which
+                // is what Android's Base64.DEFAULT also does. android.util.Base64 is
+                // unavailable in Gradle scripts — they run on the JVM, not Android.
+                keystoreFile.writeBytes(Base64.getMimeDecoder().decode(keystoreB64))
                 storeFile = keystoreFile
                 storePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
                 keyAlias = System.getenv("KEY_ALIAS") ?: ""

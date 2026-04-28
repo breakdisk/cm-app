@@ -190,7 +190,8 @@ function NotificationChannelsCard() {
   }, [rows]);
 
   return (
-    <GlassCard title="Notification Channels">
+    <GlassCard>
+      <h3 className="text-sm font-semibold text-white mb-3">Notification Channels</h3>
       {error && <p className="text-xs text-red-signal font-mono mb-2">{error}</p>}
       <div className="space-y-3">
         {loading ? (
@@ -276,7 +277,8 @@ function FeatureFlagsCard() {
   }, []);
 
   return (
-    <GlassCard title="Feature Flags" className="lg:col-span-2">
+    <GlassCard className="lg:col-span-2">
+      <h3 className="text-sm font-semibold text-white mb-3">Feature Flags</h3>
       {error && <p className="text-xs text-red-signal font-mono mb-2">{error}</p>}
       <div className="flex items-center gap-2 mb-3">
         <span className="text-xs text-white/40">Effective tier:</span>
@@ -369,13 +371,14 @@ function ApiKeysTab() {
   return (
     <motion.div variants={variants.fadeInUp} className="space-y-4">
       {error && (
-        <GlassCard padding="sm">
+        <GlassCard>
           <p className="text-xs text-[#FF3B5C] font-mono">{error}</p>
         </GlassCard>
       )}
 
       {justCreated && (
-        <GlassCard title="New API key — copy it now, you won't see it again">
+        <GlassCard>
+          <h3 className="text-sm font-semibold text-white mb-3">New API key — copy it now, you won't see it again</h3>
           <div className="space-y-3">
             <div className="flex items-center gap-3 bg-black/50 border border-[#00FF88]/30 rounded-lg p-4">
               <span className="flex-1 font-mono text-[#00FF88] text-sm break-all">{justCreated.raw_key}</span>
@@ -401,7 +404,8 @@ function ApiKeysTab() {
       )}
 
       {/* Create form */}
-      <GlassCard title="Generate new API key">
+      <GlassCard>
+        <h3 className="text-sm font-semibold text-white mb-3">Generate new API key</h3>
         <div className="grid grid-cols-1 md:grid-cols-[2fr_3fr_auto] gap-3">
           <input
             value={newName}
@@ -662,7 +666,8 @@ function TenantProfileCard() {
   }
 
   return (
-    <GlassCard title="Tenant Profile">
+    <GlassCard>
+      <h3 className="text-sm font-semibold text-white mb-3">Tenant Profile</h3>
       <div className="space-y-3">
         {loading && !tenant ? (
           <p className="text-xs text-white/40 font-mono py-4 text-center">loading tenant…</p>

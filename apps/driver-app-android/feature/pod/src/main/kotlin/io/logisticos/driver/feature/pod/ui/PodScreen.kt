@@ -1,7 +1,11 @@
 package io.logisticos.driver.feature.pod.ui
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
@@ -363,6 +367,24 @@ private fun PhotoSection(
     var showCamera by remember { mutableStateOf(false) }
     val imageCapture = remember { ImageCapture.Builder().build() }
 
+    // Runtime CAMERA permission gate. Manifest declares CAMERA but Android
+    // 6+ requires a runtime grant. Without this, ProcessCameraProvider's
+    // bindToLifecycle below throws SecurityException on the first photo
+    // attempt and crashes the activity. Pattern matches how HomeScreen
+    // gates ACCESS_FINE_LOCATION before binding the location provider.
+    var cameraPermissionGranted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+                == PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        cameraPermissionGranted = granted
+        if (granted) showCamera = true
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -460,7 +482,17 @@ private fun PhotoSection(
             }
 
             Button(
-                onClick = { showCamera = true },
+                onClick = {
+                    if (cameraPermissionGranted) {
+                        showCamera = true
+                    } else {
+                        // Triggers the OS permission dialog. The launcher's
+                        // callback flips showCamera once the user accepts.
+                        // If they deny, we stay on the placeholder card —
+                        // no crash, no broken state.
+                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                    }
+                },
                 modifier = Modifier.fillMaxWidth().height(44.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Cyan.copy(alpha = 0.12f)),
                 shape = RoundedCornerShape(10.dp)

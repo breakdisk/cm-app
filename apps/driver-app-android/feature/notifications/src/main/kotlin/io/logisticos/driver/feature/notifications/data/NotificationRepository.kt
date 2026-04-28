@@ -1,7 +1,6 @@
 package io.logisticos.driver.feature.notifications.data
 
 import io.logisticos.driver.core.network.auth.SessionManager
-import io.logisticos.driver.core.network.service.FcmTokenRequest
 import io.logisticos.driver.core.network.service.IdentityApiService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow

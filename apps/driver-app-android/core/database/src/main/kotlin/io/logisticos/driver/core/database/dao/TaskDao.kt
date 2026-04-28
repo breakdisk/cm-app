@@ -34,6 +34,15 @@ interface TaskDao {
     @Query("DELETE FROM tasks WHERE shiftId = :shiftId")
     suspend fun deleteForShift(shiftId: String)
 
+    /**
+     * Remove tasks that are no longer in the server's task list for this
+     * shift. Called from ShiftRepository.syncShift after fetching the
+     * authoritative payload — without this, completed/cancelled/reassigned
+     * tasks linger locally forever and the route screen renders ghosts.
+     */
+    @Query("DELETE FROM tasks WHERE shiftId = :shiftId AND id NOT IN (:keepIds)")
+    suspend fun pruneShiftTasks(shiftId: String, keepIds: List<String>)
+
     @Query("SELECT * FROM tasks WHERE shiftId = :shiftId")
     suspend fun getTasksForShiftOnce(shiftId: String): List<TaskEntity>
 
