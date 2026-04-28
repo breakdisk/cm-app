@@ -16,6 +16,11 @@ pub trait DriverAssignmentRepository: Send + Sync {
     async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<DriverAssignment>>;
     async fn find_active_by_driver(&self, driver_id: &DriverId) -> anyhow::Result<Option<DriverAssignment>>;
     async fn save(&self, assignment: &DriverAssignment) -> anyhow::Result<()>;
+    /// Admin operation: cancel any `pending` or `accepted` assignment for
+    /// this driver so they re-enter the auto-dispatch pool.
+    /// Returns `true` if a row was cancelled, `false` if the driver had no
+    /// active assignment.
+    async fn cancel_active_for_driver(&self, driver_id: &DriverId) -> anyhow::Result<bool>;
 }
 
 /// Read-only view of driver availability — sourced from the driver-ops service DB

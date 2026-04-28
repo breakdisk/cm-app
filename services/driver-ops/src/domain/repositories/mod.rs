@@ -58,6 +58,12 @@ pub trait TaskRepository: Send + Sync {
 
     /// Tenant-wide task summary for today — drives the admin KPI strip.
     async fn tenant_summary(&self, tenant_id: &TenantId, date: NaiveDate) -> anyhow::Result<TenantTaskSummary>;
+
+    /// Admin operation: cancel all `pending` and `in_progress` tasks for a
+    /// driver (identified by their `drivers.id`). Used to clear a stale task
+    /// queue so the driver can receive new auto-dispatch assignments.
+    /// Returns the number of rows updated.
+    async fn cancel_all_for_driver(&self, driver_id: &DriverId) -> anyhow::Result<u64>;
 }
 
 #[async_trait]

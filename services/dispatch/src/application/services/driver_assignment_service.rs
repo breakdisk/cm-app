@@ -515,6 +515,28 @@ impl DriverAssignmentService {
         );
         Ok(assignment)
     }
+
+    /// Admin operation: cancel any active (`pending`/`accepted`) assignment
+    /// for the given driver, re-entering them into the auto-dispatch pool.
+    /// Returns `true` if an assignment was cancelled.
+    pub async fn admin_cancel_driver_assignment(
+        &self,
+        driver_id: DriverId,
+        tenant_id: &TenantId,
+    ) -> AppResult<bool> {
+        let cancelled = self.assignment_repo
+            .cancel_active_for_driver(&driver_id)
+            .await
+            .map_err(AppError::Internal)?;
+
+        tracing::info!(
+            driver_id = %driver_id,
+            tenant_id = %tenant_id,
+            cancelled,
+            "Admin cancelled driver assignment"
+        );
+        Ok(cancelled)
+    }
 }
 
 #[cfg(test)]

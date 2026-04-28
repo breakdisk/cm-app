@@ -42,6 +42,8 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/queue",   get(queue::list_queue))
         .route("/drivers", get(queue::list_drivers))
         // Quick dispatch — one-shot assign driver to shipment in queue
-        .route("/queue/:shipment_id/dispatch", post(dispatch_ops::quick_dispatch))
+        .route("/queue/:shipment_id/dispatch",    post(dispatch_ops::quick_dispatch))
+        // Admin: cancel a driver's stale active assignment (re-enters them into auto-dispatch pool)
+        .route("/drivers/:id/cancel-assignment",  post(dispatch_ops::cancel_driver_assignment))
         .layer(auth_layer)
 }

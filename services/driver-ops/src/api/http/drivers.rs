@@ -243,3 +243,31 @@ pub async fn set_driver_status(
 
     Ok(Json(serde_json::json!({ "data": DriverDto::from(&driver) })))
 }
+
+/// Admin: POST /v1/drivers/:id/cancel-tasks
+///
+/// Cancels all `pending` and `in_progress` tasks for the given driver,
+/// returning them to a clean slate so auto-dispatch can reassign them.
+/// `:id` is the driver's identity user_id (JWT sub / UUID shown in portal).
+///
+/// Also call `POST /v1/drivers/:id/cancel-assignment` on the dispatch service
+/// to unblock the driver from receiving new auto-dispatches.
+pub async fn cancel_driver_tasks(
+    AuthClaims(claims): AuthClaims,
+    Path(id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_permission!(claims, logisticos_auth::rbac::permissions::FLEET_MANAGE);
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+
+    let cancelled = state.task_service
+        .admin_cancel_driver_tasks(id, &tenant_id)
+        .await?;
+
+    Ok(Json(serde_json::json!({
+        "data": {
+            "driver_user_id": id,
+            "tasks_cancelled": cancelled
+        }
+    })))
+}
