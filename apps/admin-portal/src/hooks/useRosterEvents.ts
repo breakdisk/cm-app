@@ -21,10 +21,11 @@ export type RosterEvent =
       active_route_id?: string | null;
     };
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+// WebSocket endpoint on driver-ops service (not the API gateway)
+const DRIVER_OPS_URL = process.env.NEXT_PUBLIC_DRIVER_OPS_URL ?? "http://localhost:8006";
 
 function wsUrl(token: string): string {
-  const base = API_BASE.replace(/^http/, "ws");
+  const base = DRIVER_OPS_URL.replace(/^http/, "ws");
   return `${base}/ws/locations?token=${encodeURIComponent(token)}`;
 }
 
