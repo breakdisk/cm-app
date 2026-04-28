@@ -81,7 +81,10 @@ export function useRosterEvents(onEvent: (event: RosterEvent) => void): void {
         retryTimer = setTimeout(connect, delay);
       };
 
-      ws.onerror = () => { ws.close(); };
+      ws.onerror = () => {
+        // Silently close on error — don't log, just reconnect via onclose handler
+        ws.close();
+      };
     }
 
     connect();

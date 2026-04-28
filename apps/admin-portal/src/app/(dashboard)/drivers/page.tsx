@@ -6,9 +6,9 @@
  * Live updates arrive via the driver-ops RosterEvent WebSocket — status toggles
  * and GPS fixes patch the roster in place without a refetch.
  */
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { createDriversApi, Driver as ApiDriver } from "@/lib/api/drivers";
-import { useRosterEvents } from "@/hooks/useRosterEvents";
+import { useRosterEvents, type RosterEvent } from "@/hooks/useRosterEvents";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
@@ -142,7 +142,7 @@ export default function DriversPage() {
   // ── Live roster WS ──────────────────────────────────────────────────────────
   // Patch driver state in-place as events arrive — no refetch, no flicker.
   // Unknown driver_ids are ignored (roster refetch will pick up new drivers).
-  useRosterEvents((event) => {
+  const handleRosterEvent = useCallback((event: RosterEvent) => {
     setDrivers((prev) => {
       const idx = prev.findIndex((d) => d.id === event.driver_id);
       if (idx === -1) return prev;
@@ -162,7 +162,9 @@ export default function DriversPage() {
       }
       return next;
     });
-  });
+  }, []);
+
+  useRosterEvents(handleRosterEvent);
 
   const filtered = drivers.filter((d) => {
     const cfg = STATUS_CONFIG[d.status];
