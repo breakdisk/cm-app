@@ -364,6 +364,20 @@ pub struct ReceiptEmailRequested {
     pub customer_name:       String,
 }
 
+// ── Fleet / Vehicle events ────────────────────────────────────────────────────
+
+/// Emitted by fleet service when a vehicle is registered (POST /v1/vehicles).
+/// Consumed by: compliance (auto-create vehicle compliance profile).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VehicleRegistered {
+    pub vehicle_id:    Uuid,
+    pub tenant_id:     Uuid,
+    /// ISO 3166-1 alpha-2 jurisdiction, e.g. "PH". Determines required document types.
+    pub jurisdiction:  String,
+    /// VehicleType as string: "motorcycle" | "van" | "truck" | "bicycle" | "car"
+    pub vehicle_class: String,
+}
+
 // ── Carrier events ────────────────────────────────────────────────────────────
 
 /// Emitted by carrier service when a new carrier is onboarded (saved with

@@ -1,7 +1,8 @@
 use std::{net::SocketAddr, sync::Arc};
 use sqlx::postgres::PgPoolOptions;
+use logisticos_events::producer::KafkaProducer;
 
-use crate::{api::http, application::services::FleetService, config::Config, infrastructure::db::PgVehicleRepository, AppState};
+use crate::{api::http, application::services::FleetService, config::Config, infrastructure::{db::PgVehicleRepository, messaging::FleetPublisher}, AppState};
 
 pub async fn run() -> anyhow::Result<()> {
     let cfg = Config::load()?;
@@ -26,10 +27,16 @@ pub async fn run() -> anyhow::Result<()> {
 
     logisticos_common::migrations::run(&pool, "fleet", &sqlx::migrate!("./migrations")).await?;
 
+    let kafka = Arc::new(
+        KafkaProducer::new(&cfg.kafka.brokers)
+            .expect("Failed to create fleet Kafka producer"),
+    );
+
     let vehicle_repo = Arc::new(PgVehicleRepository::new(pool));
     let fleet_svc    = Arc::new(FleetService::new(vehicle_repo));
+    let publisher    = Arc::new(FleetPublisher::new(kafka));
 
-    let state = AppState { fleet_svc };
+    let state = AppState { fleet_svc, publisher };
 
     let app = http::router()
         .layer(tower_http::trace::TraceLayer::new_for_http())

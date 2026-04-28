@@ -55,7 +55,16 @@ async fn create_vehicle(
     use logisticos_types::TenantId;
     claims.require_permission(permissions::FLEET_MANAGE)?;
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let vehicle_class = format!("{:?}", cmd.vehicle_type).to_lowercase();
     let vehicle = state.fleet_svc.create(&tenant_id, cmd).await?;
+    if let Err(e) = state.publisher.vehicle_registered(
+        vehicle.id.inner(),
+        claims.tenant_id,
+        vehicle_class,
+        "PH".into(),
+    ).await {
+        tracing::warn!(vehicle_id = %vehicle.id.inner(), "Failed to publish vehicle.registered: {e}");
+    }
     Ok::<_, AppError>((StatusCode::CREATED, Json(vehicle)))
 }
 

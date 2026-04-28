@@ -7,8 +7,10 @@ pub mod infrastructure;
 
 use std::sync::Arc;
 use application::services::FleetService;
+use infrastructure::messaging::FleetPublisher;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub fleet_svc: Arc<FleetService>,
+    pub fleet_svc:  Arc<FleetService>,
+    pub publisher:  Arc<FleetPublisher>,
 }

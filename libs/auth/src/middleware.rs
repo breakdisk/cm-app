@@ -76,6 +76,20 @@ impl AuthClaims {
             Err(logisticos_errors::AppError::Forbidden { resource: permission.to_owned() })
         }
     }
+
+    /// Returns `Ok(())` if the token carries **any** of the given permissions.
+    pub fn require_any_permission(
+        &self,
+        permissions: &[&'static str],
+    ) -> Result<(), logisticos_errors::AppError> {
+        if permissions.iter().any(|p| self.0.has_permission(p)) {
+            Ok(())
+        } else {
+            Err(logisticos_errors::AppError::Forbidden {
+                resource: permissions.join(" | "),
+            })
+        }
+    }
 }
 
 impl std::ops::Deref for AuthClaims {

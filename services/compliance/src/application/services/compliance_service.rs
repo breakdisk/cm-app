@@ -116,6 +116,81 @@ impl ComplianceService {
         Ok(())
     }
 
+    /// Called when carrier.onboarded Kafka event is received.
+    pub async fn create_profile_for_carrier(
+        &self,
+        tenant_id:  Uuid,
+        carrier_id: Uuid,
+    ) -> anyhow::Result<()> {
+        if self.profiles.find_by_entity(tenant_id, "carrier", carrier_id).await?.is_some() {
+            return Ok(());
+        }
+        let profile = ComplianceProfile {
+            id:               Uuid::new_v4(),
+            tenant_id,
+            entity_type:      "carrier".into(),
+            entity_id:        carrier_id,
+            overall_status:   ComplianceStatus::PendingSubmission,
+            jurisdiction:     "PH".into(),
+            last_reviewed_at: None,
+            reviewed_by:      None,
+            suspended_at:     None,
+            created_at:       Utc::now(),
+            updated_at:       Utc::now(),
+        };
+        self.profiles.save(&profile).await?;
+        self.audit.append(&ComplianceAuditLog {
+            id:                    Uuid::new_v4(),
+            tenant_id,
+            compliance_profile_id: profile.id,
+            document_id:           None,
+            event_type:            "profile_created".into(),
+            actor_id:              carrier_id,
+            actor_type:            "system".into(),
+            notes:                 None,
+            created_at:            Utc::now(),
+        }).await?;
+        Ok(())
+    }
+
+    /// Called when vehicle.registered Kafka event is received.
+    pub async fn create_profile_for_vehicle(
+        &self,
+        tenant_id:     Uuid,
+        vehicle_id:    Uuid,
+        jurisdiction:  &str,
+    ) -> anyhow::Result<()> {
+        if self.profiles.find_by_entity(tenant_id, "vehicle", vehicle_id).await?.is_some() {
+            return Ok(());
+        }
+        let profile = ComplianceProfile {
+            id:               Uuid::new_v4(),
+            tenant_id,
+            entity_type:      "vehicle".into(),
+            entity_id:        vehicle_id,
+            overall_status:   ComplianceStatus::PendingSubmission,
+            jurisdiction:     jurisdiction.to_owned(),
+            last_reviewed_at: None,
+            reviewed_by:      None,
+            suspended_at:     None,
+            created_at:       Utc::now(),
+            updated_at:       Utc::now(),
+        };
+        self.profiles.save(&profile).await?;
+        self.audit.append(&ComplianceAuditLog {
+            id:                    Uuid::new_v4(),
+            tenant_id,
+            compliance_profile_id: profile.id,
+            document_id:           None,
+            event_type:            "profile_created".into(),
+            actor_id:              vehicle_id,
+            actor_type:            "system".into(),
+            notes:                 None,
+            created_at:            Utc::now(),
+        }).await?;
+        Ok(())
+    }
+
     /// Driver submits a document. Returns the created DriverDocument.
     pub async fn submit_document(
         &self,

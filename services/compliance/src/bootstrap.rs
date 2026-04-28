@@ -10,7 +10,7 @@ use crate::infrastructure::db::{
     PgDocumentTypeRepository,
     PgAuditLogRepository,
 };
-use crate::infrastructure::messaging::{ComplianceProducer, start_driver_consumer};
+use crate::infrastructure::messaging::{ComplianceProducer, start_driver_consumer, start_carrier_consumer, start_vehicle_consumer};
 use crate::api::http::{router, AppState};
 use logisticos_auth::jwt::JwtService;
 use logisticos_events::producer::KafkaProducer;
@@ -102,7 +102,27 @@ pub async fn run() -> anyhow::Result<()> {
 
     tokio::spawn(async move {
         if let Err(e) = start_driver_consumer(&brokers, &group_id, compliance_for_consumer, shutdown_rx).await {
-            tracing::error!("Kafka consumer error: {e}");
+            tracing::error!("Driver Kafka consumer error: {e}");
+        }
+    });
+
+    let compliance_for_carrier = Arc::clone(&compliance_service);
+    let brokers_c  = cfg.kafka.brokers.clone();
+    let group_id_c = cfg.kafka.consumer_group.clone();
+    let shutdown_rx_c = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        if let Err(e) = start_carrier_consumer(&brokers_c, &group_id_c, compliance_for_carrier, shutdown_rx_c).await {
+            tracing::error!("Carrier Kafka consumer error: {e}");
+        }
+    });
+
+    let compliance_for_vehicle = Arc::clone(&compliance_service);
+    let brokers_v  = cfg.kafka.brokers.clone();
+    let group_id_v = cfg.kafka.consumer_group.clone();
+    let shutdown_rx_v = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        if let Err(e) = start_vehicle_consumer(&brokers_v, &group_id_v, compliance_for_vehicle, shutdown_rx_v).await {
+            tracing::error!("Vehicle Kafka consumer error: {e}");
         }
     });
 
