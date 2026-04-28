@@ -16,6 +16,7 @@ import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
+import { OnboardCarrierModal } from "@/components/carriers/OnboardCarrierModal";
 import { GitBranch, Plus, LineChart, Wallet, X, Store, RefreshCw } from "lucide-react";
 import { authFetch } from "@/lib/auth/auth-fetch";
 
@@ -154,9 +155,10 @@ function CarriersPageInner() {
   const searchParams = useSearchParams();
   const coverageFilter = searchParams.get("coverage");
 
-  const [carriers, setCarriers] = useState<Carrier[]>([]);
-  const [loading,  setLoading]  = useState(true);
-  const [error,    setError]    = useState<string | null>(null);
+  const [carriers,      setCarriers]      = useState<Carrier[]>([]);
+  const [loading,       setLoading]       = useState(true);
+  const [error,         setError]         = useState<string | null>(null);
+  const [onboardOpen,   setOnboardOpen]   = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -237,7 +239,10 @@ function CarriersPageInner() {
           >
             <RefreshCw size={12} />
           </button>
-          <button className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-cyan-neon to-purple-plasma px-4 py-2 text-xs font-semibold text-canvas">
+          <button
+            onClick={() => setOnboardOpen(true)}
+            className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-cyan-neon to-purple-plasma px-4 py-2 text-xs font-semibold text-canvas hover:opacity-90 transition-opacity"
+          >
             <Plus size={12} /> Onboard Carrier
           </button>
         </div>
@@ -250,6 +255,13 @@ function CarriersPageInner() {
           </div>
         </motion.div>
       )}
+
+      {/* Onboard modal */}
+      <OnboardCarrierModal
+        open={onboardOpen}
+        onClose={() => setOnboardOpen(false)}
+        onSuccess={load}
+      />
 
       {/* Coverage filter banner (from partner/sla deep link) */}
       {coverageFilter && (

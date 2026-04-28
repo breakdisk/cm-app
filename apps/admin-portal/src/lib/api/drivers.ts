@@ -1,14 +1,23 @@
 import { createApiClient, ApiResponse, PaginatedApiResponse } from "./client";
 
 export type DriverStatus = "online" | "idle" | "on_break" | "offline";
+export type DriverType = "full_time" | "part_time";
 
 export interface Driver {
   id: string;
+  user_id: string;
+  first_name: string;
+  last_name: string;
   name: string;
   phone: string;
   vehicle_type: string;
   vehicle_plate: string;
   status: DriverStatus;
+  driver_type: DriverType;
+  zone?: string;
+  per_delivery_rate_cents: number;
+  cod_commission_rate_bps: number;
+  is_active: boolean;
   tasks_total: number;
   tasks_done: number;
   lat?: number;
@@ -26,7 +35,28 @@ export interface DriverSummary {
   offline: number;
   total_tasks_assigned: number;
   total_tasks_completed: number;
+  total_tasks_failed: number;
   total_cod_collected: number;
+}
+
+export interface RegisterDriverPayload {
+  user_id: string;
+  first_name: string;
+  last_name: string;
+  phone: string;
+  vehicle_id?: string;
+}
+
+export interface UpdateDriverPayload {
+  first_name?: string;
+  last_name?: string;
+  phone?: string;
+  driver_type?: DriverType;
+  per_delivery_rate_cents?: number;
+  cod_commission_rate_bps?: number;
+  zone?: string;
+  vehicle_type?: string;
+  is_active?: boolean;
 }
 
 export function createDriversApi() {
@@ -46,6 +76,21 @@ export function createDriversApi() {
     getSummary: () =>
       client
         .get<ApiResponse<DriverSummary>>("/v1/drivers/summary")
+        .then((r) => r.data),
+
+    registerDriver: (payload: RegisterDriverPayload) =>
+      client
+        .post<ApiResponse<{ driver_id: string }>>("/v1/drivers", payload)
+        .then((r) => r.data),
+
+    updateDriver: (driverId: string, payload: UpdateDriverPayload) =>
+      client
+        .patch<ApiResponse<Driver>>(`/v1/drivers/${driverId}`, payload)
+        .then((r) => r.data),
+
+    setDriverStatus: (driverId: string, status: "available" | "offline" | "on_break") =>
+      client
+        .put<ApiResponse<Driver>>(`/v1/drivers/${driverId}/status`, { status })
         .then((r) => r.data),
   };
 }

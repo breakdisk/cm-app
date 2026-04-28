@@ -5,7 +5,7 @@ use logisticos_types::{DriverId, TenantId, Address, Coordinates};
 use uuid::Uuid;
 use crate::domain::{
     entities::{DriverTask, TaskStatus, TaskType},
-    repositories::{ManifestEntry, TaskRepository},
+    repositories::{ManifestEntry, TaskRepository, TenantTaskSummary},
 };
 
 pub struct PgTaskRepository {
@@ -270,5 +270,41 @@ impl TaskRepository for PgTaskRepository {
             pending:     r.get("pending"),
         }).collect();
         Ok(entries)
+    }
+
+    async fn tenant_summary(&self, tenant_id: &TenantId, date: NaiveDate) -> anyhow::Result<TenantTaskSummary> {
+        let row = sqlx::query(
+            r#"
+            WITH bounds AS (
+                SELECT ($1::date)::timestamptz AS day_start,
+                       (($1::date) + INTERVAL '1 day')::timestamptz AS day_end
+            )
+            SELECT
+                COUNT(*)::bigint                                                  AS total_assigned,
+                COUNT(*) FILTER (WHERE t.status = 'completed')::bigint            AS total_completed,
+                COUNT(*) FILTER (WHERE t.status = 'failed')::bigint               AS total_failed,
+                COALESCE(SUM(t.cod_amount_cents) FILTER (WHERE t.status = 'completed'), 0)::bigint AS cod_collected_cents
+            FROM driver_ops.tasks t
+            JOIN driver_ops.drivers d ON d.id = t.driver_id
+            CROSS JOIN bounds b
+            WHERE d.tenant_id = $2
+              AND (
+                  (t.completed_at IS NOT NULL AND t.completed_at >= b.day_start AND t.completed_at < b.day_end)
+               OR (t.started_at   IS NOT NULL AND t.started_at   >= b.day_start AND t.started_at   < b.day_end)
+               OR (t.completed_at IS NULL AND t.started_at IS NULL AND t.status IN ('pending','in_progress'))
+              )
+            "#,
+        )
+        .bind(date)
+        .bind(tenant_id.inner())
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(TenantTaskSummary {
+            total_assigned:      row.get("total_assigned"),
+            total_completed:     row.get("total_completed"),
+            total_failed:        row.get("total_failed"),
+            cod_collected_cents: row.get("cod_collected_cents"),
+        })
     }
 }

@@ -14,7 +14,8 @@ import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
-import { Search, MapPin, Package, RefreshCw, Briefcase } from "lucide-react";
+import { OnboardDriverModal } from "@/components/drivers/OnboardDriverModal";
+import { Search, MapPin, Package, RefreshCw, Briefcase, UserPlus } from "lucide-react";
 
 // ── Types & mock data ─────────────────────────────────────────────────────────
 
@@ -99,6 +100,7 @@ export default function DriversPage() {
   const [drivers, setDrivers] = useState<Driver[]>(DRIVERS);
   const [kpi, setKpi] = useState(KPI);
   const [loading, setLoading] = useState(false);
+  const [onboardOpen, setOnboardOpen] = useState(false);
 
   const fetchDrivers = useCallback(async () => {
     setLoading(true);
@@ -123,10 +125,10 @@ export default function DriversPage() {
       })));
       const s = summaryRes.data;
       setKpi([
-        { label: "Online Drivers",  value: s.online,                  trend: 0,    color: "green"  as const, format: "number"   as const },
-        { label: "Tasks Assigned",  value: s.total_tasks_assigned,    trend: 0,    color: "cyan"   as const, format: "number"   as const },
-        { label: "Tasks Complete",  value: s.total_tasks_completed,   trend: 0,    color: "purple" as const, format: "number"   as const },
-        { label: "COD Collected",   value: s.total_cod_collected,     trend: 0,    color: "amber"  as const, format: "currency" as const },
+        { label: "Online Drivers",  value: s.online,                             trend: 0, color: "green"  as const, format: "number"   as const },
+        { label: "Tasks Assigned",  value: s.total_tasks_assigned,               trend: 0, color: "cyan"   as const, format: "number"   as const },
+        { label: "Tasks Complete",  value: s.total_tasks_completed,              trend: 0, color: "purple" as const, format: "number"   as const },
+        { label: "COD Collected",   value: Math.round(s.total_cod_collected / 100), trend: 0, color: "amber" as const, format: "currency" as const },
       ]);
     } catch {
       // retain mock data on error
@@ -187,13 +189,21 @@ export default function DriversPage() {
           <h1 className="font-heading text-2xl font-bold text-white">Drivers</h1>
           <p className="text-sm text-white/40 font-mono mt-0.5">{onlineCount} online · {drivers.length} total roster</p>
         </div>
-        <button
-          onClick={fetchDrivers}
-          disabled={loading}
-          className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors disabled:opacity-50"
-        >
-          <RefreshCw size={12} className={loading ? "animate-spin" : ""} /> Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={fetchDrivers}
+            disabled={loading}
+            className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors disabled:opacity-50"
+          >
+            <RefreshCw size={12} className={loading ? "animate-spin" : ""} /> Refresh
+          </button>
+          <button
+            onClick={() => setOnboardOpen(true)}
+            className="flex items-center gap-1.5 rounded-lg border border-cyan-neon/30 bg-cyan-neon/10 px-3 py-2 text-xs font-semibold text-cyan-neon hover:bg-cyan-neon/20 transition-all"
+          >
+            <UserPlus size={12} /> Onboard Driver
+          </button>
+        </div>
       </motion.div>
 
       {/* KPI row */}
@@ -236,6 +246,13 @@ export default function DriversPage() {
           </div>
         </GlassCard>
       </motion.div>
+
+      {/* Onboard modal */}
+      <OnboardDriverModal
+        open={onboardOpen}
+        onClose={() => setOnboardOpen(false)}
+        onSuccess={fetchDrivers}
+      />
 
       {/* Driver grid */}
       <motion.div variants={variants.fadeInUp} className="grid grid-cols-1 gap-3 lg:grid-cols-2">
