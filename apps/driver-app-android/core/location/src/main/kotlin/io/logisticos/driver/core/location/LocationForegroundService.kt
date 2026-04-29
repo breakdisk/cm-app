@@ -36,6 +36,13 @@ class LocationForegroundService : Service() {
     private var currentShiftId: String = ""
     private var lastMovementTime = System.currentTimeMillis()
     private var isStationary = false
+    // Guard: startLocationUpdates() must only run once per service lifecycle.
+    // startForegroundService() on an already-running service re-delivers
+    // onStartCommand() without creating a new instance — without this flag
+    // each call would register an additional LocationCallback, flooding the
+    // FLP with duplicate requests (visible as repeated RequestManager_FLP
+    // entries in logcat).
+    private var updatesStarted = false
 
     override fun onCreate() {
         super.onCreate()
@@ -50,7 +57,10 @@ class LocationForegroundService : Service() {
         // breadcrumbs are recorded (they require a real shift context).
         val label = if (currentShiftId.isEmpty()) "Available for dispatch" else "Shift active"
         startForeground(NOTIFICATION_ID, buildNotification(label))
-        startLocationUpdates()
+        if (!updatesStarted) {
+            startLocationUpdates()
+            updatesStarted = true
+        }
         return START_STICKY
     }
 
@@ -118,6 +128,7 @@ class LocationForegroundService : Service() {
         if (::locationCallback.isInitialized) {
             fusedClient.removeLocationUpdates(locationCallback)
         }
+        updatesStarted = false
         scope.cancel()
         super.onDestroy()
     }
