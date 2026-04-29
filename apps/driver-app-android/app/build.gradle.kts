@@ -124,6 +124,7 @@ dependencies {
     implementation(project(":feature:pickup"))
     implementation(project(":feature:notifications"))
     implementation(project(":feature:profile"))
+    implementation(project(":feature:assignment"))
 
     implementation(libs.material)
     implementation(libs.mapbox.maps)
