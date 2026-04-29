@@ -91,6 +91,19 @@ impl DriverAssignmentRepository for PgDriverAssignmentRepository {
         Ok(row.map(DriverAssignment::from))
     }
 
+    async fn cancel_active_for_driver(&self, driver_id: &DriverId) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            r#"UPDATE dispatch.driver_assignments
+               SET status = 'cancelled'
+               WHERE driver_id = $1
+                 AND status IN ('pending', 'accepted')"#,
+        )
+        .bind(driver_id.inner())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     async fn save(&self, a: &DriverAssignment) -> anyhow::Result<()> {
         let status = status_str(a.status);
         sqlx::query(

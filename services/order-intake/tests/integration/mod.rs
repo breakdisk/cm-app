@@ -17,11 +17,13 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use async_trait::async_trait;
 use axum_test::TestServer;
 use serde_json::{json, Value};
 
 use logisticos_auth::{claims::Claims, jwt::JwtService, rbac::default_permissions_for_role};
 use logisticos_types::{
+    awb::{Awb, ServiceCode as AwbServiceCode, TenantCode},
     Address, MerchantId, ShipmentId, ShipmentStatus, TenantId, CustomerId,
 };
 
@@ -34,8 +36,8 @@ use logisticos_order_intake::{
         },
     },
     domain::{
-        entities::shipment::Shipment,
-        value_objects::{ServiceType, ShipmentWeight, TrackingNumber},
+        entities::{piece::Piece, shipment::Shipment},
+        value_objects::{AwbGenerator, AwbGeneratorError, ServiceType, ShipmentWeight},
     },
     infrastructure::external::PassthroughNormalizer,
 };
@@ -76,6 +78,13 @@ impl ShipmentRepository for InMemoryShipmentRepository {
         })
     }
 
+    fn save_pieces<'a>(
+        &'a self,
+        _pieces: &'a [Piece],
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
     fn list<'a>(
         &'a self,
         filter: &'a ShipmentListFilter,
@@ -110,6 +119,23 @@ impl ShipmentRepository for InMemoryShipmentRepository {
     }
 }
 
+// ── MockAwbGenerator ─────────────────────────────────────────────────────────
+
+pub struct MockAwbGenerator;
+
+#[async_trait]
+impl AwbGenerator for MockAwbGenerator {
+    async fn next_awb(
+        &self,
+        tenant_code: &TenantCode,
+        service: AwbServiceCode,
+    ) -> Result<Awb, AwbGeneratorError> {
+        // Return a deterministic but valid AWB for tests. Sequence is always
+        // 1 — this is fine because each test uses a fresh in-memory repo.
+        Ok(Awb::generate(tenant_code, service, 1))
+    }
+}
+
 // ── NoOpEventPublisher ───────────────────────────────────────────────────────
 
 pub struct NoOpEventPublisher;
@@ -132,23 +158,29 @@ const TEST_JWT_SECRET: &str = "order-intake-integration-test-secret";
 /// Build a TestServer with in-memory repo + no-op publisher.
 /// Returns the server and the JWT service so callers can mint tokens.
 fn build_test_server(repo: Arc<InMemoryShipmentRepository>) -> (TestServer, JwtService) {
-    let publisher = Arc::new(NoOpEventPublisher);
-    let normalizer = Arc::new(PassthroughNormalizer);
+    let publisher    = Arc::new(NoOpEventPublisher);
+    let normalizer   = Arc::new(PassthroughNormalizer);
+    let awb_gen      = Arc::new(MockAwbGenerator);
 
     let svc = Arc::new(ShipmentService::new(
         Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
         publisher,
         normalizer,
+        awb_gen,
     ));
     let query = Arc::new(ShipmentQueryService::new(
         Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
     ));
 
-    let state = AppState { svc, query };
+    let jwt = JwtService::new(TEST_JWT_SECRET, 3600, 86400);
+    let state = AppState {
+        svc,
+        query,
+        jwt: Arc::new(JwtService::new(TEST_JWT_SECRET, 3600, 86400)),
+    };
     let app = router(state);
 
-    let jwt = JwtService::new(TEST_JWT_SECRET, 3600, 86400);
-    let server = TestServer::new(app).expect("TestServer creation failed");
+    let server = TestServer::new(app);
     (server, jwt)
 }
 
@@ -244,12 +276,20 @@ fn make_shipment(
         coordinates:  None,
     };
     let now = chrono::Utc::now();
+    // Use a static sequence so seed shipments have a stable, valid AWB.
+    let tenant_code = TenantCode::new("TST").unwrap();
     Shipment {
         id:                   ShipmentId::new(),
         tenant_id:            TenantId::from_uuid(tenant_id),
         merchant_id:          MerchantId::from_uuid(merchant_id),
         customer_id:          CustomerId::new(),
-        tracking_number:      TrackingNumber::generate(),
+        customer_name:        "Test Customer".into(),
+        customer_phone:       "+639171234567".into(),
+        customer_email:       None,
+        booked_by_customer:   false,
+        auto_dispatch:        true,
+        awb:                  Awb::generate(&tenant_code, AwbServiceCode::Standard, 1),
+        piece_count:          1,
         status,
         service_type:         ServiceType::Standard,
         origin:               addr.clone(),
@@ -291,12 +331,12 @@ mod create_shipment {
 
         assert_eq!(resp.status_code(), 201);
         let body: Value = resp.json();
-        let tracking = body["tracking_number"].as_str().expect("tracking_number must be present");
+        let tracking = body["awb"].as_str().expect("awb must be present");
         assert!(
-            tracking.starts_with("CMPH"),
-            "tracking number must match CMPH format, got: {tracking}"
+            tracking.starts_with("CM-"),
+            "AWB must match CM-TTT-... format, got: {tracking}"
         );
-        assert_eq!(tracking.len(), 14, "CMPH + 10 digits = 14 chars");
+        assert_eq!(tracking.len(), 16, "CM-TST-S0000001X = 16 chars");
         assert!(body["id"].is_string(), "shipment id must be a UUID string");
         assert_eq!(body["status"], "Pending");
     }
@@ -467,7 +507,7 @@ mod get_shipment {
         let merchant_id = uuid::Uuid::new_v4();
         let shipment = make_shipment(tenant_id, merchant_id, ShipmentStatus::Pending);
         let shipment_id = shipment.id.inner();
-        let tracking = shipment.tracking_number.clone();
+        let tracking = shipment.awb.clone();
 
         repo.shipments.lock().unwrap().push(shipment);
 
@@ -485,7 +525,7 @@ mod get_shipment {
         assert_eq!(resp.status_code(), 200);
         let body: Value = resp.json();
         assert_eq!(body["id"], shipment_id.to_string().as_str());
-        assert_eq!(body["tracking_number"], tracking.as_str());
+        assert_eq!(body["awb"], tracking.as_str());
         assert_eq!(body["status"], "Pending");
         assert!(body["origin"].is_object(), "origin address must be present");
         assert!(body["destination"].is_object(), "destination address must be present");
@@ -559,7 +599,7 @@ mod list_shipments {
         let merchant_id = uuid::Uuid::new_v4();
 
         let s1 = make_shipment(tenant_id, merchant_id, ShipmentStatus::Pending);
-        let target_tracking = s1.tracking_number.clone();
+        let target_tracking = s1.awb.clone();
         repo.shipments.lock().unwrap().push(s1);
         repo.shipments.lock().unwrap().push(make_shipment(tenant_id, merchant_id, ShipmentStatus::Confirmed));
 
@@ -581,7 +621,7 @@ mod list_shipments {
         let body: Value = resp.json();
         let shipments = body["shipments"].as_array().unwrap();
         assert_eq!(shipments.len(), 1);
-        assert_eq!(shipments[0]["tracking_number"], target_tracking.as_str());
+        assert_eq!(shipments[0]["awb"], target_tracking.as_str());
     }
 }
 

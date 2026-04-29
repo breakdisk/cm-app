@@ -118,10 +118,13 @@ async function registerDriverApi(input: {
     const inviteRes = await authFetch(`${API_BASE}/v1/users`, {
       method: "POST",
       body: JSON.stringify({
-        email:      input.email,
-        first_name: input.firstName,
-        last_name:  input.lastName,
-        roles:      ["driver"],
+        email:        input.email,
+        first_name:   input.firstName,
+        last_name:    input.lastName,
+        roles:        ["driver"],
+        // phone_number is stored on the identity user so the Driver App OTP
+        // login can resolve this record by phone rather than creating an orphan.
+        phone_number: input.phone,
       }),
     });
     if (!inviteRes.ok) {
@@ -507,13 +510,29 @@ function RegisterModal({ onClose, onRegistered }: { onClose: () => void; onRegis
         )}
 
         {result?.tempPassword && !result.error && (
-          <div className="mb-6 rounded-xl border border-green-signal/30 bg-green-signal/10 p-4 space-y-2">
-            <p className="text-xs text-green-signal">Driver registered. Share these credentials securely:</p>
-            <div className="text-xs font-mono text-white/80">
-              <div>Email: {email}</div>
-              <div>Temporary password: <span className="text-amber-400">{result.tempPassword}</span></div>
+          <div className="mb-6 space-y-3">
+            {/* Driver App login instructions */}
+            <div className="rounded-xl border border-green-signal/30 bg-green-signal/10 p-4 space-y-2">
+              <p className="text-xs font-semibold text-green-signal">✓ Driver registered successfully</p>
+              <p className="text-xs text-white/60">
+                Tell the driver to download the <span className="text-cyan-signal font-mono">LogisticOS Driver</span> app
+                and log in with their phone number:
+              </p>
+              <div className="rounded-lg border border-glass-border bg-glass-100 px-3 py-2 font-mono text-sm text-white">
+                {phone}
+              </div>
+              <p className="text-xs text-white/40">
+                They will receive a one-time code via SMS each time they log in — no password needed.
+              </p>
             </div>
-            <p className="text-xs text-white/40">Driver must change it on first login.</p>
+            {/* Admin-portal email credentials (for portal access if ever needed) */}
+            <div className="rounded-xl border border-glass-border bg-glass-100 p-3 space-y-1">
+              <p className="text-xs text-white/30 font-mono uppercase tracking-wider">Portal credentials (admin use only)</p>
+              <div className="text-xs font-mono text-white/50">
+                <div>Email: <span className="text-white/70">{email}</span></div>
+                <div>Temp password: <span className="text-amber-400">{result.tempPassword}</span></div>
+              </div>
+            </div>
           </div>
         )}
 

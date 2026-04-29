@@ -177,6 +177,37 @@ impl TaskService {
         Ok(())
     }
 
+    /// Admin operation: cancel all pending/in-progress tasks for the given
+    /// driver user_id. Resolves drivers.id internally so the caller passes
+    /// the JWT user_id (same as identity user_id).
+    /// Returns the count of tasks cancelled.
+    pub async fn admin_cancel_driver_tasks(
+        &self,
+        driver_user_id: Uuid,
+        tenant_id: &TenantId,
+    ) -> AppResult<u64> {
+        // Resolve drivers.id from the identity user_id
+        let driver_id = self.driver_repo
+            .find_by_user_id(driver_user_id)
+            .await
+            .map_err(AppError::Internal)?
+            .map(|d| d.id)
+            .unwrap_or_else(|| DriverId::from_uuid(driver_user_id));
+
+        let count = self.task_repo
+            .cancel_all_for_driver(&driver_id)
+            .await
+            .map_err(AppError::Internal)?;
+
+        tracing::info!(
+            driver_user_id = %driver_user_id,
+            tenant_id = %tenant_id,
+            cancelled = count,
+            "Admin cancelled driver tasks"
+        );
+        Ok(count)
+    }
+
     async fn fetch_and_validate_ownership(&self, driver_id: &DriverId, task_id: Uuid) -> AppResult<DriverTask> {
         let task = self.task_repo.find_by_id(task_id).await.map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound { resource: "Task", id: task_id.to_string() })?;

@@ -14,6 +14,10 @@ pub trait TenantRepository: Send + Sync {
 pub trait UserRepository: Send + Sync {
     async fn find_by_id(&self, id: &UserId) -> anyhow::Result<Option<User>>;
     async fn find_by_email(&self, tenant_id: &TenantId, email: &str) -> anyhow::Result<Option<User>>;
+    /// Look up a user by their E.164-normalised phone number within a tenant.
+    /// Used by `otp_verify` to resolve a pre-registered driver without relying
+    /// on the synthetic-email fallback.
+    async fn find_by_phone(&self, tenant_id: &TenantId, phone: &str) -> anyhow::Result<Option<User>>;
     async fn save(&self, user: &User) -> anyhow::Result<()>;
     async fn list_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<User>>;
 }

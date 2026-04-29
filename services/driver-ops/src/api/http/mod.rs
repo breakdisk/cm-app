@@ -72,7 +72,9 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/drivers/go-offline",   post(drivers::go_offline))
         .route("/drivers/:id",          get(drivers::get_driver).patch(drivers::update_driver))
         // Admin override: force a driver's status (FLEET_MANAGE permission)
-        .route("/drivers/:id/status",   put(drivers::set_driver_status))
+        .route("/drivers/:id/status",       put(drivers::set_driver_status))
+        // Admin override: cancel all pending/in-progress tasks for a driver
+        .route("/drivers/:id/cancel-tasks", post(drivers::cancel_driver_tasks))
         // Location updates from driver app
         .route("/location", post(location::update_location))
         // Task management

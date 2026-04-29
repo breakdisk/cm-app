@@ -307,4 +307,19 @@ impl TaskRepository for PgTaskRepository {
             cod_collected_cents: row.get("cod_collected_cents"),
         })
     }
+
+    async fn cancel_all_for_driver(&self, driver_id: &DriverId) -> anyhow::Result<u64> {
+        // driver_id on tasks is drivers.id (not identity user_id).
+        // The caller (TaskService) resolves drivers.id from user_id before calling here.
+        let result = sqlx::query(
+            r#"UPDATE driver_ops.tasks
+               SET status = 'cancelled'
+               WHERE driver_id = $1
+                 AND status IN ('pending', 'in_progress')"#,
+        )
+        .bind(driver_id.inner())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
 }
