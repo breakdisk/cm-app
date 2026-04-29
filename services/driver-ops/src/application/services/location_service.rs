@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use logisticos_errors::{AppError, AppResult};
 use logisticos_types::{Coordinates, DriverId, TenantId};
-use logisticos_events::{producer::KafkaProducer, topics, envelope::Event};
+use logisticos_events::{producer::KafkaProducer, topics, envelope::Event, payloads::DriverAvailable};
 
 use crate::{
     application::commands::UpdateLocationCommand,
@@ -103,6 +103,17 @@ impl LocationService {
         driver.go_online();
         self.driver_repo.save(&driver).await.map_err(AppError::Internal)?;
         tracing::info!(driver_id = %driver_id, "Driver went online");
+
+        // Notify dispatch to retry any pending queue items for this tenant.
+        let event = Event::new("driver-ops", "driver.available", tenant_id.inner(), DriverAvailable {
+            driver_id:    driver_id.inner(),
+            tenant_id:    tenant_id.inner(),
+            available_at: chrono::Utc::now().to_rfc3339(),
+        });
+        if let Err(e) = self.kafka.publish_event(topics::DRIVER_AVAILABLE, &event).await {
+            tracing::warn!(driver_id = %driver_id, err = %e, "Failed to publish DRIVER_AVAILABLE (non-fatal)");
+        }
+
         Ok(())
     }
 

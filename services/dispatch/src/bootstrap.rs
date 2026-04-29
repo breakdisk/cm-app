@@ -10,7 +10,7 @@ use crate::infrastructure::db::{
     PgDispatchQueueRepository, PgDriverProfilesRepository,
 };
 use crate::infrastructure::messaging::compliance_consumer::start_compliance_consumer;
-use crate::infrastructure::messaging::{start_shipment_consumer, start_user_consumer};
+use crate::infrastructure::messaging::{start_driver_available_consumer, start_shipment_consumer, start_user_consumer};
 use crate::api::http::{router, AppState};
 use logisticos_auth::jwt::JwtService;
 use logisticos_events::producer::KafkaProducer;
@@ -138,6 +138,25 @@ pub async fn run() -> anyhow::Result<()> {
     tokio::spawn(async move {
         if let Err(e) = start_user_consumer(&brokers_users, &group_users, pool_for_users, shutdown_rx_users).await {
             tracing::error!("User consumer crashed: {e}");
+        }
+    });
+
+    // Spawn driver-available consumer — when a driver goes online, retry all
+    // pending dispatch_queue rows for their tenant.
+    let pool_for_driver_avail    = pool.clone();
+    let brokers_driver_avail     = cfg.kafka.brokers.clone();
+    let group_driver_avail       = cfg.kafka.group_id.clone();
+    let dispatch_svc_avail       = Arc::clone(&dispatch_service);
+    let shutdown_rx_driver_avail = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        if let Err(e) = start_driver_available_consumer(
+            &brokers_driver_avail,
+            &group_driver_avail,
+            pool_for_driver_avail,
+            dispatch_svc_avail,
+            shutdown_rx_driver_avail,
+        ).await {
+            tracing::error!("Driver-available consumer crashed: {e}");
         }
     });
 
