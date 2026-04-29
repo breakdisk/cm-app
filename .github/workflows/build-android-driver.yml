@@ -38,10 +38,25 @@ jobs:
         working-directory: apps/driver-app-android/app
         env:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
-        # Use printf instead of echo — echo interprets \n/\t and can mangle
-        # JSON with backslash sequences, producing MalformedJsonException in
-        # the google-services Gradle plugin.
-        run: printf '%s' "$GOOGLE_SERVICES_JSON" > google-services.json
+        # Python reads the env var verbatim (no shell quoting/escaping).
+        # If the secret is stored as base64, decode it first; otherwise
+        # write it directly. The inner try/except handles both forms.
+        run: |
+          python3 - <<'PYEOF'
+          import os, base64, json, sys
+          raw = os.environ["GOOGLE_SERVICES_JSON"]
+          # Try base64 first (handles secrets stored with `base64 -w 0`)
+          try:
+              decoded = base64.b64decode(raw).decode("utf-8")
+              json.loads(decoded)   # validate
+              content = decoded
+          except Exception:
+              # Fall back to raw value (secret stored as plain JSON text)
+              content = raw
+          with open("google-services.json", "w") as f:
+              f.write(content)
+          print(f"google-services.json written ({len(content)} bytes)")
+          PYEOF
 
       - name: Write local.properties
         working-directory: apps/driver-app-android
