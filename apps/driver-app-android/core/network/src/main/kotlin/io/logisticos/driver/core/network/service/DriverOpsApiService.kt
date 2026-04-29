@@ -52,6 +52,11 @@ data class UpdateLocationRequest(
     @SerialName("recorded_at") val recordedAt: String
 )
 
+@Serializable
+data class RejectAssignmentRequest(
+    val reason: String
+)
+
 // ─── API interface ────────────────────────────────────────────────────────────
 
 interface DriverOpsApiService {
@@ -89,4 +94,15 @@ interface DriverOpsApiService {
     /** POST /v1/drivers/go-offline */
     @POST("v1/drivers/go-offline")
     suspend fun goOffline()
+
+    /** PUT /v1/assignments/:id/accept — driver accepts an incoming shipment assignment */
+    @PUT("v1/assignments/{id}/accept")
+    suspend fun acceptAssignment(@Path("id") assignmentId: String)
+
+    /** PUT /v1/assignments/:id/reject — driver rejects with a reason */
+    @PUT("v1/assignments/{id}/reject")
+    suspend fun rejectAssignment(
+        @Path("id") assignmentId: String,
+        @Body body: RejectAssignmentRequest
+    )
 }
