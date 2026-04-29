@@ -45,6 +45,13 @@ class LocationForegroundService : Service() {
     // FLP with duplicate requests (visible as repeated RequestManager_FLP
     // entries in logcat).
     private var updatesStarted = false
+    // Track the active interval so we only issue a new requestLocationUpdates
+    // call when the interval actually changes.  Calling requestLocationUpdates
+    // on the same callback updates the existing FLP subscription in-place;
+    // there is no need to removeLocationUpdates first — and doing so creates
+    // a tight loop because removeLocationUpdates is async while FLP delivers
+    // the cached last-known fix synchronously on each re-registration.
+    private var currentIntervalMs = -1L
 
     override fun onCreate() {
         super.onCreate()
@@ -115,8 +122,16 @@ class LocationForegroundService : Service() {
                         locationRepository.publishLocation(lat, lng)
                     }
 
-                    fusedClient.removeLocationUpdates(locationCallback)
-                    requestUpdates(newInterval)
+                    // Only update the FLP subscription when the interval changes.
+                    // Calling requestLocationUpdates with the same callback updates
+                    // the existing subscription in-place — no removeLocationUpdates
+                    // needed.  Removing first creates a tight loop: removeLocation-
+                    // Updates is async so FLP re-delivers the cached fix immediately
+                    // on the new registration before the remove completes.
+                    if (newInterval != currentIntervalMs) {
+                        currentIntervalMs = newInterval
+                        requestUpdates(newInterval)
+                    }
                 }
             }
         }
@@ -129,6 +144,7 @@ class LocationForegroundService : Service() {
             .build()
         try {
             fusedClient.requestLocationUpdates(request, locationCallback, mainLooper)
+            currentIntervalMs = intervalMs
         } catch (e: SecurityException) {
             stopSelf()
         }
@@ -139,6 +155,7 @@ class LocationForegroundService : Service() {
             fusedClient.removeLocationUpdates(locationCallback)
         }
         updatesStarted = false
+        currentIntervalMs = -1L
         scope.cancel()
         super.onDestroy()
     }
