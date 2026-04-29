@@ -14,6 +14,14 @@ pub trait InvoiceRepository: Send + Sync {
     /// only shows B2B billing state.
     async fn list_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<Invoice>>;
     async fn save(&self, invoice: &Invoice) -> anyhow::Result<()>;
+    /// Returns the most recently issued (status = 'issued') ShipmentCharges invoice
+    /// for a merchant. Used by the weight-discrepancy consumer to find which invoice
+    /// to append the surcharge adjustment to.
+    async fn find_latest_issued_for_merchant(
+        &self,
+        tenant_id:   &TenantId,
+        merchant_id: &MerchantId,
+    ) -> anyhow::Result<Option<Invoice>>;
 }
 
 #[async_trait]
@@ -41,6 +49,14 @@ pub trait CodRepository: Send + Sync {
         merchant_id: &MerchantId,
         cutoff:      chrono::DateTime<chrono::Utc>,
     ) -> anyhow::Result<Vec<CodCollection>>;
+
+    /// Returns distinct (tenant_id, merchant_id) pairs that have at least one
+    /// unbatched COD collection with collected_at <= cutoff.
+    /// Used by the nightly COD batching cron to discover which merchants to sweep.
+    async fn distinct_merchants_with_unbatched_cod(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<Vec<(uuid::Uuid, uuid::Uuid)>>;
 
     /// Bulk-assign rows to a batch and flip `collected` → `in_batch`.
     /// Only affects rows currently `collected` with NULL batch_id.

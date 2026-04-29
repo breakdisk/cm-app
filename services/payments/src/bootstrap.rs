@@ -12,7 +12,7 @@ use crate::infrastructure::db::{
 };
 use crate::infrastructure::http::OrderIntakeClient;
 use crate::api::http::{router, AppState};
-use crate::infrastructure::messaging::PodConsumer;
+use crate::infrastructure::messaging::{PodConsumer, WeightDiscrepancyConsumer};
 use logisticos_auth::jwt::JwtService;
 use logisticos_events::producer::KafkaProducer;
 
@@ -98,6 +98,28 @@ pub async fn run() -> anyhow::Result<()> {
     });
     let app = router(state);
 
+    // Nightly COD auto-batching — groups all collected-but-unbatched COD by
+    // (tenant, merchant) up to previous UTC midnight and creates remittance batches.
+    // Finance can then confirm each batch via HTTP to trigger wallet credit.
+    let remittance_svc_for_cron = Arc::clone(&cod_remittance_service);
+    tokio::spawn(async move {
+        // Run immediately on startup to catch any missed batch, then every 24 hours.
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(24 * 3_600));
+        loop {
+            tick.tick().await;
+            // Cutoff = start of today UTC (i.e. everything collected before today)
+            let cutoff = {
+                use chrono::{TimeZone, Utc, NaiveTime};
+                Utc.from_utc_datetime(
+                    &chrono::Utc::now().date_naive().and_time(NaiveTime::MIN)
+                )
+            };
+            if let Err(e) = remittance_svc_for_cron.run_daily_batching(cutoff).await {
+                tracing::error!(err = %e, "COD daily batching cron failed");
+            }
+        }
+    });
+
     // Spawn Kafka consumer for pod.captured — runs for the lifetime of the process.
     let pod_consumer = PodConsumer::new(
         &cfg.kafka.brokers,
@@ -107,6 +129,18 @@ pub async fn run() -> anyhow::Result<()> {
     )
     .context("Failed to create PodConsumer")?;
     tokio::spawn(async move { pod_consumer.run().await });
+
+    // Spawn weight-discrepancy consumer — appends surcharge adjustments to issued
+    // invoices when hub-ops finds actual weight > declared weight.
+    let (weight_shutdown_tx, weight_shutdown_rx) = tokio::sync::watch::channel(false);
+    let weight_consumer = WeightDiscrepancyConsumer::new(
+        &cfg.kafka.brokers,
+        &cfg.kafka.group_id,
+        Arc::clone(&invoice_service),
+        Arc::clone(&invoice_repo) as Arc<dyn crate::domain::repositories::InvoiceRepository>,
+    )
+    .context("Failed to create WeightDiscrepancyConsumer")?;
+    tokio::spawn(async move { weight_consumer.run(weight_shutdown_rx).await });
 
     let addr = format!("{}:{}", cfg.app.host, cfg.app.port);
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -119,6 +153,8 @@ pub async fn run() -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("Payments server error")?;
+
+    weight_shutdown_tx.send(true).ok();
 
     Ok(())
 }

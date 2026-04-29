@@ -20,6 +20,10 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health::health))
         .route("/ready",  get(health::ready))
+        // Internal service-to-service endpoint — no JWT required.
+        // Called by business-logic when DELIVERY_FAILED fires and the ECA
+        // rule wants to re-enqueue the shipment for another dispatch attempt.
+        .route("/v1/internal/shipments/:shipment_id/requeue", post(dispatch_ops::requeue_shipment))
         .nest("/v1", protected_router(state.clone()))
         .with_state(state)
 }
