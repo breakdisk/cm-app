@@ -5,6 +5,8 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.google.android.gms.location.FusedLocationProviderClient
@@ -56,7 +58,15 @@ class LocationForegroundService : Service() {
         // the SharedFlow (keeping dispatch's driver_locations populated) but no
         // breadcrumbs are recorded (they require a real shift context).
         val label = if (currentShiftId.isEmpty()) "Available for dispatch" else "Shift active"
-        startForeground(NOTIFICATION_ID, buildNotification(label))
+        // Android 14 (API 34) requires the foreground service type to be declared
+        // explicitly in the startForeground() call, or throws
+        // MissingForegroundServiceTypeException.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(NOTIFICATION_ID, buildNotification(label),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification(label))
+        }
         if (!updatesStarted) {
             startLocationUpdates()
             updatesStarted = true
