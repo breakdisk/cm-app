@@ -86,11 +86,15 @@ class LocationRepository @Inject constructor(
      */
     @SuppressLint("MissingPermission")
     suspend fun getCurrentOrLastKnownLocation(): LatLng? {
+        // PRIORITY_BALANCED_POWER_ACCURACY uses network/WiFi positioning which
+        // works indoors and returns a fix in ~1-2 s. PRIORITY_HIGH_ACCURACY
+        // requires a GPS satellite lock (can take 30+ s indoors or return null).
+        // We extend the timeout to 8 s to cover weak indoor network signals.
         val cts = CancellationTokenSource()
-        val fresh = withTimeoutOrNull(5_000L) {
+        val fresh = withTimeoutOrNull(8_000L) {
             try {
                 val req = CurrentLocationRequest.Builder()
-                    .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
+                    .setPriority(Priority.PRIORITY_BALANCED_POWER_ACCURACY)
                     .build()
                 val loc = fusedClient.getCurrentLocation(req, cts.token).await()
                 if (loc != null) LatLng(loc.latitude, loc.longitude) else null

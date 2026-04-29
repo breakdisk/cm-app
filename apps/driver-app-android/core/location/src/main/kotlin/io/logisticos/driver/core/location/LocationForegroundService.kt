@@ -45,11 +45,11 @@ class LocationForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         currentShiftId = intent?.getStringExtra(EXTRA_SHIFT_ID) ?: ""
-        if (currentShiftId.isEmpty()) {
-            stopSelf()
-            return START_NOT_STICKY
-        }
-        startForeground(NOTIFICATION_ID, buildNotification("Shift active"))
+        // Empty shiftId = availability-tracking mode: GPS runs and publishes to
+        // the SharedFlow (keeping dispatch's driver_locations populated) but no
+        // breadcrumbs are recorded (they require a real shift context).
+        val label = if (currentShiftId.isEmpty()) "Available for dispatch" else "Shift active"
+        startForeground(NOTIFICATION_ID, buildNotification(label))
         startLocationUpdates()
         return START_STICKY
     }
@@ -73,21 +73,25 @@ class LocationForegroundService : Service() {
                     val lat = location.latitude
                     val lng = location.longitude
                     scope.launch {
-                        breadcrumbDao.insert(
-                            LocationBreadcrumbEntity(
-                                shiftId = shiftId,
-                                lat = lat,
-                                lng = lng,
-                                accuracy = location.accuracy,
-                                speedMps = speed,
-                                bearing = location.bearing,
-                                timestamp = now
+                        // Only record breadcrumbs when tracking a real shift.
+                        // Empty shiftId = availability mode (driver online, no
+                        // active shift yet) — still need to push location so
+                        // dispatch's proximity query can find the driver.
+                        if (shiftId.isNotEmpty()) {
+                            breadcrumbDao.insert(
+                                LocationBreadcrumbEntity(
+                                    shiftId = shiftId,
+                                    lat = lat,
+                                    lng = lng,
+                                    accuracy = location.accuracy,
+                                    speedMps = speed,
+                                    bearing = location.bearing,
+                                    timestamp = now
+                                )
                             )
-                        )
-                        // Publish to the SharedFlow so HomeViewModel can forward
-                        // this fix to driver_ops.driver_locations via the API.
-                        // This is the primary path that keeps dispatch's proximity
-                        // query populated while the driver is on shift.
+                        }
+                        // Always publish — this is what keeps driver_locations
+                        // populated whether or not a shift is in progress.
                         locationRepository.publishLocation(lat, lng)
                     }
 

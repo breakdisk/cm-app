@@ -148,10 +148,18 @@ class HomeViewModel @Inject constructor(
             runCatching {
                 if (goingOnline) {
                     api.goOnline()
+                    // Start the foreground service immediately so FusedLocation-
+                    // Provider begins requesting continuous GPS/network fixes.
+                    // Empty shiftId = availability mode: publishes to the
+                    // locationUpdates SharedFlow without recording breadcrumbs.
+                    // This is what populates driver_ops.driver_locations so
+                    // dispatch's proximity query can find the driver.
+                    locationRepo.startShiftTracking("")
                     pushFreshLocation()
                     syncShift()
                 } else {
                     api.goOffline()
+                    locationRepo.stopShiftTracking()
                 }
             }.onSuccess {
                 _uiState.update {
@@ -230,6 +238,7 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             runCatching {
                 api.goOnline()
+                locationRepo.startShiftTracking("")   // availability mode
                 pushFreshLocation()
             }.onSuccess {
                 _uiState.update { it.copy(isOnline = true) }
