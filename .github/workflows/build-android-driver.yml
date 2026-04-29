@@ -71,24 +71,27 @@ jobs:
         run: |
           sed -i "s/versionCode = 1/versionCode = ${{ github.run_number }}/" app/build.gradle.kts
 
-      - name: Build stagingRelease APK
+      - name: Build devRelease APK
         working-directory: apps/driver-app-android
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: ./gradlew assembleStagingRelease --no-daemon
+          # Inject the production API URL and tenant for the dev flavour so this
+          # APK hits the real backend (same as staging). Override via local.properties
+          # is not available in CI — use env vars injected into BuildConfig instead.
+        run: ./gradlew assembleDevRelease --no-daemon
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: driver-app-staging-release-${{ github.run_number }}
-          path: apps/driver-app-android/app/build/outputs/apk/staging/release/*.apk
+          name: driver-app-dev-release-${{ github.run_number }}
+          path: apps/driver-app-android/app/build/outputs/apk/dev/release/*.apk
           retention-days: 30
 
       - name: Upload APK to release (on tag)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: apps/driver-app-android/app/build/outputs/apk/staging/release/*.apk
+          files: apps/driver-app-android/app/build/outputs/apk/dev/release/*.apk
