@@ -40,32 +40,39 @@ export function createApiClient(baseURL: string): AxiosInstance {
   );
 
   // Response interceptor: Handle errors and retry
-  let retryCount = 0;
   const maxRetries = 3;
 
   client.interceptors.response.use(
-    response => {
-      retryCount = 0;
-      return response;
-    },
+    response => response,
     async (error: AxiosError) => {
       const config = error.config as any;
 
-      // Retry on network errors (except 4xx/5xx)
-      if (!error.response && retryCount < maxRetries) {
-        retryCount++;
-        const delay = Math.pow(2, retryCount) * 1000; // Exponential backoff
-        await new Promise(resolve => setTimeout(resolve, delay));
-        return client(config);
+      // Retry on network errors (except 4xx/5xx) — retryCount is per-config to avoid
+      // shared state across concurrent requests.
+      if (!error.response) {
+        config._retryCount = (config._retryCount ?? 0) + 1;
+        if (config._retryCount <= maxRetries) {
+          const delay = Math.pow(2, config._retryCount) * 1000;
+          await new Promise(resolve => setTimeout(resolve, delay));
+          return client(config);
+        }
       }
 
-      // Handle 401: Refresh token
+      // Handle 401: refresh via the identity service, not this client.
+      // _retry guards against re-entering on the refresh call itself.
       if (error.response?.status === 401 && !config._retry) {
         config._retry = true;
         try {
           const refreshToken = await SecureStore.getItemAsync('refresh_token');
           if (refreshToken) {
-            const response = await client.post('/v1/auth/refresh', { refresh_token: refreshToken });
+            // Always call the identity service — other clients (order, tracking)
+            // don't have a /v1/auth/refresh endpoint and would cascade-loop.
+            const identityClient = getIdentityClient();
+            const response = await identityClient.post(
+              '/v1/auth/refresh',
+              { refresh_token: refreshToken },
+              { _retry: true } as any, // skip interceptor on the refresh call itself
+            );
             const token = response.data?.data?.access_token ?? response.data?.access_token;
             if (!token) throw new Error('No access token in refresh response');
             await SecureStore.setItemAsync('auth_token', token);
@@ -74,15 +81,14 @@ export function createApiClient(baseURL: string): AxiosInstance {
           }
         } catch (refreshError) {
           console.error('Token refresh failed:', refreshError);
-          // Clear stored tokens and redirect to login
           await SecureStore.deleteItemAsync('auth_token');
           await SecureStore.deleteItemAsync('refresh_token');
         }
       }
 
       // Transform error response
-      const status = error.response?.status || 0;
-      const message = (error.response?.data as any)?.message || error.message;
+      const status = error.response?.status ?? 0;
+      const message = (error.response?.data as any)?.message ?? error.message;
       throw new ApiError(status, message, error.response?.data);
     }
   );

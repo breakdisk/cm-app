@@ -37,6 +37,7 @@ pub const DRIVER_ASSIGNED:           &str = "logisticos.dispatch.driver.assigned
 pub const ROUTE_OPTIMIZED:           &str = "logisticos.dispatch.route.optimized";
 
 // Driver / Field
+pub const DRIVER_AVAILABLE:          &str = "logisticos.driver.available";
 pub const PICKUP_COMPLETED:          &str = "logisticos.driver.pickup.completed";
 pub const DELIVERY_ATTEMPTED:        &str = "logisticos.driver.delivery.attempted";
 pub const DELIVERY_COMPLETED:        &str = "logisticos.driver.delivery.completed";
@@ -74,6 +75,7 @@ mod tests {
             AWB_ISSUED, PIECE_SCANNED, WEIGHT_DISCREPANCY_FOUND,
             PALLET_SEALED, CONTAINER_DEPARTED, CONTAINER_ARRIVED,
             ROUTE_CREATED, DRIVER_ASSIGNED, ROUTE_OPTIMIZED,
+            DRIVER_AVAILABLE,
             PICKUP_COMPLETED, DELIVERY_ATTEMPTED, DELIVERY_COMPLETED, DELIVERY_FAILED,
             LOCATION_UPDATED, DRIVER_LOCATION_UPDATED,
             POD_CAPTURED,

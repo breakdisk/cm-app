@@ -364,6 +364,15 @@ pub struct ReceiptEmailRequested {
     pub customer_name:       String,
 }
 
+/// Emitted by driver-ops when a driver taps "Go Online" in the app.
+/// Consumed by: dispatch (retry any pending queue items for this tenant).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriverAvailable {
+    pub driver_id:    Uuid,
+    pub tenant_id:    Uuid,
+    pub available_at: String,  // ISO-8601
+}
+
 // ── Carrier events ────────────────────────────────────────────────────────────
 
 /// Emitted by carrier service when a new carrier is onboarded (saved with
