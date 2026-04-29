@@ -27,6 +27,7 @@ import javax.inject.Inject
 class LocationForegroundService : Service() {
 
     @Inject lateinit var breadcrumbDao: LocationBreadcrumbDao
+    @Inject lateinit var locationRepository: LocationRepository
 
     private lateinit var fusedClient: FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
@@ -69,18 +70,25 @@ class LocationForegroundService : Service() {
                         AdaptiveLocationManager.intervalForSpeed(speed)
 
                     val shiftId = currentShiftId
+                    val lat = location.latitude
+                    val lng = location.longitude
                     scope.launch {
                         breadcrumbDao.insert(
                             LocationBreadcrumbEntity(
                                 shiftId = shiftId,
-                                lat = location.latitude,
-                                lng = location.longitude,
+                                lat = lat,
+                                lng = lng,
                                 accuracy = location.accuracy,
                                 speedMps = speed,
                                 bearing = location.bearing,
                                 timestamp = now
                             )
                         )
+                        // Publish to the SharedFlow so HomeViewModel can forward
+                        // this fix to driver_ops.driver_locations via the API.
+                        // This is the primary path that keeps dispatch's proximity
+                        // query populated while the driver is on shift.
+                        locationRepository.publishLocation(lat, lng)
                     }
 
                     fusedClient.removeLocationUpdates(locationCallback)

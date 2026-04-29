@@ -184,6 +184,40 @@ fun HomeScreen(
             }
         }
 
+        // GPS unavailable \u2014 driver is online but no location fix was acquired.
+        // Dispatch's proximity query cannot find the driver until driver_locations
+        // has at least one recent row. Show a warning so the driver knows to move
+        // to an open area. The banner auto-dismisses when the next fix is pushed.
+        if (state.gpsUnavailable && state.isOnline) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Amber.copy(alpha = 0.15f)),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Amber.copy(alpha = 0.4f))
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("\ud83d\udccd", fontSize = 18.sp)
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            "GPS signal not found",
+                            color = Amber,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            "Dispatch can't see your location. Move to an open area \u2014 " +
+                                "this banner disappears once a GPS fix is acquired.",
+                            color = Color.White.copy(alpha = 0.55f),
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+            }
+        }
+
         // Pending sync items \u2014 silent retries get a visible signal so the
         // driver knows a POD/scan/COD entry hasn't yet hit the server.
         if (state.pendingSyncCount > 0) {
