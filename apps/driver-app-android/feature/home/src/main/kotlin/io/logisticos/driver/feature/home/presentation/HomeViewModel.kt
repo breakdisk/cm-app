@@ -238,8 +238,12 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             runCatching {
                 api.goOnline()
-                locationRepo.startShiftTracking("")   // availability mode
-                pushFreshLocation()
+                // Do NOT start LocationForegroundService here. On Android 14+,
+                // startForeground(FOREGROUND_SERVICE_TYPE_LOCATION) throws a
+                // RemoteException if ACCESS_FINE_LOCATION has not been granted
+                // at runtime yet. HomeScreen requests the permission on entry and
+                // calls onLocationPermissionGranted() once the OS confirms the
+                // grant — that is the safe place to start tracking.
             }.onSuccess {
                 _uiState.update { it.copy(isOnline = true) }
                 startLocationHeartbeat()
@@ -250,14 +254,19 @@ class HomeViewModel @Inject constructor(
 
     /**
      * Called from HomeScreen once ACCESS_FINE/COARSE_LOCATION is granted at runtime.
-     * Pushes a fresh fix immediately so the driver is discoverable by dispatch
+     * Starts the location foreground service (safe now that permission is held)
+     * and pushes a fresh fix immediately so the driver is discoverable by dispatch
      * without waiting up to 60 s for the next heartbeat tick.
      */
     fun onLocationPermissionGranted() {
         // Granting clears any prior denial banner.
         _uiState.update { it.copy(locationDenied = false) }
         viewModelScope.launch {
-            runCatching { pushFreshLocation() }
+            runCatching {
+                // Start the foreground service now that location permission is confirmed.
+                locationRepo.startShiftTracking("")   // availability mode — no breadcrumbs
+                pushFreshLocation()
+            }
         }
     }
 
