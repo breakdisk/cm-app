@@ -73,6 +73,20 @@ jobs:
         run: |
           sed -i "s/versionCode = [0-9]*/versionCode = ${{ github.run_number }}/" app/build.gradle.kts
 
+      # ── Debug build (always runs — no keystore needed, instant testable APK) ──
+      - name: Build stagingDebug APK
+        working-directory: apps/driver-app-android
+        run: ./gradlew assembleStagingDebug --no-daemon
+
+      - name: Upload stagingDebug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: driver-app-staging-debug-${{ github.run_number }}
+          path: apps/driver-app-android/app/build/outputs/apk/staging/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      # ── Release build (signed if keystore secrets present, unsigned otherwise) ──
       - name: Build stagingRelease APK
         working-directory: apps/driver-app-android
         env:
@@ -82,11 +96,12 @@ jobs:
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: ./gradlew assembleStagingRelease --no-daemon
 
-      - name: Upload APK artifact
+      - name: Upload stagingRelease APK
         uses: actions/upload-artifact@v4
         with:
           name: driver-app-staging-release-${{ github.run_number }}
           path: apps/driver-app-android/app/build/outputs/apk/staging/release/*.apk
+          if-no-files-found: error
           retention-days: 30
 
       - name: Upload APK to release (on tag)
