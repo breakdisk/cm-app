@@ -1,8 +1,8 @@
 package io.logisticos.driver.core.common
 
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Carries the FCM `task_assigned` payload across process boundaries
@@ -22,11 +22,20 @@ data class AssignmentPayload(
 )
 
 object PendingAssignmentBus {
-    private val _events = MutableSharedFlow<AssignmentPayload>(extraBufferCapacity = 1)
-    val events: SharedFlow<AssignmentPayload> = _events.asSharedFlow()
+    // StateFlow<nullable>: null = no pending assignment, non-null = awaiting driver action.
+    // StateFlow always replays the current value to new collectors, so an assignment that
+    // arrives before ShiftScaffold enters composition is never dropped. Calling clear()
+    // after the driver acts prevents stale re-delivery on recomposition / process restore.
+    private val _pending = MutableStateFlow<AssignmentPayload?>(null)
+    val pending: StateFlow<AssignmentPayload?> = _pending.asStateFlow()
 
     /** Called by DriverMessagingService on the worker thread — safe to call without coroutine. */
     fun post(payload: AssignmentPayload) {
-        _events.tryEmit(payload)
+        _pending.value = payload
+    }
+
+    /** Called by ShiftScaffold after the driver accepts or rejects an assignment. */
+    fun clear() {
+        _pending.value = null
     }
 }

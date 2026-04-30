@@ -1,4 +1,4 @@
 # Copy to local.properties and fill in values — never commit local.properties
 sdk.dir=/path/to/android/sdk
 MAPBOX_ACCESS_TOKEN=pk.your_mapbox_token_here
-MAPS_API_KEY=your_google_maps_api_key_here
+GOOGLE_MAPS_API_KEY=your_google_maps_api_key_here
