@@ -21,6 +21,7 @@ struct AssignmentRow {
     tenant_id:        Uuid,
     driver_id:        Uuid,
     route_id:         Uuid,
+    shipment_id:      Option<Uuid>,
     status:           String,
     assigned_at:      chrono::DateTime<chrono::Utc>,
     accepted_at:      Option<chrono::DateTime<chrono::Utc>>,
@@ -53,6 +54,7 @@ impl From<AssignmentRow> for DriverAssignment {
             tenant_id: TenantId::from_uuid(r.tenant_id),
             driver_id: DriverId::from_uuid(r.driver_id),
             route_id: RouteId::from_uuid(r.route_id),
+            shipment_id: r.shipment_id,
             status: parse_status(&r.status),
             assigned_at: r.assigned_at,
             accepted_at: r.accepted_at,
@@ -66,7 +68,7 @@ impl From<AssignmentRow> for DriverAssignment {
 impl DriverAssignmentRepository for PgDriverAssignmentRepository {
     async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<DriverAssignment>> {
         let row = sqlx::query_as::<_, AssignmentRow>(
-            r#"SELECT id, tenant_id, driver_id, route_id, status,
+            r#"SELECT id, tenant_id, driver_id, route_id, shipment_id, status,
                       assigned_at, accepted_at, rejected_at, rejection_reason
                FROM dispatch.driver_assignments WHERE id = $1"#
         )
@@ -78,7 +80,7 @@ impl DriverAssignmentRepository for PgDriverAssignmentRepository {
 
     async fn find_active_by_driver(&self, driver_id: &DriverId) -> anyhow::Result<Option<DriverAssignment>> {
         let row = sqlx::query_as::<_, AssignmentRow>(
-            r#"SELECT id, tenant_id, driver_id, route_id, status,
+            r#"SELECT id, tenant_id, driver_id, route_id, shipment_id, status,
                       assigned_at, accepted_at, rejected_at, rejection_reason
                FROM dispatch.driver_assignments
                WHERE driver_id = $1 AND status IN ('pending', 'accepted')
@@ -108,10 +110,11 @@ impl DriverAssignmentRepository for PgDriverAssignmentRepository {
         let status = status_str(a.status);
         sqlx::query(
             r#"INSERT INTO dispatch.driver_assignments
-                   (id, tenant_id, driver_id, route_id, status,
+                   (id, tenant_id, driver_id, route_id, shipment_id, status,
                     assigned_at, accepted_at, rejected_at, rejection_reason)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
                ON CONFLICT (id) DO UPDATE SET
+                   shipment_id      = EXCLUDED.shipment_id,
                    status           = EXCLUDED.status,
                    accepted_at      = EXCLUDED.accepted_at,
                    rejected_at      = EXCLUDED.rejected_at,
@@ -121,6 +124,7 @@ impl DriverAssignmentRepository for PgDriverAssignmentRepository {
         .bind(a.tenant_id.inner())
         .bind(a.driver_id.inner())
         .bind(a.route_id.inner())
+        .bind(a.shipment_id)
         .bind(status)
         .bind(a.assigned_at)
         .bind(a.accepted_at)

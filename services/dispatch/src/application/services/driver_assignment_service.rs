@@ -215,12 +215,16 @@ impl DriverAssignmentService {
         Ok(assignment)
     }
 
-    /// Driver accepts their assignment — transitions route to InProgress.
+    /// Driver accepts their assignment — transitions route to InProgress and
+    /// emits `DRIVER_ASSIGNMENT_ACCEPTED` for downstream consumers (delivery-experience,
+    /// engagement, analytics).
     pub async fn accept_assignment(
         &self,
         driver_id: &DriverId,
         cmd: AcceptAssignmentCommand,
     ) -> AppResult<()> {
+        use logisticos_events::payloads::DriverAssignmentAccepted;
+
         let mut assignment = self.assignment_repo
             .find_by_id(cmd.assignment_id).await.map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound { resource: "Assignment", id: cmd.assignment_id.to_string() })?;
@@ -243,16 +247,46 @@ impl DriverAssignmentService {
         self.assignment_repo.save(&assignment).await.map_err(AppError::Internal)?;
         self.route_repo.save(&route).await.map_err(AppError::Internal)?;
 
-        tracing::info!(assignment_id = %assignment.id, route_id = %route.id, "Driver accepted route");
+        // Emit DRIVER_ASSIGNMENT_ACCEPTED — delivery-experience uses this to
+        // transition shipment status to PickupEnRoute; engagement can trigger
+        // an "on my way" notification to the customer.
+        let event = Event::new(
+            "dispatch",
+            "driver.assignment.accepted",
+            assignment.tenant_id.inner(),
+            DriverAssignmentAccepted {
+                assignment_id: assignment.id,
+                route_id:      route.id.inner(),
+                driver_id:     driver_id.inner(),
+                tenant_id:     assignment.tenant_id.inner(),
+                shipment_id:   assignment.shipment_id.unwrap_or(Uuid::nil()),
+                accepted_at:   chrono::Utc::now().to_rfc3339(),
+            },
+        );
+        self.kafka
+            .publish_event(topics::DRIVER_ASSIGNMENT_ACCEPTED, &event)
+            .await
+            .map_err(AppError::Internal)?;
+
+        tracing::info!(
+            assignment_id = %assignment.id,
+            route_id      = %route.id,
+            shipment_id   = ?assignment.shipment_id,
+            "Driver accepted route",
+        );
         Ok(())
     }
 
-    /// Driver rejects the assignment — marks it rejected; dispatcher must re-assign.
+    /// Driver rejects the assignment — marks it rejected, re-queues the shipment
+    /// so it can be auto-dispatched to another driver, and emits
+    /// `DRIVER_ASSIGNMENT_REJECTED` for analytics and engagement.
     pub async fn reject_assignment(
         &self,
         driver_id: &DriverId,
         cmd: RejectAssignmentCommand,
     ) -> AppResult<()> {
+        use logisticos_events::payloads::DriverAssignmentRejected;
+
         let mut assignment = self.assignment_repo
             .find_by_id(cmd.assignment_id).await.map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound { resource: "Assignment", id: cmd.assignment_id.to_string() })?;
@@ -261,15 +295,53 @@ impl DriverAssignmentService {
             return Err(AppError::Forbidden { resource: "Assignment".into() });
         }
 
+        let reason = cmd.reason.clone();
         assignment.reject(cmd.reason)
             .map_err(|e| AppError::BusinessRule(e.to_string()))?;
 
         self.assignment_repo.save(&assignment).await.map_err(AppError::Internal)?;
 
+        // Re-queue the shipment so another driver can be auto-dispatched.
+        // Only applies to quick_dispatch assignments (shipment_id is Some).
+        // Multi-stop auto-assign routes have no single shipment_id — the
+        // dispatcher must manually re-assign via POST /v1/routes/:id/assign.
+        if let Some(shipment_id) = assignment.shipment_id {
+            self.queue_repo
+                .reset_to_pending(shipment_id)
+                .await
+                .map_err(|e| AppError::Internal(e.into()))?;
+            tracing::info!(
+                shipment_id = %shipment_id,
+                "Re-queued shipment after driver rejection",
+            );
+        }
+
+        // Emit DRIVER_ASSIGNMENT_REJECTED — analytics and engagement use this
+        // to track rejection rates and optionally alert ops.
+        let event = Event::new(
+            "dispatch",
+            "driver.assignment.rejected",
+            assignment.tenant_id.inner(),
+            DriverAssignmentRejected {
+                assignment_id: assignment.id,
+                route_id:      assignment.route_id.inner(),
+                driver_id:     driver_id.inner(),
+                tenant_id:     assignment.tenant_id.inner(),
+                shipment_id:   assignment.shipment_id.unwrap_or(Uuid::nil()),
+                reason:        reason,
+                rejected_at:   chrono::Utc::now().to_rfc3339(),
+            },
+        );
+        self.kafka
+            .publish_event(topics::DRIVER_ASSIGNMENT_REJECTED, &event)
+            .await
+            .map_err(AppError::Internal)?;
+
         tracing::info!(
             assignment_id = %assignment.id,
-            reason = ?assignment.rejection_reason,
-            "Driver rejected assignment"
+            reason        = ?assignment.rejection_reason,
+            shipment_id   = ?assignment.shipment_id,
+            "Driver rejected assignment",
         );
         Ok(())
     }
@@ -422,8 +494,9 @@ impl DriverAssignmentService {
         };
         self.route_repo.save(&route).await.map_err(AppError::Internal)?;
 
-        // 5. Create assignment
-        let assignment = DriverAssignment::new(tenant_id.clone(), driver_id.clone(), route_id.clone());
+        // 5. Create assignment — attach shipment_id so reject_assignment can re-queue.
+        let mut assignment = DriverAssignment::new(tenant_id.clone(), driver_id.clone(), route_id.clone());
+        assignment.shipment_id = Some(cmd.shipment_id);
         self.assignment_repo.save(&assignment).await.map_err(AppError::Internal)?;
 
         // 6. Emit TASK_ASSIGNED twice — once for the pickup leg (origin) and once
