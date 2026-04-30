@@ -61,10 +61,12 @@ jobs:
       - name: Write local.properties
         working-directory: apps/driver-app-android
         env:
-          MAPS_API_KEY: ${{ secrets.MAPS_API_KEY }}
+          GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+          MAPBOX_ACCESS_TOKEN: ${{ secrets.MAPBOX_ACCESS_TOKEN }}
         run: |
           echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
-          echo "MAPS_API_KEY=${MAPS_API_KEY}" >> local.properties
+          echo "GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY}" >> local.properties
+          echo "MAPBOX_ACCESS_TOKEN=${MAPBOX_ACCESS_TOKEN}" >> local.properties
 
       - name: Bump versionCode
         working-directory: apps/driver-app-android
