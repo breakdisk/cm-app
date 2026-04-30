@@ -15,7 +15,9 @@ import javax.inject.Singleton
 class AuthRepository @Inject constructor(
     private val apiService: IdentityApiService,
     private val sessionManager: SessionManager,
-    @Named("tenant_slug") private val tenantSlug: String
+    @Named("tenant_slug") private val tenantSlug: String,
+    /** True only in debug builds — gates the 123456 OTP shortcut for local development. */
+    @Named("dev_bypass_enabled") private val devBypassEnabled: Boolean,
 ) {
     suspend fun sendOtp(phone: String): Result<Unit> = runCatching {
         apiService.sendOtp(OtpSendRequest(phone = phone, tenantSlug = tenantSlug, role = "driver"))
@@ -23,6 +25,13 @@ class AuthRepository @Inject constructor(
     }
 
     suspend fun verifyOtp(phone: String, otp: String): Result<Unit> = runCatching {
+        if (devBypassEnabled && otp == "123456") {
+            // Dev shortcut — skip real OTP verification in debug builds only.
+            sessionManager.saveTokens(jwt = "dev-token", refreshToken = "dev-refresh")
+            sessionManager.saveTenantId("dev-tenant-id")
+            sessionManager.saveDriverId("dev-driver-id")
+            return@runCatching
+        }
         val response = apiService.verifyOtp(
             OtpVerifyRequest(phone = phone, otp = otp, tenantSlug = tenantSlug, role = "driver")
         ).data
