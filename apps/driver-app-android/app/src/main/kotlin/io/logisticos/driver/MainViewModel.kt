@@ -18,9 +18,17 @@ class MainViewModel @Inject constructor(
     // Called from AppNavGraph immediately after OTP verification succeeds.
     // FCM's onNewToken only fires on token rotation — if the token was issued
     // before the driver logged in, we must explicitly fetch and register it now.
+    //
+    // Guarded with runCatching: FirebaseApp.initializeApp() is driven by the
+    // google-services plugin which requires google-services.json at build time.
+    // Debug builds that omit the file (or builds where the plugin is disabled)
+    // will throw IllegalStateException from getInstance(). Push notifications
+    // won't work in that case but all other driver operations are unaffected.
     fun onAuthSuccess() {
-        FirebaseMessaging.getInstance().token.addOnSuccessListener { fcmToken ->
-            notificationRepository.registerFcmToken(fcmToken)
+        runCatching {
+            FirebaseMessaging.getInstance().token.addOnSuccessListener { fcmToken ->
+                notificationRepository.registerFcmToken(fcmToken)
+            }
         }
     }
 }
