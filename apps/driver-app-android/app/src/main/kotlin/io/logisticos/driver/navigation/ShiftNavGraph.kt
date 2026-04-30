@@ -56,14 +56,14 @@ fun ShiftScaffold(rootNavController: NavHostController) {
     val unreadCount by notifVm.unreadCount.collectAsState()
 
     // ── FCM deeplink: task_assigned → AssignmentScreen ───────────────────────
-    // pendingPayload is held in composition state so rotation doesn't re-trigger nav.
-    var pendingPayload by remember { mutableStateOf(
-        PendingAssignmentBus.events.replayCache.firstOrNull()
-    ) }
+    // Collect from PendingAssignmentBus.pending (StateFlow<AssignmentPayload?>).
+    // StateFlow replays its current value on collection, so a cold-start FCM tap is
+    // never lost. Navigating to AssignmentScreen only when payload transitions to
+    // non-null prevents re-navigation on recomposition when payload is already null.
+    val pendingPayload by PendingAssignmentBus.pending.collectAsState()
 
-    LaunchedEffect(Unit) {
-        PendingAssignmentBus.events.collect { payload ->
-            pendingPayload = payload
+    LaunchedEffect(pendingPayload) {
+        if (pendingPayload != null) {
             shiftNavController.navigate(ASSIGNMENT_ROUTE) {
                 // Don't stack multiple assignment screens if the driver is slow to respond.
                 launchSingleTop = true
@@ -141,13 +141,13 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                 AssignmentScreen(
                     payload    = payload,
                     onAccepted = {
-                        pendingPayload = null
+                        PendingAssignmentBus.clear()
                         shiftNavController.navigate(ROUTE_ROUTE) {
                             popUpTo(HOME_ROUTE)
                         }
                     },
                     onRejected = {
-                        pendingPayload = null
+                        PendingAssignmentBus.clear()
                         shiftNavController.popBackStack()
                     }
                 )

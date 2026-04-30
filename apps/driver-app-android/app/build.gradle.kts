@@ -34,18 +34,21 @@ android {
     }
 
     signingConfigs {
-        create("release") {
-            val keystoreB64 = System.getenv("KEYSTORE_BASE64")
-            if (keystoreB64 != null) {
+        // Only materialise the release signing config when KEYSTORE_BASE64 is present
+        // (i.e. in CI). Without this guard, the error() calls fire during every
+        // Gradle configuration phase — including assembleDebug on developer machines.
+        val keystoreB64 = System.getenv("KEYSTORE_BASE64")
+        if (keystoreB64 != null) {
+            create("release") {
                 val keystoreFile = rootProject.file("keystore.jks")
-                // java.util.Base64.getMimeDecoder tolerates whitespace/newlines, which
-                // is what Android's Base64.DEFAULT also does. android.util.Base64 is
-                // unavailable in Gradle scripts — they run on the JVM, not Android.
                 keystoreFile.writeBytes(Base64.getMimeDecoder().decode(keystoreB64))
                 storeFile = keystoreFile
-                storePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
-                keyAlias = System.getenv("KEY_ALIAS") ?: ""
-                keyPassword = System.getenv("KEY_PASSWORD") ?: ""
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                    ?: error("KEYSTORE_PASSWORD env var is required for release builds")
+                keyAlias = System.getenv("KEY_ALIAS")
+                    ?: error("KEY_ALIAS env var is required for release builds")
+                keyPassword = System.getenv("KEY_PASSWORD")
+                    ?: error("KEY_PASSWORD env var is required for release builds")
             }
         }
     }
@@ -58,10 +61,9 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            val keystoreB64 = System.getenv("KEYSTORE_BASE64")
-            if (keystoreB64 != null) {
-                signingConfig = signingConfigs.getByName("release")
-            }
+            // Null when KEYSTORE_BASE64 is absent (local debug runs). CI always provides it,
+            // so a CI release build without the secret will error inside signingConfigs above.
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 
@@ -77,13 +79,13 @@ android {
         }
         create("staging") {
             dimension = "env"
-            buildConfigField("String", "BASE_URL", "\"https://os-api.cargomarket.net/\"")
-            buildConfigField("String", "TENANT_ID", "\"demo\"")
+            buildConfigField("String", "BASE_URL", "\"https://staging-api.cargomarket.net/\"")
+            buildConfigField("String", "TENANT_ID", "\"atlas-cargo-ae\"")
         }
         create("prod") {
             dimension = "env"
             buildConfigField("String", "BASE_URL", "\"https://os-api.cargomarket.net/\"")
-            buildConfigField("String", "TENANT_ID", "\"demo\"")
+            buildConfigField("String", "TENANT_ID", "\"atlas-cargo-ae\"")
         }
     }
 
