@@ -9,7 +9,7 @@ use rdkafka::{
 };
 use sqlx::PgPool;
 use tokio::sync::watch;
-use crate::infrastructure::external::FcmClient;
+use crate::infrastructure::external::{FcmClient, FcmTaskData};
 
 pub async fn start_task_consumer(
     brokers: &str,
@@ -165,13 +165,35 @@ async fn handle_task_assigned(payload: &[u8], pool: &PgPool, fcm: Option<Arc<Fcm
     );
 
     // Fire-and-forget FCM push — does not block task creation or Kafka commit.
+    //
+    // Only send for delivery tasks (sequence = last leg with customer address +
+    // COD info). For quick_dispatch flows, dispatch emits pickup then delivery
+    // events for the same assignment_id. Sending FCM only on "delivery" means
+    // the driver app receives one push per assignment, showing the delivery card
+    // with the correct customer / address / COD fields.
+    //
+    // Pickup tasks are still created in DB (driver sees them in task list) but
+    // the assignment-acceptance card is driven by the delivery push.
+    //
     // t.driver_id is the driver's user_id (identity-service UUID), which is what
     // identity.push_tokens.user_id indexes on.
-    if let Some(fcm) = fcm {
-        let driver_user_id = t.driver_id;
-        tokio::spawn(async move {
-            fcm.notify_driver(driver_user_id).await;
-        });
+    if task_type == "delivery" {
+        if let Some(fcm) = fcm {
+            let driver_user_id = t.driver_id;
+            let address = format!("{}, {}", t.address_line1, t.address_city);
+            let fcm_data = FcmTaskData {
+                assignment_id:    t.assignment_id,
+                shipment_id:      t.shipment_id,
+                customer_name:    t.customer_name.clone(),
+                address,
+                task_type:        task_type.to_owned(),
+                tracking_number:  t.tracking_number.clone(),
+                cod_amount_cents: t.cod_amount_cents,
+            };
+            tokio::spawn(async move {
+                fcm.notify_driver_task(driver_user_id, fcm_data).await;
+            });
+        }
     }
 
     Ok(())
