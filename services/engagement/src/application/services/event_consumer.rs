@@ -90,11 +90,15 @@ pub async fn process_event(
     // The event envelope wraps data: { ... }
     let data = payload.get("data").unwrap_or(payload);
 
-    let tenant_id = data["tenant_id"].as_str()
+    // tenant_id lives at the Event envelope level (payload["tenant_id"]).
+    // Some legacy/embedded payloads also embed it inside data. Try envelope first.
+    let tenant_id = payload["tenant_id"]
+        .as_str()
+        .or_else(|| data["tenant_id"].as_str())
         .and_then(|s| s.parse::<uuid::Uuid>().ok());
 
     let Some(tenant_id) = tenant_id else {
-        warn!(event_type, "Event missing tenant_id — skipping notification");
+        warn!(event_type, "Event missing tenant_id in envelope and data — skipping notification");
         return;
     };
 

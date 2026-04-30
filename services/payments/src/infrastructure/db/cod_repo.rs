@@ -193,6 +193,24 @@ impl CodRepository for PgCodRepository {
         Ok(rows.into_iter().map(CodCollection::from).collect())
     }
 
+    async fn distinct_merchants_with_unbatched_cod(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<Vec<(uuid::Uuid, uuid::Uuid)>> {
+        #[derive(sqlx::FromRow)]
+        struct Row { tenant_id: Uuid, merchant_id: Uuid }
+        let rows = sqlx::query_as::<_, Row>(
+            r#"SELECT DISTINCT tenant_id, merchant_id
+               FROM payments.cod_collections
+               WHERE batch_id IS NULL
+                 AND status = 'collected'
+                 AND collected_at <= $1"#
+        )
+        .bind(cutoff)
+        .fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(|r| (r.tenant_id, r.merchant_id)).collect())
+    }
+
     async fn mark_batch_remitted(
         &self,
         tenant_id: &TenantId,

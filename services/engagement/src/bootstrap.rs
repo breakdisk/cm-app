@@ -93,8 +93,9 @@ pub async fn run() -> anyhow::Result<()> {
     );
 
     let consumer_svc = notification_svc.clone();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     tokio::spawn(async move {
-        run_kafka_consumer(consumer, consumer_svc).await;
+        run_kafka_consumer(consumer, consumer_svc, shutdown_rx).await;
     });
 
     // HTTP API — notification dispatch endpoint
@@ -108,6 +109,10 @@ pub async fn run() -> anyhow::Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+
+    // Signal the Kafka consumer to stop
+    shutdown_tx.send(true).ok();
+
     Ok(())
 }
 
@@ -186,6 +191,7 @@ fn build_router(svc: Arc<NotificationService>) -> axum::Router {
 async fn run_kafka_consumer(
     consumer: Arc<StreamConsumer>,
     svc: Arc<NotificationService>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     use rdkafka::{consumer::{CommitMode, Consumer}, Message};
     use logisticos_events::topics;
@@ -202,18 +208,28 @@ async fn run_kafka_consumer(
     ]).expect("Engagement consumer subscription failed");
 
     loop {
-        match consumer.recv().await {
-            Ok(msg) => {
-                if let Some(payload) = msg.payload() {
-                    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(payload) {
-                        process_event(msg.topic(), &json, &svc).await;
+        tokio::select! {
+            _ = shutdown.changed() => {
+                if *shutdown.borrow_and_update() {
+                    tracing::info!("Engagement Kafka consumer shutting down");
+                    break;
+                }
+            }
+            result = consumer.recv() => {
+                match result {
+                    Ok(msg) => {
+                        if let Some(payload) = msg.payload() {
+                            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(payload) {
+                                process_event(msg.topic(), &json, &svc).await;
+                            }
+                        }
+                        consumer.commit_message(&msg, CommitMode::Async).ok();
+                    }
+                    Err(e) => {
+                        tracing::error!(err = %e, "Engagement Kafka error");
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     }
                 }
-                consumer.commit_message(&msg, CommitMode::Async).ok();
-            }
-            Err(e) => {
-                tracing::error!(err = %e, "Engagement Kafka error");
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
         }
     }

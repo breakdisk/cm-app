@@ -175,6 +175,26 @@ impl InvoiceRepository for PgInvoiceRepository {
         Ok(rows.into_iter().map(Invoice::from).collect())
     }
 
+    async fn find_latest_issued_for_merchant(
+        &self,
+        tenant_id:   &TenantId,
+        merchant_id: &MerchantId,
+    ) -> anyhow::Result<Option<Invoice>> {
+        let row = sqlx::query_as::<_, InvoiceRow>(
+            &format!(
+                "{SELECT} WHERE tenant_id = $1 AND merchant_id = $2
+                  AND status = 'issued'
+                  AND invoice_type = 'shipment_charges'
+                 ORDER BY issued_at DESC LIMIT 1"
+            ),
+        )
+        .bind(tenant_id.inner())
+        .bind(merchant_id.inner())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(Invoice::from))
+    }
+
     async fn save(&self, inv: &Invoice) -> anyhow::Result<()> {
         let status       = status_str(inv.status);
         let inv_type     = invoice_type_str(inv.invoice_type);

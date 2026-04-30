@@ -7,10 +7,10 @@ plugins {
 }
 
 android {
-    namespace = "io.logisticos.driver.feature.auth"
+    namespace = "io.logisticos.driver.feature.assignment"
     compileSdk = 35
     defaultConfig { minSdk = 26 }
-    buildFeatures { compose = true; buildConfig = true }
+    buildFeatures { compose = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -22,16 +22,11 @@ dependencies {
     implementation(project(":core:network"))
     implementation(project(":core:common"))
     implementation(platform(libs.compose.bom))
-    implementation(platform(libs.firebase.bom))
-    implementation(libs.firebase.messaging)
     implementation(libs.bundles.compose)
     implementation(libs.hilt.android)
     implementation(libs.hilt.navigation.compose)
-    implementation(libs.security.crypto)
-    implementation(libs.biometric)
+    implementation(libs.kotlinx.serialization.json)
     ksp(libs.hilt.compiler)
     testImplementation(libs.bundles.testing.unit)
-    androidTestImplementation(libs.compose.ui.test)
-    androidTestImplementation(libs.hilt.testing)
-    kspAndroidTest(libs.hilt.compiler)
+    testImplementation(libs.turbine)
 }
