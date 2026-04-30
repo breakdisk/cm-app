@@ -37,7 +37,7 @@ use logisticos_order_intake::{
     },
     domain::{
         entities::{piece::Piece, shipment::Shipment},
-        value_objects::{AwbGenerator, AwbGeneratorError, ServiceType, ShipmentWeight},
+        value_objects::{AwbGenerator, AwbGeneratorError, ServiceType, ShipmentWeight, TrackingNumber},
     },
     infrastructure::external::PassthroughNormalizer,
 };
