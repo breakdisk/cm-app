@@ -50,6 +50,24 @@ struct CachedToken {
     valid_until: Instant,
 }
 
+// ── Task data passed into the FCM push ────────────────────────────────────
+
+/// Rich data carried in the `task_assigned` FCM push.
+/// All fields map 1:1 to `RemoteMessage.data` keys the Android driver app reads
+/// in `DriverMessagingService.onMessageReceived`.
+#[derive(Debug, Clone)]
+pub struct FcmTaskData {
+    pub assignment_id:    Uuid,
+    pub shipment_id:      Uuid,
+    pub customer_name:    String,
+    /// Pre-formatted delivery address ("line1, city").
+    pub address:          String,
+    /// "pickup" | "delivery"
+    pub task_type:        String,
+    pub tracking_number:  String,
+    pub cod_amount_cents: Option<i64>,
+}
+
 // ── FcmClient ─────────────────────────────────────────────────────────────
 
 pub struct FcmClient {
@@ -96,9 +114,15 @@ impl FcmClient {
         })
     }
 
-    /// Main entry point: look up the driver's FCM token then send a push.
-    /// All errors are logged and swallowed — push is best-effort.
-    pub async fn notify_driver(&self, driver_user_id: Uuid) {
+    /// Send a `task_assigned` push to the driver with full task data.
+    ///
+    /// The Android `DriverMessagingService` reads the `data` map to construct
+    /// `AssignmentPayload` and post it to `PendingAssignmentBus`, which
+    /// triggers navigation to `AssignmentScreen`.
+    ///
+    /// All errors are logged and swallowed — push is best-effort and must
+    /// never block task creation or Kafka commit.
+    pub async fn notify_driver_task(&self, driver_user_id: Uuid, task: FcmTaskData) {
         match self.fetch_push_tokens(driver_user_id).await {
             Err(e) => {
                 tracing::warn!(driver_id = %driver_user_id, err = %e, "FCM: failed to fetch push tokens");
@@ -116,10 +140,10 @@ impl FcmClient {
                     }
                     Ok(access_token) => {
                         for token in tokens {
-                            if let Err(e) = self.send_fcm(&token, &access_token).await {
+                            if let Err(e) = self.send_fcm_task(&token, &access_token, &task).await {
                                 tracing::warn!(driver_id = %driver_user_id, err = %e, "FCM: send failed");
                             } else {
-                                tracing::info!(driver_id = %driver_user_id, "FCM: push sent");
+                                tracing::info!(driver_id = %driver_user_id, "FCM: task_assigned push sent");
                             }
                         }
                     }
@@ -204,18 +228,29 @@ impl FcmClient {
         Ok(token_resp.access_token)
     }
 
-    async fn send_fcm(&self, device_token: &str, access_token: &str) -> Result<(), String> {
+    async fn send_fcm_task(
+        &self,
+        device_token: &str,
+        access_token: &str,
+        task: &FcmTaskData,
+    ) -> Result<(), String> {
         let url = format!(
             "https://fcm.googleapis.com/v1/projects/{}/messages:send",
             self.project_id
         );
+        // FCM data-message values must all be strings.
         let body = serde_json::json!({
             "message": {
                 "token": device_token,
                 "data": {
-                    "type": "dispatch_message",
-                    "title": "New task assigned",
-                    "body": "You have a new delivery task"
+                    "type":             "task_assigned",
+                    "assignment_id":    task.assignment_id.to_string(),
+                    "shipment_id":      task.shipment_id.to_string(),
+                    "customer_name":    task.customer_name,
+                    "address":          task.address,
+                    "task_type":        task.task_type,
+                    "tracking_number":  task.tracking_number,
+                    "cod_amount_cents": task.cod_amount_cents.unwrap_or(0).to_string(),
                 },
                 "android": {
                     "priority": "HIGH"
