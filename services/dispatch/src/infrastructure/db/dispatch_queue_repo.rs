@@ -122,7 +122,7 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
 
     async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<DispatchQueueRow>> {
         let row = sqlx::query_as::<_, DispatchQueueRow>(
-            "SELECT id, tenant_id, shipment_id, customer_name, customer_phone,
+            "SELECT id, tenant_id, shipment_id, customer_id, customer_name, customer_phone,
                     customer_email, tracking_number,
                     dest_address_line1, dest_city, dest_province, dest_postal_code,
                     dest_lat, dest_lng,
@@ -148,7 +148,7 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
         tenant_id: Uuid,
         status: Option<&str>,
     ) -> anyhow::Result<Vec<DispatchQueueRow>> {
-        let base = "SELECT id, tenant_id, shipment_id, customer_name, customer_phone,
+        let base = "SELECT id, tenant_id, shipment_id, customer_id, customer_name, customer_phone,
                            customer_email, tracking_number,
                            dest_address_line1, dest_city, dest_province, dest_postal_code,
                            dest_lat, dest_lng,
