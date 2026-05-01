@@ -76,17 +76,17 @@ android {
             buildConfigField("String", "TENANT_ID", "\"$tenantId\"")
         }
         create("staging") {
-            dimension = "env"
-            buildConfigField("String", "BASE_URL", "\"https://os-api.cargomarket.net/\"")
-            buildConfigField("String", "TENANT_ID", "\"demo\"")
-        }
+           dimension = "env"
+           applicationIdSuffix = ".staging"
+           buildConfigField("String", "BASE_URL", "\"https://os-api.cargomarket.net/\"")
+           buildConfigField("String", "TENANT_ID", "\"atlas-cargo-ae\"")
+           }
         create("prod") {
-            dimension = "env"
-            buildConfigField("String", "BASE_URL", "\"https://os-api.cargomarket.net/\"")
-            buildConfigField("String", "TENANT_ID", "\"demo\"")
-        }
-    }
-
+           dimension = "env"
+           buildConfigField("String", "BASE_URL", "\"https://os-api.cargomarket.net/\"")
+           buildConfigField("String", "TENANT_ID", "\"atlas-cargo-ae\"")
+           }
+        
     buildFeatures {
         compose = true
         buildConfig = true
@@ -147,4 +147,5 @@ dependencies {
     debugImplementation(platform(libs.compose.bom))
     debugImplementation(libs.compose.ui.test.manifest)
     kspAndroidTest(libs.hilt.compiler)
+    }
 }
