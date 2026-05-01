@@ -195,15 +195,35 @@ impl DriverAssignmentService {
         let assignment = DriverAssignment::new(tenant_id.clone(), driver_id.clone(), route_id.clone());
         self.assignment_repo.save(&assignment).await.map_err(AppError::Internal)?;
 
-        let event = Event::new("dispatch", "driver.assigned", tenant_id.inner(), DriverAssigned {
-            assignment_id: assignment.id,
-            shipment_id:   Uuid::nil(), // no single shipment in multi-stop auto-assign
-            route_id: route_id.inner(),
-            driver_id: driver_id.inner(),
-            tenant_id: tenant_id.inner(),
-        });
-        self.kafka.publish_event(topics::DRIVER_ASSIGNED, &event).await
-            .map_err(AppError::Internal)?;
+        // Emit one event per delivery stop so each customer is notified
+        // of their driver assignment (with their customer_id for engagement service)
+        for stop in &route.stops {
+            // Look up customer_id from dispatch_queue for this shipment
+            let customer_id = self.queue_repo
+                .find_by_shipment(stop.shipment_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|row| row.customer_id)
+                .unwrap_or_else(|| {
+                    tracing::warn!(
+                        shipment_id = %stop.shipment_id,
+                        "Could not find shipment in dispatch_queue — customer_id unavailable"
+                    );
+                    Uuid::nil()
+                });
+
+            let event = Event::new("dispatch", "driver.assigned", tenant_id.inner(), DriverAssigned {
+                assignment_id: assignment.id,
+                shipment_id: stop.shipment_id,
+                customer_id,
+                route_id: route_id.inner(),
+                driver_id: driver_id.inner(),
+                tenant_id: tenant_id.inner(),
+            });
+            self.kafka.publish_event(topics::DRIVER_ASSIGNED, &event).await
+                .map_err(AppError::Internal)?;
+        }
 
         tracing::info!(
             assignment_id = %assignment.id,
@@ -492,15 +512,16 @@ impl DriverAssignmentService {
         self.kafka.publish_event(topics::TASK_ASSIGNED, &delivery_event).await
             .map_err(AppError::Internal)?;
 
-        // 7. Emit legacy DRIVER_ASSIGNED — delivery-experience updates tracking status
-        let legacy_event = Event::new("dispatch", "driver.assigned", tenant_id.inner(), DriverAssigned {
+        // 7. Emit DRIVER_ASSIGNED — engagement service sends push notification with customer_id
+        let driver_assigned_event = Event::new("dispatch", "driver.assigned", tenant_id.inner(), DriverAssigned {
             assignment_id: assignment.id,
             shipment_id:   cmd.shipment_id,
+            customer_id:   queue_item.customer_id,  // For engagement service notification routing
             route_id:      route_id.inner(),
             driver_id:     driver_id.inner(),
             tenant_id:     tenant_id.inner(),
         });
-        self.kafka.publish_event(topics::DRIVER_ASSIGNED, &legacy_event).await
+        self.kafka.publish_event(topics::DRIVER_ASSIGNED, &driver_assigned_event).await
             .map_err(AppError::Internal)?;
 
         // 8. Mark queue item as dispatched

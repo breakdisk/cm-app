@@ -7,6 +7,7 @@ pub struct DispatchQueueRow {
     pub id:                   Uuid,
     pub tenant_id:            Uuid,
     pub shipment_id:          Uuid,
+    pub customer_id:          Uuid,  // From ShipmentCreated event
     pub customer_name:        String,
     pub customer_phone:       String,
     pub customer_email:       Option<String>,
@@ -79,20 +80,21 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
         sqlx::query(
             r#"
             INSERT INTO dispatch.dispatch_queue (
-                id, tenant_id, shipment_id,
+                id, tenant_id, shipment_id, customer_id,
                 customer_name, customer_phone, customer_email, tracking_number,
                 dest_address_line1, dest_city, dest_province, dest_postal_code,
                 dest_lat, dest_lng,
                 origin_address_line1, origin_city, origin_province, origin_postal_code,
                 origin_lat, origin_lng,
                 cod_amount_cents, special_instructions, service_type, status
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
             ON CONFLICT (shipment_id) DO NOTHING
             "#,
         )
         .bind(row.id)
         .bind(row.tenant_id)
         .bind(row.shipment_id)
+        .bind(row.customer_id)
         .bind(&row.customer_name)
         .bind(&row.customer_phone)
         .bind(&row.customer_email)
