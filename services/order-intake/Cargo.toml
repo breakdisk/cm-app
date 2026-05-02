@@ -45,6 +45,7 @@ reqwest.workspace    = true
 # We use tower::ServiceExt::oneshot + http-body-util directly instead.
 tower            = { workspace = true, features = ["util"] }
 http-body-util   = "0.1"
+bytes            = "1"
 tokio            = { version = "1", features = ["macros", "rt-multi-thread"] }
 serde_json       = "1"
 uuid             = { version = "1", features = ["v4"] }
