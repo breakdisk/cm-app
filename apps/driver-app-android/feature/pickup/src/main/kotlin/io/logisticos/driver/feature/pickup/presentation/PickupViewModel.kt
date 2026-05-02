@@ -38,10 +38,20 @@ class PickupViewModel @Inject constructor(
     fun load(taskId: String) {
         viewModelScope.launch {
             val task = repo.observeTask(taskId).filterNotNull().first()
-            _uiState.update { it.copy(task = task) }
+            // Auto-confirm AWB when there's no scannable tracking number.
+            // task.awb falls back to shipmentId (a UUID) when no real AWB was
+            // assigned — drivers can't scan a UUID. Treat blank or UUID-format
+            // AWBs as "no scan required" so the Confirm button is immediately
+            // active. Real carrier AWBs (e.g. CM-PHL-S0012345) still require
+            // the driver to scan or type them.
+            val awbIsReal = task.awb.isNotBlank() && !isUuidFormat(task.awb)
+            _uiState.update { it.copy(task = task, awbScanned = !awbIsReal, awbMismatch = false) }
             repo.transitionToInProgress(taskId)
         }
     }
+
+    private fun isUuidFormat(s: String): Boolean =
+        Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", RegexOption.IGNORE_CASE).matches(s)
 
     fun onAwbScanned(scanned: String) {
         val expected = _uiState.value.task?.awb ?: ""
@@ -50,7 +60,7 @@ class PickupViewModel @Inject constructor(
             it.copy(
                 scannedAwb = scanned,
                 awbScanned = match,
-                awbMismatch = !match
+                awbMismatch = scanned.isNotBlank() && !match
             )
         }
     }
