@@ -69,9 +69,6 @@ class PickupViewModel @Inject constructor(
         _uiState.update { it.copy(photoPath = path) }
     }
 
-    private fun isUuidFormat(s: String): Boolean =
-        Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", RegexOption.IGNORE_CASE).matches(s)
-
     fun confirmPickup(taskId: String, onDone: () -> Unit) {
         val state = _uiState.value
         if (!state.canConfirm) return
