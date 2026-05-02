@@ -79,10 +79,9 @@ fun PodScreen(
             isCod = isCod,
             codAmount = codAmount
         )
-        // If shipmentId wasn't passed (e.g. navigated without it), load from local DB
-        if (shipmentId.isBlank()) {
-            viewModel.loadTaskMeta(taskId)
-        }
+        // Always load task meta to populate GPS fallback coordinates (taskLat/taskLng).
+        // Also backfills shipmentId/recipientName when not passed via nav args.
+        viewModel.loadTaskMeta(taskId)
     }
 
     // Success state
@@ -290,6 +289,26 @@ fun PodScreen(
                     color = if (state.canSubmit) Canvas else Color.White.copy(alpha = 0.3f),
                     fontWeight = FontWeight.Bold,
                     fontSize = 16.sp
+                )
+            }
+        }
+
+        // Hint listing what's still required when the submit button is disabled
+        if (!state.canSubmit) {
+            val missing = buildList {
+                if (requiresPhoto && state.photoPath == null)         add("parcel photo")
+                if (requiresSignature && state.signaturePath == null) add("signature")
+                if (requiresOtp && state.otpToken == null)            add("OTP verification")
+            }
+            if (missing.isNotEmpty()) {
+                Text(
+                    "Still needed: ${missing.joinToString(", ")}",
+                    color = Color.White.copy(alpha = 0.35f),
+                    fontSize = 12.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 4.dp),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
             }
         }

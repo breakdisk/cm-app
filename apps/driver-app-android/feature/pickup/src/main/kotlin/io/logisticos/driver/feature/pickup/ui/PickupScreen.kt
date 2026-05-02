@@ -1,8 +1,15 @@
 package io.logisticos.driver.feature.pickup.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -26,11 +33,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.common.InputImage
 import io.logisticos.driver.feature.pickup.presentation.PickupViewModel
 import java.io.File
 import java.io.FileOutputStream
@@ -52,6 +64,8 @@ fun PickupScreen(
     viewModel: PickupViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     LaunchedEffect(taskId) { viewModel.load(taskId) }
 
@@ -168,7 +182,23 @@ fun PickupScreen(
 
         Spacer(Modifier.height(16.dp))
 
-        // AWB scan section
+        // ── AWB scan section ──────────────────────────────────────────────────
+        // Camera permission state for QR scanning
+        var showQrCamera by remember { mutableStateOf(false) }
+        var qrCameraError by remember { mutableStateOf<String?>(null) }
+        var cameraPermissionGranted by remember {
+            mutableStateOf(
+                ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+                    == PackageManager.PERMISSION_GRANTED
+            )
+        }
+        val qrPermissionLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            cameraPermissionGranted = granted
+            if (granted) showQrCamera = true
+        }
+
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -201,7 +231,7 @@ fun PickupScreen(
                 }
             }
 
-            // Expected AWB display
+            // Expected AWB
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
@@ -239,6 +269,146 @@ fun PickupScreen(
                 }
             }
 
+            // ── Inline QR camera preview ──────────────────────────────────
+            if (showQrCamera) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(220.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                ) {
+                    if (qrCameraError != null) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color(0xFF1A0A0A))
+                                .border(1.dp, Red.copy(alpha = 0.4f), RoundedCornerShape(10.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.padding(16.dp)
+                            ) {
+                                Text("Camera unavailable", color = Red, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                                Text(qrCameraError ?: "", color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp)
+                                TextButton(onClick = { showQrCamera = false; qrCameraError = null }) {
+                                    Text("Dismiss", color = Cyan)
+                                }
+                            }
+                        }
+                    } else {
+                        AndroidView(
+                            factory = { ctx ->
+                                val previewView = PreviewView(ctx)
+                                val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
+                                cameraProviderFuture.addListener({
+                                    try {
+                                        val cameraProvider = cameraProviderFuture.get()
+                                        val preview = Preview.Builder().build().also {
+                                            it.setSurfaceProvider(previewView.surfaceProvider)
+                                        }
+                                        val barcodeScanner = BarcodeScanning.getClient()
+                                        val imageAnalysis = ImageAnalysis.Builder()
+                                            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                                            .build()
+                                        imageAnalysis.setAnalyzer(
+                                            ContextCompat.getMainExecutor(ctx)
+                                        ) { imageProxy ->
+                                            @Suppress("UnsafeOptInUsageError")
+                                            val mediaImage = imageProxy.image
+                                            if (mediaImage != null) {
+                                                val image = InputImage.fromMediaImage(
+                                                    mediaImage,
+                                                    imageProxy.imageInfo.rotationDegrees
+                                                )
+                                                barcodeScanner.process(image)
+                                                    .addOnSuccessListener { barcodes ->
+                                                        barcodes.firstOrNull()?.rawValue?.let { value ->
+                                                            viewModel.onAwbScanned(value)
+                                                            showQrCamera = false
+                                                        }
+                                                    }
+                                                    .addOnCompleteListener { imageProxy.close() }
+                                            } else {
+                                                imageProxy.close()
+                                            }
+                                        }
+                                        cameraProvider.unbindAll()
+                                        cameraProvider.bindToLifecycle(
+                                            lifecycleOwner,
+                                            CameraSelector.DEFAULT_BACK_CAMERA,
+                                            preview,
+                                            imageAnalysis
+                                        )
+                                    } catch (e: Exception) {
+                                        android.util.Log.e("PickupScreen", "QR camera bind failed: ${e.message}", e)
+                                        qrCameraError = e.message ?: "Camera failed to start"
+                                    }
+                                }, ContextCompat.getMainExecutor(ctx))
+                                previewView
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                        // Overlay: close scanner button
+                        IconButton(
+                            onClick = { showQrCamera = false },
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(6.dp)
+                                .size(36.dp)
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(Color.Black.copy(alpha = 0.5f))
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "Close scanner", tint = Color.White, modifier = Modifier.size(18.dp))
+                        }
+                        // Overlay: scan hint
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 10.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color.Black.copy(alpha = 0.5f))
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text("Point camera at barcode", color = Color.White, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+
+            // Scan / toggle button
+            Button(
+                onClick = {
+                    if (showQrCamera) {
+                        showQrCamera = false
+                    } else if (cameraPermissionGranted) {
+                        qrCameraError = null
+                        showQrCamera = true
+                    } else {
+                        qrPermissionLauncher.launch(Manifest.permission.CAMERA)
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().height(44.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (showQrCamera) Red.copy(alpha = 0.12f) else Cyan.copy(alpha = 0.12f)
+                ),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Icon(
+                    if (showQrCamera) Icons.Default.Close else Icons.Default.QrCodeScanner,
+                    contentDescription = null,
+                    tint = if (showQrCamera) Red else Cyan,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (showQrCamera) "Close Scanner" else "Scan QR / Barcode",
+                    color = if (showQrCamera) Red else Cyan,
+                    fontSize = 14.sp
+                )
+            }
+
             // Manual AWB entry as fallback
             var manualEntry by remember { mutableStateOf("") }
             OutlinedTextField(
@@ -249,7 +419,7 @@ fun PickupScreen(
                 modifier = Modifier.fillMaxWidth(),
                 trailingIcon = {
                     IconButton(onClick = { if (manualEntry.isNotBlank()) viewModel.onAwbScanned(manualEntry) }) {
-                        Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = Cyan)
+                        Icon(Icons.Default.Check, contentDescription = "Submit", tint = Cyan)
                     }
                 },
                 colors = OutlinedTextFieldDefaults.colors(
@@ -266,11 +436,7 @@ fun PickupScreen(
 
         Spacer(Modifier.height(16.dp))
 
-        // Photo section. System-camera launcher returns a thumbnail Bitmap.
-        // We persist it to filesDir and forward the absolute path to the
-        // ViewModel; matches the PodScreen photo flow without dragging
-        // CameraX into this module.
-        val context = LocalContext.current
+        // Photo section — system camera launcher returns a thumbnail Bitmap.
         val cameraLauncher = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.TakePicturePreview(),
         ) { bitmap: Bitmap? ->
@@ -384,7 +550,7 @@ fun PickupScreen(
 
         if (!state.awbScanned) {
             Text(
-                "Scan or enter the AWB barcode to enable confirmation",
+                "Scan the AWB barcode or enter it manually to enable confirmation",
                 color = Color.White.copy(alpha = 0.3f),
                 fontSize = 12.sp,
                 modifier = Modifier

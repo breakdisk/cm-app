@@ -116,12 +116,6 @@ class DeliveryRepository @Inject constructor(
             )
         )
 
-        // GPS unavailable (0,0) means the backend geofence check will fail. Surface
-        // the error immediately rather than letting the server return 422.
-        if (captureLat == 0.0 && captureLng == 0.0) {
-            throw IllegalStateException("GPS location is unavailable. Move to an area with signal and try again.")
-        }
-
         return try {
             // 1. Initiate
             val initiateResp = podApi.initiate(
