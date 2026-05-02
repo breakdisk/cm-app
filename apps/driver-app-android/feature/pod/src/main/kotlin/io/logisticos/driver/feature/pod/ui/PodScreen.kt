@@ -583,29 +583,30 @@ private fun OtpPodSection(otpToken: String?, onOtpEntered: (String) -> Unit) {
         Text("Ask recipient for their one-time delivery code", color = Color.White.copy(alpha = 0.5f), fontSize = 13.sp)
         OutlinedTextField(
             value = entered,
-            onValueChange = { if (it.length <= 6) entered = it },
-            label = { Text("6-digit OTP") },
+            onValueChange = { input ->
+                if (input.length <= 6) {
+                    entered = input
+                    // Auto-confirm as soon as 6 digits are entered — no extra button tap needed.
+                    if (input.length == 6 && otpToken == null) onOtpEntered(input)
+                }
+            },
+            label = { Text(if (otpToken != null) "OTP confirmed" else "6-digit OTP") },
             singleLine = true,
+            enabled = otpToken == null,
             modifier = Modifier.fillMaxWidth(),
             colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = Cyan,
-                unfocusedBorderColor = Border,
+                focusedBorderColor = if (otpToken != null) Green else Cyan,
+                unfocusedBorderColor = if (otpToken != null) Green.copy(alpha = 0.5f) else Border,
                 focusedTextColor = Color.White,
                 unfocusedTextColor = Color.White,
-                focusedLabelColor = Cyan,
+                focusedLabelColor = if (otpToken != null) Green else Cyan,
                 unfocusedLabelColor = Color.White.copy(alpha = 0.5f),
-                cursorColor = Cyan
+                cursorColor = Cyan,
+                disabledTextColor = Green,
+                disabledBorderColor = Green.copy(alpha = 0.5f),
+                disabledLabelColor = Green
             )
         )
-        Button(
-            onClick = { if (entered.length == 6) onOtpEntered(entered) },
-            enabled = entered.length == 6 && otpToken == null,
-            modifier = Modifier.fillMaxWidth().height(44.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Cyan),
-            shape = RoundedCornerShape(10.dp)
-        ) {
-            Text("Confirm OTP", color = Canvas)
-        }
     }
 }
 
