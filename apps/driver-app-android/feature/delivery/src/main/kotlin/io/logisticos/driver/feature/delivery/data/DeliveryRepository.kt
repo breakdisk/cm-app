@@ -13,12 +13,18 @@ import io.logisticos.driver.core.database.entity.SyncQueueEntity
 import io.logisticos.driver.core.database.entity.TaskEntity
 import io.logisticos.driver.core.database.entity.TaskStatus
 import io.logisticos.driver.core.database.worker.OutboundSyncWorker
+import io.logisticos.driver.core.network.service.AttachPhotoRequest
 import io.logisticos.driver.core.network.service.AttachSignatureRequest
 import io.logisticos.driver.core.network.service.CompleteTaskRequest
 import io.logisticos.driver.core.network.service.DriverOpsApiService
+import io.logisticos.driver.core.network.service.GetUploadUrlRequest
 import io.logisticos.driver.core.network.service.InitiatePodRequest
 import io.logisticos.driver.core.network.service.PodApiService
 import io.logisticos.driver.core.network.service.SubmitPodRequest
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import io.logisticos.driver.feature.delivery.domain.TaskStateMachine
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.encodeToString
@@ -33,7 +39,8 @@ class DeliveryRepository @Inject constructor(
     private val shiftDao: ShiftDao,
     private val syncQueueDao: SyncQueueDao,
     private val driverOpsApi: DriverOpsApiService,
-    private val podApi: PodApiService
+    private val podApi: PodApiService,
+    private val okHttpClient: OkHttpClient,
 ) {
     /** Enqueue an item AND immediately kick a one-time worker so it ships
      *  within seconds of network return — not 15 min later on the next
@@ -83,9 +90,10 @@ class DeliveryRepository @Inject constructor(
     /**
      * Full POD flow for delivery completion:
      * 1. POST /v1/pods — initiate, get pod_id
-     * 2. PUT /v1/pods/:id/signature — attach signature if provided
-     * 3. PUT /v1/pods/:id/submit — finalise with COD amount / OTP
-     * 4. PUT /v1/tasks/:id/complete — mark task done with pod_id
+     * 2. POST /v1/pods/:id/upload-url → PUT bytes to presigned R2 URL → POST /v1/pods/:id/photos
+     * 3. PUT /v1/pods/:id/signature — attach signature if provided
+     * 4. PUT /v1/pods/:id/submit — finalise with COD amount / OTP
+     * 5. PUT /v1/tasks/:id/complete — mark task done with pod_id
      *
      * Persists locally first so data isn't lost if network fails mid-flow.
      * On error, enqueues POD_SUBMIT for retry via OutboundSyncWorker.
@@ -141,7 +149,37 @@ class DeliveryRepository @Inject constructor(
                 android.util.Log.w("DeliveryRepository", "Geofence not verified for pod $podId — proceeding anyway")
             }
 
-            // 2. Attach signature if provided (base64-encode from file)
+            // 2. Upload photo to R2 via presigned URL if provided
+            if (photoPath != null) {
+                val photoFile = File(photoPath)
+                if (photoFile.exists()) {
+                    val contentType = "image/jpeg"
+                    // Get presigned PUT URL from backend
+                    val uploadResp = podApi.getUploadUrl(podId, GetUploadUrlRequest(contentType))
+                    val presignedUrl = uploadResp.data.uploadUrl
+                    val s3Key = uploadResp.data.s3Key
+                    // PUT photo bytes directly to R2 — bypass Retrofit (no auth header on R2)
+                    val photoBytes = photoFile.readBytes()
+                    val putRequest = Request.Builder()
+                        .url(presignedUrl)
+                        .put(photoBytes.toRequestBody(contentType.toMediaType()))
+                        .build()
+                    val putResponse = okHttpClient.newCall(putRequest).execute()
+                    if (!putResponse.isSuccessful) {
+                        error("R2 photo upload failed: HTTP ${putResponse.code}")
+                    }
+                    putResponse.close()
+                    // Register the uploaded photo key with the backend
+                    podApi.attachPhoto(podId, AttachPhotoRequest(
+                        s3Key = s3Key,
+                        contentType = contentType,
+                        sizeBytes = photoFile.length()
+                    ))
+                    android.util.Log.d("DeliveryRepository", "Photo uploaded to R2: $s3Key")
+                }
+            }
+
+            // 3. Attach signature if provided (base64-encode from file)
             if (signaturePath != null) {
                 val sigFile = File(signaturePath)
                 if (sigFile.exists()) {
@@ -150,10 +188,10 @@ class DeliveryRepository @Inject constructor(
                 }
             }
 
-            // 3. Submit POD
+            // 4. Submit POD
             podApi.submit(podId, SubmitPodRequest(codCollectedCents = codCollectedCents, otpCode = otpCode))
 
-            // 4. Complete the task
+            // 5. Complete the task
             driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId, codCollectedCents = codCollectedCents))
 
             // Mark local POD as synced
