@@ -34,7 +34,7 @@ class RouteViewModel @AssistedInject constructor(
         fun create(shiftId: String): RouteViewModel
     }
 
-    private val _uiState = MutableStateFlow(RouteUiState())
+    private val _uiState = MutableStateFlow(RouteUiState(isLoading = true))
     val uiState: StateFlow<RouteUiState> = _uiState.asStateFlow()
 
     private val isReordering = AtomicBoolean(false)
@@ -70,9 +70,9 @@ class RouteViewModel @AssistedInject constructor(
                 }
                 _uiState.update { state ->
                     if (!isReordering.get()) {
-                        state.copy(activeTasks = active, completedTasks = completed)
+                        state.copy(activeTasks = active, completedTasks = completed, isLoading = false)
                     } else {
-                        state.copy(completedTasks = completed)
+                        state.copy(completedTasks = completed, isLoading = false)
                     }
                 }
             }

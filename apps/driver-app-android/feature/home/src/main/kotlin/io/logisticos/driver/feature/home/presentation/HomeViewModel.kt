@@ -14,6 +14,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.time.Instant
 import java.time.format.DateTimeFormatter
 import javax.inject.Inject
@@ -33,6 +34,11 @@ data class HomeUiState(
      *  runtime (Android 11+ "Don't ask again" path). Drives the rationale
      *  card on the home screen. */
     val locationDenied: Boolean = false,
+    /** True when the driver is online but all GPS fix attempts returned null
+     *  (GPS cold-start, no cached fix, phone indoors). Clears automatically
+     *  as soon as any successful location push completes — either via the
+     *  retry loop or the next foreground service heartbeat. */
+    val gpsUnavailable: Boolean = false,
     /** Set true when the driver has just transitioned online → offline
      *  (manual toggle), and `shift` has data worth showing. The screen
      *  renders an end-of-shift summary dialog and calls dismissShiftSummary()
@@ -69,6 +75,7 @@ class HomeViewModel @Inject constructor(
         startPolling()
         autoGoOnline()
         collectSyncBus()
+        collectLocationUpdates()
     }
 
     /** Called from HomeScreen when the OS reports a location-permission denial.
@@ -94,6 +101,36 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Collect GPS fixes published by [LocationForegroundService] and forward
+     * each one to the backend.  This is the primary path keeping
+     * driver_ops.driver_locations up-to-date while a shift is running.
+     *
+     * The foreground service emits on every location callback (adaptive
+     * interval: ~5 s moving, ~60 s stationary).  The ViewModel's own 60 s
+     * heartbeat remains as a fallback for when the service isn't running.
+     */
+    private fun collectLocationUpdates() {
+        viewModelScope.launch {
+            locationRepo.locationUpdates.collect { loc ->
+                runCatching {
+                    api.updateLocation(
+                        UpdateLocationRequest(
+                            lat = loc.lat,
+                            lng = loc.lng,
+                            recordedAt = DateTimeFormatter.ISO_INSTANT.format(Instant.now())
+                        )
+                    )
+                    // GPS is clearly working — clear any stale warning.
+                    _uiState.update { it.copy(gpsUnavailable = false) }
+                }
+                // Failures are silent here; the foreground service will retry
+                // on the next location update.  Offline-mode banner covers
+                // persistent connectivity loss.
+            }
+        }
+    }
+
     fun syncShift() {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }
@@ -111,10 +148,18 @@ class HomeViewModel @Inject constructor(
             runCatching {
                 if (goingOnline) {
                     api.goOnline()
+                    // Start the foreground service immediately so FusedLocation-
+                    // Provider begins requesting continuous GPS/network fixes.
+                    // Empty shiftId = availability mode: publishes to the
+                    // locationUpdates SharedFlow without recording breadcrumbs.
+                    // This is what populates driver_ops.driver_locations so
+                    // dispatch's proximity query can find the driver.
+                    locationRepo.startShiftTracking("")
                     pushFreshLocation()
                     syncShift()
                 } else {
                     api.goOffline()
+                    locationRepo.stopShiftTracking()
                 }
             }.onSuccess {
                 _uiState.update {
@@ -152,24 +197,53 @@ class HomeViewModel @Inject constructor(
     // entry + a 60 s GPS heartbeat while online closes that gap. go-online
     // is idempotent server-side, so re-calling it on each launch is safe.
 
-    /** Push a fresh GPS fix (up to 5 s) to driver-ops; falls back to last known. */
+    /**
+     * Push a fresh GPS fix to driver-ops.
+     *
+     * On a cold-start device [LocationRepository.getCurrentOrLastKnownLocation]
+     * can return null because the FusedLocationProvider hasn't warmed up yet.
+     * Retrying with a short delay lets the OS acquire a first fix from network-
+     * assisted positioning (~2-4 s typical) before we give up.
+     *
+     * Retry policy:  3 attempts × 4 s apart → up to 8 s extra wait.
+     * If all attempts fail we set [HomeUiState.gpsUnavailable] so the UI can
+     * show a warning banner. The state clears automatically the moment any
+     * successful push happens (retry, heartbeat, or foreground service fix).
+     */
     private suspend fun pushFreshLocation() {
-        locationRepo.getCurrentOrLastKnownLocation()?.let { loc ->
-            api.updateLocation(
-                UpdateLocationRequest(
-                    lat = loc.lat,
-                    lng = loc.lng,
-                    recordedAt = DateTimeFormatter.ISO_INSTANT.format(Instant.now())
-                )
-            )
+        val maxAttempts = 3
+        val retryDelayMs = 4_000L
+        repeat(maxAttempts) { attempt ->
+            val loc = locationRepo.getCurrentOrLastKnownLocation()
+            if (loc != null) {
+                runCatching {
+                    api.updateLocation(
+                        UpdateLocationRequest(
+                            lat = loc.lat,
+                            lng = loc.lng,
+                            recordedAt = DateTimeFormatter.ISO_INSTANT.format(Instant.now())
+                        )
+                    )
+                    _uiState.update { it.copy(gpsUnavailable = false) }
+                }
+                return   // success — even if the API call failed, GPS is working
+            }
+            if (attempt < maxAttempts - 1) delay(retryDelayMs)
         }
+        // All attempts returned null — GPS unavailable (indoors, cold start, etc.)
+        _uiState.update { it.copy(gpsUnavailable = true) }
     }
 
     private fun autoGoOnline() {
         viewModelScope.launch {
             runCatching {
                 api.goOnline()
-                pushFreshLocation()
+                // Do NOT start LocationForegroundService here. On Android 14+,
+                // startForeground(FOREGROUND_SERVICE_TYPE_LOCATION) throws a
+                // RemoteException if ACCESS_FINE_LOCATION has not been granted
+                // at runtime yet. HomeScreen requests the permission on entry and
+                // calls onLocationPermissionGranted() once the OS confirms the
+                // grant — that is the safe place to start tracking.
             }.onSuccess {
                 _uiState.update { it.copy(isOnline = true) }
                 startLocationHeartbeat()
@@ -180,14 +254,19 @@ class HomeViewModel @Inject constructor(
 
     /**
      * Called from HomeScreen once ACCESS_FINE/COARSE_LOCATION is granted at runtime.
-     * Pushes a fresh fix immediately so the driver is discoverable by dispatch
+     * Starts the location foreground service (safe now that permission is held)
+     * and pushes a fresh fix immediately so the driver is discoverable by dispatch
      * without waiting up to 60 s for the next heartbeat tick.
      */
     fun onLocationPermissionGranted() {
         // Granting clears any prior denial banner.
         _uiState.update { it.copy(locationDenied = false) }
         viewModelScope.launch {
-            runCatching { pushFreshLocation() }
+            runCatching {
+                // Start the foreground service now that location permission is confirmed.
+                locationRepo.startShiftTracking("")   // availability mode — no breadcrumbs
+                pushFreshLocation()
+            }
         }
     }
 

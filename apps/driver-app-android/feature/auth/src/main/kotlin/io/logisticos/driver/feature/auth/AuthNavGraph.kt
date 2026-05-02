@@ -9,7 +9,7 @@ import io.logisticos.driver.feature.auth.ui.PhoneScreen
 
 const val AUTH_GRAPH = "auth_graph"
 const val PHONE_ROUTE = "phone"
-const val OTP_ROUTE = "otp/{phone}"
+const val OTP_ROUTE = "otp/{identifier}"
 
 fun NavGraphBuilder.authNavGraph(
     navController: NavHostController,
@@ -17,13 +17,13 @@ fun NavGraphBuilder.authNavGraph(
 ) {
     navigation(startDestination = PHONE_ROUTE, route = AUTH_GRAPH) {
         composable(PHONE_ROUTE) {
-            PhoneScreen(onOtpSent = { phone ->
-                navController.navigate("otp/$phone")
+            PhoneScreen(onOtpSent = { identifier ->
+                navController.navigate("otp/$identifier")
             })
         }
         composable(OTP_ROUTE) { backStack ->
-            val phone = backStack.arguments?.getString("phone") ?: ""
-            OtpScreen(phone = phone, onAuthenticated = onAuthenticated)
+            val identifier = backStack.arguments?.getString("identifier") ?: ""
+            OtpScreen(identifier = identifier, onAuthenticated = onAuthenticated)
         }
     }
 }

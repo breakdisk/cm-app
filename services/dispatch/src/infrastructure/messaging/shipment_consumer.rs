@@ -90,6 +90,7 @@ async fn handle_shipment_created(
         id:                   Uuid::new_v4(),
         tenant_id,
         shipment_id,
+        customer_id:          d.customer_id,  // From ShipmentCreated payload
         customer_name:        d.customer_name,
         customer_phone:       d.customer_phone,
         customer_email:       if d.customer_email.is_empty() { None } else { Some(d.customer_email) },

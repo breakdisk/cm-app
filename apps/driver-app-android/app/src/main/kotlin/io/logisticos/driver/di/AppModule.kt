@@ -44,4 +44,9 @@ object AppModule {
     @Singleton
     @Named("application_scope")
     fun provideApplicationScope(): CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** OTP bypass (123456) only active in devDebug — stagingDebug/prodDebug hit the real backend. */
+    @Provides
+    @Named("dev_bypass_enabled")
+    fun provideDevBypassEnabled(): Boolean = BuildConfig.DEBUG && BuildConfig.FLAVOR == "dev"
 }

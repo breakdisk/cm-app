@@ -95,10 +95,14 @@ export function OnboardDriverModal({ open, onClose, onSuccess }: Props) {
     try {
       const api = createIdentityApi();
       const res = await api.inviteUser({
-        first_name: s1.first_name,
-        last_name:  s1.last_name,
-        email:      s1.email,
-        roles:      ["driver"],
+        first_name:   s1.first_name,
+        last_name:    s1.last_name,
+        email:        s1.email,
+        roles:        ["driver"],
+        // Phone is required so OTP login finds this pre-registered record
+        // instead of falling through to the synthetic-email create path,
+        // which would assign a new UUID on every fresh install.
+        phone_number: s1.phone,
       });
       // Store user_id + temp_password for the result screen
       setResult({

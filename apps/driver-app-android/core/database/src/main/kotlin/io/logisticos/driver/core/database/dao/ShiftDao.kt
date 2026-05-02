@@ -18,6 +18,11 @@ interface ShiftDao {
     @Query("UPDATE shifts SET isActive = 0, endedAt = :endedAt WHERE id = :shiftId")
     suspend fun endShift(shiftId: String, endedAt: Long)
 
+    /** Deactivate every shift row except the given one — prevents stale rows from
+     *  polluting getActiveShift() which has no ORDER BY and picks indeterminately. */
+    @Query("UPDATE shifts SET isActive = 0 WHERE id != :keepId")
+    suspend fun deactivateAllExcept(keepId: String)
+
     @Query("UPDATE shifts SET completedStops = completedStops + 1 WHERE id = :shiftId")
     suspend fun incrementCompleted(shiftId: String)
 

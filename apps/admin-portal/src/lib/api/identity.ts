@@ -16,6 +16,9 @@ export interface InviteUserPayload {
   first_name: string;
   last_name: string;
   roles: string[];
+  /** E.164 phone number — required for drivers so OTP login resolves to the
+   *  pre-registered user rather than creating a duplicate ghost account. */
+  phone_number?: string;
 }
 
 export interface InviteUserResult {

@@ -10,7 +10,7 @@ on:
 
 jobs:
   build:
-    name: Build stagingRelease + prodRelease APKs
+    name: Build stagingDebug + stagingRelease + prodRelease APKs
     runs-on: ubuntu-latest
 
     steps:
@@ -38,7 +38,25 @@ jobs:
         working-directory: apps/driver-app-android/app
         env:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
-        run: echo "$GOOGLE_SERVICES_JSON" > google-services.json
+        # Python reads the env var verbatim (no shell quoting/escaping).
+        # If the secret is stored as base64, decode it first; otherwise
+        # write it directly. The inner try/except handles both forms.
+        run: |
+          python3 - <<'PYEOF'
+          import os, base64, json, sys
+          raw = os.environ["GOOGLE_SERVICES_JSON"]
+          # Try base64 first (handles secrets stored with `base64 -w 0`)
+          try:
+              decoded = base64.b64decode(raw).decode("utf-8")
+              json.loads(decoded)   # validate
+              content = decoded
+          except Exception:
+              # Fall back to raw value (secret stored as plain JSON text)
+              content = raw
+          with open("google-services.json", "w") as f:
+              f.write(content)
+          print(f"google-services.json written ({len(content)} bytes)")
+          PYEOF
 
       - name: Write local.properties
         working-directory: apps/driver-app-android
@@ -55,6 +73,20 @@ jobs:
         run: |
           sed -i "s/versionCode = [0-9]\+/versionCode = ${{ github.run_number }}/" app/build.gradle.kts
 
+      # ── Debug build (always runs — no keystore needed, instant testable APK) ──
+      - name: Build stagingDebug APK
+        working-directory: apps/driver-app-android
+        run: ./gradlew assembleStagingDebug --no-daemon
+
+      - name: Upload stagingDebug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: driver-app-staging-debug-${{ github.run_number }}
+          path: apps/driver-app-android/app/build/outputs/apk/staging/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      # ── Release build (signed when keystore secrets are present) ──
       - name: Build stagingRelease + prodRelease APKs
         working-directory: apps/driver-app-android
         env:
@@ -69,6 +101,7 @@ jobs:
         with:
           name: driver-app-staging-release-${{ github.run_number }}
           path: apps/driver-app-android/app/build/outputs/apk/staging/release/*.apk
+          if-no-files-found: error
           retention-days: 30
 
       - name: Upload prodRelease APK

@@ -5,6 +5,8 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.google.android.gms.location.FusedLocationProviderClient
@@ -27,6 +29,7 @@ import javax.inject.Inject
 class LocationForegroundService : Service() {
 
     @Inject lateinit var breadcrumbDao: LocationBreadcrumbDao
+    @Inject lateinit var locationRepository: LocationRepository
 
     private lateinit var fusedClient: FusedLocationProviderClient
     private lateinit var locationCallback: LocationCallback
@@ -35,6 +38,20 @@ class LocationForegroundService : Service() {
     private var currentShiftId: String = ""
     private var lastMovementTime = System.currentTimeMillis()
     private var isStationary = false
+    // Guard: startLocationUpdates() must only run once per service lifecycle.
+    // startForegroundService() on an already-running service re-delivers
+    // onStartCommand() without creating a new instance — without this flag
+    // each call would register an additional LocationCallback, flooding the
+    // FLP with duplicate requests (visible as repeated RequestManager_FLP
+    // entries in logcat).
+    private var updatesStarted = false
+    // Track the active interval so we only issue a new requestLocationUpdates
+    // call when the interval actually changes.  Calling requestLocationUpdates
+    // on the same callback updates the existing FLP subscription in-place;
+    // there is no need to removeLocationUpdates first — and doing so creates
+    // a tight loop because removeLocationUpdates is async while FLP delivers
+    // the cached last-known fix synchronously on each re-registration.
+    private var currentIntervalMs = -1L
 
     override fun onCreate() {
         super.onCreate()
@@ -44,12 +61,23 @@ class LocationForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         currentShiftId = intent?.getStringExtra(EXTRA_SHIFT_ID) ?: ""
-        if (currentShiftId.isEmpty()) {
-            stopSelf()
-            return START_NOT_STICKY
+        // Empty shiftId = availability-tracking mode: GPS runs and publishes to
+        // the SharedFlow (keeping dispatch's driver_locations populated) but no
+        // breadcrumbs are recorded (they require a real shift context).
+        val label = if (currentShiftId.isEmpty()) "Available for dispatch" else "Shift active"
+        // Android 14 (API 34) requires the foreground service type to be declared
+        // explicitly in the startForeground() call, or throws
+        // MissingForegroundServiceTypeException.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(NOTIFICATION_ID, buildNotification(label),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification(label))
         }
-        startForeground(NOTIFICATION_ID, buildNotification("Shift active"))
-        startLocationUpdates()
+        if (!updatesStarted) {
+            startLocationUpdates()
+            updatesStarted = true
+        }
         return START_STICKY
     }
 
@@ -69,22 +97,41 @@ class LocationForegroundService : Service() {
                         AdaptiveLocationManager.intervalForSpeed(speed)
 
                     val shiftId = currentShiftId
+                    val lat = location.latitude
+                    val lng = location.longitude
                     scope.launch {
-                        breadcrumbDao.insert(
-                            LocationBreadcrumbEntity(
-                                shiftId = shiftId,
-                                lat = location.latitude,
-                                lng = location.longitude,
-                                accuracy = location.accuracy,
-                                speedMps = speed,
-                                bearing = location.bearing,
-                                timestamp = now
+                        // Only record breadcrumbs when tracking a real shift.
+                        // Empty shiftId = availability mode (driver online, no
+                        // active shift yet) — still need to push location so
+                        // dispatch's proximity query can find the driver.
+                        if (shiftId.isNotEmpty()) {
+                            breadcrumbDao.insert(
+                                LocationBreadcrumbEntity(
+                                    shiftId = shiftId,
+                                    lat = lat,
+                                    lng = lng,
+                                    accuracy = location.accuracy,
+                                    speedMps = speed,
+                                    bearing = location.bearing,
+                                    timestamp = now
+                                )
                             )
-                        )
+                        }
+                        // Always publish — this is what keeps driver_locations
+                        // populated whether or not a shift is in progress.
+                        locationRepository.publishLocation(lat, lng)
                     }
 
-                    fusedClient.removeLocationUpdates(locationCallback)
-                    requestUpdates(newInterval)
+                    // Only update the FLP subscription when the interval changes.
+                    // Calling requestLocationUpdates with the same callback updates
+                    // the existing subscription in-place — no removeLocationUpdates
+                    // needed.  Removing first creates a tight loop: removeLocation-
+                    // Updates is async so FLP re-delivers the cached fix immediately
+                    // on the new registration before the remove completes.
+                    if (newInterval != currentIntervalMs) {
+                        currentIntervalMs = newInterval
+                        requestUpdates(newInterval)
+                    }
                 }
             }
         }
@@ -97,6 +144,7 @@ class LocationForegroundService : Service() {
             .build()
         try {
             fusedClient.requestLocationUpdates(request, locationCallback, mainLooper)
+            currentIntervalMs = intervalMs
         } catch (e: SecurityException) {
             stopSelf()
         }
@@ -106,6 +154,8 @@ class LocationForegroundService : Service() {
         if (::locationCallback.isInitialized) {
             fusedClient.removeLocationUpdates(locationCallback)
         }
+        updatesStarted = false
+        currentIntervalMs = -1L
         scope.cancel()
         super.onDestroy()
     }

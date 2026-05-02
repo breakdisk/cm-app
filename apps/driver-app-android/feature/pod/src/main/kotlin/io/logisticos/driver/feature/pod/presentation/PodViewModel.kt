@@ -123,12 +123,11 @@ class PodViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isSubmitting = true, error = null) }
             val loc = locationRepo.getLastKnownLocation()
-            // Fall back to the task's stored destination coordinates when device GPS
-            // is unavailable (0,0). Prevents a hard GPS block during testing and for
-            // drivers in underground/indoor areas. The backend geofence check is the
-            // authoritative gate for location accuracy.
-            val captureLat = if (loc != null && loc.lat != 0.0) loc.lat else state.taskLat
-            val captureLng = if (loc != null && loc.lng != 0.0) loc.lng else state.taskLng
+            // Use live GPS when available; fall back to the task's stored delivery
+            // coordinates when the device has no fix (cold start, GPS blocked indoors).
+            // The backend geofence check is the authoritative gate for location accuracy.
+            val captureLat = loc?.lat?.takeIf { it != 0.0 } ?: state.taskLat
+            val captureLng = loc?.lng?.takeIf { it != 0.0 } ?: state.taskLng
             runCatching {
                 repo.submitPod(
                     taskId = state.taskId,

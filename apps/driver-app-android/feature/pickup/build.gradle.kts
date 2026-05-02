@@ -25,6 +25,8 @@ dependencies {
     implementation(project(":core:common"))
     implementation(project(":feature:delivery"))
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.bundles.camerax)
+    implementation(libs.mlkit.barcode)
     implementation(platform(libs.compose.bom))
     implementation(libs.bundles.compose)
     implementation(libs.hilt.android)
