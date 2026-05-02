@@ -150,5 +150,4 @@ dependencies {
     debugImplementation(platform(libs.compose.bom))
     debugImplementation(libs.compose.ui.test.manifest)
     kspAndroidTest(libs.hilt.compiler)
-    }
 }
