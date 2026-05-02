@@ -151,7 +151,7 @@ impl DriverAssignmentRepository for MockAssignmentRepo {
     async fn cancel_active_for_driver(&self, driver_id: &DriverId) -> anyhow::Result<bool> {
         let mut guard = self.store.lock().unwrap();
         if let Some(assignment) = guard.values_mut().find(|a| a.driver_id.inner() == driver_id.inner() && a.is_active()) {
-            assignment.cancelled_at = Some(chrono::Utc::now());
+            assignment.cancel().ok();
             Ok(true)
         } else {
             Ok(false)
@@ -1312,6 +1312,7 @@ mod quick_dispatch {
             id:                   Uuid::new_v4(),
             tenant_id,
             shipment_id,
+            customer_id:          Uuid::new_v4(),
             customer_name:        "Test Customer".into(),
             customer_phone:       "+63912345678".into(),
             customer_email:       None,

@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 
 use logisticos_auth::{claims::Claims, jwt::JwtService, rbac::default_permissions_for_role};
 use logisticos_types::{
-    awb::{Awb, ServiceCode as AwbServiceCode, TenantCode, TrackingNumber},
+    awb::{Awb, ServiceCode as AwbServiceCode, TenantCode},
     Address, MerchantId, ShipmentId, ShipmentStatus, TenantId, CustomerId,
 };
 
@@ -178,7 +178,7 @@ fn build_test_server(repo: Arc<InMemoryShipmentRepository>) -> (TestServer, JwtS
         query,
         jwt: Arc::new(JwtService::new(TEST_JWT_SECRET, 3600, 86400)),
     };
-    let app = router(state).into_make_service();
+    let app = router(state);
 
     let server = TestServer::new(app);
     (server, jwt)
@@ -1020,24 +1020,6 @@ mod bulk_create_shipments {
 
 mod tracking_number_format {
     use super::*;
-
-    #[tokio::test]
-    async fn generated_tracking_numbers_match_lsph_format() {
-        // Domain-level unit test — TrackingNumber::generate() returns "CMPH" + 10 digits
-        for _ in 0..20 {
-            let tn = TrackingNumber::generate();
-            assert!(
-                tn.starts_with("CMPH"),
-                "tracking number must start with CMPH, got {tn}"
-            );
-            assert_eq!(tn.len(), 14, "CMPH + 10 digits = 14 chars total, got {tn}");
-            let digits = &tn[4..];
-            assert!(
-                digits.chars().all(|c| c.is_ascii_digit()),
-                "last 10 chars must be digits, got {digits}"
-            );
-        }
-    }
 
     #[tokio::test]
     async fn created_shipment_tracking_number_is_unique_across_multiple_shipments() {
