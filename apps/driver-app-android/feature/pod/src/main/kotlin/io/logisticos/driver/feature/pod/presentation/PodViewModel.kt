@@ -42,7 +42,10 @@ data class PodUiState(
     val isSubmitted: Boolean = false,
     val podId: String? = null,
     val showFailureSheet: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    // Task destination coordinates used as GPS fallback when device location is unavailable.
+    val taskLat: Double = 0.0,
+    val taskLng: Double = 0.0
 ) {
     val canSubmit: Boolean
         get() = (!requiresPhoto || photoPath != null) &&
@@ -90,7 +93,14 @@ class PodViewModel @Inject constructor(
     fun loadTaskMeta(taskId: String) {
         viewModelScope.launch {
             val task = repo.observeTask(taskId).filterNotNull().first()
-            _uiState.update { it.copy(shipmentId = task.shipmentId, recipientName = task.recipientName) }
+            _uiState.update { prev ->
+                prev.copy(
+                    shipmentId = if (prev.shipmentId.isBlank()) task.shipmentId else prev.shipmentId,
+                    recipientName = if (prev.recipientName.isBlank()) task.recipientName else prev.recipientName,
+                    taskLat = task.lat,
+                    taskLng = task.lng
+                )
+            }
         }
     }
 
@@ -113,13 +123,19 @@ class PodViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isSubmitting = true, error = null) }
             val loc = locationRepo.getLastKnownLocation()
+            // Fall back to the task's stored destination coordinates when device GPS
+            // is unavailable (0,0). Prevents a hard GPS block during testing and for
+            // drivers in underground/indoor areas. The backend geofence check is the
+            // authoritative gate for location accuracy.
+            val captureLat = if (loc != null && loc.lat != 0.0) loc.lat else state.taskLat
+            val captureLng = if (loc != null && loc.lng != 0.0) loc.lng else state.taskLng
             runCatching {
                 repo.submitPod(
                     taskId = state.taskId,
                     shipmentId = state.shipmentId,
                     recipientName = state.recipientName,
-                    captureLat = loc?.lat ?: 0.0,
-                    captureLng = loc?.lng ?: 0.0,
+                    captureLat = captureLat,
+                    captureLng = captureLng,
                     photoPath = state.photoPath,
                     signaturePath = state.signaturePath,
                     otpCode = state.otpToken,
