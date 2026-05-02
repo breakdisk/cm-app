@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 
 use logisticos_auth::{claims::Claims, jwt::JwtService, rbac::default_permissions_for_role};
 use logisticos_types::{
-    awb::{Awb, ServiceCode as AwbServiceCode, TenantCode},
+    awb::{Awb, ServiceCode as AwbServiceCode, TenantCode, TrackingNumber},
     Address, MerchantId, ShipmentId, ShipmentStatus, TenantId, CustomerId,
 };
 
@@ -178,7 +178,7 @@ fn build_test_server(repo: Arc<InMemoryShipmentRepository>) -> (TestServer, JwtS
         query,
         jwt: Arc::new(JwtService::new(TEST_JWT_SECRET, 3600, 86400)),
     };
-    let app = router(state);
+    let app = router(state).into_make_service();
 
     let server = TestServer::new(app);
     (server, jwt)
