@@ -12,11 +12,12 @@ import javax.inject.Named
 object AuthModule {
 
     /**
-     * Provides whether the dev OTP bypass is enabled.
-     * `BuildConfig.DEBUG` is `true` for `debug` build type, `false` for `release`.
-     * Library modules receive this correctly from the consuming app's build type.
+     * Dev OTP bypass (123456) is intentionally restricted to the `dev` flavor.
+     * stagingDebug and prodDebug must use real OTPs so drivers test against the
+     * actual backend — fake sessions block all task/delivery API calls.
+     * AppModule overrides this binding with the flavor-aware value.
      */
     @Provides
     @Named("dev_bypass_enabled")
-    fun provideDevBypassEnabled(): Boolean = BuildConfig.DEBUG
+    fun provideDevBypassEnabled(): Boolean = false
 }

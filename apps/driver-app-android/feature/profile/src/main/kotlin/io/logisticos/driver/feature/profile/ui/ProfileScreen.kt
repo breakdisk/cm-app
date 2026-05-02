@@ -50,7 +50,11 @@ fun ProfileScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text("Driver ID", color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp)
-                Text("Logged in", color = Color.White, fontSize = 15.sp)
+                Text(
+                    sessionManager.getDriverId() ?: "—",
+                    color = Color.White,
+                    fontSize = 15.sp
+                )
                 Text(
                     "Tenant: ${sessionManager.getTenantId() ?: "—"}",
                     color = Color.White.copy(alpha = 0.6f),
