@@ -16,7 +16,7 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM chef AS cacher
 COPY Cargo.toml Cargo.lock ./
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --profile docker --locked -j4 --recipe-path recipe.json
+RUN cargo chef cook --profile docker -j4 --recipe-path recipe.json
 
 FROM chef AS builder
 COPY Cargo.toml Cargo.lock ./
