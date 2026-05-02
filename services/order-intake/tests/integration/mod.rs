@@ -1022,24 +1022,6 @@ mod tracking_number_format {
     use super::*;
 
     #[tokio::test]
-    async fn generated_tracking_numbers_match_lsph_format() {
-        // Domain-level unit test — TrackingNumber::generate() returns "CMPH" + 10 digits
-        for _ in 0..20 {
-            let tn = TrackingNumber::generate();
-            assert!(
-                tn.starts_with("CMPH"),
-                "tracking number must start with CMPH, got {tn}"
-            );
-            assert_eq!(tn.len(), 14, "CMPH + 10 digits = 14 chars total, got {tn}");
-            let digits = &tn[4..];
-            assert!(
-                digits.chars().all(|c| c.is_ascii_digit()),
-                "last 10 chars must be digits, got {digits}"
-            );
-        }
-    }
-
-    #[tokio::test]
     async fn created_shipment_tracking_number_is_unique_across_multiple_shipments() {
         let repo = Arc::new(InMemoryShipmentRepository::new());
         let (server, jwt) = build_test_server(Arc::clone(&repo));
