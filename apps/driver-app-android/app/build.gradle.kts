@@ -79,7 +79,7 @@ android {
         }
         create("staging") {
             dimension = "env"
-            buildConfigField("String", "BASE_URL", "\"https://staging-api.cargomarket.net/\"")
+            buildConfigField("String", "BASE_URL", "\"https://os-api.cargomarket.net/\"")
             buildConfigField("String", "TENANT_ID", "\"atlas-cargo-ae\"")
         }
         create("prod") {
