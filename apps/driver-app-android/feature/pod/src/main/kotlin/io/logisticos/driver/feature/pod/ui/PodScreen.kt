@@ -170,7 +170,7 @@ fun PodScreen(
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (requiresPhoto)     StepDot("P", state.photoPath != null)
                 if (requiresSignature) StepDot("S", state.signaturePath != null)
-                if (requiresOtp)       StepDot("O", state.otpToken != null)
+                if (requiresOtp)       StepDot("O", state.otpVerified)
                 if (isCod)             StepDot("₱", state.codCollected)
             }
         }
@@ -238,8 +238,9 @@ fun PodScreen(
         // OTP
         if (requiresOtp) {
             OtpPodSection(
-                otpToken = state.otpToken,
-                onOtpEntered = viewModel::onOtpEntered
+                otpVerified = state.otpVerified,
+                isVerifying = state.isVerifyingOtp,
+                onConfirmOtp = viewModel::verifyOtp
             )
             Spacer(Modifier.height(12.dp))
         }
@@ -298,7 +299,7 @@ fun PodScreen(
             val missing = buildList {
                 if (requiresPhoto && state.photoPath == null)         add("parcel photo")
                 if (requiresSignature && state.signaturePath == null) add("signature")
-                if (requiresOtp && state.otpToken == null)            add("OTP verification")
+                if (requiresOtp && !state.otpVerified)                add("OTP verification")
             }
             if (missing.isNotEmpty()) {
                 Text(
@@ -557,7 +558,11 @@ private fun PhotoSection(
 }
 
 @Composable
-private fun OtpPodSection(otpToken: String?, onOtpEntered: (String) -> Unit) {
+private fun OtpPodSection(
+    otpVerified: Boolean,
+    isVerifying: Boolean,
+    onConfirmOtp: (String) -> Unit
+) {
     var entered by remember { mutableStateOf("") }
     Column(
         modifier = Modifier
@@ -567,7 +572,7 @@ private fun OtpPodSection(otpToken: String?, onOtpEntered: (String) -> Unit) {
             .background(Glass)
             .border(
                 1.dp,
-                if (otpToken != null) Green.copy(alpha = 0.3f) else Border,
+                if (otpVerified) Green.copy(alpha = 0.3f) else Border,
                 RoundedCornerShape(14.dp)
             )
             .padding(16.dp),
@@ -578,14 +583,15 @@ private fun OtpPodSection(otpToken: String?, onOtpEntered: (String) -> Unit) {
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text("OTP Verification", color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp)
-            if (otpToken != null) Text("Verified ✓", color = Green, fontSize = 11.sp)
+            if (otpVerified) Text("Verified ✓", color = Green, fontSize = 11.sp)
         }
-        Text("Ask recipient for their one-time delivery code", color = Color.White.copy(alpha = 0.5f), fontSize = 13.sp)
+        Text("Ask recipient for the one-time code sent to their phone", color = Color.White.copy(alpha = 0.5f), fontSize = 13.sp)
         OutlinedTextField(
             value = entered,
             onValueChange = { if (it.length <= 6) entered = it },
             label = { Text("6-digit OTP") },
             singleLine = true,
+            enabled = !otpVerified,
             modifier = Modifier.fillMaxWidth(),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = Cyan,
@@ -598,13 +604,21 @@ private fun OtpPodSection(otpToken: String?, onOtpEntered: (String) -> Unit) {
             )
         )
         Button(
-            onClick = { if (entered.length == 6) onOtpEntered(entered) },
-            enabled = entered.length == 6 && otpToken == null,
+            onClick = { if (entered.length == 6) onConfirmOtp(entered) },
+            enabled = entered.length == 6 && !otpVerified && !isVerifying,
             modifier = Modifier.fillMaxWidth().height(44.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Cyan),
             shape = RoundedCornerShape(10.dp)
         ) {
-            Text("Confirm OTP", color = Canvas)
+            if (isVerifying) {
+                CircularProgressIndicator(
+                    color = Canvas,
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp
+                )
+            } else {
+                Text("Confirm OTP", color = Canvas)
+            }
         }
     }
 }

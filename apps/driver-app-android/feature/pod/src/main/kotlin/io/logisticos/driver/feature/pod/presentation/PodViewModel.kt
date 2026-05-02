@@ -29,6 +29,7 @@ data class PodUiState(
     val taskId: String = "",
     val shipmentId: String = "",
     val recipientName: String = "",
+    val recipientPhone: String = "",
     val requiresPhoto: Boolean = false,
     val requiresSignature: Boolean = false,
     val requiresOtp: Boolean = false,
@@ -37,6 +38,9 @@ data class PodUiState(
     val photoPath: String? = null,
     val signaturePath: String? = null,
     val otpToken: String? = null,
+    val otpId: String? = null,
+    val otpVerified: Boolean = false,
+    val isVerifyingOtp: Boolean = false,
     val codCollected: Boolean = false,
     val isSubmitting: Boolean = false,
     val isSubmitted: Boolean = false,
@@ -50,7 +54,7 @@ data class PodUiState(
     val canSubmit: Boolean
         get() = (!requiresPhoto || photoPath != null) &&
                 (!requiresSignature || signaturePath != null) &&
-                (!requiresOtp || otpToken != null)
+                (!requiresOtp || otpVerified)
 }
 
 @HiltViewModel
@@ -97,16 +101,48 @@ class PodViewModel @Inject constructor(
                 prev.copy(
                     shipmentId = if (prev.shipmentId.isBlank()) task.shipmentId else prev.shipmentId,
                     recipientName = if (prev.recipientName.isBlank()) task.recipientName else prev.recipientName,
+                    recipientPhone = task.recipientPhone,
                     taskLat = task.lat,
                     taskLng = task.lng
                 )
+            }
+            val s = _uiState.value
+            if (s.requiresOtp && s.otpId == null && s.recipientPhone.isNotBlank()) {
+                generateOtp()
+            }
+        }
+    }
+
+    fun generateOtp() {
+        val s = _uiState.value
+        if (s.otpId != null || s.recipientPhone.isBlank()) return
+        viewModelScope.launch {
+            runCatching {
+                repo.generateOtp(s.shipmentId, s.recipientPhone)
+            }.onSuccess { otpId ->
+                _uiState.update { it.copy(otpId = otpId) }
+            }.onFailure { e ->
+                _uiState.update { it.copy(error = "Could not send OTP: ${e.message}") }
+            }
+        }
+    }
+
+    fun verifyOtp(code: String) {
+        val s = _uiState.value
+        viewModelScope.launch {
+            _uiState.update { it.copy(isVerifyingOtp = true, error = null) }
+            runCatching {
+                repo.verifyOtp(s.shipmentId, code)
+            }.onSuccess {
+                _uiState.update { it.copy(isVerifyingOtp = false, otpVerified = true, otpToken = code) }
+            }.onFailure { e ->
+                _uiState.update { it.copy(isVerifyingOtp = false, error = "Invalid OTP: ${e.message}") }
             }
         }
     }
 
     fun onPhotoCaptured(path: String)    { _uiState.update { it.copy(photoPath = path) } }
     fun onSignatureSaved(path: String)   { _uiState.update { it.copy(signaturePath = path) } }
-    fun onOtpEntered(token: String)      { _uiState.update { it.copy(otpToken = token) } }
     fun onCodToggled(collected: Boolean) { _uiState.update { it.copy(codCollected = collected) } }
 
     fun showFailureSheet()    { _uiState.update { it.copy(showFailureSheet = true) } }
