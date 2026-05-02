@@ -38,8 +38,19 @@ class ShiftRepository @Inject constructor(
         val response = api.listMyTasks()
         val tasks = response.data
 
-        val syntheticShiftId = "local-${System.currentTimeMillis() / 86_400_000}"
+        // Use the device's local calendar date so the shift ID never rolls over
+        // at midnight UTC (= 04:00 UAE / 08:00 PH). Previously dividing epoch ms
+        // by 86_400_000 produced a UTC day number that ticked mid-morning for
+        // drivers in UTC+4/+8 — after that tick Home showed tasks from the old
+        // shift ID while Route loaded the new (empty) shift, producing the
+        // "tasks visible on home, route blank" bug.
+        val syntheticShiftId = "local-${java.time.LocalDate.now()}"
         val existingShift = shiftDao.getShiftById(syntheticShiftId)
+
+        // Deactivate every other shift row before marking this one active.
+        // Without this, stale rows from prior days linger with isActive=1 and
+        // ShiftDao.getActiveShift() (no ORDER BY) picks one indeterminately.
+        shiftDao.deactivateAllExcept(syntheticShiftId)
 
         // Always keep the shift row in sync with the server's task count, even
         // when the count is zero. Otherwise the home screen keeps reporting
