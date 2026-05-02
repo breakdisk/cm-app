@@ -6,7 +6,9 @@
 //   - Issue a real JWT from JwtService so the auth middleware validates it.
 //   - Use rdkafka MockCluster (rdkafka/mock feature) as an in-process broker
 //     so TenantService's kafka publish does not time out during tests.
-//   - Send HTTP requests using `axum_test::TestServer`.
+//   - Send HTTP requests through a thin TestClient wrapper over tower::ServiceExt.
+//     axum-test 19.x removed because it depends on axum ^0.8 which conflicts
+//     with the workspace's axum ^0.7 pin (duplicate-crate E0277).
 //   - Assert status codes and JSON response structure.
 //
 // No real PostgreSQL or external Kafka required.
@@ -14,8 +16,126 @@
 
 use std::sync::{Arc, Mutex};
 
-use axum_test::TestServer;
 use serde_json::{json, Value};
+
+// ── Thin TestClient — replaces axum-test without the axum 0.8 dep conflict ──
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt as _;
+use tower::ServiceExt as _;
+
+struct TestClient {
+    app: axum::Router,
+}
+
+impl TestClient {
+    fn new(app: axum::Router) -> Self {
+        Self { app }
+    }
+
+    fn post(&self, uri: &str) -> RequestBuilder {
+        RequestBuilder::new(self.app.clone(), "POST", uri)
+    }
+
+    fn get(&self, uri: &str) -> RequestBuilder {
+        RequestBuilder::new(self.app.clone(), "GET", uri)
+    }
+
+    fn delete(&self, uri: &str) -> RequestBuilder {
+        RequestBuilder::new(self.app.clone(), "DELETE", uri)
+    }
+}
+
+struct RequestBuilder {
+    app: axum::Router,
+    method: String,
+    uri: String,
+    headers: Vec<(String, String)>,
+    body: Option<String>,
+}
+
+impl RequestBuilder {
+    fn new(app: axum::Router, method: &str, uri: &str) -> Self {
+        Self {
+            app,
+            method: method.to_string(),
+            uri: uri.to_string(),
+            headers: Vec::new(),
+            body: None,
+        }
+    }
+
+    fn add_header(
+        mut self,
+        name: axum::http::HeaderName,
+        value: axum::http::HeaderValue,
+    ) -> Self {
+        self.headers.push((
+            name.to_string(),
+            value.to_str().unwrap_or("").to_string(),
+        ));
+        self
+    }
+
+    fn json(mut self, body: &impl serde::Serialize) -> Self {
+        self.body = Some(serde_json::to_string(body).expect("serialize body"));
+        self.headers.push(("content-type".into(), "application/json".into()));
+        self
+    }
+
+    async fn await_response(self) -> TestResponse {
+        let body_bytes = self.body.unwrap_or_default();
+        let mut builder = Request::builder()
+            .method(self.method.as_str())
+            .uri(&self.uri);
+
+        for (k, v) in &self.headers {
+            builder = builder.header(k.as_str(), v.as_str());
+        }
+
+        let req = builder
+            .body(Body::from(body_bytes))
+            .expect("build request");
+
+        let resp = self.app.oneshot(req).await.expect("oneshot request");
+        let status = resp.status();
+        let bytes = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+
+        TestResponse { status, bytes }
+    }
+}
+
+impl std::future::IntoFuture for RequestBuilder {
+    type Output = TestResponse;
+    type IntoFuture = std::pin::Pin<Box<dyn std::future::Future<Output = TestResponse> + Send>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(self.await_response())
+    }
+}
+
+struct TestResponse {
+    status: StatusCode,
+    bytes: bytes::Bytes,
+}
+
+impl TestResponse {
+    fn status_code(&self) -> StatusCode {
+        self.status
+    }
+
+    fn json<T: serde::de::DeserializeOwned>(&self) -> T {
+        serde_json::from_slice(&self.bytes).expect("deserialize response JSON")
+    }
+}
+
+type TestServer = TestClient;
 
 use logisticos_auth::{
     claims::Claims,
@@ -226,7 +346,7 @@ fn build_test_server(
     });
 
     let app = router(state);
-    let server = TestServer::new(app).expect("Failed to build TestServer");
+    let server = TestClient::new(app);
     (server, jwt)
 }
 

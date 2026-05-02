@@ -19,47 +19,12 @@ import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
 import { variants } from "@/lib/design-system/tokens";
 import { authFetch } from "@/lib/auth/auth-fetch";
+import { ShipmentDetailPanel, ApiShipment } from "@/components/shipments/ShipmentDetailPanel";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-// Raw shape emitted by order-intake's `Shipment` entity. Newtype wrappers
-// (ShipmentId, Awb, Money, etc.) flatten to plain primitives via serde.
-interface ApiAddress {
-  line1: string;
-  line2?: string | null;
-  city: string;
-  province: string;
-  postal_code: string;
-  country_code: string;
-  coordinates?: { lat: number; lng: number } | null;
-}
-
-interface ApiMoney {
-  amount: number;   // in minor units (cents)
-  currency: string; // "PHP", "USD", ...
-}
-
-interface ApiShipment {
-  id: string;
-  tenant_id: string;
-  merchant_id: string;
-  customer_id: string;
-  customer_name: string;
-  customer_phone: string;
-  customer_email?: string | null;
-  booked_by_customer: boolean;
-  awb: string;
-  piece_count: number;
-  status: string;
-  service_type: string;
-  origin: ApiAddress;
-  destination: ApiAddress;
-  weight: { grams: number };
-  declared_value?: ApiMoney | null;
-  cod_amount?: ApiMoney | null;
-  created_at: string;
-  updated_at: string;
-}
+// ApiShipment is re-exported from ShipmentDetailPanel so both the panel
+// and this list page share a single source-of-truth type definition.
 
 const STATUS_VARIANT: Record<string, "green" | "cyan" | "amber" | "red" | "purple"> = {
   pending:            "amber",
@@ -94,7 +59,7 @@ function prettyStatus(s: string): string {
   return s.replace(/_/g, " ");
 }
 
-function formatMoney(m: ApiMoney | null | undefined): string | null {
+function formatMoney(m: { amount: number; currency: string } | null | undefined): string | null {
   if (!m) return null;
   const symbol = m.currency === "PHP" ? "₱" : `${m.currency} `;
   return `${symbol}${(m.amount / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -111,11 +76,12 @@ function formatRelative(iso: string): string {
 }
 
 export default function ShipmentsPage() {
-  const [shipments,  setShipments]  = useState<ApiShipment[]>([]);
-  const [loading,    setLoading]    = useState(false);
-  const [error,      setError]      = useState<string | null>(null);
-  const [search,     setSearch]     = useState("");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [shipments,       setShipments]       = useState<ApiShipment[]>([]);
+  const [loading,         setLoading]         = useState(false);
+  const [error,           setError]           = useState<string | null>(null);
+  const [search,          setSearch]          = useState("");
+  const [statusFilter,    setStatusFilter]    = useState<StatusFilter>("all");
+  const [selectedShipment, setSelectedShipment] = useState<ApiShipment | null>(null);
 
   const fetchShipments = useCallback(async () => {
     setLoading(true);
@@ -168,6 +134,7 @@ export default function ShipmentsPage() {
   }, [shipments]);
 
   return (
+    <>
     <motion.div
       variants={variants.staggerContainer}
       initial="hidden"
@@ -265,12 +232,19 @@ export default function ShipmentsPage() {
                 </thead>
                 <tbody>
                   {filtered.map((s) => {
-                    const variant = STATUS_VARIANT[s.status] ?? "cyan";
-                    const cod     = formatMoney(s.cod_amount);
+                    const variant   = STATUS_VARIANT[s.status] ?? "cyan";
+                    const cod       = formatMoney(s.cod_amount);
+                    const isSelected = selectedShipment?.id === s.id;
                     return (
                       <tr
                         key={s.id}
-                        className="border-b border-glass-border/40 hover:bg-glass-100/40 transition-colors"
+                        onClick={() => setSelectedShipment(s)}
+                        className={[
+                          "border-b border-glass-border/40 transition-colors cursor-pointer",
+                          isSelected
+                            ? "bg-cyan-surface/20 hover:bg-cyan-surface/30"
+                            : "hover:bg-glass-100/40",
+                        ].join(" ")}
                       >
                         <td className="py-2.5 pr-4">
                           <span className="font-mono text-xs text-cyan-neon">{s.awb}</span>
@@ -325,5 +299,12 @@ export default function ShipmentsPage() {
         </GlassCard>
       </motion.div>
     </motion.div>
+
+    {/* Shipment detail / POD slide-over panel */}
+    <ShipmentDetailPanel
+      shipment={selectedShipment}
+      onClose={() => setSelectedShipment(null)}
+    />
+    </>
   );
 }

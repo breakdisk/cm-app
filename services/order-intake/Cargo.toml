@@ -40,8 +40,12 @@ async-trait.workspace = true
 reqwest.workspace    = true
 
 [dev-dependencies]
-axum-test     = "19.1"
-tokio         = { version = "1", features = ["macros", "rt-multi-thread"] }
-serde_json    = "1"
-uuid          = { version = "1", features = ["v4"] }
-chrono        = { version = "0.4", features = ["serde"] }
+# axum-test 19.x requires axum ^0.8 but the workspace pins axum ^0.7,
+# causing a duplicate-crate conflict (E0277 on IntoTransportLayer).
+# We use tower::ServiceExt::oneshot + http-body-util directly instead.
+tower            = { workspace = true, features = ["util"] }
+http-body-util   = "0.1"
+tokio            = { version = "1", features = ["macros", "rt-multi-thread"] }
+serde_json       = "1"
+uuid             = { version = "1", features = ["v4"] }
+chrono           = { version = "0.4", features = ["serde"] }
