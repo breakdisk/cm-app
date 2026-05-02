@@ -234,6 +234,8 @@ impl PodService {
 
         // Publish POD captured event — payments service reconciles COD and
         // issues a payment receipt for customer-booked shipments.
+        // Fire-and-forget: POD is already persisted; a Kafka outage must not
+        // fail the driver's submit. Missed events are recovered by reconciliation.
         let event = Event::new("pod", "pod.captured", tenant_id.inner(), PodCaptured {
             pod_id:              pod.id,
             shipment_id:         pod.shipment_id,
@@ -251,8 +253,14 @@ impl PodService {
             customer_id:         cmd.customer_id,
             customer_email:      cmd.customer_email.clone(),
         });
-        self.kafka.publish_event(topics::POD_CAPTURED, &event).await
-            .map_err(AppError::Internal)?;
+        if let Err(e) = self.kafka.publish_event(topics::POD_CAPTURED, &event).await {
+            tracing::error!(
+                error = %e,
+                pod_id = %pod_id,
+                shipment_id = %pod.shipment_id,
+                "POD_CAPTURED event publish failed — POD saved, event will be reconciled"
+            );
+        }
 
         tracing::info!(
             pod_id = %pod_id,
