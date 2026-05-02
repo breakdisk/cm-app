@@ -24,7 +24,7 @@ COPY libs/ libs/
 COPY services/ services/
 COPY --from=cacher /app/target target
 COPY --from=cacher /usr/local/cargo /usr/local/cargo
-RUN cargo build --profile docker --locked -j4 --bin webhooks
+RUN cargo build --profile docker -j4 --bin webhooks
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y \
