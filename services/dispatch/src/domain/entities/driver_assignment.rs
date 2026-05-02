@@ -11,6 +11,9 @@ pub struct DriverAssignment {
     pub tenant_id: TenantId,
     pub driver_id: DriverId,
     pub route_id: RouteId,
+    /// Populated for single-shipment quick_dispatch flows.
+    /// None for multi-stop auto-assign routes (the route owns multiple shipments).
+    pub shipment_id: Option<Uuid>,
     pub status: AssignmentStatus,
     pub assigned_at: DateTime<Utc>,
     pub accepted_at: Option<DateTime<Utc>>,
@@ -33,6 +36,7 @@ impl DriverAssignment {
             tenant_id,
             driver_id,
             route_id,
+            shipment_id: None,
             status: AssignmentStatus::Pending,
             assigned_at: Utc::now(),
             accepted_at: None,

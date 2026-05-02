@@ -147,6 +147,18 @@ impl DriverAssignmentRepository for MockAssignmentRepo {
         guard.insert(assignment.id, assignment.clone());
         Ok(())
     }
+
+    async fn cancel_active_for_driver(&self, driver_id: &DriverId) -> anyhow::Result<bool> {
+        let mut guard = self.store.lock().unwrap();
+        let mut cancelled = false;
+        for a in guard.values_mut() {
+            if a.driver_id.inner() == driver_id.inner() && a.is_active() {
+                a.status = AssignmentStatus::Cancelled;
+                cancelled = true;
+            }
+        }
+        Ok(cancelled)
+    }
 }
 
 /// In-memory driver availability repository.
@@ -242,6 +254,15 @@ impl DispatchQueueRepository for MockDispatchQueueRepo {
             row.auto_dispatch_attempts += 1;
             row.last_dispatch_error = Some(error.to_owned());
             row.last_attempt_at = Some(chrono::Utc::now());
+        }
+        Ok(())
+    }
+
+    async fn reset_to_pending(&self, shipment_id: Uuid) -> anyhow::Result<()> {
+        let mut guard = self.store.lock().unwrap();
+        if let Some(row) = guard.get_mut(&shipment_id) {
+            row.status = "pending".to_string();
+            row.auto_dispatch_attempts += 1;
         }
         Ok(())
     }

@@ -32,9 +32,11 @@ pub const COD_REMITTANCE_READY:      &str = "logisticos.payments.cod.remittance_
 pub const WEIGHT_ADJUSTMENT_INVOICED: &str = "logisticos.payments.invoice.weight_adjustment";
 
 // Dispatch
-pub const ROUTE_CREATED:             &str = "logisticos.dispatch.route.created";
-pub const DRIVER_ASSIGNED:           &str = "logisticos.dispatch.driver.assigned";
-pub const ROUTE_OPTIMIZED:           &str = "logisticos.dispatch.route.optimized";
+pub const ROUTE_CREATED:                &str = "logisticos.dispatch.route.created";
+pub const DRIVER_ASSIGNED:              &str = "logisticos.dispatch.driver.assigned";
+pub const DRIVER_ASSIGNMENT_ACCEPTED:   &str = "logisticos.dispatch.assignment.accepted";
+pub const DRIVER_ASSIGNMENT_REJECTED:   &str = "logisticos.dispatch.assignment.rejected";
+pub const ROUTE_OPTIMIZED:              &str = "logisticos.dispatch.route.optimized";
 
 // Driver / Field
 pub const DRIVER_AVAILABLE:          &str = "logisticos.driver.available";
@@ -75,6 +77,7 @@ mod tests {
             AWB_ISSUED, PIECE_SCANNED, WEIGHT_DISCREPANCY_FOUND,
             PALLET_SEALED, CONTAINER_DEPARTED, CONTAINER_ARRIVED,
             ROUTE_CREATED, DRIVER_ASSIGNED, ROUTE_OPTIMIZED,
+            DRIVER_ASSIGNMENT_ACCEPTED, DRIVER_ASSIGNMENT_REJECTED,
             DRIVER_AVAILABLE,
             PICKUP_COMPLETED, DELIVERY_ATTEMPTED, DELIVERY_COMPLETED, DELIVERY_FAILED,
             LOCATION_UPDATED, DRIVER_LOCATION_UPDATED,

@@ -303,6 +303,34 @@ pub struct WeightAdjustmentInvoiced {
     pub actual_grams:      u32,
 }
 
+/// Emitted by dispatch when a driver accepts their assignment.
+/// Consumed by: delivery-experience (transition status to PickupEnRoute),
+/// analytics, engagement (send on-my-way notification to customer).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriverAssignmentAccepted {
+    pub assignment_id: Uuid,
+    pub route_id:      Uuid,
+    pub driver_id:     Uuid,
+    pub tenant_id:     Uuid,
+    /// Populated for quick-dispatch assignments (single-shipment flow).
+    /// Nil UUID for multi-stop route assignments.
+    pub shipment_id:   Uuid,
+    pub accepted_at:   String,  // ISO-8601
+}
+
+/// Emitted by dispatch when a driver rejects their assignment.
+/// Consumed by: analytics, engagement (notify ops of rejection).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriverAssignmentRejected {
+    pub assignment_id: Uuid,
+    pub route_id:      Uuid,
+    pub driver_id:     Uuid,
+    pub tenant_id:     Uuid,
+    pub shipment_id:   Uuid,
+    pub reason:        String,
+    pub rejected_at:   String,  // ISO-8601
+}
+
 /// Emitted by dispatch when a shipment is assigned to a driver.
 /// Contains all data driver-ops needs to create a DriverTask row
 /// without querying other services.
