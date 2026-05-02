@@ -43,9 +43,9 @@ data class PodUiState(
     val podId: String? = null,
     val showFailureSheet: Boolean = false,
     val error: String? = null,
-    // Task's stored coordinates — used as GPS fallback when device location is unavailable.
+    // Task destination coordinates used as GPS fallback when device location is unavailable.
     val taskLat: Double = 0.0,
-    val taskLng: Double = 0.0,
+    val taskLng: Double = 0.0
 ) {
     val canSubmit: Boolean
         get() = (!requiresPhoto || photoPath != null) &&
@@ -93,12 +93,12 @@ class PodViewModel @Inject constructor(
     fun loadTaskMeta(taskId: String) {
         viewModelScope.launch {
             val task = repo.observeTask(taskId).filterNotNull().first()
-            _uiState.update {
-                it.copy(
-                    shipmentId = task.shipmentId,
-                    recipientName = task.recipientName,
+            _uiState.update { prev ->
+                prev.copy(
+                    shipmentId = if (prev.shipmentId.isBlank()) task.shipmentId else prev.shipmentId,
+                    recipientName = if (prev.recipientName.isBlank()) task.recipientName else prev.recipientName,
                     taskLat = task.lat,
-                    taskLng = task.lng,
+                    taskLng = task.lng
                 )
             }
         }
@@ -125,7 +125,7 @@ class PodViewModel @Inject constructor(
             val loc = locationRepo.getLastKnownLocation()
             // Use live GPS when available; fall back to the task's stored delivery
             // coordinates when the device has no fix (cold start, GPS blocked indoors).
-            // This prevents the hard GPS guard from blocking submission entirely.
+            // The backend geofence check is the authoritative gate for location accuracy.
             val captureLat = loc?.lat?.takeIf { it != 0.0 } ?: state.taskLat
             val captureLng = loc?.lng?.takeIf { it != 0.0 } ?: state.taskLng
             runCatching {

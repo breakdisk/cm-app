@@ -8,6 +8,8 @@ import androidx.core.app.NotificationCompat
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import dagger.hilt.android.AndroidEntryPoint
+import io.logisticos.driver.core.common.AssignmentPayload
+import io.logisticos.driver.core.common.PendingAssignmentBus
 import io.logisticos.driver.core.common.TaskSyncBus
 import io.logisticos.driver.feature.notifications.data.NotificationRepository
 import java.util.concurrent.atomic.AtomicInteger
@@ -23,14 +25,37 @@ class DriverMessagingService : FirebaseMessagingService() {
     @Inject lateinit var notificationRepo: NotificationRepository
 
     override fun onMessageReceived(message: RemoteMessage) {
-        val type = message.data["type"] ?: "dispatch_message"
+        val type  = message.data["type"] ?: "dispatch_message"
         val title = message.notification?.title ?: message.data["title"] ?: "LogisticOS"
-        val body = message.notification?.body ?: message.data["body"] ?: ""
+        val body  = message.notification?.body  ?: message.data["body"]  ?: ""
 
         notificationRepo.saveNotification(type = type, title = title, body = body)
-        if (type == "dispatch_message" || type == "task_assigned") {
-            TaskSyncBus.requestSync()
+
+        when (type) {
+            "task_assigned" -> {
+                // Extract assignment payload from FCM data map.
+                // The backend must include these fields; missing fields fall back to safe
+                // defaults so the AssignmentScreen still renders rather than crashing.
+                val assignmentId = message.data["assignment_id"] ?: ""
+                if (assignmentId.isNotBlank()) {
+                    PendingAssignmentBus.post(
+                        AssignmentPayload(
+                            assignmentId   = assignmentId,
+                            shipmentId     = message.data["shipment_id"]     ?: "",
+                            customerName   = message.data["customer_name"]   ?: "Unknown Customer",
+                            address        = message.data["address"]         ?: "",
+                            taskType       = message.data["task_type"]       ?: "delivery",
+                            trackingNumber = message.data["tracking_number"] ?: "",
+                            codAmountCents = message.data["cod_amount_cents"]?.toLongOrNull() ?: 0L,
+                        )
+                    )
+                }
+                // Still sync task list so RouteScreen is up to date after accept.
+                TaskSyncBus.requestSync()
+            }
+            "dispatch_message" -> TaskSyncBus.requestSync()
         }
+
         showSystemNotification(title, body, type)
     }
 
@@ -61,7 +86,7 @@ class DriverMessagingService : FirebaseMessagingService() {
         val notification = NotificationCompat.Builder(this, channelId)
             .setContentTitle(title)
             .setContentText(body)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(R.drawable.ic_notification)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
             .setPriority(NotificationCompat.PRIORITY_HIGH)

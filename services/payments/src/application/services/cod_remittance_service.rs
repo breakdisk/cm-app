@@ -130,6 +130,46 @@ impl CodRemittanceService {
         Ok(batch)
     }
 
+    /// Sweep all (tenant, merchant) pairs that have unbatched COD up to `cutoff`
+    /// and create a remittance batch for each. Failures per-merchant are non-fatal —
+    /// a warn is logged and the next nightly run will retry.
+    ///
+    /// Designed to be called from a Tokio interval task in bootstrap.
+    pub async fn run_daily_batching(&self, cutoff: chrono::DateTime<chrono::Utc>) -> anyhow::Result<()> {
+        let pairs = self.cod_repo
+            .distinct_merchants_with_unbatched_cod(cutoff)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to query unbatched COD merchants: {e}"))?;
+
+        tracing::info!(merchant_count = pairs.len(), cutoff = %cutoff, "COD daily batching run started");
+
+        for (tenant_id, merchant_id) in pairs {
+            let cmd = CreateCodBatchCommand {
+                tenant_id,
+                merchant_id,
+                cutoff_date: cutoff.date_naive(),
+            };
+            match self.create_batch(cmd).await {
+                Ok(batch) => tracing::info!(
+                    batch_id    = %batch.id,
+                    merchant_id = %merchant_id,
+                    gross_cents = batch.gross_cents,
+                    "COD batch created by nightly cron"
+                ),
+                Err(logisticos_errors::AppError::BusinessRule(ref msg)) if msg == "NO_UNBATCHED_COD" => {
+                    // Race: another process already batched — benign
+                }
+                Err(e) => tracing::warn!(
+                    merchant_id = %merchant_id,
+                    err         = %e,
+                    "COD batch creation failed — will retry next run"
+                ),
+            }
+        }
+
+        Ok(())
+    }
+
     /// Confirm that finance has received/verified the batch's cash.
     ///
     /// Idempotent: confirming an already-Paid batch returns it unchanged.

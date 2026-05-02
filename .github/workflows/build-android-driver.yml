@@ -10,7 +10,7 @@ on:
 
 jobs:
   build:
-    name: Build stagingRelease APK
+    name: Build stagingDebug + stagingRelease + prodRelease APKs
     runs-on: ubuntu-latest
 
     steps:
@@ -61,17 +61,17 @@ jobs:
       - name: Write local.properties
         working-directory: apps/driver-app-android
         env:
-          GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+          MAPS_API_KEY: ${{ secrets.MAPS_API_KEY }}
           MAPBOX_ACCESS_TOKEN: ${{ secrets.MAPBOX_ACCESS_TOKEN }}
         run: |
           echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
-          echo "GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY}" >> local.properties
+          echo "GOOGLE_MAPS_API_KEY=${MAPS_API_KEY}" >> local.properties
           echo "MAPBOX_ACCESS_TOKEN=${MAPBOX_ACCESS_TOKEN}" >> local.properties
 
-      - name: Bump versionCode
+      - name: Set versionCode
         working-directory: apps/driver-app-android
         run: |
-          sed -i "s/versionCode = [0-9]*/versionCode = ${{ github.run_number }}/" app/build.gradle.kts
+          sed -i "s/versionCode = [0-9]\+/versionCode = ${{ github.run_number }}/" app/build.gradle.kts
 
       # ── Debug build (always runs — no keystore needed, instant testable APK) ──
       - name: Build stagingDebug APK
@@ -86,15 +86,15 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # ── Release build (signed if keystore secrets present, unsigned otherwise) ──
-      - name: Build stagingRelease APK
+      # ── Release build (signed when keystore secrets are present) ──
+      - name: Build stagingRelease + prodRelease APKs
         working-directory: apps/driver-app-android
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: ./gradlew assembleStagingRelease --no-daemon
+        run: ./gradlew assembleStagingRelease assembleProdRelease --no-daemon
 
       - name: Upload stagingRelease APK
         uses: actions/upload-artifact@v4
@@ -104,8 +104,17 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Upload APK to release (on tag)
+      - name: Upload prodRelease APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: driver-app-prod-release-${{ github.run_number }}
+          path: apps/driver-app-android/app/build/outputs/apk/prod/release/*.apk
+          retention-days: 30
+
+      - name: Attach APKs to GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: apps/driver-app-android/app/build/outputs/apk/staging/release/*.apk
+          files: |
+            apps/driver-app-android/app/build/outputs/apk/staging/release/*.apk
+            apps/driver-app-android/app/build/outputs/apk/prod/release/*.apk

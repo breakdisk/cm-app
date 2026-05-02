@@ -50,6 +50,12 @@ class NavigationViewModel @AssistedInject constructor(
         viewModelScope.launch {
             val task = taskDao.getById(taskId)
             _uiState.update { it.copy(task = task) }
+            // Advance ASSIGNED → EN_ROUTE locally. EN_ROUTE has no backend endpoint;
+            // the backend only tracks IN_PROGRESS, COMPLETED, FAILED. This unblocks
+            // the ArrivalScreen → IN_PROGRESS transition that the state machine guards.
+            if (task != null && task.status == io.logisticos.driver.core.database.entity.TaskStatus.ASSIGNED) {
+                taskDao.updateStatus(taskId, io.logisticos.driver.core.database.entity.TaskStatus.EN_ROUTE)
+            }
         }
         viewModelScope.launch {
             navRepo.observeRoute(taskId).collect { route ->
@@ -79,8 +85,19 @@ class NavigationViewModel @AssistedInject constructor(
 
     private fun checkArrival(lat: Double, lng: Double) {
         val task = _uiState.value.task ?: return
+        if (_uiState.value.isArrived) return   // already arrived — prevent repeated DB writes
         val distance = haversineMeters(lat, lng, task.lat, task.lng)
-        if (distance < 50.0) _uiState.update { it.copy(isArrived = true) }
+        if (distance < 50.0) {
+            _uiState.update { it.copy(isArrived = true) }
+            // Advance EN_ROUTE → ARRIVED locally. Same local-only pattern as EN_ROUTE:
+            // no backend endpoint exists for ARRIVED; it gates the IN_PROGRESS transition.
+            viewModelScope.launch {
+                val current = taskDao.getById(task.id)
+                if (current?.status == io.logisticos.driver.core.database.entity.TaskStatus.EN_ROUTE) {
+                    taskDao.updateStatus(task.id, io.logisticos.driver.core.database.entity.TaskStatus.ARRIVED)
+                }
+            }
+        }
     }
 
     fun fetchRoute(originLat: Double, originLng: Double) {

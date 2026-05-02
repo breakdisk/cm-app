@@ -62,6 +62,11 @@ pub trait DispatchQueueRepository: Send + Sync {
     /// shipment consumer when quick_dispatch fails so the admin console
     /// can visually flag shipments needing manual intervention.
     async fn record_failed_attempt(&self, shipment_id: Uuid, error: &str) -> anyhow::Result<()>;
+
+    /// Re-queues a delivery-failed shipment for another dispatch attempt.
+    /// Resets status back to 'pending' and increments auto_dispatch_attempts
+    /// so operators know this is a retry. No-op if the row doesn't exist.
+    async fn reset_to_pending(&self, shipment_id: Uuid) -> anyhow::Result<()>;
 }
 
 pub struct PgDispatchQueueRepository {
@@ -213,6 +218,25 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
         )
         .bind(shipment_id)
         .bind(error)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn reset_to_pending(&self, shipment_id: Uuid) -> anyhow::Result<()> {
+        // Reset a delivery-failed shipment back to pending so it can be
+        // re-dispatched. Increments the attempt counter so operators can
+        // see how many times a shipment has cycled through.
+        sqlx::query(
+            "UPDATE dispatch.dispatch_queue
+             SET status                 = 'pending',
+                 dispatched_at          = NULL,
+                 auto_dispatch_attempts = auto_dispatch_attempts + 1,
+                 last_dispatch_error    = 'delivery failed — requeued for retry',
+                 last_attempt_at        = NOW()
+             WHERE shipment_id = $1",
+        )
+        .bind(shipment_id)
         .execute(&self.pool)
         .await?;
         Ok(())

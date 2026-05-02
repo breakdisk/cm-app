@@ -1,4 +1,4 @@
-use axum::{extract::{Path, State}, Json};
+use axum::{extract::{Path, State}, http::StatusCode, Json};
 use std::sync::Arc;
 use uuid::Uuid;
 use logisticos_auth::middleware::AuthClaims;
@@ -30,6 +30,24 @@ pub async fn quick_dispatch(
             "status": "pending"
         }
     })))
+}
+
+/// Internal: POST /v1/internal/shipments/:shipment_id/requeue
+///
+/// Re-queues a delivery-failed shipment back to `pending` so the dispatch
+/// engine can assign a new driver. Called by the business-logic ECA engine
+/// when a `DELIVERY_FAILED` event fires the failed-delivery rule.
+/// No auth required — only callable from inside the service mesh.
+pub async fn requeue_shipment(
+    Path(shipment_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+) -> Result<StatusCode, AppError> {
+    state.queue_repo
+        .reset_to_pending(shipment_id)
+        .await
+        .map_err(AppError::Internal)?;
+    tracing::info!(shipment_id = %shipment_id, "Shipment requeued for dispatch retry via internal endpoint");
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Admin: POST /v1/drivers/:id/cancel-assignment

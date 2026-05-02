@@ -28,6 +28,7 @@ struct HttpActionExecutor {
     http:           reqwest::Client,
     engagement_url: String,
     order_url:      String,
+    dispatch_url:   String,
     producer:       FutureProducer,
 }
 
@@ -56,12 +57,17 @@ impl ActionExecutor for HttpActionExecutor {
         Ok(())
     }
 
-    async fn reschedule_delivery(&self, shipment_id: Uuid, delay_hours: u32) -> anyhow::Result<()> {
-        self.http
-            .post(format!("{}/v1/shipments/{}/reschedule", self.order_url, shipment_id))
-            .json(&serde_json::json!({"delay_hours": delay_hours}))
+    async fn reschedule_delivery(&self, shipment_id: Uuid, _delay_hours: u32) -> anyhow::Result<()> {
+        // Re-queue the shipment in dispatch so a new driver can be assigned.
+        // The delay_hours param is advisory — the dispatch engine assigns the
+        // next available driver immediately; ops can add scheduling later.
+        let res = self.http
+            .post(format!("{}/v1/internal/shipments/{}/requeue", self.dispatch_url, shipment_id))
             .send()
             .await?;
+        if !res.status().is_success() && res.status().as_u16() != 204 {
+            anyhow::bail!("requeue endpoint returned {}", res.status());
+        }
         Ok(())
     }
 
@@ -138,6 +144,7 @@ pub async fn run() -> anyhow::Result<()> {
         http:           reqwest::Client::new(),
         engagement_url: std::env::var("ENGAGEMENT_URL").unwrap_or_else(|_| "http://engagement:8010".into()),
         order_url:      std::env::var("ORDER_INTAKE_URL").unwrap_or_else(|_| "http://order-intake:8003".into()),
+        dispatch_url:   std::env::var("DISPATCH_URL").unwrap_or_else(|_| "http://dispatch:8004".into()),
         producer,
     });
 

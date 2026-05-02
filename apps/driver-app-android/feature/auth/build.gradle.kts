@@ -10,7 +10,7 @@ android {
     namespace = "io.logisticos.driver.feature.auth"
     compileSdk = 35
     defaultConfig { minSdk = 26 }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

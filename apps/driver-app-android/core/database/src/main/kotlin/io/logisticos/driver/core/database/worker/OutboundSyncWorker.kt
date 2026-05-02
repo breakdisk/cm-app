@@ -125,6 +125,10 @@ class OutboundSyncWorker @AssistedInject constructor(
                 driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId))
 
                 podDao.markSynced(taskId)
+                // Mirror COMPLETED into local DB so the Route screen removes this task
+                // from the active list. Without this the task stays at its original
+                // status after an offline retry succeeds.
+                taskDao.updateStatus(taskId, io.logisticos.driver.core.database.entity.TaskStatus.COMPLETED)
             }
             // Actions with no backend wiring (SCAN_EVENT, SHIFT_START, SHIFT_END,
             // and historically COD_CONFIRM — whose value is actually delivered via

@@ -50,6 +50,9 @@ class PickupViewModel @Inject constructor(
         }
     }
 
+    private fun isUuidFormat(s: String): Boolean =
+        Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", RegexOption.IGNORE_CASE).matches(s)
+
     fun onAwbScanned(scanned: String) {
         val expected = _uiState.value.task?.awb ?: ""
         val match = scanned.trim().equals(expected.trim(), ignoreCase = true)
