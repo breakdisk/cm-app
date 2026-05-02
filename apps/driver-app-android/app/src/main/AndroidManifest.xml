@@ -58,6 +58,23 @@
             android:name="com.google.android.geo.API_KEY"
             android:value="${MAPS_API_KEY}" />
 
+        <!--
+            FileProvider — grants the system camera app temporary write-URI
+            access to files inside context.filesDir. Required so TakePicture
+            can save POD photos without world-readable external storage.
+            Authority matches "${context.packageName}.fileprovider" used in
+            PodScreen's FileProvider.getUriForFile() call.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_provider_paths" />
+        </provider>
+
         <!-- Disable default WorkManager initializer so Hilt's Configuration.Provider is used -->
         <provider
             android:name="androidx.startup.InitializationProvider"

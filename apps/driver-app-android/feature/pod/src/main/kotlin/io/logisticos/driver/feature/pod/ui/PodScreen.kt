@@ -6,14 +6,9 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageCapture
-import androidx.camera.core.ImageCaptureException
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,18 +24,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import io.logisticos.driver.feature.pod.presentation.FailureReason
 import io.logisticos.driver.feature.pod.presentation.PodViewModel
 import java.io.File
 import java.io.FileOutputStream
-import java.util.concurrent.Executors
 
 private val Canvas = Color(0xFF050810)
 private val Cyan   = Color(0xFF00E5FF)
@@ -375,6 +368,21 @@ private fun CodSection(amount: Double, collected: Boolean, onToggle: (Boolean) -
     }
 }
 
+/**
+ * Photo capture section backed by the system camera (ActivityResultContracts.TakePicture).
+ *
+ * Tapping anywhere on the preview/placeholder area — including the camera icon —
+ * immediately fires the system camera app. No intermediate "Open Camera" button
+ * and no embedded CameraX preview inside the scrollable form.
+ *
+ * Flow:
+ *   1. Tap placeholder  →  request CAMERA permission if not yet granted
+ *   2. Permission granted  →  create a FileProvider URI in context.filesDir
+ *   3. System camera launches full-screen (familiar UX, no re-implementation)
+ *   4. On confirm in camera app  →  TakePicture returns true  →  onCaptured(path)
+ *
+ * FileProvider authority must match the `<provider>` declared in AndroidManifest.xml.
+ */
 @Composable
 private fun PhotoSection(
     captured: Boolean,
@@ -382,26 +390,35 @@ private fun PhotoSection(
     taskId: String,
     context: Context
 ) {
-    val lifecycleOwner = LocalLifecycleOwner.current
-    var showCamera by remember { mutableStateOf(false) }
-    val imageCapture = remember { ImageCapture.Builder().build() }
+    // Stable file path — same name on retake so old file is overwritten cleanly.
+    val photoFile = remember(taskId) { File(context.filesDir, "photo_$taskId.jpg") }
 
-    // Runtime CAMERA permission gate. Manifest declares CAMERA but Android
-    // 6+ requires a runtime grant. Without this, ProcessCameraProvider's
-    // bindToLifecycle below throws SecurityException on the first photo
-    // attempt and crashes the activity. Pattern matches how HomeScreen
-    // gates ACCESS_FINE_LOCATION before binding the location provider.
     var cameraPermissionGranted by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
                 == PackageManager.PERMISSION_GRANTED
         )
     }
+
+    // TakePicture writes the photo to a FileProvider URI and returns success flag.
+    val photoUri = remember(taskId) {
+        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", photoFile)
+    }
+    val takePictureLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success ->
+        if (success) onCaptured(photoFile.absolutePath)
+    }
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         cameraPermissionGranted = granted
-        if (granted) showCamera = true
+        if (granted) takePictureLauncher.launch(photoUri)
+    }
+
+    fun launchCamera() {
+        if (cameraPermissionGranted) takePictureLauncher.launch(photoUri)
+        else cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
     }
 
     Column(
@@ -426,131 +443,56 @@ private fun PhotoSection(
             if (captured) Text("Captured ✓", color = Green, fontSize = 11.sp)
         }
 
-        if (showCamera) {
-            var cameraError by remember { mutableStateOf<String?>(null) }
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(240.dp)
-                    .clip(RoundedCornerShape(10.dp))
-            ) {
-                if (cameraError != null) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(Color(0xFF1A0A0A))
-                            .border(1.dp, Red.copy(alpha = 0.4f), RoundedCornerShape(10.dp)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.padding(16.dp)
-                        ) {
-                            Text("Camera unavailable", color = Red, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                            Text(cameraError ?: "", color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp)
-                            TextButton(onClick = { showCamera = false; cameraError = null }) {
-                                Text("Dismiss", color = Cyan)
-                            }
-                        }
-                    }
-                } else {
-                    AndroidView(
-                        factory = { ctx ->
-                            val previewView = PreviewView(ctx)
-                            val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
-                            cameraProviderFuture.addListener({
-                                try {
-                                    val cameraProvider = cameraProviderFuture.get()
-                                    val preview = Preview.Builder().build().also {
-                                        it.setSurfaceProvider(previewView.surfaceProvider)
-                                    }
-                                    cameraProvider.unbindAll()
-                                    cameraProvider.bindToLifecycle(
-                                        lifecycleOwner,
-                                        CameraSelector.DEFAULT_BACK_CAMERA,
-                                        preview,
-                                        imageCapture
-                                    )
-                                } catch (e: Exception) {
-                                    android.util.Log.e("PodScreen", "Camera bind failed: ${e.message}", e)
-                                    cameraError = e.message ?: "Camera failed to start"
-                                }
-                            }, ContextCompat.getMainExecutor(ctx))
-                            previewView
-                        },
-                        modifier = Modifier.fillMaxSize()
+        // Single tappable area — tapping anywhere (icon, text, or empty space) launches
+        // the system camera immediately with no intermediate button required.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(160.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(
+                    if (captured) Green.copy(alpha = 0.05f) else Color(0x08FFFFFF)
+                )
+                .border(
+                    1.dp,
+                    if (captured) Green.copy(alpha = 0.25f) else Border,
+                    RoundedCornerShape(10.dp)
+                )
+                .clickable { launchCamera() },
+            contentAlignment = Alignment.Center
+        ) {
+            if (captured) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        Icons.Default.CameraAlt,
+                        contentDescription = null,
+                        tint = Green.copy(alpha = 0.7f),
+                        modifier = Modifier.size(36.dp)
                     )
-
-                    Button(
-                        onClick = {
-                            val file = File(context.filesDir, "photo_$taskId.jpg")
-                            val outputOptions = ImageCapture.OutputFileOptions.Builder(file).build()
-                            imageCapture.takePicture(
-                                outputOptions,
-                                Executors.newSingleThreadExecutor(),
-                                object : ImageCapture.OnImageSavedCallback {
-                                    override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                                        showCamera = false
-                                        onCaptured(file.absolutePath)
-                                    }
-                                    override fun onError(exc: ImageCaptureException) {
-                                        android.util.Log.e("PodScreen", "Photo capture failed: ${exc.message}", exc)
-                                        cameraError = "Capture failed: ${exc.message}"
-                                    }
-                                }
-                            )
-                        },
-                        modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp).fillMaxWidth().height(48.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Cyan),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Icon(Icons.Default.CameraAlt, contentDescription = null, tint = Canvas, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Capture", color = Canvas, fontWeight = FontWeight.Bold)
-                    }
+                    Text("Photo captured ✓", color = Green, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                    Text("Tap to retake", color = Color.White.copy(alpha = 0.3f), fontSize = 11.sp)
                 }
-            }
-        } else {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(120.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(Color(0x08FFFFFF))
-                    .border(1.dp, Border, RoundedCornerShape(10.dp)),
-                contentAlignment = Alignment.Center
-            ) {
-                if (captured) {
-                    Text("📷  Photo captured", color = Green, fontSize = 14.sp)
-                } else {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("📷", fontSize = 28.sp)
-                        Text("Tap to open camera", color = Color.White.copy(alpha = 0.3f), fontSize = 12.sp)
-                    }
+            } else {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        Icons.Default.CameraAlt,
+                        contentDescription = "Take photo",
+                        tint = Cyan.copy(alpha = 0.6f),
+                        modifier = Modifier.size(40.dp)
+                    )
+                    Text("Tap to take photo", color = Color.White.copy(alpha = 0.5f), fontSize = 13.sp)
+                    Text(
+                        "System camera will open",
+                        color = Color.White.copy(alpha = 0.25f),
+                        fontSize = 11.sp
+                    )
                 }
-            }
-
-            Button(
-                onClick = {
-                    if (cameraPermissionGranted) {
-                        showCamera = true
-                    } else {
-                        // Triggers the OS permission dialog. The launcher's
-                        // callback flips showCamera once the user accepts.
-                        // If they deny, we stay on the placeholder card —
-                        // no crash, no broken state.
-                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().height(44.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Cyan.copy(alpha = 0.12f)),
-                shape = RoundedCornerShape(10.dp)
-            ) {
-                Icon(Icons.Default.CameraAlt, contentDescription = null, tint = Cyan, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(if (captured) "Retake Photo" else "Open Camera", color = Cyan, fontSize = 14.sp)
             }
         }
     }

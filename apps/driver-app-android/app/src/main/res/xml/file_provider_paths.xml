@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!--
+        Grants the system camera app temporary write access to files inside
+        context.filesDir so TakePicture can save POD photos without needing
+        a world-readable external storage location.
+    -->
+    <files-path name="pod_photos" path="." />
+</paths>
