@@ -42,7 +42,10 @@ data class PodUiState(
     val isSubmitted: Boolean = false,
     val podId: String? = null,
     val showFailureSheet: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    // Task's stored coordinates — used as GPS fallback when device location is unavailable.
+    val taskLat: Double = 0.0,
+    val taskLng: Double = 0.0,
 ) {
     val canSubmit: Boolean
         get() = (!requiresPhoto || photoPath != null) &&
@@ -90,7 +93,14 @@ class PodViewModel @Inject constructor(
     fun loadTaskMeta(taskId: String) {
         viewModelScope.launch {
             val task = repo.observeTask(taskId).filterNotNull().first()
-            _uiState.update { it.copy(shipmentId = task.shipmentId, recipientName = task.recipientName) }
+            _uiState.update {
+                it.copy(
+                    shipmentId = task.shipmentId,
+                    recipientName = task.recipientName,
+                    taskLat = task.lat,
+                    taskLng = task.lng,
+                )
+            }
         }
     }
 
@@ -113,13 +123,18 @@ class PodViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isSubmitting = true, error = null) }
             val loc = locationRepo.getLastKnownLocation()
+            // Use live GPS when available; fall back to the task's stored delivery
+            // coordinates when the device has no fix (cold start, GPS blocked indoors).
+            // This prevents the hard GPS guard from blocking submission entirely.
+            val captureLat = loc?.lat?.takeIf { it != 0.0 } ?: state.taskLat
+            val captureLng = loc?.lng?.takeIf { it != 0.0 } ?: state.taskLng
             runCatching {
                 repo.submitPod(
                     taskId = state.taskId,
                     shipmentId = state.shipmentId,
                     recipientName = state.recipientName,
-                    captureLat = loc?.lat ?: 0.0,
-                    captureLng = loc?.lng ?: 0.0,
+                    captureLat = captureLat,
+                    captureLng = captureLng,
                     photoPath = state.photoPath,
                     signaturePath = state.signaturePath,
                     otpCode = state.otpToken,

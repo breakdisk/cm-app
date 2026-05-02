@@ -372,16 +372,17 @@ private fun PhotoSection(
     // bindToLifecycle below throws SecurityException on the first photo
     // attempt and crashes the activity. Pattern matches how HomeScreen
     // gates ACCESS_FINE_LOCATION before binding the location provider.
-    var cameraPermissionGranted by remember {
-        mutableStateOf(
+    // Re-check on every recomposition so a permission grant that happened outside
+    // this screen (e.g. via Settings) is picked up without a restart.
+    val cameraPermissionGranted by remember {
+        derivedStateOf {
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
                 == PackageManager.PERMISSION_GRANTED
-        )
+        }
     }
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
-        cameraPermissionGranted = granted
         if (granted) showCamera = true
     }
 
