@@ -10,7 +10,8 @@ data class ApiResponse<T>(val data: T)
 
 @Serializable
 data class OtpSendRequest(
-    @SerialName("phone_number") val phone: String,
+    @SerialName("phone_number") val phone: String? = null,
+    @SerialName("email") val email: String? = null,
     @SerialName("tenant_slug") val tenantSlug: String? = null,
     @SerialName("role") val role: String? = "driver"
 )
@@ -20,7 +21,8 @@ data class OtpSendResponse(val message: String)
 
 @Serializable
 data class OtpVerifyRequest(
-    @SerialName("phone_number") val phone: String,
+    @SerialName("phone_number") val phone: String? = null,
+    @SerialName("email") val email: String? = null,
     @SerialName("otp_code") val otp: String,
     @SerialName("tenant_slug") val tenantSlug: String? = null,
     @SerialName("role") val role: String? = "driver"

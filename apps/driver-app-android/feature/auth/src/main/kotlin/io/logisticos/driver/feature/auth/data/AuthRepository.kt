@@ -19,21 +19,22 @@ class AuthRepository @Inject constructor(
     /** True only in debug builds — gates the 123456 OTP shortcut for local development. */
     @Named("dev_bypass_enabled") private val devBypassEnabled: Boolean,
 ) {
-    suspend fun sendOtp(phone: String): Result<Unit> = runCatching {
-        apiService.sendOtp(OtpSendRequest(phone = phone, tenantSlug = tenantSlug, role = "driver"))
+    suspend fun sendOtp(phone: String? = null, email: String? = null): Result<Unit> = runCatching {
+        apiService.sendOtp(
+            OtpSendRequest(phone = phone, email = email, tenantSlug = tenantSlug, role = "driver")
+        )
         Unit
     }
 
-    suspend fun verifyOtp(phone: String, otp: String): Result<Unit> = runCatching {
+    suspend fun verifyOtp(phone: String? = null, otp: String, email: String? = null): Result<Unit> = runCatching {
         if (devBypassEnabled && otp == "123456") {
-            // Dev shortcut — skip real OTP verification in debug builds only.
             sessionManager.saveTokens(jwt = "dev-token", refreshToken = "dev-refresh")
             sessionManager.saveTenantId("dev-tenant-id")
             sessionManager.saveDriverId("dev-driver-id")
             return@runCatching
         }
         val response = apiService.verifyOtp(
-            OtpVerifyRequest(phone = phone, otp = otp, tenantSlug = tenantSlug, role = "driver")
+            OtpVerifyRequest(phone = phone, email = email, otp = otp, tenantSlug = tenantSlug, role = "driver")
         ).data
         sessionManager.saveTokens(jwt = response.jwt, refreshToken = response.refreshToken)
         sessionManager.saveTenantId(response.tenantId)

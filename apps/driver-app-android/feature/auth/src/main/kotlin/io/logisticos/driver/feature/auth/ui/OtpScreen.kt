@@ -23,7 +23,7 @@ private val BorderWhite = Color(0x14FFFFFF)
 
 @Composable
 fun OtpScreen(
-    phone: String,
+    identifier: String,
     onAuthenticated: () -> Unit,
     viewModel: OtpViewModel = hiltViewModel()
 ) {
@@ -57,7 +57,7 @@ fun OtpScreen(
         ) {
             Text("Verify OTP", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color.White)
             Text(
-                text = "Enter the 6-digit code sent to $phone",
+                text = "Enter the 6-digit code sent to $identifier",
                 fontSize = 14.sp,
                 color = Color.White.copy(alpha = 0.6f),
                 textAlign = TextAlign.Center
@@ -86,7 +86,7 @@ fun OtpScreen(
             }
 
             Button(
-                onClick = { viewModel.verifyOtp(phone, state.otp) },
+                onClick = { viewModel.verifyOtp(identifier, state.otp) },
                 enabled = state.otp.length == 6 && !state.isLoading,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -101,7 +101,7 @@ fun OtpScreen(
             }
 
             TextButton(
-                onClick = { resendTrigger++; viewModel.resendOtp(phone) },
+                onClick = { resendTrigger++; viewModel.resendOtp(identifier) },
                 enabled = resendSeconds == 0
             ) {
                 Text(

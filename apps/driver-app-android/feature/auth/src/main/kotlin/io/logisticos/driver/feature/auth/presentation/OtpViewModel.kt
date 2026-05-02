@@ -29,22 +29,27 @@ class OtpViewModel @Inject constructor(
         if (value.length <= 6) _uiState.update { it.copy(otp = value, error = null) }
     }
 
-    fun resendOtp(phone: String) {
+    fun resendOtp(identifier: String) {
         viewModelScope.launch {
             _uiState.update { it.copy(error = null) }
-            repo.sendOtp(phone)
-                .onFailure { e -> _uiState.update { it.copy(error = e.message ?: "Failed to resend OTP") } }
+            val result = if (identifier.contains("@"))
+                repo.sendOtp(email = identifier)
+            else
+                repo.sendOtp(phone = identifier)
+            result.onFailure { e -> _uiState.update { it.copy(error = e.message ?: "Failed to resend OTP") } }
         }
     }
 
-    fun verifyOtp(phone: String, otp: String) {
+    fun verifyOtp(identifier: String, otp: String) {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }
-            repo.verifyOtp(phone, otp)
+            val result = if (identifier.contains("@"))
+                repo.verifyOtp(email = identifier, otp = otp)
+            else
+                repo.verifyOtp(phone = identifier, otp = otp)
+            result
                 .onSuccess { _uiState.update { it.copy(isLoading = false, isSuccess = true) } }
-                .onFailure { e ->
-                    _uiState.update { it.copy(isLoading = false, error = e.message ?: "Invalid OTP") }
-                }
+                .onFailure { e -> _uiState.update { it.copy(isLoading = false, error = e.message ?: "Invalid OTP") } }
         }
     }
 }
