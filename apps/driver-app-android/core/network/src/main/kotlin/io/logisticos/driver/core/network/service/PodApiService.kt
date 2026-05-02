@@ -54,6 +54,29 @@ data class SubmitPodData(
 )
 
 @Serializable
+data class GetUploadUrlRequest(
+    @SerialName("content_type") val contentType: String
+)
+
+@Serializable
+data class GetUploadUrlResponse(
+    val data: GetUploadUrlData
+)
+
+@Serializable
+data class GetUploadUrlData(
+    @SerialName("upload_url") val uploadUrl: String,
+    @SerialName("s3_key")     val s3Key: String
+)
+
+@Serializable
+data class AttachPhotoRequest(
+    @SerialName("s3_key")       val s3Key: String,
+    @SerialName("content_type") val contentType: String,
+    @SerialName("size_bytes")   val sizeBytes: Long
+)
+
+@Serializable
 data class GenerateOtpRequest(
     @SerialName("shipment_id")      val shipmentId: String,
     @SerialName("recipient_phone")  val recipientPhone: String
@@ -88,6 +111,20 @@ interface PodApiService {
     suspend fun attachSignature(
         @Path("id") podId: String,
         @Body body: AttachSignatureRequest
+    )
+
+    /** POST /v1/pods/{id}/upload-url — get a presigned S3 URL for photo upload */
+    @POST("v1/pods/{id}/upload-url")
+    suspend fun getUploadUrl(
+        @Path("id") podId: String,
+        @Body body: GetUploadUrlRequest
+    ): GetUploadUrlResponse
+
+    /** POST /v1/pods/{id}/photos — register a completed S3 photo upload */
+    @POST("v1/pods/{id}/photos")
+    suspend fun attachPhoto(
+        @Path("id") podId: String,
+        @Body body: AttachPhotoRequest
     )
 
     /** PUT /v1/pods/{id}/submit — finalise POD; triggers TASK_COMPLETED event */

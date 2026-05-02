@@ -13,12 +13,16 @@ import io.logisticos.driver.core.database.entity.SyncQueueEntity
 import io.logisticos.driver.core.database.entity.TaskEntity
 import io.logisticos.driver.core.database.entity.TaskStatus
 import io.logisticos.driver.core.database.worker.OutboundSyncWorker
+import io.logisticos.driver.core.network.service.AttachPhotoRequest
 import io.logisticos.driver.core.network.service.AttachSignatureRequest
 import io.logisticos.driver.core.network.service.CompleteTaskRequest
 import io.logisticos.driver.core.network.service.DriverOpsApiService
+import io.logisticos.driver.core.network.service.GenerateOtpRequest
+import io.logisticos.driver.core.network.service.GetUploadUrlRequest
 import io.logisticos.driver.core.network.service.InitiatePodRequest
 import io.logisticos.driver.core.network.service.PodApiService
 import io.logisticos.driver.core.network.service.SubmitPodRequest
+import io.logisticos.driver.core.network.service.VerifyOtpRequest
 import io.logisticos.driver.feature.delivery.domain.TaskStateMachine
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.encodeToString
@@ -140,12 +144,36 @@ class DeliveryRepository @Inject constructor(
                 throw IllegalStateException("You are not close enough to the delivery address. Move within 200 m and try again.")
             }
 
-            // 2. Attach signature if provided (base64-encode from file)
+            // 2a. Attach signature if provided (base64-encode from file)
             if (signaturePath != null) {
                 val sigFile = File(signaturePath)
                 if (sigFile.exists()) {
                     val base64 = Base64.encodeToString(sigFile.readBytes(), Base64.NO_WRAP)
                     podApi.attachSignature(podId, AttachSignatureRequest(signatureData = base64))
+                }
+            }
+
+            // 2b. Upload photo to S3 then register with backend
+            if (photoPath != null) {
+                val photoFile = File(photoPath)
+                if (photoFile.exists()) {
+                    val contentType = "image/jpeg"
+                    val urlResp = podApi.getUploadUrl(podId, GetUploadUrlRequest(contentType))
+                    val conn = java.net.URL(urlResp.data.uploadUrl).openConnection() as java.net.HttpURLConnection
+                    conn.requestMethod = "PUT"
+                    conn.doOutput = true
+                    conn.setRequestProperty("Content-Type", contentType)
+                    conn.outputStream.use { it.write(photoFile.readBytes()) }
+                    val httpCode = conn.responseCode
+                    conn.disconnect()
+                    if (httpCode !in 200..299) {
+                        throw IllegalStateException("Photo S3 upload failed: HTTP $httpCode")
+                    }
+                    podApi.attachPhoto(podId, AttachPhotoRequest(
+                        s3Key = urlResp.data.s3Key,
+                        contentType = contentType,
+                        sizeBytes = photoFile.length()
+                    ))
                 }
             }
 
@@ -176,6 +204,16 @@ class DeliveryRepository @Inject constructor(
             )
             throw e
         }
+    }
+
+    suspend fun generateOtp(shipmentId: String, recipientPhone: String): String {
+        val resp = podApi.generateOtp(GenerateOtpRequest(shipmentId = shipmentId, recipientPhone = recipientPhone))
+        return resp.data.otpId
+    }
+
+    /** Throws on invalid/expired OTP so callers can surface the error. */
+    suspend fun verifyOtp(shipmentId: String, code: String) {
+        podApi.verifyOtp(VerifyOtpRequest(shipmentId = shipmentId, code = code))
     }
 
     suspend fun getActiveShiftId(): String? = shiftDao.getActiveShiftOnce()?.id
