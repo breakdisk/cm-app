@@ -97,12 +97,15 @@ impl LocationService {
 
     pub async fn go_online(&self, driver_id: &DriverId, tenant_id: &TenantId) -> AppResult<()> {
         let mut driver = self.find_or_create_driver(driver_id, tenant_id).await?;
-        if driver.status == DriverStatus::Available {
-            return Ok(());
-        }
+        // Always run go_online() — never short-circuit on `status == Available`.
+        // A driver row may legitimately be Available but have `is_active=false`
+        // (e.g. an ops override that bulk-deactivated stale drivers). The short
+        // circuit caused those drivers to stay invisible to dispatch forever
+        // because `is_active` never got reconciled on subsequent logins.
+        // go_online() is idempotent; the only cost is one extra UPDATE.
         driver.go_online();
         self.driver_repo.save(&driver).await.map_err(AppError::Internal)?;
-        tracing::info!(driver_id = %driver_id, "Driver went online");
+        tracing::info!(driver_id = %driver_id, is_active = driver.is_active, "Driver went online");
 
         // Notify dispatch to retry any pending queue items for this tenant.
         let event = Event::new("driver-ops", "driver.available", tenant_id.inner(), DriverAvailable {

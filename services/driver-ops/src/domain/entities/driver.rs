@@ -54,6 +54,16 @@ impl Driver {
         self.updated_at = Utc::now();
     }
 
-    pub fn go_online(&mut self)  { self.status = DriverStatus::Available; self.updated_at = Utc::now(); }
+    /// Driver coming online for shift. Sets status=Available AND is_active=true —
+    /// `is_active` is the dispatch-eligibility flag and must be on whenever the
+    /// driver intends to take work. Without flipping it back on, an admin/ops
+    /// `is_active=false` override silently persists across logins: the driver
+    /// appears online in the app but stays invisible to `find_available_near`,
+    /// receives no auto-dispatched tasks, and ops can't tell why.
+    pub fn go_online(&mut self)  {
+        self.status = DriverStatus::Available;
+        self.is_active = true;
+        self.updated_at = Utc::now();
+    }
     pub fn go_offline(&mut self) { self.status = DriverStatus::Offline;   self.updated_at = Utc::now(); }
 }
