@@ -180,7 +180,7 @@ fn build_test_server(repo: Arc<InMemoryShipmentRepository>) -> (TestServer, JwtS
     };
     let app = router(state);
 
-    let server = TestServer::new(app);
+    let server = TestServer::new(app).unwrap();
     (server, jwt)
 }
 
