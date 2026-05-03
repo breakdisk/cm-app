@@ -242,11 +242,15 @@ async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) -> Res
 
     // Copy safe headers from upstream response
     for (name, value) in upstream_headers.iter() {
-        let name_str = name.as_str();
-        if !is_hop_by_hop_str(name_str) {
-            // HeaderName and HeaderValue are already validated from upstream response,
-            // so we can insert them directly without re-parsing
-            response = response.header(name.clone(), value.clone());
+        if !is_hop_by_hop(name) {
+            // Convert reqwest header values to axum-compatible types
+            if let Ok(value_str) = value.to_str() {
+                if let Ok(axum_name) = HeaderName::from_bytes(name.as_ref()) {
+                    if let Ok(axum_value) = HeaderValue::from_str(value_str) {
+                        response = response.header(axum_name, axum_value);
+                    }
+                }
+            }
         }
     }
 
