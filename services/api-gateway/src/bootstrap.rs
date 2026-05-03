@@ -257,7 +257,13 @@ async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) -> Res
         &subscription_tier,
     );
 
-    response.body(Body::from(resp_bytes)).unwrap_or_else(|_| {
+    response.body(Body::from(resp_bytes)).unwrap_or_else(|e| {
+        tracing::error!(
+            err = %e,
+            status = %status,
+            resp_bytes_len = %resp_bytes.len(),
+            "Failed to build response — this happens when response builder is in invalid state"
+        );
         (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Response build error"}))).into_response()
     })
 }
