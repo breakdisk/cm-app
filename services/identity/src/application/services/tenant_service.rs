@@ -176,6 +176,22 @@ impl TenantService {
             return Err(AppError::BusinessRule("Cannot invite users to a suspended tenant".into()));
         }
 
+        // Drivers MUST be onboarded with a phone number — the Driver App logs
+        // in via SMS OTP and resolves the pre-registered user by phone (see
+        // AuthService::otp_verify). Without it, OTP login falls through to
+        // the synthetic-email auto-create path and creates a shadow user
+        // whose driver-ops profile stays disconnected from the real onboarded
+        // row — the driver appears online in their app but invisible to
+        // dispatch. Reject the invite at source instead of leaving ops to
+        // diagnose the symptom in production.
+        let is_driver = cmd.roles.iter().any(|r| r == "driver");
+        let has_phone = cmd.phone_number.as_deref().map(|p| !p.trim().is_empty()).unwrap_or(false);
+        if is_driver && !has_phone {
+            return Err(AppError::Validation(
+                "phone_number is required when inviting a driver — the Driver App OTP login resolves users by phone".into()
+            ));
+        }
+
         // Check for duplicate email within tenant
         if self.user_repo.find_by_email(tenant_id, &cmd.email).await.map_err(AppError::Internal)?.is_some() {
             return Err(AppError::BusinessRule(format!("User with email '{}' already exists", cmd.email)));

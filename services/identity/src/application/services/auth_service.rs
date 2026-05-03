@@ -387,6 +387,23 @@ impl AuthService {
             // ── Step 2: fall back to synthetic-email find-or-create ──────────
             // Handles self-registering customers and dev/test drivers that were
             // never pre-registered through the Partner portal.
+            //
+            // For `role=driver`, hitting this branch is almost always a bug:
+            // it means a partner-onboarded driver couldn't be resolved by phone
+            // (most often because their `users.phone_number` is NULL or stored
+            // in a non-E.164 format). The fallback then creates a *shadow*
+            // identity user, and driver-ops `find_or_create_driver` keeps
+            // creating "Driver" stub rows — the real onboarded driver row
+            // stays offline forever. Surface it loudly in production logs so
+            // ops can spot the data drift instead of staring at a healthy app
+            // that's silently invisible to dispatch.
+            if role == "driver" {
+                tracing::warn!(
+                    phone = %normalised_phone,
+                    tenant_id = %tenant.id,
+                    "OTP login: no pre-registered driver found by phone — falling through to synthetic-email auto-create. This produces a shadow user; the partner-onboarded driver row will not be touched. Backfill identity.users.phone_number for this driver."
+                );
+            }
             let digits: String = normalised_phone.chars().filter(|c| c.is_ascii_digit()).collect();
             let (email, password, first_name) = match role {
                 "customer" => (
