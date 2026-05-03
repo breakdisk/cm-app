@@ -42,18 +42,13 @@ interface Driver {
   cod_collected: number;
 }
 
-const DRIVERS: Driver[] = [
-  { id: "1",  name: "Juan Dela Cruz",     vehicle: "Motorcycle", plate: "ABC-1234", status: "delivering", tasks_total: 18, tasks_done: 11, last_location: "Makati CBD",       last_seen: "Just now",  grade: "A", cod_collected: 8400  },
-  { id: "2",  name: "Maria Santos",       vehicle: "Van",        plate: "XYZ-5678", status: "delivering", tasks_total: 24, tasks_done: 16, last_location: "Taguig BGC",       last_seen: "1m ago",    grade: "A", cod_collected: 14200 },
-  { id: "3",  name: "Pedro Gonzales",     vehicle: "Motorcycle", plate: "DEF-9012", status: "on_break",   tasks_total: 15, tasks_done: 9,  last_location: "Pasig City",       last_seen: "8m ago",    grade: "B", cod_collected: 5100  },
-  { id: "4",  name: "Ana Cruz",           vehicle: "Motorcycle", plate: "GHI-3456", status: "delivering", tasks_total: 20, tasks_done: 14, last_location: "Quezon City",      last_seen: "Just now",  grade: "A", cod_collected: 9800  },
-  { id: "5",  name: "Carlo Reyes",        vehicle: "Van",        plate: "JKL-7890", status: "delivering", tasks_total: 22, tasks_done: 8,  last_location: "Mandaluyong",      last_seen: "2m ago",    grade: "B", cod_collected: 11600 },
-  { id: "6",  name: "Luz Bautista",       vehicle: "Motorcycle", plate: "MNO-1234", status: "available",  tasks_total: 12, tasks_done: 12, last_location: "Las Piñas",        last_seen: "5m ago",    grade: "A", cod_collected: 4200  },
-  { id: "7",  name: "Dennis Villanueva",  vehicle: "Motorcycle", plate: "PQR-5678", status: "en_route",   tasks_total: 19, tasks_done: 13, last_location: "Caloocan City",    last_seen: "Just now",  grade: "B", cod_collected: 6300  },
-  { id: "8",  name: "Rowena Ramos",       vehicle: "Van",        plate: "STU-9012", status: "delivering", tasks_total: 26, tasks_done: 19, last_location: "Parañaque City",   last_seen: "3m ago",    grade: "A", cod_collected: 16800 },
-  { id: "9",  name: "Eduardo Torres",     vehicle: "Motorcycle", plate: "VWX-3456", status: "offline",    tasks_total: 0,  tasks_done: 0,  last_location: "Depot — Caloocan", last_seen: "2h ago",    grade: "C", cod_collected: 0     },
-  { id: "10", name: "Gloria Mendoza",     vehicle: "Motorcycle", plate: "YZA-7890", status: "available",  tasks_total: 16, tasks_done: 11, last_location: "Valenzuela",       last_seen: "Just now",  grade: "B", cod_collected: 7200  },
-];
+// Empty initial state. Previously this file shipped a 10-row hardcoded
+// roster of fake Filipino driver names that flashed on every page load
+// and stuck around if the /v1/drivers fetch failed — making real onboarded
+// drivers (e.g. a single registered driver) impossible to spot through
+// the noise. We now show only what the API returns; an empty roster
+// renders the empty-state card below the grid.
+const DRIVERS: Driver[] = [];
 
 const STATUS_CONFIG: Record<DriverStatus, { label: string; variant: "green" | "cyan" | "amber" | "red" | "purple"; dot: boolean; isActive: boolean }> = {
   offline:    { label: "Offline",    variant: "red",    dot: false, isActive: false },
@@ -71,11 +66,13 @@ const GRADE_COLOR: Record<Driver["grade"], string> = {
   D: "text-red-signal",
 };
 
+// Zeroed initial KPI strip. Real values come from /v1/drivers/summary —
+// rendering 7 / 172 / 113 / 83600 before the API responds was lying to ops.
 const KPI = [
-  { label: "Online Drivers",  value: 7,   trend: 0,    color: "green"  as const, format: "number"  as const },
-  { label: "Tasks Assigned",  value: 172, trend: +8.2, color: "cyan"   as const, format: "number"  as const },
-  { label: "Tasks Complete",  value: 113, trend: +6.4, color: "purple" as const, format: "number"  as const },
-  { label: "COD Collected",   value: 83600, trend: +11.2, color: "amber" as const, format: "currency" as const },
+  { label: "Online Drivers",  value: 0, trend: 0, color: "green"  as const, format: "number"   as const },
+  { label: "Tasks Assigned",  value: 0, trend: 0, color: "cyan"   as const, format: "number"   as const },
+  { label: "Tasks Complete",  value: 0, trend: 0, color: "purple" as const, format: "number"   as const },
+  { label: "COD Collected",   value: 0, trend: 0, color: "amber"  as const, format: "currency" as const },
 ];
 
 // Coarse backend-string → UI DriverStatus mapping for fresh API payloads.
@@ -131,7 +128,9 @@ export default function DriversPage() {
         { label: "COD Collected",   value: Math.round(s.total_cod_collected / 100), trend: 0, color: "amber" as const, format: "currency" as const },
       ]);
     } catch {
-      // retain mock data on error
+      // Leave the roster empty on fetch failure — silently falling back
+      // to seeded mock data made real outages invisible.
+      setDrivers([]);
     } finally {
       setLoading(false);
     }
@@ -255,6 +254,37 @@ export default function DriversPage() {
         onClose={() => setOnboardOpen(false)}
         onSuccess={fetchDrivers}
       />
+
+      {/* Empty state — shown when the API returns no drivers (or returned
+          an error and we cleared the roster). The Onboard button above is
+          the only path forward, so highlight it visually. */}
+      {!loading && drivers.length === 0 && (
+        <motion.div variants={variants.fadeInUp}>
+          <GlassCard className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full border border-glass-border bg-glass-100">
+              <UserPlus size={20} className="text-white/30" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-white">No drivers onboarded yet</p>
+              <p className="mt-1 text-2xs font-mono text-white/40">
+                Use <span className="text-cyan-neon">Onboard Driver</span> above to register your first courier
+              </p>
+            </div>
+          </GlassCard>
+        </motion.div>
+      )}
+
+      {/* Filtered-but-empty state — drivers exist but none match the current filter/search */}
+      {!loading && drivers.length > 0 && filtered.length === 0 && (
+        <motion.div variants={variants.fadeInUp}>
+          <GlassCard className="flex flex-col items-center justify-center gap-2 py-8 text-center">
+            <p className="text-xs text-white/40">
+              No drivers match the current filter
+              {search && <> · search “<span className="font-mono text-white/60">{search}</span>”</>}
+            </p>
+          </GlassCard>
+        </motion.div>
+      )}
 
       {/* Driver grid */}
       <motion.div variants={variants.fadeInUp} className="grid grid-cols-1 gap-3 lg:grid-cols-2">
