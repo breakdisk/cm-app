@@ -246,11 +246,39 @@ async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) -> Res
         // not axum::http::HeaderName
         if !is_hop_by_hop_str(name.as_str()) {
             // Convert reqwest header values to axum-compatible types
-            if let Ok(value_str) = value.to_str() {
-                if let Ok(axum_name) = HeaderName::from_bytes(name.as_ref()) {
-                    if let Ok(axum_value) = HeaderValue::from_str(value_str) {
-                        response = response.header(axum_name, axum_value);
+            match value.to_str() {
+                Ok(value_str) => {
+                    match HeaderName::from_bytes(name.as_ref()) {
+                        Ok(axum_name) => {
+                            match HeaderValue::from_str(value_str) {
+                                Ok(axum_value) => {
+                                    response = response.header(axum_name, axum_value);
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        header_name = %name,
+                                        header_value = %value_str,
+                                        err = %e,
+                                        "Failed to convert header value to axum HeaderValue"
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                header_name = %name,
+                                err = %e,
+                                "Failed to convert header name to axum HeaderName"
+                            );
+                        }
                     }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        header_name = %name,
+                        err = %e,
+                        "Failed to convert header value to string"
+                    );
                 }
             }
         }
@@ -269,8 +297,16 @@ async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) -> Res
 
     // Build the final response
     let resp_bytes_len = resp_bytes.len();
+    tracing::debug!(
+        status = %status,
+        resp_bytes_len = %resp_bytes_len,
+        "Building response with body"
+    );
     match response.body(Body::from(resp_bytes)) {
-        Ok(r) => r.into_response(),
+        Ok(r) => {
+            tracing::debug!(status = %status, "Response built successfully");
+            r.into_response()
+        }
         Err(e) => {
             tracing::error!(
                 err = %e,
