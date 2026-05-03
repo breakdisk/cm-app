@@ -49,8 +49,18 @@ CREATE INDEX IF NOT EXISTS ai_sessions_type
 -- ─── RLS ─────────────────────────────────────────────────────────────────────
 ALTER TABLE ai.agent_sessions ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY ai_sessions_tenant_isolation ON ai.agent_sessions
-    USING (tenant_id = (current_setting('app.tenant_id', true)::UUID));
+-- CREATE POLICY does not support `IF NOT EXISTS` until PostgreSQL 15. Wrap in a
+-- DO block that swallows duplicate_object so this migration can re-run against
+-- a database where the policy was already created by a prior run (the schema-
+-- isolated migrator may seed an empty <schema>._sqlx_migrations table during
+-- ADR-0012 cutover, forcing all migrations to re-execute).
+DO $$
+BEGIN
+    CREATE POLICY ai_sessions_tenant_isolation ON ai.agent_sessions
+        USING (tenant_id = (current_setting('app.tenant_id', true)::UUID));
+EXCEPTION WHEN duplicate_object THEN
+    NULL;
+END $$;
 
 -- ─── Immutable completed sessions ────────────────────────────────────────────
 -- Completed/failed/escalated sessions must not be modified (except via resolve endpoint).

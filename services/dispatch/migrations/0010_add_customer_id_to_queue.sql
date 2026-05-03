@@ -1,7 +1,12 @@
 -- Add customer_id to dispatch_queue for engagement service notifications
 -- The engagement service needs customer_id to route driver.assigned notifications to the correct recipient
+--
+-- IF NOT EXISTS is required: the schema-isolated migrator (libs/common/src/migrations.rs)
+-- pre-seeds an empty <schema>._sqlx_migrations table on first roll-out of ADR-0012, so
+-- this migration can re-run against a database where the column was already added by a
+-- prior run that tracked state in public._sqlx_migrations.
 ALTER TABLE dispatch.dispatch_queue
-    ADD COLUMN customer_id UUID NOT NULL DEFAULT gen_random_uuid();
+    ADD COLUMN IF NOT EXISTS customer_id UUID NOT NULL DEFAULT gen_random_uuid();
 
 -- Add index for customer_id lookups during driver assignment
 CREATE INDEX IF NOT EXISTS idx_dispatch_queue_customer
