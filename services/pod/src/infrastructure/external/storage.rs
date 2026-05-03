@@ -24,19 +24,35 @@ pub struct S3StorageAdapter {
 }
 
 impl S3StorageAdapter {
-    pub async fn new(endpoint_url: Option<String>, bucket: String) -> anyhow::Result<Self> {
-        let mut config_builder = aws_config::load_from_env().await;
-        // Build the SDK config — endpoint_url overrides for MinIO in local/staging
-        let sdk_config = if let Some(endpoint) = endpoint_url {
-            aws_sdk_s3::config::Builder::from(&config_builder)
+    pub async fn new(
+        endpoint_url: Option<String>,
+        bucket: String,
+        region: Option<String>,
+    ) -> anyhow::Result<Self> {
+        // The AWS SDK auto-discovers region from env/IMDS. On a non-AWS host
+        // (our VPS), IMDS times out (1 s per call) and the SDK then errors
+        // every S3 call with "A region must be set". We always provide an
+        // explicit region — `auto` is what Cloudflare R2 expects, and any
+        // value is accepted by MinIO / non-AWS endpoints.
+        let region_str = region.unwrap_or_else(|| "auto".to_string());
+        let aws_region = aws_sdk_s3::config::Region::new(region_str);
+
+        let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .region(aws_region)
+            .load()
+            .await;
+
+        // Build the SDK config — endpoint_url overrides for MinIO/R2 in local/staging
+        let s3_config = if let Some(endpoint) = endpoint_url {
+            aws_sdk_s3::config::Builder::from(&sdk_config)
                 .endpoint_url(endpoint)
                 .force_path_style(true)  // MinIO requires path-style
                 .build()
         } else {
-            aws_sdk_s3::config::Builder::from(&config_builder).build()
+            aws_sdk_s3::config::Builder::from(&sdk_config).build()
         };
 
-        let client = aws_sdk_s3::Client::from_conf(sdk_config);
+        let client = aws_sdk_s3::Client::from_conf(s3_config);
         Ok(Self { client, bucket })
     }
 }

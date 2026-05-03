@@ -53,14 +53,26 @@ object NetworkModule {
         .authenticator(tokenAuthenticator)
         .apply {
             if (!isDebug) {
-                // Pins LE E7 intermediate (valid until Mar 2027) + ISRG Root X1 fallback.
-                // Update E7 pin before expiry:
+                // Pins three anchors to survive cert rotation across Cloudflare edges:
+                //   • Leaf cert SubjectPublicKeyInfo (CN=cargomarket.net, ECDSA P-256)
+                //   • Let's Encrypt E7 intermediate (valid until Mar 2027)
+                //   • ISRG Root X1 ultimate root
+                //
+                // OkHttp passes if ANY pin matches a cert in the verified chain. Three
+                // anchors mean rotating any single one (e.g. when LE auto-renews the
+                // leaf or E7 expires) keeps the app working.
+                //
+                // Recompute pins before each rotation:
                 //   echo | openssl s_client -connect os-api.cargomarket.net:443 -showcerts 2>/dev/null |
                 //   openssl x509 -pubkey -noout | openssl pkey -pubin -outform der |
                 //   openssl dgst -sha256 -binary | openssl enc -base64
                 certificatePinner(
                     CertificatePinner.Builder()
+                        // Leaf — rotates every ~90 days; verify after every renewal
+                        .add("*.cargomarket.net", "sha256/Xmbu6WAH7f8fcGMz/e4qRPr9oWEOgvmm9x/yz6couhU=")
+                        // LE E7 intermediate
                         .add("*.cargomarket.net", "sha256/y7xVm0TVJNahMr2sZydE2jQH8SquXV9yLF9seROHHHU=")
+                        // ISRG Root X1 — long-lived backstop
                         .add("*.cargomarket.net", "sha256/YLh1dUR9y6Kja30RrAn7JKnbQG/uEtLMkBgFF2Fuihg=")
                         .build()
                 )

@@ -46,11 +46,19 @@ pub async fn run() -> anyhow::Result<()> {
     let jwt_secret = std::env::var("AUTH__JWT_SECRET").context("AUTH__JWT_SECRET not set")?;
     let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
 
-    // S3/MinIO storage adapter
-    let s3_bucket  = std::env::var("S3_BUCKET").unwrap_or_else(|_| "logisticos-pod".to_string());
+    // S3/MinIO/R2 storage adapter
+    //
+    // S3_REGION must be set or the AWS SDK falls back to IMDS lookup which
+    // hangs for ~1 s and then errors every call with "A region must be set".
+    // For Cloudflare R2 use "auto"; for AWS S3 use the bucket's region (e.g.
+    // "us-east-1"); for MinIO any non-empty value works.
+    let s3_bucket   = std::env::var("S3_BUCKET").unwrap_or_else(|_| "logisticos-pod".to_string());
     let s3_endpoint = std::env::var("S3_ENDPOINT_URL").ok(); // None = use AWS default
+    let s3_region   = std::env::var("S3_REGION")
+        .or_else(|_| std::env::var("AWS_REGION"))
+        .ok();
     let storage = Arc::new(
-        S3StorageAdapter::new(s3_endpoint, s3_bucket).await
+        S3StorageAdapter::new(s3_endpoint, s3_bucket, s3_region).await
             .context("Failed to init S3 storage")?
     );
 

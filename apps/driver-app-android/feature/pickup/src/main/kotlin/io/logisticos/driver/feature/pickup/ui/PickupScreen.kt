@@ -437,6 +437,11 @@ fun PickupScreen(
         Spacer(Modifier.height(16.dp))
 
         // Photo section — system camera launcher returns a thumbnail Bitmap.
+        //
+        // CAMERA runtime permission is required before launching ACTION_IMAGE_CAPTURE
+        // because the manifest declares <uses-permission android:name=".CAMERA"/>.
+        // Without the grant, Samsung's One UI camera throws SecurityException mid-launch
+        // and crashes the activity (observed on stagingDebug build #34, Galaxy device).
         val cameraLauncher = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.TakePicturePreview(),
         ) { bitmap: Bitmap? ->
@@ -447,6 +452,19 @@ fun PickupScreen(
                 }
                 viewModel.onPhotoCaptured(file.absolutePath)
             }
+        }
+        // Permission-then-capture path: if the user already granted CAMERA (e.g. via the
+        // QR scanner above), launch directly; otherwise prompt and chain into the launch
+        // on success. Mirrors PodScreen.kt's pattern.
+        val photoCameraPermissionLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            cameraPermissionGranted = granted
+            if (granted) cameraLauncher.launch(null)
+        }
+        val launchPhotoCapture: () -> Unit = {
+            if (cameraPermissionGranted) cameraLauncher.launch(null)
+            else photoCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
         }
 
         Column(
@@ -483,7 +501,7 @@ fun PickupScreen(
                     .clip(RoundedCornerShape(10.dp))
                     .background(Color(0x08FFFFFF))
                     .border(1.dp, Border, RoundedCornerShape(10.dp))
-                    .clickable { cameraLauncher.launch(null) },
+                    .clickable { launchPhotoCapture() },
                 contentAlignment = Alignment.Center
             ) {
                 if (state.photoPath != null) {
@@ -500,7 +518,7 @@ fun PickupScreen(
             }
 
             Button(
-                onClick = { cameraLauncher.launch(null) },
+                onClick = { launchPhotoCapture() },
                 modifier = Modifier.fillMaxWidth().height(44.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Cyan.copy(alpha = 0.12f)),
                 shape = RoundedCornerShape(10.dp),
