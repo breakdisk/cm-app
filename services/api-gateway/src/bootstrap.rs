@@ -231,41 +231,49 @@ async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) -> Res
     let upstream_headers = upstream_resp.headers().clone();
     let resp_bytes = match upstream_resp.bytes().await {
         Ok(b) => b,
-        Err(_) => {
+        Err(e) => {
+            tracing::error!(err = %e, "Failed to read upstream response body");
             return (StatusCode::BAD_GATEWAY, Json(json!({"error": "Failed to read upstream response"}))).into_response();
         }
     };
 
+    // Build response with status
     let mut response = Response::builder().status(status);
-    let resp_headers = response.headers_mut().unwrap();
+
+    // Copy safe headers from upstream response
     for (name, value) in upstream_headers.iter() {
-        if let Ok(name_str) = std::str::from_utf8(name.as_str().as_bytes()) {
-            if !is_hop_by_hop_str(name_str) {
-                if let Ok(header_name) = axum::http::HeaderName::from_bytes(name_str.as_bytes()) {
-                    if let Ok(header_value) = axum::http::HeaderValue::from_bytes(value.as_bytes()) {
-                        resp_headers.insert(header_name, header_value);
-                    }
-                }
-            }
+        let name_str = name.as_str();
+        if !is_hop_by_hop_str(name_str) {
+            // HeaderName and HeaderValue are already validated from upstream response,
+            // so we can insert them directly without re-parsing
+            response = response.header(name.clone(), value.clone());
         }
     }
-    insert_rate_limit_headers(
-        resp_headers,
-        limit_for_tier(&subscription_tier),
-        remaining,
-        reset_in,
-        &subscription_tier,
-    );
 
-    response.body(Body::from(resp_bytes)).unwrap_or_else(|e| {
-        tracing::error!(
-            err = %e,
-            status = %status,
-            resp_bytes_len = %resp_bytes.len(),
-            "Failed to build response — this happens when response builder is in invalid state"
-        );
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Response build error"}))).into_response()
-    })
+    // Add rate limit headers
+    if let Ok(v) = HeaderValue::from_str(&limit_for_tier(&subscription_tier).to_string()) {
+        response = response.header("X-RateLimit-Limit", v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&remaining.to_string()) {
+        response = response.header("X-RateLimit-Remaining", v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&reset_in.to_string()) {
+        response = response.header("X-RateLimit-Reset", v);
+    }
+
+    // Build the final response
+    match response.body(Body::from(resp_bytes)) {
+        Ok(r) => r.into_response(),
+        Err(e) => {
+            tracing::error!(
+                err = %e,
+                status = %status,
+                resp_bytes_len = %resp_bytes.len(),
+                "Failed to build response body"
+            );
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Response build error"}))).into_response()
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
