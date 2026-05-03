@@ -242,7 +242,9 @@ async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) -> Res
 
     // Copy safe headers from upstream response
     for (name, value) in upstream_headers.iter() {
-        if !is_hop_by_hop(name) {
+        // Use is_hop_by_hop_str instead of is_hop_by_hop because name is reqwest::HeaderName,
+        // not axum::http::HeaderName
+        if !is_hop_by_hop_str(name.as_str()) {
             // Convert reqwest header values to axum-compatible types
             if let Ok(value_str) = value.to_str() {
                 if let Ok(axum_name) = HeaderName::from_bytes(name.as_ref()) {
@@ -266,13 +268,14 @@ async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) -> Res
     }
 
     // Build the final response
+    let resp_bytes_len = resp_bytes.len();
     match response.body(Body::from(resp_bytes)) {
         Ok(r) => r.into_response(),
         Err(e) => {
             tracing::error!(
                 err = %e,
                 status = %status,
-                resp_bytes_len = %resp_bytes.len(),
+                resp_bytes_len = %resp_bytes_len,
                 "Failed to build response body"
             );
             (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Response build error"}))).into_response()
