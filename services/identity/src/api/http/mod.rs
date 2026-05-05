@@ -75,6 +75,7 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         logisticos_auth::middleware::require_auth,
     );
     Router::new()
+        .route("/users/me",        get(users::get_me).put(users::update_me))
         .route("/users",           get(users::list_users).post(users::invite_user))
         .route("/users/:id",       get(users::get_user))
         .route("/api-keys",        get(api_keys::list).post(api_keys::create))

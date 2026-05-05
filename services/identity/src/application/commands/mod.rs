@@ -202,3 +202,17 @@ pub struct OtpVerifyResult {
     pub expires_in: i64,
     pub token_type: String,
 }
+
+/// Partial self-update — authenticated user edits their own profile.
+/// All fields are optional; absent fields are left unchanged.
+#[derive(Debug, Deserialize, Validate)]
+pub struct UpdateUserSelfCommand {
+    #[validate(length(min = 1, max = 100))]
+    #[serde(default)]
+    pub first_name: Option<String>,
+    #[validate(length(min = 0, max = 100))]
+    #[serde(default)]
+    pub last_name: Option<String>,
+    #[serde(default)]
+    pub phone_number: Option<String>,
+}
