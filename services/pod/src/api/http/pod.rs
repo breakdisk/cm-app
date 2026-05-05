@@ -95,7 +95,7 @@ pub async fn submit(
 }
 
 /// GET /v1/pods?shipment_id=<uuid> — fetch POD for the admin portal panel.
-/// Returns the most recent submitted/draft POD for the shipment, or 404.
+/// Returns the most recent POD for the shipment with presigned photo/signature URLs.
 pub async fn list_pods(
     AuthClaims(_claims): AuthClaims,
     Query(q): Query<PodQuery>,
@@ -105,7 +105,10 @@ pub async fn list_pods(
         .ok_or_else(|| AppError::Validation("shipment_id query param required".into()))?;
 
     match state.pod_service.get_by_shipment(shipment_id).await? {
-        Some(pod) => Ok(Json(serde_json::json!({ "data": [pod] }))),
+        Some(pod) => {
+            let view = state.pod_service.pod_to_view(&pod).await;
+            Ok(Json(serde_json::json!({ "data": [view] })))
+        }
         None => Ok(Json(serde_json::json!({ "data": [] }))),
     }
 }
@@ -116,7 +119,8 @@ pub async fn get_pod(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let pod = state.pod_service.get_by_id(pod_id).await?;
-    Ok(Json(serde_json::json!({ "data": pod })))
+    let view = state.pod_service.pod_to_view(&pod).await;
+    Ok(Json(serde_json::json!({ "data": view })))
 }
 
 pub async fn generate_otp(
