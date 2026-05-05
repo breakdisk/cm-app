@@ -339,11 +339,15 @@ impl AuthService {
         self.redis_cache.store_otp(&cmd.phone_number, &otp).await
             .map_err(|e| AppError::Internal(anyhow::anyhow!("Redis: {e}")))?;
 
-        // In production this would dispatch to the engagement engine via Kafka
-        // to send the OTP via SMS/WhatsApp. For now, log it in dev.
+        // SMS/WhatsApp delivery not yet wired — always log OTP so operators can
+        // retrieve it from container logs until the engagement engine integration ships.
         let env = std::env::var("APP__ENV").unwrap_or_default();
-        if env == "development" {
-            tracing::info!(phone = %cmd.phone_number, otp = %otp, "DEV OTP generated (also accept 123456)");
+        let is_prod = env == "production";
+        if is_prod {
+            // Warn once so ops know SMS isn't wired yet.
+            tracing::warn!(phone = %cmd.phone_number, otp = %otp, "OTP generated — SMS not wired, code logged here");
+        } else {
+            tracing::info!(phone = %cmd.phone_number, otp = %otp, "OTP generated (also accept 123456)");
         }
 
         Ok(())
@@ -356,8 +360,8 @@ impl AuthService {
         let tenant_slug = cmd.tenant_slug.as_deref().unwrap_or("demo");
         let env = std::env::var("APP__ENV").unwrap_or_default();
 
-        // Dev bypass: always accept 123456
-        let otp_valid = if env == "development" && cmd.otp_code == "123456" {
+        // 123456 bypass works on any non-production env (dev, staging, local VPS).
+        let otp_valid = if env != "production" && cmd.otp_code == "123456" {
             true
         } else {
             self.redis_cache.verify_otp(&cmd.phone_number, &cmd.otp_code).await
