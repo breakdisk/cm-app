@@ -28,6 +28,7 @@ impl S3StorageAdapter {
         endpoint_url: Option<String>,
         bucket: String,
         region: Option<String>,
+        force_path_style: bool,
     ) -> anyhow::Result<Self> {
         // The AWS SDK auto-discovers region from env/IMDS. On a non-AWS host
         // (our VPS), IMDS times out (1 s per call) and the SDK then errors
@@ -42,11 +43,13 @@ impl S3StorageAdapter {
             .load()
             .await;
 
-        // Build the SDK config — endpoint_url overrides for MinIO/R2 in local/staging
+        // Build the SDK config — endpoint_url overrides for MinIO/R2 in local/staging.
+        // force_path_style: true for MinIO (requires it), false for Cloudflare R2
+        // (R2 rejects presigned PUTs generated with path-style).
         let s3_config = if let Some(endpoint) = endpoint_url {
             aws_sdk_s3::config::Builder::from(&sdk_config)
                 .endpoint_url(endpoint)
-                .force_path_style(true)  // MinIO requires path-style
+                .force_path_style(force_path_style)
                 .build()
         } else {
             aws_sdk_s3::config::Builder::from(&sdk_config).build()

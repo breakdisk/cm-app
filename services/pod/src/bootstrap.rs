@@ -52,13 +52,14 @@ pub async fn run() -> anyhow::Result<()> {
     // hangs for ~1 s and then errors every call with "A region must be set".
     // For Cloudflare R2 use "auto"; for AWS S3 use the bucket's region (e.g.
     // "us-east-1"); for MinIO any non-empty value works.
-    let s3_bucket   = std::env::var("S3_BUCKET").unwrap_or_else(|_| "logisticos-pod".to_string());
-    let s3_endpoint = std::env::var("S3_ENDPOINT_URL").ok(); // None = use AWS default
-    let s3_region   = std::env::var("S3_REGION")
-        .or_else(|_| std::env::var("AWS_REGION"))
-        .ok();
+    let s3_bucket          = std::env::var("S3_BUCKET").unwrap_or_else(|_| "logisticos-pod".to_string());
+    let s3_endpoint        = std::env::var("S3_ENDPOINT_URL").ok();
+    let s3_region          = std::env::var("S3_REGION").or_else(|_| std::env::var("AWS_REGION")).ok();
+    let s3_force_path_style = std::env::var("S3_FORCE_PATH_STYLE")
+        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+        .unwrap_or(false); // false = virtual-hosted style (R2); true = path-style (MinIO)
     let storage = Arc::new(
-        S3StorageAdapter::new(s3_endpoint, s3_bucket, s3_region).await
+        S3StorageAdapter::new(s3_endpoint, s3_bucket, s3_region, s3_force_path_style).await
             .context("Failed to init S3 storage")?
     );
 
