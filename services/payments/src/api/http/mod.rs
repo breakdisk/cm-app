@@ -59,6 +59,7 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route("/partner/commission/breakdown", get(partner_commission::get_commission_breakdown))
         .route("/admin/partner-bonuses",        post(partner_commission::create_partner_bonus))
+        .route("/admin/billing/run",            post(billing::run_billing_admin))
         .layer(auth_layer)
 }
 

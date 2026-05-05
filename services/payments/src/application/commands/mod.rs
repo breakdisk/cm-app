@@ -105,6 +105,15 @@ pub struct RunBillingCommand {
     pub month:          u32,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AdminRunBillingCommand {
+    pub merchant_id:    Uuid,
+    pub merchant_email: Option<String>,
+    pub tenant_code:    String,
+    pub period_start:   NaiveDate,
+    pub period_end:     NaiveDate,
+}
+
 // ── Response shapes ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
