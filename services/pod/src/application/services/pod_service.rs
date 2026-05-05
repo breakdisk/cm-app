@@ -151,7 +151,7 @@ impl PodService {
         );
 
         let upload_url = self.storage
-            .presign_upload(&s3_key, content_type, 30)
+            .presign_upload(&s3_key, content_type, 900)
             .await
             .map_err(AppError::Internal)?;
 
