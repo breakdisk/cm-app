@@ -79,7 +79,14 @@ android {
         }
         create("staging") {
             dimension = "env"
-            buildConfigField("String", "BASE_URL", "\"https://os-api.cargomarket.net/\"")
+            // Staging hits the VPS gateway directly over HTTP. Bypasses Traefik
+            // and Let's Encrypt entirely so cert renewal failures (e.g. Cloudflare
+            // proxy interfering with HTTP-01 challenge) don't block the staging
+            // app. The IP is also whitelisted in network_security_config.xml for
+            // cleartext. Override per-machine via local.properties API_BASE_URL.
+            val stagingUrl = localProps.getProperty("API_BASE_URL")
+                ?: "http://75.119.138.135:8000/"
+            buildConfigField("String", "BASE_URL", "\"$stagingUrl\"")
             buildConfigField("String", "TENANT_ID", "\"atlas-cargo-ae\"")
         }
         create("prod") {
