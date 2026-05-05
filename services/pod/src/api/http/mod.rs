@@ -25,7 +25,7 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     );
     Router::new()
         // POD lifecycle
-        .route("/pods",                          post(pod::initiate))
+        .route("/pods",                          post(pod::initiate).get(pod::list_pods))
         .route("/pods/:id/signature",            put(pod::attach_signature))
         .route("/pods/:id/upload-url",           post(pod::get_upload_url))
         .route("/pods/:id/photos",               post(pod::attach_photo))
