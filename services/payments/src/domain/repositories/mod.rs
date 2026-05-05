@@ -166,3 +166,9 @@ pub struct BillingRunRecord {
     pub total_cents:    i64,
     pub created_at:     chrono::DateTime<chrono::Utc>,
 }
+
+#[async_trait]
+pub trait MerchantBillingAccountRepository: Send + Sync {
+    async fn find_by_merchant(&self, merchant_id: Uuid) -> anyhow::Result<Option<crate::domain::entities::MerchantBillingAccount>>;
+    async fn upsert(&self, account: &crate::domain::entities::MerchantBillingAccount) -> anyhow::Result<()>;
+}
