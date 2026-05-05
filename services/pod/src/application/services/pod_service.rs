@@ -316,6 +316,46 @@ impl PodService {
         self.pod_repo.find_by_shipment(shipment_id).await.map_err(AppError::Internal)
     }
 
+    /// Map a POD entity to the JSON shape expected by the admin portal.
+    /// Generates a presigned download URL for the first photo (1-hour TTL)
+    /// and converts signature base64 to a data URI the browser can render.
+    pub async fn pod_to_view(&self, pod: &ProofOfDelivery) -> serde_json::Value {
+        let photo_url: Option<String> = if let Some(photo) = pod.photos.first() {
+            self.storage.presign_download(&photo.s3_key, 3600).await
+                .map_err(|e| tracing::warn!(error = %e, s3_key = %photo.s3_key, "Failed to presign POD photo"))
+                .ok()
+        } else {
+            None
+        };
+
+        let signature_url = pod.signature_data.as_ref().map(|b64| {
+            format!("data:image/png;base64,{b64}")
+        });
+
+        let status_str = match pod.status {
+            crate::domain::entities::PodStatus::Draft     => "draft",
+            crate::domain::entities::PodStatus::Submitted => "submitted",
+            crate::domain::entities::PodStatus::Verified  => "verified",
+            crate::domain::entities::PodStatus::Disputed  => "disputed",
+        };
+
+        serde_json::json!({
+            "pod_id":              pod.id,
+            "shipment_id":         pod.shipment_id,
+            "task_id":             pod.task_id,
+            "status":              status_str,
+            "recipient_name":      pod.recipient_name,
+            "geofence_verified":   pod.geofence_verified,
+            "capture_lat":         pod.capture_lat,
+            "capture_lng":         pod.capture_lng,
+            "photo_url":           photo_url,
+            "signature_url":       signature_url,
+            "otp_verified":        pod.otp_verified,
+            "cod_collected_cents": pod.cod_collected_cents,
+            "captured_at":         pod.captured_at,
+        })
+    }
+
     /// Standalone OTP verification — driver can pre-verify before submitting POD.
     /// Returns otp_id on success.
     pub async fn verify_otp_standalone(
