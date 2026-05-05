@@ -60,10 +60,11 @@ async fn create_shipment(
     if is_customer {
         cmd.booked_by_customer = true;
     }
-    // Default auto_dispatch by role unless the caller set it explicitly:
-    //   customer / merchant → true  (agentic-first: intake auto-assigns a driver)
-    //   admin / other       → false (manual dispatch console flow)
-    let auto_dispatch_effective = cmd.auto_dispatch.unwrap_or(is_customer || is_merchant);
+    // Default auto_dispatch by role unless the caller set it explicitly.
+    // All roles default to true — dispatch fails gracefully if no driver is
+    // available and the shipment remains in the queue for manual assignment.
+    let is_admin = claims.roles.iter().any(|r| r == "admin" || r == "ops");
+    let auto_dispatch_effective = cmd.auto_dispatch.unwrap_or(is_customer || is_merchant || is_admin);
     cmd.auto_dispatch = Some(auto_dispatch_effective);
     // Customer-booked shipments need a deliverable email for the POD payment
     // receipt. If the booking didn't include one, fall back to the JWT email
