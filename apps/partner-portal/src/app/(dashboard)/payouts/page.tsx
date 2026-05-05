@@ -23,14 +23,14 @@ import {
 } from "@/lib/api/payments";
 import { useRosterEvents } from "@/hooks/useRosterEvents";
 
-// ── Static chart data (no backend endpoint for monthly breakdown) ─────────────
+// ── Empty seed for monthly chart (populated at runtime from commission API) ────
 const MONTHLY_PAYOUTS = [
-  { month: "Oct", base: 310000, cod: 190000, bonus: 12000 },
-  { month: "Nov", base: 328000, cod: 212000, bonus: 18000 },
-  { month: "Dec", base: 401000, cod: 268000, bonus: 42000 },
-  { month: "Jan", base: 335000, cod: 218000, bonus: 8000  },
-  { month: "Feb", base: 362000, cod: 241000, bonus: 14000 },
-  { month: "Mar", base: 421000, cod: 284000, bonus: 22000 },
+  { month: "–", base: 0, cod: 0, bonus: 0 },
+  { month: "–", base: 0, cod: 0, bonus: 0 },
+  { month: "–", base: 0, cod: 0, bonus: 0 },
+  { month: "–", base: 0, cod: 0, bonus: 0 },
+  { month: "–", base: 0, cod: 0, bonus: 0 },
+  { month: "–", base: 0, cod: 0, bonus: 0 },
 ];
 
 const STATUS_VARIANT: Record<InvoiceStatus, { label: string; variant: "green" | "amber" | "red" | "cyan" | "muted" }> = {
@@ -130,6 +130,7 @@ export default function PayoutsPage() {
   const [loading,      setLoading]      = useState(true);
   const [error,        setError]        = useState<string | null>(null);
   const [showWithdraw, setShowWithdraw] = useState(false);
+  const [monthlyChart, setMonthlyChart] = useState(MONTHLY_PAYOUTS);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -143,6 +144,35 @@ export default function PayoutsPage() {
       setWallet(w);
       setTransactions(txs);
       setInvoices(invs);
+
+      // Fetch last 6 months of commission breakdown
+      // merchant_id is preferred; fall back to tenant_id if not yet returned by backend
+      const merchantId = w.merchant_id ?? w.tenant_id;
+      const now = new Date();
+      const months = Array.from({ length: 6 }, (_, i) => {
+        const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (5 - i), 1));
+        return {
+          year:  d.getUTCFullYear(),
+          month: d.getUTCMonth() + 1,
+          label: d.toLocaleString("en", { month: "short", timeZone: "UTC" }),
+        };
+      });
+      const breakdowns = await Promise.all(
+        months.map(({ year, month }) =>
+          paymentsApi.getCommissionBreakdown({ merchant_id: merchantId, year, month })
+            .catch(() => null)
+        )
+      );
+      const liveChart = months.map(({ label }, i) => {
+        const b = breakdowns[i];
+        return {
+          month: label,
+          base:  b ? Math.round(b.base_charges_centavos  / 100) : 0,
+          cod:   b ? Math.round(b.cod_remittance_centavos / 100) : 0,
+          bonus: b ? Math.round(b.bonuses_centavos        / 100) : 0,
+        };
+      });
+      setMonthlyChart(liveChart);
     } catch (e) {
       const err = e as { message?: string };
       setError(err?.message ?? "Failed to load payout data");
@@ -170,18 +200,6 @@ export default function PayoutsPage() {
       return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
     })
     .reduce((s, i) => s + i.total_php, 0);
-
-  // Derive monthly bar chart from live invoices; fall back to static seed data.
-  const monthlyChart = (() => {
-    const paid = invoices.filter(i => i.status === "paid" && i.paid_at);
-    if (paid.length === 0) return MONTHLY_PAYOUTS;
-    const byMonth: Record<string, number> = {};
-    paid.forEach(inv => {
-      const key = new Date(inv.paid_at!).toLocaleString("en", { month: "short" });
-      byMonth[key] = (byMonth[key] ?? 0) + inv.total_php;
-    });
-    return Object.entries(byMonth).slice(-6).map(([month, base]) => ({ month, base, cod: 0, bonus: 0 }));
-  })();
 
   return (
     <>

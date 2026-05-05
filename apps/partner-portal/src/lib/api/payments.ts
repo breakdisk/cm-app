@@ -4,6 +4,7 @@ import { createApiClient } from "./client";
 
 export interface Wallet {
   tenant_id: string;
+  merchant_id?: string;
   balance_php: number;
   reserved_php: number;
   available_php: number;
@@ -68,6 +69,32 @@ export const paymentsApi = {
       "/v1/wallet/withdraw",
       req
     );
+    return data.data;
+  },
+
+  /** Fetch the commission breakdown for a given merchant, year and month. */
+  async getCommissionBreakdown(params: { merchant_id: string; year: number; month: number }): Promise<{
+    period:                  string;
+    base_charges_centavos:   number;
+    cod_remittance_centavos: number;
+    bonuses_centavos:        number;
+    total_centavos:          number;
+    currency:                string;
+  }> {
+    const { data } = await createApiClient().get<{ data: {
+      period:                  string;
+      base_charges_centavos:   number;
+      cod_remittance_centavos: number;
+      bonuses_centavos:        number;
+      total_centavos:          number;
+      currency:                string;
+    } }>("/v1/partner/commission/breakdown", {
+      params: {
+        merchant_id: params.merchant_id,
+        year:        params.year,
+        month:       params.month,
+      },
+    });
     return data.data;
   },
 };
