@@ -3,6 +3,8 @@ package io.logisticos.driver.feature.delivery.data
 import android.content.Context
 import android.util.Base64
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import io.logisticos.driver.core.database.dao.PodDao
 import io.logisticos.driver.core.database.dao.ShiftDao
 import io.logisticos.driver.core.database.dao.SyncQueueDao
@@ -158,17 +160,20 @@ class DeliveryRepository @Inject constructor(
                     val uploadResp = podApi.getUploadUrl(podId, GetUploadUrlRequest(contentType))
                     val presignedUrl = uploadResp.data.uploadUrl
                     val s3Key = uploadResp.data.s3Key
-                    // PUT photo bytes directly to R2 — bypass Retrofit (no auth header on R2)
-                    val photoBytes = photoFile.readBytes()
-                    val putRequest = Request.Builder()
-                        .url(presignedUrl)
-                        .put(photoBytes.toRequestBody(contentType.toMediaType()))
-                        .build()
-                    val putResponse = okHttpClient.newCall(putRequest).execute()
-                    if (!putResponse.isSuccessful) {
-                        error("R2 photo upload failed: HTTP ${putResponse.code}")
+                    // PUT photo bytes directly to R2 — bypass Retrofit (no auth header on R2).
+                    // Must run on IO because OkHttp .execute() is blocking.
+                    withContext(Dispatchers.IO) {
+                        val photoBytes = photoFile.readBytes()
+                        val putRequest = Request.Builder()
+                            .url(presignedUrl)
+                            .put(photoBytes.toRequestBody(contentType.toMediaType()))
+                            .build()
+                        val putResponse = okHttpClient.newCall(putRequest).execute()
+                        if (!putResponse.isSuccessful) {
+                            error("R2 photo upload failed: HTTP ${putResponse.code}")
+                        }
+                        putResponse.close()
                     }
-                    putResponse.close()
                     // Register the uploaded photo key with the backend
                     podApi.attachPhoto(podId, AttachPhotoRequest(
                         s3Key = s3Key,
