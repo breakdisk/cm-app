@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use logisticos_types::{TenantId, UserId};
-use crate::domain::entities::{Tenant, User, ApiKey, AuthIdentity, AuthProvider};
+use crate::domain::entities::{Tenant, User, ApiKey, AuthIdentity, AuthProvider, PickupAddress};
 
 #[async_trait]
 pub trait TenantRepository: Send + Sync {
@@ -32,6 +32,16 @@ pub trait ApiKeyRepository: Send + Sync {
     async fn save(&self, key: &ApiKey) -> anyhow::Result<()>;
     async fn list_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<ApiKey>>;
     async fn revoke(&self, id: &logisticos_types::ApiKeyId) -> anyhow::Result<()>;
+}
+
+#[async_trait]
+pub trait PickupAddressRepository: Send + Sync {
+    async fn list_by_user(&self, user_id: &UserId) -> anyhow::Result<Vec<PickupAddress>>;
+    async fn find_by_id(&self, id: uuid::Uuid) -> anyhow::Result<Option<PickupAddress>>;
+    async fn insert(&self, addr: &PickupAddress) -> anyhow::Result<()>;
+    async fn delete(&self, id: uuid::Uuid, user_id: &UserId) -> anyhow::Result<()>;
+    /// Atomically sets one address as default and clears all others for the user.
+    async fn set_default(&self, id: uuid::Uuid, user_id: &UserId) -> anyhow::Result<()>;
 }
 
 #[async_trait]

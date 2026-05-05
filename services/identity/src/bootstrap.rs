@@ -3,7 +3,7 @@ use sqlx::postgres::PgPoolOptions;
 use anyhow::Context;
 use crate::config::Config;
 use crate::application::services::{AuthService, TenantService, ApiKeyService};
-use crate::infrastructure::db::{PgTenantRepository, PgUserRepository, PgApiKeyRepository, PgPasswordResetTokenRepository, PgEmailVerificationTokenRepository, PgAuthIdentityRepository, PgAuditLogRepository};
+use crate::infrastructure::db::{PgTenantRepository, PgUserRepository, PgApiKeyRepository, PgPasswordResetTokenRepository, PgEmailVerificationTokenRepository, PgAuthIdentityRepository, PgAuditLogRepository, PgPickupAddressRepository};
 use crate::infrastructure::external::{SesEmailAdapter, LogEmailAdapter};
 use crate::api::http::{router, AppState};
 use logisticos_auth::jwt::JwtService;
@@ -79,6 +79,7 @@ pub async fn run() -> anyhow::Result<()> {
     let push_token_repo = Arc::new(crate::infrastructure::db::PgPushTokenRepository::new(pool.clone()));
     let auth_identity_repo = Arc::new(PgAuthIdentityRepository::new(pool.clone()));
     let audit_log = Arc::new(PgAuditLogRepository::new(pool.clone()));
+    let address_repo = Arc::new(PgPickupAddressRepository::new(pool.clone()));
 
     // Email adapter — SES when from_address is configured, dev-log otherwise.
     let app_base_url = cfg.email.app_base_url.clone()
@@ -128,6 +129,7 @@ pub async fn run() -> anyhow::Result<()> {
         email_verification_token_repo,
         push_token_repo,
         audit_log,
+        address_repo: address_repo as _,
     });
 
     use tower_http::cors::CorsLayer;
