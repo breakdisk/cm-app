@@ -54,7 +54,7 @@ impl WithdrawalService {
     /// persist request, and return it.
     pub async fn request(
         &self,
-        tenant_id:       Uuid,
+        tenant_id:       &TenantId,
         amount_centavos: i64,
         requested_by:    Uuid,
     ) -> AppResult<WithdrawalRequest> {
@@ -65,24 +65,23 @@ impl WithdrawalService {
             )));
         }
 
-        let tid = TenantId::from_uuid(tenant_id);
         let mut wallet = self.wallet_repo
-            .find_by_tenant(&tid)
+            .find_by_tenant(tenant_id)
             .await
             .map_err(AppError::Internal)?
-            .ok_or_else(|| AppError::NotFound { resource: "wallet", id: tenant_id.to_string() })?;
+            .ok_or_else(|| AppError::NotFound { resource: "wallet", id: tenant_id.inner().to_string() })?;
 
         wallet.reserve(amount_centavos)
             .map_err(|e| AppError::BusinessRule(e.to_string()))?;
 
         self.wallet_repo.save_wallet(&wallet).await.map_err(AppError::Internal)?;
 
-        let req = WithdrawalRequest::new(tenant_id, wallet.id, amount_centavos, requested_by);
+        let req = WithdrawalRequest::new(tenant_id.inner(), wallet.id, amount_centavos, requested_by);
         self.withdrawal_repo.insert(&req).await.map_err(AppError::Internal)?;
 
         tracing::info!(
             withdrawal_id = %req.id,
-            tenant_id     = %tenant_id,
+            tenant_id     = %tenant_id.inner(),
             amount        = amount_centavos,
             "Withdrawal request created — funds reserved",
         );
@@ -110,7 +109,7 @@ impl WithdrawalService {
         &self,
         id:          Uuid,
         reviewed_by: Uuid,
-        tenant_id:   Uuid,
+        tenant_id:   &TenantId,
     ) -> AppResult<WithdrawalRequest> {
         let mut req = self.find_or_error(id).await?;
         let mut wallet = self.wallet_or_error(req.wallet_id).await?;
@@ -125,11 +124,10 @@ impl WithdrawalService {
 
         self.wallet_repo.save_wallet(&wallet).await.map_err(AppError::Internal)?;
 
-        let tid = TenantId::from_uuid(tenant_id);
         let ledger_tx = WalletTransaction {
             id:               Uuid::new_v4(),
             wallet_id:        wallet.id,
-            tenant_id:        tid.clone(),
+            tenant_id:        tenant_id.clone(),
             transaction_type: TransactionType::Withdrawal,
             amount:           Money::new(req.amount_centavos, Currency::PHP),
             reference_id:     req.id,
@@ -146,10 +144,10 @@ impl WithdrawalService {
         let event = Event::new(
             "payments",
             "wallet.withdrawal_disbursed",
-            tenant_id,
+            tenant_id.inner(),
             WithdrawalDisbursed {
                 withdrawal_id:   req.id,
-                tenant_id,
+                tenant_id:       tenant_id.inner(),
                 wallet_id:       req.wallet_id,
                 amount_centavos: req.amount_centavos,
                 disbursed_by:    reviewed_by,
@@ -177,7 +175,7 @@ impl WithdrawalService {
         id:          Uuid,
         reviewed_by: Uuid,
         note:        String,
-        tenant_id:   Uuid,
+        tenant_id:   &TenantId,
     ) -> AppResult<WithdrawalRequest> {
         let mut req = self.find_or_error(id).await?;
         let mut wallet = self.wallet_or_error(req.wallet_id).await?;
@@ -194,10 +192,10 @@ impl WithdrawalService {
         let event = Event::new(
             "payments",
             "wallet.withdrawal_rejected",
-            tenant_id,
+            tenant_id.inner(),
             WithdrawalRejected {
                 withdrawal_id:   req.id,
-                tenant_id,
+                tenant_id:       tenant_id.inner(),
                 wallet_id:       req.wallet_id,
                 amount_centavos: req.amount_centavos,
                 rejected_by:     reviewed_by,
