@@ -67,7 +67,6 @@ impl StorageAdapter for S3StorageAdapter {
             .put_object()
             .bucket(&self.bucket)
             .key(key)
-            .content_type(content_type)
             .presigned(
                 aws_sdk_s3::presigning::PresigningConfig::expires_in(
                     std::time::Duration::from_secs(ttl_seconds as u64)
