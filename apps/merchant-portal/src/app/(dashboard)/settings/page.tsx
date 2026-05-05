@@ -1,14 +1,5 @@
 "use client";
-/**
- * Merchant Portal — Settings
- * Merchant profile, pickup addresses, notification preferences, API access.
- *
- * Status per tab:
- *   Profile          — display-only; backend has no PUT /v1/users/:id yet
- *   Pickup Addresses — UI-local; no backend `saved_addresses` table yet
- *   Notifications    — placeholder; no backend `notification_prefs` store yet
- *   API Access       — fully wired to identity /v1/api-keys (list + create + revoke)
- */
+
 import { useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { GlassCard } from "@/components/ui/glass-card";
@@ -18,15 +9,11 @@ import {
   apiKeysApi, apiKeyIdOf,
   type ApiKey, type CreateApiKeyResult,
 } from "@/lib/api/api-keys";
+import { identityApi, type Me, type Tenant } from "@/lib/api/identity";
+import { addressesApi, type PickupAddress, type CreatePickupAddressPayload } from "@/lib/api/addresses";
 
 const TABS = ["Profile", "Pickup Addresses", "Notifications", "API Access"] as const;
 type Tab = (typeof TABS)[number];
-
-const ADDRESSES = [
-  { id: "addr_1", label: "Main Warehouse",  address: "123 Industrial Blvd, Pasig City, Metro Manila 1605", default: true  },
-  { id: "addr_2", label: "Cebu Branch",     address: "45 Colon St, Cebu City, Cebu 6000",                 default: false },
-  { id: "addr_3", label: "Davao Depot",     address: "Buhangin Rd, Davao City, Davao del Sur 8000",        default: false },
-];
 
 export default function MerchantSettingsPage() {
   const [activeTab, setActiveTab] = useState<Tab>("Profile");
@@ -62,87 +49,9 @@ export default function MerchantSettingsPage() {
         </div>
       </motion.div>
 
-      {/* Profile */}
-      {activeTab === "Profile" && (
-        <motion.div variants={variants.fadeInUp} className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <GlassCard title="Business Information">
-            <div className="space-y-4">
-              {[
-                { label: "Business Name",   value: "Acme Trading Corp."          },
-                { label: "Merchant ID",     value: "merch-a1b2c3d4", mono: true  },
-                { label: "Contact Person",  value: "Juan dela Cruz"               },
-                { label: "Email",           value: "ops@acmetrading.ph"           },
-                { label: "Phone",           value: "+63 917 123 4567"             },
-                { label: "TIN",             value: "123-456-789-000", mono: true  },
-              ].map((row) => (
-                <div key={row.label} className="flex justify-between items-center py-2 border-b border-white/[0.06]">
-                  <span className="text-xs text-white/40 uppercase tracking-widest font-mono">{row.label}</span>
-                  <span className={`text-sm text-white font-medium ${row.mono ? "font-mono text-[#00FF88]" : ""}`}>{row.value}</span>
-                </div>
-              ))}
-            </div>
-          </GlassCard>
+      {activeTab === "Profile" && <ProfileTab />}
+      {activeTab === "Pickup Addresses" && <PickupAddressesTab />}
 
-          <GlassCard title="Billing & Plan">
-            <div className="space-y-4">
-              {[
-                { label: "Plan",             value: "Growth",       badge: "green"  },
-                { label: "Billing Cycle",    value: "Monthly",      badge: null     },
-                { label: "Shipments / mo",   value: "≤ 5,000",      badge: null     },
-                { label: "COD Rate",         value: "1.5% + ₱15",   badge: null     },
-                { label: "Fragile Surcharge",value: "₱30 / parcel", badge: null     },
-                { label: "Status",           value: "Active",       badge: "green"  },
-              ].map((row) => (
-                <div key={row.label} className="flex justify-between items-center py-2 border-b border-white/[0.06]">
-                  <span className="text-xs text-white/40 uppercase tracking-widest font-mono">{row.label}</span>
-                  {row.badge ? (
-                    <NeonBadge variant={row.badge as any}>{row.value}</NeonBadge>
-                  ) : (
-                    <span className="text-sm text-white font-medium">{row.value}</span>
-                  )}
-                </div>
-              ))}
-            </div>
-          </GlassCard>
-        </motion.div>
-      )}
-
-      {/* Pickup Addresses */}
-      {activeTab === "Pickup Addresses" && (
-        <motion.div variants={variants.fadeInUp} className="space-y-4">
-          <div className="flex justify-end">
-            <button className="px-4 py-2 text-sm font-medium text-[#050810] bg-[#00FF88] rounded-lg hover:bg-[#00FF88]/90 transition-colors">
-              + Add Address
-            </button>
-          </div>
-          {ADDRESSES.map((addr) => (
-            <GlassCard key={addr.id}>
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <div className="flex items-center gap-3 mb-1">
-                    <span className="text-white font-semibold">{addr.label}</span>
-                    {addr.default && <NeonBadge variant="cyan">Default</NeonBadge>}
-                  </div>
-                  <p className="text-sm text-white/50">{addr.address}</p>
-                </div>
-                <div className="flex gap-2 shrink-0">
-                  {!addr.default && (
-                    <button className="text-xs text-[#00E5FF] hover:text-[#00E5FF]/70">Set Default</button>
-                  )}
-                  <button className="text-xs text-[#A855F7] hover:text-[#A855F7]/70">Edit</button>
-                  {!addr.default && (
-                    <button className="text-xs text-[#FF3B5C] hover:text-[#FF3B5C]/70">Remove</button>
-                  )}
-                </div>
-              </div>
-            </GlassCard>
-          ))}
-        </motion.div>
-      )}
-
-      {/* Notifications — honest placeholder until the engagement service
-          gains a per-merchant notification_prefs store. The UI previously
-          rendered 21 toggles that did nothing server-side. */}
       {activeTab === "Notifications" && (
         <motion.div variants={variants.fadeInUp}>
           <GlassCard>
@@ -158,8 +67,320 @@ export default function MerchantSettingsPage() {
         </motion.div>
       )}
 
-      {/* API Access — fully wired */}
       {activeTab === "API Access" && <ApiKeysTab />}
+    </motion.div>
+  );
+}
+
+// ── Profile tab ───────────────────────────────────────────────────────────────
+
+function ProfileTab() {
+  const [me, setMe]           = useState<Me | null>(null);
+  const [tenant, setTenant]   = useState<Tenant | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving]   = useState(false);
+  const [form, setForm]       = useState({ first_name: "", last_name: "", phone_number: "" });
+
+  useEffect(() => {
+    Promise.all([identityApi.getMe(), identityApi.getTenant()])
+      .then(([meData, tenantData]) => {
+        setMe(meData);
+        setTenant(tenantData);
+        setForm({
+          first_name:   meData.first_name,
+          last_name:    meData.last_name,
+          phone_number: meData.phone_number ?? "",
+        });
+      })
+      .catch((e) => setError(e?.message ?? "Failed to load profile"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  async function handleSave() {
+    if (!me) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const updated = await identityApi.updateMe({
+        first_name:   form.first_name || undefined,
+        last_name:    form.last_name  || undefined,
+        phone_number: form.phone_number || undefined,
+      });
+      setMe(updated);
+      setEditing(false);
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <motion.div variants={variants.fadeInUp} className="text-white/40 text-sm font-mono py-8 text-center">
+        Loading profile…
+      </motion.div>
+    );
+  }
+
+  return (
+    <motion.div variants={variants.fadeInUp} className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <GlassCard title="Your Profile">
+        {error && <p className="text-xs text-red-400 font-mono mb-4">{error}</p>}
+        {editing ? (
+          <div className="space-y-4">
+            {(["first_name", "last_name", "phone_number"] as const).map((field) => (
+              <div key={field} className="space-y-1">
+                <label className="text-xs text-white/40 uppercase tracking-widest font-mono">
+                  {field.replace(/_/g, " ")}
+                </label>
+                <input
+                  value={form[field]}
+                  onChange={(e) => setForm((f) => ({ ...f, [field]: e.target.value }))}
+                  className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white placeholder-white/25 outline-none focus:border-cyan-neon/40"
+                />
+              </div>
+            ))}
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                className="px-4 py-2 text-sm font-semibold text-black bg-[#00FF88] rounded-lg disabled:opacity-40"
+              >
+                {saving ? "Saving…" : "Save"}
+              </button>
+              <button
+                onClick={() => { setEditing(false); setError(null); }}
+                className="px-4 py-2 text-sm text-white/60 border border-white/10 rounded-lg"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {[
+              { label: "Name",   value: me ? `${me.first_name} ${me.last_name}` : "—" },
+              { label: "Email",  value: me?.email ?? "—" },
+              { label: "Phone",  value: me?.phone_number ?? "—" },
+              { label: "Roles",  value: me?.roles.join(", ") ?? "—" },
+              { label: "User ID",value: me?.id ?? "—", mono: true },
+            ].map((row) => (
+              <div key={row.label} className="flex justify-between items-center py-2 border-b border-white/[0.06]">
+                <span className="text-xs text-white/40 uppercase tracking-widest font-mono">{row.label}</span>
+                <span className={`text-sm text-white font-medium ${row.mono ? "font-mono text-[#00FF88]" : ""}`}>
+                  {row.value}
+                </span>
+              </div>
+            ))}
+            <div className="pt-2">
+              <button
+                onClick={() => setEditing(true)}
+                className="px-4 py-2 text-sm font-medium text-[#00E5FF] border border-[#00E5FF]/20 rounded-lg hover:bg-[#00E5FF]/5"
+              >
+                Edit Profile
+              </button>
+            </div>
+          </div>
+        )}
+      </GlassCard>
+
+      <GlassCard title="Tenant & Plan">
+        <div className="space-y-4">
+          {[
+            { label: "Business Name",     value: tenant?.name ?? "—" },
+            { label: "Tenant Slug",       value: tenant?.slug ?? "—", mono: true },
+            { label: "Plan",              value: tenant?.subscription_tier ?? "—", badge: "green" },
+            { label: "Status",            value: tenant?.is_active ? "Active" : "Suspended", badge: tenant?.is_active ? "green" : "muted" },
+            { label: "Tenant ID",         value: tenant?.id ?? "—", mono: true },
+          ].map((row) => (
+            <div key={row.label} className="flex justify-between items-center py-2 border-b border-white/[0.06]">
+              <span className="text-xs text-white/40 uppercase tracking-widest font-mono">{row.label}</span>
+              {row.badge ? (
+                <NeonBadge variant={row.badge as "green" | "muted"}>{row.value}</NeonBadge>
+              ) : (
+                <span className={`text-sm text-white font-medium ${row.mono ? "font-mono text-[#00FF88] text-xs" : ""}`}>
+                  {row.value}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      </GlassCard>
+    </motion.div>
+  );
+}
+
+// ── Pickup Addresses tab ──────────────────────────────────────────────────────
+
+function PickupAddressesTab() {
+  const [addresses, setAddresses] = useState<PickupAddress[]>([]);
+  const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState<string | null>(null);
+  const [adding, setAdding]       = useState(false);
+  const [saving, setSaving]       = useState(false);
+  const [form, setForm]           = useState<CreatePickupAddressPayload>({ label: "", address: "", city: "", province: "", postal_code: "", country: "PH" });
+  const [busyId, setBusyId]       = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      setAddresses(await addressesApi.list());
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Failed to load addresses");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleCreate() {
+    if (!form.label.trim() || !form.address.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await addressesApi.create(form);
+      setForm({ label: "", address: "", city: "", province: "", postal_code: "", country: "PH" });
+      setAdding(false);
+      await load();
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Create failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleSetDefault(id: string) {
+    setBusyId(id);
+    try {
+      await addressesApi.setDefault(id);
+      await load();
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Failed to set default");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function handleRemove(id: string) {
+    setBusyId(id);
+    try {
+      await addressesApi.remove(id);
+      await load();
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Failed to remove");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <motion.div variants={variants.fadeInUp} className="space-y-4">
+      {error && (
+        <GlassCard padding="sm">
+          <p className="text-xs text-red-400 font-mono">{error}</p>
+        </GlassCard>
+      )}
+
+      <div className="flex justify-end">
+        <button
+          onClick={() => setAdding((v) => !v)}
+          className="px-4 py-2 text-sm font-medium text-[#050810] bg-[#00FF88] rounded-lg hover:bg-[#00FF88]/90 transition-colors"
+        >
+          {adding ? "Cancel" : "+ Add Address"}
+        </button>
+      </div>
+
+      {adding && (
+        <GlassCard title="New pickup address">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {([
+              ["label",       "Label",       "Main Warehouse"],
+              ["address",     "Street Address", "123 Industrial Blvd"],
+              ["city",        "City",        "Pasig City"],
+              ["province",    "Province",    "Metro Manila"],
+              ["postal_code", "Postal Code", "1600"],
+              ["country",     "Country",     "PH"],
+            ] as [keyof CreatePickupAddressPayload, string, string][]).map(([field, label, placeholder]) => (
+              <div key={field} className="space-y-1">
+                <label className="text-xs text-white/40 uppercase tracking-widest font-mono">{label}</label>
+                <input
+                  value={(form[field] as string) ?? ""}
+                  onChange={(e) => setForm((f) => ({ ...f, [field]: e.target.value }))}
+                  placeholder={placeholder}
+                  className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white placeholder-white/25 outline-none focus:border-cyan-neon/40"
+                />
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-3 mt-4">
+            <button
+              onClick={handleCreate}
+              disabled={saving || !form.label.trim() || !form.address.trim()}
+              className="px-4 py-2 text-sm font-semibold text-black bg-[#00FF88] rounded-lg disabled:opacity-40"
+            >
+              {saving ? "Saving…" : "Save Address"}
+            </button>
+          </div>
+        </GlassCard>
+      )}
+
+      {loading ? (
+        <div className="text-white/40 text-sm font-mono py-8 text-center">Loading addresses…</div>
+      ) : addresses.length === 0 ? (
+        <GlassCard>
+          <div className="py-8 text-center text-xs text-white/40 font-mono">No pickup addresses yet. Add one above.</div>
+        </GlassCard>
+      ) : (
+        addresses.map((addr) => {
+          const busy = busyId === addr.id;
+          return (
+            <GlassCard key={addr.id}>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-3 mb-1">
+                    <span className="text-white font-semibold">{addr.label}</span>
+                    {addr.is_default && <NeonBadge variant="cyan">Default</NeonBadge>}
+                  </div>
+                  <p className="text-sm text-white/50">
+                    {[addr.address, addr.city, addr.province, addr.postal_code, addr.country]
+                      .filter(Boolean)
+                      .join(", ")}
+                  </p>
+                </div>
+                <div className="flex gap-2 shrink-0 items-center">
+                  {!addr.is_default && (
+                    <button
+                      onClick={() => handleSetDefault(addr.id)}
+                      disabled={busy}
+                      className="text-xs text-[#00E5FF] hover:text-[#00E5FF]/70 disabled:opacity-40"
+                    >
+                      {busy ? "…" : "Set Default"}
+                    </button>
+                  )}
+                  {!addr.is_default && (
+                    <button
+                      onClick={() => handleRemove(addr.id)}
+                      disabled={busy}
+                      className="text-xs text-[#FF3B5C] hover:text-[#FF3B5C]/70 disabled:opacity-40"
+                    >
+                      {busy ? "…" : "Remove"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </GlassCard>
+          );
+        })
+      )}
     </motion.div>
   );
 }
@@ -232,7 +453,6 @@ function ApiKeysTab() {
         </GlassCard>
       )}
 
-      {/* One-time display of a newly-created key */}
       {justCreated && (
         <GlassCard title="New API key — copy it now, you won't see it again">
           <div className="space-y-3">
@@ -253,13 +473,12 @@ function ApiKeysTab() {
               onClick={() => setJustCreated(null)}
               className="px-3 py-1.5 text-xs text-white/60 border border-white/10 rounded"
             >
-              I've saved it
+              I&apos;ve saved it
             </button>
           </div>
         </GlassCard>
       )}
 
-      {/* Create form */}
       <GlassCard title="Create new key">
         <div className="grid grid-cols-1 md:grid-cols-[2fr_3fr_auto] gap-3">
           <input
@@ -285,7 +504,6 @@ function ApiKeysTab() {
         </div>
       </GlassCard>
 
-      {/* Existing keys list */}
       <GlassCard padding="none">
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.08]">
           <h2 className="font-heading text-sm font-semibold text-white">Your API Keys</h2>
