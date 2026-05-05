@@ -167,6 +167,38 @@ impl TenantService {
         Ok(tenant)
     }
 
+    pub async fn update_user_self(
+        &self,
+        user_id: &logisticos_types::UserId,
+        cmd: crate::application::commands::UpdateUserSelfCommand,
+    ) -> AppResult<User> {
+        use validator::Validate;
+        cmd.validate().map_err(|e| AppError::Validation(e.to_string()))?;
+
+        let mut user = self.user_repo.find_by_id(user_id).await
+            .map_err(AppError::Internal)?
+            .ok_or_else(|| AppError::NotFound { resource: "User", id: user_id.inner().to_string() })?;
+
+        if let Some(first_name) = cmd.first_name {
+            user.first_name = first_name;
+        }
+        if let Some(last_name) = cmd.last_name {
+            user.last_name = last_name;
+        }
+        if let Some(phone) = cmd.phone_number {
+            user.phone_number = if phone.trim().is_empty() {
+                None
+            } else {
+                Some(normalise_phone(&phone))
+            };
+        }
+        user.updated_at = chrono::Utc::now();
+
+        self.user_repo.save(&user).await.map_err(AppError::Internal)?;
+        tracing::info!(user_id = %user.id, "User self-updated profile");
+        Ok(user)
+    }
+
     pub async fn invite_user(&self, tenant_id: &logisticos_types::TenantId, cmd: InviteUserCommand) -> AppResult<(User, String)> {
         // Verify tenant is active before allowing user creation
         let tenant = self.tenant_repo.find_by_id(tenant_id).await.map_err(AppError::Internal)?
@@ -215,6 +247,13 @@ impl TenantService {
         // Normalise and store the phone number when provided (required for
         // Driver App OTP login so the app can resolve this user by phone).
         user.phone_number = cmd.phone_number.map(|p| normalise_phone(&p));
+
+        // Drivers use OTP login (no email verification step). All other
+        // invited roles (merchant, admin, partner) can log in immediately
+        // with the temp password — mark verified so can_login() passes.
+        if !is_driver {
+            user.email_verified = true;
+        }
 
         self.user_repo.save(&user).await.map_err(AppError::Internal)?;
 

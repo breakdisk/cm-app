@@ -4,7 +4,28 @@ use uuid::Uuid;
 use logisticos_auth::middleware::AuthClaims;
 use logisticos_auth::require_permission;
 use logisticos_errors::AppError;
-use crate::{api::http::AppState, application::commands::InviteUserCommand};
+use crate::{api::http::AppState, application::commands::{InviteUserCommand, UpdateUserSelfCommand}};
+
+pub async fn get_me(
+    AuthClaims(claims): AuthClaims,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let user_id = logisticos_types::UserId::from_uuid(claims.user_id);
+    let user = state.tenant_service.user_repo_ref().find_by_id(&user_id).await
+        .map_err(AppError::Internal)?
+        .ok_or(AppError::NotFound { resource: "User", id: claims.user_id.to_string() })?;
+    Ok(Json(serde_json::json!({ "data": user })))
+}
+
+pub async fn update_me(
+    AuthClaims(claims): AuthClaims,
+    State(state): State<Arc<AppState>>,
+    Json(cmd): Json<UpdateUserSelfCommand>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let user_id = logisticos_types::UserId::from_uuid(claims.user_id);
+    let user = state.tenant_service.update_user_self(&user_id, cmd).await?;
+    Ok(Json(serde_json::json!({ "data": user })))
+}
 
 pub async fn list_users(
     AuthClaims(claims): AuthClaims,

@@ -1,3 +1,4 @@
+pub mod addresses;
 pub mod auth;
 pub mod tenants;
 pub mod users;
@@ -6,7 +7,7 @@ pub mod audit_log;
 pub mod health;
 pub mod push_tokens;
 
-use axum::{Router, routing::{get, post, put, delete}};
+use axum::{Router, routing::{delete, get, patch, post, put}};
 use std::sync::Arc;
 use crate::api::middleware::{require_internal_secret, InternalSecret};
 use crate::application::services::{auth_service::AuthService, tenant_service::TenantService, api_key_service::ApiKeyService};
@@ -20,6 +21,7 @@ pub struct AppState {
     pub email_verification_token_repo: Arc<crate::infrastructure::db::user_repo::PgEmailVerificationTokenRepository>,
     pub push_token_repo: Arc<crate::infrastructure::db::push_token_repo::PgPushTokenRepository>,
     pub audit_log: Arc<crate::infrastructure::db::audit_log_repo::PgAuditLogRepository>,
+    pub address_repo: Arc<dyn crate::domain::repositories::PickupAddressRepository>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -75,8 +77,12 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         logisticos_auth::middleware::require_auth,
     );
     Router::new()
+        .route("/users/me",        get(users::get_me).put(users::update_me))
         .route("/users",           get(users::list_users).post(users::invite_user))
         .route("/users/:id",       get(users::get_user))
+        .route("/pickup-addresses",              get(addresses::list).post(addresses::create))
+        .route("/pickup-addresses/:id",          delete(addresses::delete))
+        .route("/pickup-addresses/:id/default",  patch(addresses::set_default))
         .route("/api-keys",        get(api_keys::list).post(api_keys::create))
         .route("/api-keys/:id",    delete(api_keys::revoke))
         .route("/push-tokens",     post(push_tokens::register_push_token).delete(push_tokens::delete_push_token))

@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use logisticos_types::{TenantId, UserId};
-use crate::domain::entities::{Tenant, User, ApiKey, AuthIdentity, AuthProvider};
+use crate::domain::entities::{Tenant, User, ApiKey, AuthIdentity, AuthProvider, PickupAddress};
 
 #[async_trait]
 pub trait TenantRepository: Send + Sync {
@@ -14,6 +14,10 @@ pub trait TenantRepository: Send + Sync {
 pub trait UserRepository: Send + Sync {
     async fn find_by_id(&self, id: &UserId) -> anyhow::Result<Option<User>>;
     async fn find_by_email(&self, tenant_id: &TenantId, email: &str) -> anyhow::Result<Option<User>>;
+    /// Cross-tenant email lookup — used by `exchange_firebase` to link an invited
+    /// admin/partner user's Firebase UID to their pre-provisioned identity row.
+    /// Returns the most-recently-created match (by `created_at DESC LIMIT 1`).
+    async fn find_by_email_global(&self, email: &str) -> anyhow::Result<Option<User>>;
     /// Look up a user by their E.164-normalised phone number within a tenant.
     /// Used by `otp_verify` to resolve a pre-registered driver without relying
     /// on the synthetic-email fallback.
@@ -28,6 +32,16 @@ pub trait ApiKeyRepository: Send + Sync {
     async fn save(&self, key: &ApiKey) -> anyhow::Result<()>;
     async fn list_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<ApiKey>>;
     async fn revoke(&self, id: &logisticos_types::ApiKeyId) -> anyhow::Result<()>;
+}
+
+#[async_trait]
+pub trait PickupAddressRepository: Send + Sync {
+    async fn list_by_user(&self, user_id: &UserId) -> anyhow::Result<Vec<PickupAddress>>;
+    async fn find_by_id(&self, id: uuid::Uuid) -> anyhow::Result<Option<PickupAddress>>;
+    async fn insert(&self, addr: &PickupAddress) -> anyhow::Result<()>;
+    async fn delete(&self, id: uuid::Uuid, user_id: &UserId) -> anyhow::Result<()>;
+    /// Atomically sets one address as default and clears all others for the user.
+    async fn set_default(&self, id: uuid::Uuid, user_id: &UserId) -> anyhow::Result<()>;
 }
 
 #[async_trait]
