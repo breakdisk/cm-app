@@ -170,7 +170,9 @@ class DeliveryRepository @Inject constructor(
                             .build()
                         val putResponse = okHttpClient.newCall(putRequest).execute()
                         if (!putResponse.isSuccessful) {
-                            error("R2 photo upload failed: HTTP ${putResponse.code}")
+                            val body = try { putResponse.body?.string() ?: "empty" } catch (e: Exception) { "unreadable" }
+                            android.util.Log.e("DeliveryRepo", "R2 PUT ${putResponse.code}: $body")
+                            error("R2 ${putResponse.code}: $body")
                         }
                         putResponse.close()
                     }
