@@ -14,6 +14,10 @@ pub trait TenantRepository: Send + Sync {
 pub trait UserRepository: Send + Sync {
     async fn find_by_id(&self, id: &UserId) -> anyhow::Result<Option<User>>;
     async fn find_by_email(&self, tenant_id: &TenantId, email: &str) -> anyhow::Result<Option<User>>;
+    /// Cross-tenant email lookup — used by `exchange_firebase` to link an invited
+    /// admin/partner user's Firebase UID to their pre-provisioned identity row.
+    /// Returns the most-recently-created match (by `created_at DESC LIMIT 1`).
+    async fn find_by_email_global(&self, email: &str) -> anyhow::Result<Option<User>>;
     /// Look up a user by their E.164-normalised phone number within a tenant.
     /// Used by `otp_verify` to resolve a pre-registered driver without relying
     /// on the synthetic-email fallback.

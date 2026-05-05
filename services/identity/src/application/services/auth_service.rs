@@ -520,11 +520,76 @@ impl AuthService {
         match cmd.role.as_str() {
             "merchant" => self.provision_draft_merchant(&cmd).await,
             "customer" => self.provision_partner_customer(&cmd).await,
-            "admin" | "partner" => Err(AppError::Forbidden {
-                resource: "tenant_not_provisioned".into(),
-            }),
+            // Invited admins and partners already have an identity row created by
+            // `invite_user`. On first Firebase sign-in they have no auth_identity
+            // link yet. Find their row by email (cross-tenant), validate the role
+            // matches, create the link, then mint tokens normally.
+            "admin" | "partner" | "tenant_admin" => self.link_invited_user(&cmd).await,
             other => Err(AppError::Validation(format!("unknown role: {other}"))),
         }
+    }
+
+    async fn link_invited_user(
+        &self,
+        cmd: &ExchangeFirebaseCommand,
+    ) -> AppResult<ExchangeFirebaseResult> {
+        let user = self
+            .user_repo
+            .find_by_email_global(&cmd.email)
+            .await
+            .map_err(AppError::Internal)?
+            .ok_or_else(|| AppError::Forbidden { resource: "user_not_invited".into() })?;
+
+        if !user.is_active {
+            return Err(AppError::Unauthorized("Account inactive".into()));
+        }
+
+        // Ensure the user actually holds the role the portal is requesting.
+        let requested_role = &cmd.role;
+        let allowed = match requested_role.as_str() {
+            "admin" => user.roles.iter().any(|r| r == "admin" || r == "tenant_admin"),
+            other   => user.roles.iter().any(|r| r == other),
+        };
+        if !allowed {
+            return Err(AppError::Forbidden { resource: "role_mismatch".into() });
+        }
+
+        let tenant = self
+            .tenant_repo
+            .find_by_id(&user.tenant_id)
+            .await
+            .map_err(AppError::Internal)?
+            .ok_or_else(|| AppError::Internal(anyhow::anyhow!("invited user points to missing tenant")))?;
+
+        let identity = AuthIdentity::new(
+            user.id.clone(),
+            AuthProvider::Firebase,
+            cmd.firebase_uid.clone(),
+            cmd.email.clone(),
+        );
+        self.auth_identity_repo.insert(&identity).await.map_err(AppError::Internal)?;
+
+        tracing::info!(
+            user_id = %user.id,
+            tenant_id = %tenant.id,
+            firebase_uid = %cmd.firebase_uid,
+            role = %requested_role,
+            "Linked Firebase UID to invited user"
+        );
+
+        let onboarding_required = tenant.is_draft();
+        let permissions: Vec<String> = if onboarding_required {
+            ONBOARDING_PERMISSIONS.iter().map(|p| (*p).to_owned()).collect()
+        } else {
+            user.roles.iter()
+                .flat_map(|r| default_permissions_for_role(r))
+                .map(|p| p.to_owned())
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect()
+        };
+
+        self.build_exchange_result(&tenant, &user, permissions, onboarding_required)
     }
 
     async fn mint_for_existing_user(

@@ -77,6 +77,20 @@ impl UserRepository for PgUserRepository {
         Ok(row.map(User::from))
     }
 
+    async fn find_by_email_global(&self, email: &str) -> anyhow::Result<Option<User>> {
+        let row = sqlx::query_as::<_, UserRow>(
+            r#"SELECT id, tenant_id, email, password_hash, first_name, last_name,
+                      roles, is_active, email_verified, phone_number,
+                      last_login_at, created_at, updated_at
+               FROM identity.users WHERE email = $1
+               ORDER BY created_at DESC LIMIT 1"#
+        )
+        .bind(email)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(User::from))
+    }
+
     async fn find_by_phone(&self, tenant_id: &TenantId, phone: &str) -> anyhow::Result<Option<User>> {
         let row = sqlx::query_as::<_, UserRow>(
             r#"SELECT id, tenant_id, email, password_hash, first_name, last_name,
