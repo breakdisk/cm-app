@@ -52,6 +52,21 @@ impl Wallet {
         self.updated_at = Utc::now();
     }
 
+    /// Release a reservation and debit the balance in a single version bump.
+    /// Used during withdrawal disbursal to avoid double-incrementing the optimistic lock version.
+    pub fn complete_withdrawal(&mut self, amount_centavos: i64) -> Result<(), &'static str> {
+        let reserved = self.reserved_centavos.min(amount_centavos);
+        self.reserved_centavos -= reserved;
+
+        if self.balance.amount < amount_centavos {
+            return Err("Insufficient balance for withdrawal");
+        }
+        self.balance = Money::new(self.balance.amount - amount_centavos, self.currency);
+        self.version += 1;
+        self.updated_at = Utc::now();
+        Ok(())
+    }
+
     /// Credit the wallet (COD remittance, refund, promotional credit).
     pub fn credit(&mut self, amount: Money) -> Result<(), &'static str> {
         if amount.currency != self.currency {

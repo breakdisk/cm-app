@@ -29,6 +29,7 @@ pub struct WithdrawalRequest {
 
 impl WithdrawalRequest {
     pub fn new(tenant_id: Uuid, wallet_id: Uuid, amount_centavos: i64, requested_by: Uuid) -> Self {
+        debug_assert!(amount_centavos > 0, "amount_centavos must be positive");
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),

@@ -33,12 +33,17 @@ impl WithdrawalService {
     }
 
     /// Find a withdrawal request by ID or return NotFound.
-    async fn find_or_error(&self, id: Uuid) -> AppResult<WithdrawalRequest> {
-        self.withdrawal_repo
+    /// Also verifies the request belongs to the given tenant (returns NotFound if not, to avoid leaking IDs).
+    async fn find_or_error(&self, id: Uuid, tenant_id: &TenantId) -> AppResult<WithdrawalRequest> {
+        let req = self.withdrawal_repo
             .find_by_id(id)
             .await
             .map_err(AppError::Internal)?
-            .ok_or_else(|| AppError::NotFound { resource: "withdrawal_request", id: id.to_string() })
+            .ok_or_else(|| AppError::NotFound { resource: "withdrawal_request", id: id.to_string() })?;
+        if req.tenant_id != tenant_id.inner() {
+            return Err(AppError::NotFound { resource: "withdrawal_request", id: id.to_string() });
+        }
+        Ok(req)
     }
 
     /// Find a wallet by ID or return NotFound.
@@ -90,8 +95,8 @@ impl WithdrawalService {
     }
 
     /// Approve a pending withdrawal request (finance review step).
-    pub async fn approve(&self, id: Uuid, reviewed_by: Uuid) -> AppResult<WithdrawalRequest> {
-        let mut req = self.find_or_error(id).await?;
+    pub async fn approve(&self, id: Uuid, reviewed_by: Uuid, tenant_id: &TenantId) -> AppResult<WithdrawalRequest> {
+        let mut req = self.find_or_error(id, tenant_id).await?;
 
         req.approve(reviewed_by)
             .map_err(|e| AppError::BusinessRule(e.to_string()))?;
@@ -111,15 +116,18 @@ impl WithdrawalService {
         reviewed_by: Uuid,
         tenant_id:   &TenantId,
     ) -> AppResult<WithdrawalRequest> {
-        let mut req = self.find_or_error(id).await?;
+        let mut req = self.find_or_error(id, tenant_id).await?;
         let mut wallet = self.wallet_or_error(req.wallet_id).await?;
 
         req.disburse(reviewed_by)
             .map_err(|e| AppError::BusinessRule(e.to_string()))?;
 
-        // Debit balance and clear the prior reservation atomically (domain-level).
-        wallet.release_reservation(req.amount_centavos);
-        wallet.debit(Money::new(req.amount_centavos, Currency::PHP))
+        // Status update first: if wallet save fails, retry sees Disbursed and refuses — preventing double-debit.
+        // Full atomicity requires a DB transaction (future improvement).
+        self.withdrawal_repo.update(&req).await.map_err(AppError::Internal)?;
+
+        // Debit balance and clear the prior reservation in a single version bump (domain-level).
+        wallet.complete_withdrawal(req.amount_centavos)
             .map_err(|e| AppError::BusinessRule(e.to_string()))?;
 
         self.wallet_repo.save_wallet(&wallet).await.map_err(AppError::Internal)?;
@@ -138,8 +146,6 @@ impl WithdrawalService {
             created_at: chrono::Utc::now(),
         };
         self.wallet_repo.record_transaction(&ledger_tx).await.map_err(AppError::Internal)?;
-
-        self.withdrawal_repo.update(&req).await.map_err(AppError::Internal)?;
 
         let event = Event::new(
             "payments",
@@ -177,7 +183,7 @@ impl WithdrawalService {
         note:        String,
         tenant_id:   &TenantId,
     ) -> AppResult<WithdrawalRequest> {
-        let mut req = self.find_or_error(id).await?;
+        let mut req = self.find_or_error(id, tenant_id).await?;
         let mut wallet = self.wallet_or_error(req.wallet_id).await?;
 
         req.reject(reviewed_by, note.clone())
