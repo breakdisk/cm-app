@@ -8,7 +8,7 @@ use crate::application::services::{
 use crate::infrastructure::cache::RedisSequenceSource;
 use crate::infrastructure::db::{
     PgBillingRunRepository, PgCodRemittanceBatchRepository, PgCodRepository,
-    PgInvoiceRepository, PgWalletRepository,
+    PgInvoiceRepository, PgWalletRepository, PgMerchantBillingAccountRepository,
 };
 use crate::infrastructure::http::OrderIntakeClient;
 use crate::api::http::{router, AppState};
@@ -57,6 +57,9 @@ pub async fn run() -> anyhow::Result<()> {
     let cod_batch_repo   = Arc::new(PgCodRemittanceBatchRepository::new(pool.clone()));
     let wallet_repo      = Arc::new(PgWalletRepository::new(pool.clone()));
     let billing_run_repo = Arc::new(PgBillingRunRepository::new(pool.clone()));
+    let merchant_billing_account_repo = Arc::new(
+        PgMerchantBillingAccountRepository::new(pool.clone())
+    );
     let sequence_source  = Arc::new(
         RedisSequenceSource::new(&cfg.redis.url).context("Failed to connect to Redis for sequences")?
     );
@@ -89,12 +92,13 @@ pub async fn run() -> anyhow::Result<()> {
     ));
 
     let state = Arc::new(AppState {
-        invoice_service:        Arc::clone(&invoice_service),
-        cod_service:            Arc::clone(&cod_service),
-        cod_remittance_service: Arc::clone(&cod_remittance_service),
+        invoice_service:                   Arc::clone(&invoice_service),
+        cod_service:                       Arc::clone(&cod_service),
+        cod_remittance_service:            Arc::clone(&cod_remittance_service),
         wallet_service,
-        billing_service:        Arc::clone(&billing_service),
-        jwt:                    Arc::clone(&jwt),
+        billing_service:                   Arc::clone(&billing_service),
+        jwt:                               Arc::clone(&jwt),
+        merchant_billing_account_repo:     Arc::clone(&merchant_billing_account_repo) as _,
     });
     let app = router(state);
 

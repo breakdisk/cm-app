@@ -3,6 +3,7 @@ pub mod wallet;
 pub mod billing;
 pub mod cod_batches;
 pub mod health;
+pub mod merchant_billing_accounts;
 
 use axum::{Router, routing::{get, post}};
 use std::sync::Arc;
@@ -11,12 +12,13 @@ use crate::application::services::{
 };
 
 pub struct AppState {
-    pub invoice_service:         Arc<InvoiceService>,
-    pub cod_service:             Arc<CodService>,
-    pub cod_remittance_service:  Arc<CodRemittanceService>,
-    pub wallet_service:          Arc<WalletService>,
-    pub billing_service:         Arc<BillingAggregationService>,
-    pub jwt:                     Arc<logisticos_auth::jwt::JwtService>,
+    pub invoice_service:                Arc<InvoiceService>,
+    pub cod_service:                    Arc<CodService>,
+    pub cod_remittance_service:         Arc<CodRemittanceService>,
+    pub wallet_service:                 Arc<WalletService>,
+    pub billing_service:                Arc<BillingAggregationService>,
+    pub jwt:                            Arc<logisticos_auth::jwt::JwtService>,
+    pub merchant_billing_account_repo:  Arc<dyn crate::domain::repositories::MerchantBillingAccountRepository>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -46,6 +48,12 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/wallet",                                get(wallet::get_wallet))
         .route("/wallet/transactions",                   get(wallet::list_transactions))
         .route("/wallet/withdraw",                       post(wallet::request_withdrawal))
+        .route(
+            "/admin/merchants/:merchant_id/billing-account",
+            get(merchant_billing_accounts::get_billing_account)
+                .post(merchant_billing_accounts::upsert_billing_account)
+                .patch(merchant_billing_accounts::patch_billing_account),
+        )
         .layer(auth_layer)
 }
 
