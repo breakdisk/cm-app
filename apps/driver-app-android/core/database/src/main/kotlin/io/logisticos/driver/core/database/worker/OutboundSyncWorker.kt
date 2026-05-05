@@ -20,17 +20,25 @@ import io.logisticos.driver.core.database.entity.SyncAction
 import io.logisticos.driver.core.database.entity.SyncQueueEntity
 import android.util.Base64
 import io.logisticos.driver.core.database.dao.TaskDao
+import io.logisticos.driver.core.network.service.AttachPhotoRequest
 import io.logisticos.driver.core.network.service.AttachSignatureRequest
 import io.logisticos.driver.core.network.service.CompleteTaskRequest
 import io.logisticos.driver.core.network.service.DriverOpsApiService
 import io.logisticos.driver.core.network.service.FailTaskRequest
+import io.logisticos.driver.core.network.service.GetUploadUrlRequest
 import io.logisticos.driver.core.network.service.InitiatePodRequest
 import io.logisticos.driver.core.network.service.PodApiService
 import io.logisticos.driver.core.network.service.SubmitPodRequest
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 import java.util.concurrent.TimeUnit
 
@@ -42,7 +50,8 @@ class OutboundSyncWorker @AssistedInject constructor(
     private val podDao: PodDao,
     private val taskDao: TaskDao,
     private val driverOpsApi: DriverOpsApiService,
-    private val podApi: PodApiService
+    private val podApi: PodApiService,
+    private val okHttpClient: OkHttpClient,
 ) : CoroutineWorker(context, workerParams) {
 
     override suspend fun doWork(): Result {
@@ -82,9 +91,10 @@ class OutboundSyncWorker @AssistedInject constructor(
                     "FAILED"      -> {
                         driverOpsApi.failTask(taskId, FailTaskRequest(reason = reason ?: "unknown"))
                     }
-                    else -> syncQueueDao.remove(item.id)   // unknown status — discard
+                    else -> syncQueueDao.remove(item.id)
                 }
             }
+
             SyncAction.POD_SUBMIT -> {
                 val taskId = payload["taskId"]?.jsonPrimitive?.contentOrNull
                     ?: run { syncQueueDao.remove(item.id); return }
@@ -95,47 +105,76 @@ class OutboundSyncWorker @AssistedInject constructor(
                     syncQueueDao.remove(item.id); return
                 }
 
-                // 1. Initiate — use task's stored destination coords as best available
+                val photoFile = pod.photoPath?.let { File(it).takeIf { f -> f.exists() } }
+                val sigFile   = pod.signaturePath?.let { File(it).takeIf { f -> f.exists() } }
+
+                // 1. Initiate — requires_* flags reflect what evidence is actually on disk.
+                //    Pickup tasks have no signature; photos are optional on both task types.
+                //    Setting these correctly prevents "POD incomplete" on submit.
                 val initiateResp = podApi.initiate(
                     InitiatePodRequest(
-                        shipmentId = task.shipmentId,
-                        taskId = taskId,
-                        recipientName = task.recipientName,
-                        captureLat = task.lat,
-                        captureLng = task.lng,
-                        deliveryLat = task.lat,
-                        deliveryLng = task.lng
+                        shipmentId        = task.shipmentId,
+                        taskId            = taskId,
+                        recipientName     = task.recipientName,
+                        captureLat        = task.lat,
+                        captureLng        = task.lng,
+                        deliveryLat       = task.lat,
+                        deliveryLng       = task.lng,
+                        requiresPhoto     = photoFile != null,
+                        requiresSignature = sigFile != null,
                     )
                 )
                 val podId = initiateResp.data.podId
 
-                // 2. Attach signature if available
-                if (pod.signaturePath != null) {
-                    val sigFile = File(pod.signaturePath)
-                    if (sigFile.exists()) {
-                        val base64 = Base64.encodeToString(sigFile.readBytes(), Base64.NO_WRAP)
-                        podApi.attachSignature(podId, AttachSignatureRequest(base64))
+                // 2. Upload photo via presigned R2 URL if the file is available.
+                //    Runs on IO because OkHttp .execute() is blocking.
+                if (photoFile != null) {
+                    val contentType = "image/jpeg"
+                    val uploadResp = podApi.getUploadUrl(podId, GetUploadUrlRequest(contentType))
+                    val presignedUrl = uploadResp.data.uploadUrl
+                    val s3Key = uploadResp.data.s3Key
+
+                    withContext(Dispatchers.IO) {
+                        val photoBytes = photoFile.readBytes()
+                        val putRequest = Request.Builder()
+                            .url(presignedUrl)
+                            .put(photoBytes.toRequestBody(contentType.toMediaType()))
+                            .build()
+                        val putResponse = okHttpClient.newCall(putRequest).execute()
+                        if (!putResponse.isSuccessful) {
+                            val body = try { putResponse.body?.string() ?: "empty" } catch (e: Exception) { "unreadable" }
+                            android.util.Log.e("OutboundSyncWorker", "R2 PUT ${putResponse.code}: $body")
+                            error("R2 photo upload failed: ${putResponse.code}: $body")
+                        }
+                        putResponse.close()
                     }
+
+                    podApi.attachPhoto(podId, AttachPhotoRequest(
+                        s3Key       = s3Key,
+                        contentType = contentType,
+                        sizeBytes   = photoFile.length(),
+                    ))
+                    android.util.Log.d("OutboundSyncWorker", "Photo uploaded: $s3Key")
                 }
 
-                // 3. Submit POD
+                // 3. Attach signature if available
+                if (sigFile != null) {
+                    val base64 = Base64.encodeToString(sigFile.readBytes(), Base64.NO_WRAP)
+                    podApi.attachSignature(podId, AttachSignatureRequest(base64))
+                }
+
+                // 4. Submit POD
                 podApi.submit(podId, SubmitPodRequest(otpCode = pod.otpToken))
 
-                // 4. Complete the task
+                // 5. Complete the task with the pod_id so driver-ops links them
                 driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId))
 
                 podDao.markSynced(taskId)
-                // Mirror COMPLETED into local DB so the Route screen removes this task
-                // from the active list. Without this the task stays at its original
-                // status after an offline retry succeeds.
                 taskDao.updateStatus(taskId, io.logisticos.driver.core.database.entity.TaskStatus.COMPLETED)
             }
-            // Actions with no backend wiring (SCAN_EVENT, SHIFT_START, SHIFT_END,
-            // and historically COD_CONFIRM — whose value is actually delivered via
-            // completeTask.codCollectedCents). Log and drop deliberately so they
-            // don't block the queue forever — but keep this branch loud so a
-            // future enum addition is caught in code review, not in production
-            // silent data loss.
+
+            // Actions with no backend wiring. Log and drop deliberately so they
+            // don't block the queue forever.
             else -> {
                 android.util.Log.w(
                     "OutboundSyncWorker",
