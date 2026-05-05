@@ -4,6 +4,7 @@ pub mod billing;
 pub mod cod_batches;
 pub mod health;
 pub mod merchant_billing_accounts;
+pub mod partner_commission;
 
 use axum::{Router, routing::{get, post}};
 use std::sync::Arc;
@@ -19,6 +20,8 @@ pub struct AppState {
     pub billing_service:                Arc<BillingAggregationService>,
     pub jwt:                            Arc<logisticos_auth::jwt::JwtService>,
     pub merchant_billing_account_repo:  Arc<dyn crate::domain::repositories::MerchantBillingAccountRepository>,
+    pub commission_query:               Arc<crate::application::queries::CommissionBreakdownQuery>,
+    pub partner_bonus_repo:             Arc<crate::infrastructure::db::partner_bonus_repo::PgPartnerBonusRepo>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -54,6 +57,8 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
                 .post(merchant_billing_accounts::upsert_billing_account)
                 .patch(merchant_billing_accounts::patch_billing_account),
         )
+        .route("/partner/commission/breakdown", get(partner_commission::get_commission_breakdown))
+        .route("/admin/partner-bonuses",        post(partner_commission::create_partner_bonus))
         .layer(auth_layer)
 }
 

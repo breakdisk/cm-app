@@ -4,6 +4,7 @@ pub mod cod_remittance_batch_repo;
 pub mod wallet_repo;
 pub mod billing_run_repo;
 pub mod merchant_billing_account_repo;
+pub mod partner_bonus_repo;
 
 pub use invoice_repo::PgInvoiceRepository;
 pub use cod_repo::PgCodRepository;
@@ -11,3 +12,4 @@ pub use cod_remittance_batch_repo::PgCodRemittanceBatchRepository;
 pub use wallet_repo::PgWalletRepository;
 pub use billing_run_repo::PgBillingRunRepository;
 pub use merchant_billing_account_repo::PgMerchantBillingAccountRepository;
+pub use partner_bonus_repo::PgPartnerBonusRepo;

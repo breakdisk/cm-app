@@ -65,6 +65,13 @@ pub async fn run() -> anyhow::Result<()> {
     );
     let order_intake_client = Arc::new(OrderIntakeClient::new(&cfg.order_intake.url));
 
+    let partner_bonus_repo = Arc::new(
+        crate::infrastructure::db::partner_bonus_repo::PgPartnerBonusRepo::new(pool.clone())
+    );
+    let commission_query = Arc::new(
+        crate::application::queries::CommissionBreakdownQuery::new(pool.clone())
+    );
+
     let invoice_service = Arc::new(InvoiceService::new(
         Arc::clone(&invoice_repo) as _,
         Arc::clone(&kafka),
@@ -99,6 +106,8 @@ pub async fn run() -> anyhow::Result<()> {
         billing_service:                   Arc::clone(&billing_service),
         jwt:                               Arc::clone(&jwt),
         merchant_billing_account_repo:     Arc::clone(&merchant_billing_account_repo) as _,
+        commission_query:                  Arc::clone(&commission_query),
+        partner_bonus_repo:                Arc::clone(&partner_bonus_repo),
     });
     let app = router(state);
 
