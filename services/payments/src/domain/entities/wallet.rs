@@ -12,6 +12,7 @@ pub struct Wallet {
     pub balance: Money,
     pub currency: Currency,
     pub version: i64,    // Optimistic concurrency — prevents double-credit on concurrent updates
+    pub reserved_centavos: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -25,9 +26,30 @@ impl Wallet {
             balance: Money::new(0, currency),
             currency,
             version: 0,
+            reserved_centavos: 0,
             created_at: now,
             updated_at: now,
         }
+    }
+
+    pub fn available_centavos(&self) -> i64 {
+        self.balance.amount - self.reserved_centavos
+    }
+
+    pub fn reserve(&mut self, amount: i64) -> Result<(), &'static str> {
+        if self.available_centavos() < amount {
+            return Err("Insufficient available balance");
+        }
+        self.reserved_centavos += amount;
+        self.version += 1;
+        self.updated_at = Utc::now();
+        Ok(())
+    }
+
+    pub fn release_reservation(&mut self, amount: i64) {
+        self.reserved_centavos = (self.reserved_centavos - amount).max(0);
+        self.version += 1;
+        self.updated_at = Utc::now();
     }
 
     /// Credit the wallet (COD remittance, refund, promotional credit).
@@ -111,5 +133,39 @@ impl WalletTransaction {
             description: format!("COD handling fee: ₱{:.2}", amount.amount as f64 / 100.0),
             created_at: Utc::now(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_wallet() -> Wallet {
+        let tenant_id = TenantId::from_uuid(Uuid::new_v4());
+        let mut w = Wallet::new(tenant_id, Currency::PHP);
+        w.credit(Money::new(100_000, Currency::PHP)).unwrap();
+        w
+    }
+
+    #[test]
+    fn reserve_reduces_available() {
+        let mut w = make_wallet();
+        w.reserve(30_000).unwrap();
+        assert_eq!(w.available_centavos(), 70_000);
+        assert_eq!(w.balance.amount, 100_000); // balance unchanged
+    }
+
+    #[test]
+    fn reserve_fails_when_insufficient() {
+        let mut w = make_wallet();
+        assert!(w.reserve(200_000).is_err());
+    }
+
+    #[test]
+    fn release_reservation_restores_available() {
+        let mut w = make_wallet();
+        w.reserve(30_000).unwrap();
+        w.release_reservation(30_000);
+        assert_eq!(w.available_centavos(), 100_000);
     }
 }

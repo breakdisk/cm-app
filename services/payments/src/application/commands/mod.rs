@@ -133,8 +133,10 @@ pub struct InvoiceSummary {
 
 #[derive(Debug, Serialize)]
 pub struct WalletSummary {
-    pub wallet_id:     Uuid,
-    pub balance_cents: i64,
-    pub currency:      String,
-    pub updated_at:    String,
+    pub wallet_id:          Uuid,
+    pub balance_cents:      i64,
+    pub currency:           String,
+    pub reserved_centavos:  i64,
+    pub available_centavos: i64,
+    pub updated_at:         String,
 }
