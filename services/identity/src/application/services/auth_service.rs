@@ -13,6 +13,7 @@ use crate::{
     },
     infrastructure::db::user_repo::{PgPasswordResetTokenRepository, PgEmailVerificationTokenRepository},
     infrastructure::cache::RedisCache,
+    infrastructure::external::EmailAdapter,
 };
 
 /// Permissions granted to a draft-tenant owner during lazy onboarding.
@@ -32,6 +33,8 @@ pub struct AuthService {
     reset_token_repo: Arc<PgPasswordResetTokenRepository>,
     email_verification_token_repo: Arc<PgEmailVerificationTokenRepository>,
     redis_cache: Arc<RedisCache>,
+    email: Arc<dyn EmailAdapter>,
+    app_base_url: String,
 }
 
 impl AuthService {
@@ -44,8 +47,10 @@ impl AuthService {
         reset_token_repo: Arc<PgPasswordResetTokenRepository>,
         email_verification_token_repo: Arc<PgEmailVerificationTokenRepository>,
         redis_cache: Arc<RedisCache>,
+        email: Arc<dyn EmailAdapter>,
+        app_base_url: String,
     ) -> Self {
-        Self { tenant_repo, user_repo, auth_identity_repo, jwt, reset_token_repo, email_verification_token_repo, redis_cache }
+        Self { tenant_repo, user_repo, auth_identity_repo, jwt, reset_token_repo, email_verification_token_repo, redis_cache, email, app_base_url }
     }
 
     pub async fn login(&self, cmd: LoginCommand) -> AppResult<LoginResult> {
@@ -169,11 +174,14 @@ impl AuthService {
                 .await
                 .map_err(AppError::Internal)?;
 
-            tracing::info!(
-                user_id = %user.id,
-                reset_link = %format!("http://localhost:3002/reset-password?token={raw_token}"),
-                "Password reset token generated — use this link in dev"
+            let reset_link = format!("{}/reset-password?token={raw_token}", self.app_base_url);
+            let html = format!(
+                "<p>Hi {},</p><p>Click the link below to reset your password. It expires in 1 hour.</p><p><a href=\"{reset_link}\">{reset_link}</a></p><p>If you did not request this, ignore this email.</p>",
+                user.first_name
             );
+            if let Err(e) = self.email.send(&user.email, "Reset your LogisticOS password", &html).await {
+                tracing::warn!(error = %e, user_id = %user.id, "Failed to send password reset email");
+            }
         }
         Ok(()) // Always return Ok to avoid email enumeration
     }
@@ -230,11 +238,14 @@ impl AuthService {
                 .await
                 .map_err(AppError::Internal)?;
 
-            tracing::info!(
-                user_id = %user.id,
-                verify_link = %format!("http://localhost:3002/verify-email?token={raw_token}"),
-                "Email verification token generated — use this link in dev"
+            let verify_link = format!("{}/verify-email?token={raw_token}", self.app_base_url);
+            let html = format!(
+                "<p>Hi {},</p><p>Click the link below to verify your email address.</p><p><a href=\"{verify_link}\">{verify_link}</a></p>",
+                user.first_name
             );
+            if let Err(e) = self.email.send(&user.email, "Verify your LogisticOS email", &html).await {
+                tracing::warn!(error = %e, user_id = %user.id, "Failed to send verification email");
+            }
         }
         Ok(())
     }

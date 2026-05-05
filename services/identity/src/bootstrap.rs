@@ -4,6 +4,7 @@ use anyhow::Context;
 use crate::config::Config;
 use crate::application::services::{AuthService, TenantService, ApiKeyService};
 use crate::infrastructure::db::{PgTenantRepository, PgUserRepository, PgApiKeyRepository, PgPasswordResetTokenRepository, PgEmailVerificationTokenRepository, PgAuthIdentityRepository, PgAuditLogRepository};
+use crate::infrastructure::external::{SesEmailAdapter, LogEmailAdapter};
 use crate::api::http::{router, AppState};
 use logisticos_auth::jwt::JwtService;
 use logisticos_events::producer::KafkaProducer;
@@ -79,6 +80,21 @@ pub async fn run() -> anyhow::Result<()> {
     let auth_identity_repo = Arc::new(PgAuthIdentityRepository::new(pool.clone()));
     let audit_log = Arc::new(PgAuditLogRepository::new(pool.clone()));
 
+    // Email adapter — SES when from_address is configured, dev-log otherwise.
+    let app_base_url = cfg.email.app_base_url.clone()
+        .unwrap_or_else(|| "http://localhost:3002".to_string());
+    let email: Arc<dyn crate::infrastructure::external::EmailAdapter> =
+        if let Some(from_address) = cfg.email.from_address.clone() {
+            Arc::new(
+                SesEmailAdapter::new(from_address, cfg.email.aws_region.clone())
+                    .await
+                    .context("Failed to init SES email adapter")?,
+            )
+        } else {
+            tracing::warn!("EMAIL__FROM_ADDRESS not set — emails will only be logged (dev mode)");
+            Arc::new(LogEmailAdapter)
+        };
+
     // 9. Application services — depend only on repository traits, not DB types
     let auth_service = Arc::new(AuthService::new(
         Arc::clone(&tenant_repo) as _,
@@ -88,6 +104,8 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::clone(&reset_token_repo),
         Arc::clone(&email_verification_token_repo),
         Arc::clone(&redis_cache),
+        email,
+        app_base_url,
     ));
 
     let tenant_service = Arc::new(TenantService::new(

@@ -44,6 +44,8 @@ sha2.workspace        = true
 subtle.workspace      = true
 hmac                  = "0.12"
 base64                = "0.22"
+aws-sdk-sesv2.workspace = true
+aws-config.workspace    = true
 
 [dev-dependencies]
 # axum-test 19.x requires axum ^0.8 — conflicts with workspace axum ^0.7.

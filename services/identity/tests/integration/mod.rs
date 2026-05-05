@@ -149,8 +149,16 @@ use logisticos_identity::{
     api::http::{router, AppState},
     application::services::{ApiKeyService, AuthService, TenantService},
     domain::{
-        entities::{ApiKey, Tenant, User},
-        repositories::{ApiKeyRepository, TenantRepository, UserRepository},
+        entities::{ApiKey, AuthIdentity, AuthProvider, Tenant, User},
+        repositories::{ApiKeyRepository, AuthIdentityRepository, TenantRepository, UserRepository},
+    },
+    infrastructure::{
+        cache::RedisCache,
+        db::{
+            PgAuditLogRepository, PgEmailVerificationTokenRepository,
+            PgPasswordResetTokenRepository, PgPushTokenRepository,
+        },
+        external::LogEmailAdapter,
     },
 };
 
@@ -285,6 +293,23 @@ impl ApiKeyRepository for InMemoryApiKeyRepository {
     }
 }
 
+// ─── InMemoryAuthIdentityRepository ─────────────────────────────────────────
+
+pub struct InMemoryAuthIdentityRepository;
+
+#[async_trait]
+impl AuthIdentityRepository for InMemoryAuthIdentityRepository {
+    async fn find_by_provider_subject(&self, _provider: AuthProvider, _subject: &str) -> anyhow::Result<Option<AuthIdentity>> {
+        Ok(None)
+    }
+    async fn list_for_user(&self, _user_id: &logisticos_types::UserId) -> anyhow::Result<Vec<AuthIdentity>> {
+        Ok(vec![])
+    }
+    async fn insert(&self, _identity: &AuthIdentity) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
 // ── Test app builder ─────────────────────────────────────────────────────────
 //
 // TenantService::new requires Arc<KafkaProducer> (a concrete type, not a trait
@@ -328,10 +353,28 @@ fn build_test_server(
         Arc::clone(&kafka),
     ));
 
+    // Use a lazy pool (no real DB) for the concrete repos that tests don't exercise.
+    let fake_pool = sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy("postgres://test:test@localhost/test_identity")
+        .expect("lazy pool");
+    let reset_token_repo = Arc::new(PgPasswordResetTokenRepository::new(fake_pool.clone()));
+    let email_verification_token_repo = Arc::new(PgEmailVerificationTokenRepository::new(fake_pool.clone()));
+    let push_token_repo = Arc::new(PgPushTokenRepository::new(fake_pool.clone()));
+    let audit_log = Arc::new(PgAuditLogRepository::new(fake_pool.clone()));
+    let auth_identity_repo = Arc::new(InMemoryAuthIdentityRepository);
+    // RedisCache: won't connect until first use; tests don't trigger OTP paths.
+    let redis_cache = Arc::new(RedisCache::new("redis://127.0.0.1:9999").expect("lazy redis"));
+
     let auth_service = Arc::new(AuthService::new(
         Arc::clone(&tenant_repo) as Arc<dyn TenantRepository>,
         Arc::clone(&user_repo) as Arc<dyn UserRepository>,
+        Arc::clone(&auth_identity_repo) as Arc<dyn AuthIdentityRepository>,
         Arc::clone(&jwt),
+        Arc::clone(&reset_token_repo),
+        Arc::clone(&email_verification_token_repo),
+        Arc::clone(&redis_cache),
+        Arc::new(LogEmailAdapter),
+        "http://localhost:3002".to_string(),
     ));
 
     let api_key_service = Arc::new(ApiKeyService::new(
@@ -343,6 +386,10 @@ fn build_test_server(
         tenant_service,
         api_key_service,
         jwt: Arc::clone(&jwt),
+        reset_token_repo,
+        email_verification_token_repo,
+        push_token_repo,
+        audit_log,
     });
 
     let app = router(state);

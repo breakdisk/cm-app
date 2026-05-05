@@ -7,6 +7,8 @@ pub struct Config {
     pub redis: RedisConfig,
     pub kafka: KafkaConfig,
     pub auth: AuthConfig,
+    #[serde(default)]
+    pub email: EmailConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -38,6 +40,16 @@ pub struct AuthConfig {
     pub jwt_secret: String,
     pub jwt_expiry_seconds: u64,
     pub refresh_token_expiry_seconds: u64,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct EmailConfig {
+    /// AWS SES sender address — e.g. "LogisticOS <no-reply@logisticos.app>"
+    pub from_address: Option<String>,
+    /// AWS region for SES (defaults to us-east-1; overridden by AWS_REGION).
+    pub aws_region: Option<String>,
+    /// Base URL for reset/verify links — e.g. "https://app.logisticos.app"
+    pub app_base_url: Option<String>,
 }
 
 impl Config {
