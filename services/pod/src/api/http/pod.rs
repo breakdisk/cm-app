@@ -1,4 +1,4 @@
-use axum::{extract::{Path, State}, Json};
+use axum::{extract::{Path, Query, State}, Json};
 use std::sync::Arc;
 use uuid::Uuid;
 use logisticos_auth::middleware::AuthClaims;
@@ -8,6 +8,11 @@ use crate::{
     api::http::AppState,
     application::commands::*,
 };
+
+#[derive(serde::Deserialize)]
+pub struct PodQuery {
+    pub shipment_id: Option<Uuid>,
+}
 
 pub async fn initiate(
     AuthClaims(claims): AuthClaims,
@@ -87,6 +92,22 @@ pub async fn submit(
     let cmd = SubmitPodCommand { pod_id, ..cmd };
     let pod_id = state.pod_service.submit(&driver_id, &tenant_id, cmd).await?;
     Ok(Json(serde_json::json!({ "data": { "pod_id": pod_id, "status": "submitted" } })))
+}
+
+/// GET /v1/pods?shipment_id=<uuid> — fetch POD for the admin portal panel.
+/// Returns the most recent submitted/draft POD for the shipment, or 404.
+pub async fn list_pods(
+    AuthClaims(_claims): AuthClaims,
+    Query(q): Query<PodQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let shipment_id = q.shipment_id
+        .ok_or_else(|| AppError::Validation("shipment_id query param required".into()))?;
+
+    match state.pod_service.get_by_shipment(shipment_id).await? {
+        Some(pod) => Ok(Json(serde_json::json!({ "data": [pod] }))),
+        None => Ok(Json(serde_json::json!({ "data": [] }))),
+    }
 }
 
 pub async fn get_pod(

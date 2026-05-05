@@ -311,6 +311,11 @@ impl PodService {
         self.load_pod(pod_id).await
     }
 
+    /// Retrieve the most recent POD for a shipment (for admin portal panel).
+    pub async fn get_by_shipment(&self, shipment_id: Uuid) -> AppResult<Option<ProofOfDelivery>> {
+        self.pod_repo.find_by_shipment(shipment_id).await.map_err(AppError::Internal)
+    }
+
     /// Standalone OTP verification — driver can pre-verify before submitting POD.
     /// Returns otp_id on success.
     pub async fn verify_otp_standalone(
