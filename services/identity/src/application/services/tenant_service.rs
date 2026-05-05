@@ -216,6 +216,13 @@ impl TenantService {
         // Driver App OTP login so the app can resolve this user by phone).
         user.phone_number = cmd.phone_number.map(|p| normalise_phone(&p));
 
+        // Drivers use OTP login (no email verification step). All other
+        // invited roles (merchant, admin, partner) can log in immediately
+        // with the temp password — mark verified so can_login() passes.
+        if !is_driver {
+            user.email_verified = true;
+        }
+
         self.user_repo.save(&user).await.map_err(AppError::Internal)?;
 
         // Emit USER_CREATED so downstream services (e.g. dispatch) can populate caches.
