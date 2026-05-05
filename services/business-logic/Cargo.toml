@@ -37,3 +37,4 @@ rdkafka.workspace    = true
 tracing.workspace    = true
 async-trait.workspace = true
 reqwest.workspace    = true
+evalexpr             = "11"

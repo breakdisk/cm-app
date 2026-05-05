@@ -20,10 +20,11 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health::health))
         .route("/ready",  get(health::ready))
-        // Internal service-to-service endpoint — no JWT required.
-        // Called by business-logic when DELIVERY_FAILED fires and the ECA
-        // rule wants to re-enqueue the shipment for another dispatch attempt.
+        // Internal service-to-service endpoints — no JWT required.
+        // Istio mTLS gates caller identity within the service mesh.
         .route("/v1/internal/shipments/:shipment_id/requeue", post(dispatch_ops::requeue_shipment))
+        .route("/v1/internal/shipments/:shipment_id/assign",  post(dispatch_ops::internal_assign))
+        .route("/v1/internal/drivers/available",              get(dispatch_ops::internal_available_drivers))
         .nest("/v1", protected_router(state.clone()))
         .with_state(state)
 }

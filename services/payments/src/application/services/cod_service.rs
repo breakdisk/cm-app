@@ -19,7 +19,7 @@ use crate::{
     domain::{
         entities::CodCollection,
         events::CodReconciled,
-        repositories::{CodRepository, ShipmentBillingSource},
+        repositories::{CodBalanceSummary, CodRepository, ShipmentBillingSource},
     },
 };
 
@@ -112,5 +112,17 @@ impl CodService {
             "COD collection recorded (pending remittance)",
         );
         Ok(())
+    }
+
+    /// Aggregate COD balance for a merchant — called by the AI agent via the internal API.
+    pub async fn cod_balance(
+        &self,
+        tenant_id:   &TenantId,
+        merchant_id: uuid::Uuid,
+    ) -> AppResult<CodBalanceSummary> {
+        self.cod_repo
+            .cod_balance_for_merchant(tenant_id, merchant_id)
+            .await
+            .map_err(AppError::Internal)
     }
 }

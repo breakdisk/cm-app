@@ -54,4 +54,5 @@ fn internal_router(_state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/billing/run",                  post(billing::run_billing))
         .route("/cod/batches",                  post(cod_batches::create_batch))
         .route("/cod/batches/:id/confirm",      post(cod_batches::confirm_batch))
+        .route("/cod/balance/:merchant_id",     get(wallet::get_cod_balance_internal))
 }

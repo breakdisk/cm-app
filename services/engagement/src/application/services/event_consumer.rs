@@ -17,6 +17,7 @@
 use tracing::{error, info, warn};
 use crate::application::services::notification_service::NotificationService;
 use crate::domain::entities::notification::NotificationPriority;
+use crate::infrastructure::cache::SuppressionCache;
 use logisticos_events::topics;
 
 /// Maps a Kafka event type to the template ID and channel priority.
@@ -63,6 +64,11 @@ fn get_mapping(event_type: &str) -> Option<EventNotificationMapping> {
             priority: NotificationPriority::Normal,
             channels: &["email"],
         }),
+        topics::CAMPAIGN_TRIGGERED => Some(EventNotificationMapping {
+            template_id: "campaign_message",
+            priority: NotificationPriority::Low,
+            channels: &["whatsapp", "sms", "email", "push"],
+        }),
         // INVOICE_GENERATED channels/template differ by recipient_type.
         // Routing is handled in process_event(); return a placeholder here so
         // the event is not silently dropped by the None arm.
@@ -81,6 +87,7 @@ pub async fn process_event(
     event_type: &str,
     payload: &serde_json::Value,
     notification_service: &NotificationService,
+    suppression_cache: &SuppressionCache,
 ) {
     let Some(mapping) = get_mapping(event_type) else {
         // Not every event triggers a notification — this is expected
@@ -182,6 +189,20 @@ pub async fn process_event(
             warn!(event_type, "Event missing customer_id — skipping notification");
             return;
         };
+
+        // Campaign suppression: customers with an open support ticket must not
+        // receive marketing messages until the ticket is resolved.
+        if event_type == topics::CAMPAIGN_TRIGGERED
+            && suppression_cache.is_suppressed(customer_id).await
+        {
+            info!(
+                event_type,
+                customer_id = %customer_id,
+                "Campaign notification suppressed — customer has open support ticket"
+            );
+            return;
+        }
+
         let phone = data["customer_phone"].as_str().unwrap_or("").to_owned();
         let email = if is_receipt_resend {
             data["recipient_email"].as_str().unwrap_or("").to_owned()
@@ -328,6 +349,12 @@ pub async fn process_event(
                  Due Date:   {{due_date}}\n\n\
                  You can view and pay your invoice in the CargoMarket Merchant Portal.\n\n\
                  — CargoMarket Billing".to_owned(),
+            ),
+            "campaign_message" => (
+                data.get("subject").and_then(|v| v.as_str()).map(|s| s.to_owned()),
+                data.get("body").and_then(|v| v.as_str())
+                    .unwrap_or("Hi {{customer_name}}, we have an update for you!")
+                    .to_owned(),
             ),
             _ => (None, "{{body}}".to_owned()),
         };

@@ -33,22 +33,20 @@ async def route_event(topic: str, event: dict[str, Any]) -> AgentResult | None:
         return None
 
     match topic:
-        case "shipment.created":
+        case "logisticos.order.shipment.created":
             return await _handle_shipment_created(event, log)
-        case "delivery.failed":
+        case "logisticos.driver.delivery.failed":
             return await _handle_delivery_failed(event, log)
-        case "delivery.completed":
+        case "logisticos.driver.delivery.completed":
             return await _handle_delivery_completed(event, log)
-        case "cod.collection.anomaly":
+        case "logisticos.payments.cod.collection.anomaly":
             return await _handle_cod_anomaly(event, log)
-        case "driver.idle":
-            # Driver idle events are informational — Dispatch agent handles proactively
-            # only if there are pending unassigned shipments. Skip for now.
-            log.debug("driver_idle_event_skipped")
-            return None
-        case "merchant.support.request":
-            # Support requests are handled via REST API (POST /v1/agents/run), not Kafka.
-            log.debug("support_request_via_kafka_skipped")
+        case "logisticos.ai.dispatch.requested":
+            # Emitted by business-logic ECA engine when RunAiDispatch action fires.
+            return await _handle_shipment_created(event, log)
+        case "logisticos.driver.available":
+            # Driver came online — skip; dispatch agent is triggered per-shipment.
+            log.debug("driver_available_event_skipped")
             return None
         case _:
             log.warning("unknown_topic_skipped", topic=topic)

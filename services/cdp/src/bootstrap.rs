@@ -6,6 +6,7 @@ use sqlx::postgres::PgPoolOptions;
 
 use anyhow::Context;
 use logisticos_auth::jwt::JwtService;
+use logisticos_events::producer::KafkaProducer;
 use crate::{
     api::http,
     application::{handlers, services::ProfileService},
@@ -62,7 +63,9 @@ pub async fn run() -> anyhow::Result<()> {
         .context("AUTH__JWT_SECRET env var not set")?;
     let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
 
-    let state = AppState { profile_svc, jwt: Arc::clone(&jwt) };
+    let kafka = Arc::new(KafkaProducer::new(&cfg.kafka.brokers)?);
+
+    let state = AppState { profile_svc, jwt: Arc::clone(&jwt), kafka };
 
     let app = http::router()
         .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth))

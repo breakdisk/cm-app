@@ -120,9 +120,81 @@ impl RuleCondition {
             RuleCondition::AttemptCount { lte } => {
                 ctx.attempt_count.map_or(false, |a| a <= *lte)
             }
-            // Custom DSL expressions require an interpreter — evaluated externally
-            RuleCondition::Custom { .. } => true,
+            RuleCondition::Custom { expression } => evaluate_custom_expression(expression, ctx),
             _ => true,
+        }
+    }
+}
+
+/// Evaluates a DSL expression against a RuleContext using evalexpr.
+///
+/// Supported variables (map directly to RuleContext fields):
+///   service_type (string), zone (string), current_hour (int), current_day (string),
+///   attempt_count (int), shipment_value_cents (int), has_customer (bool),
+///   has_shipment (bool), has_driver (bool), has_merchant (bool).
+///
+/// Supported operators: ==, !=, >, >=, <, <=, &&, ||, !
+///
+/// Returns false (fail-safe) on parse/type errors — bad expressions must not
+/// halt rule evaluation for other conditions.
+fn evaluate_custom_expression(expression: &str, ctx: &RuleContext) -> bool {
+    use evalexpr::{ContextWithMutableVariables, HashMapContext, Value, eval_boolean_with_context};
+
+    let mut evalctx = HashMapContext::new();
+
+    let set = |c: &mut HashMapContext, k: &str, v: Value| {
+        c.set_value(k.into(), v).ok();
+    };
+
+    set(&mut evalctx, "service_type",
+        Value::String(ctx.service_type.clone().unwrap_or_default()));
+    set(&mut evalctx, "zone",
+        Value::String(ctx.zone.clone().unwrap_or_default()));
+    set(&mut evalctx, "current_day",
+        Value::String(ctx.current_day.clone()));
+    set(&mut evalctx, "event_type",
+        Value::String(ctx.event_type.clone()));
+    set(&mut evalctx, "current_hour",
+        Value::Int(ctx.current_hour as i64));
+    set(&mut evalctx, "attempt_count",
+        Value::Int(ctx.attempt_count.unwrap_or(0) as i64));
+    set(&mut evalctx, "shipment_value_cents",
+        Value::Int(ctx.shipment_value_cents.unwrap_or(0)));
+    set(&mut evalctx, "has_customer",
+        Value::Boolean(ctx.customer_id.is_some()));
+    set(&mut evalctx, "has_shipment",
+        Value::Boolean(ctx.shipment_id.is_some()));
+    set(&mut evalctx, "has_driver",
+        Value::Boolean(ctx.driver_id.is_some()));
+    set(&mut evalctx, "has_merchant",
+        Value::Boolean(ctx.merchant_id.is_some()));
+
+    // Populate any additional scalar fields from the raw metadata JSON so
+    // operators can reference custom payload keys not modelled in RuleContext.
+    if let Some(obj) = ctx.metadata.as_object() {
+        for (k, v) in obj {
+            let eval_val = match v {
+                serde_json::Value::Bool(b)   => Some(Value::Boolean(*b)),
+                serde_json::Value::Number(n) => n.as_i64().map(Value::Int)
+                    .or_else(|| n.as_f64().map(Value::Float)),
+                serde_json::Value::String(s) => Some(Value::String(s.clone())),
+                _ => None,
+            };
+            if let Some(val) = eval_val {
+                set(&mut evalctx, k, val);
+            }
+        }
+    }
+
+    match eval_boolean_with_context(expression, &evalctx) {
+        Ok(result) => result,
+        Err(e) => {
+            tracing::warn!(
+                expression = %expression,
+                err = %e,
+                "Custom DSL condition evaluation failed — treating as false"
+            );
+            false
         }
     }
 }

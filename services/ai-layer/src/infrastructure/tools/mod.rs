@@ -98,11 +98,12 @@ impl ToolRegistry {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "lat": {"type": "number", "description": "Pickup latitude"},
-                        "lng": {"type": "number", "description": "Pickup longitude"},
-                        "radius_km": {"type": "number", "description": "Search radius in km (default 10)"}
+                        "lat":       {"type": "number", "description": "Pickup latitude"},
+                        "lng":       {"type": "number", "description": "Pickup longitude"},
+                        "radius_km": {"type": "number", "description": "Search radius in km (default 10)"},
+                        "tenant_id": {"type": "string", "format": "uuid"}
                     },
-                    "required": ["lat", "lng"]
+                    "required": ["lat", "lng", "tenant_id"]
                 }),
             },
             {
@@ -113,11 +114,12 @@ impl ToolRegistry {
                     let url = url.clone();
                     Box::pin(async move {
                         let resp = http
-                            .get(format!("{}/internal/drivers/available", url))
+                            .get(format!("{}/v1/internal/drivers/available", url))
                             .query(&[
                                 ("lat",       input["lat"].to_string()),
                                 ("lng",       input["lng"].to_string()),
                                 ("radius_km", input.get("radius_km").and_then(|v| v.as_f64()).unwrap_or(10.0).to_string()),
+                                ("tenant_id", input["tenant_id"].as_str().unwrap_or("").to_string()),
                             ])
                             .send().await?
                             .json::<Value>().await?;
@@ -136,9 +138,10 @@ impl ToolRegistry {
                     "type": "object",
                     "properties": {
                         "shipment_id": {"type": "string", "format": "uuid"},
-                        "driver_id":  {"type": "string", "format": "uuid", "description": "Leave null for auto-assignment"},
+                        "driver_id":  {"type": "string", "format": "uuid", "description": "Preferred driver; service selects best if omitted"},
+                        "tenant_id":  {"type": "string", "format": "uuid"},
                     },
-                    "required": ["shipment_id"]
+                    "required": ["shipment_id", "tenant_id"]
                 }),
             },
             {
@@ -150,7 +153,7 @@ impl ToolRegistry {
                     Box::pin(async move {
                         let shipment_id = input["shipment_id"].as_str().unwrap_or("");
                         let resp = http
-                            .post(format!("{}/v1/assignments/{}/auto-assign", url, shipment_id))
+                            .post(format!("{}/v1/internal/shipments/{}/assign", url, shipment_id))
                             .json(&input)
                             .send().await?
                             .json::<Value>().await?;
@@ -377,11 +380,11 @@ impl ToolRegistry {
                     let url = url.clone();
                     Box::pin(async move {
                         let resp = if let Some(id) = input["customer_id"].as_str() {
-                            http.get(format!("{}/v1/profiles/{}", url, id))
+                            http.get(format!("{}/v1/customers/{}", url, id))
                                 .send().await?
                                 .json::<Value>().await?
                         } else {
-                            http.get(format!("{}/v1/profiles/lookup", url))
+                            http.get(format!("{}/v1/customers", url))
                                 .query(&[("phone", input["phone"].as_str().unwrap_or(""))])
                                 .send().await?
                                 .json::<Value>().await?
@@ -414,7 +417,7 @@ impl ToolRegistry {
                     Box::pin(async move {
                         let id = input["customer_id"].as_str().unwrap_or("");
                         let resp = http
-                            .get(format!("{}/v1/profiles/{}/churn-score", url, id))
+                            .get(format!("{}/v1/customers/{}/churn-score", url, id))
                             .send().await?
                             .json::<Value>().await?;
                         Ok(resp)
@@ -438,14 +441,14 @@ impl ToolRegistry {
             },
             {
                 let http = http.clone();
-                let url = urls.engagement.clone();
+                let url = urls.cdp.clone();
                 move |input: Value| {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
                         let id = input["customer_id"].as_str().unwrap_or("");
                         let resp = http
-                            .get(format!("{}/v1/preferences/{}", url, id))
+                            .get(format!("{}/v1/customers/{}/preferences", url, id))
                             .send().await?
                             .json::<Value>().await?;
                         Ok(resp)
@@ -495,9 +498,10 @@ impl ToolRegistry {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "merchant_id": {"type": "string", "format": "uuid"}
+                        "merchant_id": {"type": "string", "format": "uuid"},
+                        "tenant_id":   {"type": "string", "format": "uuid"}
                     },
-                    "required": ["merchant_id"]
+                    "required": ["merchant_id", "tenant_id"]
                 }),
             },
             {
@@ -508,8 +512,10 @@ impl ToolRegistry {
                     let url = url.clone();
                     Box::pin(async move {
                         let merchant_id = input["merchant_id"].as_str().unwrap_or("");
+                        let tenant_id   = input["tenant_id"].as_str().unwrap_or("");
                         let resp = http
-                            .get(format!("{}/v1/cod/balance/{}", url, merchant_id))
+                            .get(format!("{}/v1/internal/cod/balance/{}", url, merchant_id))
+                            .query(&[("tenant_id", tenant_id)])
                             .send().await?
                             .json::<Value>().await?;
                         Ok(resp)
