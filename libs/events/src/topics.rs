@@ -49,10 +49,12 @@ pub const DRIVER_LOCATION_UPDATED:   &str = "logisticos.driver.location.updated"
 pub const POD_CAPTURED:              &str = "logisticos.pod.captured";
 
 // Payments
-pub const INVOICE_GENERATED:         &str = "logisticos.payments.invoice.generated";
-pub const PAYMENT_RECEIVED:          &str = "logisticos.payments.payment.received";
-pub const COD_COLLECTED:             &str = "logisticos.payments.cod.collected";
-pub const COD_REMITTED:              &str = "logisticos.payments.cod.remitted";
+pub const INVOICE_GENERATED:              &str = "logisticos.payments.invoice.generated";
+pub const PAYMENT_RECEIVED:               &str = "logisticos.payments.payment.received";
+pub const COD_COLLECTED:                  &str = "logisticos.payments.cod.collected";
+pub const COD_REMITTED:                   &str = "logisticos.payments.cod.remitted";
+pub const WALLET_WITHDRAWAL_DISBURSED:    &str = "logisticos.payments.wallet.withdrawal_disbursed";
+pub const WALLET_WITHDRAWAL_REJECTED:     &str = "logisticos.payments.wallet.withdrawal_rejected";
 
 // Engagement
 pub const NOTIFICATION_QUEUED:       &str = "logisticos.engagement.notification.queued";
@@ -81,6 +83,7 @@ mod tests {
             POD_CAPTURED,
             INVOICE_GENERATED, INVOICE_FINALIZED, PAYMENT_RECEIVED,
             COD_COLLECTED, COD_REMITTANCE_READY, WEIGHT_ADJUSTMENT_INVOICED,
+            WALLET_WITHDRAWAL_DISBURSED, WALLET_WITHDRAWAL_REJECTED,
             NOTIFICATION_QUEUED, CAMPAIGN_TRIGGERED, CUSTOMER_SEGMENT_UPDATED,
             TASK_ASSIGNED,
             RECEIPT_EMAIL_REQUESTED,

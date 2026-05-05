@@ -50,3 +50,22 @@ pub struct WalletCredited {
     pub balance_after_cents: i64,
     pub reference_id: Uuid,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WithdrawalDisbursed {
+    pub withdrawal_id:   Uuid,
+    pub tenant_id:       Uuid,
+    pub wallet_id:       Uuid,
+    pub amount_centavos: i64,
+    pub disbursed_by:    Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WithdrawalRejected {
+    pub withdrawal_id: Uuid,
+    pub tenant_id:     Uuid,
+    pub wallet_id:     Uuid,
+    pub amount_centavos: i64,
+    pub rejected_by:   Uuid,
+    pub review_note:   Option<String>,
+}
