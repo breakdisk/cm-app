@@ -5,6 +5,7 @@ pub mod cod_batches;
 pub mod health;
 pub mod merchant_billing_accounts;
 pub mod partner_commission;
+pub mod withdrawal_requests;
 
 use axum::{Router, routing::{get, post}};
 use std::sync::Arc;
@@ -22,6 +23,7 @@ pub struct AppState {
     pub merchant_billing_account_repo:  Arc<dyn crate::domain::repositories::MerchantBillingAccountRepository>,
     pub commission_query:               Arc<crate::application::queries::CommissionBreakdownQuery>,
     pub partner_bonus_repo:             Arc<crate::infrastructure::db::partner_bonus_repo::PgPartnerBonusRepo>,
+    pub withdrawal_service:             Arc<crate::application::services::WithdrawalService>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -60,6 +62,10 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/partner/commission/breakdown", get(partner_commission::get_commission_breakdown))
         .route("/admin/partner-bonuses",        post(partner_commission::create_partner_bonus))
         .route("/admin/billing/run",            post(billing::run_billing_admin))
+        .route("/admin/withdrawal-requests",              get(withdrawal_requests::list_withdrawal_requests))
+        .route("/admin/withdrawal-requests/:id/approve",  post(withdrawal_requests::approve_withdrawal))
+        .route("/admin/withdrawal-requests/:id/disburse", post(withdrawal_requests::disburse_withdrawal))
+        .route("/admin/withdrawal-requests/:id/reject",   post(withdrawal_requests::reject_withdrawal))
         .layer(auth_layer)
 }
 

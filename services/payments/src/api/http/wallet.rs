@@ -48,9 +48,16 @@ pub async fn request_withdrawal(
     AuthClaims(claims): AuthClaims,
     State(state): State<Arc<AppState>>,
     Json(cmd): Json<RequestWithdrawalCommand>,
-) -> Result<axum::http::StatusCode, AppError> {
+) -> Result<Json<serde_json::Value>, AppError> {
     require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_MANAGE);
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
-    state.wallet_service.request_withdrawal(&tenant_id, cmd).await?;
-    Ok(axum::http::StatusCode::NO_CONTENT)
+    let req = state.withdrawal_service
+        .request(&tenant_id, cmd.amount_cents, claims.user_id).await?;
+    let summary = state.wallet_service.summary(&tenant_id).await?;
+    Ok(Json(serde_json::json!({
+        "withdrawal_request_id": req.id,
+        "status":                "pending",
+        "reserved_centavos":     summary.reserved_centavos,
+        "available_centavos":    summary.available_centavos,
+    })))
 }

@@ -4,11 +4,13 @@ use anyhow::Context;
 use crate::config::Config;
 use crate::application::services::{
     BillingAggregationService, CodRemittanceService, CodService, InvoiceService, WalletService,
+    WithdrawalService,
 };
 use crate::infrastructure::cache::RedisSequenceSource;
 use crate::infrastructure::db::{
     PgBillingRunRepository, PgCodRemittanceBatchRepository, PgCodRepository,
     PgInvoiceRepository, PgWalletRepository, PgMerchantBillingAccountRepository,
+    PgWithdrawalRequestRepository,
 };
 use crate::infrastructure::http::OrderIntakeClient;
 use crate::api::http::{router, AppState};
@@ -56,6 +58,7 @@ pub async fn run() -> anyhow::Result<()> {
     let cod_repo         = Arc::new(PgCodRepository::new(pool.clone()));
     let cod_batch_repo   = Arc::new(PgCodRemittanceBatchRepository::new(pool.clone()));
     let wallet_repo      = Arc::new(PgWalletRepository::new(pool.clone()));
+    let withdrawal_repo  = Arc::new(PgWithdrawalRequestRepository::new(pool.clone()));
     let billing_run_repo = Arc::new(PgBillingRunRepository::new(pool.clone()));
     let merchant_billing_account_repo = Arc::new(
         PgMerchantBillingAccountRepository::new(pool.clone())
@@ -92,6 +95,11 @@ pub async fn run() -> anyhow::Result<()> {
     let wallet_service = Arc::new(WalletService::new(
         Arc::clone(&wallet_repo) as _,
     ));
+    let withdrawal_service = Arc::new(WithdrawalService::new(
+        Arc::clone(&wallet_repo) as _,
+        Arc::clone(&withdrawal_repo),
+        Arc::clone(&kafka),
+    ));
     let billing_service = Arc::new(BillingAggregationService::new(
         Arc::clone(&billing_run_repo) as _,
         Arc::clone(&order_intake_client) as _,
@@ -108,6 +116,7 @@ pub async fn run() -> anyhow::Result<()> {
         merchant_billing_account_repo:     Arc::clone(&merchant_billing_account_repo) as _,
         commission_query:                  Arc::clone(&commission_query),
         partner_bonus_repo:                Arc::clone(&partner_bonus_repo),
+        withdrawal_service,
     });
     let app = router(state);
 
