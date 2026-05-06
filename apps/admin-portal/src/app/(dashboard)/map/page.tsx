@@ -66,8 +66,8 @@ function LiveMapPageInner() {
           seed[d.id] = {
             driver_id:           d.id,
             driver_name:         d.name,
-            lat:                 d.lat ?? 0,
-            lng:                 d.lng ?? 0,
+            lat:                 d.lat ?? 14.5995,
+            lng:                 d.lng ?? 120.9842,
             status:              (d.status as BackendStatus) ?? "offline",
             deliveries_remaining: Math.max(0, d.tasks_total - d.tasks_done),
             location_label:      d.last_location ?? "—",

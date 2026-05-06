@@ -107,7 +107,9 @@ function MapboxMap({
             onClick={() => { setSelected(driver.driver_id); onDriverClick?.(driver); }}
           >
             <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} whileHover={{ scale: 1.2 }} className="relative cursor-pointer">
-              <span className="absolute inset-0 rounded-full animate-beacon" style={{ background: statusColor[driver.status] }} />
+              {(driver.status !== "offline" && driver.status !== "on_break") && (
+                <span className="absolute inset-0 rounded-full animate-beacon" style={{ background: statusColor[driver.status] }} />
+              )}
               <span className="relative flex h-4 w-4 rounded-full border-2 border-canvas" style={{ background: statusColor[driver.status] }} />
               {driver.deliveries_remaining > 0 && (
                 <span className="absolute -top-2.5 -right-2.5 flex h-4 w-4 items-center justify-center rounded-full bg-canvas border border-glass-border text-2xs font-mono text-white/70">
