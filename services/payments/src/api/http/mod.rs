@@ -1,4 +1,5 @@
 pub mod invoices;
+pub mod invoice_pdf;
 pub mod wallet;
 pub mod billing;
 pub mod cod_batches;
@@ -24,6 +25,7 @@ pub struct AppState {
     pub commission_query:               Arc<crate::application::queries::CommissionBreakdownQuery>,
     pub partner_bonus_repo:             Arc<crate::infrastructure::db::partner_bonus_repo::PgPartnerBonusRepo>,
     pub withdrawal_service:             Arc<crate::application::services::WithdrawalService>,
+    pub pdf_renderer:                   Option<Arc<crate::application::services::pdf_renderer::PdfRenderer>>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -47,6 +49,7 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         // literally instead of treating "tenant" as an invoice id.
         .route("/invoices/tenant",                       get(invoices::list_tenant_invoices))
         .route("/invoices/:id",                          get(invoices::get_invoice))
+        .route("/invoices/:id/pdf",                      get(invoice_pdf::download_invoice_pdf))
         .route("/invoices/:id/resend",                   post(invoices::resend_invoice))
         .route("/customers/:customer_id/invoices",       get(invoices::list_customer_invoices))
         .route("/cod/reconcile",                         post(wallet::reconcile_cod))

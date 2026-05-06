@@ -106,6 +106,19 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::clone(&invoice_service),
     ));
 
+    let templates_dir = std::env::var("PAYMENTS_TEMPLATES_DIR")
+        .unwrap_or_else(|_| "./templates".into());
+    let pdf_renderer = match crate::application::services::PdfRenderer::new(&templates_dir).await {
+        Ok(r) => {
+            tracing::info!("PDF renderer initialised");
+            Some(Arc::new(r))
+        }
+        Err(e) => {
+            tracing::warn!(err = %e, "PDF renderer failed to initialise — /invoices/:id/pdf will return 503");
+            None
+        }
+    };
+
     let state = Arc::new(AppState {
         invoice_service:                   Arc::clone(&invoice_service),
         cod_service:                       Arc::clone(&cod_service),
@@ -117,6 +130,7 @@ pub async fn run() -> anyhow::Result<()> {
         commission_query:                  Arc::clone(&commission_query),
         partner_bonus_repo:                Arc::clone(&partner_bonus_repo),
         withdrawal_service,
+        pdf_renderer,
     });
     let app = router(state);
 
