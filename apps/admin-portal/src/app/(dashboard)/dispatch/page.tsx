@@ -14,6 +14,8 @@ import type { DriverPin } from "@/components/maps/live-dispatch-map";
 import { variants } from "@/lib/design-system/tokens";
 import { authFetch } from "@/lib/auth/auth-fetch";
 import { readBus, subscribeToBus, type BusBooking } from "@/lib/api/marketplace-bus";
+import { useDriverRoster } from "@/context/driver-roster-context";
+import type { DriverPin as ContextDriverPin } from "@/context/driver-roster-context";
 
 // Route through the api-gateway (same base as every other admin-portal caller).
 // Gateway proxies /v1/queue + /v1/drivers to dispatch+driver-ops — no service-specific URL needed.
@@ -87,18 +89,6 @@ interface DriverSummary {
   total_tasks_completed: number;
   total_tasks_failed: number;
   total_cod_collected: number;
-}
-
-/** Map driver-ops status → LiveDispatchMap pin status */
-function toMapStatus(s?: string): DriverPin["status"] {
-  switch (s) {
-    case "en_route":   return "en_route";
-    case "delivering": return "delivering";
-    case "returning":  return "returning";
-    case "on_break":   return "on_break";
-    case "offline":    return "offline";
-    default:           return "available";
-  }
 }
 
 // ── Driver Detail Drawer ───────────────────────────────────────────────────────
@@ -232,6 +222,8 @@ function DispatchPageInner() {
   const [togglingDriver,    setTogglingDriver]    = useState<string | null>(null);
   const [drawerDriver,      setDrawerDriver]      = useState<DriverProfile | null>(null);
   const [cancellingTasks,   setCancellingTasks]   = useState(false);
+
+  const { drivers: rosterDrivers } = useDriverRoster();
 
   const searchParams  = useSearchParams();
   const focusOrderId  = searchParams.get("order");
@@ -378,18 +370,20 @@ function DispatchPageInner() {
     return Array.from(byId.values());
   }, [queue, marketplaceQueue, queueFilter]);
 
-  // Build driver pins for the live map using real GPS coordinates.
-  // Falls back to Manila city centre only when a driver has never shared location.
-  const mapDrivers: DriverPin[] = drivers
-    .filter((d) => d.status !== "offline" || d.lat != null)
-    .map((d) => ({
-      driver_id:            d.id,
-      driver_name:          [d.first_name, d.last_name].filter(Boolean).join(" ") || d.email || d.id,
-      lat:                  d.lat ?? MANILA_LAT,
-      lng:                  d.lng ?? MANILA_LNG,
-      status:               toMapStatus(d.status),
-      deliveries_remaining: 0,
-    }));
+  // Build map pins from shared roster context — real-time GPS and status.
+  // Falls back to Manila when a driver has never reported location.
+  const mapDrivers = useMemo(
+    () =>
+      rosterDrivers.map((d) => ({
+        driver_id:            d.driver_id,
+        driver_name:          d.name,
+        lat:                  d.lat ?? MANILA_LAT,
+        lng:                  d.lng ?? MANILA_LNG,
+        status:               d.status,
+        deliveries_remaining: d.tasks_total,
+      })),
+    [rosterDrivers],
+  );
 
   // KPIs: queue length and live driver count are always exact.
   // Success rate and avg delivery time come from the driver-ops summary endpoint.
