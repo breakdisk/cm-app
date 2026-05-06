@@ -14,7 +14,8 @@ object TaskStateMachine {
         TaskStatus.ATTEMPTED   to setOf(TaskStatus.IN_PROGRESS, TaskStatus.RETURNED),
         TaskStatus.FAILED      to setOf(TaskStatus.RETURNED),
         TaskStatus.COMPLETED   to emptySet(),
-        TaskStatus.RETURNED    to emptySet()
+        TaskStatus.RETURNED    to emptySet(),
+        TaskStatus.FAILED_SYNC to emptySet()
     )
 
     fun canTransition(from: TaskStatus, to: TaskStatus): Boolean =

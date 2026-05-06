@@ -72,4 +72,11 @@ class TaskStateMachineTest {
             assertFalse(TaskStateMachine.canTransition(TaskStatus.RETURNED, target))
         }
     }
+
+    @Test
+    fun `FAILED_SYNC cannot transition to any other status`() {
+        TaskStatus.entries.forEach { target ->
+            assertFalse(TaskStateMachine.canTransition(TaskStatus.FAILED_SYNC, target))
+        }
+    }
 }
