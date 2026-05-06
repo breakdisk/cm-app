@@ -37,6 +37,30 @@ pub async fn get_route(
     Ok(Json(serde_json::json!({ "data": route })))
 }
 
+/// PUT /v1/routes/:id/cancel
+///
+/// Cancels a `planned` or `in_progress` route owned by the caller's tenant.
+/// A completed route cannot be cancelled. The driver is freed from the route
+/// so auto-dispatch can assign them to a new job.
+pub async fn cancel_route(
+    AuthClaims(claims): AuthClaims,
+    Path(id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_permission!(claims, logisticos_auth::rbac::permissions::DISPATCH_ASSIGN);
+    let route_id  = RouteId::from_uuid(id);
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+
+    let cancelled = state.dispatch_service.cancel_route(&route_id, &tenant_id).await?;
+    if !cancelled {
+        return Err(AppError::NotFound { resource: "Route", id: id.to_string() });
+    }
+
+    Ok(Json(serde_json::json!({
+        "data": { "route_id": id, "status": "cancelled" }
+    })))
+}
+
 pub async fn create_route(
     AuthClaims(claims): AuthClaims,
     State(state): State<Arc<AppState>>,

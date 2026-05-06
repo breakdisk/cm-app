@@ -5,11 +5,12 @@
  */
 import { useMemo, useEffect, useState, useCallback, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
 import { LiveDispatchMap } from "@/components/maps/live-dispatch-map";
+import type { DriverPin } from "@/components/maps/live-dispatch-map";
 import { variants } from "@/lib/design-system/tokens";
 import { authFetch } from "@/lib/auth/auth-fetch";
 import { readBus, subscribeToBus, type BusBooking } from "@/lib/api/marketplace-bus";
@@ -17,6 +18,10 @@ import { readBus, subscribeToBus, type BusBooking } from "@/lib/api/marketplace-
 // Route through the api-gateway (same base as every other admin-portal caller).
 // Gateway proxies /v1/queue + /v1/drivers to dispatch+driver-ops — no service-specific URL needed.
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+// Manila city center — fallback when driver hasn't shared GPS yet
+const MANILA_LAT = 14.5995;
+const MANILA_LNG = 120.9842;
 
 interface QueueItem {
   id:             string;
@@ -27,13 +32,9 @@ interface QueueItem {
   service_type:   string;
   status:         string;
   cod_amount_cents?: number | null;
-  tracking_number?: string | null;   // present on rows from dispatch_queue.tracking_number (migration 0005)
-  origin?:        "dispatch" | "marketplace"; // synthetic rows from accepted marketplace bookings carry origin="marketplace"
-  partner_display?: string;          // marketplace-origin: which partner accepted the job
-  // Auto-dispatch attempt tracking (migration 0007). Non-zero attempts means
-  // the customer-booked auto-assign failed (no available driver, etc.) and
-  // the row is parked here awaiting ops action. Rendered as an amber warning
-  // badge so the silent-failure mode is visible at a glance.
+  tracking_number?: string | null;
+  origin?:        "dispatch" | "marketplace";
+  partner_display?: string;
   auto_dispatch_attempts?: number | null;
   last_dispatch_error?:    string | null;
   last_attempt_at?:        string | null;
@@ -42,10 +43,6 @@ interface QueueItem {
 
 type QueueFilter = "pending" | "dispatched" | "all";
 
-// Project an accepted marketplace booking into a dispatch QueueItem.
-// Per ADR-0013 §Booking flow, accept → "shipment enters dispatch flow".
-// Until the real /v1/marketplace/bookings endpoint + order-intake mint the
-// shipment, we surface the accepted booking here so ops can see the pipeline.
 function busToQueueItem(b: BusBooking): QueueItem {
   return {
     id:                 `mp-${b.id}`,
@@ -63,23 +60,156 @@ function busToQueueItem(b: BusBooking): QueueItem {
 }
 
 interface DriverProfile {
-  id:         string;
-  first_name: string;
-  last_name:  string;
-  email:      string;
-  tenant_id:  string;
-  status?:    string;        // "available" | "offline" | "en_route" | "delivering" | "returning" | "on_break"
-  is_online?: boolean;
-  active_route_id?: string | null;
+  id:               string;
+  user_id:          string;
+  first_name:       string;
+  last_name:        string;
+  email?:           string;
+  phone?:           string;
+  status?:          string;
+  is_online?:       boolean;
+  driver_type?:     string;
+  vehicle_type?:    string | null;
+  zone?:            string | null;
+  lat?:             number | null;
+  lng?:             number | null;
   last_location_at?: string | null;
+  active_route_id?: string | null;
+  per_delivery_rate_cents?: number;
 }
 
-const KPI_METRICS = [
-  { label: "Pending Queue",    value: 0,  trend: 0,    color: "cyan"   as const, format: "number"  as const, key: "queue"    },
-  { label: "Active Drivers",   value: 0,  trend: 0,    color: "green"  as const, format: "number"  as const, key: "drivers"  },
-  { label: "Success Rate",     value: 94.7, trend: +1.2, color: "green" as const, format: "percent" as const, key: "rate"   },
-  { label: "Avg Delivery Time",value: 47,  trend: -5.1, color: "purple" as const, format: "duration" as const, key: "time"  },
-];
+interface DriverSummary {
+  online: number;
+  idle: number;
+  on_break: number;
+  offline: number;
+  total_tasks_assigned: number;
+  total_tasks_completed: number;
+  total_tasks_failed: number;
+  total_cod_collected: number;
+}
+
+/** Map driver-ops status → LiveDispatchMap pin status */
+function toMapStatus(s?: string): DriverPin["status"] {
+  switch (s) {
+    case "en_route":   return "en_route";
+    case "delivering": return "delivering";
+    case "returning":  return "returning";
+    default:           return "idle";
+  }
+}
+
+// ── Driver Detail Drawer ───────────────────────────────────────────────────────
+
+interface DriverDrawerProps {
+  driver:   DriverProfile;
+  onClose:  () => void;
+  onCancelTasks: () => void;
+  cancellingTasks: boolean;
+}
+
+function DriverDrawer({ driver, onClose, onCancelTasks, cancellingTasks }: DriverDrawerProps) {
+  const name = [driver.first_name, driver.last_name].filter(Boolean).join(" ") || driver.email || driver.id;
+  const isOnline = driver.is_online ?? (driver.status && driver.status !== "offline");
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-50 flex items-end justify-end bg-black/40 backdrop-blur-sm"
+        onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      >
+        <motion.div
+          initial={{ x: "100%" }}
+          animate={{ x: 0 }}
+          exit={{ x: "100%" }}
+          transition={{ type: "spring", stiffness: 320, damping: 30 }}
+          className="h-full w-full max-w-sm border-l border-white/10 bg-[#050810]/95 backdrop-blur-xl flex flex-col overflow-y-auto"
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
+            <div>
+              <h2 className="font-heading text-base font-semibold text-white">{name}</h2>
+              <p className="text-xs font-mono text-white/40">{driver.phone ?? driver.id}</p>
+            </div>
+            <button onClick={onClose} className="text-white/40 hover:text-white transition-colors text-xl leading-none">×</button>
+          </div>
+
+          {/* Status row */}
+          <div className="border-b border-white/10 px-5 py-3 flex items-center gap-3">
+            <span className={`h-2.5 w-2.5 rounded-full ${isOnline ? "bg-green-400" : "bg-white/20"}`} />
+            <span className="text-sm font-mono text-white/70 capitalize">{driver.status ?? "unknown"}</span>
+            {driver.vehicle_type && (
+              <span className="ml-auto text-xs font-mono text-white/40">{driver.vehicle_type}</span>
+            )}
+          </div>
+
+          {/* Profile */}
+          <div className="px-5 py-4 flex flex-col gap-3">
+            <h3 className="text-xs font-mono uppercase tracking-widest text-white/30">Profile</h3>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2">
+                <p className="text-[10px] font-mono text-white/30 uppercase mb-0.5">Zone</p>
+                <p className="text-sm text-white/80">{driver.zone ?? "—"}</p>
+              </div>
+              <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2">
+                <p className="text-[10px] font-mono text-white/30 uppercase mb-0.5">Type</p>
+                <p className="text-sm text-white/80 capitalize">{(driver.driver_type ?? "—").replace("_", " ")}</p>
+              </div>
+              <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2">
+                <p className="text-[10px] font-mono text-white/30 uppercase mb-0.5">Rate / delivery</p>
+                <p className="text-sm text-white/80">
+                  {driver.per_delivery_rate_cents != null
+                    ? `₱${(driver.per_delivery_rate_cents / 100).toFixed(0)}`
+                    : "—"}
+                </p>
+              </div>
+              <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2">
+                <p className="text-[10px] font-mono text-white/30 uppercase mb-0.5">Route</p>
+                <p className="text-sm text-white/80 font-mono truncate">
+                  {driver.active_route_id
+                    ? driver.active_route_id.slice(0, 8) + "…"
+                    : "None"}
+                </p>
+              </div>
+            </div>
+
+            {/* GPS */}
+            {driver.lat != null && driver.lng != null ? (
+              <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2">
+                <p className="text-[10px] font-mono text-white/30 uppercase mb-0.5">Last Location</p>
+                <p className="text-sm font-mono text-cyan-400/80">
+                  {driver.lat.toFixed(5)}, {driver.lng.toFixed(5)}
+                </p>
+                {driver.last_location_at && (
+                  <p className="text-[10px] font-mono text-white/25 mt-0.5">
+                    {new Date(driver.last_location_at).toLocaleTimeString("en-PH")}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <p className="text-xs font-mono text-white/25 italic">No GPS signal yet</p>
+            )}
+          </div>
+
+          {/* Actions */}
+          <div className="mt-auto border-t border-white/10 px-5 py-4 flex flex-col gap-2">
+            <button
+              onClick={onCancelTasks}
+              disabled={cancellingTasks}
+              className="w-full rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2 text-sm font-mono text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-40"
+            >
+              {cancellingTasks ? "Cancelling…" : "Cancel Active Tasks"}
+            </button>
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+// ── Main Page ─────────────────────────────────────────────────────────────────
 
 function DispatchPageInner() {
   const today = useMemo(
@@ -87,18 +217,20 @@ function DispatchPageInner() {
     [],
   );
 
-  const [queue,         setQueue]         = useState<QueueItem[]>([]);
-  const [marketplaceQueue, setMarketplaceQueue] = useState<QueueItem[]>([]);
-  const [drivers,       setDrivers]       = useState<DriverProfile[]>([]);
-  const [dispatching,   setDispatching]   = useState<string | null>(null);
-  const [selectedDriver,setSelectedDriver]= useState<string>("");
-  const [loading,       setLoading]       = useState(false);
-  const [error,         setError]         = useState<string | null>(null);
-  const [queueFilter,   setQueueFilter]   = useState<QueueFilter>("pending");
-  const [togglingDriver,setTogglingDriver]= useState<string | null>(null);
+  const [queue,             setQueue]             = useState<QueueItem[]>([]);
+  const [marketplaceQueue,  setMarketplaceQueue]  = useState<QueueItem[]>([]);
+  const [drivers,           setDrivers]           = useState<DriverProfile[]>([]);
+  const [driverSummary,     setDriverSummary]     = useState<DriverSummary | null>(null);
+  const [dispatching,       setDispatching]       = useState<string | null>(null);
+  const [cancellingDispatch,setCancellingDispatch]= useState<string | null>(null);
+  const [selectedDriver,    setSelectedDriver]    = useState<string>("");
+  const [loading,           setLoading]           = useState(false);
+  const [error,             setError]             = useState<string | null>(null);
+  const [queueFilter,       setQueueFilter]       = useState<QueueFilter>("pending");
+  const [togglingDriver,    setTogglingDriver]    = useState<string | null>(null);
+  const [drawerDriver,      setDrawerDriver]      = useState<DriverProfile | null>(null);
+  const [cancellingTasks,   setCancellingTasks]   = useState(false);
 
-  // Deep-link from partner-portal: /admin/dispatch?order=<shipment_id> highlights
-  // and scrolls to the matching queue card once data lands.
   const searchParams  = useSearchParams();
   const focusOrderId  = searchParams.get("order");
   const focusCardRef  = useRef<HTMLDivElement | null>(null);
@@ -106,30 +238,27 @@ function DispatchPageInner() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
-    const queueUrl  = `${API_BASE}/v1/queue?status=${queueFilter}`;
-    const driverUrl = `${API_BASE}/v1/drivers`;
+    const queueUrl   = `${API_BASE}/v1/queue?status=${queueFilter}`;
+    const driverUrl  = `${API_BASE}/v1/drivers`;
+    const summaryUrl = `${API_BASE}/v1/drivers/summary`;
     try {
-      const [qRes, dRes] = await Promise.all([
+      const [qRes, dRes, sRes] = await Promise.all([
         authFetch(queueUrl),
         authFetch(driverUrl),
+        authFetch(summaryUrl),
       ]);
       if (qRes.ok) { const j = await qRes.json(); setQueue(j.data ?? []); }
       else {
-        // eslint-disable-next-line no-console
         console.error("[dispatch] /v1/queue HTTP", qRes.status, qRes.statusText);
-        setError(`Queue fetch failed: ${qRes.status} ${qRes.statusText} (${queueUrl})`);
+        setError(`Queue fetch failed: ${qRes.status} ${qRes.statusText}`);
       }
       if (dRes.ok) { const j = await dRes.json(); setDrivers(j.data ?? []); }
       else {
-        // eslint-disable-next-line no-console
         console.error("[dispatch] /v1/drivers HTTP", dRes.status, dRes.statusText);
       }
+      if (sRes.ok) { const j = await sRes.json(); setDriverSummary(j.data ?? null); }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Failed to load dispatch data";
-      // Surface the attempted URL so ops can spot env-var misconfigurations
-      // (e.g. NEXT_PUBLIC_API_URL not baked into the build → fallback to
-      // http://localhost:8000 → Mixed Content block under HTTPS).
-      // eslint-disable-next-line no-console
       console.error("[dispatch] fetchData threw:", msg, { queueUrl, driverUrl, API_BASE });
       setError(`${msg} — tried ${queueUrl}`);
     } finally {
@@ -139,8 +268,7 @@ function DispatchPageInner() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  // Marketplace-origin queue: accepted bookings from the bus become synthetic
-  // queue rows (dedup'd by shipment_id against the real dispatch queue).
+  // Marketplace-origin queue: accepted bookings from the bus become synthetic queue rows
   const refreshMarketplaceQueue = useCallback(() => {
     const accepted = readBus()
       .filter((b) => b.status === "accepted")
@@ -154,16 +282,12 @@ function DispatchPageInner() {
     return unsubscribe;
   }, [refreshMarketplaceQueue]);
 
-  // Scroll the focused queue card into view after the queue loads.
   useEffect(() => {
     if (focusOrderId && focusCardRef.current) {
       focusCardRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, [focusOrderId, queue]);
 
-  // Admin override — flip a driver's status. Backed by FLEET_MANAGE on
-  // PUT /v1/drivers/:id/status (driver-ops). Used to pull idle drivers
-  // out of the auto-dispatch pool for testing or to mark a no-show offline.
   async function handleToggleDriver(driver: DriverProfile) {
     const isAvailable = driver.status === "available";
     const next = isAvailable ? "offline" : "available";
@@ -205,10 +329,44 @@ function DispatchPageInner() {
     }
   }
 
-  // Dedup by shipment_id: real dispatch rows override synthetic marketplace
-  // rows. Marketplace bookings only join the merged list under the Pending
-  // tab — they're synthetic "awaiting dispatch" rows and have no meaning
-  // under Dispatched/All views, which read straight from the queue table.
+  async function handleCancelDispatch(shipmentId: string) {
+    setCancellingDispatch(shipmentId);
+    try {
+      const res = await authFetch(`${API_BASE}/v1/queue/${shipmentId}/cancel-dispatch`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error?.message ?? `Cancel dispatch failed (${res.status})`);
+      }
+      await fetchData();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Cancel dispatch error");
+    } finally {
+      setCancellingDispatch(null);
+    }
+  }
+
+  async function handleCancelTasks(driver: DriverProfile) {
+    setCancellingTasks(true);
+    try {
+      const res = await authFetch(`${API_BASE}/v1/drivers/${driver.id}/cancel-tasks`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error?.message ?? `Cancel tasks failed (${res.status})`);
+      }
+      setDrawerDriver(null);
+      await fetchData();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Cancel tasks error");
+    } finally {
+      setCancellingTasks(false);
+    }
+  }
+
+  // Dedup by shipment_id: real dispatch rows override synthetic marketplace rows.
   const mergedQueue = useMemo(() => {
     const byId = new Map<string, QueueItem>();
     if (queueFilter === "pending") {
@@ -218,20 +376,32 @@ function DispatchPageInner() {
     return Array.from(byId.values());
   }, [queue, marketplaceQueue, queueFilter]);
 
-  const mapDrivers = drivers.map((d) => ({
-    driver_id:             d.id,
-    driver_name:           [d.first_name, d.last_name].filter(Boolean).join(" ") || d.email,
-    lat:                   14.5995,
-    lng:                   120.9842,
-    status:                "idle" as const,
-    deliveries_remaining:  0,
-  }));
+  // Build driver pins for the live map using real GPS coordinates.
+  // Falls back to Manila city centre only when a driver has never shared location.
+  const mapDrivers: DriverPin[] = drivers
+    .filter((d) => d.status !== "offline" || d.lat != null)
+    .map((d) => ({
+      driver_id:            d.id,
+      driver_name:          [d.first_name, d.last_name].filter(Boolean).join(" ") || d.email || d.id,
+      lat:                  d.lat ?? MANILA_LAT,
+      lng:                  d.lng ?? MANILA_LNG,
+      status:               toMapStatus(d.status),
+      deliveries_remaining: 0,
+    }));
+
+  // KPIs: queue length and live driver count are always exact.
+  // Success rate and avg delivery time come from the driver-ops summary endpoint.
+  const successRate = driverSummary && (driverSummary.total_tasks_completed + driverSummary.total_tasks_failed) > 0
+    ? (driverSummary.total_tasks_completed / (driverSummary.total_tasks_completed + driverSummary.total_tasks_failed)) * 100
+    : null;
+
+  const onlineDriverCount = driverSummary?.online ?? drivers.filter((d) => d.is_online).length;
 
   const kpiValues = [
-    { ...KPI_METRICS[0], value: mergedQueue.length },
-    { ...KPI_METRICS[1], value: drivers.length },
-    KPI_METRICS[2],
-    KPI_METRICS[3],
+    { label: "Pending Queue",     value: mergedQueue.length,              trend: 0,    color: "cyan"   as const, format: "number"  as const, live: true  },
+    { label: "Online Drivers",    value: onlineDriverCount,               trend: 0,    color: "green"  as const, format: "number"  as const, live: false },
+    { label: "Success Rate",      value: successRate ?? 0,                trend: 0,    color: "green"  as const, format: "percent" as const, live: false },
+    { label: "Tasks Completed",   value: driverSummary?.total_tasks_completed ?? 0, trend: 0, color: "purple" as const, format: "number" as const, live: false },
   ];
 
   return (
@@ -275,7 +445,7 @@ function DispatchPageInner() {
               trend={m.trend}
               color={m.color}
               format={m.format}
-              live={m.key === "queue"}
+              live={m.live}
             />
           </GlassCard>
         ))}
@@ -286,6 +456,10 @@ function DispatchPageInner() {
         <motion.div variants={variants.fadeInUp} className="flex-1">
           <LiveDispatchMap
             drivers={mapDrivers}
+            onDriverClick={(pin) => {
+              const d = drivers.find((dr) => dr.id === pin.driver_id);
+              if (d) setDrawerDriver(d);
+            }}
             className="h-full min-h-[320px] sm:min-h-[420px] lg:min-h-[500px]"
           />
         </motion.div>
@@ -307,17 +481,14 @@ function DispatchPageInner() {
                 {drivers.map((d) => (
                   <option key={d.id} value={d.id}>
                     {[d.first_name, d.last_name].filter(Boolean).join(" ") || d.email}
+                    {d.status === "available" ? " ✓" : ""}
                   </option>
                 ))}
               </select>
             </div>
           )}
 
-          {/* Driver Roster — admin override (FLEET_MANAGE). Status dot
-              + force-online/offline button per driver. Used to pull idle
-              drivers out of the auto-dispatch pool, e.g. for a focused
-              test loop on a single device. Disabled while a driver is
-              en_route — they need their route cancelled first. */}
+          {/* Driver Roster */}
           {drivers.length > 0 && (
             <div>
               <span className="text-xs font-mono uppercase tracking-widest text-white/30 mb-1 block">
@@ -337,14 +508,18 @@ function DispatchPageInner() {
                   return (
                     <div
                       key={d.id}
-                      className="flex items-center justify-between gap-2 rounded-md border border-white/5 bg-white/[0.02] px-2 py-1.5"
+                      className="flex items-center justify-between gap-2 rounded-md border border-white/5 bg-white/[0.02] px-2 py-1.5 cursor-pointer hover:border-white/15 transition-colors"
+                      onClick={() => setDrawerDriver(d)}
                     >
                       <div className="flex items-center gap-2 min-w-0">
-                        <span className={`h-2 w-2 rounded-full ${dotColor}`} />
+                        <span className={`h-2 w-2 rounded-full flex-shrink-0 ${dotColor}`} />
                         <span className="text-xs text-white/80 truncate">{name}</span>
+                        {d.lat != null && (
+                          <span className="text-[9px] font-mono text-cyan-400/50 flex-shrink-0" title="GPS active">●</span>
+                        )}
                       </div>
                       <button
-                        onClick={() => handleToggleDriver(d)}
+                        onClick={(e) => { e.stopPropagation(); handleToggleDriver(d); }}
                         disabled={togglingDriver === d.id || isOnRoute}
                         title={isOnRoute ? "Cancel route before changing status" : ""}
                         className={`text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
@@ -366,10 +541,7 @@ function DispatchPageInner() {
             </div>
           )}
 
-          {/* Queue tabs — Pending = unassigned, Dispatched = already on a
-              driver, All = both (read-only). Auto-dispatched merchant
-              shipments go straight to Dispatched, so without this tab they
-              vanish from the console even though they're alive in the system. */}
+          {/* Queue tabs */}
           <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.02] p-1">
             {(["pending", "dispatched", "all"] as const).map((t) => (
               <button
@@ -433,9 +605,7 @@ function DispatchPageInner() {
                           title={item.last_dispatch_error ?? "Auto-dispatch failed — no available driver"}
                           className="cursor-help"
                         >
-                          <NeonBadge variant="amber">
-                            ⚠ AUTO-DISPATCH FAILED
-                          </NeonBadge>
+                          <NeonBadge variant="amber">⚠ AUTO-DISPATCH FAILED</NeonBadge>
                         </div>
                       )}
                     </div>
@@ -448,20 +618,25 @@ function DispatchPageInner() {
                     </p>
                   )}
                   <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => handleDispatch(item.shipment_id)}
-                      disabled={dispatching === item.shipment_id || item.status === "dispatched"}
-                      className="flex-1 rounded-lg border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs font-mono text-purple-300 hover:bg-purple-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      {item.status === "dispatched"
-                        ? "✓ Already Dispatched"
-                        : dispatching === item.shipment_id
-                          ? "Dispatching…"
-                          : "⚡ Dispatch"}
-                    </button>
+                    {item.status !== "dispatched" ? (
+                      <button
+                        onClick={() => handleDispatch(item.shipment_id)}
+                        disabled={dispatching === item.shipment_id}
+                        className="flex-1 rounded-lg border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs font-mono text-purple-300 hover:bg-purple-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        {dispatching === item.shipment_id ? "Dispatching…" : "⚡ Dispatch"}
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleCancelDispatch(item.shipment_id)}
+                        disabled={cancellingDispatch === item.shipment_id || item.origin === "marketplace"}
+                        title={item.origin === "marketplace" ? "Marketplace bookings cannot be cancelled here" : "Return to pending queue"}
+                        className="flex-1 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-1.5 text-xs font-mono text-red-400/80 hover:bg-red-500/15 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        {cancellingDispatch === item.shipment_id ? "Cancelling…" : "✕ Cancel Dispatch"}
+                      </button>
+                    )}
                     {item.tracking_number && (
-                      // Cross-portal jump to merchant's own view — preserves /merchant basePath.
-                      // Useful when ops wants to see what the merchant is seeing for this shipment.
                       <a
                         href={`/merchant/shipments?awb=${encodeURIComponent(item.tracking_number)}`}
                         title="Open in Merchant Portal"
@@ -479,6 +654,16 @@ function DispatchPageInner() {
           </div>
         </motion.div>
       </div>
+
+      {/* Driver Detail Drawer */}
+      {drawerDriver && (
+        <DriverDrawer
+          driver={drawerDriver}
+          onClose={() => setDrawerDriver(null)}
+          onCancelTasks={() => handleCancelTasks(drawerDriver)}
+          cancellingTasks={cancellingTasks}
+        />
+      )}
     </motion.div>
   );
 }

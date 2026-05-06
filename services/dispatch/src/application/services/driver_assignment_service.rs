@@ -537,6 +537,29 @@ impl DriverAssignmentService {
         Ok(assignment)
     }
 
+    /// Admin operation: cancel a planned or in-progress route.
+    /// Returns `true` if the route was found and cancelled.
+    /// Validates tenant ownership before cancelling.
+    pub async fn cancel_route(
+        &self,
+        route_id: &RouteId,
+        tenant_id: &TenantId,
+    ) -> AppResult<bool> {
+        let cancelled = self.route_repo
+            .cancel(route_id, tenant_id)
+            .await
+            .map_err(AppError::Internal)?;
+
+        if cancelled {
+            tracing::info!(
+                route_id = %route_id,
+                tenant_id = %tenant_id,
+                "Route cancelled by admin"
+            );
+        }
+        Ok(cancelled)
+    }
+
     /// Admin operation: cancel any active (`pending`/`accepted`) assignment
     /// for the given driver, re-entering them into the auto-dispatch pool.
     /// Returns `true` if an assignment was cancelled.

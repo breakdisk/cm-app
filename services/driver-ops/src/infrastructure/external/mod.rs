@@ -96,6 +96,43 @@ impl FcmClient {
         })
     }
 
+    /// Send a typed instruction push to a driver (e.g. "return_to_hub", "call_support").
+    /// All errors are logged and swallowed — push is best-effort.
+    pub async fn notify_driver_instruction(
+        &self,
+        driver_user_id: Uuid,
+        instruction_type: &str,
+        message: &str,
+    ) {
+        match self.fetch_push_tokens(driver_user_id).await {
+            Err(e) => {
+                tracing::warn!(driver_id = %driver_user_id, err = %e, "FCM: failed to fetch push tokens for instruction");
+                return;
+            }
+            Ok(tokens) if tokens.is_empty() => {
+                tracing::debug!(driver_id = %driver_user_id, "FCM: no tokens registered, skipping instruction push");
+                return;
+            }
+            Ok(tokens) => {
+                match self.get_access_token().await {
+                    Err(e) => {
+                        tracing::warn!(err = %e, "FCM: failed to obtain Google access token");
+                        return;
+                    }
+                    Ok(access_token) => {
+                        for token in tokens {
+                            if let Err(e) = self.send_fcm_instruction(&token, &access_token, instruction_type, message).await {
+                                tracing::warn!(driver_id = %driver_user_id, err = %e, "FCM: instruction send failed");
+                            } else {
+                                tracing::info!(driver_id = %driver_user_id, instruction_type, "FCM: instruction push sent");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Main entry point: look up the driver's FCM token then send a push.
     /// All errors are logged and swallowed — push is best-effort.
     pub async fn notify_driver(&self, driver_user_id: Uuid) {
@@ -202,6 +239,44 @@ impl FcmClient {
         let token_resp: GoogleTokenResponse = serde_json::from_str(&body)
             .map_err(|e| format!("Google token parse: {e}"))?;
         Ok(token_resp.access_token)
+    }
+
+    async fn send_fcm_instruction(
+        &self,
+        device_token: &str,
+        access_token: &str,
+        instruction_type: &str,
+        message: &str,
+    ) -> Result<(), String> {
+        let url = format!(
+            "https://fcm.googleapis.com/v1/projects/{}/messages:send",
+            self.project_id
+        );
+        let body = serde_json::json!({
+            "message": {
+                "token": device_token,
+                "data": {
+                    "type": "driver_instruction",
+                    "instruction_type": instruction_type,
+                    "title": "Dispatch instruction",
+                    "body": message,
+                },
+                "android": { "priority": "HIGH" }
+            }
+        });
+        let resp = self.http
+            .post(&url)
+            .bearer_auth(access_token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("FCM instruction request: {e}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("FCM instruction {status}: {text}"));
+        }
+        Ok(())
     }
 
     async fn send_fcm(&self, device_token: &str, access_token: &str) -> Result<(), String> {

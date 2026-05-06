@@ -7,6 +7,7 @@ pub mod ws;
 use axum::{Router, routing::{get, post, put}};
 use std::sync::Arc;
 use crate::application::services::{DriverService, TaskService, LocationService};
+use crate::infrastructure::external::FcmClient;
 
 pub struct AppState {
     pub driver_service:   Arc<DriverService>,
@@ -15,6 +16,8 @@ pub struct AppState {
     pub jwt: Arc<logisticos_auth::jwt::JwtService>,
     /// Broadcast channel for real-time roster updates (location + status) to WebSocket clients.
     pub roster_tx: tokio::sync::broadcast::Sender<RosterEvent>,
+    /// Optional FCM client for push notifications. None when FCM env vars are unset.
+    pub fcm: Option<Arc<FcmClient>>,
 }
 
 /// Events fanned out to WebSocket subscribers. Tenant-scoped on the server side —
@@ -37,6 +40,15 @@ pub enum RosterEvent {
         is_online: bool,
         active_route_id: Option<uuid::Uuid>,
     },
+    /// Sent when an admin dispatches an instruction to a driver via
+    /// `POST /v1/drivers/:id/instructions`. Surfaced to the dispatch console
+    /// so the UI can show an "instruction sent" toast without polling.
+    Instruction {
+        driver_id:        uuid::Uuid,
+        tenant_id:        uuid::Uuid,
+        instruction_type: String,
+        message:          String,
+    },
 }
 
 impl RosterEvent {
@@ -44,6 +56,7 @@ impl RosterEvent {
         match self {
             RosterEvent::LocationUpdated { tenant_id, .. } => *tenant_id,
             RosterEvent::StatusChanged   { tenant_id, .. } => *tenant_id,
+            RosterEvent::Instruction     { tenant_id, .. } => *tenant_id,
         }
     }
 }
@@ -72,17 +85,23 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/drivers/go-offline",   post(drivers::go_offline))
         .route("/drivers/:id",          get(drivers::get_driver).patch(drivers::update_driver))
         // Admin override: force a driver's status (FLEET_MANAGE permission)
-        .route("/drivers/:id/status",       put(drivers::set_driver_status))
+        .route("/drivers/:id/status",        put(drivers::set_driver_status))
         // Admin override: cancel all pending/in-progress tasks for a driver
-        .route("/drivers/:id/cancel-tasks", post(drivers::cancel_driver_tasks))
+        .route("/drivers/:id/cancel-tasks",  post(drivers::cancel_driver_tasks))
+        // MCP tool endpoint: get live location for a specific driver
+        .route("/drivers/:id/location",      get(drivers::get_driver_location))
+        // MCP tool endpoint: send an operational instruction to a driver via FCM + WS
+        .route("/drivers/:id/instructions",  post(drivers::send_driver_instruction))
         // Location updates from driver app
         .route("/location", post(location::update_location))
         // Task management
-        .route("/tasks",          get(tasks::list_my_tasks))
+        .route("/tasks",           get(tasks::list_my_tasks))
         // Aggregated manifest — partner portal daily view. Must come
         // before /:id patterns to avoid matchit picking up "manifest"
         // as a task id.
-        .route("/tasks/manifest", get(tasks::list_manifest))
+        .route("/tasks/manifest",  get(tasks::list_manifest))
+        // Completed + failed tasks for the current driver (history view)
+        .route("/tasks/history",   get(tasks::list_task_history))
         .route("/tasks/:id/start",    put(tasks::start_task))
         .route("/tasks/:id/complete", put(tasks::complete_task))
         .route("/tasks/:id/fail",     put(tasks::fail_task))

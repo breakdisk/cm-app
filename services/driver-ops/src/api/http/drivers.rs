@@ -1,5 +1,6 @@
 use axum::{extract::{Path, State}, Json};
 use std::sync::Arc;
+use serde::Deserialize;
 use uuid::Uuid;
 use logisticos_auth::middleware::AuthClaims;
 use logisticos_auth::require_permission;
@@ -242,6 +243,106 @@ pub async fn set_driver_status(
     });
 
     Ok(Json(serde_json::json!({ "data": DriverDto::from(&driver) })))
+}
+
+/// GET /v1/drivers/:id/location
+///
+/// Returns the most-recent known GPS coordinates for a driver.
+/// Used by the AI layer's `get_driver_location` MCP tool.
+/// Returns 404 if the driver has never broadcast a location.
+pub async fn get_driver_location(
+    AuthClaims(claims): AuthClaims,
+    Path(id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_permission!(claims, logisticos_auth::rbac::permissions::FLEET_VIEW);
+    let driver_id = DriverId::from_uuid(id);
+    let driver = state.driver_service.get(&driver_id).await?;
+
+    // Tenant isolation
+    if driver.tenant_id.inner() != claims.tenant_id {
+        return Err(AppError::NotFound { resource: "Driver", id: id.to_string() });
+    }
+
+    let (lat, lng) = match driver.current_location {
+        Some(loc) => (loc.lat, loc.lng),
+        None => return Err(AppError::NotFound {
+            resource: "DriverLocation",
+            id: id.to_string(),
+        }),
+    };
+
+    Ok(Json(serde_json::json!({
+        "data": {
+            "driver_id":       id,
+            "lat":             lat,
+            "lng":             lng,
+            "last_updated_at": driver.last_location_at,
+            "status":          status_str(driver.status),
+            "is_online":       driver.status != DriverStatus::Offline,
+        }
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SendInstructionRequest {
+    /// e.g. "return_to_hub", "call_support", "pickup_at_hub", "custom"
+    pub instruction_type: String,
+    pub message: String,
+}
+
+/// POST /v1/drivers/:id/instructions
+///
+/// Sends an operational instruction to a driver — delivered via FCM push (if
+/// the driver app has registered a token) and broadcast to the WebSocket roster
+/// so the dispatch console can show confirmation without polling.
+/// `:id` is the driver's identity user_id (the UUID shown in the portal).
+pub async fn send_driver_instruction(
+    AuthClaims(claims): AuthClaims,
+    Path(id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SendInstructionRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_permission!(claims, logisticos_auth::rbac::permissions::FLEET_MANAGE);
+
+    if req.instruction_type.is_empty() || req.message.is_empty() {
+        return Err(AppError::Validation(
+            "instruction_type and message are required".into(),
+        ));
+    }
+
+    // Fire FCM push — best-effort, non-blocking
+    if let Some(fcm) = &state.fcm {
+        let fcm = fcm.clone();
+        let itype = req.instruction_type.clone();
+        let msg = req.message.clone();
+        tokio::spawn(async move {
+            fcm.notify_driver_instruction(id, &itype, &msg).await;
+        });
+    }
+
+    // Broadcast to WebSocket subscribers (dispatch console, monitoring dashboards)
+    let _ = state.roster_tx.send(RosterEvent::Instruction {
+        driver_id:        id,
+        tenant_id:        claims.tenant_id,
+        instruction_type: req.instruction_type.clone(),
+        message:          req.message.clone(),
+    });
+
+    tracing::info!(
+        driver_id = %id,
+        instruction_type = %req.instruction_type,
+        "Instruction sent to driver"
+    );
+
+    Ok(Json(serde_json::json!({
+        "data": {
+            "driver_id":        id,
+            "instruction_type": req.instruction_type,
+            "message":          req.message,
+            "delivered":        state.fcm.is_some(),
+        }
+    })))
 }
 
 /// Admin: POST /v1/drivers/:id/cancel-tasks

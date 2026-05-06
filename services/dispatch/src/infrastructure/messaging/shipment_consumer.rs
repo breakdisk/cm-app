@@ -99,8 +99,8 @@ async fn handle_shipment_created(
         tracking_number:      if d.tracking_number.is_empty() { None } else { Some(d.tracking_number) },
         dest_address_line1:   d.destination_address,
         dest_city:            d.destination_city,
-        dest_province:        String::new(),    // TODO: ShipmentCreated payload doesn't carry province yet
-        dest_postal_code:     String::new(),    // TODO: Same — postal_code not in ShipmentCreated payload
+        dest_province:        d.destination_province,
+        dest_postal_code:     d.destination_postal_code,
         dest_lat:             d.destination_lat,
         dest_lng:             d.destination_lng,
         origin_address_line1: d.origin_address,

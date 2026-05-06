@@ -153,6 +153,21 @@ impl RouteRepository for PgRouteRepository {
         Ok(routes)
     }
 
+    async fn cancel(&self, id: &RouteId, tenant_id: &TenantId) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            r#"UPDATE dispatch.routes
+               SET status = 'cancelled', completed_at = NOW()
+               WHERE id        = $1
+                 AND tenant_id = $2
+                 AND status IN ('planned', 'in_progress')"#,
+        )
+        .bind(id.inner())
+        .bind(tenant_id.inner())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     async fn save(&self, route: &Route) -> anyhow::Result<()> {
         let status = status_str(route.status);
         sqlx::query(

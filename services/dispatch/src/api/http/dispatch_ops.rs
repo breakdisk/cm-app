@@ -6,7 +6,7 @@ use logisticos_auth::middleware::AuthClaims;
 use logisticos_auth::require_permission;
 use logisticos_errors::AppError;
 use logisticos_types::{Coordinates, DriverId, TenantId};
-use crate::{api::http::AppState, application::commands::QuickDispatchCommand};
+use crate::{api::http::AppState, application::commands::QuickDispatchCommand, infrastructure::db::DispatchQueueRepository};
 
 pub async fn quick_dispatch(
     AuthClaims(claims): AuthClaims,
@@ -121,6 +121,45 @@ pub async fn internal_available_drivers(
     })).collect();
 
     Ok(Json(serde_json::json!({ "drivers": data, "count": data.len() })))
+}
+
+/// Admin: POST /v1/queue/:shipment_id/cancel-dispatch
+///
+/// Cancels a previously dispatched shipment — resets the queue row back to
+/// `pending` so the dispatcher can reassign. Scoped to the caller's tenant.
+/// Call this when a driver's assignment needs to be undone from the dispatch console.
+pub async fn cancel_queue_dispatch(
+    AuthClaims(claims): AuthClaims,
+    Path(shipment_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_permission!(claims, logisticos_auth::rbac::permissions::DISPATCH_ASSIGN);
+
+    let cancelled = state.queue_repo
+        .cancel_dispatch(shipment_id, claims.tenant_id)
+        .await
+        .map_err(AppError::Internal)?;
+
+    if !cancelled {
+        return Err(AppError::NotFound {
+            resource: "Dispatched shipment",
+            id: shipment_id.to_string(),
+        });
+    }
+
+    tracing::info!(
+        shipment_id = %shipment_id,
+        tenant_id   = %claims.tenant_id,
+        "Dispatch cancelled by ops — shipment returned to pending queue"
+    );
+
+    Ok(Json(serde_json::json!({
+        "data": {
+            "shipment_id": shipment_id,
+            "status":      "pending",
+            "message":     "Dispatch cancelled — shipment returned to queue"
+        }
+    })))
 }
 
 /// Admin: POST /v1/drivers/:id/cancel-assignment

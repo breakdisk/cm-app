@@ -38,6 +38,8 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         // Route management
         .route("/routes",              get(routes::list_routes).post(routes::create_route))
         .route("/routes/:id",          get(routes::get_route))
+        // Admin: cancel a planned/in-progress route
+        .route("/routes/:id/cancel",   put(routes::cancel_route))
         // Auto-assign the best available driver to a route
         .route("/routes/:id/assign",   post(assignments::auto_assign))
         // Driver actions — called from mobile app
@@ -47,8 +49,10 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/queue",   get(queue::list_queue))
         .route("/drivers", get(queue::list_drivers))
         // Quick dispatch — one-shot assign driver to shipment in queue
-        .route("/queue/:shipment_id/dispatch",    post(dispatch_ops::quick_dispatch))
+        .route("/queue/:shipment_id/dispatch",        post(dispatch_ops::quick_dispatch))
+        // Admin: cancel a dispatched shipment — returns it to pending for reassignment
+        .route("/queue/:shipment_id/cancel-dispatch", post(dispatch_ops::cancel_queue_dispatch))
         // Admin: cancel a driver's stale active assignment (re-enters them into auto-dispatch pool)
-        .route("/drivers/:id/cancel-assignment",  post(dispatch_ops::cancel_driver_assignment))
+        .route("/drivers/:id/cancel-assignment",      post(dispatch_ops::cancel_driver_assignment))
         .layer(auth_layer)
 }

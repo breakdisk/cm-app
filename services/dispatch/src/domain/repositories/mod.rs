@@ -9,6 +9,10 @@ pub trait RouteRepository: Send + Sync {
     async fn find_active_by_driver(&self, driver_id: &DriverId) -> anyhow::Result<Option<Route>>;
     async fn list_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<Route>>;
     async fn save(&self, route: &Route) -> anyhow::Result<()>;
+    /// Cancel a planned or in-progress route by ID.
+    /// Returns `true` if the route was found and cancelled, `false` if already
+    /// completed/cancelled or not found.
+    async fn cancel(&self, id: &RouteId, tenant_id: &TenantId) -> anyhow::Result<bool>;
 }
 
 #[async_trait]
