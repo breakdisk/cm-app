@@ -86,6 +86,7 @@ pub trait CodRemittanceBatchRepository: Send + Sync {
 #[async_trait]
 pub trait WalletRepository: Send + Sync {
     async fn find_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Option<Wallet>>;
+    async fn find_by_id(&self, id: uuid::Uuid) -> anyhow::Result<Option<Wallet>>;
     async fn save_wallet(&self, wallet: &Wallet) -> anyhow::Result<()>;
     async fn record_transaction(&self, tx: &WalletTransaction) -> anyhow::Result<()>;
     async fn list_transactions(&self, wallet_id: Uuid, limit: u32) -> anyhow::Result<Vec<WalletTransaction>>;
@@ -165,4 +166,10 @@ pub struct BillingRunRecord {
     pub shipment_count: i32,
     pub total_cents:    i64,
     pub created_at:     chrono::DateTime<chrono::Utc>,
+}
+
+#[async_trait]
+pub trait MerchantBillingAccountRepository: Send + Sync {
+    async fn find_by_merchant(&self, merchant_id: Uuid) -> anyhow::Result<Option<crate::domain::entities::MerchantBillingAccount>>;
+    async fn upsert(&self, account: &crate::domain::entities::MerchantBillingAccount) -> anyhow::Result<()>;
 }

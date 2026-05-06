@@ -1,8 +1,12 @@
 pub mod invoices;
+pub mod invoice_pdf;
 pub mod wallet;
 pub mod billing;
 pub mod cod_batches;
 pub mod health;
+pub mod merchant_billing_accounts;
+pub mod partner_commission;
+pub mod withdrawal_requests;
 
 use axum::{Router, routing::{get, post}};
 use std::sync::Arc;
@@ -11,12 +15,17 @@ use crate::application::services::{
 };
 
 pub struct AppState {
-    pub invoice_service:         Arc<InvoiceService>,
-    pub cod_service:             Arc<CodService>,
-    pub cod_remittance_service:  Arc<CodRemittanceService>,
-    pub wallet_service:          Arc<WalletService>,
-    pub billing_service:         Arc<BillingAggregationService>,
-    pub jwt:                     Arc<logisticos_auth::jwt::JwtService>,
+    pub invoice_service:                Arc<InvoiceService>,
+    pub cod_service:                    Arc<CodService>,
+    pub cod_remittance_service:         Arc<CodRemittanceService>,
+    pub wallet_service:                 Arc<WalletService>,
+    pub billing_service:                Arc<BillingAggregationService>,
+    pub jwt:                            Arc<logisticos_auth::jwt::JwtService>,
+    pub merchant_billing_account_repo:  Arc<dyn crate::domain::repositories::MerchantBillingAccountRepository>,
+    pub commission_query:               Arc<crate::application::queries::CommissionBreakdownQuery>,
+    pub partner_bonus_repo:             Arc<crate::infrastructure::db::partner_bonus_repo::PgPartnerBonusRepo>,
+    pub withdrawal_service:             Arc<crate::application::services::WithdrawalService>,
+    pub pdf_renderer:                   Option<Arc<crate::application::services::pdf_renderer::PdfRenderer>>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -40,12 +49,26 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         // literally instead of treating "tenant" as an invoice id.
         .route("/invoices/tenant",                       get(invoices::list_tenant_invoices))
         .route("/invoices/:id",                          get(invoices::get_invoice))
+        .route("/invoices/:id/pdf",                      get(invoice_pdf::download_invoice_pdf))
         .route("/invoices/:id/resend",                   post(invoices::resend_invoice))
         .route("/customers/:customer_id/invoices",       get(invoices::list_customer_invoices))
         .route("/cod/reconcile",                         post(wallet::reconcile_cod))
         .route("/wallet",                                get(wallet::get_wallet))
         .route("/wallet/transactions",                   get(wallet::list_transactions))
         .route("/wallet/withdraw",                       post(wallet::request_withdrawal))
+        .route(
+            "/admin/merchants/:merchant_id/billing-account",
+            get(merchant_billing_accounts::get_billing_account)
+                .post(merchant_billing_accounts::upsert_billing_account)
+                .patch(merchant_billing_accounts::patch_billing_account),
+        )
+        .route("/partner/commission/breakdown", get(partner_commission::get_commission_breakdown))
+        .route("/admin/partner-bonuses",        post(partner_commission::create_partner_bonus))
+        .route("/admin/billing/run",            post(billing::run_billing_admin))
+        .route("/admin/withdrawal-requests",              get(withdrawal_requests::list_withdrawal_requests))
+        .route("/admin/withdrawal-requests/:id/approve",  post(withdrawal_requests::approve_withdrawal))
+        .route("/admin/withdrawal-requests/:id/disburse", post(withdrawal_requests::disburse_withdrawal))
+        .route("/admin/withdrawal-requests/:id/reject",   post(withdrawal_requests::reject_withdrawal))
         .layer(auth_layer)
 }
 

@@ -35,10 +35,12 @@ impl WalletService {
     pub async fn summary(&self, tenant_id: &TenantId) -> AppResult<WalletSummary> {
         let wallet = self.get_or_create(tenant_id).await?;
         Ok(WalletSummary {
-            wallet_id: wallet.id,
-            balance_cents: wallet.balance.amount,
-            currency: format!("{:?}", wallet.currency),
-            updated_at: wallet.updated_at.to_rfc3339(),
+            wallet_id:          wallet.id,
+            balance_cents:      wallet.balance.amount,
+            currency:           format!("{:?}", wallet.currency),
+            reserved_centavos:  wallet.reserved_centavos,
+            available_centavos: wallet.available_centavos(),
+            updated_at:         wallet.updated_at.to_rfc3339(),
         })
     }
 

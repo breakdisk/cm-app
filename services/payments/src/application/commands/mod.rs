@@ -105,6 +105,15 @@ pub struct RunBillingCommand {
     pub month:          u32,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AdminRunBillingCommand {
+    pub merchant_id:    Uuid,
+    pub merchant_email: Option<String>,
+    pub tenant_code:    String,
+    pub period_start:   NaiveDate,
+    pub period_end:     NaiveDate,
+}
+
 // ── Response shapes ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -124,8 +133,10 @@ pub struct InvoiceSummary {
 
 #[derive(Debug, Serialize)]
 pub struct WalletSummary {
-    pub wallet_id:     Uuid,
-    pub balance_cents: i64,
-    pub currency:      String,
-    pub updated_at:    String,
+    pub wallet_id:          Uuid,
+    pub balance_cents:      i64,
+    pub currency:           String,
+    pub reserved_centavos:  i64,
+    pub available_centavos: i64,
+    pub updated_at:         String,
 }

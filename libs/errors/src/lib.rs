@@ -49,6 +49,10 @@ pub enum AppError {
     #[error("Event publishing failed: {0}")]
     EventPublish(String),
 
+    // ── Availability ────────────────────────────────────────
+    #[error("Service unavailable: {0}")]
+    ServiceUnavailable(String),
+
     // ── Generic ─────────────────────────────────────────────
     #[error("Internal server error")]
     Internal(#[from] anyhow::Error),
@@ -71,6 +75,7 @@ impl AppError {
             AppError::SubscriptionLimitExceeded {..} => StatusCode::PAYMENT_REQUIRED,
             AppError::SlaBreach(_)                 => StatusCode::UNPROCESSABLE_ENTITY,
             AppError::PaymentFailed(_)             => StatusCode::PAYMENT_REQUIRED,
+            AppError::ServiceUnavailable(_)        => StatusCode::SERVICE_UNAVAILABLE,
             _                                      => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -90,6 +95,7 @@ impl AppError {
             AppError::Database(_)                  => "DATABASE_ERROR",
             AppError::Cache(_)                     => "CACHE_ERROR",
             AppError::EventPublish(_)              => "EVENT_PUBLISH_ERROR",
+            AppError::ServiceUnavailable(_)        => "SERVICE_UNAVAILABLE",
             AppError::Internal(_)                  => "INTERNAL_SERVER_ERROR",
         }
     }

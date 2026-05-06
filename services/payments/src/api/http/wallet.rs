@@ -37,6 +37,7 @@ pub async fn reconcile_cod(
     State(state): State<Arc<AppState>>,
     Json(cmd): Json<ReconcileCodCommand>,
 ) -> Result<axum::http::StatusCode, AppError> {
+    require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_MANAGE);
     // This endpoint is called by driver-ops/pod service via internal API key auth
     // In production, this would be protected by mTLS + service account, not user JWT
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
@@ -48,9 +49,18 @@ pub async fn request_withdrawal(
     AuthClaims(claims): AuthClaims,
     State(state): State<Arc<AppState>>,
     Json(cmd): Json<RequestWithdrawalCommand>,
-) -> Result<axum::http::StatusCode, AppError> {
+) -> Result<Json<serde_json::Value>, AppError> {
     require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_MANAGE);
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
-    state.wallet_service.request_withdrawal(&tenant_id, cmd).await?;
-    Ok(axum::http::StatusCode::NO_CONTENT)
+    // NOTE: cmd.bank_account_id is not persisted — WithdrawalRequest entity does not yet
+    // carry a bank_account_id field. Track in: future WithdrawalRequest schema iteration.
+    let req = state.withdrawal_service
+        .request(&tenant_id, cmd.amount_cents, claims.user_id).await?;
+    let summary = state.wallet_service.summary(&tenant_id).await?;
+    Ok(Json(serde_json::json!({
+        "withdrawal_request_id": req.id,
+        "status":                "pending",
+        "reserved_centavos":     summary.reserved_centavos,
+        "available_centavos":    summary.available_centavos,
+    })))
 }

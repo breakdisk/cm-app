@@ -12,13 +12,14 @@ impl PgWalletRepository { pub fn new(pool: PgPool) -> Self { Self { pool } } }
 
 #[derive(sqlx::FromRow)]
 struct WalletRow {
-    id:            Uuid,
-    tenant_id:     Uuid,
-    balance_cents: i64,
-    currency:      String,
-    version:       i64,
-    created_at:    chrono::DateTime<chrono::Utc>,
-    updated_at:    chrono::DateTime<chrono::Utc>,
+    id:                Uuid,
+    tenant_id:         Uuid,
+    balance_cents:     i64,
+    currency:          String,
+    version:           i64,
+    reserved_centavos: i64,
+    created_at:        chrono::DateTime<chrono::Utc>,
+    updated_at:        chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -67,6 +68,7 @@ impl From<WalletRow> for Wallet {
             balance: Money::new(r.balance_cents, currency),
             currency,
             version: r.version,
+            reserved_centavos: r.reserved_centavos,
             created_at: r.created_at,
             updated_at: r.updated_at,
         }
@@ -93,9 +95,17 @@ impl From<TxRow> for WalletTransaction {
 impl WalletRepository for PgWalletRepository {
     async fn find_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Option<Wallet>> {
         let row = sqlx::query_as::<_, WalletRow>(
-            "SELECT id, tenant_id, balance_cents, currency, version, created_at, updated_at
+            "SELECT id, tenant_id, balance_cents, currency, version, reserved_centavos, created_at, updated_at
              FROM payments.wallets WHERE tenant_id = $1"
         ).bind(tenant_id.inner()).fetch_optional(&self.pool).await?;
+        Ok(row.map(Wallet::from))
+    }
+
+    async fn find_by_id(&self, id: uuid::Uuid) -> anyhow::Result<Option<Wallet>> {
+        let row = sqlx::query_as::<_, WalletRow>(
+            "SELECT id, tenant_id, balance_cents, currency, version, reserved_centavos, created_at, updated_at
+             FROM payments.wallets WHERE id = $1"
+        ).bind(id).fetch_optional(&self.pool).await?;
         Ok(row.map(Wallet::from))
     }
 
@@ -103,16 +113,17 @@ impl WalletRepository for PgWalletRepository {
         let currency = format!("{:?}", w.currency);
         // Optimistic concurrency: the WHERE version check prevents double-credit
         let rows = sqlx::query(
-            r#"INSERT INTO payments.wallets (id, tenant_id, balance_cents, currency, version, created_at, updated_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7)
+            r#"INSERT INTO payments.wallets (id, tenant_id, balance_cents, currency, version, reserved_centavos, created_at, updated_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
                ON CONFLICT (tenant_id) DO UPDATE SET
-                   balance_cents = EXCLUDED.balance_cents,
-                   version       = EXCLUDED.version,
-                   updated_at    = EXCLUDED.updated_at
+                   balance_cents     = EXCLUDED.balance_cents,
+                   version           = EXCLUDED.version,
+                   reserved_centavos = EXCLUDED.reserved_centavos,
+                   updated_at        = EXCLUDED.updated_at
                WHERE payments.wallets.version = $5 - 1"#
         )
         .bind(w.id).bind(w.tenant_id.inner()).bind(w.balance.amount).bind(currency)
-        .bind(w.version).bind(w.created_at).bind(w.updated_at)
+        .bind(w.version).bind(w.reserved_centavos).bind(w.created_at).bind(w.updated_at)
         .execute(&self.pool).await?;
 
         if rows.rows_affected() == 0 {

@@ -20,7 +20,7 @@ use logisticos_types::{MerchantId, TenantId};
 
 use crate::{
     application::{
-        commands::{AwbChargeInput, GenerateInvoiceCommand, RunBillingCommand},
+        commands::{AdminRunBillingCommand, AwbChargeInput, GenerateInvoiceCommand, RunBillingCommand},
         services::InvoiceService,
     },
     domain::{
@@ -201,6 +201,122 @@ impl BillingAggregationService {
             total_cents,
             period         = format!("{}-{:02}", cmd.year, cmd.month),
             "Billing run issued invoice",
+        );
+        Ok((run, BillingRunOutcome::Issued))
+    }
+
+    pub async fn run_for_merchant(
+        &self,
+        tenant_id: &TenantId,
+        cmd: AdminRunBillingCommand,
+    ) -> AppResult<(BillingRunRecord, BillingRunOutcome)> {
+        if cmd.period_end < cmd.period_start {
+            return Err(AppError::Validation("period_end must be >= period_start".into()));
+        }
+        if cmd.period_start.year() != cmd.period_end.year()
+            || cmd.period_start.month() != cmd.period_end.month()
+        {
+            return Err(AppError::Validation(
+                "billing period must fall within a single calendar month".into(),
+            ));
+        }
+
+        let merchant_id = MerchantId::from_uuid(cmd.merchant_id);
+
+        if let Some(existing) = self.runs
+            .find_for_period(tenant_id, &merchant_id, cmd.period_start, cmd.period_end)
+            .await.map_err(AppError::Internal)?
+        {
+            tracing::info!(
+                run_id   = %existing.id,
+                merchant = %cmd.merchant_id,
+                "billing run already existed for period"
+            );
+            return Ok((existing, BillingRunOutcome::AlreadyExisted));
+        }
+
+        let from_utc = Utc.from_utc_datetime(&cmd.period_start.and_time(NaiveTime::MIN));
+        let to_utc   = Utc.from_utc_datetime(
+            &(cmd.period_end + Duration::days(1)).and_time(NaiveTime::MIN),
+        );
+        let shipments = self.billing_source
+            .list_delivered(tenant_id.inner(), cmd.merchant_id, from_utc, to_utc)
+            .await.map_err(AppError::Internal)?;
+
+        if shipments.is_empty() {
+            let run = BillingRunRecord {
+                id:             uuid::Uuid::new_v4(),
+                tenant_id:      tenant_id.clone(),
+                merchant_id:    merchant_id.clone(),
+                period_start:   cmd.period_start,
+                period_end:     cmd.period_end,
+                invoice_id:     None,
+                shipment_count: 0,
+                total_cents:    0,
+                created_at:     Utc::now(),
+            };
+            self.runs.save(&run).await.map_err(AppError::Internal)?;
+            tracing::info!(
+                run_id   = %run.id,
+                merchant = %cmd.merchant_id,
+                "admin billing run: no shipments in period"
+            );
+            return Ok((run, BillingRunOutcome::NoShipments));
+        }
+
+        let mut charges = Vec::with_capacity(shipments.len() * 3);
+        let mut total_cents = 0i64;
+        for s in &shipments {
+            total_cents = total_cents.saturating_add(s.total_cents);
+            if s.base_freight_cents > 0 {
+                charges.push(AwbChargeInput { awb: s.awb.clone(), charge_type: "base_freight".into(), description: "Base freight".into(), quantity: 1, unit_price_cents: s.base_freight_cents, discount_cents: None });
+            }
+            if s.fuel_surcharge_cents > 0 {
+                charges.push(AwbChargeInput { awb: s.awb.clone(), charge_type: "fuel_surcharge".into(), description: "Fuel surcharge".into(), quantity: 1, unit_price_cents: s.fuel_surcharge_cents, discount_cents: None });
+            }
+            if s.insurance_cents > 0 {
+                charges.push(AwbChargeInput { awb: s.awb.clone(), charge_type: "insurance_fee".into(), description: "Shipment insurance".into(), quantity: 1, unit_price_cents: s.insurance_cents, discount_cents: None });
+            }
+        }
+
+        if charges.is_empty() {
+            return Err(AppError::BusinessRule(format!(
+                "Billing run for {} shipments produced zero charges",
+                shipments.len()
+            )));
+        }
+
+        let invoice = self.invoice_service.generate(
+            tenant_id,
+            GenerateInvoiceCommand {
+                merchant_id:          cmd.merchant_id,
+                merchant_email:       cmd.merchant_email,
+                tenant_code:          cmd.tenant_code,
+                billing_period_year:  cmd.period_start.year(),
+                billing_period_month: cmd.period_start.month(),
+                charges,
+            },
+        ).await?;
+
+        let run = BillingRunRecord {
+            id:             uuid::Uuid::new_v4(),
+            tenant_id:      tenant_id.clone(),
+            merchant_id,
+            period_start:   cmd.period_start,
+            period_end:     cmd.period_end,
+            invoice_id:     Some(invoice.id.clone()),
+            shipment_count: shipments.len() as i32,
+            total_cents,
+            created_at:     Utc::now(),
+        };
+        self.runs.save(&run).await.map_err(AppError::Internal)?;
+        tracing::info!(
+            run_id         = %run.id,
+            invoice_id     = ?run.invoice_id,
+            merchant       = %cmd.merchant_id,
+            shipment_count = run.shipment_count,
+            total_cents    = run.total_cents,
+            "admin billing run issued invoice"
         );
         Ok((run, BillingRunOutcome::Issued))
     }

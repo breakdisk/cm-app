@@ -4,11 +4,13 @@ use anyhow::Context;
 use crate::config::Config;
 use crate::application::services::{
     BillingAggregationService, CodRemittanceService, CodService, InvoiceService, WalletService,
+    WithdrawalService,
 };
 use crate::infrastructure::cache::RedisSequenceSource;
 use crate::infrastructure::db::{
     PgBillingRunRepository, PgCodRemittanceBatchRepository, PgCodRepository,
-    PgInvoiceRepository, PgWalletRepository,
+    PgInvoiceRepository, PgWalletRepository, PgMerchantBillingAccountRepository,
+    PgWithdrawalRequestRepository,
 };
 use crate::infrastructure::http::OrderIntakeClient;
 use crate::api::http::{router, AppState};
@@ -56,11 +58,22 @@ pub async fn run() -> anyhow::Result<()> {
     let cod_repo         = Arc::new(PgCodRepository::new(pool.clone()));
     let cod_batch_repo   = Arc::new(PgCodRemittanceBatchRepository::new(pool.clone()));
     let wallet_repo      = Arc::new(PgWalletRepository::new(pool.clone()));
+    let withdrawal_repo  = Arc::new(PgWithdrawalRequestRepository::new(pool.clone()));
     let billing_run_repo = Arc::new(PgBillingRunRepository::new(pool.clone()));
+    let merchant_billing_account_repo = Arc::new(
+        PgMerchantBillingAccountRepository::new(pool.clone())
+    );
     let sequence_source  = Arc::new(
         RedisSequenceSource::new(&cfg.redis.url).context("Failed to connect to Redis for sequences")?
     );
     let order_intake_client = Arc::new(OrderIntakeClient::new(&cfg.order_intake.url));
+
+    let partner_bonus_repo = Arc::new(
+        crate::infrastructure::db::partner_bonus_repo::PgPartnerBonusRepo::new(pool.clone())
+    );
+    let commission_query = Arc::new(
+        crate::application::queries::CommissionBreakdownQuery::new(pool.clone())
+    );
 
     let invoice_service = Arc::new(InvoiceService::new(
         Arc::clone(&invoice_repo) as _,
@@ -82,19 +95,42 @@ pub async fn run() -> anyhow::Result<()> {
     let wallet_service = Arc::new(WalletService::new(
         Arc::clone(&wallet_repo) as _,
     ));
+    let withdrawal_service = Arc::new(WithdrawalService::new(
+        Arc::clone(&wallet_repo) as _,
+        Arc::clone(&withdrawal_repo),
+        Arc::clone(&kafka),
+    ));
     let billing_service = Arc::new(BillingAggregationService::new(
         Arc::clone(&billing_run_repo) as _,
         Arc::clone(&order_intake_client) as _,
         Arc::clone(&invoice_service),
     ));
 
+    let templates_dir = std::env::var("PAYMENTS_TEMPLATES_DIR")
+        .unwrap_or_else(|_| "./templates".into());
+    let pdf_renderer = match crate::application::services::PdfRenderer::new(&templates_dir).await {
+        Ok(r) => {
+            tracing::info!("PDF renderer initialised");
+            Some(Arc::new(r))
+        }
+        Err(e) => {
+            tracing::warn!(err = %e, "PDF renderer failed to initialise — /invoices/:id/pdf will return 503");
+            None
+        }
+    };
+
     let state = Arc::new(AppState {
-        invoice_service:        Arc::clone(&invoice_service),
-        cod_service:            Arc::clone(&cod_service),
-        cod_remittance_service: Arc::clone(&cod_remittance_service),
+        invoice_service:                   Arc::clone(&invoice_service),
+        cod_service:                       Arc::clone(&cod_service),
+        cod_remittance_service:            Arc::clone(&cod_remittance_service),
         wallet_service,
-        billing_service:        Arc::clone(&billing_service),
-        jwt:                    Arc::clone(&jwt),
+        billing_service:                   Arc::clone(&billing_service),
+        jwt:                               Arc::clone(&jwt),
+        merchant_billing_account_repo:     Arc::clone(&merchant_billing_account_repo) as _,
+        commission_query:                  Arc::clone(&commission_query),
+        partner_bonus_repo:                Arc::clone(&partner_bonus_repo),
+        withdrawal_service,
+        pdf_renderer,
     });
     let app = router(state);
 
