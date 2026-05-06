@@ -21,6 +21,11 @@ export type RosterEvent =
       active_route_id?: string | null;
     };
 
+export interface RosterEventsOpts {
+  onConnect?: () => void;
+  onDisconnect?: () => void;
+}
+
 // WebSocket endpoint on driver-ops service (not the API gateway)
 const DRIVER_OPS_URL = process.env.NEXT_PUBLIC_DRIVER_OPS_URL ?? "http://localhost:8006";
 
@@ -35,9 +40,14 @@ function wsUrl(token: string): string {
  * Reconnects with exponential backoff (capped at 30s). The latest `onEvent`
  * is always called — callers don't need to memoize it.
  */
-export function useRosterEvents(onEvent: (event: RosterEvent) => void): void {
-  const cbRef = useRef(onEvent);
-  cbRef.current = onEvent;
+export function useRosterEvents(
+  onEvent: (event: RosterEvent) => void,
+  opts?: RosterEventsOpts,
+): void {
+  const cbRef      = useRef(onEvent);
+  const optsRef    = useRef(opts);
+  cbRef.current    = onEvent;
+  optsRef.current  = opts;
 
   useEffect(() => {
     let cancelled = false;
@@ -56,6 +66,7 @@ export function useRosterEvents(onEvent: (event: RosterEvent) => void): void {
 
       ws.onopen = () => {
         attempt = 0;
+        optsRef.current?.onConnect?.();
         pingTimer = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "ping" }));
@@ -76,6 +87,7 @@ export function useRosterEvents(onEvent: (event: RosterEvent) => void): void {
 
       ws.onclose = () => {
         if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+        optsRef.current?.onDisconnect?.();
         if (cancelled) return;
         const delay = Math.min(30_000, 1_000 * 2 ** attempt);
         attempt += 1;

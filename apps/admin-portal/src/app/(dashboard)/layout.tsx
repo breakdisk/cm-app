@@ -28,6 +28,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
+import { DriverRosterProvider } from "@/context/driver-roster-context";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -476,16 +477,18 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
         </header>
 
         {/* ── Page content ──────────────────────────────────────────────── */}
-        <main className="flex-1 overflow-auto bg-canvas p-4 md:p-6">
-          <motion.div
-            key={pathname}
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-          >
-            {children}
-          </motion.div>
-        </main>
+        <DriverRosterProvider>
+          <main className="flex-1 overflow-auto bg-canvas p-4 md:p-6">
+            <motion.div
+              key={pathname}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+            >
+              {children}
+            </motion.div>
+          </main>
+        </DriverRosterProvider>
       </div>
     </div>
   );

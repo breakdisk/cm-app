@@ -6,9 +6,9 @@
  * Live updates arrive via the driver-ops RosterEvent WebSocket — status toggles
  * and GPS fixes patch the roster in place without a refetch.
  */
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { createDriversApi, Driver as ApiDriver } from "@/lib/api/drivers";
-import { useRosterEvents, type RosterEvent } from "@/hooks/useRosterEvents";
+import { useDriverRoster } from "@/context/driver-roster-context";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
@@ -99,6 +99,8 @@ export default function DriversPage() {
   const [loading, setLoading] = useState(false);
   const [onboardOpen, setOnboardOpen] = useState(false);
 
+  const { driverMap, connected, refresh } = useDriverRoster();
+
   const fetchDrivers = useCallback(async () => {
     setLoading(true);
     try {
@@ -138,32 +140,26 @@ export default function DriversPage() {
 
   useEffect(() => { fetchDrivers(); }, [fetchDrivers]);
 
-  // ── Live roster WS ──────────────────────────────────────────────────────────
-  // Patch driver state in-place as events arrive — no refetch, no flicker.
-  // Unknown driver_ids are ignored (roster refetch will pick up new drivers).
-  const handleRosterEvent = useCallback((event: RosterEvent) => {
-    setDrivers((prev) => {
-      const idx = prev.findIndex((d) => d.id === event.driver_id);
-      if (idx === -1) return prev;
-      const next = [...prev];
-      if (event.type === "status_changed") {
-        next[idx] = {
-          ...next[idx],
-          status: normalizeStatus(event.status),
-          last_seen: "Just now",
+  // ── Live roster patch from shared context ───────────────────────────────────
+  // Context carries status + GPS; page's own fetch carries full profile data.
+  useEffect(() => {
+    if (Object.keys(driverMap).length === 0) return;
+    setDrivers((prev) =>
+      prev.map((d) => {
+        const pin = driverMap[d.id];
+        if (!pin) return d;
+        return {
+          ...d,
+          status: pin.status as DriverStatus,
+          last_location:
+            pin.lat != null
+              ? `${pin.lat.toFixed(4)}, ${pin.lng.toFixed(4)}`
+              : d.last_location,
+          last_seen: "Live",
         };
-      } else {
-        next[idx] = {
-          ...next[idx],
-          last_location: `${event.lat.toFixed(4)}, ${event.lng.toFixed(4)}`,
-          last_seen: "Just now",
-        };
-      }
-      return next;
-    });
-  }, []);
-
-  useRosterEvents(handleRosterEvent);
+      })
+    );
+  }, [driverMap]);
 
   const filtered = drivers.filter((d) => {
     const cfg = STATUS_CONFIG[d.status];
@@ -191,8 +187,13 @@ export default function DriversPage() {
           <p className="text-sm text-white/40 font-mono mt-0.5">{onlineCount} online · {drivers.length} total roster</p>
         </div>
         <div className="flex items-center gap-2">
+          {!connected && (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-red-signal/30 bg-red-signal/10 px-2.5 py-1 text-2xs font-mono text-red-signal">
+              WS disconnected
+            </span>
+          )}
           <button
-            onClick={fetchDrivers}
+            onClick={() => { fetchDrivers(); refresh(); }}
             disabled={loading}
             className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors disabled:opacity-50"
           >
