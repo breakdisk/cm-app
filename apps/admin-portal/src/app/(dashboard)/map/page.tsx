@@ -39,9 +39,9 @@ function toPinStatus(s: BackendStatus): DriverPin["status"] {
     case "en_route":   return "en_route";
     case "delivering": return "delivering";
     case "returning":  return "returning";
-    case "available":
-    case "on_break":
-    default:           return "idle";
+    case "available":   return "available";
+    case "on_break":    return "on_break";
+    default:           return "available";
   }
 }
 

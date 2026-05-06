@@ -95,7 +95,7 @@ function toMapStatus(s?: string): DriverPin["status"] {
     case "en_route":   return "en_route";
     case "delivering": return "delivering";
     case "returning":  return "returning";
-    default:           return "idle";
+    default:           return "available";
   }
 }
 
