@@ -57,6 +57,9 @@ pub async fn reject_withdrawal(
 ) -> Result<Json<serde_json::Value>, AppError> {
     // TODO: define BILLING_ADMIN permission in rbac.rs
     require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_MANAGE);
+    if body.reason.trim().is_empty() {
+        return Err(AppError::BusinessRule("Rejection reason must not be empty".into()));
+    }
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let req = state.withdrawal_service.reject(id, claims.user_id, body.reason, &tenant_id).await?;
     Ok(Json(serde_json::json!({ "data": req })))

@@ -186,7 +186,7 @@ impl WithdrawalService {
         let mut req = self.find_or_error(id, tenant_id).await?;
         let mut wallet = self.wallet_or_error(req.wallet_id).await?;
 
-        req.reject(reviewed_by, note.clone())
+        req.reject(reviewed_by, note)
             .map_err(|e| AppError::BusinessRule(e.to_string()))?;
 
         // Release the reservation so funds become available again.
