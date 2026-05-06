@@ -41,16 +41,20 @@ impl PdfRenderer {
         let html = self.tera.render("invoice.html", context)
             .context("Tera render failed")?;
 
-        let browser = self.browser.lock().await;
-        let page = browser.new_page("about:blank").await
-            .context("Failed to open Chrome tab")?;
+        let page = {
+            let browser = self.browser.lock().await;
+            browser.new_page("about:blank").await
+                .context("Failed to open Chrome tab")?
+        };
 
-        page.set_content(html).await.context("Failed to set page content")?;
+        let pdf_bytes = async {
+            page.set_content(html).await.context("Failed to set page content")?;
+            let pdf_opts = chromiumoxide::cdp::browser_protocol::page::PrintToPdfParams::default();
+            page.pdf(pdf_opts).await.context("Failed to print PDF")
+        }.await;
 
-        let pdf_opts = chromiumoxide::cdp::browser_protocol::page::PrintToPdfParams::default();
-        let pdf_bytes = page.pdf(pdf_opts).await.context("Failed to print PDF")?;
         page.close().await.ok();
 
-        Ok(pdf_bytes)
+        pdf_bytes
     }
 }

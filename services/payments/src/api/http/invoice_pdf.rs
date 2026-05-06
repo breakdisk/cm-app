@@ -63,7 +63,12 @@ pub async fn download_invoice_pdf(
     let pdf_bytes = renderer.render_invoice(&ctx).await
         .map_err(AppError::Internal)?;
 
-    let filename = format!("{}.pdf", invoice.invoice_number);
+    let safe_name: String = invoice.invoice_number
+        .to_string()
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        .collect();
+    let filename = format!("{safe_name}.pdf");
     let response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/pdf")
