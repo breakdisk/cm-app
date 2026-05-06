@@ -75,7 +75,7 @@ pub async fn get_cod_balance_internal(
     let tenant_id = tenant_id_str
         .parse::<Uuid>()
         .map(TenantId::from_uuid)
-        .map_err(|_| AppError::BadRequest("tenant_id query param is required and must be a UUID".into()))?;
+        .map_err(|_| AppError::Validation("tenant_id query param is required and must be a UUID".into()))?;
 
     let balance = state.cod_service.cod_balance(&tenant_id, merchant_id).await?;
 

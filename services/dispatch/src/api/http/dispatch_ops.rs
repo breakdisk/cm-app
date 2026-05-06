@@ -65,7 +65,7 @@ pub async fn internal_assign(
     let tenant_id = tenant_id_str
         .parse::<Uuid>()
         .map(TenantId::from_uuid)
-        .map_err(|_| AppError::BadRequest("tenant_id is required in request body".into()))?;
+        .map_err(|_| AppError::Validation("tenant_id is required and must be a valid UUID".into()))?;
 
     let preferred_driver_id = body["driver_id"]
         .as_str()
