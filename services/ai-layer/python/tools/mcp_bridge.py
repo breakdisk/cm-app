@@ -219,7 +219,7 @@ class GetDriverLocationInput(BaseModel):
 
 class SendDriverInstructionInput(BaseModel):
     driver_id: str = Field(..., description="Driver UUID")
-    instruction: str = Field(..., description="Instruction type")
+    instruction_type: str = Field(..., description="Instruction type (e.g. route_change, urgent_alert)")
     message: str = Field(..., description="Human-readable message for driver")
     payload: dict[str, Any] = Field(default_factory=dict)
 

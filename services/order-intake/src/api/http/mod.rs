@@ -4,7 +4,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
-    routing::{get, post},
+    routing::{get, post, put},
     Router,
 };
 use serde::Deserialize;
@@ -15,7 +15,7 @@ use logisticos_auth::rbac::permissions;
 use logisticos_errors::AppError;
 
 use crate::application::{
-    commands::{BulkCreateShipmentCommand, CancelShipmentCommand, CreateShipmentCommand},
+    commands::{BulkCreateShipmentCommand, CancelShipmentCommand, CreateShipmentCommand, RescheduleShipmentCommand},
     queries::ShipmentQueryService,
     services::shipment_service::ShipmentService,
 };
@@ -139,6 +139,57 @@ async fn cancel_shipment(
     Ok::<_, AppError>((StatusCode::NO_CONTENT, ()))
 }
 
+async fn reschedule_shipment(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+    Json(mut cmd): Json<RescheduleShipmentCommand>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    cmd.shipment_id = id;
+    s.svc.reschedule(cmd).await?;
+    Ok::<_, AppError>((StatusCode::NO_CONTENT, ()))
+}
+
+#[derive(serde::Deserialize)]
+struct OverrideStatusBody {
+    status: String,
+    #[allow(dead_code)]
+    reason: Option<String>,
+}
+
+async fn admin_override_status(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+    Json(body): Json<OverrideStatusBody>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    // Map string → ShipmentStatus
+    use logisticos_types::ShipmentStatus;
+    let new_status = match body.status.as_str() {
+        "pending"            => ShipmentStatus::Pending,
+        "confirmed"          => ShipmentStatus::Confirmed,
+        "pickup_assigned"    => ShipmentStatus::PickupAssigned,
+        "picked_up"          => ShipmentStatus::PickedUp,
+        "in_transit"         => ShipmentStatus::InTransit,
+        "at_hub"             => ShipmentStatus::AtHub,
+        "out_for_delivery"   => ShipmentStatus::OutForDelivery,
+        "delivery_attempted" => ShipmentStatus::DeliveryAttempted,
+        "delivered"          => ShipmentStatus::Delivered,
+        "partial_delivery"   => ShipmentStatus::PartialDelivery,
+        "piece_exception"    => ShipmentStatus::PieceException,
+        "customs_hold"       => ShipmentStatus::CustomsHold,
+        "failed"             => ShipmentStatus::Failed,
+        "cancelled"          => ShipmentStatus::Cancelled,
+        "returned"           => ShipmentStatus::Returned,
+        other => return Err(AppError::Validation(format!("Unknown status: {other}"))),
+    };
+    let actor = claims.user_id.to_string();
+    s.svc.override_status(id, new_status, &actor).await?;
+    Ok::<_, AppError>((StatusCode::NO_CONTENT, ()))
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -154,7 +205,9 @@ pub fn router(state: AppState) -> Router {
             .route("/shipments",        post(create_shipment).get(list_shipments))
             .route("/shipments/bulk",   post(bulk_create_shipments))
             .route("/shipments/:id",    get(get_shipment))
-            .route("/shipments/:id/cancel", post(cancel_shipment))
+            .route("/shipments/:id/cancel",     post(cancel_shipment))
+            .route("/shipments/:id/reschedule", post(reschedule_shipment))
+            .route("/shipments/:id/status",     put(admin_override_status))
             .layer(auth_layer)
         )
         // Internal service-to-service endpoints — no JWT auth required (Istio mTLS enforces caller identity).

@@ -13,13 +13,13 @@ import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
 import { Truck, Fuel, Wrench, MapPin, AlertTriangle, Briefcase } from "lucide-react";
 
-// ── Mock data ──────────────────────────────────────────────────────────────────
+// ── Initial KPI state (zeros — replaced by live API data on mount) ─────────────
 
-const KPI = [
-  { label: "Active Vehicles", value: 38,  trend: 0,    color: "green"  as const, format: "number" as const },
-  { label: "In Maintenance",  value: 4,   trend: -1,   color: "amber"  as const, format: "number" as const },
-  { label: "Avg Fuel Level",  value: 68,  trend: -4.2, color: "cyan"   as const, format: "percent" as const },
-  { label: "KM Today",        value: 8420, trend: +6.8, color: "purple" as const, format: "number" as const },
+const EMPTY_KPI = [
+  { label: "Active Vehicles", value: 0, trend: 0, color: "green"  as const, format: "number"  as const },
+  { label: "In Maintenance",  value: 0, trend: 0, color: "amber"  as const, format: "number"  as const },
+  { label: "Avg Fuel Level",  value: 0, trend: 0, color: "cyan"   as const, format: "percent" as const },
+  { label: "KM Today",        value: 0, trend: 0, color: "purple" as const, format: "number"  as const },
 ];
 
 type VehicleStatus = "active" | "idle" | "maintenance" | "offline";
@@ -38,16 +38,6 @@ interface Vehicle {
   alerts: string[];
 }
 
-const VEHICLES: Vehicle[] = [
-  { id: "V01", plate: "ABC-1234", type: "Motorcycle", driver: "Juan Dela Cruz",    status: "active",      fuel_pct: 72, km_today: 184, location: "Makati CBD",       next_service_km: 2400, alerts: []                          },
-  { id: "V02", plate: "XYZ-5678", type: "Van",        driver: "Maria Santos",      status: "active",      fuel_pct: 48, km_today: 248, location: "BGC Taguig",       next_service_km: 800,  alerts: ["Low fuel warning"]        },
-  { id: "V03", plate: "DEF-9012", type: "Motorcycle", driver: "Pedro Gonzales",    status: "idle",        fuel_pct: 91, km_today: 142, location: "Pasig City",       next_service_km: 4200, alerts: []                          },
-  { id: "V04", plate: "GHI-3456", type: "Van",        driver: undefined,           status: "maintenance", fuel_pct: 100, km_today: 0,  location: "Caloocan Depot",   next_service_km: 0,    alerts: ["Scheduled PMS"]           },
-  { id: "V05", plate: "JKL-7890", type: "Truck",      driver: "Carlo Reyes",       status: "active",      fuel_pct: 61, km_today: 312, location: "NLEX North",       next_service_km: 1100, alerts: []                          },
-  { id: "V06", plate: "MNO-1234", type: "Motorcycle", driver: "Ana Cruz",          status: "active",      fuel_pct: 84, km_today: 167, location: "Quezon City",      next_service_km: 5800, alerts: []                          },
-  { id: "V07", plate: "PQR-5678", type: "Van",        driver: undefined,           status: "maintenance", fuel_pct: 100, km_today: 0,  location: "Makati Depot",     next_service_km: 0,    alerts: ["Brake system check"]      },
-  { id: "V08", plate: "STU-9012", type: "Motorcycle", driver: "Dennis Villanueva", status: "active",      fuel_pct: 55, km_today: 198, location: "Caloocan City",    next_service_km: 3200, alerts: []                          },
-];
 
 const STATUS_CONFIG: Record<VehicleStatus, { label: string; variant: "green" | "cyan" | "amber" | "red" }> = {
   active:      { label: "Active",      variant: "green" },
@@ -69,8 +59,8 @@ function FleetPageInner() {
   const focusDriverId  = searchParams.get("driver");
   const focusCardRef   = useRef<HTMLDivElement | null>(null);
 
-  const [vehicles, setVehicles] = useState<Vehicle[]>(VEHICLES);
-  const [kpi, setKpi] = useState(KPI);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [kpi, setKpi] = useState(EMPTY_KPI);
 
   useEffect(() => {
     if (focusDriverId && focusCardRef.current) {
@@ -103,7 +93,7 @@ function FleetPageInner() {
           { label: "KM Today",        value: s.total_km_today, trend: 0,    color: "purple" as const, format: "number"  as const },
         ]);
       })
-      .catch(() => { /* retain mock on error */ });
+      .catch(() => { /* keep empty state — no fallback mock data */ });
   }, []);
 
   return (
@@ -120,7 +110,9 @@ function FleetPageInner() {
             <Truck size={22} className="text-cyan-neon" />
             Fleet Management
           </h1>
-          <p className="text-sm text-white/40 font-mono mt-0.5">42 vehicles · 38 active · 4 in maintenance</p>
+          <p className="text-sm text-white/40 font-mono mt-0.5">
+            {vehicles.length} vehicles · {kpi[0].value} active · {kpi[1].value} in maintenance
+          </p>
         </div>
       </motion.div>
 
@@ -135,6 +127,17 @@ function FleetPageInner() {
 
       {/* Vehicle grid */}
       <motion.div variants={variants.fadeInUp} className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+        {vehicles.length === 0 && (
+          <div className="col-span-full">
+            <GlassCard className="flex flex-col items-center justify-center py-14 text-center">
+              <Truck size={32} className="text-white/20 mb-3" />
+              <p className="text-sm font-semibold text-white/40">No vehicles registered</p>
+              <p className="text-xs font-mono text-white/20 mt-1">
+                Vehicles will appear here once registered in the fleet service.
+              </p>
+            </GlassCard>
+          </div>
+        )}
         {vehicles.map((v) => {
           const { label, variant } = STATUS_CONFIG[v.status];
           const fuelColor = v.fuel_pct < 25 ? "#FF3B5C" : v.fuel_pct < 50 ? "#FFAB00" : "#00FF88";

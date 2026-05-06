@@ -3,7 +3,7 @@ use chrono::NaiveDate;
 use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
-use logisticos_auth::middleware::AuthClaims;
+use logisticos_auth::{middleware::AuthClaims, require_permission};
 use logisticos_errors::AppError;
 use logisticos_types::{TenantId, DriverId};
 use crate::{
@@ -61,6 +61,31 @@ pub async fn list_task_history(
     let driver_id = DriverId::from_uuid(claims.user_id);
     let all_tasks = state.task_service.list_all_tasks(&driver_id).await?;
     // Filter to terminal statuses (completed / failed / cancelled)
+    let history: Vec<_> = all_tasks
+        .into_iter()
+        .filter(|t| {
+            matches!(
+                t.status.as_str(),
+                "completed" | "failed" | "cancelled"
+            )
+        })
+        .collect();
+    let count = history.len();
+    Ok(Json(serde_json::json!({ "data": history, "count": count })))
+}
+
+/// `GET /v1/drivers/:id/tasks/history`
+///
+/// Admin variant — returns completed/failed/cancelled tasks for any driver by UUID.
+/// Requires `FLEET_VIEW` permission (dispatcher / admin role).
+pub async fn admin_list_driver_task_history(
+    AuthClaims(claims): AuthClaims,
+    Path(driver_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_permission!(claims, logisticos_auth::rbac::permissions::FLEET_VIEW);
+    let driver_id = DriverId::from_uuid(driver_id);
+    let all_tasks = state.task_service.list_all_tasks(&driver_id).await?;
     let history: Vec<_> = all_tasks
         .into_iter()
         .filter(|t| {
