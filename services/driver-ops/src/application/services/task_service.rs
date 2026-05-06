@@ -140,6 +140,13 @@ impl TaskService {
             return Err(AppError::BusinessRule("Can only complete an in-progress task".into()));
         }
 
+        // Delivery tasks must always link to a POD — no completions without evidence.
+        if task.task_type == TaskType::Delivery && cmd.pod_id.is_none() {
+            return Err(AppError::BusinessRule(
+                "delivery task completion requires pod_id".into(),
+            ));
+        }
+
         task.complete(cmd.pod_id)
             .map_err(|e| AppError::BusinessRule(e.to_string()))?;
 
