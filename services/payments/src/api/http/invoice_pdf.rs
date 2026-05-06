@@ -27,7 +27,15 @@ pub async fn download_invoice_pdf(
     ctx.insert("tenant_name",        &claims.tenant_id.to_string());
     ctx.insert("invoice_number",     &invoice.invoice_number.to_string());
     ctx.insert("merchant_id",        &invoice.merchant_id.inner().to_string());
-    ctx.insert("status",             &format!("{:?}", invoice.status).to_lowercase());
+    let status_str = match invoice.status {
+        crate::domain::entities::InvoiceStatus::Draft     => "draft",
+        crate::domain::entities::InvoiceStatus::Issued    => "issued",
+        crate::domain::entities::InvoiceStatus::Paid      => "paid",
+        crate::domain::entities::InvoiceStatus::Overdue   => "overdue",
+        crate::domain::entities::InvoiceStatus::Disputed  => "disputed",
+        crate::domain::entities::InvoiceStatus::Cancelled => "cancelled",
+    };
+    ctx.insert("status", &status_str);
     ctx.insert("issued_at",          &invoice.issued_at.format("%Y-%m-%d").to_string());
     ctx.insert("due_at",             &invoice.due_at.format("%Y-%m-%d").to_string());
     ctx.insert("period_start",       &invoice.billing_period.start.to_string());

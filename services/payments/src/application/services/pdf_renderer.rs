@@ -12,6 +12,10 @@ pub struct PdfRenderer {
 
 impl PdfRenderer {
     pub async fn new(template_dir: &str) -> anyhow::Result<Self> {
+        // Initialise templates first — if the directory is missing, fail fast before launching Chrome.
+        let glob = format!("{template_dir}/**/*.html");
+        let tera = Tera::new(&glob).context("Failed to load Tera templates")?;
+
         let config = BrowserConfig::builder()
             .no_sandbox()
             .build()
@@ -24,9 +28,6 @@ impl PdfRenderer {
                 if handler.next().await.is_none() { break; }
             }
         });
-
-        let glob = format!("{template_dir}/**/*.html");
-        let tera = Tera::new(&glob).context("Failed to load Tera templates")?;
 
         Ok(Self {
             browser: Arc::new(Mutex::new(browser)),

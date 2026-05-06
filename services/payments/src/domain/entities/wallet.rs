@@ -55,8 +55,10 @@ impl Wallet {
     /// Release a reservation and debit the balance in a single version bump.
     /// Used during withdrawal disbursal to avoid double-incrementing the optimistic lock version.
     pub fn complete_withdrawal(&mut self, amount_centavos: i64) -> Result<(), &'static str> {
-        let reserved = self.reserved_centavos.min(amount_centavos);
-        self.reserved_centavos -= reserved;
+        if self.reserved_centavos < amount_centavos {
+            return Err("Reserved amount is less than withdrawal amount — invariant violated");
+        }
+        self.reserved_centavos -= amount_centavos;
 
         if self.balance.amount < amount_centavos {
             return Err("Insufficient balance for withdrawal");

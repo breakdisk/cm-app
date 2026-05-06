@@ -88,7 +88,7 @@ impl PgWithdrawalRequestRepository {
     }
 
     pub async fn update(&self, r: &WithdrawalRequest) -> anyhow::Result<()> {
-        sqlx::query(
+        let result = sqlx::query(
             "UPDATE payments.withdrawal_requests SET
              status = $2, reviewed_by = $3, review_note = $4, reviewed_at = $5, updated_at = $6
              WHERE id = $1 AND tenant_id = $7"
@@ -97,6 +97,10 @@ impl PgWithdrawalRequestRepository {
         .bind(r.review_note.as_deref()).bind(r.reviewed_at).bind(r.updated_at)
         .bind(r.tenant_id)
         .execute(&self.pool).await?;
+
+        if result.rows_affected() == 0 {
+            anyhow::bail!("WithdrawalRequest update affected 0 rows — id={}", r.id);
+        }
         Ok(())
     }
 }

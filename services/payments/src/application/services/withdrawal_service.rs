@@ -189,11 +189,14 @@ impl WithdrawalService {
         req.reject(reviewed_by, note)
             .map_err(|e| AppError::BusinessRule(e.to_string()))?;
 
+        // Status update first: if wallet save fails, the request is already Rejected
+        // so retry sees a terminal state and the reservation remains (safe for reconciliation).
+        // Full atomicity requires a DB transaction (future improvement).
+        self.withdrawal_repo.update(&req).await.map_err(AppError::Internal)?;
+
         // Release the reservation so funds become available again.
         wallet.release_reservation(req.amount_centavos);
         self.wallet_repo.save_wallet(&wallet).await.map_err(AppError::Internal)?;
-
-        self.withdrawal_repo.update(&req).await.map_err(AppError::Internal)?;
 
         let event = Event::new(
             "payments",
