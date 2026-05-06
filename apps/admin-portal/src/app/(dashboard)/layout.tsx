@@ -28,6 +28,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
+import { DriverRosterProvider } from "@/context/driver-roster-context";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -483,7 +484,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
           >
-            {children}
+            <DriverRosterProvider>{children}</DriverRosterProvider>
           </motion.div>
         </main>
       </div>
