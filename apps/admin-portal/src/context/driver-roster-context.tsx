@@ -5,6 +5,8 @@ import {
   useReducer,
   useEffect,
   useCallback,
+  useMemo,
+  useRef,
   type ReactNode,
 } from "react";
 import { authFetch } from "@/lib/auth/auth-fetch";
@@ -157,10 +159,16 @@ export function DriverRosterProvider({ children }: { children: ReactNode }) {
           tasks_total:        d.tasks_total ?? 0,
           cod_collected_cents: d.cod_collected_cents ?? d.cod_collected ?? 0,
         }));
+        const total = json.meta?.total ?? json.total_count ?? null;
+        if (total !== null && total > pins.length) {
+          console.warn(
+            `DriverRosterContext: fetched ${pins.length} of ${total} drivers — increase per_page or add pagination`,
+          );
+        }
         dispatch({ type: "ROSTER_INIT", payload: pins });
       })
-      .catch(() => {
-        // Leave roster empty — pages render their existing empty states
+      .catch((err) => {
+        console.error("DriverRosterContext: fetchRoster failed", err);
       });
   }, []);
 
@@ -184,17 +192,33 @@ export function DriverRosterProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const disconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useRosterEvents(handleEvent, {
-    onConnect:    () => dispatch({ type: "CONNECTED" }),
-    onDisconnect: () => dispatch({ type: "DISCONNECTED" }),
+    onConnect: () => {
+      if (disconnectTimer.current) {
+        clearTimeout(disconnectTimer.current);
+        disconnectTimer.current = null;
+      }
+      dispatch({ type: "CONNECTED" });
+    },
+    onDisconnect: () => {
+      disconnectTimer.current = setTimeout(() => {
+        dispatch({ type: "DISCONNECTED" });
+        disconnectTimer.current = null;
+      }, 3_000);
+    },
   });
 
-  const value: DriverRosterContextValue = {
-    drivers:   sortedDrivers(state.drivers),
-    driverMap: state.drivers,
-    connected: state.connected,
-    refresh:   fetchRoster,
-  };
+  const value = useMemo<DriverRosterContextValue>(
+    () => ({
+      drivers:   sortedDrivers(state.drivers),
+      driverMap: state.drivers,
+      connected: state.connected,
+      refresh:   fetchRoster,
+    }),
+    [state.drivers, state.connected, fetchRoster],
+  );
 
   return (
     <DriverRosterContext.Provider value={value}>
