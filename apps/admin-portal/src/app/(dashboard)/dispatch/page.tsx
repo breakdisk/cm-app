@@ -15,7 +15,6 @@ import { variants } from "@/lib/design-system/tokens";
 import { authFetch } from "@/lib/auth/auth-fetch";
 import { readBus, subscribeToBus, type BusBooking } from "@/lib/api/marketplace-bus";
 import { useDriverRoster } from "@/context/driver-roster-context";
-import type { DriverPin as ContextDriverPin } from "@/context/driver-roster-context";
 
 // Route through the api-gateway (same base as every other admin-portal caller).
 // Gateway proxies /v1/queue + /v1/drivers to dispatch+driver-ops — no service-specific URL needed.
