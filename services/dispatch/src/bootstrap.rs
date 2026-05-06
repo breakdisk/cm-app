@@ -124,6 +124,7 @@ pub async fn run() -> anyhow::Result<()> {
             &group_shipment,
             pool_for_shipment,
             dispatch_svc_shipment,
+            cfg.app.ai_dispatch_enabled,
             shutdown_rx_shipment,
         ).await {
             tracing::error!("Shipment consumer crashed: {e}");

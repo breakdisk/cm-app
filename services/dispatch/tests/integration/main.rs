@@ -116,6 +116,19 @@ impl RouteRepository for MockRouteRepo {
         guard.insert(route.id.inner(), route.clone());
         Ok(())
     }
+
+    async fn cancel(&self, id: &RouteId, tenant_id: &TenantId) -> anyhow::Result<bool> {
+        let mut guard = self.store.lock().unwrap();
+        if let Some(route) = guard.get_mut(&id.inner()) {
+            if route.tenant_id.inner() == tenant_id.inner()
+                && matches!(route.status, RouteStatus::Planned | RouteStatus::InProgress)
+            {
+                route.status = RouteStatus::Cancelled;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
 }
 
 /// In-memory driver assignment repository.
@@ -264,6 +277,18 @@ impl DispatchQueueRepository for MockDispatchQueueRepo {
         } else {
             anyhow::bail!("reset_to_pending: shipment_id {} not found in mock", shipment_id)
         }
+    }
+
+    async fn cancel_dispatch(&self, shipment_id: Uuid, tenant_id: Uuid) -> anyhow::Result<bool> {
+        let mut guard = self.store.lock().unwrap();
+        if let Some(row) = guard.get_mut(&shipment_id) {
+            if row.tenant_id == tenant_id && row.status == "dispatched" {
+                row.status = "pending".to_string();
+                row.dispatched_at = None;
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 

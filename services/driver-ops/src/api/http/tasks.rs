@@ -50,6 +50,30 @@ pub async fn list_manifest(
     })))
 }
 
+/// GET /v1/tasks/history
+///
+/// Returns completed and failed tasks for the authenticated driver.
+/// Useful for the driver app's history tab and the admin audit view.
+pub async fn list_task_history(
+    AuthClaims(claims): AuthClaims,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let driver_id = DriverId::from_uuid(claims.user_id);
+    let all_tasks = state.task_service.list_all_tasks(&driver_id).await?;
+    // Filter to terminal statuses (completed / failed / cancelled)
+    let history: Vec<_> = all_tasks
+        .into_iter()
+        .filter(|t| {
+            matches!(
+                t.status.as_str(),
+                "completed" | "failed" | "cancelled"
+            )
+        })
+        .collect();
+    let count = history.len();
+    Ok(Json(serde_json::json!({ "data": history, "count": count })))
+}
+
 pub async fn start_task(
     AuthClaims(claims): AuthClaims,
     Path(task_id): Path<Uuid>,

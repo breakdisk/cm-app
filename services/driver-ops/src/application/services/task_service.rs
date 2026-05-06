@@ -85,6 +85,36 @@ impl TaskService {
         )
     }
 
+    /// Returns ALL tasks for a driver regardless of status (for history view).
+    /// Unlike `list_my_tasks`, completed/failed/cancelled tasks are included.
+    pub async fn list_all_tasks(&self, driver_id: &DriverId) -> AppResult<Vec<TaskSummary>> {
+        let tasks = self.task_repo.list_by_driver(driver_id).await.map_err(AppError::Internal)?;
+        Ok(tasks.into_iter()
+            .map(|t| {
+                let is_delivery = matches!(t.task_type, TaskType::Delivery);
+                let has_cod = t.cod_amount_cents.unwrap_or(0) > 0;
+                TaskSummary {
+                    task_id:           t.id,
+                    shipment_id:       t.shipment_id,
+                    sequence:          t.sequence as u32,
+                    status:            format!("{:?}", t.status).to_lowercase(),
+                    task_type:         format!("{:?}", t.task_type).to_lowercase(),
+                    customer_name:     t.customer_name.clone(),
+                    customer_phone:    t.customer_phone.clone(),
+                    address:           format!("{}, {}", t.address.line1, t.address.city),
+                    tracking_number:   t.tracking_number.clone(),
+                    cod_amount_cents:  t.cod_amount_cents,
+                    lat:               t.address.coordinates.map(|c| c.lat),
+                    lng:               t.address.coordinates.map(|c| c.lng),
+                    requires_photo:     true,
+                    requires_signature: is_delivery,
+                    requires_otp:       is_delivery && has_cod,
+                }
+            })
+            .collect()
+        )
+    }
+
     pub async fn start_task(&self, driver_id: &DriverId, cmd: StartTaskCommand) -> AppResult<()> {
         let mut task = self.fetch_and_validate_ownership(driver_id, cmd.task_id).await?;
 

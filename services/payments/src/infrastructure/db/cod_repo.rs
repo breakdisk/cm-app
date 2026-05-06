@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use sqlx::PgPool;
 use logisticos_types::{MerchantId, Money, Currency, TenantId};
 use uuid::Uuid;
-use crate::domain::{entities::{CodCollection, CodStatus}, repositories::CodRepository};
+use crate::domain::{entities::{CodCollection, CodStatus}, repositories::{CodBalanceSummary, CodRepository}};
 
 pub struct PgCodRepository { pool: PgPool }
 impl PgCodRepository { pub fn new(pool: PgPool) -> Self { Self { pool } } }
@@ -227,5 +227,37 @@ impl CodRepository for PgCodRepository {
         .bind(batch_id)
         .execute(&self.pool).await?;
         Ok(res.rows_affected())
+    }
+
+    async fn cod_balance_for_merchant(
+        &self,
+        tenant_id:   &TenantId,
+        merchant_id: Uuid,
+    ) -> anyhow::Result<CodBalanceSummary> {
+        #[derive(sqlx::FromRow)]
+        struct BalanceRow {
+            pending_cents:  Option<i64>,
+            remitted_cents: Option<i64>,
+            total_cents:    Option<i64>,
+        }
+
+        let row = sqlx::query_as::<_, BalanceRow>(
+            r#"SELECT
+                   SUM(amount_cents) FILTER (WHERE status IN ('collected','in_batch')) AS pending_cents,
+                   SUM(amount_cents) FILTER (WHERE status = 'remitted')                AS remitted_cents,
+                   SUM(amount_cents)                                                    AS total_cents
+               FROM payments.cod_collections
+               WHERE tenant_id = $1 AND merchant_id = $2"#
+        )
+        .bind(tenant_id.inner())
+        .bind(merchant_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(CodBalanceSummary {
+            pending_cents:  row.pending_cents.unwrap_or(0),
+            remitted_cents: row.remitted_cents.unwrap_or(0),
+            total_cents:    row.total_cents.unwrap_or(0),
+        })
     }
 }

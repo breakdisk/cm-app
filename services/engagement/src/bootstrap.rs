@@ -7,13 +7,16 @@ use crate::{
         notification_service::NotificationService,
     },
     config::Config,
-    infrastructure::channels::{
-        email::SesEmailAdapter,
-        log_adapter::LogChannelAdapter,
-        push::ExpoPushAdapter,
-        sms::TwilioSmsAdapter,
-        whatsapp::TwilioWhatsAppAdapter,
-        ChannelAdapter,
+    infrastructure::{
+        cache::SuppressionCache,
+        channels::{
+            email::SesEmailAdapter,
+            log_adapter::LogChannelAdapter,
+            push::ExpoPushAdapter,
+            sms::TwilioSmsAdapter,
+            whatsapp::TwilioWhatsAppAdapter,
+            ChannelAdapter,
+        },
     },
 };
 
@@ -82,6 +85,18 @@ pub async fn run() -> anyhow::Result<()> {
 
     let notification_svc = Arc::new(NotificationService::new(whatsapp, sms, email, push));
 
+    // Suppression cache — Redis-backed. Fails open if Redis is unavailable.
+    let suppression_cache = Arc::new(
+        match SuppressionCache::new(&cfg.redis.url).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(err = %e, "engagement: Redis unavailable — campaign suppression disabled");
+                SuppressionCache::new("redis://127.0.0.1/").await
+                    .unwrap_or_else(|_| panic!("fallback redis client failed"))
+            }
+        }
+    );
+
     // Kafka consumer
     let consumer: Arc<StreamConsumer> = Arc::new(
         ClientConfig::new()
@@ -92,10 +107,11 @@ pub async fn run() -> anyhow::Result<()> {
             .create()?,
     );
 
-    let consumer_svc = notification_svc.clone();
+    let consumer_svc   = notification_svc.clone();
+    let consumer_cache = suppression_cache.clone();
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     tokio::spawn(async move {
-        run_kafka_consumer(consumer, consumer_svc, shutdown_rx).await;
+        run_kafka_consumer(consumer, consumer_svc, consumer_cache, shutdown_rx).await;
     });
 
     // HTTP API — notification dispatch endpoint
@@ -191,6 +207,7 @@ fn build_router(svc: Arc<NotificationService>) -> axum::Router {
 async fn run_kafka_consumer(
     consumer: Arc<StreamConsumer>,
     svc: Arc<NotificationService>,
+    cache: Arc<SuppressionCache>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     use rdkafka::{consumer::{CommitMode, Consumer}, Message};
@@ -205,6 +222,9 @@ async fn run_kafka_consumer(
         topics::COD_COLLECTED,
         topics::INVOICE_GENERATED,
         topics::RECEIPT_EMAIL_REQUESTED,
+        topics::CAMPAIGN_TRIGGERED,
+        topics::SUPPORT_TICKET_OPENED,
+        topics::SUPPORT_TICKET_CLOSED,
     ]).expect("Engagement consumer subscription failed");
 
     loop {
@@ -220,7 +240,18 @@ async fn run_kafka_consumer(
                     Ok(msg) => {
                         if let Some(payload) = msg.payload() {
                             if let Ok(json) = serde_json::from_slice::<serde_json::Value>(payload) {
-                                process_event(msg.topic(), &json, &svc).await;
+                                let topic = msg.topic();
+                                match topic {
+                                    topics::SUPPORT_TICKET_OPENED => {
+                                        handle_ticket_opened(&json, &cache).await;
+                                    }
+                                    topics::SUPPORT_TICKET_CLOSED => {
+                                        handle_ticket_closed(&json, &cache).await;
+                                    }
+                                    _ => {
+                                        process_event(topic, &json, &svc, &cache).await;
+                                    }
+                                }
                             }
                         }
                         consumer.commit_message(&msg, CommitMode::Async).ok();
@@ -231,6 +262,32 @@ async fn run_kafka_consumer(
                     }
                 }
             }
+        }
+    }
+}
+
+async fn handle_ticket_opened(payload: &serde_json::Value, cache: &SuppressionCache) {
+    let data = payload.get("data").unwrap_or(payload);
+    let customer_id = data["customer_id"].as_str()
+        .and_then(|s| s.parse::<uuid::Uuid>().ok());
+    if let Some(id) = customer_id {
+        if let Err(e) = cache.suppress(id).await {
+            tracing::warn!(customer_id = %id, err = %e, "Failed to set campaign suppression flag");
+        } else {
+            tracing::info!(customer_id = %id, "Campaign suppression set — support ticket opened");
+        }
+    }
+}
+
+async fn handle_ticket_closed(payload: &serde_json::Value, cache: &SuppressionCache) {
+    let data = payload.get("data").unwrap_or(payload);
+    let customer_id = data["customer_id"].as_str()
+        .and_then(|s| s.parse::<uuid::Uuid>().ok());
+    if let Some(id) = customer_id {
+        if let Err(e) = cache.lift(id).await {
+            tracing::warn!(customer_id = %id, err = %e, "Failed to lift campaign suppression flag");
+        } else {
+            tracing::info!(customer_id = %id, "Campaign suppression lifted — support ticket closed");
         }
     }
 }

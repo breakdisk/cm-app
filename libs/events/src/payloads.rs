@@ -37,6 +37,10 @@ pub struct ShipmentCreated {
     pub origin_lng:           Option<f64>,
     pub destination_address:  String,
     pub destination_city:     String,
+    #[serde(default)]
+    pub destination_province:     String,
+    #[serde(default)]
+    pub destination_postal_code:  String,
     pub destination_lat:      Option<f64>,
     pub destination_lng:      Option<f64>,
     pub service_type:         String,

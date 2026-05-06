@@ -67,6 +67,11 @@ pub trait DispatchQueueRepository: Send + Sync {
     /// Resets status back to 'pending' and increments auto_dispatch_attempts
     /// so operators know this is a retry. No-op if the row doesn't exist.
     async fn reset_to_pending(&self, shipment_id: Uuid) -> anyhow::Result<()>;
+
+    /// Cancel a dispatched shipment — reset it back to 'pending' in the queue
+    /// so ops can reassign manually, and clear the dispatched_at timestamp.
+    /// Returns `true` if the row was found and updated.
+    async fn cancel_dispatch(&self, shipment_id: Uuid, tenant_id: Uuid) -> anyhow::Result<bool>;
 }
 
 pub struct PgDispatchQueueRepository {
@@ -240,5 +245,25 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn cancel_dispatch(&self, shipment_id: Uuid, tenant_id: Uuid) -> anyhow::Result<bool> {
+        // Admin-initiated cancel: return a dispatched shipment back to pending.
+        // Scoped to tenant_id to prevent cross-tenant ops.
+        let result = sqlx::query(
+            "UPDATE dispatch.dispatch_queue
+             SET status       = 'pending',
+                 dispatched_at = NULL,
+                 last_dispatch_error = 'manually cancelled by ops',
+                 last_attempt_at     = NOW()
+             WHERE shipment_id = $1
+               AND tenant_id   = $2
+               AND status      = 'dispatched'",
+        )
+        .bind(shipment_id)
+        .bind(tenant_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
     }
 }

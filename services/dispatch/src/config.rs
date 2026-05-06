@@ -13,6 +13,11 @@ pub struct AppConfig {
     pub host: String,
     pub port: u16,
     pub env: String,
+    /// When true the shipment consumer defers auto-dispatch to the AI layer agent
+    /// instead of running the heuristic directly. Fallback to heuristic if the
+    /// AI layer is unreachable.
+    #[serde(default)]
+    pub ai_dispatch_enabled: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]

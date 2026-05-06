@@ -75,6 +75,24 @@ pub trait CodRepository: Send + Sync {
         tenant_id: &TenantId,
         batch_id:  Uuid,
     ) -> anyhow::Result<u64>;
+
+    /// Aggregate COD balance for a merchant across all statuses.
+    async fn cod_balance_for_merchant(
+        &self,
+        tenant_id:   &TenantId,
+        merchant_id: Uuid,
+    ) -> anyhow::Result<CodBalanceSummary>;
+}
+
+/// Aggregated COD balance breakdown for a merchant.
+#[derive(Debug, Clone)]
+pub struct CodBalanceSummary {
+    /// Total COD collected but not yet remitted (status: collected or in_batch).
+    pub pending_cents:  i64,
+    /// Total COD already remitted to the merchant.
+    pub remitted_cents: i64,
+    /// Grand total across all statuses.
+    pub total_cents:    i64,
 }
 
 #[async_trait]

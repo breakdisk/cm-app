@@ -28,12 +28,12 @@ class Settings(BaseSettings):
     kafka_brokers: str = "kafka:9092"
     kafka_consumer_group: str = "ai-agents-python"
     kafka_topics: list[str] = [
-        "shipment.created",
-        "delivery.failed",
-        "delivery.completed",
-        "driver.idle",
-        "merchant.support.request",
-        "cod.collection.anomaly",
+        "logisticos.order.shipment.created",
+        "logisticos.driver.delivery.failed",
+        "logisticos.driver.delivery.completed",
+        "logisticos.driver.available",
+        "logisticos.payments.cod.collection.anomaly",
+        "logisticos.ai.dispatch.requested",
     ]
 
     # HTTP server

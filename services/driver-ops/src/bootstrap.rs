@@ -61,6 +61,10 @@ pub async fn run() -> anyhow::Result<()> {
         );
     }
 
+    // Clone the Arc before moving fcm_client into the task consumer so we can
+    // also attach it to AppState for the HTTP instruction endpoint.
+    let fcm_for_state = fcm_client.clone();
+
     // Spawn TASK_ASSIGNED consumer — creates driver_ops.tasks rows on dispatch.
     let pool_for_tasks    = pool.clone();
     let brokers_for_tasks = cfg.kafka.brokers.clone();
@@ -111,6 +115,7 @@ pub async fn run() -> anyhow::Result<()> {
         location_service,
         jwt: Arc::clone(&jwt),
         roster_tx,
+        fcm: fcm_for_state,
     });
 
     use tower_http::cors::CorsLayer;

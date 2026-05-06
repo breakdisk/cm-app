@@ -39,13 +39,14 @@ pub struct AppState {
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/v1/rules",              get(list_rules).post(create_rule))
-        .route("/v1/rules/reload",       post(reload_rules))
-        .route("/v1/rules/:id",          get(get_rule).put(update_rule).delete(delete_rule))
-        .route("/v1/rules/:id/toggle",   patch(toggle_rule))
-        .route("/v1/rules/:id/executions", get(list_executions))
-        .route("/health",                get(health))
-        .route("/ready",                 get(health))
+        .route("/v1/rules",                    get(list_rules).post(create_rule))
+        .route("/v1/rules/reload",             post(reload_rules))
+        .route("/v1/rules/validate-expression", post(validate_expression))
+        .route("/v1/rules/:id",                get(get_rule).put(update_rule).delete(delete_rule))
+        .route("/v1/rules/:id/toggle",         patch(toggle_rule))
+        .route("/v1/rules/:id/executions",     get(list_executions))
+        .route("/health",                      get(health))
+        .route("/ready",                       get(health))
 }
 
 // ── GET /v1/rules ─────────────────────────────────────────────────────────────
@@ -298,6 +299,53 @@ async fn list_executions(
         "data":        rows,
         "next_cursor": next_cursor,
     }))))
+}
+
+// ── POST /v1/rules/validate-expression ───────────────────────────────────────
+// Validates a custom DSL expression without persisting it.
+// Returns { valid, error } so the admin portal can give inline feedback
+// before the operator saves a rule with a broken condition.
+
+#[derive(Deserialize)]
+struct ValidateExpressionBody {
+    expression: String,
+}
+
+async fn validate_expression(
+    _claims: AuthClaims,
+    Json(body): Json<ValidateExpressionBody>,
+) -> impl IntoResponse {
+    use evalexpr::{ContextWithMutableVariables, HashMapContext, Value, eval_boolean_with_context};
+
+    // Populate the same variables the rules engine exposes at runtime.
+    let mut ctx = HashMapContext::new();
+    let defaults: &[(&str, Value)] = &[
+        ("service_type",         Value::String("standard".into())),
+        ("zone",                 Value::String("zone-1".into())),
+        ("current_day",          Value::String("Monday".into())),
+        ("event_type",           Value::String("shipment.created".into())),
+        ("current_hour",         Value::Int(10)),
+        ("attempt_count",        Value::Int(1)),
+        ("shipment_value_cents", Value::Int(50000)),
+        ("has_customer",         Value::Boolean(true)),
+        ("has_shipment",         Value::Boolean(true)),
+        ("has_driver",           Value::Boolean(false)),
+        ("has_merchant",         Value::Boolean(true)),
+    ];
+    for (k, v) in defaults {
+        ctx.set_value((*k).into(), v.clone()).ok();
+    }
+
+    match eval_boolean_with_context(&body.expression, &ctx) {
+        Ok(_) => Ok::<_, AppError>((
+            StatusCode::OK,
+            Json(serde_json::json!({ "valid": true })),
+        )),
+        Err(e) => Ok((
+            StatusCode::OK,
+            Json(serde_json::json!({ "valid": false, "error": e.to_string() })),
+        )),
+    }
 }
 
 // ── GET /health ───────────────────────────────────────────────────────────────

@@ -31,6 +31,7 @@ pub async fn start_shipment_consumer(
     group_id: &str,
     pool: PgPool,
     dispatch_service: Arc<DriverAssignmentService>,
+    ai_dispatch_enabled: bool,
     mut shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let consumer: StreamConsumer = ClientConfig::new()
@@ -55,7 +56,7 @@ pub async fn start_shipment_consumer(
                 match result {
                     Ok(msg) => {
                         if let Some(payload) = msg.payload() {
-                            if let Err(e) = handle_shipment_created(payload, &*repo, &dispatch_service).await {
+                            if let Err(e) = handle_shipment_created(payload, &*repo, &dispatch_service, ai_dispatch_enabled).await {
                                 tracing::warn!(err = %e, "shipment consumer: handler error (skipping)");
                             }
                         }
@@ -77,6 +78,7 @@ async fn handle_shipment_created(
     payload: &[u8],
     repo: &dyn DispatchQueueRepository,
     dispatch_service: &DriverAssignmentService,
+    ai_dispatch_enabled: bool,
 ) -> anyhow::Result<()> {
     let event: Event<ShipmentCreated> = serde_json::from_slice(payload)?;
     // Use tenant_id from the Event envelope (authoritative), not merchant_id from the payload
@@ -97,8 +99,8 @@ async fn handle_shipment_created(
         tracking_number:      if d.tracking_number.is_empty() { None } else { Some(d.tracking_number) },
         dest_address_line1:   d.destination_address,
         dest_city:            d.destination_city,
-        dest_province:        String::new(),    // TODO: ShipmentCreated payload doesn't carry province yet
-        dest_postal_code:     String::new(),    // TODO: Same — postal_code not in ShipmentCreated payload
+        dest_province:        d.destination_province,
+        dest_postal_code:     d.destination_postal_code,
         dest_lat:             d.destination_lat,
         dest_lng:             d.destination_lng,
         origin_address_line1: d.origin_address,
@@ -122,42 +124,52 @@ async fn handle_shipment_created(
     tracing::info!(shipment_id = %shipment_id, booked_by_customer, auto_dispatch, "Shipment added to dispatch queue");
 
     // Agentic-first: if the order-intake handler flagged this shipment for
-    // auto-dispatch, assign the best available driver immediately. If it fails
-    // (no driver in zone, compliance block, etc.) the shipment stays queued
-    // for manual dispatch via the admin console.
+    // auto-dispatch, assign the best available driver immediately.
+    //
+    // When AI_DISPATCH_ENABLED=true the Python DispatchAgent handles assignment
+    // by consuming the same Kafka event and calling back via the internal
+    // /v1/internal/shipments/:id/assign endpoint. We skip the heuristic here
+    // to avoid a race condition where both paths attempt assignment.
+    //
+    // When AI dispatch is off (default), the heuristic runs synchronously as before.
     if auto_dispatch {
-        let cmd = QuickDispatchCommand {
-            shipment_id,
-            preferred_driver_id: None,
-        };
-        match dispatch_service
-            .quick_dispatch(TenantId::from_uuid(tenant_id), cmd)
-            .await
-        {
-            Ok(assignment) => {
-                tracing::info!(
-                    shipment_id = %shipment_id,
-                    driver_id   = %assignment.driver_id.inner(),
-                    "Shipment auto-dispatched"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    shipment_id = %shipment_id,
-                    err         = %e,
-                    "Auto-dispatch failed — shipment remains in queue for manual dispatch"
-                );
-                // Surface the failure to ops: bump attempt counter + stash
-                // the reason so the admin dispatch console can flag the row.
-                if let Err(record_err) = repo
-                    .record_failed_attempt(shipment_id, &e.to_string())
-                    .await
-                {
-                    tracing::error!(
+        if ai_dispatch_enabled {
+            tracing::info!(
+                shipment_id = %shipment_id,
+                "AI dispatch enabled — deferring assignment to DispatchAgent (Kafka-triggered)"
+            );
+        } else {
+            let cmd = QuickDispatchCommand {
+                shipment_id,
+                preferred_driver_id: None,
+            };
+            match dispatch_service
+                .quick_dispatch(TenantId::from_uuid(tenant_id), cmd)
+                .await
+            {
+                Ok(assignment) => {
+                    tracing::info!(
                         shipment_id = %shipment_id,
-                        err         = %record_err,
-                        "Failed to record auto-dispatch attempt on dispatch_queue"
+                        driver_id   = %assignment.driver_id.inner(),
+                        "Shipment auto-dispatched (heuristic)"
                     );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        shipment_id = %shipment_id,
+                        err         = %e,
+                        "Auto-dispatch failed — shipment remains in queue for manual dispatch"
+                    );
+                    if let Err(record_err) = repo
+                        .record_failed_attempt(shipment_id, &e.to_string())
+                        .await
+                    {
+                        tracing::error!(
+                            shipment_id = %shipment_id,
+                            err         = %record_err,
+                            "Failed to record auto-dispatch attempt on dispatch_queue"
+                        );
+                    }
                 }
             }
         }

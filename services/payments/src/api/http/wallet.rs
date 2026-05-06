@@ -1,6 +1,7 @@
-use axum::{extract::{State, Query}, Json};
+use axum::{extract::{Path, State, Query}, Json};
 use std::sync::Arc;
 use serde::Deserialize;
+use uuid::Uuid;
 use logisticos_auth::middleware::AuthClaims;
 use logisticos_auth::require_permission;
 use logisticos_errors::AppError;
@@ -62,5 +63,37 @@ pub async fn request_withdrawal(
         "status":                "pending",
         "reserved_centavos":     summary.reserved_centavos,
         "available_centavos":    summary.available_centavos,
+    })))
+}
+
+/// Internal (no JWT): GET /v1/internal/cod/balance/:merchant_id
+///
+/// Returns aggregated COD balance for a merchant. Called by the AI layer's
+/// `get_cod_balance` MCP tool within the service mesh (Istio mTLS gates identity).
+pub async fn get_cod_balance_internal(
+    Path(merchant_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+    axum::extract::RawQuery(raw_query): axum::extract::RawQuery,
+) -> Result<Json<serde_json::Value>, AppError> {
+    // tenant_id is required; passed as a query param by the AI tool.
+    let tenant_id_str = raw_query
+        .as_deref()
+        .and_then(|q| q.split('&').find(|p| p.starts_with("tenant_id=")))
+        .and_then(|p| p.strip_prefix("tenant_id="))
+        .unwrap_or("");
+
+    let tenant_id = tenant_id_str
+        .parse::<Uuid>()
+        .map(TenantId::from_uuid)
+        .map_err(|_| AppError::Validation("tenant_id query param is required and must be a UUID".into()))?;
+
+    let balance = state.cod_service.cod_balance(&tenant_id, merchant_id).await?;
+
+    Ok(Json(serde_json::json!({
+        "merchant_id":     merchant_id,
+        "pending_cents":   balance.pending_cents,
+        "remitted_cents":  balance.remitted_cents,
+        "total_cents":     balance.total_cents,
+        "currency":        "PHP",
     })))
 }
