@@ -95,6 +95,7 @@ export function useRosterEvents(
       };
 
       ws.onerror = () => {
+        // Silently close on error — don't log, just reconnect via onclose handler
         ws.close();
       };
     }
