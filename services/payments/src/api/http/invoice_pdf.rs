@@ -58,7 +58,7 @@ pub async fn download_invoice_pdf(
     ctx.insert("total_php",    &format!("{:.2}", invoice.total_due().amount as f64 / 100.0));
 
     let renderer = state.pdf_renderer.as_ref()
-        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("PDF renderer not initialised")))?;
+        .ok_or_else(|| AppError::ServiceUnavailable("PDF renderer not initialised — Chrome unavailable".into()))?;
 
     let pdf_bytes = renderer.render_invoice(&ctx).await
         .map_err(AppError::Internal)?;
