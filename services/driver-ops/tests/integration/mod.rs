@@ -325,6 +325,7 @@ impl TestApp {
             location_service: location_svc,
             jwt: Arc::clone(&jwt_svc),
             roster_tx,
+            fcm: None,
         });
 
         let router = logisticos_driver_ops::api::http::router(state);

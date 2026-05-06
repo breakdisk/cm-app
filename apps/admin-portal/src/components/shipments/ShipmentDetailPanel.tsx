@@ -30,6 +30,11 @@ import {
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { authFetch } from "@/lib/auth/auth-fetch";
+import {
+  cancelShipment,
+  rescheduleShipment,
+  overrideShipmentStatus,
+} from "@/lib/api/shipments";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -88,9 +93,32 @@ interface PodData {
   captured_at?: string | null;
 }
 
+// ── Valid status list for override dropdown ────────────────────────────────────
+
+const ALL_STATUSES = [
+  "pending",
+  "confirmed",
+  "pickup_assigned",
+  "picked_up",
+  "in_transit",
+  "at_hub",
+  "out_for_delivery",
+  "delivery_attempted",
+  "delivered",
+  "partial_delivery",
+  "piece_exception",
+  "customs_hold",
+  "failed",
+  "cancelled",
+  "returned",
+] as const;
+
+const TIME_SLOTS = ["morning", "afternoon", "anytime"] as const;
+
 interface ShipmentDetailPanelProps {
   shipment: ApiShipment | null;
   onClose: () => void;
+  onActionComplete?: () => void;
 }
 
 // ── Status timeline ────────────────────────────────────────────────────────────
@@ -155,11 +183,73 @@ function formatDate(iso: string): string {
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
-export function ShipmentDetailPanel({ shipment, onClose }: ShipmentDetailPanelProps) {
+export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: ShipmentDetailPanelProps) {
   const [pod,        setPod]        = useState<PodData | null>(null);
   const [podLoading, setPodLoading] = useState(false);
   const [podError,   setPodError]   = useState<string | null>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
+
+  // ── Action state ──────────────────────────────────────────────────────────
+  const [actionBusy,    setActionBusy]    = useState(false);
+  const [actionError,   setActionError]   = useState<string | null>(null);
+  const [showReschedule, setShowReschedule] = useState(false);
+  const [rescheduleDate, setRescheduleDate] = useState("");
+  const [rescheduleSlot, setRescheduleSlot] = useState<string>("anytime");
+  const [showOverride,  setShowOverride]  = useState(false);
+  const [overrideStatus, setOverrideStatus] = useState("");
+
+  async function handleCancel() {
+    if (!shipment) return;
+    if (!window.confirm(`Cancel shipment ${shipment.awb}? This cannot be undone.`)) return;
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await cancelShipment(shipment.id, "Cancelled by ops");
+      onActionComplete?.();
+      onClose();
+    } catch (e: unknown) {
+      setActionError(e instanceof Error ? e.message : "Cancel failed");
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function handleReschedule() {
+    if (!shipment || !rescheduleDate) return;
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await rescheduleShipment(shipment.id, {
+        preferred_date: rescheduleDate,
+        preferred_time_slot: rescheduleSlot || null,
+        reason: "Rescheduled by ops admin",
+      });
+      setShowReschedule(false);
+      onActionComplete?.();
+    } catch (e: unknown) {
+      setActionError(e instanceof Error ? e.message : "Reschedule failed");
+    } finally {
+      setActionBusy(false);
+    }
+  }
+
+  async function handleOverride() {
+    if (!shipment || !overrideStatus) return;
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await overrideShipmentStatus(shipment.id, {
+        status: overrideStatus,
+        reason: "Manual override by ops admin",
+      });
+      setShowOverride(false);
+      onActionComplete?.();
+    } catch (e: unknown) {
+      setActionError(e instanceof Error ? e.message : "Override failed");
+    } finally {
+      setActionBusy(false);
+    }
+  }
 
   // Fetch POD whenever the selected shipment changes
   useEffect(() => {
@@ -448,6 +538,133 @@ export function ShipmentDetailPanel({ shipment, onClose }: ShipmentDetailPanelPr
                     </ol>
                   )}
                 </GlassCard>
+              </section>
+
+              {/* ── Admin Actions ── */}
+              <section>
+                <SectionHeading>Admin Actions</SectionHeading>
+
+                {actionError && (
+                  <div className="mt-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs font-mono text-red-400">
+                    {actionError}
+                  </div>
+                )}
+
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {/* Cancel button — only for Pending / Confirmed */}
+                  {(shipment.status === "pending" || shipment.status === "confirmed") && (
+                    <button
+                      onClick={handleCancel}
+                      disabled={actionBusy}
+                      className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs font-mono text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-50"
+                    >
+                      Cancel Shipment
+                    </button>
+                  )}
+
+                  {/* Reschedule button — for delivery_attempted / failed */}
+                  {(shipment.status === "delivery_attempted" || shipment.status === "failed") && (
+                    <button
+                      onClick={() => { setShowReschedule((v) => !v); setShowOverride(false); }}
+                      disabled={actionBusy}
+                      className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-mono text-amber-400 hover:bg-amber-500/20 transition-colors disabled:opacity-50"
+                    >
+                      Reschedule
+                    </button>
+                  )}
+
+                  {/* Override Status — always visible */}
+                  <button
+                    onClick={() => { setShowOverride((v) => !v); setShowReschedule(false); }}
+                    disabled={actionBusy}
+                    className="rounded-lg border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs font-mono text-purple-400 hover:bg-purple-500/20 transition-colors disabled:opacity-50"
+                  >
+                    Override Status
+                  </button>
+                </div>
+
+                {/* Reschedule inline form */}
+                {showReschedule && (
+                  <GlassCard size="sm" className="mt-3 space-y-3">
+                    <p className="text-2xs font-mono uppercase tracking-widest text-white/40">Reschedule Delivery</p>
+                    <div className="space-y-2">
+                      <div>
+                        <label className="block text-2xs font-mono text-white/40 mb-1">Preferred Date</label>
+                        <input
+                          type="date"
+                          value={rescheduleDate}
+                          onChange={(e) => setRescheduleDate(e.target.value)}
+                          className="w-full rounded-lg border border-glass-border bg-glass-100 px-3 py-1.5 text-xs font-mono text-white outline-none focus:border-amber-500/50 transition-colors"
+                          min={new Date().toISOString().split("T")[0]}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-2xs font-mono text-white/40 mb-1">Time Slot</label>
+                        <select
+                          value={rescheduleSlot}
+                          onChange={(e) => setRescheduleSlot(e.target.value)}
+                          className="w-full rounded-lg border border-glass-border bg-glass-100 px-3 py-1.5 text-xs font-mono text-white outline-none focus:border-amber-500/50 transition-colors"
+                        >
+                          {TIME_SLOTS.map((s) => (
+                            <option key={s} value={s} className="bg-canvas capitalize">{s}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={handleReschedule}
+                        disabled={actionBusy || !rescheduleDate}
+                        className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-mono text-amber-400 hover:bg-amber-500/20 transition-colors disabled:opacity-50"
+                      >
+                        {actionBusy ? "Saving…" : "Confirm Reschedule"}
+                      </button>
+                      <button
+                        onClick={() => setShowReschedule(false)}
+                        className="rounded-lg border border-glass-border px-3 py-1.5 text-xs font-mono text-white/40 hover:text-white transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </GlassCard>
+                )}
+
+                {/* Override Status inline form */}
+                {showOverride && (
+                  <GlassCard size="sm" className="mt-3 space-y-3">
+                    <p className="text-2xs font-mono uppercase tracking-widest text-white/40">Override Status</p>
+                    <div>
+                      <label className="block text-2xs font-mono text-white/40 mb-1">New Status</label>
+                      <select
+                        value={overrideStatus}
+                        onChange={(e) => setOverrideStatus(e.target.value)}
+                        className="w-full rounded-lg border border-glass-border bg-glass-100 px-3 py-1.5 text-xs font-mono text-white outline-none focus:border-purple-500/50 transition-colors"
+                      >
+                        <option value="" disabled className="bg-canvas">Select status…</option>
+                        {ALL_STATUSES.map((s) => (
+                          <option key={s} value={s} className="bg-canvas capitalize">
+                            {s.replace(/_/g, " ")}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={handleOverride}
+                        disabled={actionBusy || !overrideStatus}
+                        className="rounded-lg border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs font-mono text-purple-400 hover:bg-purple-500/20 transition-colors disabled:opacity-50"
+                      >
+                        {actionBusy ? "Saving…" : "Apply Override"}
+                      </button>
+                      <button
+                        onClick={() => setShowOverride(false)}
+                        className="rounded-lg border border-glass-border px-3 py-1.5 text-xs font-mono text-white/40 hover:text-white transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </GlassCard>
+                )}
               </section>
 
               {/* Bottom padding so last section isn't cut by shadow */}

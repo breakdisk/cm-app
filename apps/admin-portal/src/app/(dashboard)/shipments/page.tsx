@@ -10,7 +10,8 @@
  *
  * Data source: GET /v1/shipments (api-gateway → order-intake).
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { Search, RefreshCw, Package, User } from "lucide-react";
 
@@ -75,13 +76,21 @@ function formatRelative(iso: string): string {
   return `${Math.floor(sec / 86400)}d ago`;
 }
 
-export default function ShipmentsPage() {
+function ShipmentsPageInner() {
+  const searchParams = useSearchParams();
+
   const [shipments,       setShipments]       = useState<ApiShipment[]>([]);
   const [loading,         setLoading]         = useState(false);
   const [error,           setError]           = useState<string | null>(null);
   const [search,          setSearch]          = useState("");
   const [statusFilter,    setStatusFilter]    = useState<StatusFilter>("all");
   const [selectedShipment, setSelectedShipment] = useState<ApiShipment | null>(null);
+
+  // Pre-populate search from ?q=<awb> deep-links (e.g. from Alerts page)
+  useEffect(() => {
+    const q = searchParams.get("q");
+    if (q) setSearch(q);
+  }, [searchParams]);
 
   const fetchShipments = useCallback(async () => {
     setLoading(true);
@@ -304,7 +313,16 @@ export default function ShipmentsPage() {
     <ShipmentDetailPanel
       shipment={selectedShipment}
       onClose={() => setSelectedShipment(null)}
+      onActionComplete={() => { fetchShipments(); setSelectedShipment(null); }}
     />
     </>
+  );
+}
+
+export default function ShipmentsPage() {
+  return (
+    <Suspense fallback={null}>
+      <ShipmentsPageInner />
+    </Suspense>
   );
 }

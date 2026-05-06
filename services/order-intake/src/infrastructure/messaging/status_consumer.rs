@@ -37,6 +37,11 @@ struct DeliveryFailedEvt {
     shipment_id: Uuid,
 }
 
+#[derive(Serialize, Deserialize)]
+struct DeliveryAttemptedEvt {
+    shipment_id: Uuid,
+}
+
 pub async fn start_status_consumer(
     brokers: &str,
     group_id: &str,
@@ -53,6 +58,7 @@ pub async fn start_status_consumer(
     consumer.subscribe(&[
         topics::DRIVER_ASSIGNED,
         topics::PICKUP_COMPLETED,
+        topics::DELIVERY_ATTEMPTED,
         topics::DELIVERY_COMPLETED,
         topics::DELIVERY_FAILED,
     ])?;
@@ -150,6 +156,23 @@ async fn handle(pool: &PgPool, topic: &str, payload: &[u8]) -> anyhow::Result<()
                 tracing::warn!(
                     shipment_id = %evt.shipment_id,
                     "DELIVERY_FAILED: no shipment updated (unknown id or already in terminal status)"
+                );
+            }
+        }
+        topics::DELIVERY_ATTEMPTED => {
+            let envelope: Event<DeliveryAttemptedEvt> = serde_json::from_slice(payload)?;
+            let evt = envelope.data;
+            let result = sqlx::query(
+                "UPDATE order_intake.shipments SET status = 'delivery_attempted', updated_at = NOW()
+                 WHERE id = $1 AND status NOT IN ('delivered','cancelled','returned')",
+            )
+            .bind(evt.shipment_id)
+            .execute(pool)
+            .await?;
+            if result.rows_affected() == 0 {
+                tracing::warn!(
+                    shipment_id = %evt.shipment_id,
+                    "DELIVERY_ATTEMPTED: no shipment updated (unknown id or already in terminal status)"
                 );
             }
         }

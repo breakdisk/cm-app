@@ -10,7 +10,7 @@ use logisticos_types::{
 };
 use crate::{
     application::commands::{
-        CreateShipmentCommand, CancelShipmentCommand,
+        CreateShipmentCommand, CancelShipmentCommand, RescheduleShipmentCommand,
         BulkCreateShipmentCommand, BulkCreateResult, BulkRowError,
     },
     domain::{
@@ -339,6 +339,65 @@ impl ShipmentService {
             .await
             .map_err(AppError::Internal)?;
 
+        Ok(())
+    }
+
+    pub async fn reschedule(&self, cmd: RescheduleShipmentCommand) -> AppResult<()> {
+        let id = ShipmentId::from_uuid(cmd.shipment_id);
+        let mut shipment = self.repo.find_by_id(&id).await.map_err(AppError::Internal)?
+            .ok_or(AppError::NotFound { resource: "Shipment", id: cmd.shipment_id.to_string() })?;
+
+        if !shipment.can_reschedule() {
+            return Err(AppError::BusinessRule(
+                format!("Cannot reschedule shipment in status {:?}", shipment.status),
+            ));
+        }
+
+        // Reset status to Confirmed so dispatch can re-assign
+        shipment.status     = ShipmentStatus::Confirmed;
+        shipment.updated_at = Utc::now();
+        self.repo.save(&shipment).await.map_err(AppError::Internal)?;
+
+        let event = Event::new(
+            "logisticos/order-intake",
+            "shipment.rescheduled",
+            shipment.tenant_id.inner(),
+            serde_json::json!({
+                "shipment_id":          shipment.id.inner(),
+                "preferred_date":       cmd.preferred_date.to_string(),
+                "preferred_time_slot":  cmd.preferred_time_slot,
+                "reason":               cmd.reason,
+            }),
+        );
+        let payload = serde_json::to_string(&event).map_err(|e| AppError::Internal(e.into()))?;
+        // Fire-and-forget — Kafka unavailability must not prevent rescheduling.
+        if let Err(e) = self.publisher
+            .publish(topics::SHIPMENT_RESCHEDULED, &shipment.id.to_string(), &payload)
+            .await
+        {
+            tracing::warn!(error = %e, shipment_id = %shipment.id, "ShipmentRescheduled event publish failed (non-fatal)");
+        }
+
+        Ok(())
+    }
+
+    pub async fn override_status(&self, shipment_id: uuid::Uuid, new_status: ShipmentStatus, actor: &str) -> AppResult<()> {
+        let id = ShipmentId::from_uuid(shipment_id);
+        let mut shipment = self.repo.find_by_id(&id).await.map_err(AppError::Internal)?
+            .ok_or(AppError::NotFound { resource: "Shipment", id: shipment_id.to_string() })?;
+
+        let old_status = shipment.status;
+        shipment.status     = new_status;
+        shipment.updated_at = Utc::now();
+        self.repo.save(&shipment).await.map_err(AppError::Internal)?;
+
+        tracing::info!(
+            shipment_id = %shipment_id,
+            old_status  = ?old_status,
+            new_status  = ?new_status,
+            actor,
+            "Admin status override"
+        );
         Ok(())
     }
 

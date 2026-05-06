@@ -15,6 +15,7 @@ pub const TASK_ASSIGNED:             &str = "logisticos.task.assigned";
 pub const SHIPMENT_CREATED:          &str = "logisticos.order.shipment.created";
 pub const SHIPMENT_CONFIRMED:        &str = "logisticos.order.shipment.confirmed";
 pub const SHIPMENT_CANCELLED:        &str = "logisticos.order.shipment.cancelled";
+pub const SHIPMENT_RESCHEDULED:      &str = "logisticos.order.shipment.rescheduled";
 
 // AWB / Piece
 pub const AWB_ISSUED:                &str = "logisticos.order.awb.issued";
@@ -77,7 +78,7 @@ mod tests {
         let topics: &[&str] = &[
             CARRIER_ONBOARDED, CARRIER_STATUS_CHANGED, CARRIER_ALLOCATED,
             TENANT_CREATED, USER_CREATED, USER_INVITED,
-            SHIPMENT_CREATED, SHIPMENT_CONFIRMED, SHIPMENT_CANCELLED,
+            SHIPMENT_CREATED, SHIPMENT_CONFIRMED, SHIPMENT_CANCELLED, SHIPMENT_RESCHEDULED,
             AWB_ISSUED, PIECE_SCANNED, WEIGHT_DISCREPANCY_FOUND,
             PALLET_SEALED, CONTAINER_DEPARTED, CONTAINER_ARRIVED,
             ROUTE_CREATED, DRIVER_ASSIGNED, ROUTE_OPTIMIZED,

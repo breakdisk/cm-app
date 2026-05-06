@@ -741,12 +741,12 @@ impl ToolRegistry {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "driver_id":   {"type": "string", "format": "uuid"},
-                        "instruction": {"type": "string", "enum": ["route_change", "add_stop", "remove_stop", "priority_change", "return_to_hub", "urgent_alert"]},
-                        "payload":     {"type": "object", "description": "Instruction-specific data (e.g. new stop address, shipment_id to add)"},
-                        "message":     {"type": "string", "description": "Human-readable message shown to driver in the app"}
+                        "driver_id":        {"type": "string", "format": "uuid"},
+                        "instruction_type": {"type": "string", "enum": ["route_change", "add_stop", "remove_stop", "priority_change", "return_to_hub", "urgent_alert"]},
+                        "payload":          {"type": "object", "description": "Instruction-specific data (e.g. new stop address, shipment_id to add)"},
+                        "message":          {"type": "string", "description": "Human-readable message shown to driver in the app"}
                     },
-                    "required": ["driver_id", "instruction", "message"]
+                    "required": ["driver_id", "instruction_type", "message"]
                 }),
             },
             {

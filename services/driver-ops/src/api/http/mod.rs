@@ -92,6 +92,8 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/drivers/:id/location",      get(drivers::get_driver_location))
         // MCP tool endpoint: send an operational instruction to a driver via FCM + WS
         .route("/drivers/:id/instructions",  post(drivers::send_driver_instruction))
+        // Admin: task history for any driver by UUID
+        .route("/drivers/:id/tasks/history", get(tasks::admin_list_driver_task_history))
         // Location updates from driver app
         .route("/location", post(location::update_location))
         // Task management
