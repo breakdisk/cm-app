@@ -5,12 +5,15 @@ import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.mapbox.common.MapboxOptions
 import dagger.hilt.android.HiltAndroidApp
+import io.logisticos.driver.core.network.NetworkConnectivityObserver
 import javax.inject.Inject
 
 @HiltAndroidApp
 class DriverApplication : Application(), Configuration.Provider {
 
     @Inject lateinit var workerFactory: HiltWorkerFactory
+
+    private lateinit var connectivityObserver: NetworkConnectivityObserver
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
@@ -22,5 +25,7 @@ class DriverApplication : Application(), Configuration.Provider {
         if (BuildConfig.MAPBOX_ACCESS_TOKEN.isNotEmpty()) {
             MapboxOptions.accessToken = BuildConfig.MAPBOX_ACCESS_TOKEN
         }
+        connectivityObserver = NetworkConnectivityObserver(this)
+        connectivityObserver.register()
     }
 }
