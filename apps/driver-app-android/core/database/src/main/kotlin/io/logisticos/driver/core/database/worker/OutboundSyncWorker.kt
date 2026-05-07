@@ -139,6 +139,7 @@ class OutboundSyncWorker @AssistedInject constructor(
                         val photoBytes = photoFile.readBytes()
                         val putRequest = Request.Builder()
                             .url(presignedUrl)
+                            .addHeader("x-amz-content-sha256", "UNSIGNED-PAYLOAD")
                             .put(photoBytes.toRequestBody(contentType.toMediaType()))
                             .build()
                         val putResponse = okHttpClient.newCall(putRequest).execute()

@@ -51,9 +51,8 @@ fun BottomNavBar(navController: NavController, unreadCount: Int = 0) {
                 selected = currentRoute == tab.route,
                 onClick = {
                     navController.navigate(tab.route) {
-                        popUpTo(navController.graph.startDestinationId) { saveState = true }
+                        popUpTo(navController.graph.startDestinationId) { inclusive = false }
                         launchSingleTop = true
-                        restoreState = true
                     }
                 },
                 icon = {
