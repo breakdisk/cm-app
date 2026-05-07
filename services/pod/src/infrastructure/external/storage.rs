@@ -72,10 +72,17 @@ impl S3StorageAdapter {
 #[async_trait]
 impl StorageAdapter for S3StorageAdapter {
     async fn presign_upload(&self, key: &str, content_type: &str, ttl_seconds: u32) -> anyhow::Result<PresignedUpload> {
+        // Sign Content-Type as part of the canonical request. The Android client
+        // sends `Content-Type: image/jpeg` on the PUT body, and if Content-Type is
+        // not in SignedHeaders R2's signature validator can take a different code
+        // path that demands x-amz-date as a header (which is not how presigned
+        // URLs work). Calling .content_type() here adds it to SignedHeaders so
+        // the validator stays on the presigned-URL code path.
         let presigned = self.client
             .put_object()
             .bucket(&self.bucket)
             .key(key)
+            .content_type(content_type)
             .presigned(
                 aws_sdk_s3::presigning::PresigningConfig::expires_in(
                     std::time::Duration::from_secs(ttl_seconds as u64)
@@ -85,47 +92,29 @@ impl StorageAdapter for S3StorageAdapter {
 
         let url = presigned.uri().to_string();
 
-        // Collect headers the SDK says must be sent. Note: aws-sdk-s3 puts
-        // X-Amz-Date in the URL query string and only signs `host` by default,
-        // so this map is often empty for R2.
-        let mut headers: std::collections::HashMap<String, String> = presigned
+        // Headers the SDK says the client MUST send. With .content_type() above
+        // this returns at minimum {content-type, x-amz-content-sha256}. We do
+        // NOT inject x-amz-date here — sending it as a header makes R2 fall back
+        // to direct-V4 validation (looking for the Authorization header), which
+        // breaks presigned URLs. X-Amz-Date stays in the URL query string only.
+        let headers: std::collections::HashMap<String, String> = presigned
             .headers()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
 
-        // Cloudflare R2 rejects the PUT with "InvalidArgument: No date provided
-        // in x-amz-date nor date header" when neither header is sent — even
-        // when X-Amz-Date is present as a URL query parameter. R2's signature
-        // validator falls back to direct-request validation in some code paths
-        // and that path requires the header to exist on the wire.
-        //
-        // Parse X-Amz-Date from the presigned URL and add it as a header so
-        // the Android client always sends it. The value is identical to the
-        // query parameter — same string, different transport — so the V4
-        // signature still validates.
-        if !headers.contains_key("x-amz-date") && !headers.contains_key("X-Amz-Date") {
-            if let Some(date) = url
-                .split("X-Amz-Date=")
-                .nth(1)
-                .and_then(|s| s.split('&').next())
-            {
-                headers.insert("x-amz-date".to_string(), date.to_string());
-            }
-        }
-
-        // Always include x-amz-content-sha256 as UNSIGNED-PAYLOAD — required
-        // by R2 for PUT object even though it's not in SignedHeaders. Adding
-        // it here as a fallback covers the case where presigned.headers()
-        // didn't return it.
-        headers
-            .entry("x-amz-content-sha256".to_string())
-            .or_insert_with(|| "UNSIGNED-PAYLOAD".to_string());
-
-        tracing::debug!(
-            url_len = url.len(),
+        // Log the SignedHeaders list from the URL so a botched config (path-style,
+        // wrong endpoint, missing region) is obvious from container logs.
+        let signed_headers = url
+            .split("X-Amz-SignedHeaders=")
+            .nth(1)
+            .and_then(|s| s.split('&').next())
+            .unwrap_or("<none>");
+        tracing::info!(
+            bucket = %self.bucket,
+            key = %key,
+            content_type = %content_type,
+            signed_headers = %signed_headers,
             header_count = headers.len(),
-            has_amz_date = headers.contains_key("x-amz-date"),
-            has_content_sha256 = headers.contains_key("x-amz-content-sha256"),
             "Generated R2 presigned PUT URL"
         );
 
