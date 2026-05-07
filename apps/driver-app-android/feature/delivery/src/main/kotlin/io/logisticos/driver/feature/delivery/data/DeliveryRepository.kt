@@ -198,20 +198,35 @@ class DeliveryRepository @Inject constructor(
             // 4. Submit POD
             podApi.submit(podId, SubmitPodRequest(codCollectedCents = codCollectedCents, otpCode = otpCode))
 
-            // 5. Complete the task
-            driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId, codCollectedCents = codCollectedCents))
-
-            // Mark local POD as synced
+            // POD is on the server. Mark it synced before attempting step 7
+            // so a subsequent failure doesn't re-upload the same photo.
             podDao.markSynced(taskId)
-            taskDao.updateStatus(taskId, TaskStatus.COMPLETED)
+
+            // Optimistic local task completion — isSynced=false until backend confirms.
+            taskDao.updateStatusWithSync(taskId, TaskStatus.COMPLETED, isSynced = false)
             val shift = shiftDao.getActiveShiftOnce()
             if (shift != null) shiftDao.incrementCompleted(shift.id)
 
+            try {
+                // 5. Complete the task on the backend — links pod_id to the task.
+                driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId, codCollectedCents = codCollectedCents))
+                taskDao.markSynced(taskId)   // Backend confirmed — clear the pending badge.
+            } catch (e: Exception) {
+                // Only step 7 (task completion) failed. POD evidence is safe on the server.
+                // Enqueue just the task completion for retry; do NOT replay all 7 steps.
+                android.util.Log.w("DeliveryRepository", "completeTask failed, queuing TASK_COMPLETE: ${e.message}")
+                enqueueAndKick(
+                    SyncQueueEntity(
+                        action = SyncAction.TASK_COMPLETE,
+                        payloadJson = Json.encodeToString(mapOf("taskId" to taskId, "podId" to podId)),
+                        createdAt = System.currentTimeMillis()
+                    )
+                )
+            }
+
             podId
         } catch (e: Exception) {
-            // Surface the failure so UI/logcat show *why* the POD didn't sync,
-            // instead of silently pretending it succeeded. The sync queue retry
-            // still runs, but the user gets a real error now.
+            // Steps 1–6 failed (POD not yet on server). Enqueue a full POD_SUBMIT retry.
             android.util.Log.e("DeliveryRepository", "submitPod failed: ${e.javaClass.simpleName}: ${e.message}", e)
             enqueueAndKick(
                 SyncQueueEntity(
