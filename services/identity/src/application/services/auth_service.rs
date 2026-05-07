@@ -332,11 +332,15 @@ impl AuthService {
         use validator::Validate;
         cmd.validate().map_err(|e| AppError::Validation(e.to_string()))?;
 
+        // Require at least one of phone_number or email
+        let identifier = cmd.identifier()
+            .ok_or_else(|| AppError::Validation("phone_number or email is required".into()))?;
+
         // Generate a 6-digit OTP
         use rand::Rng;
         let otp: String = format!("{:06}", rand::thread_rng().gen_range(0..1_000_000u32));
 
-        self.redis_cache.store_otp(&cmd.phone_number, &otp).await
+        self.redis_cache.store_otp(identifier, &otp).await
             .map_err(|e| AppError::Internal(anyhow::anyhow!("Redis: {e}")))?;
 
         // SMS/WhatsApp delivery not yet wired — always log OTP so operators can
@@ -345,9 +349,9 @@ impl AuthService {
         let is_prod = env == "production";
         if is_prod {
             // Warn once so ops know SMS isn't wired yet.
-            tracing::warn!(phone = %cmd.phone_number, otp = %otp, "OTP generated — SMS not wired, code logged here");
+            tracing::warn!(identifier = %identifier, otp = %otp, "OTP generated — SMS not wired, code logged here");
         } else {
-            tracing::info!(phone = %cmd.phone_number, otp = %otp, "OTP generated (also accept 123456)");
+            tracing::info!(identifier = %identifier, otp = %otp, "OTP generated (also accept 123456)");
         }
 
         Ok(())
@@ -357,6 +361,9 @@ impl AuthService {
         use validator::Validate;
         cmd.validate().map_err(|e| AppError::Validation(e.to_string()))?;
 
+        let identifier = cmd.identifier()
+            .ok_or_else(|| AppError::Validation("phone_number or email is required".into()))?;
+
         let tenant_slug = cmd.tenant_slug.as_deref().unwrap_or("demo");
         let env = std::env::var("APP__ENV").unwrap_or_default();
 
@@ -364,7 +371,7 @@ impl AuthService {
         let otp_valid = if env != "production" && cmd.otp_code == "123456" {
             true
         } else {
-            self.redis_cache.verify_otp(&cmd.phone_number, &cmd.otp_code).await
+            self.redis_cache.verify_otp(identifier, &cmd.otp_code).await
                 .map_err(|e| AppError::Internal(anyhow::anyhow!("Redis: {e}")))?
         };
 
@@ -380,77 +387,90 @@ impl AuthService {
 
         let role = cmd.role.as_deref().unwrap_or("driver");
 
-        // Normalise the phone number to E.164 before any lookup.
-        let normalised_phone = crate::application::services::tenant_service::normalise_phone(&cmd.phone_number);
-
-        // ── Step 1: try to find a pre-registered user by phone ───────────────
-        // Partner portal admin registers drivers with a real email + phone.
-        // The phone is stored on identity.users so the Driver App can log in
-        // without the driver ever knowing their email address.
-        let user = if let Some(pre_registered) = self.user_repo
-            .find_by_phone(&tenant.id, &normalised_phone)
-            .await
-            .map_err(AppError::Internal)?
-        {
-            tracing::info!(
-                user_id = %pre_registered.id,
-                phone = %normalised_phone,
-                "OTP login: resolved pre-registered user by phone"
-            );
-            pre_registered
+        // ── Email-based OTP: look up directly by email ───────────────────────
+        // Short-circuit the phone-based lookup path for email logins (customer app,
+        // ops portal). The OTP was keyed on the email address in otp_send.
+        let user = if let Some(ref email_addr) = cmd.email {
+            self.user_repo
+                .find_by_email(&tenant.id, email_addr).await
+                .map_err(AppError::Internal)?
+                .ok_or_else(|| AppError::NotFound { resource: "User", id: email_addr.clone() })?
         } else {
-            // ── Step 2: fall back to synthetic-email find-or-create ──────────
-            // Handles self-registering customers and dev/test drivers that were
-            // never pre-registered through the Partner portal.
-            //
-            // For `role=driver`, hitting this branch is almost always a bug:
-            // it means a partner-onboarded driver couldn't be resolved by phone
-            // (most often because their `users.phone_number` is NULL or stored
-            // in a non-E.164 format). The fallback then creates a *shadow*
-            // identity user, and driver-ops `find_or_create_driver` keeps
-            // creating "Driver" stub rows — the real onboarded driver row
-            // stays offline forever. Surface it loudly in production logs so
-            // ops can spot the data drift instead of staring at a healthy app
-            // that's silently invisible to dispatch.
-            if role == "driver" {
-                tracing::warn!(
-                    phone = %normalised_phone,
-                    tenant_id = %tenant.id,
-                    "OTP login: no pre-registered driver found by phone — falling through to synthetic-email auto-create. This produces a shadow user; the partner-onboarded driver row will not be touched. Backfill identity.users.phone_number for this driver."
-                );
-            }
-            let digits: String = normalised_phone.chars().filter(|c| c.is_ascii_digit()).collect();
-            let (email, password, first_name) = match role {
-                "customer" => (
-                    format!("{digits}@customer.logisticos.app"),
-                    format!("Cust{digits}!Lgx"),
-                    "Customer".to_owned(),
-                ),
-                _ => (
-                    format!("{digits}@driver.logisticos.app"),
-                    format!("Drv{digits}!Lgx"),
-                    "Driver".to_owned(),
-                ),
-            };
+            // ── Phone-based OTP ───────────────────────────────────────────────
+            // Normalise the phone number to E.164 before any lookup.
+            let normalised_phone = crate::application::services::tenant_service::normalise_phone(
+                cmd.phone_number.as_deref().unwrap_or_default()
+            );
 
-            match self.user_repo.find_by_email(&tenant.id, &email).await.map_err(AppError::Internal)? {
-                Some(u) => u,
-                None => {
-                    let password_hash = logisticos_auth::password::hash_password(&password)
-                        .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
-                    let mut new_user = crate::domain::entities::User::new(
-                        tenant.id.clone(),
-                        email.clone(),
-                        password_hash,
-                        first_name,
-                        digits.clone(),
-                        vec![role.to_owned()],
+            // ── Step 1: try to find a pre-registered user by phone ───────────────
+            // Partner portal admin registers drivers with a real email + phone.
+            // The phone is stored on identity.users so the Driver App can log in
+            // without the driver ever knowing their email address.
+            if let Some(pre_registered) = self.user_repo
+                .find_by_phone(&tenant.id, &normalised_phone)
+                .await
+                .map_err(AppError::Internal)?
+            {
+                tracing::info!(
+                    user_id = %pre_registered.id,
+                    phone = %normalised_phone,
+                    "OTP login: resolved pre-registered user by phone"
+                );
+                pre_registered
+            } else {
+                // ── Step 2: fall back to synthetic-email find-or-create ──────────
+                // Handles self-registering customers and dev/test drivers that were
+                // never pre-registered through the Partner portal.
+                //
+                // For `role=driver`, hitting this branch is almost always a bug:
+                // it means a partner-onboarded driver couldn't be resolved by phone
+                // (most often because their `users.phone_number` is NULL or stored
+                // in a non-E.164 format). The fallback then creates a *shadow*
+                // identity user, and driver-ops `find_or_create_driver` keeps
+                // creating "Driver" stub rows — the real onboarded driver row
+                // stays offline forever. Surface it loudly in production logs so
+                // ops can spot the data drift instead of staring at a healthy app
+                // that's silently invisible to dispatch.
+                if role == "driver" {
+                    tracing::warn!(
+                        phone = %normalised_phone,
+                        tenant_id = %tenant.id,
+                        "OTP login: no pre-registered driver found by phone — falling through to synthetic-email auto-create. This produces a shadow user; the partner-onboarded driver row will not be touched. Backfill identity.users.phone_number for this driver."
                     );
-                    new_user.email_verified = true; // OTP-verified phone = verified identity
-                    new_user.phone_number = Some(normalised_phone.clone());
-                    self.user_repo.save(&new_user).await.map_err(AppError::Internal)?;
-                    tracing::info!(user_id = %new_user.id, phone = %normalised_phone, role = %role, "Auto-registered user via OTP");
-                    new_user
+                }
+                let digits: String = normalised_phone.chars().filter(|c| c.is_ascii_digit()).collect();
+                let (email, password, first_name) = match role {
+                    "customer" => (
+                        format!("{digits}@customer.logisticos.app"),
+                        format!("Cust{digits}!Lgx"),
+                        "Customer".to_owned(),
+                    ),
+                    _ => (
+                        format!("{digits}@driver.logisticos.app"),
+                        format!("Drv{digits}!Lgx"),
+                        "Driver".to_owned(),
+                    ),
+                };
+
+                match self.user_repo.find_by_email(&tenant.id, &email).await.map_err(AppError::Internal)? {
+                    Some(u) => u,
+                    None => {
+                        let password_hash = logisticos_auth::password::hash_password(&password)
+                            .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
+                        let mut new_user = crate::domain::entities::User::new(
+                            tenant.id.clone(),
+                            email.clone(),
+                            password_hash,
+                            first_name,
+                            digits.clone(),
+                            vec![role.to_owned()],
+                        );
+                        new_user.email_verified = true; // OTP-verified phone = verified identity
+                        new_user.phone_number = Some(normalised_phone.clone());
+                        self.user_repo.save(&new_user).await.map_err(AppError::Internal)?;
+                        tracing::info!(user_id = %new_user.id, phone = %normalised_phone, role = %role, "Auto-registered user via OTP");
+                        new_user
+                    }
                 }
             }
         };
@@ -479,7 +499,7 @@ impl AuthService {
         let refresh_token = self.jwt.issue_refresh_token(refresh_claims)
             .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
 
-        tracing::info!(user_id = %user.id, tenant_id = %tenant.id, phone = %cmd.phone_number, "OTP login successful");
+        tracing::info!(user_id = %user.id, tenant_id = %tenant.id, identifier = %identifier, "OTP login successful");
 
         Ok(OtpVerifyResult {
             access_token,

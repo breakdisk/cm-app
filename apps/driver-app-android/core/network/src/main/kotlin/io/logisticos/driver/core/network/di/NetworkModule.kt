@@ -20,6 +20,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
+import java.util.concurrent.TimeUnit
 import javax.inject.Named
 import javax.inject.Singleton
 
@@ -47,6 +48,13 @@ object NetworkModule {
         loggingInterceptor: HttpLoggingInterceptor,
         @Named("is_debug") isDebug: Boolean
     ): OkHttpClient = OkHttpClient.Builder()
+        // Explicit timeouts — OkHttp 4 defaults are 10s connect/read/write with no
+        // overall call timeout. We add a 30s call timeout so a stalled server
+        // (e.g. identity pod restarting) fails fast instead of keeping isLoading=true.
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
+        .callTimeout(30, TimeUnit.SECONDS)
         .addInterceptor(authInterceptor)
         .addInterceptor(tenantInterceptor)
         .addInterceptor(loggingInterceptor)

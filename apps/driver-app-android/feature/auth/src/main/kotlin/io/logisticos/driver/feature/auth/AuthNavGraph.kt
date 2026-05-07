@@ -1,5 +1,6 @@
 package io.logisticos.driver.feature.auth
 
+import android.net.Uri
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.composable
@@ -18,7 +19,11 @@ fun NavGraphBuilder.authNavGraph(
     navigation(startDestination = PHONE_ROUTE, route = AUTH_GRAPH) {
         composable(PHONE_ROUTE) {
             PhoneScreen(onOtpSent = { identifier ->
-                navController.navigate("otp/$identifier")
+                // URL-encode the identifier so special characters like '+' in
+                // international phone numbers (+971…) survive the navigation route
+                // intact. Compose Navigation 2.8 URI-decodes path args on extraction,
+                // so '+' must be encoded as '%2B' to avoid being decoded as a space.
+                navController.navigate("otp/${Uri.encode(identifier)}")
             })
         }
         composable(OTP_ROUTE) { backStack ->

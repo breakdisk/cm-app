@@ -106,24 +106,48 @@ pub struct RegisterCommand {
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct OtpSendCommand {
+    /// Phone number (E.164 format). Required for phone-based OTP; omit for email-based.
     #[validate(length(min = 7, max = 20))]
-    pub phone_number: String,
+    #[serde(default)]
+    pub phone_number: Option<String>,
+    /// Email address. Required for email-based OTP; omit for phone-based.
+    #[serde(default)]
+    pub email: Option<String>,
     /// Optional tenant slug; defaults to "default" if omitted.
     pub tenant_slug: Option<String>,
     /// "driver" or "customer"; determines auto-registration role. Defaults to "driver".
     pub role: Option<String>,
 }
 
+impl OtpSendCommand {
+    /// Returns the identifier used as the Redis key (phone number or email address).
+    pub fn identifier(&self) -> Option<&str> {
+        self.phone_number.as_deref().or(self.email.as_deref())
+    }
+}
+
 #[derive(Debug, Deserialize, Validate)]
 pub struct OtpVerifyCommand {
+    /// Phone number (E.164 format). Required for phone-based OTP; omit for email-based.
     #[validate(length(min = 7, max = 20))]
-    pub phone_number: String,
+    #[serde(default)]
+    pub phone_number: Option<String>,
+    /// Email address. Required for email-based OTP; omit for phone-based.
+    #[serde(default)]
+    pub email: Option<String>,
     #[validate(length(equal = 6))]
     pub otp_code: String,
     /// Optional tenant slug; defaults to "default" if omitted.
     pub tenant_slug: Option<String>,
     /// "driver" or "customer"; determines auto-registration role. Defaults to "driver".
     pub role: Option<String>,
+}
+
+impl OtpVerifyCommand {
+    /// Returns the identifier used as the Redis key (phone number or email address).
+    pub fn identifier(&self) -> Option<&str> {
+        self.phone_number.as_deref().or(self.email.as_deref())
+    }
 }
 
 // ─── Firebase token exchange (server-side bridge) ────────────────────────────
