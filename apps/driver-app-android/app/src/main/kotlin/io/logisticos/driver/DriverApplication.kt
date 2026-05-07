@@ -5,7 +5,7 @@ import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.mapbox.common.MapboxOptions
 import dagger.hilt.android.HiltAndroidApp
-import io.logisticos.driver.core.network.NetworkConnectivityObserver
+import io.logisticos.driver.core.database.worker.NetworkConnectivityObserver
 import javax.inject.Inject
 
 @HiltAndroidApp

@@ -1,4 +1,4 @@
-package io.logisticos.driver.core.network
+package io.logisticos.driver.core.database.worker
 
 import android.content.Context
 import android.net.ConnectivityManager
@@ -6,7 +6,6 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import androidx.core.content.getSystemService
-import io.logisticos.driver.core.database.worker.OutboundSyncWorker
 
 class NetworkConnectivityObserver(private val context: Context) {
 
