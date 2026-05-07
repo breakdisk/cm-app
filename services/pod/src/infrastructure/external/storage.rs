@@ -83,17 +83,53 @@ impl StorageAdapter for S3StorageAdapter {
             )
             .await?;
 
-        // Collect all headers the SDK says the client MUST send with the PUT request.
-        // For Cloudflare R2, this includes `x-amz-content-sha256: UNSIGNED-PAYLOAD`
-        // and `x-amz-date: <timestamp>` when both appear in X-Amz-SignedHeaders.
-        // Returning them here means the Android client sends exactly what R2 signed —
-        // no hard-coding of header names or values in the client.
-        let headers: std::collections::HashMap<String, String> = presigned
+        let url = presigned.uri().to_string();
+
+        // Collect headers the SDK says must be sent. Note: aws-sdk-s3 puts
+        // X-Amz-Date in the URL query string and only signs `host` by default,
+        // so this map is often empty for R2.
+        let mut headers: std::collections::HashMap<String, String> = presigned
             .headers()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
 
-        Ok(PresignedUpload { url: presigned.uri().to_string(), headers })
+        // Cloudflare R2 rejects the PUT with "InvalidArgument: No date provided
+        // in x-amz-date nor date header" when neither header is sent — even
+        // when X-Amz-Date is present as a URL query parameter. R2's signature
+        // validator falls back to direct-request validation in some code paths
+        // and that path requires the header to exist on the wire.
+        //
+        // Parse X-Amz-Date from the presigned URL and add it as a header so
+        // the Android client always sends it. The value is identical to the
+        // query parameter — same string, different transport — so the V4
+        // signature still validates.
+        if !headers.contains_key("x-amz-date") && !headers.contains_key("X-Amz-Date") {
+            if let Some(date) = url
+                .split("X-Amz-Date=")
+                .nth(1)
+                .and_then(|s| s.split('&').next())
+            {
+                headers.insert("x-amz-date".to_string(), date.to_string());
+            }
+        }
+
+        // Always include x-amz-content-sha256 as UNSIGNED-PAYLOAD — required
+        // by R2 for PUT object even though it's not in SignedHeaders. Adding
+        // it here as a fallback covers the case where presigned.headers()
+        // didn't return it.
+        headers
+            .entry("x-amz-content-sha256".to_string())
+            .or_insert_with(|| "UNSIGNED-PAYLOAD".to_string());
+
+        tracing::debug!(
+            url_len = url.len(),
+            header_count = headers.len(),
+            has_amz_date = headers.contains_key("x-amz-date"),
+            has_content_sha256 = headers.contains_key("x-amz-content-sha256"),
+            "Generated R2 presigned PUT URL"
+        );
+
+        Ok(PresignedUpload { url, headers })
     }
 
     async fn presign_download(&self, key: &str, ttl_seconds: u32) -> anyhow::Result<String> {
