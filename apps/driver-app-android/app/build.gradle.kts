@@ -79,13 +79,14 @@ android {
         }
         create("staging") {
             dimension = "env"
-            // Staging hits the VPS gateway directly over HTTP. Bypasses Traefik
-            // and Let's Encrypt entirely so cert renewal failures (e.g. Cloudflare
-            // proxy interfering with HTTP-01 challenge) don't block the staging
-            // app. The IP is also whitelisted in network_security_config.xml for
-            // cleartext. Override per-machine via local.properties API_BASE_URL.
+            // Staging uses the same HTTPS gateway as prod so the APK works from
+            // any network (mobile data, remote WiFi) without requiring direct VPS
+            // port access. The direct-IP HTTP fallback was unreliable: port 8000
+            // is not firewalled-open to all IPs and some ISPs/mobile networks
+            // block non-standard HTTP ports. Override per-machine via local.properties
+            // API_BASE_URL if you need to point at a local dev server instead.
             val stagingUrl = localProps.getProperty("API_BASE_URL")
-                ?: "http://75.119.138.135:8000/"
+                ?: "https://os-api.cargomarket.net/"
             buildConfigField("String", "BASE_URL", "\"$stagingUrl\"")
             buildConfigField("String", "TENANT_ID", "\"atlas-cargo-ae\"")
         }
