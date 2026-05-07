@@ -3,8 +3,18 @@ package io.logisticos.driver.core.database
 import androidx.room.Database
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import io.logisticos.driver.core.database.dao.*
 import io.logisticos.driver.core.database.entity.*
+
+val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(database: SupportSQLiteDatabase) {
+        database.execSQL(
+            "ALTER TABLE tasks ADD COLUMN is_synced INTEGER NOT NULL DEFAULT 1"
+        )
+    }
+}
 
 @TypeConverters(Converters::class)
 @Database(
@@ -17,7 +27,7 @@ import io.logisticos.driver.core.database.entity.*
         ScanEventEntity::class,
         SyncQueueEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true
 )
 abstract class DriverDatabase : RoomDatabase() {

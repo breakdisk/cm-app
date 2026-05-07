@@ -8,6 +8,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import io.logisticos.driver.core.database.DriverDatabase
+import io.logisticos.driver.core.database.MIGRATION_3_4
 import io.logisticos.driver.core.database.dao.*
 import javax.inject.Singleton
 
@@ -18,6 +19,7 @@ object DatabaseModule {
     @Provides @Singleton
     fun provideDatabase(@ApplicationContext context: Context): DriverDatabase =
         Room.databaseBuilder(context, DriverDatabase::class.java, "driver_app.db")
+            .addMigrations(MIGRATION_3_4)
             .fallbackToDestructiveMigration()
             .build()
 

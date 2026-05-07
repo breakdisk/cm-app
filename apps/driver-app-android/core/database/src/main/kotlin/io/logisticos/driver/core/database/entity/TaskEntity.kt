@@ -36,5 +36,6 @@ data class TaskEntity(
     val attemptCount: Int = 0,
     val failureReason: String? = null,
     val notes: String? = null,
-    val syncedAt: Long?
+    val syncedAt: Long?,
+    val isSynced: Boolean = true,
 )
