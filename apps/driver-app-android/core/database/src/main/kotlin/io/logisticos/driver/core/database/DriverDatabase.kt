@@ -11,7 +11,7 @@ import io.logisticos.driver.core.database.entity.*
 val MIGRATION_3_4 = object : Migration(3, 4) {
     override fun migrate(database: SupportSQLiteDatabase) {
         database.execSQL(
-            "ALTER TABLE tasks ADD COLUMN is_synced INTEGER NOT NULL DEFAULT 1"
+            "ALTER TABLE tasks ADD COLUMN isSynced INTEGER NOT NULL DEFAULT 1"
         )
     }
 }

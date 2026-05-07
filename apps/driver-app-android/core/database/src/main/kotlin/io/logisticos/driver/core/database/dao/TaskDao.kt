@@ -49,12 +49,12 @@ interface TaskDao {
     @Query("SELECT * FROM tasks WHERE id = :taskId LIMIT 1")
     fun getByIdAsFlow(taskId: String): Flow<TaskEntity?>
 
-    @Query("UPDATE tasks SET is_synced = 1 WHERE id = :taskId")
+    @Query("UPDATE tasks SET isSynced = 1 WHERE id = :taskId")
     suspend fun markSynced(taskId: String)
 
-    @Query("UPDATE tasks SET is_synced = 0, status = 'FAILED_SYNC' WHERE id = :taskId")
+    @Query("UPDATE tasks SET isSynced = 0, status = 'FAILED_SYNC' WHERE id = :taskId")
     suspend fun markSyncFailed(taskId: String)
 
-    @Query("UPDATE tasks SET status = :status, is_synced = :isSynced WHERE id = :taskId")
+    @Query("UPDATE tasks SET status = :status, isSynced = :isSynced WHERE id = :taskId")
     suspend fun updateStatusWithSync(taskId: String, status: TaskStatus, isSynced: Boolean)
 }
