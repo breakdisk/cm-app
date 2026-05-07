@@ -31,6 +31,7 @@ import io.logisticos.driver.core.network.service.PodApiService
 import io.logisticos.driver.core.network.service.SubmitPodRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -166,11 +167,44 @@ class OutboundSyncWorker @AssistedInject constructor(
                 // 4. Submit POD
                 podApi.submit(podId, SubmitPodRequest(otpCode = pod.otpToken))
 
-                // 5. Complete the task with the pod_id so driver-ops links them
-                driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId))
-
+                // 4b. Mark POD as synced now that it's on the server.
                 podDao.markSynced(taskId)
-                taskDao.updateStatus(taskId, io.logisticos.driver.core.database.entity.TaskStatus.COMPLETED)
+
+                // 5. Enqueue TASK_COMPLETE (step 7) separately so it has its own retry lifecycle.
+                //    The task is already COMPLETED locally; this just confirms it with the backend.
+                taskDao.updateStatusWithSync(
+                    taskId,
+                    io.logisticos.driver.core.database.entity.TaskStatus.COMPLETED,
+                    isSynced = false,
+                )
+                syncQueueDao.enqueue(
+                    io.logisticos.driver.core.database.entity.SyncQueueEntity(
+                        action = io.logisticos.driver.core.database.entity.SyncAction.TASK_COMPLETE,
+                        payloadJson = Json.encodeToString(mapOf("taskId" to taskId, "podId" to podId)),
+                        createdAt = System.currentTimeMillis(),
+                    )
+                )
+                OutboundSyncWorker.kickOnce(applicationContext)
+            }
+
+            SyncAction.TASK_COMPLETE -> {
+                val taskId = payload["taskId"]?.jsonPrimitive?.contentOrNull
+                    ?: run { syncQueueDao.remove(item.id); return }
+                val podId = payload["podId"]?.jsonPrimitive?.contentOrNull
+                    ?: run { syncQueueDao.remove(item.id); return }
+
+                // After 7 days with no success, the backend may have auto-cancelled the task.
+                // Mark locally as permanently failed so the driver knows to contact support.
+                val sevenDaysMs = 7L * 24 * 60 * 60 * 1_000
+                if (item.createdAt < System.currentTimeMillis() - sevenDaysMs) {
+                    taskDao.markSyncFailed(taskId)
+                    syncQueueDao.remove(item.id)
+                    return
+                }
+
+                driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId))
+                taskDao.markSynced(taskId)
+                podDao.markSynced(taskId)
             }
 
             // Actions with no backend wiring. Log and drop deliberately so they
