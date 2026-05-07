@@ -171,13 +171,18 @@ class DeliveryRepository @Inject constructor(
                         val reqBuilder = Request.Builder()
                             .url(presignedUrl)
                             .put(photoBytes.toRequestBody(contentType.toMediaType()))
-                        // Add SDK-required signed headers; fall back to known R2 requirement
-                        // if the backend returned an empty map (older deploy / unexpected SDK version).
-                        if (requiredHeaders.isNotEmpty()) {
-                            requiredHeaders.forEach { (k, v) -> reqBuilder.addHeader(k, v) }
-                        } else {
-                            reqBuilder.addHeader("x-amz-content-sha256", "UNSIGNED-PAYLOAD")
+                        // The backend MUST include every header listed in the presigned URL's
+                        // X-Amz-SignedHeaders (x-amz-content-sha256 + x-amz-date for R2). If
+                        // upload_headers is empty the pod service is on a pre-54d2f68 image —
+                        // R2 will reject the PUT with a cryptic "No date provided in x-amz-date"
+                        // error. Fail fast here with a clear, actionable message instead of
+                        // letting R2 surface a confusing 400.
+                        check(requiredHeaders.isNotEmpty()) {
+                            "Pod backend returned empty upload_headers — the deployed pod image " +
+                                    "is older than commit 54d2f68. Redeploy " +
+                                    "ghcr.io/breakdisk/logisticos-service-pod:latest on the VPS."
                         }
+                        requiredHeaders.forEach { (k, v) -> reqBuilder.addHeader(k, v) }
                         val putResponse = okHttpClient.newCall(reqBuilder.build()).execute()
                         if (!putResponse.isSuccessful) {
                             val body = try { putResponse.body?.string() ?: "empty" } catch (e: Exception) { "unreadable" }
