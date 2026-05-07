@@ -92,15 +92,29 @@ impl StorageAdapter for S3StorageAdapter {
 
         let url = presigned.uri().to_string();
 
-        // Headers the SDK says the client MUST send. With .content_type() above
-        // this returns at minimum {content-type, x-amz-content-sha256}. We do
-        // NOT inject x-amz-date here — sending it as a header makes R2 fall back
-        // to direct-V4 validation (looking for the Authorization header), which
-        // breaks presigned URLs. X-Amz-Date stays in the URL query string only.
-        let headers: std::collections::HashMap<String, String> = presigned
+        // Headers the SDK says the client MUST send.
+        let mut headers: std::collections::HashMap<String, String> = presigned
             .headers()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
+
+        // R2-specific quirk: R2 requires `x-amz-content-sha256` as an actual
+        // request header on every PUT, even for presigned URLs where the SDK
+        // doesn't put it in SignedHeaders. Sending it unsigned is fine for V4 —
+        // unsigned headers are simply not part of the canonical request — but
+        // R2's request gate rejects requests that omit it entirely with
+        // "InvalidRequest: Missing x-amz-content-sha256".
+        //
+        // This is safe to add unconditionally: if the SDK already returned it,
+        // .or_insert_with is a no-op; if not, we add UNSIGNED-PAYLOAD which
+        // matches what aws-sdk-s3 uses for presigned URL body hashing.
+        //
+        // We deliberately do NOT inject x-amz-date as a header — sending it
+        // makes R2 switch to direct-V4 validation looking for the Authorization
+        // header, which doesn't exist on presigned requests.
+        headers
+            .entry("x-amz-content-sha256".to_string())
+            .or_insert_with(|| "UNSIGNED-PAYLOAD".to_string());
 
         // Log the SignedHeaders list from the URL so a botched config (path-style,
         // wrong endpoint, missing region) is obvious from container logs.
