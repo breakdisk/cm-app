@@ -2,6 +2,7 @@ package io.logisticos.driver.feature.route.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
@@ -23,6 +24,7 @@ private val Canvas = Color(0xFF050810)
 private val Cyan = Color(0xFF00E5FF)
 private val Green = Color(0xFF00FF88)
 private val Amber = Color(0xFFFFAB00)
+private val Red = Color(0xFFFF4444)
 private val Glass = Color(0x0AFFFFFF)
 private val Border = Color(0x14FFFFFF)
 
@@ -168,6 +170,7 @@ private fun TaskStopCard(task: TaskEntity, stopNumber: Int?, onClick: (() -> Uni
         TaskStatus.COMPLETED -> Green
         TaskStatus.ATTEMPTED, TaskStatus.FAILED -> Amber
         TaskStatus.EN_ROUTE, TaskStatus.ARRIVED, TaskStatus.IN_PROGRESS -> Cyan
+        TaskStatus.FAILED_SYNC -> Red
         else -> Color.White.copy(alpha = 0.6f)
     }
     // When onClick is null, use the non-clickable Card overload — completed
@@ -232,6 +235,37 @@ private fun TaskStopCardBody(task: TaskEntity, stopNumber: Int?, statusColor: Co
                 maxLines = 1
             )
             Text(task.awb, color = statusColor, fontSize = 11.sp)
+            // Sync state badge — only visible when task is done locally but not yet confirmed by backend.
+            val syncBadgeColor: Color?
+            val syncBadgeLabel: String?
+            when {
+                task.status == TaskStatus.FAILED_SYNC -> {
+                    syncBadgeColor = Red
+                    syncBadgeLabel = "Sync failed — contact support"
+                }
+                task.status == TaskStatus.COMPLETED && !task.isSynced -> {
+                    syncBadgeColor = Amber
+                    syncBadgeLabel = "Pending sync"
+                }
+                else -> {
+                    syncBadgeColor = null
+                    syncBadgeLabel = null
+                }
+            }
+            if (syncBadgeColor != null && syncBadgeLabel != null) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.padding(top = 2.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .background(syncBadgeColor, shape = CircleShape)
+                    )
+                    Text(syncBadgeLabel, color = syncBadgeColor, fontSize = 10.sp)
+                }
+            }
         }
         if (stopNumber != null) {
             Icon(
