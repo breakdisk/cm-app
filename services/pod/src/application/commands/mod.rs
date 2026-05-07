@@ -62,8 +62,12 @@ pub struct VerifyOtpCommand {
 
 #[derive(Debug, Serialize)]
 pub struct UploadUrlResponse {
-    pub upload_url: String,     // Pre-signed S3 PUT URL (30-second expiry)
+    pub upload_url: String,     // Pre-signed S3 PUT URL
     pub s3_key: String,         // Key to pass back in AttachPhotoCommand
+    /// Headers the client MUST include in the PUT request alongside the presigned URL.
+    /// Forwarded verbatim from PresignedRequest::headers() — typically contains
+    /// `x-amz-content-sha256` and `x-amz-date` when Cloudflare R2 signs them.
+    pub upload_headers: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]

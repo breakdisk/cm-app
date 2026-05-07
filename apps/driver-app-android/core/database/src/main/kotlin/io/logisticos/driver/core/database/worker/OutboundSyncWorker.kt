@@ -134,15 +134,21 @@ class OutboundSyncWorker @AssistedInject constructor(
                     val uploadResp = podApi.getUploadUrl(podId, GetUploadUrlRequest(contentType))
                     val presignedUrl = uploadResp.data.uploadUrl
                     val s3Key = uploadResp.data.s3Key
+                    val requiredHeaders = uploadResp.data.uploadHeaders
 
                     withContext(Dispatchers.IO) {
                         val photoBytes = photoFile.readBytes()
-                        val putRequest = Request.Builder()
+                        val reqBuilder = Request.Builder()
                             .url(presignedUrl)
-                            .addHeader("x-amz-content-sha256", "UNSIGNED-PAYLOAD")
                             .put(photoBytes.toRequestBody(contentType.toMediaType()))
-                            .build()
-                        val putResponse = okHttpClient.newCall(putRequest).execute()
+                        // Add SDK-required signed headers; fall back to known R2 requirement
+                        // if the backend returned an empty map (older deploy / unexpected SDK version).
+                        if (requiredHeaders.isNotEmpty()) {
+                            requiredHeaders.forEach { (k, v) -> reqBuilder.addHeader(k, v) }
+                        } else {
+                            reqBuilder.addHeader("x-amz-content-sha256", "UNSIGNED-PAYLOAD")
+                        }
+                        val putResponse = okHttpClient.newCall(reqBuilder.build()).execute()
                         if (!putResponse.isSuccessful) {
                             val body = try { putResponse.body?.string() ?: "empty" } catch (e: Exception) { "unreadable" }
                             android.util.Log.e("OutboundSyncWorker", "R2 PUT ${putResponse.code}: $body")

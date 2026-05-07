@@ -156,20 +156,29 @@ class DeliveryRepository @Inject constructor(
                 val photoFile = File(photoPath)
                 if (photoFile.exists()) {
                     val contentType = "image/jpeg"
-                    // Get presigned PUT URL from backend
+                    // Get presigned PUT URL + required headers from backend.
+                    // The backend forwards PresignedRequest::headers() verbatim, which for
+                    // Cloudflare R2 includes x-amz-content-sha256 and x-amz-date so the
+                    // client sends exactly what R2 signed.
                     val uploadResp = podApi.getUploadUrl(podId, GetUploadUrlRequest(contentType))
                     val presignedUrl = uploadResp.data.uploadUrl
                     val s3Key = uploadResp.data.s3Key
+                    val requiredHeaders = uploadResp.data.uploadHeaders
                     // PUT photo bytes directly to R2 — bypass Retrofit (no auth header on R2).
                     // Must run on IO because OkHttp .execute() is blocking.
                     withContext(Dispatchers.IO) {
                         val photoBytes = photoFile.readBytes()
-                        val putRequest = Request.Builder()
+                        val reqBuilder = Request.Builder()
                             .url(presignedUrl)
-                            .addHeader("x-amz-content-sha256", "UNSIGNED-PAYLOAD")
                             .put(photoBytes.toRequestBody(contentType.toMediaType()))
-                            .build()
-                        val putResponse = okHttpClient.newCall(putRequest).execute()
+                        // Add SDK-required signed headers; fall back to known R2 requirement
+                        // if the backend returned an empty map (older deploy / unexpected SDK version).
+                        if (requiredHeaders.isNotEmpty()) {
+                            requiredHeaders.forEach { (k, v) -> reqBuilder.addHeader(k, v) }
+                        } else {
+                            reqBuilder.addHeader("x-amz-content-sha256", "UNSIGNED-PAYLOAD")
+                        }
+                        val putResponse = okHttpClient.newCall(reqBuilder.build()).execute()
                         if (!putResponse.isSuccessful) {
                             val body = try { putResponse.body?.string() ?: "empty" } catch (e: Exception) { "unreadable" }
                             android.util.Log.e("DeliveryRepo", "R2 PUT ${putResponse.code}: $body")

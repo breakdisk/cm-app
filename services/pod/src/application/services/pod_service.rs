@@ -150,12 +150,16 @@ impl PodService {
             if content_type.contains("png") { "png" } else if content_type.contains("webp") { "webp" } else { "jpg" }
         );
 
-        let upload_url = self.storage
+        let presigned = self.storage
             .presign_upload(&s3_key, content_type, 900)
             .await
             .map_err(AppError::Internal)?;
 
-        Ok(UploadUrlResponse { upload_url, s3_key })
+        Ok(UploadUrlResponse {
+            upload_url: presigned.url,
+            s3_key,
+            upload_headers: presigned.headers,
+        })
     }
 
     /// Step 2c: Register a completed photo upload (called after driver finishes S3 PUT).

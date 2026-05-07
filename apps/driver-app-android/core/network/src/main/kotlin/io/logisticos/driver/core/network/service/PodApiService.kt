@@ -87,8 +87,12 @@ data class GetUploadUrlResponse(
 
 @Serializable
 data class GetUploadUrlData(
-    @SerialName("upload_url") val uploadUrl: String,
-    @SerialName("s3_key")     val s3Key: String
+    @SerialName("upload_url")     val uploadUrl: String,
+    @SerialName("s3_key")         val s3Key: String,
+    /** Headers the client MUST include in the PUT request alongside the presigned URL.
+     *  Forwarded verbatim from the Rust SDK's PresignedRequest::headers() — typically
+     *  contains `x-amz-content-sha256` and `x-amz-date` for Cloudflare R2. */
+    @SerialName("upload_headers") val uploadHeaders: Map<String, String> = emptyMap(),
 )
 
 @Serializable

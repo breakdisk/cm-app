@@ -4,11 +4,20 @@
 
 use async_trait::async_trait;
 
+/// Result of generating a pre-signed upload URL.
+/// `headers` contains any headers the client MUST include in its PUT request alongside
+/// the presigned URL — typically `x-amz-content-sha256: UNSIGNED-PAYLOAD` and
+/// `x-amz-date: <timestamp>` when Cloudflare R2 includes them in SignedHeaders.
+pub struct PresignedUpload {
+    pub url: String,
+    pub headers: std::collections::HashMap<String, String>,
+}
+
 #[async_trait]
 pub trait StorageAdapter: Send + Sync {
     /// Generate a pre-signed URL for direct-upload from the driver app.
     /// `ttl_seconds` is how long the URL is valid.
-    async fn presign_upload(&self, key: &str, content_type: &str, ttl_seconds: u32) -> anyhow::Result<String>;
+    async fn presign_upload(&self, key: &str, content_type: &str, ttl_seconds: u32) -> anyhow::Result<PresignedUpload>;
 
     /// Generate a pre-signed URL for viewing a photo (for merchant portal).
     async fn presign_download(&self, key: &str, ttl_seconds: u32) -> anyhow::Result<String>;
@@ -62,8 +71,8 @@ impl S3StorageAdapter {
 
 #[async_trait]
 impl StorageAdapter for S3StorageAdapter {
-    async fn presign_upload(&self, key: &str, content_type: &str, ttl_seconds: u32) -> anyhow::Result<String> {
-        let presigner = self.client
+    async fn presign_upload(&self, key: &str, content_type: &str, ttl_seconds: u32) -> anyhow::Result<PresignedUpload> {
+        let presigned = self.client
             .put_object()
             .bucket(&self.bucket)
             .key(key)
@@ -73,7 +82,18 @@ impl StorageAdapter for S3StorageAdapter {
                 )?
             )
             .await?;
-        Ok(presigner.uri().to_string())
+
+        // Collect all headers the SDK says the client MUST send with the PUT request.
+        // For Cloudflare R2, this includes `x-amz-content-sha256: UNSIGNED-PAYLOAD`
+        // and `x-amz-date: <timestamp>` when both appear in X-Amz-SignedHeaders.
+        // Returning them here means the Android client sends exactly what R2 signed —
+        // no hard-coding of header names or values in the client.
+        let headers: std::collections::HashMap<String, String> = presigned
+            .headers()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+
+        Ok(PresignedUpload { url: presigned.uri().to_string(), headers })
     }
 
     async fn presign_download(&self, key: &str, ttl_seconds: u32) -> anyhow::Result<String> {
