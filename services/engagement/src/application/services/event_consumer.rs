@@ -8,6 +8,7 @@
 //!   driver.assigned         → "pickup_scheduled"        → WhatsApp
 //!   driver.pickup.completed → "shipment_picked_up"      → WhatsApp
 //!   driver.delivery.completed → "delivery_confirmed"    → WhatsApp + Email
+//!   driver.delivery.attempted → "delivery_attempted"       → WhatsApp + SMS
 //!   driver.delivery.failed  → "delivery_failed_reschedule" → WhatsApp + SMS
 //!   payments.cod.collected  → "cod_receipt"             → WhatsApp
 //!   payments.cod.remitted   → "cod_remitted_merchant"   → WhatsApp + Email          (merchant)
@@ -49,6 +50,11 @@ fn get_mapping(event_type: &str) -> Option<EventNotificationMapping> {
             template_id: "delivery_confirmed",
             priority: NotificationPriority::High,
             channels: &["whatsapp", "email"],
+        }),
+        topics::DELIVERY_ATTEMPTED => Some(EventNotificationMapping {
+            template_id: "delivery_attempted",
+            priority: NotificationPriority::High,
+            channels: &["whatsapp", "sms"],
         }),
         topics::DELIVERY_FAILED => Some(EventNotificationMapping {
             template_id: "delivery_failed_reschedule",
@@ -353,6 +359,15 @@ pub async fn process_event(
                  If you have any questions, contact us or track details at: {{tracking_url}}\n\n\
                  Thank you for shipping with CargoMarket!\n\
                  — CargoMarket Logistics".to_owned(),
+            ),
+            "delivery_attempted" => (
+                None,
+                "Hi {{customer_name}},\n\n\
+                 We attempted to deliver your shipment {{tracking_number}} but \
+                 couldn't reach you at the address.\n\n\
+                 Our rider will try again on the next scheduled delivery run.\n\
+                 To arrange a re-delivery or update your address: {{tracking_url}}\n\n\
+                 — CargoMarket".to_owned(),
             ),
             "delivery_failed_reschedule" => (
                 None,

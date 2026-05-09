@@ -8,7 +8,7 @@ use logisticos_errors::AppError;
 use logisticos_types::{TenantId, DriverId};
 use crate::{
     api::http::AppState,
-    application::commands::{StartTaskCommand, CompleteTaskCommand, FailTaskCommand},
+    application::commands::{StartTaskCommand, CompleteTaskCommand, FailTaskCommand, AttemptTaskCommand},
 };
 
 pub async fn list_my_tasks(
@@ -133,5 +133,23 @@ pub async fn fail_task(
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let cmd = FailTaskCommand { task_id, ..cmd };
     state.task_service.fail_task(&driver_id, &tenant_id, cmd).await?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+/// `PUT /v1/tasks/:id/attempt`
+///
+/// Driver knocked on the door but couldn't deliver (nobody home, access denied, etc.).
+/// Records the attempt, resets the task to Pending for re-delivery, and emits
+/// DELIVERY_ATTEMPTED so engagement can notify the customer.
+pub async fn attempt_task(
+    AuthClaims(claims): AuthClaims,
+    Path(task_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+    Json(cmd): Json<AttemptTaskCommand>,
+) -> Result<axum::http::StatusCode, AppError> {
+    let driver_id = DriverId::from_uuid(claims.user_id);
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let cmd = AttemptTaskCommand { task_id, ..cmd };
+    state.task_service.attempt_task(&driver_id, &tenant_id, cmd).await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }

@@ -5,10 +5,10 @@ use logisticos_events::{producer::KafkaProducer, topics, envelope::Event};
 use uuid::Uuid;
 
 use crate::{
-    application::commands::{StartTaskCommand, CompleteTaskCommand, FailTaskCommand, TaskSummary},
+    application::commands::{StartTaskCommand, CompleteTaskCommand, FailTaskCommand, AttemptTaskCommand, TaskSummary},
     domain::{
         entities::{DriverTask, TaskStatus, TaskType},
-        events::{TaskCompleted, TaskFailed},
+        events::{TaskAttempted, TaskCompleted, TaskFailed},
         repositories::{TaskRepository, DriverRepository, TenantTaskSummary},
     },
 };
@@ -211,6 +211,53 @@ impl TaskService {
             .map_err(AppError::Internal)?;
 
         tracing::info!(task_id = %task.id, driver_id = %driver_id, "Task failed");
+        Ok(())
+    }
+
+    /// Record a non-completing delivery attempt.
+    ///
+    /// The driver tried to deliver but couldn't (nobody home, wrong address, etc.).
+    /// The task resets to Pending for retry and a DELIVERY_ATTEMPTED event is
+    /// emitted so engagement can send the customer a "we missed you" notification.
+    pub async fn attempt_task(
+        &self,
+        driver_id: &DriverId,
+        tenant_id: &TenantId,
+        cmd: AttemptTaskCommand,
+    ) -> AppResult<()> {
+        let mut task = self.fetch_and_validate_ownership(driver_id, cmd.task_id).await?;
+
+        if !matches!(task.status, TaskStatus::InProgress | TaskStatus::Pending) {
+            return Err(AppError::BusinessRule("Can only record an attempt on an active task".into()));
+        }
+
+        let attempt_count = task.attempt_count + 1;
+        task.attempt(cmd.reason.clone());
+        self.task_repo.save(&task).await.map_err(AppError::Internal)?;
+
+        let attempted_at = task.last_attempted_at.unwrap_or_else(chrono::Utc::now);
+        let event = Event::new("driver-ops", "delivery.attempted", tenant_id.inner(), TaskAttempted {
+            task_id:        task.id,
+            driver_id:      driver_id.inner(),
+            shipment_id:    task.shipment_id,
+            tenant_id:      tenant_id.inner(),
+            reason:         cmd.reason,
+            attempt_count,
+            attempted_at,
+            customer_name:  task.customer_name.clone(),
+            customer_phone: task.customer_phone.clone(),
+            customer_email: task.customer_email.clone().unwrap_or_default(),
+            tracking_number: task.tracking_number.clone().unwrap_or_default(),
+        });
+        self.kafka.publish_event(topics::DELIVERY_ATTEMPTED, &event).await
+            .map_err(AppError::Internal)?;
+
+        tracing::info!(
+            task_id       = %task.id,
+            driver_id     = %driver_id,
+            attempt_count = attempt_count,
+            "Delivery attempted — task reset to pending for retry"
+        );
         Ok(())
     }
 

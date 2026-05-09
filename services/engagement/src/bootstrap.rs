@@ -218,6 +218,7 @@ async fn run_kafka_consumer(
         topics::DRIVER_ASSIGNED,
         topics::PICKUP_COMPLETED,
         topics::DELIVERY_COMPLETED,
+        topics::DELIVERY_ATTEMPTED,
         topics::DELIVERY_FAILED,
         topics::COD_COLLECTED,
         topics::COD_REMITTED,

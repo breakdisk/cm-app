@@ -43,6 +43,8 @@ struct TaskRow {
     started_at:           Option<chrono::DateTime<chrono::Utc>>,
     completed_at:         Option<chrono::DateTime<chrono::Utc>>,
     failed_reason:        Option<String>,
+    attempt_count:        i32,
+    last_attempted_at:    Option<chrono::DateTime<chrono::Utc>>,
 }
 
 fn parse_task_status(s: &str) -> TaskStatus {
@@ -98,6 +100,8 @@ impl From<TaskRow> for DriverTask {
             started_at: r.started_at,
             completed_at: r.completed_at,
             failed_reason: r.failed_reason,
+            attempt_count: r.attempt_count,
+            last_attempted_at: r.last_attempted_at,
         }
     }
 }
@@ -109,7 +113,8 @@ impl TaskRepository for PgTaskRepository {
             r#"SELECT id, driver_id, route_id, shipment_id, task_type, sequence, status,
                       address_line1, address_line2, city, province, postal_code, country AS country_code,
                       lat, lng, customer_name, customer_phone, customer_email, tracking_number,
-                      cod_amount_cents, special_instructions, pod_id, started_at, completed_at, failed_reason
+                      cod_amount_cents, special_instructions, pod_id, started_at, completed_at, failed_reason,
+                      attempt_count, last_attempted_at
                FROM driver_ops.tasks WHERE id = $1"#
         )
         .bind(id)
@@ -125,7 +130,9 @@ impl TaskRepository for PgTaskRepository {
             r#"SELECT t.id, t.driver_id, t.route_id, t.shipment_id, t.task_type, t.sequence, t.status,
                       t.address_line1, t.address_line2, t.city, t.province, t.postal_code, t.country AS country_code,
                       t.lat, t.lng, t.customer_name, t.customer_phone, t.customer_email, t.tracking_number,
-                      t.cod_amount_cents, t.special_instructions, t.pod_id, t.started_at, t.completed_at, t.failed_reason
+                      t.cod_amount_cents, t.special_instructions, t.pod_id,
+                      t.started_at, t.completed_at, t.failed_reason,
+                      t.attempt_count, t.last_attempted_at
                FROM driver_ops.tasks t
                JOIN driver_ops.drivers d ON d.id = t.driver_id
                WHERE d.user_id = $1
@@ -142,7 +149,8 @@ impl TaskRepository for PgTaskRepository {
             r#"SELECT id, driver_id, route_id, shipment_id, task_type, sequence, status,
                       address_line1, address_line2, city, province, postal_code, country AS country_code,
                       lat, lng, customer_name, customer_phone, customer_email, tracking_number,
-                      cod_amount_cents, special_instructions, pod_id, started_at, completed_at, failed_reason
+                      cod_amount_cents, special_instructions, pod_id, started_at, completed_at, failed_reason,
+                      attempt_count, last_attempted_at
                FROM driver_ops.tasks
                WHERE route_id = $1
                ORDER BY sequence ASC"#
@@ -161,14 +169,18 @@ impl TaskRepository for PgTaskRepository {
                    (id, driver_id, route_id, shipment_id, task_type, sequence, status,
                     address_line1, address_line2, city, province, postal_code, country,
                     lat, lng, customer_name, customer_phone, customer_email, tracking_number,
-                    cod_amount_cents, special_instructions, pod_id, started_at, completed_at, failed_reason)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+                    cod_amount_cents, special_instructions, pod_id,
+                    started_at, completed_at, failed_reason,
+                    attempt_count, last_attempted_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
                ON CONFLICT (id) DO UPDATE SET
-                   status        = EXCLUDED.status,
-                   pod_id        = EXCLUDED.pod_id,
-                   started_at    = EXCLUDED.started_at,
-                   completed_at  = EXCLUDED.completed_at,
-                   failed_reason = EXCLUDED.failed_reason"#
+                   status            = EXCLUDED.status,
+                   pod_id            = EXCLUDED.pod_id,
+                   started_at        = EXCLUDED.started_at,
+                   completed_at      = EXCLUDED.completed_at,
+                   failed_reason     = EXCLUDED.failed_reason,
+                   attempt_count     = EXCLUDED.attempt_count,
+                   last_attempted_at = EXCLUDED.last_attempted_at"#
         )
         .bind(t.id)
         .bind(t.driver_id.inner())
@@ -195,6 +207,8 @@ impl TaskRepository for PgTaskRepository {
         .bind(t.started_at)
         .bind(t.completed_at)
         .bind(&t.failed_reason)
+        .bind(t.attempt_count)
+        .bind(t.last_attempted_at)
         .execute(&self.pool)
         .await?;
         Ok(())

@@ -50,6 +50,28 @@ pub struct TaskFailed {
     pub tracking_number: String,
 }
 
+/// Emitted when a driver attempts delivery but cannot complete it
+/// (no one home, address unclear, etc.). Task resets to Pending for retry.
+/// Engagement sends the customer a "we tried but missed you" notification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskAttempted {
+    pub task_id:        Uuid,
+    pub driver_id:      Uuid,
+    pub shipment_id:    Uuid,
+    pub tenant_id:      Uuid,
+    pub reason:         String,
+    pub attempt_count:  i32,
+    pub attempted_at:   chrono::DateTime<chrono::Utc>,
+    #[serde(default)]
+    pub customer_name:     String,
+    #[serde(default)]
+    pub customer_phone:    String,
+    #[serde(default)]
+    pub customer_email:    String,
+    #[serde(default)]
+    pub tracking_number:   String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriverStatusChanged {
     pub driver_id: Uuid,

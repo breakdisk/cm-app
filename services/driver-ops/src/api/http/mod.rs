@@ -107,5 +107,6 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/tasks/:id/start",    put(tasks::start_task))
         .route("/tasks/:id/complete", put(tasks::complete_task))
         .route("/tasks/:id/fail",     put(tasks::fail_task))
+        .route("/tasks/:id/attempt",  put(tasks::attempt_task))
         .layer(auth_layer)
 }

@@ -69,6 +69,17 @@ pub struct FailTaskCommand {
     pub reason: String,
 }
 
+/// Driver attempted delivery but could not complete it. Task resets to
+/// Pending for a future retry; DELIVERY_ATTEMPTED is emitted so engagement
+/// can notify the customer.
+#[derive(Debug, Deserialize, Validate)]
+pub struct AttemptTaskCommand {
+    #[serde(default)]
+    pub task_id: Uuid,
+    #[validate(length(min = 3, max = 500))]
+    pub reason: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct TaskSummary {
     pub task_id: Uuid,

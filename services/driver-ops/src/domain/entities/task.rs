@@ -20,10 +20,14 @@ pub struct DriverTask {
     pub tracking_number: Option<String>,
     pub cod_amount_cents: Option<i64>,
     pub special_instructions: Option<String>,
-    pub pod_id: Option<uuid::Uuid>,         // Filled when task completed
+    pub pod_id: Option<uuid::Uuid>,
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
     pub failed_reason: Option<String>,
+    /// Number of delivery attempts that did not result in completion.
+    /// Incremented by `attempt()`. Distinct from `fail()` which is permanent.
+    pub attempt_count: i32,
+    pub last_attempted_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -67,5 +71,17 @@ impl DriverTask {
         self.status = TaskStatus::Failed;
         self.failed_reason = Some(reason);
         self.completed_at = Some(Utc::now());
+    }
+
+    /// Record a non-completing delivery attempt — driver tried but couldn't
+    /// deliver (no one home, address unclear, etc.). Task resets to Pending
+    /// for retry while the attempt is logged for engagement notification.
+    pub fn attempt(&mut self, reason: String) {
+        self.attempt_count += 1;
+        self.failed_reason = Some(reason);
+        self.last_attempted_at = Some(Utc::now());
+        // Reset to Pending so the driver app shows it as retry-eligible.
+        self.status = TaskStatus::Pending;
+        self.started_at = None;
     }
 }
