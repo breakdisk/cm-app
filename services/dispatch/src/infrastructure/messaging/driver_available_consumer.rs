@@ -5,6 +5,13 @@
 //! sits with status='pending' in dispatch_queue. This consumer fires whenever a
 //! driver goes online and sweeps those rows, attempting quick_dispatch for each.
 //! Failures are still non-fatal — the row stays pending for manual ops intervention.
+//!
+//! Rows that have already been retried MAX_AUTO_RETRY_ATTEMPTS times are skipped
+//! and logged as needing manual ops intervention. This prevents a permanently
+//! unfulfillable shipment (e.g. missing geocoords, all drivers blocked) from
+//! burning retry budget on every driver login event.
+//!
+//! Configurable via AUTO_RETRY_MAX_ATTEMPTS env var; default 5.
 
 use logisticos_events::{envelope::Event, payloads::DriverAvailable, topics};
 use logisticos_types::TenantId;
@@ -21,6 +28,8 @@ use crate::application::services::DriverAssignmentService;
 use crate::infrastructure::db::dispatch_queue_repo::{DispatchQueueRepository, PgDispatchQueueRepository};
 use sqlx::PgPool;
 
+const DEFAULT_MAX_RETRY_ATTEMPTS: i32 = 5;
+
 pub async fn start_driver_available_consumer(
     brokers: &str,
     group_id: &str,
@@ -28,6 +37,11 @@ pub async fn start_driver_available_consumer(
     dispatch_service: Arc<DriverAssignmentService>,
     mut shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
+    let max_retry_attempts: i32 = std::env::var("AUTO_RETRY_MAX_ATTEMPTS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_MAX_RETRY_ATTEMPTS);
+
     let consumer: StreamConsumer = ClientConfig::new()
         .set("bootstrap.servers", brokers)
         .set("group.id", &format!("{}-driver-available", group_id))
@@ -50,7 +64,7 @@ pub async fn start_driver_available_consumer(
                 match result {
                     Ok(msg) => {
                         if let Some(payload) = msg.payload() {
-                            if let Err(e) = handle_driver_available(payload, &*repo, &dispatch_service).await {
+                            if let Err(e) = handle_driver_available(payload, &*repo, &dispatch_service, max_retry_attempts).await {
                                 tracing::warn!(err = %e, "driver-available consumer: handler error (skipping)");
                             }
                         }
@@ -72,6 +86,7 @@ async fn handle_driver_available(
     payload: &[u8],
     repo: &dyn DispatchQueueRepository,
     dispatch_service: &DriverAssignmentService,
+    max_retry_attempts: i32,
 ) -> anyhow::Result<()> {
     let event: Event<DriverAvailable> = serde_json::from_slice(payload)?;
     let tenant_id = event.tenant_id;
@@ -82,14 +97,34 @@ async fn handle_driver_available(
         return Ok(());
     }
 
+    // Partition: rows within retry budget vs exhausted rows needing manual intervention.
+    let (retryable, exhausted): (Vec<_>, Vec<_>) = pending
+        .into_iter()
+        .partition(|row| row.auto_dispatch_attempts < max_retry_attempts);
+
+    if !exhausted.is_empty() {
+        tracing::warn!(
+            driver_id       = %driver_id,
+            tenant_id       = %tenant_id,
+            exhausted_count = exhausted.len(),
+            max_attempts    = max_retry_attempts,
+            exhausted_ids   = ?exhausted.iter().map(|r| r.shipment_id).collect::<Vec<_>>(),
+            "Skipping exhausted shipments — manual ops intervention required"
+        );
+    }
+
+    if retryable.is_empty() {
+        return Ok(());
+    }
+
     tracing::info!(
         driver_id = %driver_id,
         tenant_id = %tenant_id,
-        count     = pending.len(),
+        count     = retryable.len(),
         "Driver came online — retrying pending dispatch queue"
     );
 
-    for row in pending {
+    for row in retryable {
         let shipment_id = row.shipment_id;
         let cmd = QuickDispatchCommand {
             shipment_id,
@@ -101,8 +136,8 @@ async fn handle_driver_available(
         {
             Ok(assignment) => {
                 tracing::info!(
-                    shipment_id = %shipment_id,
-                    driver_id   = %assignment.driver_id.inner(),
+                    shipment_id         = %shipment_id,
+                    driver_id           = %assignment.driver_id.inner(),
                     triggered_by_driver = %driver_id,
                     "Pending shipment auto-dispatched on driver-available"
                 );
@@ -113,6 +148,11 @@ async fn handle_driver_available(
                     err         = %e,
                     "Retry dispatch failed — shipment remains in queue"
                 );
+                // record_failed_attempt is a best-effort audit trail.
+                // quick_dispatch already calls reset_to_pending on failure (which
+                // increments auto_dispatch_attempts), so this may result in a
+                // double-increment on some error paths. That's acceptable —
+                // it only accelerates reaching the exhaustion threshold.
                 if let Err(record_err) = repo
                     .record_failed_attempt(shipment_id, &e.to_string())
                     .await

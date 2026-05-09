@@ -326,16 +326,69 @@ impl DriverAssignmentService {
             .map_err(AppError::Internal)
     }
 
-    /// One-shot dispatch: find shipment in queue → create route → assign driver →
-    /// emit TASK_ASSIGNED + DRIVER_ASSIGNED → mark queue item dispatched.
+    /// One-shot dispatch: atomically claim the queue row → find driver → create route →
+    /// assign driver → emit TASK_ASSIGNED + DRIVER_ASSIGNED → finalise as dispatched.
+    ///
+    /// The `try_claim_dispatch` call at the start atomically moves the queue row from
+    /// 'pending' → 'dispatching'. Only one concurrent caller can win this race; others
+    /// see 0 rows affected and bail before any side effects (no orphaned routes/events).
+    /// If any step after the claim fails, `reset_to_pending` rolls the row back so the
+    /// shipment returns to the queue for manual ops intervention.
     pub async fn quick_dispatch(
+        &self,
+        tenant_id: TenantId,
+        cmd: QuickDispatchCommand,
+    ) -> AppResult<DriverAssignment> {
+        // 1. Atomically claim the queue row ('pending' → 'dispatching').
+        //    If another concurrent quick_dispatch already claimed it, bail with no side effects.
+        let claimed = self.queue_repo
+            .try_claim_dispatch(cmd.shipment_id)
+            .await
+            .map_err(|e| AppError::Internal(e.into()))?;
+
+        if !claimed {
+            // Either already dispatching/dispatched, or not in queue at all.
+            // Load to give a better error message.
+            let existing = self.queue_repo
+                .find_by_shipment(cmd.shipment_id)
+                .await
+                .map_err(|e| AppError::Internal(e.into()))?;
+            return Err(match existing {
+                None => AppError::NotFound {
+                    resource: "Shipment in dispatch queue",
+                    id: cmd.shipment_id.to_string(),
+                },
+                Some(row) => AppError::BusinessRule(format!(
+                    "Shipment {} is already {} — cannot dispatch again",
+                    cmd.shipment_id, row.status
+                )),
+            });
+        }
+
+        // All code from here must call reset_to_pending on failure so the queue row
+        // doesn't stay stuck in 'dispatching'.
+        let shipment_id = cmd.shipment_id;
+        let result = self.do_dispatch(tenant_id, cmd).await;
+        if result.is_err() {
+            if let Err(reset_err) = self.queue_repo.reset_to_pending(shipment_id).await {
+                tracing::error!(
+                    shipment_id = %shipment_id,
+                    err = %reset_err,
+                    "quick_dispatch: failed to reset queue row to pending after dispatch error — row is stuck in 'dispatching'"
+                );
+            }
+        }
+        result
+    }
+
+    async fn do_dispatch(
         &self,
         tenant_id: TenantId,
         cmd: QuickDispatchCommand,
     ) -> AppResult<DriverAssignment> {
         use logisticos_events::{payloads::TaskAssigned, topics};
 
-        // 1. Load shipment from queue
+        // 2. Load the now-claimed queue row to read shipment details
         let queue_item = self.queue_repo
             .find_by_shipment(cmd.shipment_id)
             .await
@@ -345,15 +398,8 @@ impl DriverAssignmentService {
                 id: cmd.shipment_id.to_string(),
             })?;
 
-        if queue_item.status != "pending" {
-            return Err(AppError::BusinessRule(format!(
-                "Shipment {} is already {} — cannot dispatch again",
-                cmd.shipment_id, queue_item.status
-            )));
-        }
-
-        // 2. Find driver (explicit or auto-selected by proximity score)
-        let driver_id = match cmd.preferred_driver_id {
+        // 3. Find driver (explicit or auto-selected by proximity score)
+        let driver_id: DriverId = match cmd.preferred_driver_id {
             Some(id) => DriverId::from_uuid(id),
             None => {
                 // Use origin (pickup point) as anchor for driver proximity — the driver
@@ -392,7 +438,7 @@ impl DriverAssignmentService {
             }
         };
 
-        // 3. Compliance gate (skipped in test environments where compliance_cache is None)
+        // 4. Compliance gate (skipped in test environments where compliance_cache is None)
         let is_assignable = if let Some(ref cc) = self.compliance_cache {
             let mut cache = cc.lock().await;
             match cache.get_status(driver_id.inner()).await {
@@ -415,7 +461,7 @@ impl DriverAssignmentService {
             )));
         }
 
-        // 4a. Guard: driver must not already have an active assignment
+        // 5. Guard: driver must not already have an active assignment
         let existing = self.assignment_repo
             .find_active_by_driver(&driver_id).await
             .map_err(AppError::Internal)?;
@@ -425,7 +471,7 @@ impl DriverAssignmentService {
             ));
         }
 
-        // 4. Create a minimal single-stop route (vehicle_id = nil, stop added by driver-ops)
+        // 6. Create a minimal single-stop route (vehicle_id = nil, stop added by driver-ops)
         let route_id = RouteId::new();
         let route = Route {
             id: route_id.clone(),
@@ -442,11 +488,11 @@ impl DriverAssignmentService {
         };
         self.route_repo.save(&route).await.map_err(AppError::Internal)?;
 
-        // 5. Create assignment
+        // 7. Create assignment
         let assignment = DriverAssignment::new(tenant_id.clone(), driver_id.clone(), route_id.clone());
         self.assignment_repo.save(&assignment).await.map_err(AppError::Internal)?;
 
-        // 6. Emit TASK_ASSIGNED twice — once for the pickup leg (origin) and once
+        // 8. Emit TASK_ASSIGNED twice — once for the pickup leg (origin) and once
         //    for the delivery leg (destination). driver-ops creates one DriverTask
         //    row per event, sequenced so the driver app shows pickup → delivery.
         //    Both events share the same assignment_id so they belong to the same
@@ -512,7 +558,7 @@ impl DriverAssignmentService {
         self.kafka.publish_event(topics::TASK_ASSIGNED, &delivery_event).await
             .map_err(AppError::Internal)?;
 
-        // 7. Emit DRIVER_ASSIGNED — engagement service sends push notification with customer_id
+        // 9. Emit DRIVER_ASSIGNED — engagement service sends push notification with customer_id
         let driver_assigned_event = Event::new("dispatch", "driver.assigned", tenant_id.inner(), DriverAssigned {
             assignment_id: assignment.id,
             shipment_id:   cmd.shipment_id,
@@ -524,7 +570,7 @@ impl DriverAssignmentService {
         self.kafka.publish_event(topics::DRIVER_ASSIGNED, &driver_assigned_event).await
             .map_err(AppError::Internal)?;
 
-        // 8. Mark queue item as dispatched
+        // 10. Finalise queue row ('dispatching' → 'dispatched')
         self.queue_repo.mark_dispatched(cmd.shipment_id).await
             .map_err(|e| AppError::Internal(e.into()))?;
 

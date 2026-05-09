@@ -10,7 +10,7 @@ use crate::infrastructure::db::{
     PgDispatchQueueRepository, PgDriverProfilesRepository,
 };
 use crate::infrastructure::messaging::compliance_consumer::start_compliance_consumer;
-use crate::infrastructure::messaging::{start_driver_available_consumer, start_shipment_consumer, start_user_consumer};
+use crate::infrastructure::messaging::{start_delivery_failed_consumer, start_driver_available_consumer, start_shipment_consumer, start_user_consumer};
 use crate::api::http::{router, AppState};
 use logisticos_auth::jwt::JwtService;
 use logisticos_events::producer::KafkaProducer;
@@ -161,6 +161,25 @@ pub async fn run() -> anyhow::Result<()> {
         }
     });
 
+    // Spawn delivery-failed consumer — when a driver marks a delivery as failed,
+    // reset the dispatch_queue row to 'pending' for immediate reassignment.
+    // This is a resilience complement to the business-logic ECA engine's
+    // RescheduleDelivery action; both paths call reset_to_pending, which is idempotent.
+    let pool_for_delivery_failed    = pool.clone();
+    let brokers_delivery_failed     = cfg.kafka.brokers.clone();
+    let group_delivery_failed       = cfg.kafka.group_id.clone();
+    let shutdown_rx_delivery_failed = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        if let Err(e) = start_delivery_failed_consumer(
+            &brokers_delivery_failed,
+            &group_delivery_failed,
+            pool_for_delivery_failed,
+            shutdown_rx_delivery_failed,
+        ).await {
+            tracing::error!("Delivery-failed consumer crashed: {e}");
+        }
+    });
+
     // Orphan-assignment cleanup tick. Drivers reinstall the app, lose their
     // session, leave a `pending` row in dispatch.driver_assignments behind.
     // The unique index `uq_driver_active_assignment` then blocks every new
@@ -179,9 +198,9 @@ pub async fn run() -> anyhow::Result<()> {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             tick.tick().await;
-            // Use INTERVAL '1 minute' * $1 (standard PostgreSQL multiplication order).
-            // This avoids make_interval function which may not be available in all PG versions.
-            let res = sqlx::query(
+            // Cancel stale pending driver_assignments (driver never accepted).
+            // Use INTERVAL '1 minute' * $1 — avoids make_interval unavailable in some PG versions.
+            let res_assignments = sqlx::query(
                 "UPDATE dispatch.driver_assignments
                  SET    status = 'cancelled', rejection_reason = 'orphaned: pending > stale threshold'
                  WHERE  status = 'pending'
@@ -191,13 +210,40 @@ pub async fn run() -> anyhow::Result<()> {
             .bind(cleanup_age_minutes)
             .execute(&pool_for_cleanup)
             .await;
-            match res {
+            match res_assignments {
                 Ok(r) if r.rows_affected() > 0 => tracing::info!(
                     rows = r.rows_affected(),
                     age_minutes = cleanup_age_minutes,
                     "orphan-cleanup: cancelled stale pending assignments"
                 ),
-                Err(e) => tracing::warn!(err = %e, "orphan-cleanup: query failed"),
+                Err(e) => tracing::warn!(err = %e, "orphan-cleanup: driver_assignments query failed"),
+                _ => {}
+            }
+
+            // Reset stale 'dispatching' queue rows — these are left behind if
+            // quick_dispatch panicked after claiming the row but before completing.
+            // The reset_to_pending guard in quick_dispatch handles clean failures;
+            // this tick covers unclean exits (OOM kill, power loss, etc.).
+            let res_queue = sqlx::query(
+                "UPDATE dispatch.dispatch_queue
+                 SET    status                 = 'pending',
+                        dispatched_at          = NULL,
+                        last_dispatch_error    = 'crash-recovery: stuck in dispatching > stale threshold',
+                        last_attempt_at        = NOW(),
+                        auto_dispatch_attempts = auto_dispatch_attempts + 1
+                 WHERE  status = 'dispatching'
+                   AND  queued_at < NOW() - (INTERVAL '1 minute' * $1)"
+            )
+            .bind(cleanup_age_minutes)
+            .execute(&pool_for_cleanup)
+            .await;
+            match res_queue {
+                Ok(r) if r.rows_affected() > 0 => tracing::warn!(
+                    rows = r.rows_affected(),
+                    age_minutes = cleanup_age_minutes,
+                    "orphan-cleanup: reset stale 'dispatching' queue rows to pending"
+                ),
+                Err(e) => tracing::warn!(err = %e, "orphan-cleanup: dispatch_queue query failed"),
                 _ => {}
             }
         }

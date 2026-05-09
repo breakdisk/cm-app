@@ -57,6 +57,14 @@ pub trait DispatchQueueRepository: Send + Sync {
         tenant_id: Uuid,
         status: Option<&str>,
     ) -> anyhow::Result<Vec<DispatchQueueRow>>;
+    /// Atomically claim a 'pending' row for dispatch by moving it to 'dispatching'.
+    /// Returns `true` if the row was claimed (caller should proceed with dispatch).
+    /// Returns `false` if the row was not pending — either already claimed by a
+    /// concurrent caller or already dispatched. Caller must bail without side effects.
+    async fn try_claim_dispatch(&self, shipment_id: Uuid) -> anyhow::Result<bool>;
+    /// Finalise a previously-claimed row ('dispatching' → 'dispatched').
+    /// Only updates rows that are in the 'dispatching' state so a crash-recovery
+    /// reset (pending) never gets accidentally re-finalised.
     async fn mark_dispatched(&self, shipment_id: Uuid) -> anyhow::Result<()>;
     /// Increment attempt counter and record the reason. Called by the
     /// shipment consumer when quick_dispatch fails so the admin console
@@ -174,10 +182,12 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
         // that's the more useful "what just happened" view.
         let rows = match status {
             Some("pending") => sqlx::query_as::<_, DispatchQueueRow>(
-                &format!("{base} AND status = $2 ORDER BY queued_at ASC"),
+                // Include 'dispatching' rows in the pending view — they are mid-flight
+                // and will resolve to 'dispatched' or revert to 'pending' shortly.
+                // Showing them prevents ops thinking those shipments "disappeared".
+                &format!("{base} AND status IN ('pending', 'dispatching') ORDER BY queued_at ASC"),
             )
             .bind(tenant_id)
-            .bind("pending")
             .fetch_all(&self.pool)
             .await?,
             Some(s) => sqlx::query_as::<_, DispatchQueueRow>(
@@ -197,18 +207,30 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
         Ok(rows)
     }
 
+    async fn try_claim_dispatch(&self, shipment_id: Uuid) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE dispatch.dispatch_queue
+             SET status = 'dispatching'
+             WHERE shipment_id = $1 AND status = 'pending'",
+        )
+        .bind(shipment_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     async fn mark_dispatched(&self, shipment_id: Uuid) -> anyhow::Result<()> {
         let result = sqlx::query(
             "UPDATE dispatch.dispatch_queue
              SET status = 'dispatched', dispatched_at = NOW()
-             WHERE shipment_id = $1",
+             WHERE shipment_id = $1 AND status = 'dispatching'",
         )
         .bind(shipment_id)
         .execute(&self.pool)
         .await?;
 
         if result.rows_affected() == 0 {
-            anyhow::bail!("mark_dispatched: no dispatch_queue row found for shipment_id {}", shipment_id);
+            anyhow::bail!("mark_dispatched: no 'dispatching' row found for shipment_id {} — possible concurrent reset", shipment_id);
         }
         Ok(())
     }
@@ -229,9 +251,9 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
     }
 
     async fn reset_to_pending(&self, shipment_id: Uuid) -> anyhow::Result<()> {
-        // Reset a delivery-failed shipment back to pending so it can be
-        // re-dispatched. Increments the attempt counter so operators can
-        // see how many times a shipment has cycled through.
+        // Resets from 'dispatched' (delivery failed) OR 'dispatching' (crash mid-flight).
+        // Increments the attempt counter so operators can see how many times a shipment
+        // has cycled through and spot persistently problematic shipments.
         sqlx::query(
             "UPDATE dispatch.dispatch_queue
              SET status                 = 'pending',
@@ -239,7 +261,8 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
                  auto_dispatch_attempts = auto_dispatch_attempts + 1,
                  last_dispatch_error    = 'delivery failed — requeued for retry',
                  last_attempt_at        = NOW()
-             WHERE shipment_id = $1",
+             WHERE shipment_id = $1
+               AND status IN ('dispatched', 'dispatching')",
         )
         .bind(shipment_id)
         .execute(&self.pool)

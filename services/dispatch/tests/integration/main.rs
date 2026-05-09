@@ -242,18 +242,38 @@ impl DispatchQueueRepository for MockDispatchQueueRepo {
             .values()
             .filter(|r| {
                 r.tenant_id == tenant_id
-                    && status.map_or(true, |s| r.status == s)
+                    && match status {
+                        // Mirror production: pending view includes 'dispatching' mid-flight rows
+                        Some("pending") => r.status == "pending" || r.status == "dispatching",
+                        Some(s)         => r.status == s,
+                        None            => true,
+                    }
             })
             .cloned()
             .collect();
         Ok(rows)
     }
 
+    async fn try_claim_dispatch(&self, shipment_id: Uuid) -> anyhow::Result<bool> {
+        let mut guard = self.store.lock().unwrap();
+        if let Some(row) = guard.get_mut(&shipment_id) {
+            if row.status == "pending" {
+                row.status = "dispatching".to_string();
+                return Ok(true);
+            }
+            return Ok(false);
+        }
+        Ok(false)
+    }
+
     async fn mark_dispatched(&self, shipment_id: Uuid) -> anyhow::Result<()> {
         let mut guard = self.store.lock().unwrap();
         if let Some(row) = guard.get_mut(&shipment_id) {
-            row.status = "dispatched".to_string();
-            Ok(())
+            if row.status == "dispatching" {
+                row.status = "dispatched".to_string();
+                return Ok(());
+            }
+            anyhow::bail!("mark_dispatched: shipment_id {} not in 'dispatching' state (was '{}')", shipment_id, row.status)
         } else {
             anyhow::bail!("mark_dispatched: shipment_id {} not found in mock", shipment_id)
         }
@@ -272,11 +292,13 @@ impl DispatchQueueRepository for MockDispatchQueueRepo {
     async fn reset_to_pending(&self, shipment_id: Uuid) -> anyhow::Result<()> {
         let mut guard = self.store.lock().unwrap();
         if let Some(row) = guard.get_mut(&shipment_id) {
-            row.status = "pending".to_string();
-            Ok(())
-        } else {
-            anyhow::bail!("reset_to_pending: shipment_id {} not found in mock", shipment_id)
+            if row.status == "dispatching" || row.status == "dispatched" {
+                row.status = "pending".to_string();
+                row.dispatched_at = None;
+                row.auto_dispatch_attempts += 1;
+            }
         }
+        Ok(())
     }
 
     async fn cancel_dispatch(&self, shipment_id: Uuid, tenant_id: Uuid) -> anyhow::Result<bool> {
