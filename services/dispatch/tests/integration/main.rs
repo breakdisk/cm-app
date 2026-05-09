@@ -289,6 +289,18 @@ impl DispatchQueueRepository for MockDispatchQueueRepo {
         Ok(())
     }
 
+    async fn release_claim(&self, shipment_id: Uuid, error: &str) -> anyhow::Result<()> {
+        let mut guard = self.store.lock().unwrap();
+        if let Some(row) = guard.get_mut(&shipment_id) {
+            if row.status == "dispatching" {
+                row.status = "pending".to_string();
+                row.last_dispatch_error = Some(error.to_owned());
+                row.last_attempt_at = Some(chrono::Utc::now());
+            }
+        }
+        Ok(())
+    }
+
     async fn reset_to_pending(&self, shipment_id: Uuid) -> anyhow::Result<()> {
         let mut guard = self.store.lock().unwrap();
         if let Some(row) = guard.get_mut(&shipment_id) {

@@ -73,7 +73,7 @@ export interface QueueItem {
   origin_city: string;
   cod_amount_cents?: number | null;
   service_type: string;
-  status: "pending" | "dispatched";
+  status: "pending" | "dispatching" | "dispatched";
   auto_dispatch_attempts?: number | null;
   last_dispatch_error?: string | null;
   dispatched_at?: string | null;

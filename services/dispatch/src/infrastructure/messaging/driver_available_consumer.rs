@@ -148,11 +148,8 @@ async fn handle_driver_available(
                     err         = %e,
                     "Retry dispatch failed — shipment remains in queue"
                 );
-                // record_failed_attempt is a best-effort audit trail.
-                // quick_dispatch already calls reset_to_pending on failure (which
-                // increments auto_dispatch_attempts), so this may result in a
-                // double-increment on some error paths. That's acceptable —
-                // it only accelerates reaching the exhaustion threshold.
+                // quick_dispatch uses release_claim on failure (no counter increment).
+                // This call is the single source of the attempt increment.
                 if let Err(record_err) = repo
                     .record_failed_attempt(shipment_id, &e.to_string())
                     .await

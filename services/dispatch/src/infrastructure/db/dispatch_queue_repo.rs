@@ -67,17 +67,25 @@ pub trait DispatchQueueRepository: Send + Sync {
     /// reset (pending) never gets accidentally re-finalised.
     async fn mark_dispatched(&self, shipment_id: Uuid) -> anyhow::Result<()>;
     /// Increment attempt counter and record the reason. Called by the
-    /// shipment consumer when quick_dispatch fails so the admin console
-    /// can visually flag shipments needing manual intervention.
+    /// consumer (shipment_consumer / driver_available_consumer) AFTER
+    /// `quick_dispatch` returns Err. `quick_dispatch` uses `release_claim`
+    /// (not `reset_to_pending`) so the counter is only incremented once here.
     async fn record_failed_attempt(&self, shipment_id: Uuid, error: &str) -> anyhow::Result<()>;
+
+    /// Release a claimed row back to 'pending' WITHOUT incrementing
+    /// `auto_dispatch_attempts`. Used by `quick_dispatch` on internal failure so
+    /// the caller's `record_failed_attempt` is the single source of the increment.
+    /// No-op if the row is not in 'dispatching' state.
+    async fn release_claim(&self, shipment_id: Uuid, error: &str) -> anyhow::Result<()>;
 
     /// Re-queues a delivery-failed shipment for another dispatch attempt.
     /// Resets status back to 'pending' and increments auto_dispatch_attempts
-    /// so operators know this is a retry. No-op if the row doesn't exist.
+    /// so operators know this is a retry. Only called by delivery_failed_consumer
+    /// and business-logic ECA; NOT by quick_dispatch failure paths.
     async fn reset_to_pending(&self, shipment_id: Uuid) -> anyhow::Result<()>;
 
-    /// Cancel a dispatched shipment — reset it back to 'pending' in the queue
-    /// so ops can reassign manually, and clear the dispatched_at timestamp.
+    /// Cancel a dispatched (or mid-flight 'dispatching') shipment — reset it back
+    /// to 'pending' in the queue so ops can reassign manually.
     /// Returns `true` if the row was found and updated.
     async fn cancel_dispatch(&self, shipment_id: Uuid, tenant_id: Uuid) -> anyhow::Result<bool>;
 }
@@ -250,6 +258,25 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
         Ok(())
     }
 
+    async fn release_claim(&self, shipment_id: Uuid, error: &str) -> anyhow::Result<()> {
+        // Resets 'dispatching' → 'pending' and records the error reason WITHOUT
+        // incrementing auto_dispatch_attempts. The caller's record_failed_attempt
+        // is responsible for the single increment so we never double-count.
+        sqlx::query(
+            "UPDATE dispatch.dispatch_queue
+             SET status              = 'pending',
+                 last_dispatch_error = $2,
+                 last_attempt_at     = NOW()
+             WHERE shipment_id = $1
+               AND status = 'dispatching'",
+        )
+        .bind(shipment_id)
+        .bind(error)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     async fn reset_to_pending(&self, shipment_id: Uuid) -> anyhow::Result<()> {
         // Resets from 'dispatched' (delivery failed) OR 'dispatching' (crash mid-flight).
         // Increments the attempt counter so operators can see how many times a shipment
@@ -271,17 +298,18 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
     }
 
     async fn cancel_dispatch(&self, shipment_id: Uuid, tenant_id: Uuid) -> anyhow::Result<bool> {
-        // Admin-initiated cancel: return a dispatched shipment back to pending.
+        // Admin-initiated cancel: return a dispatched or mid-flight dispatching row
+        // back to pending so it can be reassigned manually.
         // Scoped to tenant_id to prevent cross-tenant ops.
         let result = sqlx::query(
             "UPDATE dispatch.dispatch_queue
-             SET status       = 'pending',
-                 dispatched_at = NULL,
+             SET status              = 'pending',
+                 dispatched_at       = NULL,
                  last_dispatch_error = 'manually cancelled by ops',
                  last_attempt_at     = NOW()
              WHERE shipment_id = $1
                AND tenant_id   = $2
-               AND status      = 'dispatched'",
+               AND status IN ('dispatched', 'dispatching')",
         )
         .bind(shipment_id)
         .bind(tenant_id)

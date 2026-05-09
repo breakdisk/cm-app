@@ -589,6 +589,9 @@ function DispatchPageInner() {
                       {item.origin === "marketplace" && (
                         <NeonBadge variant="cyan">Marketplace</NeonBadge>
                       )}
+                      {item.status === "dispatching" && (
+                        <NeonBadge variant="cyan" dot pulse>In-Flight</NeonBadge>
+                      )}
                       {item.status === "dispatched" && (
                         <NeonBadge variant="green">Dispatched</NeonBadge>
                       )}
@@ -613,7 +616,7 @@ function DispatchPageInner() {
                     </p>
                   )}
                   <div className="flex items-center gap-2">
-                    {item.status !== "dispatched" ? (
+                    {item.status === "pending" && (
                       <button
                         onClick={() => handleDispatch(item.shipment_id)}
                         disabled={dispatching === item.shipment_id}
@@ -621,7 +624,17 @@ function DispatchPageInner() {
                       >
                         {dispatching === item.shipment_id ? "Dispatching…" : "⚡ Dispatch"}
                       </button>
-                    ) : (
+                    )}
+                    {item.status === "dispatching" && (
+                      <button
+                        disabled
+                        title="Assignment is in progress — wait a moment"
+                        className="flex-1 rounded-lg border border-yellow-500/20 bg-yellow-500/5 px-3 py-1.5 text-xs font-mono text-yellow-400/60 opacity-60 cursor-not-allowed"
+                      >
+                        ⟳ Assigning driver…
+                      </button>
+                    )}
+                    {item.status === "dispatched" && (
                       <button
                         onClick={() => handleCancelDispatch(item.shipment_id)}
                         disabled={cancellingDispatch === item.shipment_id || item.origin === "marketplace"}

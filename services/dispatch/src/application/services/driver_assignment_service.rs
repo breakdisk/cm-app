@@ -365,16 +365,19 @@ impl DriverAssignmentService {
             });
         }
 
-        // All code from here must call reset_to_pending on failure so the queue row
-        // doesn't stay stuck in 'dispatching'.
+        // All code from here must release the claim on failure so the queue row
+        // doesn't stay stuck in 'dispatching'. We use release_claim (not
+        // reset_to_pending) so auto_dispatch_attempts is NOT incremented here —
+        // the caller (shipment_consumer / driver_available_consumer) does the
+        // single increment via record_failed_attempt.
         let shipment_id = cmd.shipment_id;
         let result = self.do_dispatch(tenant_id, cmd).await;
-        if result.is_err() {
-            if let Err(reset_err) = self.queue_repo.reset_to_pending(shipment_id).await {
+        if let Err(ref e) = result {
+            if let Err(release_err) = self.queue_repo.release_claim(shipment_id, &e.to_string()).await {
                 tracing::error!(
                     shipment_id = %shipment_id,
-                    err = %reset_err,
-                    "quick_dispatch: failed to reset queue row to pending after dispatch error — row is stuck in 'dispatching'"
+                    err = %release_err,
+                    "quick_dispatch: failed to release claim — row is stuck in 'dispatching' until orphan-cleanup tick"
                 );
             }
         }
