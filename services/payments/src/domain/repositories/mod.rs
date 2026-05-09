@@ -190,4 +190,6 @@ pub struct BillingRunRecord {
 pub trait MerchantBillingAccountRepository: Send + Sync {
     async fn find_by_merchant(&self, merchant_id: Uuid) -> anyhow::Result<Option<crate::domain::entities::MerchantBillingAccount>>;
     async fn upsert(&self, account: &crate::domain::entities::MerchantBillingAccount) -> anyhow::Result<()>;
+    /// Returns every billing account across all tenants — used by the monthly billing cron.
+    async fn list_all(&self) -> anyhow::Result<Vec<crate::domain::entities::MerchantBillingAccount>>;
 }

@@ -90,6 +90,7 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::clone(&cod_repo) as _,
         Arc::clone(&cod_batch_repo) as _,
         Arc::clone(&wallet_repo) as _,
+        Arc::clone(&merchant_billing_account_repo) as _,
         Arc::clone(&kafka),
     ));
     let wallet_service = Arc::new(WalletService::new(
@@ -153,6 +154,89 @@ pub async fn run() -> anyhow::Result<()> {
             if let Err(e) = remittance_svc_for_cron.run_daily_batching(cutoff).await {
                 tracing::error!(err = %e, "COD daily batching cron failed");
             }
+        }
+    });
+
+    // Monthly billing sweep — on the 1st of each month, issue invoices for all
+    // merchants with a billing account covering the prior month's deliveries.
+    // Idempotent: BillingAggregationService skips (tenant, merchant, period) pairs
+    // that already have a billing run.
+    let billing_svc_for_cron    = Arc::clone(&billing_service);
+    let merchant_acct_for_cron  = Arc::clone(&merchant_billing_account_repo);
+    tokio::spawn(async move {
+        // Check every hour; actual billing only fires on day-of-month == 1.
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(3_600));
+        let mut last_billed_month: Option<(i32, u32)> = None;
+
+        loop {
+            tick.tick().await;
+
+            use chrono::Datelike as _;
+            let now   = chrono::Utc::now();
+            let year  = now.year();
+            let month = now.month();
+
+            // Only run on the 1st of the month, and only once per calendar month.
+            if now.day() != 1 { continue; }
+            if last_billed_month == Some((year, month)) { continue; }
+
+            // Bill for the previous month.
+            let (bill_year, bill_month) = if month == 1 {
+                (year - 1, 12u32)
+            } else {
+                (year, month - 1)
+            };
+
+            tracing::info!(
+                bill_year,
+                bill_month,
+                "Monthly billing sweep starting"
+            );
+
+            let accounts = match merchant_acct_for_cron.list_all().await {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::error!(err = %e, "Monthly billing sweep: failed to list merchant billing accounts");
+                    continue;
+                }
+            };
+
+            let mut issued = 0u32;
+            let mut skipped = 0u32;
+            for acct in accounts {
+                use crate::application::commands::RunBillingCommand;
+                let cmd = RunBillingCommand {
+                    tenant_id:      acct.tenant_id,
+                    tenant_code:    acct.tenant_code.clone(),
+                    merchant_id:    acct.merchant_id,
+                    merchant_email: Some(acct.billing_email.clone()),
+                    year:           bill_year,
+                    month:          bill_month,
+                };
+                match billing_svc_for_cron.run_monthly(cmd).await {
+                    Ok((run, crate::application::services::BillingRunOutcome::Issued)) => {
+                        tracing::info!(
+                            run_id      = %run.id,
+                            merchant_id = %acct.merchant_id,
+                            bill_year,
+                            bill_month,
+                            "Monthly billing sweep: invoice issued"
+                        );
+                        issued += 1;
+                    }
+                    Ok((_, _)) => { skipped += 1; }
+                    Err(e) => {
+                        tracing::error!(
+                            merchant_id = %acct.merchant_id,
+                            err         = %e,
+                            "Monthly billing sweep: failed to bill merchant"
+                        );
+                    }
+                }
+            }
+
+            tracing::info!(issued, skipped, bill_year, bill_month, "Monthly billing sweep complete");
+            last_billed_month = Some((year, month));
         }
     });
 

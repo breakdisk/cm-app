@@ -220,6 +220,7 @@ async fn run_kafka_consumer(
         topics::DELIVERY_COMPLETED,
         topics::DELIVERY_FAILED,
         topics::COD_COLLECTED,
+        topics::COD_REMITTED,
         topics::INVOICE_GENERATED,
         topics::RECEIPT_EMAIL_REQUESTED,
         topics::CAMPAIGN_TRIGGERED,

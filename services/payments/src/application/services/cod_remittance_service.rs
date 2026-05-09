@@ -26,26 +26,29 @@ use crate::{
         entities::{CodBatchStatus, CodRemittanceBatch, WalletTransaction},
         events::CodRemitted,
         repositories::{
-            CodRemittanceBatchRepository, CodRepository, WalletRepository,
+            CodRemittanceBatchRepository, CodRepository, MerchantBillingAccountRepository,
+            WalletRepository,
         },
     },
 };
 
 pub struct CodRemittanceService {
-    cod_repo:      Arc<dyn CodRepository>,
-    batch_repo:    Arc<dyn CodRemittanceBatchRepository>,
-    wallet_repo:   Arc<dyn WalletRepository>,
-    kafka:         Arc<KafkaProducer>,
+    cod_repo:              Arc<dyn CodRepository>,
+    batch_repo:            Arc<dyn CodRemittanceBatchRepository>,
+    wallet_repo:           Arc<dyn WalletRepository>,
+    merchant_billing_repo: Arc<dyn MerchantBillingAccountRepository>,
+    kafka:                 Arc<KafkaProducer>,
 }
 
 impl CodRemittanceService {
     pub fn new(
-        cod_repo:    Arc<dyn CodRepository>,
-        batch_repo:  Arc<dyn CodRemittanceBatchRepository>,
-        wallet_repo: Arc<dyn WalletRepository>,
-        kafka:       Arc<KafkaProducer>,
+        cod_repo:              Arc<dyn CodRepository>,
+        batch_repo:            Arc<dyn CodRemittanceBatchRepository>,
+        wallet_repo:           Arc<dyn WalletRepository>,
+        merchant_billing_repo: Arc<dyn MerchantBillingAccountRepository>,
+        kafka:                 Arc<KafkaProducer>,
     ) -> Self {
-        Self { cod_repo, batch_repo, wallet_repo, kafka }
+        Self { cod_repo, batch_repo, wallet_repo, merchant_billing_repo, kafka }
     }
 
     /// Create a Created-status batch for (tenant, merchant) up to cutoff_date.
@@ -253,6 +256,30 @@ impl CodRemittanceService {
         // Persist the now-Paid batch.
         self.batch_repo.save(&batch).await.map_err(AppError::Internal)?;
 
+        // Look up merchant billing account for notification enrichment.
+        // Fails open — a missing account doesn't block the remittance itself.
+        let (merchant_name, merchant_email) = match self.merchant_billing_repo
+            .find_by_merchant(batch.merchant_id.inner())
+            .await
+        {
+            Ok(Some(acct)) => (format!("Merchant {}", batch.merchant_id.inner()), acct.billing_email),
+            Ok(None) => {
+                tracing::warn!(
+                    merchant_id = %batch.merchant_id,
+                    "No billing account for merchant — COD_REMITTED notification will not be sent"
+                );
+                (String::new(), String::new())
+            }
+            Err(e) => {
+                tracing::warn!(
+                    merchant_id = %batch.merchant_id,
+                    err = %e,
+                    "Failed to look up merchant billing account for COD_REMITTED enrichment"
+                );
+                (String::new(), String::new())
+            }
+        };
+
         // Emit cod.remitted.
         let remitted_at = batch.paid_at.unwrap_or_else(Utc::now);
         let event_payload = CodRemitted {
@@ -265,6 +292,8 @@ impl CodRemittanceService {
             platform_fee_cents: batch.platform_fee_cents,
             net_credit_cents:   batch.net_cents,
             remitted_at,
+            merchant_name,
+            merchant_email,
         };
         let event = Event::new("payments", "cod.remitted", tenant_id.inner(), event_payload);
         self.kafka

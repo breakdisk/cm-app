@@ -16,6 +16,7 @@ struct AccountRow {
     id:                          Uuid,
     tenant_id:                   Uuid,
     merchant_id:                 Uuid,
+    tenant_code:                 String,
     base_rate_override_centavos: Option<i64>,
     payment_terms_days:          i16,
     credit_limit_centavos:       i64,
@@ -36,6 +37,7 @@ impl From<AccountRow> for MerchantBillingAccount {
             id: r.id,
             tenant_id: r.tenant_id,
             merchant_id: r.merchant_id,
+            tenant_code: r.tenant_code,
             base_rate_override_centavos: r.base_rate_override_centavos,
             payment_terms_days: r.payment_terms_days,
             credit_limit_centavos: r.credit_limit_centavos,
@@ -52,9 +54,10 @@ impl From<AccountRow> for MerchantBillingAccount {
     }
 }
 
-const SELECT: &str = "SELECT id, tenant_id, merchant_id, base_rate_override_centavos,
-    payment_terms_days, credit_limit_centavos, tin, vat_registered, billing_email,
-    invoice_channel, bank_name, bank_account_number, bank_account_name,
+const SELECT: &str = "SELECT id, tenant_id, merchant_id, tenant_code,
+    base_rate_override_centavos, payment_terms_days, credit_limit_centavos,
+    tin, vat_registered, billing_email, invoice_channel,
+    bank_name, bank_account_number, bank_account_name,
     created_at, updated_at FROM payments.merchant_billing_accounts";
 
 #[async_trait]
@@ -69,12 +72,14 @@ impl MerchantBillingAccountRepository for PgMerchantBillingAccountRepository {
     async fn upsert(&self, a: &MerchantBillingAccount) -> anyhow::Result<()> {
         sqlx::query(
             r#"INSERT INTO payments.merchant_billing_accounts
-                (id, tenant_id, merchant_id, base_rate_override_centavos,
-                 payment_terms_days, credit_limit_centavos, tin, vat_registered,
+                (id, tenant_id, merchant_id, tenant_code,
+                 base_rate_override_centavos, payment_terms_days,
+                 credit_limit_centavos, tin, vat_registered,
                  billing_email, invoice_channel, bank_name, bank_account_number,
                  bank_account_name, created_at, updated_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
                ON CONFLICT (merchant_id) DO UPDATE SET
+                 tenant_code                 = EXCLUDED.tenant_code,
                  base_rate_override_centavos = EXCLUDED.base_rate_override_centavos,
                  payment_terms_days          = EXCLUDED.payment_terms_days,
                  credit_limit_centavos       = EXCLUDED.credit_limit_centavos,
@@ -87,7 +92,7 @@ impl MerchantBillingAccountRepository for PgMerchantBillingAccountRepository {
                  bank_account_name           = EXCLUDED.bank_account_name,
                  updated_at                  = EXCLUDED.updated_at"#
         )
-        .bind(a.id).bind(a.tenant_id).bind(a.merchant_id)
+        .bind(a.id).bind(a.tenant_id).bind(a.merchant_id).bind(&a.tenant_code)
         .bind(a.base_rate_override_centavos).bind(a.payment_terms_days)
         .bind(a.credit_limit_centavos).bind(a.tin.as_deref())
         .bind(a.vat_registered).bind(&a.billing_email).bind(&a.invoice_channel)
@@ -95,5 +100,12 @@ impl MerchantBillingAccountRepository for PgMerchantBillingAccountRepository {
         .bind(a.bank_account_name.as_deref()).bind(a.created_at).bind(a.updated_at)
         .execute(&self.pool).await?;
         Ok(())
+    }
+
+    async fn list_all(&self) -> anyhow::Result<Vec<MerchantBillingAccount>> {
+        let rows = sqlx::query_as::<_, AccountRow>(SELECT)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(MerchantBillingAccount::from).collect())
     }
 }

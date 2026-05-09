@@ -10,6 +10,7 @@
 //!   driver.delivery.completed → "delivery_confirmed"    → WhatsApp + Email
 //!   driver.delivery.failed  → "delivery_failed_reschedule" → WhatsApp + SMS
 //!   payments.cod.collected  → "cod_receipt"             → WhatsApp
+//!   payments.cod.remitted   → "cod_remitted_merchant"   → WhatsApp + Email          (merchant)
 //!   payments.invoice.generated → "invoice_issued"        → Email                    (recipient_type=merchant)
 //!   payments.invoice.generated → "payment_receipt"      → WhatsApp + Email + Push  (recipient_type=customer)
 //!   tracking.receipt.email.requested → "shipment_confirmation" → Email   (customer-initiated re-send)
@@ -58,6 +59,12 @@ fn get_mapping(event_type: &str) -> Option<EventNotificationMapping> {
             template_id: "cod_receipt",
             priority: NotificationPriority::High,
             channels: &["whatsapp"],
+        }),
+        // Merchant-addressed — routing handled in process_event() like INVOICE_GENERATED.
+        topics::COD_REMITTED => Some(EventNotificationMapping {
+            template_id: "__cod_remitted__",
+            priority: NotificationPriority::Normal,
+            channels: &[],
         }),
         topics::RECEIPT_EMAIL_REQUESTED => Some(EventNotificationMapping {
             template_id: "shipment_confirmation",
@@ -109,12 +116,12 @@ pub async fn process_event(
         return;
     };
 
-    // Invoice events branch on recipient_type ("merchant" | "customer").
+    // Invoice and COD_REMITTED events are merchant-addressed.
     // All other events address the delivery customer directly.
-    let is_invoice_event = event_type == topics::INVOICE_GENERATED;
+    let is_invoice_event    = event_type == topics::INVOICE_GENERATED;
+    let is_cod_remit_event  = event_type == topics::COD_REMITTED;
 
-    // For invoice events we resolve (template_id, channels) dynamically here
-    // and override the sentinel values from get_mapping().
+    // Resolve (template_id, channels), overriding the sentinels from get_mapping().
     let (resolved_template, resolved_channels): (&str, &[&str]) = if is_invoice_event {
         let recipient_type = data["recipient_type"].as_str().unwrap_or("merchant");
         if recipient_type == "customer" {
@@ -122,11 +129,44 @@ pub async fn process_event(
         } else {
             ("invoice_issued", &["email"])
         }
+    } else if is_cod_remit_event {
+        ("cod_remitted_merchant", &["whatsapp", "email"])
     } else {
         (mapping.template_id, mapping.channels)
     };
 
-    let (customer_id, phone, email, vars) = if is_invoice_event {
+    let (customer_id, phone, email, vars) = if is_cod_remit_event {
+        // COD_REMITTED is merchant-addressed. merchant_id serves as the
+        // audit/customer_id key; merchant_email is the notification target.
+        let merchant_id = data["merchant_id"].as_str()
+            .and_then(|s| s.parse::<uuid::Uuid>().ok())
+            .unwrap_or(uuid::Uuid::nil());
+        let merchant_email = data["merchant_email"].as_str().unwrap_or("").to_owned();
+
+        if merchant_email.is_empty() {
+            warn!(event_type, "COD_REMITTED event missing merchant_email — skipping notification");
+            return;
+        }
+
+        let gross_cents     = data["gross_cents"].as_i64().unwrap_or(0);
+        let net_cents       = data["net_credit_cents"].as_i64().unwrap_or(0);
+        let fee_cents       = data["platform_fee_cents"].as_i64().unwrap_or(0);
+        let cod_count       = data["cod_count"].as_i64().unwrap_or(0);
+        let currency        = "PHP";
+
+        let vars = serde_json::json!({
+            "merchant_name":   data["merchant_name"].as_str().unwrap_or("Merchant"),
+            "batch_id":        data["batch_id"].as_str().unwrap_or(""),
+            "cod_count":       cod_count,
+            "gross_amount":    format!("{} {:.2}", currency, gross_cents as f64 / 100.0),
+            "platform_fee":    format!("{} {:.2}", currency, fee_cents as f64 / 100.0),
+            "net_credit":      format!("{} {:.2}", currency, net_cents as f64 / 100.0),
+            "cutoff_date":     data["cutoff_date"].as_str().unwrap_or(""),
+            "remitted_at":     data["remitted_at"].as_str().unwrap_or(""),
+        });
+
+        (merchant_id, String::new(), merchant_email, vars)
+    } else if is_invoice_event {
         let recipient_type = data["recipient_type"].as_str().unwrap_or("merchant");
         let total_cents = data["total_cents"].as_i64().unwrap_or(0);
         let currency    = data["currency"].as_str().unwrap_or("PHP");
@@ -328,6 +368,18 @@ pub async fn process_event(
                  Cash on Delivery collected for {{tracking_number}}.\n\
                  Amount: {{cod_amount}}\n\n\
                  — CargoMarket".to_owned(),
+            ),
+            "cod_remitted_merchant" => (
+                Some("COD Remittance Credited — CargoMarket".to_owned()),
+                "Hi {{merchant_name}},\n\n\
+                 Your COD remittance batch has been processed and credited to your wallet.\n\n\
+                 Shipments:    {{cod_count}}\n\
+                 Gross COD:    {{gross_amount}}\n\
+                 Platform Fee: {{platform_fee}}\n\
+                 Net Credited: {{net_credit}}\n\
+                 Cut-off Date: {{cutoff_date}}\n\n\
+                 Log in to the CargoMarket Merchant Portal to view your wallet balance.\n\n\
+                 — CargoMarket Finance".to_owned(),
             ),
             "payment_receipt" => (
                 Some(format!("Payment Receipt {} — CargoMarket", vars["invoice_number"].as_str().unwrap_or(""))),

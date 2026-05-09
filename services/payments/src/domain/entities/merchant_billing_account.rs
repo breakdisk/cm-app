@@ -7,6 +7,9 @@ pub struct MerchantBillingAccount {
     pub id:                          Uuid,
     pub tenant_id:                   Uuid,
     pub merchant_id:                 Uuid,
+    /// 3-char AWB tenant code (e.g. "PH1"). Stored here so the monthly
+    /// billing cron can generate invoice numbers without calling identity.
+    pub tenant_code:                 String,
     pub base_rate_override_centavos: Option<i64>,
     pub payment_terms_days:          i16,
     pub credit_limit_centavos:       i64,
@@ -25,6 +28,7 @@ impl MerchantBillingAccount {
     pub fn new(
         tenant_id:     Uuid,
         merchant_id:   Uuid,
+        tenant_code:   String,
         billing_email: String,
     ) -> Self {
         let now = Utc::now();
@@ -32,6 +36,7 @@ impl MerchantBillingAccount {
             id: Uuid::new_v4(),
             tenant_id,
             merchant_id,
+            tenant_code,
             base_rate_override_centavos: None,
             payment_terms_days: 30,
             credit_limit_centavos: 0,
@@ -66,7 +71,7 @@ mod tests {
     #[test]
     fn masked_bank_account_shows_last_4() {
         let mut acct = MerchantBillingAccount::new(
-            Uuid::new_v4(), Uuid::new_v4(), "m@example.com".into()
+            Uuid::new_v4(), Uuid::new_v4(), "PH1".into(), "m@example.com".into()
         );
         acct.bank_account_number = Some("1234567890".into());
         assert_eq!(acct.masked_bank_account(), Some("****7890".into()));

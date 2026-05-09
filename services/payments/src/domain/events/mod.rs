@@ -40,6 +40,10 @@ pub struct CodRemitted {
     pub platform_fee_cents:   i64,
     pub net_credit_cents:     i64,
     pub remitted_at:          chrono::DateTime<chrono::Utc>,
+    /// Merchant contact fields — enriched at emit time so the engagement
+    /// service can send the remittance notification without a registry lookup.
+    pub merchant_name:        String,
+    pub merchant_email:       String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

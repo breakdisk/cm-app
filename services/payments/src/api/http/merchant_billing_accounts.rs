@@ -43,7 +43,7 @@ pub async fn upsert_billing_account(
         let email = body.billing_email.clone()
             .filter(|e| !e.trim().is_empty())
             .ok_or_else(|| AppError::Validation("billing_email is required".into()))?;
-        MerchantBillingAccount::new(claims.tenant_id, merchant_id, email)
+        MerchantBillingAccount::new(claims.tenant_id, merchant_id, String::new(), email)
     };
 
     apply_body(&mut acct, body);
@@ -76,6 +76,7 @@ pub async fn patch_billing_account(
 
 #[derive(Deserialize)]
 pub struct UpsertBillingAccountBody {
+    pub tenant_code:                 Option<String>,
     pub base_rate_override_centavos: Option<i64>,
     pub payment_terms_days:          Option<i16>,
     pub credit_limit_centavos:       Option<i64>,
@@ -89,6 +90,7 @@ pub struct UpsertBillingAccountBody {
 }
 
 fn apply_body(acct: &mut MerchantBillingAccount, body: UpsertBillingAccountBody) {
+    if let Some(v) = body.tenant_code                 { acct.tenant_code = v; }
     if let Some(v) = body.base_rate_override_centavos { acct.base_rate_override_centavos = Some(v); }
     if let Some(v) = body.payment_terms_days          { acct.payment_terms_days = v; }
     if let Some(v) = body.credit_limit_centavos       { acct.credit_limit_centavos = v; }
@@ -105,6 +107,7 @@ fn account_to_json(a: &MerchantBillingAccount) -> serde_json::Value {
     serde_json::json!({
         "id":                          a.id,
         "merchant_id":                 a.merchant_id,
+        "tenant_code":                 a.tenant_code,
         "base_rate_override_centavos": a.base_rate_override_centavos,
         "payment_terms_days":          a.payment_terms_days,
         "credit_limit_centavos":       a.credit_limit_centavos,
