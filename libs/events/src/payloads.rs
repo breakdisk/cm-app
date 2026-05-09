@@ -72,6 +72,10 @@ pub struct ShipmentCreated {
     /// compatibility with events emitted before this field existed.
     #[serde(default)]
     pub auto_dispatch:        bool,
+    /// Free-text instructions from the sender (e.g. "Leave at guard house").
+    /// Carried through to the driver task so it appears in the driver app.
+    #[serde(default)]
+    pub special_instructions: Option<String>,
 }
 
 fn default_currency() -> String { "PHP".into() }

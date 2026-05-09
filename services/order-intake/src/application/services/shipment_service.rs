@@ -291,6 +291,7 @@ impl ShipmentService {
                 estimated_delivery:   String::new(), // TODO: derive from service_type SLA
                 booked_by_customer:   shipment.booked_by_customer,
                 auto_dispatch:        shipment.auto_dispatch,
+                special_instructions: shipment.special_instructions.clone(),
             },
         );
         let payload = serde_json::to_string(&event).map_err(|e| AppError::Internal(e.into()))?;

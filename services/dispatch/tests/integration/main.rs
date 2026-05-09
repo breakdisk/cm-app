@@ -316,7 +316,7 @@ impl DispatchQueueRepository for MockDispatchQueueRepo {
     async fn cancel_dispatch(&self, shipment_id: Uuid, tenant_id: Uuid) -> anyhow::Result<bool> {
         let mut guard = self.store.lock().unwrap();
         if let Some(row) = guard.get_mut(&shipment_id) {
-            if row.tenant_id == tenant_id && row.status == "dispatched" {
+            if row.tenant_id == tenant_id && (row.status == "dispatched" || row.status == "dispatching") {
                 row.status = "pending".to_string();
                 row.dispatched_at = None;
                 return Ok(true);
