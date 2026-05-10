@@ -28,6 +28,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/carriers/:id",                  get(get_carrier).put(update_carrier))
         .route("/v1/carriers/:id/activate",         post(activate_carrier))
         .route("/v1/carriers/:id/suspend",          post(suspend_carrier))
+        .route("/v1/carriers/:id/api-key",          post(generate_api_key))
         // SLA reporting
         .route("/v1/carriers/:id/sla-summary",      get(sla_summary))
         .route("/v1/carriers/:id/sla-history",      get(sla_history))
@@ -116,7 +117,13 @@ async fn activate_carrier(
     claims: AuthClaims,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
+    use logisticos_types::TenantId;
     claims.require_permission(permissions::CARRIERS_MANAGE)?;
+    let existing = state.carrier_svc.get(id).await?;
+    let claim_tenant = TenantId::from_uuid(claims.tenant_id);
+    if existing.tenant_id.inner() != claim_tenant.inner() {
+        return Err(AppError::NotFound { resource: "Carrier", id: id.to_string() });
+    }
     let carrier = state.carrier_svc.activate(id).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(carrier)))
 }
@@ -130,9 +137,46 @@ async fn suspend_carrier(
     Path(id): Path<Uuid>,
     Json(body): Json<SuspendBody>,
 ) -> impl IntoResponse {
+    use logisticos_types::TenantId;
     claims.require_permission(permissions::CARRIERS_MANAGE)?;
+    let existing = state.carrier_svc.get(id).await?;
+    let claim_tenant = TenantId::from_uuid(claims.tenant_id);
+    if existing.tenant_id.inner() != claim_tenant.inner() {
+        return Err(AppError::NotFound { resource: "Carrier", id: id.to_string() });
+    }
     let carrier = state.carrier_svc.suspend(id, body.reason).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(carrier)))
+}
+
+/// POST /v1/carriers/:id/api-key
+///
+/// Generates (or rotates) the carrier's integration API key. Returns the
+/// plaintext key **exactly once** — it is not stored and cannot be retrieved
+/// again. The partner must copy it immediately.
+///
+/// Only `carriers:manage` callers can generate keys (admin or tenant_admin).
+/// Tenant isolation is enforced the same way as `update_carrier`.
+async fn generate_api_key(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    use logisticos_types::TenantId;
+    claims.require_permission(permissions::CARRIERS_MANAGE)?;
+    // Tenant guard — same pattern as update_carrier.
+    let existing = state.carrier_svc.get(id).await?;
+    let claim_tenant = TenantId::from_uuid(claims.tenant_id);
+    if existing.tenant_id.inner() != claim_tenant.inner() {
+        return Err(AppError::NotFound { resource: "Carrier", id: id.to_string() });
+    }
+    let raw_key = state.carrier_svc.generate_api_key(id).await?;
+    Ok::<_, AppError>((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "api_key":     raw_key,
+            "has_api_key": true,
+        })),
+    ))
 }
 
 #[derive(Debug, Deserialize)]

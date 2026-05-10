@@ -36,3 +36,5 @@ validator.workspace  = true
 rdkafka.workspace    = true
 tracing.workspace    = true
 async-trait.workspace = true
+rand.workspace        = true
+sha2.workspace        = true

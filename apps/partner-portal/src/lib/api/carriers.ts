@@ -7,6 +7,15 @@ import { createApiClient } from "./client";
 
 export type CarrierStatus = "pending_verification" | "active" | "suspended" | "deactivated";
 export type PerformanceGrade = "excellent" | "good" | "fair" | "poor";
+/** Mirrors ComplianceStatus in services/carrier/src/domain/entities/mod.rs */
+export type ComplianceStatus =
+  | "pending_submission"
+  | "under_review"
+  | "compliant"
+  | "expiring_soon"
+  | "expired"
+  | "rejected"
+  | "suspended";
 
 export interface RateCard {
   service_type: string;          // "same_day" | "next_day" | "standard"
@@ -30,7 +39,12 @@ export interface Carrier {
   contact_email: string;
   contact_phone?: string | null;
   api_endpoint?: string | null;
+  /** True when an API key has been generated for this carrier. The hash is
+   *  never sent to the client; this boolean is all the frontend needs. */
+  has_api_key: boolean;
   status: CarrierStatus;
+  /** KYB / document verification state. Admin-managed; independent of operational status. */
+  compliance_status: ComplianceStatus;
   sla: SlaCommitment;
   rate_cards: RateCard[];
   total_shipments: number;
@@ -39,6 +53,12 @@ export interface Carrier {
   performance_grade: PerformanceGrade;
   onboarded_at: string;
   updated_at: string;
+}
+
+export interface GenerateApiKeyResult {
+  /** Plaintext key — returned ONCE. Frontend must display and let the user copy it. */
+  api_key:     string;
+  has_api_key: boolean;
 }
 
 export interface RateQuote {
@@ -70,6 +90,25 @@ export interface ZoneSlaRow {
 
 export interface SlaSummaryResponse {
   zones: ZoneSlaRow[];
+}
+
+/** Per-shipment SLA commitment record — returned by GET /v1/carriers/:id/sla-history */
+export interface SlaRecord {
+  id:             string;
+  shipment_id:    string;
+  zone:           string;
+  service_level:  string;
+  promised_by:    string;
+  delivered_at:   string | null;
+  status:         "in_transit" | "delivered" | "failed";
+  on_time:        boolean | null;
+  failure_reason: string | null;
+  created_at:     string;
+}
+
+export interface SlaHistoryResponse {
+  records: SlaRecord[];
+  count:   number;
 }
 
 /** Aggregated manifest row — one per (driver, task_type) for a given date.
@@ -114,6 +153,21 @@ export const carriersApi = {
     return data;
   },
 
+  /**
+   * Generate (or rotate) the carrier's integration API key.
+   *
+   * The plaintext key is returned ONCE — show it in a copy-to-clipboard
+   * modal immediately. It cannot be retrieved again.
+   *
+   * Requires `carriers:manage` (admin/tenant_admin token).
+   */
+  async generateApiKey(carrierId: string): Promise<GenerateApiKeyResult> {
+    const { data } = await createApiClient().post<GenerateApiKeyResult>(
+      `/v1/carriers/${carrierId}/api-key`,
+    );
+    return data;
+  },
+
   /** Fetch a single carrier's full record including embedded rate_cards. */
   async get(carrierId: string): Promise<Carrier> {
     const { data } = await createApiClient().get<Carrier>(`/v1/carriers/${carrierId}`);
@@ -155,6 +209,18 @@ export const carriersApi = {
       { params: { from, to } },
     );
     return data.zones ?? [];
+  },
+
+  /**
+   * Paginated per-shipment SLA delivery history for a carrier.
+   * Backed by `GET /v1/carriers/:id/sla-history?limit=&offset=`.
+   */
+  async slaHistory(carrierId: string, limit = 20, offset = 0): Promise<SlaHistoryResponse> {
+    const { data } = await createApiClient().get<SlaHistoryResponse>(
+      `/v1/carriers/${carrierId}/sla-history`,
+      { params: { limit, offset } },
+    );
+    return { records: data.records ?? [], count: data.count ?? 0 };
   },
 
   /**

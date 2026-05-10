@@ -19,7 +19,7 @@ import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { FileText, Search, Building2, RefreshCw, Calendar, CheckCircle2, Clock, X } from "lucide-react";
 import { carriersApi, type ManifestEntry } from "@/lib/api/carriers";
-import { getCurrentPartnerId } from "@/lib/api/partner-identity";
+import { useCarrier } from "@/contexts/carrier-context";
 
 type DerivedStatus = "pending" | "in_progress" | "completed" | "failed";
 
@@ -46,6 +46,8 @@ function ManifestsPageInner() {
   const searchParams = useSearchParams();
   const hubParam = searchParams.get("hub");
 
+  const { carrierId } = useCarrier();
+
   const [search, setSearch]       = useState(
     searchParams.get("zone") ?? searchParams.get("driver") ?? "",
   );
@@ -56,11 +58,16 @@ function ManifestsPageInner() {
   const [error, setError]         = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    // Wait until the carrier context has resolved before fetching.
+    // If carrierId is null (context failed or still loading), stop the spinner.
+    if (carrierId === null) {
+      setLoading(false);
+      return;
+    }
     setError(null);
     setLoading(true);
     try {
-      const partnerId = getCurrentPartnerId();
-      const resp = await carriersApi.manifest(date, partnerId);
+      const resp = await carriersApi.manifest(date, carrierId);
       setEntries(resp.data ?? []);
     } catch (e) {
       const err = e as { message?: string };
@@ -68,7 +75,7 @@ function ManifestsPageInner() {
     } finally {
       setLoading(false);
     }
-  }, [date]);
+  }, [date, carrierId]);
 
   useEffect(() => { load(); }, [load]);
 

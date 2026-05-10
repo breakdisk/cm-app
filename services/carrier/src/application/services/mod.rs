@@ -1,5 +1,7 @@
 use std::sync::Arc;
 use serde::Deserialize;
+use rand::RngCore;
+use sha2::{Sha256, Digest};
 use uuid::Uuid;
 
 use logisticos_errors::{AppError, AppResult};
@@ -29,12 +31,14 @@ pub struct OnboardCarrierCommand {
 /// which only the admin role holds, so partners log in with admin tokens.
 #[derive(Debug, Deserialize)]
 pub struct UpdateCarrierCommand {
-    pub name:           Option<String>,
-    pub contact_email:  Option<String>,
-    pub contact_phone:  Option<String>,
-    pub api_endpoint:   Option<String>,
-    pub sla:            Option<SlaCommitment>,
-    pub rate_cards:     Option<Vec<RateCard>>,
+    pub name:              Option<String>,
+    pub contact_email:     Option<String>,
+    pub contact_phone:     Option<String>,
+    pub api_endpoint:      Option<String>,
+    pub sla:               Option<SlaCommitment>,
+    pub rate_cards:        Option<Vec<RateCard>>,
+    /// Admin-only: update the compliance/KYB verification state.
+    pub compliance_status: Option<crate::domain::entities::ComplianceStatus>,
 }
 
 /// Rate shopping result — returned to the dispatch service to choose carrier for a shipment.
@@ -142,7 +146,8 @@ impl CarrierService {
                 penalty_per_breach: v.penalty_per_breach.max(0),
             };
         }
-        if let Some(v) = cmd.rate_cards { carrier.rate_cards = v; }
+        if let Some(v) = cmd.rate_cards        { carrier.rate_cards = v; }
+        if let Some(v) = cmd.compliance_status { carrier.compliance_status = v; }
         carrier.updated_at = chrono::Utc::now();
         self.repo.save(&carrier).await.map_err(AppError::internal)?;
         Ok(carrier)
@@ -235,6 +240,38 @@ impl CarrierService {
         to: chrono::DateTime<chrono::Utc>,
     ) -> AppResult<Vec<ZoneSlaRow>> {
         self.sla_repo.zone_summary(carrier_id, from, to).await.map_err(AppError::internal)
+    }
+
+    /// Generate (or rotate) an API key for a carrier.
+    ///
+    /// Returns the raw plaintext key **once** — the caller must display it
+    /// immediately and inform the partner to copy it. Only the SHA-256 hash
+    /// is persisted. Rotating overwrites the previous hash, invalidating the
+    /// old key instantly.
+    ///
+    /// Key format: `los_<64-char hex>` (32 random bytes, hex-encoded).
+    pub async fn generate_api_key(&self, id: Uuid) -> AppResult<String> {
+        let mut carrier = self.get(id).await?;
+
+        // 32 bytes from OsRng — explicit OS-entropy path, immune to any
+        // thread_rng feature-flag changes. Produces a 64-char hex suffix.
+        let mut raw_bytes = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut raw_bytes);
+        let raw_key = format!("los_{}", raw_bytes.iter().map(|b| format!("{b:02x}")).collect::<String>());
+
+        // Store only the SHA-256 hash — the plaintext is never persisted.
+        let hash = {
+            let mut hasher = Sha256::new();
+            hasher.update(raw_key.as_bytes());
+            format!("{:x}", hasher.finalize())
+        };
+
+        carrier.api_key_hash = Some(hash);
+        carrier.has_api_key  = true;
+        carrier.updated_at   = chrono::Utc::now();
+        self.repo.save(&carrier).await.map_err(AppError::internal)?;
+
+        Ok(raw_key)
     }
 
     /// Paginated SLA record history for a carrier (partner portal).

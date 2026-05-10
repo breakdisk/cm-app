@@ -15,9 +15,9 @@ import {
   BarChart, Bar, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
-import { Star, AlertTriangle, CheckCircle2, Clock, GitBranch, Download } from "lucide-react";
+import { Star, AlertTriangle, CheckCircle2, Clock, GitBranch, Download, ChevronLeft, ChevronRight } from "lucide-react";
 import { authFetch } from "@/lib/auth/auth-fetch";
-import { carriersApi, carrierIdOf, type ZoneSlaRow } from "@/lib/api/carriers";
+import { carriersApi, carrierIdOf, type ZoneSlaRow, type SlaRecord } from "@/lib/api/carriers";
 
 // ── API helpers ────────────────────────────────────────────────────────────────
 
@@ -127,6 +127,14 @@ function SLADashboardPageInner() {
   const [trendData, setTrendData]         = useState(DAILY_SLA_TREND_DEFAULT);
   const [zoneSla, setZoneSla]             = useState<ZoneSlaRow[]>([]);
   const [slaTarget, setSlaTarget]         = useState<number>(DEFAULT_ZONE_TARGET);
+  const [carrierName, setCarrierName]     = useState<string | null>(null);
+  const [carrierId,   setCarrierId]       = useState<string | null>(null);
+
+  // Delivery history pagination
+  const [history,      setHistory]        = useState<SlaRecord[]>([]);
+  const [historyTotal, setHistoryTotal]   = useState<number>(0);
+  const [historyPage,  setHistoryPage]    = useState<number>(0);
+  const HISTORY_PAGE_SIZE = 15;
 
   useEffect(() => {
     if (focusZone && focusRowRef.current) {
@@ -160,6 +168,8 @@ function SLADashboardPageInner() {
       const carrier = await carriersApi.me();
       const cid = carrierIdOf(carrier);
       setSlaTarget(carrier.sla.on_time_target_pct);
+      setCarrierName(carrier.name);
+      setCarrierId(cid);
       if (cid) {
         const from = new Date();
         from.setDate(from.getDate() - 30);
@@ -177,6 +187,19 @@ function SLADashboardPageInner() {
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  const loadHistory = useCallback(async () => {
+    if (!carrierId) return;
+    try {
+      const resp = await carriersApi.slaHistory(carrierId, HISTORY_PAGE_SIZE, historyPage * HISTORY_PAGE_SIZE);
+      setHistory(resp.records);
+      setHistoryTotal(resp.count);
+    } catch {
+      // Non-fatal — table stays empty
+    }
+  }, [carrierId, historyPage]);
+
+  useEffect(() => { loadHistory(); }, [loadHistory]);
 
   // SLA rate moves on every delivery completion / failure, which correlates with
   // driver status transitions (en_route → returning/available). Refetch opportunistically
@@ -210,7 +233,9 @@ function SLADashboardPageInner() {
             <Star size={20} className="text-purple-plasma" />
             SLA Dashboard
           </h1>
-          <p className="text-sm text-white/40 font-mono mt-0.5">FastLine Couriers · March 2026 · Contract SLA: 95% on-time</p>
+          <p className="text-sm text-white/40 font-mono mt-0.5">
+            {carrierName ?? "—"} · {new Date().toLocaleString("en-PH", { month: "long", year: "numeric" })} · Contract SLA: {slaTarget}% on-time
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -239,8 +264,10 @@ function SLADashboardPageInner() {
         <GlassCard glow="green">
           <div className="flex items-center justify-between mb-5">
             <div>
-              <h2 className="font-heading text-sm font-semibold text-white">SLA Compliance Trend — March 2026</h2>
-              <p className="text-2xs font-mono text-white/30">Contract target: 95%</p>
+              <h2 className="font-heading text-sm font-semibold text-white">
+                SLA Compliance Trend — {new Date().toLocaleString("en-PH", { month: "long", year: "numeric" })}
+              </h2>
+              <p className="text-2xs font-mono text-white/30">Contract target: {slaTarget}%</p>
             </div>
             <CheckCircle2 size={15} className="text-green-signal" />
           </div>
@@ -253,7 +280,7 @@ function SLADashboardPageInner() {
                 contentStyle={{ background: "rgba(13,20,34,0.95)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, fontFamily: "JetBrains Mono", fontSize: 11 }}
                 formatter={(v) => [`${v}%`, "SLA Rate"]}
               />
-              <ReferenceLine y={95} stroke="rgba(255,171,0,0.4)" strokeDasharray="4 4" label={{ value: "Target 95%", fill: "rgba(255,171,0,0.6)", fontSize: 10 }} />
+              <ReferenceLine y={slaTarget} stroke="rgba(255,171,0,0.4)" strokeDasharray="4 4" label={{ value: `Target ${slaTarget}%`, fill: "rgba(255,171,0,0.6)", fontSize: 10 }} />
               <Line type="monotone" dataKey="rate" stroke="#00FF88" strokeWidth={2} dot={{ fill: "#00FF88", r: 3 }} activeDot={{ r: 5 }} />
             </LineChart>
           </ResponsiveContainer>
@@ -332,7 +359,7 @@ function SLADashboardPageInner() {
           <div className="flex items-center justify-between mb-5">
             <div>
               <h2 className="font-heading text-sm font-semibold text-white">SLA Breach Root Causes</h2>
-              <p className="text-2xs font-mono text-white/30">{breachCount} breaches MTD</p>
+              <p className="text-2xs font-mono text-white/30">{breachCount} breaches MTD · categories are illustrative pending analytics endpoint</p>
             </div>
             <Clock size={14} className="text-red-signal" />
           </div>
@@ -347,6 +374,81 @@ function SLADashboardPageInner() {
               <Bar dataKey="count" fill="#FF3B5C" radius={[0,4,4,0]} fillOpacity={0.8} />
             </BarChart>
           </ResponsiveContainer>
+        </GlassCard>
+      </motion.div>
+
+      {/* Delivery History */}
+      <motion.div variants={variants.fadeInUp}>
+        <GlassCard padding="none">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-glass-border">
+            <div>
+              <h2 className="font-heading text-sm font-semibold text-white">Delivery History</h2>
+              <p className="text-2xs font-mono text-white/30">
+                {historyTotal > 0 ? `${historyTotal} records · page ${historyPage + 1} of ${Math.ceil(historyTotal / HISTORY_PAGE_SIZE)}` : "No records yet"}
+              </p>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <button
+                disabled={historyPage === 0}
+                onClick={() => setHistoryPage((p) => Math.max(0, p - 1))}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-glass-border text-white/40 hover:text-white disabled:opacity-30 transition-colors"
+              >
+                <ChevronLeft size={13} />
+              </button>
+              <button
+                disabled={(historyPage + 1) * HISTORY_PAGE_SIZE >= historyTotal}
+                onClick={() => setHistoryPage((p) => p + 1)}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-glass-border text-white/40 hover:text-white disabled:opacity-30 transition-colors"
+              >
+                <ChevronRight size={13} />
+              </button>
+            </div>
+          </div>
+
+          {/* Table header */}
+          <div className="grid grid-cols-[1fr_90px_90px_90px_80px_90px] gap-3 px-5 py-2 border-b border-glass-border">
+            {["Shipment", "Zone", "Service", "Promised By", "Delivered", "Status"].map((h) => (
+              <span key={h} className="text-2xs font-mono text-white/30 uppercase tracking-wider">{h}</span>
+            ))}
+          </div>
+
+          {history.length === 0 ? (
+            <p className="text-xs font-mono text-white/30 py-8 text-center">
+              No delivery records yet — they appear here as shipments complete.
+            </p>
+          ) : (
+            history.map((r) => {
+              const statusColor = r.status === "delivered"
+                ? r.on_time ? "text-green-signal" : "text-amber-signal"
+                : r.status === "failed" ? "text-red-signal" : "text-white/40";
+              const statusLabel = r.status === "delivered"
+                ? r.on_time ? "On Time" : "Late"
+                : r.status === "failed" ? "Failed" : "In Transit";
+              return (
+                <div
+                  key={r.id}
+                  className="grid grid-cols-[1fr_90px_90px_90px_80px_90px] gap-3 items-center px-5 py-3 border-b border-glass-border/40 hover:bg-glass-100 transition-colors"
+                >
+                  <span className="text-2xs font-mono text-white/50 truncate" title={r.shipment_id}>
+                    {r.shipment_id.slice(0, 8)}…
+                  </span>
+                  <span className="text-xs font-mono text-white/60 truncate">{r.zone}</span>
+                  <NeonBadge variant={r.service_level === "same_day" ? "cyan" : r.service_level === "next_day" ? "purple" : "amber"}>
+                    {r.service_level.replace("_", " ")}
+                  </NeonBadge>
+                  <span className="text-2xs font-mono text-white/40">
+                    {new Date(r.promised_by).toLocaleDateString("en-PH", { month: "short", day: "numeric" })}
+                  </span>
+                  <span className="text-2xs font-mono text-white/40">
+                    {r.delivered_at
+                      ? new Date(r.delivered_at).toLocaleDateString("en-PH", { month: "short", day: "numeric" })
+                      : "—"}
+                  </span>
+                  <span className={`text-xs font-mono font-semibold ${statusColor}`}>{statusLabel}</span>
+                </div>
+              );
+            })
+          )}
         </GlassCard>
       </motion.div>
     </motion.div>

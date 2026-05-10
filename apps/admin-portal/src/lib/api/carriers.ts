@@ -1,6 +1,14 @@
-import { createApiClient, ApiResponse, PaginatedApiResponse } from "./client";
+import { createApiClient } from "./client";
 
 export type CarrierStatus = "pending_verification" | "active" | "suspended" | "deactivated";
+export type ComplianceStatus =
+  | "pending_submission"
+  | "under_review"
+  | "compliant"
+  | "expiring_soon"
+  | "expired"
+  | "rejected"
+  | "suspended";
 
 export interface SlaCommitment {
   on_time_target_pct: number;
@@ -23,7 +31,9 @@ export interface Carrier {
   contact_email: string;
   contact_phone?: string | null;
   api_endpoint?: string | null;
+  has_api_key: boolean;
   status: CarrierStatus;
+  compliance_status: ComplianceStatus;
   sla: SlaCommitment;
   rate_cards: RateCard[];
   total_shipments: number;
@@ -32,6 +42,19 @@ export interface Carrier {
   performance_grade: "excellent" | "good" | "fair" | "poor";
   onboarded_at: string;
   updated_at: string;
+}
+
+export interface SlaHistoryRecord {
+  id:             string;
+  shipment_id:    string;
+  zone:           string;
+  service_level:  string;
+  promised_by:    string;
+  delivered_at:   string | null;
+  status:         "in_transit" | "delivered" | "failed";
+  on_time:        boolean | null;
+  failure_reason: string | null;
+  created_at:     string;
 }
 
 export interface OnboardCarrierPayload {
@@ -49,6 +72,7 @@ export interface UpdateCarrierPayload {
   api_endpoint?: string;
   sla?: SlaCommitment;
   rate_cards?: RateCard[];
+  compliance_status?: ComplianceStatus;
 }
 
 export interface ZoneSlaRow {
@@ -63,39 +87,42 @@ export function createCarriersApi() {
   const client = createApiClient();
 
   return {
+    // Returns { carriers: Carrier[], count: number } envelope from carrier service.
     listCarriers: (params?: { status?: CarrierStatus; page?: number; per_page?: number }) =>
       client
         .get<{ carriers?: Carrier[]; data?: Carrier[] }>("/v1/carriers", { params })
         .then((r) => r.data),
 
+    // Carrier service returns raw Carrier bodies (no { data: } wrapper).
     getCarrier: (carrierId: string) =>
-      client
-        .get<ApiResponse<Carrier>>(`/v1/carriers/${carrierId}`)
-        .then((r) => r.data),
+      client.get<Carrier>(`/v1/carriers/${carrierId}`).then((r) => r.data),
 
     onboardCarrier: (payload: OnboardCarrierPayload) =>
-      client
-        .post<ApiResponse<Carrier>>("/v1/carriers", payload)
-        .then((r) => r.data),
+      client.post<Carrier>("/v1/carriers", payload).then((r) => r.data),
 
     updateCarrier: (carrierId: string, payload: UpdateCarrierPayload) =>
-      client
-        .put<ApiResponse<Carrier>>(`/v1/carriers/${carrierId}`, payload)
-        .then((r) => r.data),
+      client.put<Carrier>(`/v1/carriers/${carrierId}`, payload).then((r) => r.data),
 
     activateCarrier: (carrierId: string) =>
-      client
-        .post<ApiResponse<Carrier>>(`/v1/carriers/${carrierId}/activate`, {})
-        .then((r) => r.data),
+      client.post<Carrier>(`/v1/carriers/${carrierId}/activate`, {}).then((r) => r.data),
 
     suspendCarrier: (carrierId: string, reason: string) =>
-      client
-        .post<ApiResponse<Carrier>>(`/v1/carriers/${carrierId}/suspend`, { reason })
-        .then((r) => r.data),
+      client.post<Carrier>(`/v1/carriers/${carrierId}/suspend`, { reason }).then((r) => r.data),
 
+    // Returns { zones: ZoneSlaRow[] } envelope.
     getSlaZoneSummary: (carrierId: string, from: string, to: string) =>
       client
-        .get<ApiResponse<ZoneSlaRow[]>>(`/v1/carriers/${carrierId}/sla-summary`, { params: { from, to } })
+        .get<{ zones: ZoneSlaRow[] }>(`/v1/carriers/${carrierId}/sla-summary`, { params: { from, to } })
+        .then((r) => r.data),
+
+    // Generate (or rotate) the carrier's integration API key.
+    generateApiKey: (carrierId: string) =>
+      client.post<{ api_key: string; has_api_key: boolean }>(`/v1/carriers/${carrierId}/api-key`, {}).then((r) => r.data),
+
+    // Paginated per-shipment SLA history.
+    getSlaHistory: (carrierId: string, limit = 20, offset = 0) =>
+      client
+        .get<{ records: SlaHistoryRecord[]; count: number }>(`/v1/carriers/${carrierId}/sla-history`, { params: { limit, offset } })
         .then((r) => r.data),
   };
 }

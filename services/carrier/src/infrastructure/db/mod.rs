@@ -6,7 +6,7 @@ use uuid::Uuid;
 use logisticos_types::TenantId;
 
 use crate::domain::{
-    entities::{Carrier, CarrierId, CarrierStatus, PerformanceGrade, SlaCommitment, SlaRecord, SlaStatus, ZoneSlaRow},
+    entities::{Carrier, CarrierId, CarrierStatus, ComplianceStatus, PerformanceGrade, SlaCommitment, SlaRecord, SlaStatus, ZoneSlaRow},
     repositories::{CarrierRepository, SlaRecordRepository},
 };
 
@@ -21,6 +21,7 @@ struct CarrierRow {
     api_endpoint:      Option<String>,
     api_key_hash:      Option<String>,
     status:            String,
+    compliance_status: String,
     sla:               serde_json::Value,
     rate_cards:        serde_json::Value,
     total_shipments:   i64,
@@ -42,8 +43,11 @@ impl TryFrom<CarrierRow> for Carrier {
             contact_email:     r.contact_email,
             contact_phone:     r.contact_phone,
             api_endpoint:      r.api_endpoint,
+            has_api_key:       r.api_key_hash.is_some(),
             api_key_hash:      r.api_key_hash,
             status:            serde_json::from_value(serde_json::Value::String(r.status))?,
+            compliance_status: serde_json::from_value(serde_json::Value::String(r.compliance_status))
+                               .unwrap_or(ComplianceStatus::PendingSubmission),
             sla:               serde_json::from_value(r.sla)?,
             rate_cards:        serde_json::from_value(r.rate_cards)?,
             total_shipments:   r.total_shipments,
@@ -69,7 +73,7 @@ impl CarrierRepository for PgCarrierRepository {
     async fn find_by_id(&self, id: &CarrierId) -> anyhow::Result<Option<Carrier>> {
         let row = sqlx::query_as::<_, CarrierRow>(
             "SELECT id, tenant_id, name, code, contact_email, contact_phone, api_endpoint, api_key_hash, \
-             status, sla, rate_cards, total_shipments, on_time_count, failed_count, performance_grade, \
+             status, compliance_status, sla, rate_cards, total_shipments, on_time_count, failed_count, performance_grade, \
              onboarded_at, updated_at FROM carrier.carriers WHERE id = $1"
         ).bind(id.inner()).fetch_optional(&self.pool).await?;
         row.map(Carrier::try_from).transpose()
@@ -78,7 +82,7 @@ impl CarrierRepository for PgCarrierRepository {
     async fn find_by_code(&self, tenant_id: &TenantId, code: &str) -> anyhow::Result<Option<Carrier>> {
         let row = sqlx::query_as::<_, CarrierRow>(
             "SELECT id, tenant_id, name, code, contact_email, contact_phone, api_endpoint, api_key_hash, \
-             status, sla, rate_cards, total_shipments, on_time_count, failed_count, performance_grade, \
+             status, compliance_status, sla, rate_cards, total_shipments, on_time_count, failed_count, performance_grade, \
              onboarded_at, updated_at FROM carrier.carriers WHERE tenant_id = $1 AND code = $2"
         ).bind(tenant_id.inner()).bind(code).fetch_optional(&self.pool).await?;
         row.map(Carrier::try_from).transpose()
@@ -87,7 +91,7 @@ impl CarrierRepository for PgCarrierRepository {
     async fn find_by_contact_email(&self, tenant_id: &TenantId, email: &str) -> anyhow::Result<Option<Carrier>> {
         let row = sqlx::query_as::<_, CarrierRow>(
             "SELECT id, tenant_id, name, code, contact_email, contact_phone, api_endpoint, api_key_hash, \
-             status, sla, rate_cards, total_shipments, on_time_count, failed_count, performance_grade, \
+             status, compliance_status, sla, rate_cards, total_shipments, on_time_count, failed_count, performance_grade, \
              onboarded_at, updated_at FROM carrier.carriers \
              WHERE tenant_id = $1 AND lower(contact_email) = lower($2)"
         ).bind(tenant_id.inner()).bind(email).fetch_optional(&self.pool).await?;
@@ -97,7 +101,7 @@ impl CarrierRepository for PgCarrierRepository {
     async fn list(&self, tenant_id: &TenantId, limit: i64, offset: i64) -> anyhow::Result<Vec<Carrier>> {
         let rows = sqlx::query_as::<_, CarrierRow>(
             "SELECT id, tenant_id, name, code, contact_email, contact_phone, api_endpoint, api_key_hash, \
-             status, sla, rate_cards, total_shipments, on_time_count, failed_count, performance_grade, \
+             status, compliance_status, sla, rate_cards, total_shipments, on_time_count, failed_count, performance_grade, \
              onboarded_at, updated_at FROM carrier.carriers \
              WHERE tenant_id = $1 AND status != 'deactivated' \
              ORDER BY name ASC LIMIT $2 OFFSET $3"
@@ -108,7 +112,7 @@ impl CarrierRepository for PgCarrierRepository {
     async fn list_active(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<Carrier>> {
         let rows = sqlx::query_as::<_, CarrierRow>(
             "SELECT id, tenant_id, name, code, contact_email, contact_phone, api_endpoint, api_key_hash, \
-             status, sla, rate_cards, total_shipments, on_time_count, failed_count, performance_grade, \
+             status, compliance_status, sla, rate_cards, total_shipments, on_time_count, failed_count, performance_grade, \
              onboarded_at, updated_at FROM carrier.carriers \
              WHERE tenant_id = $1 AND status = 'active'"
         ).bind(tenant_id.inner()).fetch_all(&self.pool).await?;
@@ -116,23 +120,25 @@ impl CarrierRepository for PgCarrierRepository {
     }
 
     async fn save(&self, c: &Carrier) -> anyhow::Result<()> {
-        let status    = serde_json::to_value(&c.status)?.as_str().unwrap_or("pending_verification").to_owned();
-        let grade     = serde_json::to_value(&c.performance_grade)?.as_str().unwrap_or("good").to_owned();
-        let sla       = serde_json::to_value(&c.sla)?;
-        let rate_cards = serde_json::to_value(&c.rate_cards)?;
+        let status            = serde_json::to_value(&c.status)?.as_str().unwrap_or("pending_verification").to_owned();
+        let compliance_status = serde_json::to_value(&c.compliance_status)?.as_str().unwrap_or("pending_submission").to_owned();
+        let grade             = serde_json::to_value(&c.performance_grade)?.as_str().unwrap_or("good").to_owned();
+        let sla               = serde_json::to_value(&c.sla)?;
+        let rate_cards        = serde_json::to_value(&c.rate_cards)?;
 
         sqlx::query(
             r#"
             INSERT INTO carrier.carriers (
                 id, tenant_id, name, code, contact_email, contact_phone,
-                api_endpoint, api_key_hash, status, sla, rate_cards,
+                api_endpoint, api_key_hash, status, compliance_status, sla, rate_cards,
                 total_shipments, on_time_count, failed_count, performance_grade,
                 onboarded_at, updated_at
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name, contact_email = EXCLUDED.contact_email,
                 contact_phone = EXCLUDED.contact_phone, api_endpoint = EXCLUDED.api_endpoint,
                 api_key_hash = EXCLUDED.api_key_hash, status = EXCLUDED.status,
+                compliance_status = EXCLUDED.compliance_status,
                 sla = EXCLUDED.sla, rate_cards = EXCLUDED.rate_cards,
                 total_shipments = EXCLUDED.total_shipments, on_time_count = EXCLUDED.on_time_count,
                 failed_count = EXCLUDED.failed_count, performance_grade = EXCLUDED.performance_grade,
@@ -140,7 +146,7 @@ impl CarrierRepository for PgCarrierRepository {
             "#
         )
         .bind(c.id.inner()).bind(c.tenant_id.inner()).bind(&c.name).bind(&c.code).bind(&c.contact_email).bind(&c.contact_phone)
-        .bind(&c.api_endpoint).bind(&c.api_key_hash).bind(status).bind(sla).bind(rate_cards)
+        .bind(&c.api_endpoint).bind(&c.api_key_hash).bind(status).bind(compliance_status).bind(sla).bind(rate_cards)
         .bind(c.total_shipments).bind(c.on_time_count).bind(c.failed_count).bind(grade)
         .bind(c.onboarded_at).bind(c.updated_at)
         .execute(&self.pool).await?;

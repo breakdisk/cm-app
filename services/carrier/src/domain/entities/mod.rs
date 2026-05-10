@@ -64,6 +64,31 @@ impl Default for SlaCommitment {
     }
 }
 
+/// KYB / document verification state for the carrier.
+/// Managed by admin compliance review; independent of operational status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComplianceStatus {
+    /// No documents submitted yet (default for newly onboarded carriers).
+    PendingSubmission,
+    /// Documents received and under admin review.
+    UnderReview,
+    /// Fully verified and compliant.
+    Compliant,
+    /// Compliant but expiring within 30 days.
+    ExpiringSoon,
+    /// Compliance documents have expired — partner must re-submit.
+    Expired,
+    /// Submission was rejected; partner must correct and resubmit.
+    Rejected,
+    /// Compliance suspended (e.g. regulatory hold).
+    Suspended,
+}
+
+impl Default for ComplianceStatus {
+    fn default() -> Self { Self::PendingSubmission }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CarrierStatus {
@@ -84,9 +109,17 @@ pub struct Carrier {
     pub contact_email:    String,
     pub contact_phone:    Option<String>,
     pub api_endpoint:     Option<String>,  // 3PL API base URL (for webhook integrations)
-    pub api_key_hash:     Option<String>,  // SHA-256 of API key (never stored plaintext)
+    /// SHA-256 hash of the carrier's API key. Never serialized to API responses.
+    /// Frontend reads `has_api_key` (a bool) to know whether a key is configured.
+    #[serde(skip_serializing)]
+    pub api_key_hash:     Option<String>,
+    /// True when `api_key_hash` is set. Computed on load; not persisted separately.
+    pub has_api_key:      bool,
 
-    pub status:           CarrierStatus,
+    pub status:             CarrierStatus,
+    /// KYB / document verification state. Managed by admin; not affected by
+    /// operational activate/suspend calls.
+    pub compliance_status:  ComplianceStatus,
     pub sla:              SlaCommitment,
     pub rate_cards:       Vec<RateCard>,  // JSONB in DB
 
@@ -118,7 +151,9 @@ impl Carrier {
             contact_phone: None,
             api_endpoint: None,
             api_key_hash: None,
+            has_api_key:  false,
             status: CarrierStatus::PendingVerification,
+            compliance_status: ComplianceStatus::PendingSubmission,
             sla,
             rate_cards: Vec::new(),
             total_shipments: 0,

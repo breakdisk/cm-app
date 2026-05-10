@@ -99,14 +99,15 @@ export function OnboardCarrierModal({ open, onClose, onSuccess }: Props) {
         max_delivery_days: maxDays,
       });
 
-      const carrierId = typeof res.data.id === "string"
-        ? res.data.id
-        : (res.data.id as unknown as { 0: string })[0] ?? "";
+      // onboardCarrier returns raw Carrier (no { data: } wrapper from carrier service).
+      const carrierId = typeof res.id === "string"
+        ? res.id
+        : (res.id as unknown as { 0: string })[0] ?? "";
 
       setResult({
         carrier_id:    carrierId,
-        carrier_name:  res.data.name,
-        carrier_code:  res.data.code,
+        carrier_name:  res.name,
+        carrier_code:  res.code,
         user_id:       "",
         partner_email: "",
         temp_password: "",
