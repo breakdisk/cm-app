@@ -5,7 +5,7 @@ use crate::config::Config;
 use crate::application::services::PodService;
 use crate::infrastructure::db::{PgPodRepository, PgOtpRepository};
 use crate::infrastructure::external::storage::S3StorageAdapter;
-use crate::infrastructure::external::sms::TwilioSmsAdapter;
+use crate::infrastructure::external::sms::{NoOpSmsAdapter, TwilioSmsAdapter};
 use crate::api::http::{router, AppState};
 use logisticos_auth::jwt::JwtService;
 use logisticos_events::producer::KafkaProducer;
@@ -119,11 +119,29 @@ pub async fn run() -> anyhow::Result<()> {
             .context("Failed to init S3 storage")?
     );
 
-    // Twilio SMS for OTP delivery
-    let twilio_sid   = std::env::var("TWILIO_ACCOUNT_SID").context("TWILIO_ACCOUNT_SID not set")?;
-    let twilio_token = std::env::var("TWILIO_AUTH_TOKEN").context("TWILIO_AUTH_TOKEN not set")?;
-    let twilio_from  = std::env::var("TWILIO_FROM_NUMBER").context("TWILIO_FROM_NUMBER not set")?;
-    let sms = Arc::new(TwilioSmsAdapter::new(twilio_sid, twilio_token, twilio_from));
+    // Twilio SMS for OTP delivery.
+    // All three vars must be present to enable real SMS; if any are missing the
+    // service boots with a no-op adapter so photo/signature PODs still work.
+    // OTP-required deliveries will log a warning instead of sending an SMS —
+    // set the vars in production to enable real OTP delivery.
+    let sms: Arc<dyn crate::infrastructure::external::sms::SmsAdapter> = match (
+        std::env::var("TWILIO_ACCOUNT_SID").ok(),
+        std::env::var("TWILIO_AUTH_TOKEN").ok(),
+        std::env::var("TWILIO_FROM_NUMBER").ok(),
+    ) {
+        (Some(sid), Some(token), Some(from)) => {
+            tracing::info!("SMS: Twilio configured (from {})", from);
+            Arc::new(TwilioSmsAdapter::new(sid, token, from))
+        }
+        _ => {
+            tracing::warn!(
+                "SMS: TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM_NUMBER not all set — \
+                 using NoOpSmsAdapter. OTP SMS will NOT be delivered. \
+                 Set all three env vars in production."
+            );
+            Arc::new(NoOpSmsAdapter)
+        }
+    };
 
     // Repositories
     let pod_repo = Arc::new(PgPodRepository::new(pool.clone()));

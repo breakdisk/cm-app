@@ -1,11 +1,31 @@
 //! SMS adapter for sending OTP codes to delivery recipients.
 //! Uses the Twilio REST API (same credentials as the engagement service).
+//! Falls back to a no-op adapter when Twilio credentials are not configured
+//! so the pod service can boot and handle photo/signature PODs in environments
+//! (e.g. staging) that have no SMS provider configured.
 
 use async_trait::async_trait;
 
 #[async_trait]
 pub trait SmsAdapter: Send + Sync {
     async fn send(&self, to: &str, body: &str) -> anyhow::Result<()>;
+}
+
+/// No-op SMS adapter used when Twilio credentials are not configured.
+/// OTP generation will succeed but no SMS will be sent; the driver must
+/// relay the OTP out-of-band (or use the dev bypass).
+pub struct NoOpSmsAdapter;
+
+#[async_trait]
+impl SmsAdapter for NoOpSmsAdapter {
+    async fn send(&self, to: &str, _body: &str) -> anyhow::Result<()> {
+        tracing::warn!(
+            to = %to,
+            "NoOpSmsAdapter: TWILIO_ACCOUNT_SID not configured — SMS not sent. \
+             Set TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM_NUMBER to enable real OTP delivery."
+        );
+        Ok(())
+    }
 }
 
 pub struct TwilioSmsAdapter {
