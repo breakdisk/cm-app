@@ -91,12 +91,12 @@ export default function CompliancePage() {
     }
   }
 
-  async function handleSuspend(_profileId: string) {
+  function handleSuspend(_profileId: string) {
     // Refresh profiles + queue so KPI strip updates
     refresh();
   }
 
-  async function handleReinstate(_profileId: string) {
+  function handleReinstate(_profileId: string) {
     refresh();
   }
 

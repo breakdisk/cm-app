@@ -38,7 +38,7 @@ export async function fetchProfiles(): Promise<ComplianceProfile[]> {
   return j.data;
 }
 
-export async function fetchProfile(profileId: string) {
+export async function fetchProfile(profileId: string): Promise<{ profile: ComplianceProfile; documents: DriverDocument[]; audit_log: unknown[] }> {
   const r = await authFetch(`${BASE}/api/v1/compliance/admin/profiles/${profileId}`);
   return (await r.json()).data;
 }

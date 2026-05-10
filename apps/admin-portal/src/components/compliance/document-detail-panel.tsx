@@ -8,7 +8,7 @@ import {
   suspendProfile,
   reinstateProfile,
 } from "@/lib/api/compliance";
-import type { DriverDocument } from "@/lib/api/compliance";
+import type { DriverDocument, ComplianceProfile } from "@/lib/api/compliance";
 import { cn } from "@/lib/design-system/cn";
 import { Check, X, ExternalLink, ShieldX, ShieldCheck } from "lucide-react";
 
@@ -36,7 +36,7 @@ export function DocumentDetailPanel({
   onSuspend,
   onReinstate,
 }: Props) {
-  const [detail,        setDetail]        = useState<{ profile: any; documents: DriverDocument[] } | null>(null);
+  const [detail,        setDetail]        = useState<{ profile: ComplianceProfile; documents: DriverDocument[]; audit_log: unknown[] } | null>(null);
   const [rejectDocId,   setRejectDocId]   = useState<string | null>(null);
   const [rejectReason,  setRejectReason]  = useState("");
   const [suspendOpen,   setSuspendOpen]   = useState(false);
@@ -67,34 +67,50 @@ export function DocumentDetailPanel({
   });
 
   async function handleApprove(docId: string) {
-    await approveDocument(docId);
-    onApprove(docId);
-    fetchProfile(profileId).then(setDetail);
+    try {
+      await approveDocument(docId);
+      onApprove(docId);
+      fetchProfile(profileId).then(setDetail);
+    } catch (err) {
+      console.error("Failed to approve document:", err);
+    }
   }
 
   async function handleReject(docId: string) {
     if (!rejectReason.trim()) return;
-    await rejectDocument(docId, rejectReason);
-    onReject(docId, rejectReason);
-    setRejectDocId(null);
-    setRejectReason("");
-    fetchProfile(profileId).then(setDetail);
+    try {
+      await rejectDocument(docId, rejectReason);
+      onReject(docId, rejectReason);
+      setRejectDocId(null);
+      setRejectReason("");
+      fetchProfile(profileId).then(setDetail);
+    } catch (err) {
+      console.error("Failed to reject document:", err);
+    }
   }
 
   async function handleSuspend() {
-    await suspendProfile(profile.id, suspendReason.trim() || undefined);
-    setSuspendOpen(false);
-    setSuspendReason("");
-    const updated = await fetchProfile(profileId);
-    setDetail(updated);
-    onSuspend(profile.id);
+    try {
+      await suspendProfile(profile.id, suspendReason.trim() || undefined);
+      setSuspendOpen(false);
+      setSuspendReason("");
+      const updated = await fetchProfile(profileId);
+      setDetail(updated);
+      onSuspend(profile.id);
+    } catch (err) {
+      console.error("Failed to suspend profile:", err);
+    }
   }
 
   async function handleReinstate() {
-    await reinstateProfile(profile.id);
-    const updated = await fetchProfile(profileId);
-    setDetail(updated);
-    onReinstate(profile.id);
+    try {
+      await reinstateProfile(profile.id);
+      const updated = await fetchProfile(profileId);
+      setDetail(updated);
+      onReinstate(profile.id);
+    } catch (err) {
+      console.error("Failed to reinstate profile:", err);
+    }
   }
 
   const badgeClass =
@@ -214,8 +230,12 @@ export function DocumentDetailPanel({
                 {doc.file_url && (
                   <button
                     onClick={async () => {
-                      const url = await getAdminDocumentUrl(doc.id);
-                      window.open(url, "_blank", "noreferrer");
+                      try {
+                        const url = await getAdminDocumentUrl(doc.id);
+                        window.open(url, "_blank", "noreferrer");
+                      } catch (err) {
+                        console.error("Failed to get document URL:", err);
+                      }
                     }}
                     className="px-2.5 py-1.5 rounded-lg text-xs bg-glass-100 border border-glass-border text-white/50 flex items-center gap-1 hover:text-white/80 transition-colors"
                   >
