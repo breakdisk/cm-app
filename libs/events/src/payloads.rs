@@ -119,6 +119,7 @@ pub struct PodCaptured {
     pub pod_id:             Uuid,
     pub shipment_id:        Uuid,
     pub driver_id:          Uuid,
+    #[serde(default)]
     pub pod_type:           String,   // "signature" | "photo" | "otp"
     pub captured_at:        String,
     pub lat:                Option<f64>,
@@ -136,6 +137,17 @@ pub struct PodCaptured {
     /// Customer email for receipt delivery — populated when `booked_by_customer` is true.
     #[serde(default)]
     pub customer_email:     Option<String>,
+    /// Customer / recipient name — serialised as "recipient_name" by the pod service
+    /// (the confirmed name of the person who received the parcel).  The alias lets
+    /// this canonical struct deserialize both legacy "recipient_name" events and newer
+    /// "customer_name" events without field duplication.
+    #[serde(default, alias = "recipient_name")]
+    pub customer_name:      String,
+    /// Customer phone — for engagement to send COD receipt / delivery WhatsApp.
+    /// Populated from SubmitPodCommand.customer_phone (driver app carries it from
+    /// the task summary screen).
+    #[serde(default)]
+    pub customer_phone:     String,
     /// COD amount collected at doorstep (0 if non-COD).
     #[serde(default)]
     pub cod_amount_cents:   i64,
@@ -343,6 +355,10 @@ pub struct TaskAssigned {
     /// Customer email — forwarded to engagement for delivery receipt email.
     #[serde(default)]
     pub customer_email:       String,
+    /// Customer UUID — forwarded to driver-ops so TaskCompleted can carry it
+    /// to engagement for delivery receipt notification routing.
+    #[serde(default)]
+    pub customer_id:          Option<Uuid>,
 }
 
 /// Emitted by delivery-experience when a customer taps "Email Receipt" on the

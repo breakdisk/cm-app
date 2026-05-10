@@ -99,6 +99,12 @@ impl CodService {
                 amount_cents:          cmd.amount_cents,
                 merchant_credit_cents: merchant_credit,
                 platform_fee_cents:    platform_fee,
+                tracking_number:       shipment.awb.clone(),
+                // Customer contact — forwarded from SubmitPodCommand via PodCaptured.
+                // Enables engagement's "cod_receipt" WhatsApp to reach the customer
+                // without a cross-service lookup at notification time.
+                customer_phone:        cmd.customer_phone.clone(),
+                customer_name:         cmd.customer_name.clone(),
             },
         );
         self.kafka.publish_event(topics::COD_COLLECTED, &event)

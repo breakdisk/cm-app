@@ -171,22 +171,23 @@ pub async fn process_event(
             (merchant_id, String::new(), merchant_email, vars)
         }
     } else {
-        // RECEIPT_EMAIL_REQUESTED carries recipient_email (the address the
-        // customer typed into the form) and may omit customer_id — the
-        // tracking projection doesn't store it today. Fall back to shipment_id
-        // as the notification's audit key; that's enough for the downstream
-        // delivery log and keeps the common code path below unchanged.
         let is_receipt_resend = event_type == topics::RECEIPT_EMAIL_REQUESTED;
 
+        // CAMPAIGN_TRIGGERED requires a real customer_id for suppression checks.
+        // All other transactional events (delivery_confirmed, pickup_scheduled, etc.)
+        // may not carry customer_id — TaskCompleted/TaskAssigned only carry customer
+        // contact fields (phone/email). Fall back to shipment_id as the notification
+        // audit key so the message is still delivered to the correct phone/email even
+        // when customer_id is absent from the event payload.
         let customer_id = data["customer_id"].as_str()
             .and_then(|s| s.parse::<uuid::Uuid>().ok())
-            .or_else(|| if is_receipt_resend {
+            .or_else(|| if event_type != topics::CAMPAIGN_TRIGGERED {
                 data["shipment_id"].as_str().and_then(|s| s.parse::<uuid::Uuid>().ok())
             } else {
                 None
             });
         let Some(customer_id) = customer_id else {
-            warn!(event_type, "Event missing customer_id — skipping notification");
+            warn!(event_type, "Event missing customer_id and shipment_id — skipping notification");
             return;
         };
 

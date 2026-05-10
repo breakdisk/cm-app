@@ -172,6 +172,9 @@ impl TaskService {
             customer_email: task.customer_email.clone().unwrap_or_default(),
             tracking_number: task.tracking_number.clone().unwrap_or_default(),
             cod_amount_cents: task.cod_amount_cents,
+            // customer_id not yet stored on DriverTask (requires TaskAssigned to carry it).
+            // Engagement service falls back to shipment_id as the audit key when absent.
+            customer_id: task.customer_id,
         });
         self.kafka.publish_event(topic, &event).await
             .map_err(AppError::Internal)?;
@@ -206,6 +209,7 @@ impl TaskService {
             customer_name: task.customer_name.clone(),
             customer_phone: task.customer_phone.clone(),
             tracking_number: task.tracking_number.clone().unwrap_or_default(),
+            customer_id: task.customer_id,
         });
         self.kafka.publish_event(topics::DELIVERY_FAILED, &event).await
             .map_err(AppError::Internal)?;

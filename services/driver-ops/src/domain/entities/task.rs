@@ -17,6 +17,10 @@ pub struct DriverTask {
     pub customer_name: String,
     pub customer_phone: String,
     pub customer_email: Option<String>,
+    /// Customer UUID — populated when TaskAssigned carries it (requires
+    /// dispatch to forward customer_id). Used to populate TaskCompleted so
+    /// engagement can link the notification to the customer profile.
+    pub customer_id: Option<uuid::Uuid>,
     pub tracking_number: Option<String>,
     pub cod_amount_cents: Option<i64>,
     pub special_instructions: Option<String>,

@@ -121,6 +121,7 @@ async fn handle_task_assigned(payload: &[u8], pool: &PgPool, fcm: Option<Arc<Fcm
             customer_name,
             customer_phone,
             customer_email,
+            customer_id,
             tracking_number,
             cod_amount_cents,
             special_instructions
@@ -129,7 +130,7 @@ async fn handle_task_assigned(payload: &[u8], pool: &PgPool, fcm: Option<Arc<Fcm
             $5, $6, 'pending',
             $7, $8, $9, $10, 'PH',
             $11, $12,
-            $13, $14, $15, $16, $17, $18
+            $13, $14, $15, $16, $17, $18, $19
         )
         ON CONFLICT (id) DO NOTHING
         "#,
@@ -149,6 +150,7 @@ async fn handle_task_assigned(payload: &[u8], pool: &PgPool, fcm: Option<Arc<Fcm
     .bind(&t.customer_name)
     .bind(&t.customer_phone)
     .bind(if t.customer_email.is_empty() { None } else { Some(&t.customer_email) })
+    .bind(t.customer_id)            // Option<Uuid> — from TaskAssigned, used in TaskCompleted for engagement
     .bind(if t.tracking_number.is_empty() { None } else { Some(&t.tracking_number) })
     .bind(t.cod_amount_cents)       // Option<i64>
     .bind(t.special_instructions.as_deref())

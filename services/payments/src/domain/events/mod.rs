@@ -17,16 +17,43 @@ pub struct InvoiceGenerated {
     pub total_cents:    i64,
     pub currency:       String,
     pub due_at:         chrono::DateTime<chrono::Utc>,
+    /// AWB tracking number — used by engagement to populate the receipt template.
+    /// Empty string for non-shipment invoices (e.g. weight surcharge credits).
+    #[serde(default)]
+    pub tracking_number: String,
+    /// Customer / recipient name — shown in the "payment_receipt" notification body.
+    /// Empty for merchant invoices (engagement shows "Merchant" as fallback).
+    #[serde(default)]
+    pub customer_name:  String,
+    /// Customer phone — enables engagement to send "payment_receipt" WhatsApp.
+    /// Empty for merchant invoices (WhatsApp channel skipped when blank).
+    #[serde(default)]
+    pub customer_phone: String,
+    /// ISO date string (YYYY-MM-DD) of the delivery / capture date.
+    /// Shown on the payment receipt as the "Paid on" date.
+    /// Empty for periodic merchant invoices.
+    #[serde(default)]
+    pub paid_at:        String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodReconciled {
-    pub cod_id: Uuid,
-    pub shipment_id: Uuid,
-    pub tenant_id: Uuid,
-    pub amount_cents: i64,
+    pub cod_id:                Uuid,
+    pub shipment_id:           Uuid,
+    pub tenant_id:             Uuid,
+    pub amount_cents:          i64,
     pub merchant_credit_cents: i64,
-    pub platform_fee_cents: i64,
+    pub platform_fee_cents:    i64,
+    /// AWB for the engagement "cod_receipt" template variable. Populated from
+    /// ShipmentBillingDto.awb which is already fetched during reconciliation.
+    pub tracking_number:       String,
+    /// Customer phone — for engagement's "cod_receipt" WhatsApp notification.
+    /// Forwarded from ReconcileCodCommand (originated in SubmitPodCommand).
+    #[serde(default)]
+    pub customer_phone:        String,
+    /// Recipient name from POD — shown in the cod_receipt WhatsApp body.
+    #[serde(default)]
+    pub customer_name:         String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

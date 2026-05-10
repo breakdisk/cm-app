@@ -137,17 +137,23 @@ impl InvoiceService {
             "invoice.generated",
             tenant_id.inner(),
             InvoiceGenerated {
-                invoice_id:     invoice.id.inner(),
-                invoice_number: invoice.invoice_number.to_string(),
-                recipient_type: "merchant".into(),
-                merchant_id:    merchant_id.inner(),
-                merchant_email: cmd.merchant_email.clone(),
-                customer_id:    uuid::Uuid::nil(),
-                customer_email: None,
-                tenant_id:      tenant_id.inner(),
-                total_cents:    invoice.total_due().amount,
-                currency:       format!("{:?}", invoice.currency),
-                due_at:         invoice.due_at,
+                invoice_id:      invoice.id.inner(),
+                invoice_number:  invoice.invoice_number.to_string(),
+                recipient_type:  "merchant".into(),
+                merchant_id:     merchant_id.inner(),
+                merchant_email:  cmd.merchant_email.clone(),
+                customer_id:     uuid::Uuid::nil(),
+                customer_email:  None,
+                tenant_id:       tenant_id.inner(),
+                total_cents:     invoice.total_due().amount,
+                currency:        format!("{:?}", invoice.currency),
+                due_at:          invoice.due_at,
+                // Merchant invoices are periodic aggregates — no single AWB.
+                tracking_number: String::new(),
+                // Not applicable for merchant invoices — engagement uses merchant_email.
+                customer_name:   String::new(),
+                customer_phone:  String::new(),
+                paid_at:         String::new(),
             },
         );
         self.kafka
@@ -314,17 +320,23 @@ impl InvoiceService {
             "invoice.generated",
             tenant_id.inner(),
             InvoiceGenerated {
-                invoice_id:     invoice.id.inner(),
-                invoice_number: invoice.invoice_number.to_string(),
-                recipient_type: "customer".into(),
-                merchant_id:    uuid::Uuid::nil(),
-                merchant_email: None,
-                customer_id:    cmd.customer_id,
-                customer_email: cmd.customer_email.clone(),
-                tenant_id:      tenant_id.inner(),
-                total_cents:    invoice.total_due().amount,
-                currency:       format!("{:?}", currency),
-                due_at:         invoice.due_at,
+                invoice_id:      invoice.id.inner(),
+                invoice_number:  invoice.invoice_number.to_string(),
+                recipient_type:  "customer".into(),
+                merchant_id:     uuid::Uuid::nil(),
+                merchant_email:  None,
+                customer_id:     cmd.customer_id,
+                customer_email:  cmd.customer_email.clone(),
+                tenant_id:       tenant_id.inner(),
+                total_cents:     invoice.total_due().amount,
+                currency:        format!("{:?}", currency),
+                due_at:          invoice.due_at,
+                tracking_number: billing.awb.clone(),
+                // Recipient details from POD — enable WhatsApp + personalised email.
+                customer_name:   cmd.customer_name.clone(),
+                customer_phone:  cmd.customer_phone.clone(),
+                // Delivery date as ISO date string — shown as "Paid on" in receipt.
+                paid_at:         cmd.delivered_on.to_string(),
             },
         );
         self.kafka
@@ -420,6 +432,15 @@ impl InvoiceService {
                 total_cents:    invoice.total_due().amount,
                 currency:       format!("{:?}", invoice.currency),
                 due_at:         invoice.due_at,
+                // Invoice entity doesn't store AWB, customer_name, or phone —
+                // resend is initiated from stored invoice data only. Engagement
+                // falls back to empty strings gracefully (WhatsApp skipped, email
+                // uses "Customer" placeholder). A future improvement could look
+                // these up from CDP/order-intake on resend.
+                tracking_number: String::new(),
+                customer_name:   String::new(),
+                customer_phone:  String::new(),
+                paid_at:         String::new(),
             },
         );
 

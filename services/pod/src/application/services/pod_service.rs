@@ -241,21 +241,24 @@ impl PodService {
         // Fire-and-forget: POD is already persisted; a Kafka outage must not
         // fail the driver's submit. Missed events are recovered by reconciliation.
         let event = Event::new("pod", "pod.captured", tenant_id.inner(), PodCaptured {
-            pod_id:              pod.id,
-            shipment_id:         pod.shipment_id,
-            task_id:             pod.task_id,
-            tenant_id:           tenant_id.inner(),
-            driver_id:           driver_id.inner(),
-            recipient_name:      pod.recipient_name.clone(),
-            has_signature:       pod.signature_data.is_some(),
-            photo_count:         pod.photos.len(),
-            otp_verified:        pod.otp_verified,
-            cod_collected_cents: pod.cod_collected_cents,
-            captured_at:         pod.captured_at,
-            tenant_code:         cmd.tenant_code.clone(),
-            booked_by_customer:  cmd.booked_by_customer,
-            customer_id:         cmd.customer_id,
-            customer_email:      cmd.customer_email.clone(),
+            pod_id:             pod.id,
+            shipment_id:        pod.shipment_id,
+            task_id:            pod.task_id,
+            tenant_id:          tenant_id.inner(),
+            driver_id:          driver_id.inner(),
+            recipient_name:     pod.recipient_name.clone(),
+            has_signature:      pod.signature_data.is_some(),
+            photo_count:        pod.photos.len(),
+            otp_verified:       pod.otp_verified,
+            cod_amount_cents:   pod.cod_collected_cents.unwrap_or(0),
+            captured_at:        pod.captured_at.to_rfc3339(),
+            tenant_code:        cmd.tenant_code.clone(),
+            booked_by_customer: cmd.booked_by_customer,
+            customer_id:        cmd.customer_id,
+            customer_email:     cmd.customer_email.clone(),
+            // customer_phone from driver app task screen — enables payments/engagement
+            // to send WhatsApp receipts without a cross-service customer lookup.
+            customer_phone:     cmd.customer_phone.clone(),
         });
         if let Err(e) = self.kafka.publish_event(topics::POD_CAPTURED, &event).await {
             tracing::error!(

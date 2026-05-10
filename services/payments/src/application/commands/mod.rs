@@ -57,14 +57,26 @@ pub struct IssuePaymentReceiptCommand {
     pub customer_id:    Uuid,          // recipient — receipts go to customers, not merchants
     pub customer_email: Option<String>,
     pub delivered_on:   NaiveDate,     // used for the billing period (single-day window)
+    /// Recipient name from POD — shown on the receipt email/WhatsApp body.
+    pub customer_name:  String,
+    /// Customer phone for WhatsApp receipt dispatch.
+    pub customer_phone: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct ReconcileCodCommand {
-    pub shipment_id:  Uuid,
-    pub pod_id:       Uuid,
-    pub driver_id:    Uuid,
-    pub amount_cents: i64,
+    pub shipment_id:    Uuid,
+    pub pod_id:         Uuid,
+    pub driver_id:      Uuid,
+    pub amount_cents:   i64,
+    /// Customer phone — forwarded from PodCaptured so engagement's
+    /// "cod_receipt" WhatsApp notification has a recipient without a
+    /// cross-service lookup. Empty string when absent (non-COD or legacy).
+    #[serde(default)]
+    pub customer_phone: String,
+    /// Recipient name from POD — shown in the COD receipt WhatsApp body.
+    #[serde(default)]
+    pub customer_name:  String,
 }
 
 #[derive(Debug, Deserialize)]

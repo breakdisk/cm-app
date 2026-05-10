@@ -46,6 +46,11 @@ pub struct SubmitPodCommand {
     /// Customer email for payment receipt delivery.
     #[serde(default)]
     pub customer_email:       Option<String>,
+    /// Customer phone — driver app carries this from the task summary screen.
+    /// Forwarded into PodCaptured so payments/engagement can route WhatsApp
+    /// for receipt and COD notifications without a cross-service lookup.
+    #[serde(default)]
+    pub customer_phone:       String,
 }
 
 #[derive(Debug, Deserialize)]

@@ -189,7 +189,9 @@ impl TrackingService {
                 origin_address:      record.origin_address.clone(),
                 destination_address: record.destination_address.clone(),
                 customer_id:         None,
-                customer_name:       String::new(),
+                // recipient_name is populated by mark_delivered; fall back to empty
+                // string — engagement renders "Customer" when absent.
+                customer_name:       record.recipient_name.clone().unwrap_or_default(),
             };
             let event = Event::new(
                 "logisticos/delivery-experience",

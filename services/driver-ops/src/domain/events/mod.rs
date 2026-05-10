@@ -32,6 +32,11 @@ pub struct TaskCompleted {
     pub tracking_number: String,
     #[serde(default)]
     pub cod_amount_cents: Option<i64>,
+    /// Customer UUID — populated when dispatch carries it in TaskAssigned
+    /// (requires TaskAssigned.customer_id to be added). Absent in legacy events;
+    /// engagement falls back to shipment_id as the audit key.
+    #[serde(default)]
+    pub customer_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +53,9 @@ pub struct TaskFailed {
     pub customer_phone: String,
     #[serde(default)]
     pub tracking_number: String,
+    /// Customer UUID — absent in current events; engagement falls back to shipment_id.
+    #[serde(default)]
+    pub customer_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

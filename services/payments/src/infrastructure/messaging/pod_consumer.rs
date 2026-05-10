@@ -85,10 +85,14 @@ async fn handle_pod_captured(
             .reconcile_cod(
                 &tenant_id,
                 ReconcileCodCommand {
-                    shipment_id:  payload.shipment_id,
-                    pod_id:       payload.pod_id,
-                    driver_id:    payload.driver_id,
-                    amount_cents: payload.cod_amount_cents,
+                    shipment_id:    payload.shipment_id,
+                    pod_id:         payload.pod_id,
+                    driver_id:      payload.driver_id,
+                    amount_cents:   payload.cod_amount_cents,
+                    // Denormalized from the driver's task screen — enables engagement's
+                    // "cod_receipt" WhatsApp without a cross-service customer lookup.
+                    customer_phone: payload.customer_phone.clone(),
+                    customer_name:  payload.customer_name.clone(),
                 },
             )
             .await
@@ -130,6 +134,10 @@ async fn handle_pod_captured(
                     customer_id,
                     customer_email: payload.customer_email.clone(),
                     delivered_on,
+                    // recipient_name = confirmed name on POD signature / customer_name
+                    // from canonical PodCaptured (alias of local "recipient_name" field).
+                    customer_name:  payload.customer_name.clone(),
+                    customer_phone: payload.customer_phone.clone(),
                 },
             )
             .await

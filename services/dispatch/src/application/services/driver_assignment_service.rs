@@ -480,6 +480,7 @@ impl DriverAssignmentService {
                 special_instructions: queue_item.special_instructions.clone(),
                 tracking_number:      queue_item.tracking_number.clone().unwrap_or_default(),
                 customer_email:       queue_item.customer_email.clone().unwrap_or_default(),
+                customer_id:          Some(queue_item.customer_id),
             });
             self.kafka.publish_event(topics::TASK_ASSIGNED, &pickup_event).await
                 .map_err(AppError::Internal)?;
@@ -508,18 +509,25 @@ impl DriverAssignmentService {
             special_instructions: queue_item.special_instructions.clone(),
             tracking_number:      queue_item.tracking_number.clone().unwrap_or_default(),
             customer_email:       queue_item.customer_email.clone().unwrap_or_default(),
+            customer_id:          Some(queue_item.customer_id),
         });
         self.kafka.publish_event(topics::TASK_ASSIGNED, &delivery_event).await
             .map_err(AppError::Internal)?;
 
-        // 7. Emit DRIVER_ASSIGNED — engagement service sends push notification with customer_id
+        // 7. Emit DRIVER_ASSIGNED — engagement sends "pickup_scheduled" WhatsApp to customer.
+        //    Denormalize all contact fields here so engagement needs no extra lookup.
         let driver_assigned_event = Event::new("dispatch", "driver.assigned", tenant_id.inner(), DriverAssigned {
-            assignment_id: assignment.id,
-            shipment_id:   cmd.shipment_id,
-            customer_id:   queue_item.customer_id,  // For engagement service notification routing
-            route_id:      route_id.inner(),
-            driver_id:     driver_id.inner(),
-            tenant_id:     tenant_id.inner(),
+            assignment_id:         assignment.id,
+            shipment_id:           cmd.shipment_id,
+            customer_id:           queue_item.customer_id,
+            route_id:              route_id.inner(),
+            driver_id:             driver_id.inner(),
+            tenant_id:             tenant_id.inner(),
+            customer_name:         queue_item.customer_name.clone(),
+            customer_phone:        queue_item.customer_phone.clone(),
+            customer_email:        queue_item.customer_email.clone().unwrap_or_default(),
+            tracking_number:       queue_item.tracking_number.clone().unwrap_or_default(),
+            estimated_pickup_time: None,  // ETA not computed at assignment time; driver app shows ETA
         });
         self.kafka.publish_event(topics::DRIVER_ASSIGNED, &driver_assigned_event).await
             .map_err(AppError::Internal)?;
@@ -611,6 +619,7 @@ mod tests {
             special_instructions: None,
             tracking_number:     "CM-PH1-S0001234X".into(),
             customer_email:      "test@example.com".into(),
+            customer_id:         Some(uuid::Uuid::new_v4()),
         };
     }
 }
