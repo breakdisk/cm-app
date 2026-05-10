@@ -1,9 +1,11 @@
 package io.logisticos.driver.navigation
 
+import android.app.Activity
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavHostController
@@ -110,6 +112,7 @@ fun ShiftScaffold(rootNavController: NavHostController) {
 
             composable(PROFILE_ROUTE) {
                 val vm: ProfileViewModel = hiltViewModel()
+                val context = LocalContext.current
                 ProfileScreen(
                     sessionManager = vm.sessionManager,
                     isOfflineMode = vm.isOfflineMode,
@@ -117,10 +120,14 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                         shiftNavController.navigate(COMPLIANCE_ROUTE)
                     },
                     onLogout = {
+                        // Clear session then recreate the Activity so all ViewModels,
+                        // background coroutines, and WorkManager workers start fresh.
+                        // Simple nav-to-AUTH_GRAPH leaves stale in-memory state that
+                        // causes the OTP send viewModelScope.launch to never fire after
+                        // logout — recreate() is the reliable fix (same pattern Android
+                        // uses for account switching).
                         vm.sessionManager.clearSession()
-                        rootNavController.navigate(io.logisticos.driver.feature.auth.AUTH_GRAPH) {
-                            popUpTo(SHIFT_GRAPH) { inclusive = true }
-                        }
+                        (context as? Activity)?.recreate()
                     }
                 )
             }

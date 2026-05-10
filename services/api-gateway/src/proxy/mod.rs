@@ -34,7 +34,7 @@ impl ProxyClient {
             return None;
         }
         // Identity & Auth
-        if path.starts_with("/v1/auth") || path.starts_with("/v1/users") || path.starts_with("/v1/tenants") || path.starts_with("/v1/api-keys") || path.starts_with("/v1/audit-log") {
+        if path.starts_with("/v1/auth") || path.starts_with("/v1/users") || path.starts_with("/v1/tenants") || path.starts_with("/v1/api-keys") || path.starts_with("/v1/audit-log") || path.starts_with("/v1/push-tokens") {
             Some(&self.services.identity_url)
         // Order & Shipment Intake
         } else if path.starts_with("/v1/shipments") || path.starts_with("/v1/orders") {
