@@ -88,6 +88,32 @@ object NetworkModule {
         }
         .build()
 
+    /**
+     * Dedicated OkHttpClient for Cloudflare R2 presigned PUT uploads.
+     *
+     * Cannot share the API client because:
+     *  1. Timeouts: writeTimeout(120s) covers a ~10 MB upload at 1 Mbps (3G floor).
+     *     The API client's callTimeout(30s) kills uploads mid-stream on weak signal.
+     *  2. TenantInterceptor adds X-Tenant-ID, which isn't in the presigned
+     *     SignedHeaders — R2 would reject with SignatureDoesNotMatch.
+     *  3. CertificatePinner pins *.cargomarket.net; R2 endpoints are
+     *     *.r2.cloudflarestorage.com — pin mismatch would crash every upload.
+     *
+     * AuthInterceptor is already R2-aware (skips auth for storage hosts) but
+     * is excluded here for defence-in-depth.
+     */
+    @Provides @Singleton @Named("r2_upload")
+    fun provideR2UploadClient(
+        loggingInterceptor: HttpLoggingInterceptor
+    ): OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .writeTimeout(120, TimeUnit.SECONDS)
+        // No callTimeout — let writeTimeout bound each I/O chunk; a hard
+        // wall-clock cap races with legitimate slow-upload scenarios.
+        .addInterceptor(loggingInterceptor)
+        .build()
+
     @Provides @Singleton
     fun provideRetrofit(
         okHttpClient: OkHttpClient,
