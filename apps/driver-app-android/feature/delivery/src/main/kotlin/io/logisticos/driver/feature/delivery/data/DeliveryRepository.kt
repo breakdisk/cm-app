@@ -33,6 +33,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
 import javax.inject.Inject
+import javax.inject.Named
 
 class DeliveryRepository @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -42,7 +43,8 @@ class DeliveryRepository @Inject constructor(
     private val syncQueueDao: SyncQueueDao,
     private val driverOpsApi: DriverOpsApiService,
     private val podApi: PodApiService,
-    private val okHttpClient: OkHttpClient,
+    /** Dedicated client for R2 presigned PUT uploads — longer timeouts, no API interceptors. */
+    @Named("r2_upload") private val r2HttpClient: OkHttpClient,
 ) {
     /** Enqueue an item AND immediately kick a one-time worker so it ships
      *  within seconds of network return — not 15 min later on the next
@@ -156,34 +158,26 @@ class DeliveryRepository @Inject constructor(
                 val photoFile = File(photoPath)
                 if (photoFile.exists()) {
                     val contentType = "image/jpeg"
-                    // Get presigned PUT URL + required headers from backend.
-                    // The backend forwards PresignedRequest::headers() verbatim, which for
-                    // Cloudflare R2 includes x-amz-content-sha256 and x-amz-date so the
-                    // client sends exactly what R2 signed.
                     val uploadResp = podApi.getUploadUrl(podId, GetUploadUrlRequest(contentType))
                     val presignedUrl = uploadResp.data.uploadUrl
                     val s3Key = uploadResp.data.s3Key
                     val requiredHeaders = uploadResp.data.uploadHeaders
-                    // PUT photo bytes directly to R2 — bypass Retrofit (no auth header on R2).
+                    // PUT photo bytes directly to R2 via the dedicated upload client.
+                    // r2HttpClient has 120 s writeTimeout / no callTimeout so a large
+                    // JPEG on a slow mobile network won't hit the API client's 30 s wall.
                     // Must run on IO because OkHttp .execute() is blocking.
                     withContext(Dispatchers.IO) {
                         val photoBytes = photoFile.readBytes()
                         val reqBuilder = Request.Builder()
                             .url(presignedUrl)
                             .put(photoBytes.toRequestBody(contentType.toMediaType()))
-                        // The backend MUST include every header listed in the presigned URL's
-                        // X-Amz-SignedHeaders (x-amz-content-sha256 + x-amz-date for R2). If
-                        // upload_headers is empty the pod service is on a pre-54d2f68 image —
-                        // R2 will reject the PUT with a cryptic "No date provided in x-amz-date"
-                        // error. Fail fast here with a clear, actionable message instead of
-                        // letting R2 surface a confusing 400.
-                        check(requiredHeaders.isNotEmpty()) {
-                            "Pod backend returned empty upload_headers — the deployed pod image " +
-                                    "is older than commit 54d2f68. Redeploy " +
-                                    "ghcr.io/breakdisk/logisticos-service-pod:latest on the VPS."
-                        }
+                        // Forward any headers the SDK says must accompany the presigned URL
+                        // (e.g. content-type when it's part of SignedHeaders). For R2 with
+                        // correct 32-char credentials this map is often empty — that's fine;
+                        // the presigned URL already encodes UNSIGNED-PAYLOAD, no sidecar
+                        // header needed.
                         requiredHeaders.forEach { (k, v) -> reqBuilder.addHeader(k, v) }
-                        val putResponse = okHttpClient.newCall(reqBuilder.build()).execute()
+                        val putResponse = r2HttpClient.newCall(reqBuilder.build()).execute()
                         if (!putResponse.isSuccessful) {
                             val body = try { putResponse.body?.string() ?: "empty" } catch (e: Exception) { "unreadable" }
                             android.util.Log.e("DeliveryRepo", "R2 PUT ${putResponse.code}: $body")
