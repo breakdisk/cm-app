@@ -67,7 +67,20 @@ impl S3StorageAdapter {
         // Inject explicit credentials when provided. This overrides whatever
         // AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY the SDK would auto-discover,
         // ensuring the correct R2 key (32 chars) is embedded in presigned URLs.
+        //
+        // Belt-and-braces: also scrub AWS_* from the process env. The
+        // credentials_provider() call binds creds to *this* client config, but
+        // any other code path inside aws-sdk-s3 (region resolver, IMDS probe,
+        // retries with refreshed config) can still consult the default
+        // credential chain and pick up a stale 20-char AWS key. Removing them
+        // here is safe because we have just captured the only valid credential
+        // for this process — pod service does not talk to real AWS.
         if let Some((access_key_id, secret_access_key)) = credentials {
+            // Called during single-threaded bootstrap before tokio workers
+            // spawn S3 calls, so the POSIX env-mutation hazard does not apply.
+            std::env::remove_var("AWS_ACCESS_KEY_ID");
+            std::env::remove_var("AWS_SECRET_ACCESS_KEY");
+            std::env::remove_var("AWS_SESSION_TOKEN");
             let creds = aws_sdk_s3::config::Credentials::new(
                 access_key_id,
                 secret_access_key,

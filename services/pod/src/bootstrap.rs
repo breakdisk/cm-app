@@ -64,16 +64,52 @@ pub async fn run() -> anyhow::Result<()> {
     let s3_force_path_style = std::env::var("S3_FORCE_PATH_STYLE")
         .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
         .unwrap_or(false); // false = virtual-hosted style (R2); true = path-style (MinIO)
+    // Detect Cloudflare R2 by endpoint host. R2 credentials are *exactly* 32
+    // chars; AWS S3 keys are 20 chars; MinIO accepts anything. We've burned
+    // multiple deploys on the AWS SDK silently picking up a leftover 20-char
+    // `AWS_ACCESS_KEY_ID` from the container env and embedding it in presigned
+    // URLs that R2 then rejects with `Credential access key has length 20,
+    // should be 32`. The fix is to refuse to boot in that configuration —
+    // surface the misconfig at startup, not at the first driver POD upload.
+    let is_r2 = s3_endpoint
+        .as_deref()
+        .map(|e| e.contains("r2.cloudflarestorage.com"))
+        .unwrap_or(false);
+
     let s3_credentials = match (cfg.storage.access_key_id.clone(), cfg.storage.secret_access_key.clone()) {
         (Some(k), Some(s)) => {
-            tracing::info!("S3 storage: using explicit credentials from config (key length={})", k.len());
+            if is_r2 && k.len() != 32 {
+                anyhow::bail!(
+                    "S3__ACCESS_KEY_ID is {} chars but Cloudflare R2 requires exactly 32. \
+                     This usually means an AWS S3 key (20 chars) is set instead of an R2 API token. \
+                     Generate an R2 token at https://dash.cloudflare.com/?to=/:account/r2/api-tokens \
+                     and update S3__ACCESS_KEY_ID / S3__SECRET_ACCESS_KEY.",
+                    k.len()
+                );
+            }
+            tracing::info!(
+                key_len = k.len(),
+                target = if is_r2 { "cloudflare-r2" } else { "s3-compatible" },
+                "S3 storage: using explicit credentials from config"
+            );
             Some((k, s))
         }
         _ => {
+            if is_r2 {
+                anyhow::bail!(
+                    "S3 storage targets Cloudflare R2 ({}) but S3__ACCESS_KEY_ID / \
+                     S3__SECRET_ACCESS_KEY are not set. Refusing to start: the AWS SDK \
+                     credential chain would silently pick up any AWS_ACCESS_KEY_ID in the \
+                     environment (typically a 20-char AWS key) and R2 would reject every \
+                     presigned PUT with `Credential access key has length 20, should be 32`. \
+                     Set both env vars to your R2 API token (32-char access key id).",
+                    s3_endpoint.as_deref().unwrap_or("<unknown>")
+                );
+            }
             tracing::warn!(
-                "S3 storage: S3__ACCESS_KEY_ID / S3__SECRET_ACCESS_KEY not set — \
-                 falling back to AWS SDK credential auto-discovery. \
-                 If targeting Cloudflare R2, set both vars to your R2 API token (32-char key)."
+                "S3 storage: explicit credentials not configured — falling back to AWS SDK \
+                 credential auto-discovery. Safe for real AWS S3 / MinIO; never use this path \
+                 against Cloudflare R2."
             );
             None
         }
