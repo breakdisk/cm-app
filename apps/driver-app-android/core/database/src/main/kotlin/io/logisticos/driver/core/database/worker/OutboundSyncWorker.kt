@@ -141,17 +141,12 @@ class OutboundSyncWorker @AssistedInject constructor(
                         val reqBuilder = Request.Builder()
                             .url(presignedUrl)
                             .put(photoBytes.toRequestBody(contentType.toMediaType()))
-                        // The backend MUST include every header listed in the presigned URL's
-                        // X-Amz-SignedHeaders (x-amz-content-sha256 + x-amz-date for R2). If
-                        // upload_headers is empty the pod service is on a pre-54d2f68 image —
-                        // R2 will reject the PUT with a cryptic "No date provided in x-amz-date"
-                        // error and the sync queue will silently retry forever. Fail loudly so
-                        // ops sees a clear diagnostic instead of a stuck offline queue.
-                        check(requiredHeaders.isNotEmpty()) {
-                            "Pod backend returned empty upload_headers — the deployed pod image " +
-                                    "is older than commit 54d2f68. Redeploy " +
-                                    "ghcr.io/breakdisk/logisticos-service-pod:latest on the VPS."
-                        }
+                        // Add any headers the backend says must accompany the presigned PUT.
+                        // For R2 presigned URLs the backend returns only headers that are
+                        // genuinely signed (in X-Amz-SignedHeaders). An empty map is valid —
+                        // the presigned URL itself carries the UNSIGNED-PAYLOAD indicator and
+                        // R2 does not require x-amz-content-sha256 as a separate header when
+                        // the URL is already signed correctly with the right 32-char R2 key.
                         requiredHeaders.forEach { (k, v) -> reqBuilder.addHeader(k, v) }
                         val putResponse = okHttpClient.newCall(reqBuilder.build()).execute()
                         if (!putResponse.isSuccessful) {

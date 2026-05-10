@@ -6,8 +6,12 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub redis: RedisConfig,
     pub kafka: KafkaConfig,
+    // Field name must match the env-var prefix segment.
+    // config crate maps S3__ACCESS_KEY_ID  → config.s3.access_key_id
+    //                    S3__SECRET_ACCESS_KEY → config.s3.secret_access_key
+    // A field named `storage` would require STORAGE__* vars instead.
     #[serde(default)]
-    pub storage: StorageConfig,
+    pub s3: StorageConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -45,9 +49,10 @@ pub struct KafkaConfig {
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct StorageConfig {
     /// R2/S3/MinIO access key ID — 32 chars for R2, 20 chars for AWS S3.
-    /// Set via S3__ACCESS_KEY_ID env var.
+    /// Env var: S3__ACCESS_KEY_ID  (matches parent field name `s3` + separator `__`)
     pub access_key_id: Option<String>,
-    /// Corresponding secret access key. Set via S3__SECRET_ACCESS_KEY env var.
+    /// Corresponding secret access key.
+    /// Env var: S3__SECRET_ACCESS_KEY
     pub secret_access_key: Option<String>,
 }
 
