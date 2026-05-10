@@ -52,14 +52,34 @@ pub async fn run() -> anyhow::Result<()> {
     // hangs for ~1 s and then errors every call with "A region must be set".
     // For Cloudflare R2 use "auto"; for AWS S3 use the bucket's region (e.g.
     // "us-east-1"); for MinIO any non-empty value works.
-    let s3_bucket          = std::env::var("S3_BUCKET").unwrap_or_else(|_| "logisticos-pod".to_string());
-    let s3_endpoint        = std::env::var("S3_ENDPOINT_URL").ok();
-    let s3_region          = std::env::var("S3_REGION").or_else(|_| std::env::var("AWS_REGION")).ok();
+    //
+    // S3__ACCESS_KEY_ID / S3__SECRET_ACCESS_KEY must be set to the Cloudflare R2
+    // access key (32 chars). If omitted, the AWS SDK auto-discovers credentials
+    // from AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY — but those are typically
+    // 20-char AWS keys that R2 rejects with "Credential access key has length 20,
+    // should be 32".
+    let s3_bucket           = std::env::var("S3_BUCKET").unwrap_or_else(|_| "logisticos-pod".to_string());
+    let s3_endpoint         = std::env::var("S3_ENDPOINT_URL").ok();
+    let s3_region           = std::env::var("S3_REGION").or_else(|_| std::env::var("AWS_REGION")).ok();
     let s3_force_path_style = std::env::var("S3_FORCE_PATH_STYLE")
         .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
         .unwrap_or(false); // false = virtual-hosted style (R2); true = path-style (MinIO)
+    let s3_credentials = match (cfg.storage.access_key_id.clone(), cfg.storage.secret_access_key.clone()) {
+        (Some(k), Some(s)) => {
+            tracing::info!("S3 storage: using explicit credentials from config (key length={})", k.len());
+            Some((k, s))
+        }
+        _ => {
+            tracing::warn!(
+                "S3 storage: S3__ACCESS_KEY_ID / S3__SECRET_ACCESS_KEY not set — \
+                 falling back to AWS SDK credential auto-discovery. \
+                 If targeting Cloudflare R2, set both vars to your R2 API token (32-char key)."
+            );
+            None
+        }
+    };
     let storage = Arc::new(
-        S3StorageAdapter::new(s3_endpoint, s3_bucket, s3_region, s3_force_path_style).await
+        S3StorageAdapter::new(s3_endpoint, s3_bucket, s3_region, s3_force_path_style, s3_credentials).await
             .context("Failed to init S3 storage")?
     );
 

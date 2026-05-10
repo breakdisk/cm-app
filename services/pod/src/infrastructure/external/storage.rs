@@ -33,11 +33,18 @@ pub struct S3StorageAdapter {
 }
 
 impl S3StorageAdapter {
+    /// `credentials` — explicit (access_key_id, secret_access_key) for R2 or MinIO.
+    /// When `None`, the AWS SDK auto-discovers from env/IMDS (fine for real AWS S3).
+    /// Always pass explicit credentials for Cloudflare R2: R2 keys are 32 chars, but
+    /// the SDK auto-discovery chain picks up any `AWS_ACCESS_KEY_ID` in the environment,
+    /// which may be a legacy 20-char AWS key that R2 rejects with "InvalidArgument:
+    /// Credential access key has length 20, should be 32".
     pub async fn new(
         endpoint_url: Option<String>,
         bucket: String,
         region: Option<String>,
         force_path_style: bool,
+        credentials: Option<(String, String)>,
     ) -> anyhow::Result<Self> {
         // The AWS SDK auto-discovers region from env/IMDS. On a non-AWS host
         // (our VPS), IMDS times out (1 s per call) and the SDK then errors
@@ -55,16 +62,27 @@ impl S3StorageAdapter {
         // Build the SDK config — endpoint_url overrides for MinIO/R2 in local/staging.
         // force_path_style: true for MinIO (requires it), false for Cloudflare R2
         // (R2 rejects presigned PUTs generated with path-style).
-        let s3_config = if let Some(endpoint) = endpoint_url {
-            aws_sdk_s3::config::Builder::from(&sdk_config)
-                .endpoint_url(endpoint)
-                .force_path_style(force_path_style)
-                .build()
-        } else {
-            aws_sdk_s3::config::Builder::from(&sdk_config).build()
-        };
+        let mut builder = aws_sdk_s3::config::Builder::from(&sdk_config);
 
-        let client = aws_sdk_s3::Client::from_conf(s3_config);
+        // Inject explicit credentials when provided. This overrides whatever
+        // AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY the SDK would auto-discover,
+        // ensuring the correct R2 key (32 chars) is embedded in presigned URLs.
+        if let Some((access_key_id, secret_access_key)) = credentials {
+            let creds = aws_sdk_s3::config::Credentials::new(
+                access_key_id,
+                secret_access_key,
+                None,   // session token — not used for R2 or static MinIO keys
+                None,   // expiry — static key, never expires
+                "logisticos-static",
+            );
+            builder = builder.credentials_provider(creds);
+        }
+
+        if let Some(endpoint) = endpoint_url {
+            builder = builder.endpoint_url(endpoint).force_path_style(force_path_style);
+        }
+
+        let client = aws_sdk_s3::Client::from_conf(builder.build());
         Ok(Self { client, bucket })
     }
 }
