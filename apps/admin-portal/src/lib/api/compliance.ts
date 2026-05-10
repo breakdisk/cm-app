@@ -55,3 +55,22 @@ export async function rejectDocument(docId: string, reason: string): Promise<voi
     body: JSON.stringify({ reason }),
   });
 }
+
+export async function getAdminDocumentUrl(docId: string): Promise<string> {
+  const r = await authFetch(`${BASE}/api/v1/compliance/admin/documents/${docId}/url`);
+  const j = await r.json();
+  return j.data.url;
+}
+
+export async function suspendProfile(profileId: string, reason?: string): Promise<void> {
+  await authFetch(`${BASE}/api/v1/compliance/admin/profiles/${profileId}/suspend`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export async function reinstateProfile(profileId: string): Promise<void> {
+  await authFetch(`${BASE}/api/v1/compliance/admin/profiles/${profileId}/reinstate`, {
+    method: "POST",
+  });
+}
