@@ -76,7 +76,7 @@ pub async fn run() -> anyhow::Result<()> {
         .map(|e| e.contains("r2.cloudflarestorage.com"))
         .unwrap_or(false);
 
-    let s3_credentials = match (cfg.storage.access_key_id.clone(), cfg.storage.secret_access_key.clone()) {
+    let s3_credentials = match (cfg.s3.access_key_id.clone(), cfg.s3.secret_access_key.clone()) {
         (Some(k), Some(s)) => {
             if is_r2 && k.len() != 32 {
                 anyhow::bail!(
