@@ -751,6 +751,13 @@ services:
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
       S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
       S3_BUCKET: ${S3_BUCKET:-logisticos-pod}
+      S3_REGION: ${AWS_DEFAULT_REGION:-auto}
+      # R2-specific 32-char credentials (S3__ prefix = Rust config crate double-underscore separator).
+      # These take precedence over the generic AWS_* vars and satisfy the bootstrap
+      # R2 credential guard that refuses to start with a 20-char AWS key against R2.
+      S3__ACCESS_KEY_ID: ${S3__ACCESS_KEY_ID:-}
+      S3__SECRET_ACCESS_KEY: ${S3__SECRET_ACCESS_KEY:-}
+      # Generic AWS vars kept for non-R2 / MinIO compatibility.
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-auto}
