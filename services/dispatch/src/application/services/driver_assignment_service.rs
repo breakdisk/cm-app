@@ -198,20 +198,32 @@ impl DriverAssignmentService {
         // Emit one event per delivery stop so each customer is notified
         // of their driver assignment (with their customer_id for engagement service)
         for stop in &route.stops {
-            // Look up customer_id from dispatch_queue for this shipment
-            let customer_id = self.queue_repo
+            // Look up the full queue row for this shipment — we need customer
+            // contact fields so engagement can send "pickup_scheduled" WhatsApp
+            // without a cross-service lookup at notification time.
+            let queue_row = self.queue_repo
                 .find_by_shipment(stop.shipment_id)
                 .await
                 .ok()
-                .flatten()
-                .map(|row| row.customer_id)
-                .unwrap_or_else(|| {
-                    tracing::warn!(
-                        shipment_id = %stop.shipment_id,
-                        "Could not find shipment in dispatch_queue — customer_id unavailable"
-                    );
-                    Uuid::nil()
-                });
+                .flatten();
+
+            let (customer_id, customer_name, customer_phone, customer_email, tracking_number) =
+                match queue_row {
+                    Some(ref row) => (
+                        row.customer_id,
+                        row.customer_name.clone(),
+                        row.customer_phone.clone(),
+                        row.customer_email.clone().unwrap_or_default(),
+                        row.tracking_number.clone().unwrap_or_default(),
+                    ),
+                    None => {
+                        tracing::warn!(
+                            shipment_id = %stop.shipment_id,
+                            "Could not find shipment in dispatch_queue — contact fields unavailable"
+                        );
+                        (Uuid::nil(), String::new(), String::new(), String::new(), String::new())
+                    }
+                };
 
             let event = Event::new("dispatch", "driver.assigned", tenant_id.inner(), DriverAssigned {
                 assignment_id: assignment.id,
@@ -220,6 +232,11 @@ impl DriverAssignmentService {
                 route_id: route_id.inner(),
                 driver_id: driver_id.inner(),
                 tenant_id: tenant_id.inner(),
+                customer_name,
+                customer_phone,
+                customer_email,
+                tracking_number,
+                estimated_pickup_time: None,
             });
             self.kafka.publish_event(topics::DRIVER_ASSIGNED, &event).await
                 .map_err(AppError::Internal)?;
