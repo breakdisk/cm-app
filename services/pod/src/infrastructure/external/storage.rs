@@ -103,12 +103,20 @@ impl S3StorageAdapter {
 #[async_trait]
 impl StorageAdapter for S3StorageAdapter {
     async fn presign_upload(&self, key: &str, content_type: &str, ttl_seconds: u32) -> anyhow::Result<PresignedUpload> {
-        // Sign Content-Type as part of the canonical request. The Android client
-        // sends `Content-Type: image/jpeg` on the PUT body, and if Content-Type is
-        // not in SignedHeaders R2's signature validator can take a different code
-        // path that demands x-amz-date as a header (which is not how presigned
-        // URLs work). Calling .content_type() here adds it to SignedHeaders so
-        // the validator stays on the presigned-URL code path.
+        // Sign Content-Type as part of the canonical request so R2 stays on
+        // the presigned-URL validation code path (not the direct-V4 path that
+        // demands x-amz-date as a standalone header).
+        //
+        // Do NOT manually inject `x-amz-content-sha256` into upload_headers.
+        // History: a previous version added it as an unsigned sidecar header
+        // (not in SignedHeaders) to work around "Missing x-amz-content-sha256".
+        // That error only appeared when wrong credentials were in use (20-char
+        // AWS key). With correct 32-char R2 credentials, R2 does NOT require
+        // x-amz-content-sha256 as a request header for presigned PUTs — the
+        // presigned URL already encodes UNSIGNED-PAYLOAD in the canonical
+        // request. Sending the header unsigned (not in SignedHeaders) caused R2
+        // to include it in its canonical request while our signature excluded
+        // it, producing "SignatureDoesNotMatch".
         let presigned = self.client
             .put_object()
             .bucket(&self.bucket)
@@ -123,29 +131,13 @@ impl StorageAdapter for S3StorageAdapter {
 
         let url = presigned.uri().to_string();
 
-        // Headers the SDK says the client MUST send.
-        let mut headers: std::collections::HashMap<String, String> = presigned
+        // Headers the SDK says the client MUST send — typically empty for
+        // presigned PUTs or just content-type if the SDK chose to sign it.
+        // Do NOT add x-amz-content-sha256 here; send only what the SDK signed.
+        let headers: std::collections::HashMap<String, String> = presigned
             .headers()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-
-        // R2-specific quirk: R2 requires `x-amz-content-sha256` as an actual
-        // request header on every PUT, even for presigned URLs where the SDK
-        // doesn't put it in SignedHeaders. Sending it unsigned is fine for V4 —
-        // unsigned headers are simply not part of the canonical request — but
-        // R2's request gate rejects requests that omit it entirely with
-        // "InvalidRequest: Missing x-amz-content-sha256".
-        //
-        // This is safe to add unconditionally: if the SDK already returned it,
-        // .or_insert_with is a no-op; if not, we add UNSIGNED-PAYLOAD which
-        // matches what aws-sdk-s3 uses for presigned URL body hashing.
-        //
-        // We deliberately do NOT inject x-amz-date as a header — sending it
-        // makes R2 switch to direct-V4 validation looking for the Authorization
-        // header, which doesn't exist on presigned requests.
-        headers
-            .entry("x-amz-content-sha256".to_string())
-            .or_insert_with(|| "UNSIGNED-PAYLOAD".to_string());
 
         // Log the SignedHeaders list from the URL so a botched config (path-style,
         // wrong endpoint, missing region) is obvious from container logs.
