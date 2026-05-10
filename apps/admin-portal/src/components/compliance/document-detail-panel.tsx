@@ -1,14 +1,23 @@
 "use client";
 import { useEffect, useState } from "react";
-import { fetchProfile, approveDocument, rejectDocument } from "@/lib/api/compliance";
+import {
+  fetchProfile,
+  approveDocument,
+  rejectDocument,
+  getAdminDocumentUrl,
+  suspendProfile,
+  reinstateProfile,
+} from "@/lib/api/compliance";
 import type { DriverDocument } from "@/lib/api/compliance";
 import { cn } from "@/lib/design-system/cn";
-import { Check, X, ExternalLink } from "lucide-react";
+import { Check, X, ExternalLink, ShieldX, ShieldCheck } from "lucide-react";
 
 interface Props {
-  profileId: string;
-  onApprove: (docId: string) => void;
-  onReject:  (docId: string, reason: string) => void;
+  profileId:   string;
+  onApprove:   (docId: string) => void;
+  onReject:    (docId: string, reason: string) => void;
+  onSuspend:   (profileId: string) => void;
+  onReinstate: (profileId: string) => void;
 }
 
 const STATUS_BADGE: Record<string, string> = {
@@ -20,13 +29,23 @@ const STATUS_BADGE: Record<string, string> = {
   suspended:          "bg-red-surface/20 border-red-glow/25 text-red-signal",
 };
 
-export function DocumentDetailPanel({ profileId, onApprove, onReject }: Props) {
-  const [detail,       setDetail]       = useState<{ profile: any; documents: DriverDocument[] } | null>(null);
-  const [rejectDocId,  setRejectDocId]  = useState<string | null>(null);
-  const [rejectReason, setRejectReason] = useState("");
+export function DocumentDetailPanel({
+  profileId,
+  onApprove,
+  onReject,
+  onSuspend,
+  onReinstate,
+}: Props) {
+  const [detail,        setDetail]        = useState<{ profile: any; documents: DriverDocument[] } | null>(null);
+  const [rejectDocId,   setRejectDocId]   = useState<string | null>(null);
+  const [rejectReason,  setRejectReason]  = useState("");
+  const [suspendOpen,   setSuspendOpen]   = useState(false);
+  const [suspendReason, setSuspendReason] = useState("");
 
   useEffect(() => {
     setDetail(null);
+    setSuspendOpen(false);
+    setSuspendReason("");
     fetchProfile(profileId).then(setDetail);
   }, [profileId]);
 
@@ -62,40 +81,94 @@ export function DocumentDetailPanel({ profileId, onApprove, onReject }: Props) {
     fetchProfile(profileId).then(setDetail);
   }
 
+  async function handleSuspend() {
+    await suspendProfile(profile.id, suspendReason.trim() || undefined);
+    setSuspendOpen(false);
+    setSuspendReason("");
+    const updated = await fetchProfile(profileId);
+    setDetail(updated);
+    onSuspend(profile.id);
+  }
+
+  async function handleReinstate() {
+    await reinstateProfile(profile.id);
+    const updated = await fetchProfile(profileId);
+    setDetail(updated);
+    onReinstate(profile.id);
+  }
+
   const badgeClass =
     STATUS_BADGE[profile.overall_status] ?? STATUS_BADGE.pending_submission;
+
+  const isSuspended = profile.overall_status === "suspended";
 
   return (
     <div className="flex-1 rounded-xl border border-cyan-glow/20 bg-cyan-surface/5 flex flex-col overflow-hidden">
       {/* Profile header */}
-      <div className="px-4 py-3 border-b border-glass-border flex items-center gap-3">
-        <div className="w-10 h-10 rounded-full bg-cyan-surface/20 border-2 border-cyan-glow/30 flex items-center justify-center text-sm font-bold text-cyan-neon flex-shrink-0">
-          {String(profile.entity_id ?? "").slice(0, 2).toUpperCase()}
-        </div>
-        <div>
-          <div className="text-sm font-semibold text-white truncate max-w-[200px]">
-            {profile.entity_id}
+      <div className="px-4 py-3 border-b border-glass-border">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-full bg-cyan-surface/20 border-2 border-cyan-glow/30 flex items-center justify-center text-sm font-bold text-cyan-neon flex-shrink-0">
+            {String(profile.entity_id ?? "").slice(0, 2).toUpperCase()}
           </div>
-          <div className="text-xs font-mono text-white/35">{profile.jurisdiction}</div>
-        </div>
-        <span
-          className={cn(
-            "ml-auto text-xs px-3 py-1 rounded-full border font-mono font-semibold",
-            badgeClass,
-          )}
-        >
-          {String(profile.overall_status ?? "").replace(/_/g, " ")}
-        </span>
-        {/* Cross-portal — drivers are managed (commission, zone, SLA) in partner-portal.
-            Plain <a> so the /partner basePath persists after the jump. */}
-        {profile.entity_type === "driver" && profile.entity_id && (
-          <a
-            href={`/partner/drivers?focus=${encodeURIComponent(String(profile.entity_id))}`}
-            title="Open driver in Partner Portal"
-            className="ml-2 inline-flex items-center gap-1 rounded-md border border-glass-border bg-glass-100 px-2 py-1 text-2xs font-mono text-white/50 hover:border-purple-plasma/40 hover:text-purple-plasma transition-colors"
+          <div>
+            <div className="text-sm font-semibold text-white truncate max-w-[200px]">
+              {profile.entity_id}
+            </div>
+            <div className="text-xs font-mono text-white/35">{profile.jurisdiction}</div>
+          </div>
+          <span
+            className={cn(
+              "ml-auto text-xs px-3 py-1 rounded-full border font-mono font-semibold",
+              badgeClass,
+            )}
           >
-            Partner ↗
-          </a>
+            {String(profile.overall_status ?? "").replace(/_/g, " ")}
+          </span>
+          {/* Cross-portal — drivers are managed (commission, zone, SLA) in partner-portal.
+              Plain <a> so the /partner basePath persists after the jump. */}
+          {profile.entity_type === "driver" && profile.entity_id && (
+            <a
+              href={`/partner/drivers?focus=${encodeURIComponent(String(profile.entity_id))}`}
+              title="Open driver in Partner Portal"
+              className="ml-2 inline-flex items-center gap-1 rounded-md border border-glass-border bg-glass-100 px-2 py-1 text-2xs font-mono text-white/50 hover:border-purple-plasma/40 hover:text-purple-plasma transition-colors"
+            >
+              Partner ↗
+            </a>
+          )}
+          {/* Suspend / Reinstate */}
+          {isSuspended ? (
+            <button
+              onClick={handleReinstate}
+              className="ml-1 px-2 py-1 rounded-lg text-2xs border border-green-glow/30 bg-green-surface/20 text-green-signal flex items-center gap-1 hover:bg-green-surface/30 transition-colors"
+            >
+              <ShieldCheck className="h-3 w-3" /> Reinstate
+            </button>
+          ) : (
+            <button
+              onClick={() => setSuspendOpen((o) => !o)}
+              className="ml-1 px-2 py-1 rounded-lg text-2xs border border-red-glow/30 bg-red-surface/20 text-red-signal flex items-center gap-1 hover:bg-red-surface/30 transition-colors"
+            >
+              <ShieldX className="h-3 w-3" /> Suspend
+            </button>
+          )}
+        </div>
+
+        {/* Inline suspend-reason form */}
+        {suspendOpen && !isSuspended && (
+          <div className="mt-2 flex gap-2">
+            <input
+              value={suspendReason}
+              onChange={(e) => setSuspendReason(e.target.value)}
+              placeholder="Suspension reason (optional)…"
+              className="flex-1 bg-red-surface/30 border border-red-glow/25 rounded-lg px-3 py-1.5 text-xs font-mono text-white/60 placeholder:text-white/25 outline-none"
+            />
+            <button
+              onClick={handleSuspend}
+              className="px-3 py-1.5 rounded-lg text-xs font-bold bg-red-surface/20 border border-red-glow/30 text-red-signal transition-colors"
+            >
+              Confirm
+            </button>
+          </div>
         )}
       </div>
 
@@ -139,14 +212,15 @@ export function DocumentDetailPanel({ profileId, onApprove, onReject }: Props) {
                   )}
                 </div>
                 {doc.file_url && (
-                  <a
-                    href={doc.file_url}
-                    target="_blank"
-                    rel="noreferrer"
+                  <button
+                    onClick={async () => {
+                      const url = await getAdminDocumentUrl(doc.id);
+                      window.open(url, "_blank", "noreferrer");
+                    }}
                     className="px-2.5 py-1.5 rounded-lg text-xs bg-glass-100 border border-glass-border text-white/50 flex items-center gap-1 hover:text-white/80 transition-colors"
                   >
                     <ExternalLink className="h-3 w-3" /> View
-                  </a>
+                  </button>
                 )}
               </div>
 
