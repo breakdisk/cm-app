@@ -17,7 +17,7 @@ import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
 import { OnboardCarrierModal } from "@/components/carriers/OnboardCarrierModal";
-import { GitBranch, Plus, LineChart, Wallet, X, Store, RefreshCw } from "lucide-react";
+import { GitBranch, Plus, LineChart, Wallet, X, Store, RefreshCw, Power, PauseCircle, ExternalLink } from "lucide-react";
 import { authFetch } from "@/lib/auth/auth-fetch";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -160,6 +160,46 @@ function CarriersPageInner() {
   const [error,         setError]         = useState<string | null>(null);
   const [onboardOpen,   setOnboardOpen]   = useState(false);
 
+  // Suspend modal state
+  const [suspendTarget, setSuspendTarget] = useState<Carrier | null>(null);
+  const [suspendReason, setSuspendReason] = useState("");
+  const [suspending,    setSuspending]    = useState(false);
+  const [actionError,   setActionError]   = useState<string | null>(null);
+
+  const handleSuspend = async () => {
+    if (!suspendTarget || !suspendReason.trim()) return;
+    setSuspending(true);
+    setActionError(null);
+    try {
+      const res = await authFetch(`${API_BASE}/v1/carriers/${suspendTarget.id}/suspend`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: suspendReason.trim() }),
+      });
+      if (!res.ok) throw new Error(`Suspend failed: ${res.status}`);
+      setSuspendTarget(null);
+      setSuspendReason("");
+      await load();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Failed to suspend carrier");
+    } finally {
+      setSuspending(false);
+    }
+  };
+
+  const handleActivate = async (carrier: Carrier) => {
+    setActionError(null);
+    try {
+      const res = await authFetch(`${API_BASE}/v1/carriers/${carrier.id}/activate`, {
+        method: "POST",
+      });
+      if (!res.ok) throw new Error(`Activate failed: ${res.status}`);
+      await load();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Failed to activate carrier");
+    }
+  };
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -263,6 +303,69 @@ function CarriersPageInner() {
         onSuccess={load}
       />
 
+      {/* Suspend modal */}
+      {suspendTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            className="w-full max-w-md"
+          >
+            <GlassCard glow="red">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <h3 className="font-heading text-base font-bold text-white">Suspend Carrier</h3>
+                  <p className="text-xs font-mono text-white/40 mt-0.5">{suspendTarget.name} · {suspendTarget.code}</p>
+                </div>
+                <button onClick={() => { setSuspendTarget(null); setSuspendReason(""); setActionError(null); }} className="text-white/40 hover:text-white">
+                  <X size={16} />
+                </button>
+              </div>
+              <p className="text-xs text-white/50 mb-3">
+                Suspended carriers are removed from rate-shop and dispatch allocation immediately.
+                Provide a clear reason — it is logged and visible in the audit trail.
+              </p>
+              <label className="block mb-1">
+                <span className="text-2xs font-mono text-white/40 uppercase tracking-wider">Reason</span>
+                <textarea
+                  value={suspendReason}
+                  onChange={(e) => setSuspendReason(e.target.value)}
+                  rows={3}
+                  placeholder="SLA breach threshold exceeded / regulatory hold / …"
+                  className="mt-1 w-full rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white placeholder:text-white/20 outline-none focus:border-red-signal/50 resize-none font-mono"
+                />
+              </label>
+              {actionError && <p className="text-2xs text-red-signal font-mono mb-2">{actionError}</p>}
+              <div className="flex items-center gap-2 mt-4">
+                <button
+                  onClick={() => { setSuspendTarget(null); setSuspendReason(""); setActionError(null); }}
+                  className="flex-1 rounded-lg border border-glass-border py-2 text-xs text-white/60 hover:text-white transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSuspend}
+                  disabled={suspending || !suspendReason.trim()}
+                  className="flex-1 rounded-lg bg-red-signal/20 border border-red-signal/40 py-2 text-xs font-semibold text-red-signal hover:bg-red-signal/30 disabled:opacity-40 transition-colors"
+                >
+                  {suspending ? "Suspending…" : "Confirm Suspend"}
+                </button>
+              </div>
+            </GlassCard>
+          </motion.div>
+        </div>
+      )}
+
+      {actionError && !suspendTarget && (
+        <motion.div variants={variants.fadeInUp}>
+          <div className="rounded-lg border border-red-signal/30 bg-red-signal/5 px-3 py-2 flex items-center gap-2">
+            <span className="text-2xs font-mono text-red-signal">{actionError}</span>
+            <button onClick={() => setActionError(null)} className="ml-auto text-white/40 hover:text-white"><X size={11} /></button>
+          </div>
+        </motion.div>
+      )}
+
       {/* Coverage filter banner (from partner/sla deep link) */}
       {coverageFilter && (
         <motion.div variants={variants.fadeInUp}>
@@ -297,8 +400,8 @@ function CarriersPageInner() {
       {/* Carrier table */}
       <motion.div variants={variants.fadeInUp}>
         <GlassCard padding="none">
-          <div className="grid grid-cols-[2fr_1fr_60px_80px_80px_100px_60px_80px] gap-3 px-5 py-2.5 border-b border-glass-border">
-            {["Carrier", "Coverage", "Grade", "SLA", "Shipments", "Cost/Ship", "Int.", "Status"].map((h) => (
+          <div className="grid grid-cols-[2fr_1fr_60px_80px_80px_100px_60px_140px] gap-3 px-5 py-2.5 border-b border-glass-border">
+            {["Carrier", "Coverage", "Grade", "SLA", "Shipments", "Cost/Ship", "Int.", "Status / Actions"].map((h) => (
               <span key={h} className="text-2xs font-mono text-white/30 uppercase tracking-wider">{h}</span>
             ))}
           </div>
@@ -306,18 +409,26 @@ function CarriersPageInner() {
           {visibleCarriers.map((c) => {
             const { label, variant } = STATUS_CONFIG[c.status];
             const slaOk = c.sla_rate >= c.sla_target;
+            const isActive    = c.status === "active" || c.status === "probation";
+            const isSuspended = c.status === "suspended";
+            const isPending   = c.status === "pending";
             return (
-              <div key={c.id} className="grid grid-cols-[2fr_1fr_60px_80px_80px_100px_60px_80px] gap-3 items-center px-5 py-3.5 border-b border-glass-border/50 hover:bg-glass-100 transition-colors cursor-pointer">
-                <div className="flex items-center gap-2">
-                  <div>
-                    <p className="text-xs font-semibold text-white">{c.name}</p>
+              <div
+                key={c.id}
+                className="grid grid-cols-[2fr_1fr_60px_80px_80px_100px_60px_140px] gap-3 items-center px-5 py-3.5 border-b border-glass-border/50 hover:bg-glass-100 transition-colors"
+              >
+                {/* Name + code — click navigates to detail */}
+                <a href={`/admin/carriers/${c.id}`} className="group flex items-center gap-2 min-w-0">
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-white group-hover:text-cyan-neon transition-colors truncate">{c.name}</p>
                     <div className="flex items-center gap-1 mt-0.5">
                       <span className="text-2xs font-mono text-cyan-neon/70">{c.code}</span>
                       <span className="text-2xs font-mono text-white/20">·</span>
-                      <span className="text-2xs font-mono text-white/30 truncate max-w-[120px]">{c.id}</span>
+                      <span className="text-2xs font-mono text-white/30 truncate max-w-[100px]">{c.id.slice(0, 8)}…</span>
                     </div>
                   </div>
-                </div>
+                  <ExternalLink size={10} className="flex-shrink-0 text-white/20 group-hover:text-cyan-neon/50 transition-colors" />
+                </a>
                 <div className="flex flex-wrap gap-0.5">
                   {c.coverage.slice(0,2).map((z) => (
                     <span key={z} className="text-2xs font-mono text-white/40 bg-glass-200 rounded px-1">{z}</span>
@@ -333,14 +444,32 @@ function CarriersPageInner() {
                 <NeonBadge variant={c.integration === "API" ? "green" : c.integration === "EDI" ? "cyan" : "amber"}>
                   {c.integration}
                 </NeonBadge>
-                <div className="flex items-center gap-1.5">
-                  <NeonBadge variant={variant} dot={c.status === "active"}>{label}</NeonBadge>
-                  {/* Cross-portal — partner-portal owns SLA detail + payout ledger.
-                      Plain <a> preserves the /partner basePath after the jump. */}
+                <div className="flex items-center gap-1">
+                  <NeonBadge variant={variant} dot={isActive}>{label}</NeonBadge>
+                  {/* Activate — shown when suspended or pending */}
+                  {(isSuspended || isPending) && (
+                    <button
+                      onClick={() => handleActivate(c)}
+                      title="Activate carrier"
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-glass-border text-white/40 hover:text-green-signal hover:border-green-signal/30 transition-colors"
+                    >
+                      <Power size={11} />
+                    </button>
+                  )}
+                  {/* Suspend — shown when active or probation */}
+                  {isActive && (
+                    <button
+                      onClick={() => { setSuspendTarget(c); setSuspendReason(""); setActionError(null); }}
+                      title="Suspend carrier"
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-glass-border text-white/40 hover:text-amber-signal hover:border-amber-signal/30 transition-colors"
+                    >
+                      <PauseCircle size={11} />
+                    </button>
+                  )}
+                  {/* Cross-portal links */}
                   <a
                     href={`/partner/sla?carrier=${encodeURIComponent(c.id)}`}
                     title="Open SLA in Partner Portal"
-                    onClick={(e) => e.stopPropagation()}
                     className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-glass-border text-white/40 hover:text-cyan-neon hover:border-cyan-neon/30 transition-colors"
                   >
                     <LineChart size={11} />
@@ -348,7 +477,6 @@ function CarriersPageInner() {
                   <a
                     href={`/partner/payouts?carrier=${encodeURIComponent(c.id)}`}
                     title="Open Payouts in Partner Portal"
-                    onClick={(e) => e.stopPropagation()}
                     className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-glass-border text-white/40 hover:text-green-signal hover:border-green-signal/30 transition-colors"
                   >
                     <Wallet size={11} />

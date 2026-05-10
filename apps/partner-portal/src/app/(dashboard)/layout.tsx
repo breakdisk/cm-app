@@ -21,9 +21,12 @@ import {
   Users,
   PackagePlus,
   Store,
+  Clock,
+  ShieldOff,
 } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 import { NeonBadge } from "@/components/ui/neon-badge";
+import { CarrierProvider, useCarrier } from "@/contexts/carrier-context";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -40,29 +43,29 @@ interface DashboardLayoutProps {
 // ─── Nav config ───────────────────────────────────────────────────────────────
 
 const NAV_ITEMS: NavItem[] = [
-  { label: "Overview",    href: "/",          icon: LayoutDashboard },
-  { label: "New Orders",  href: "/orders",    icon: PackagePlus },
-  { label: "Marketplace", href: "/marketplace", icon: Store },
-  { label: "SLA Dashboard", href: "/sla",     icon: Target },
-  { label: "Payouts",     href: "/payouts",   icon: DollarSign },
-  { label: "Rate Cards",  href: "/rates",     icon: Tag },
-  { label: "Manifests",   href: "/manifests", icon: ClipboardList },
-  { label: "Drivers",     href: "/drivers",   icon: Users },
-  { label: "Settings",    href: "/settings",  icon: Settings },
+  { label: "Overview",      href: "/",            icon: LayoutDashboard },
+  { label: "New Orders",    href: "/orders",      icon: PackagePlus },
+  { label: "Marketplace",   href: "/marketplace", icon: Store },
+  { label: "SLA Dashboard", href: "/sla",         icon: Target },
+  { label: "Payouts",       href: "/payouts",     icon: DollarSign },
+  { label: "Rate Cards",    href: "/rates",       icon: Tag },
+  { label: "Manifests",     href: "/manifests",   icon: ClipboardList },
+  { label: "Drivers",       href: "/drivers",     icon: Users },
+  { label: "Settings",      href: "/settings",    icon: Settings },
 ];
 
 // ─── Page title map ───────────────────────────────────────────────────────────
 
 const PAGE_TITLE_MAP: Record<string, string> = {
-  "/":          "Overview",
-  "/orders":    "New Orders",
+  "/":            "Overview",
+  "/orders":      "New Orders",
   "/marketplace": "Marketplace",
-  "/sla":       "SLA Dashboard",
-  "/payouts":   "Payouts",
-  "/rates":     "Rate Cards",
-  "/manifests": "Manifests",
-  "/drivers":   "Drivers",
-  "/settings":  "Settings",
+  "/sla":         "SLA Dashboard",
+  "/payouts":     "Payouts",
+  "/rates":       "Rate Cards",
+  "/manifests":   "Manifests",
+  "/drivers":     "Drivers",
+  "/settings":    "Settings",
 };
 
 function getPageTitle(pathname: string): string {
@@ -98,19 +101,14 @@ function NavLink({
       )}
       style={
         isActive
-          ? {
-              boxShadow:
-                "inset 3px 0 0 #00FF88, 0 0 12px rgba(0,255,136,0.08)",
-            }
+          ? { boxShadow: "inset 3px 0 0 #00FF88, 0 0 12px rgba(0,255,136,0.08)" }
           : undefined
       }
     >
       <Icon
         className={cn(
           "h-4 w-4 flex-shrink-0 transition-colors duration-200",
-          isActive
-            ? "text-green-signal"
-            : "text-white/40 group-hover:text-white/70"
+          isActive ? "text-green-signal" : "text-white/40 group-hover:text-white/70"
         )}
       />
 
@@ -128,7 +126,6 @@ function NavLink({
         )}
       </AnimatePresence>
 
-      {/* Tooltip for collapsed state */}
       {collapsed && (
         <div
           className={cn(
@@ -146,17 +143,116 @@ function NavLink({
   );
 }
 
-// ─── Layout ───────────────────────────────────────────────────────────────────
+// ─── Status gate screens (D) ──────────────────────────────────────────────────
 
-export default function DashboardLayout({ children }: DashboardLayoutProps) {
-  const [collapsed, setCollapsed] = useState(false);
-  const [mobileOpen, setMobileOpen] = useState(false);
-  const pathname = usePathname();
-  const router = useRouter();
+function PendingVerificationScreen() {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center p-8 text-center">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+        className="max-w-md space-y-5"
+      >
+        <div
+          className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-amber-signal/30"
+          style={{ background: "rgba(255, 171, 0, 0.08)", boxShadow: "0 0 24px rgba(255,171,0,0.15)" }}
+        >
+          <Clock className="h-7 w-7 text-amber-signal" />
+        </div>
+
+        <div>
+          <h2 className="font-heading text-xl font-bold text-white">Pending Verification</h2>
+          <p className="mt-2 text-sm text-white/50">
+            Your carrier profile is under review by our operations team.
+            You will be notified at your registered contact email once your
+            account is activated.
+          </p>
+        </div>
+
+        <div
+          className="rounded-xl border border-amber-signal/20 p-4 text-left"
+          style={{ background: "rgba(255,171,0,0.04)" }}
+        >
+          <p className="text-xs font-semibold text-amber-signal uppercase tracking-wider mb-2">
+            While you wait
+          </p>
+          <ul className="space-y-1.5 text-xs text-white/50 font-mono">
+            <li>• Visit <Link href="/settings" className="text-amber-signal/80 hover:text-amber-signal underline underline-offset-2">Settings</Link> to complete your carrier profile</li>
+            <li>• Prepare your rate cards for the rates page</li>
+            <li>• Contact your account manager to expedite review</li>
+          </ul>
+        </div>
+
+        <p className="text-2xs text-white/25 font-mono">
+          Status: <span className="text-amber-signal">pending_verification</span>
+        </p>
+      </motion.div>
+    </div>
+  );
+}
+
+function SuspendedScreen() {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center p-8 text-center">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+        className="max-w-md space-y-5"
+      >
+        <div
+          className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-red-signal/30"
+          style={{ background: "rgba(239, 68, 68, 0.08)", boxShadow: "0 0 24px rgba(239,68,68,0.15)" }}
+        >
+          <ShieldOff className="h-7 w-7 text-red-signal" />
+        </div>
+
+        <div>
+          <h2 className="font-heading text-xl font-bold text-white">Account Suspended</h2>
+          <p className="mt-2 text-sm text-white/50">
+            Your carrier account has been suspended. New shipment allocations
+            are paused. Please contact your account manager to resolve the issue
+            and restore access.
+          </p>
+        </div>
+
+        <p className="text-2xs text-white/25 font-mono">
+          Status: <span className="text-red-signal">suspended</span>
+        </p>
+      </motion.div>
+    </div>
+  );
+}
+
+// ─── Inner layout (consumes CarrierContext) ───────────────────────────────────
+
+function DashboardLayoutInner({ children }: DashboardLayoutProps) {
+  const [collapsed,   setCollapsed]   = useState(false);
+  const [mobileOpen,  setMobileOpen]  = useState(false);
+  const pathname  = usePathname();
+  const router    = useRouter();
   const pageTitle = getPageTitle(pathname);
 
-  // Close mobile menu on navigation
-  useState(() => { setMobileOpen(false); });
+  const { carrier, loading: carrierLoading } = useCarrier();
+
+  // Carrier-derived display values (fall back gracefully while loading).
+  const carrierName = carrier?.name ?? "Partner Portal";
+  const onTimeRate  = carrier
+    ? (carrier.total_shipments > 0
+        ? ((carrier.on_time_count / carrier.total_shipments) * 100).toFixed(1) + "%"
+        : "—")
+    : "—";
+
+  // ── D: Status gate ────────────────────────────────────────────────────────
+  // Settings is accessible regardless of status so the partner can complete
+  // their profile while pending. All other routes are gated.
+  const isSettingsRoute = pathname === "/settings" || pathname.startsWith("/settings/");
+  const isGated =
+    !carrierLoading &&
+    carrier !== null &&
+    (carrier.status === "pending_verification" || carrier.status === "suspended") &&
+    !isSettingsRoute;
 
   return (
     <div className="flex min-h-screen bg-canvas font-sans antialiased">
@@ -192,7 +288,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           borderRight: "1px solid rgba(255, 255, 255, 0.06)",
         }}
       >
-        {/* ── Carrier logo + PARTNER PORTAL badge ───────────────────────── */}
+        {/* ── Carrier name + portal badge ────────────────────────────── */}
         <div
           className={cn(
             "flex h-16 flex-shrink-0 flex-col justify-center border-b border-glass-border",
@@ -200,7 +296,6 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           )}
         >
           <div className="flex items-center gap-2.5 min-w-0">
-            {/* Icon mark */}
             <div
               className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg"
               style={{
@@ -221,7 +316,11 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                   className="overflow-hidden"
                 >
                   <span className="whitespace-nowrap font-heading text-sm font-bold tracking-tight text-white">
-                    FastShip Co.
+                    {carrierLoading ? (
+                      <span className="inline-block h-3 w-24 animate-pulse rounded bg-glass-300" />
+                    ) : (
+                      carrierName
+                    )}
                   </span>
                   <div className="mt-0.5">
                     <NeonBadge variant="green" className="text-2xs">
@@ -267,7 +366,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
               className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-xs font-bold text-canvas"
               style={{ background: "linear-gradient(135deg, #00FF88, #00B8D9)" }}
             >
-              RC
+              {carrier?.code?.slice(0, 2).toUpperCase() ?? "—"}
             </div>
             <AnimatePresence initial={false}>
               {!collapsed && (
@@ -279,10 +378,10 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                   className="min-w-0 flex-1 overflow-hidden"
                 >
                   <p className="truncate whitespace-nowrap text-xs font-medium text-white/80">
-                    Roberto Cruz
+                    {carrier?.contact_email ?? "—"}
                   </p>
                   <p className="truncate whitespace-nowrap text-2xs text-white/40 font-mono">
-                    Partner Admin
+                    {carrier?.code ?? "Partner"}
                   </p>
                 </motion.div>
               )}
@@ -326,11 +425,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           )}
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
         >
-          {collapsed ? (
-            <ChevronRight className="h-3 w-3" />
-          ) : (
-            <ChevronLeft className="h-3 w-3" />
-          )}
+          {collapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronLeft className="h-3 w-3" />}
         </button>
       </aside>
 
@@ -364,7 +459,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             </motion.h1>
           </div>
 
-          {/* Right — SLA quick status */}
+          {/* Right — live SLA rate from carrier context */}
           <div className="flex items-center gap-3">
             <div className="hidden items-center gap-2 sm:flex">
               <span className="text-xs text-white/40">SLA Rate</span>
@@ -372,28 +467,52 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                 className="font-mono text-sm font-bold text-green-signal"
                 style={{ textShadow: "0 0 8px rgba(0,255,136,0.4)" }}
               >
-                96.8%
+                {onTimeRate}
               </span>
             </div>
             <div className="h-4 w-px bg-glass-border hidden sm:block" />
-            <NeonBadge variant="green" dot pulse>
-              Active
-            </NeonBadge>
+            {carrier?.status === "pending_verification" ? (
+              <NeonBadge variant="amber">Pending</NeonBadge>
+            ) : carrier?.status === "suspended" ? (
+              <NeonBadge variant="red">Suspended</NeonBadge>
+            ) : (
+              <NeonBadge variant="green" dot pulse>Active</NeonBadge>
+            )}
           </div>
         </header>
 
-        {/* ── Page content ──────────────────────────────────────────────── */}
-        <main className="flex-1 overflow-auto bg-canvas p-4 md:p-6">
-          <motion.div
-            key={pathname}
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-          >
-            {children}
-          </motion.div>
+        {/* ── Page content (or status gate) ─────────────────────────────── */}
+        <main className="flex flex-1 flex-col overflow-auto bg-canvas">
+          {isGated ? (
+            carrier?.status === "pending_verification" ? (
+              <PendingVerificationScreen />
+            ) : (
+              <SuspendedScreen />
+            )
+          ) : (
+            <div className="p-4 md:p-6">
+              <motion.div
+                key={pathname}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+              >
+                {children}
+              </motion.div>
+            </div>
+          )}
         </main>
       </div>
     </div>
+  );
+}
+
+// ─── Root layout export ───────────────────────────────────────────────────────
+
+export default function DashboardLayout({ children }: DashboardLayoutProps) {
+  return (
+    <CarrierProvider>
+      <DashboardLayoutInner>{children}</DashboardLayoutInner>
+    </CarrierProvider>
   );
 }

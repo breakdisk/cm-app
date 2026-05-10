@@ -3,12 +3,22 @@
  * Partner Portal — Settings
  * Carrier profile + SLA commitment editor backed by PUT /v1/carriers/:id.
  * Server clamps SLA target to [0, 100] and floors max_delivery_days at 1.
+ *
+ * Sections:
+ *  • Carrier Profile  — name, email, phone, webhook URL (editable)
+ *  • SLA Commitment   — on-time target, max days, penalty (editable)
+ *  • Coverage Zones   — derived from rate cards (read-only)
+ *  • API Credentials  — generate/rotate integration API key (B)
+ *  • Compliance       — live compliance_status from carrier entity (admin-managed)
  */
 import { useCallback, useEffect, useState } from "react";
-import { motion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
-import { RefreshCw, Save } from "lucide-react";
+import { ComplianceBadge } from "@/components/compliance/compliance-badge";
+import {
+  RefreshCw, Save, Key, Copy, Check, AlertTriangle, RotateCcw, X,
+} from "lucide-react";
 import { variants } from "@/lib/design-system/tokens";
 import { carriersApi, carrierIdOf, fmtPhp, type Carrier } from "@/lib/api/carriers";
 
@@ -30,12 +40,115 @@ function statusBadge(status: string): "green" | "amber" | "red" | "muted" {
   }
 }
 
+// ── API Key Reveal Modal ───────────────────────────────────────────────────────
+
+function ApiKeyRevealModal({
+  apiKey,
+  onClose,
+}: {
+  apiKey: string;
+  onClose: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    await navigator.clipboard.writeText(apiKey);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2500);
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "rgba(5,8,16,0.90)", backdropFilter: "blur(8px)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      {/* Inner AnimatePresence so the card's exit spring animation fires.
+          Without this, the card and backdrop unmount together and the card
+          exit transition is skipped (matching the PickupModal pattern). */}
+      <AnimatePresence>
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0, y: 12 }}
+        animate={{ scale: 1,    opacity: 1, y: 0 }}
+        exit={{ scale: 0.95,    opacity: 0, y: 12 }}
+        transition={{ type: "spring", duration: 0.35 }}
+        className="w-full max-w-md"
+      >
+        <GlassCard glow="amber" className="relative space-y-4">
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-2">
+              <Key size={16} className="text-amber-signal" />
+              <h3 className="font-heading font-bold text-white text-sm">API Key Generated</h3>
+            </div>
+            <button onClick={onClose} className="text-white/30 hover:text-white/70 transition-colors">
+              <X size={14} />
+            </button>
+          </div>
+
+          <div className="rounded-lg border border-amber-signal/30 bg-amber-signal/5 px-3 py-3 space-y-1">
+            <div className="flex items-center gap-1.5 mb-1">
+              <AlertTriangle size={11} className="text-amber-signal flex-shrink-0" />
+              <span className="text-xs font-semibold text-amber-signal">This key will not be shown again</span>
+            </div>
+            <p className="text-2xs text-white/40 font-mono">
+              Copy it now and store it securely. Generating a new key will immediately
+              invalidate this one.
+            </p>
+          </div>
+
+          <div className="rounded-lg border border-glass-border bg-glass-100 px-3 py-2.5">
+            <p className="text-xs text-white/40 font-mono mb-1.5 uppercase tracking-widest">API Key</p>
+            <div className="flex items-center gap-2">
+              <span className="flex-1 font-mono text-xs text-cyan-neon break-all">{apiKey}</span>
+            </div>
+          </div>
+
+          <button
+            onClick={handleCopy}
+            className={`w-full flex items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-semibold transition-all ${
+              copied
+                ? "border-green-signal/40 bg-green-signal/10 text-green-signal"
+                : "border-amber-signal/30 bg-amber-signal/10 text-amber-signal hover:bg-amber-signal/20"
+            }`}
+          >
+            {copied ? <Check size={14} /> : <Copy size={14} />}
+            {copied ? "Copied!" : "Copy to Clipboard"}
+          </button>
+
+          <button
+            onClick={onClose}
+            className="w-full rounded-lg border border-glass-border bg-glass-100 px-4 py-2 text-xs text-white/50 hover:text-white transition-colors"
+          >
+            I&apos;ve copied the key — Close
+          </button>
+        </GlassCard>
+      </motion.div>
+      </AnimatePresence>
+    </motion.div>
+
+  );
+}
+
+// ── Settings page ─────────────────────────────────────────────────────────────
+
 export default function PartnerSettingsPage() {
+  // Settings is the single source of truth for its own carrier data — it owns
+  // its own carriersApi.me() fetch and local state. carrierId is derived from
+  // the local carrier record, not from context, to avoid dual-state sync issues.
+
   const [carrier, setCarrier] = useState<Carrier | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
   const [saving, setSaving]   = useState(false);
   const [saved, setSaved]     = useState(false);
+
+  // API key state
+  const [generatingKey, setGeneratingKey] = useState(false);
+  const [revealedKey,   setRevealedKey]   = useState<string | null>(null);
+  const [keyError,      setKeyError]      = useState<string | null>(null);
 
   // Editable form state — kept separate from `carrier` so a failed save
   // doesn't trash the user's in-progress input. Reset every time fresh
@@ -101,12 +214,41 @@ export default function PartnerSettingsPage() {
     }
   }
 
+  async function handleGenerateKey() {
+    const id = carrier ? carrierIdOf(carrier) : null;
+    if (!id) return;
+    setGeneratingKey(true);
+    setKeyError(null);
+    try {
+      const result = await carriersApi.generateApiKey(id);
+      // Update local carrier has_api_key flag without a full reload.
+      if (carrier) setCarrier({ ...carrier, has_api_key: true });
+      setRevealedKey(result.api_key);
+    } catch (e) {
+      const err = e as { message?: string };
+      setKeyError(err?.message ?? "Failed to generate API key");
+    } finally {
+      setGeneratingKey(false);
+    }
+  }
+
   // Flatten all coverage_zones across rate cards; dedupe.
   const coverageZones: string[] = carrier
     ? Array.from(new Set(carrier.rate_cards.flatMap((r) => r.coverage_zones)))
     : [];
 
   return (
+    <>
+      {/* API Key Reveal Modal (shown once after generation) */}
+      <AnimatePresence>
+        {revealedKey && (
+          <ApiKeyRevealModal
+            apiKey={revealedKey}
+            onClose={() => setRevealedKey(null)}
+          />
+        )}
+      </AnimatePresence>
+
     <motion.div
       variants={variants.staggerContainer}
       initial="hidden"
@@ -251,9 +393,91 @@ export default function PartnerSettingsPage() {
               )}
             </GlassCard>
           </motion.div>
+
+          {/* API Credentials */}
+          <motion.div variants={variants.fadeInUp}>
+            <GlassCard title="API Credentials">
+              <div className="space-y-4">
+                <p className="text-xs text-white/40">
+                  Use this key to authenticate inbound webhook callbacks from your
+                  systems to the LogisticOS platform. Generate once, store securely —
+                  the key is not recoverable after it is dismissed.
+                </p>
+
+                <div className="flex items-center justify-between rounded-lg border border-glass-border bg-glass-100/50 px-3 py-2.5">
+                  <div className="flex items-center gap-2">
+                    <Key size={13} className={carrier.has_api_key ? "text-green-signal" : "text-white/30"} />
+                    <span className="text-xs font-mono text-white/60">
+                      {carrier.has_api_key ? "API key configured" : "No API key generated"}
+                    </span>
+                  </div>
+                  <NeonBadge variant={carrier.has_api_key ? "green" : "amber"}>
+                    {carrier.has_api_key ? "Active" : "None"}
+                  </NeonBadge>
+                </div>
+
+                {keyError && (
+                  <p className="text-xs text-red-signal font-mono">{keyError}</p>
+                )}
+
+                <button
+                  onClick={handleGenerateKey}
+                  disabled={generatingKey}
+                  className={`flex w-full items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+                    carrier.has_api_key
+                      ? "border-amber-signal/30 bg-amber-surface text-amber-signal hover:border-amber-signal/60"
+                      : "border-cyan-neon/30 bg-cyan-surface text-cyan-neon hover:border-cyan-neon/60"
+                  }`}
+                >
+                  {generatingKey ? (
+                    <RotateCcw size={13} className="animate-spin" />
+                  ) : carrier.has_api_key ? (
+                    <RotateCcw size={13} />
+                  ) : (
+                    <Key size={13} />
+                  )}
+                  {generatingKey
+                    ? "Generating…"
+                    : carrier.has_api_key
+                    ? "Rotate API Key"
+                    : "Generate API Key"}
+                </button>
+
+                {carrier.has_api_key && (
+                  <p className="text-2xs text-white/25 font-mono text-center">
+                    Rotating generates a new key and immediately invalidates the previous one.
+                  </p>
+                )}
+              </div>
+            </GlassCard>
+          </motion.div>
+
+          {/* Compliance Status */}
+          <motion.div variants={variants.fadeInUp}>
+            <GlassCard title="Compliance">
+              <div className="space-y-3">
+                <p className="text-xs text-white/40">
+                  Document verification is required to unlock all platform features.
+                  Submit your business registration, insurance, and permits to begin the
+                  review process.
+                </p>
+
+                <div className="flex items-center justify-between rounded-lg border border-glass-border bg-glass-100/50 px-3 py-2.5">
+                  <span className="text-xs font-mono text-white/50">Current Status</span>
+                  <ComplianceBadge status={carrier?.compliance_status ?? "pending_submission"} />
+                </div>
+
+                <p className="text-2xs text-white/25 font-mono text-center">
+                  Document upload coming soon. Contact ops to submit manually.
+                </p>
+              </div>
+            </GlassCard>
+          </motion.div>
+
         </div>
       ) : null}
     </motion.div>
+    </>
   );
 }
 
