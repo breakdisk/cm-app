@@ -112,3 +112,20 @@ pub async fn reinstate_profile(
     state.compliance.reinstate(profile_id, claims.user_id, None).await?;
     Ok(Json(serde_json::json!({ "data": { "ok": true } })))
 }
+
+pub async fn get_document_url(
+    AuthClaims(claims): AuthClaims,
+    Path(doc_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_permission!(claims, permissions::COMPLIANCE_REVIEW);
+    let doc = state.compliance.documents.find_by_id(doc_id).await?
+        .ok_or(AppError::NotFound { resource: "DriverDocument", id: doc_id.to_string() })?;
+    let profile = state.compliance.profiles.find_by_id(doc.compliance_profile_id).await?
+        .ok_or(AppError::NotFound { resource: "ComplianceProfile", id: doc.compliance_profile_id.to_string() })?;
+    if profile.tenant_id != claims.tenant_id {
+        return Err(AppError::Forbidden { resource: "DriverDocument".to_owned() });
+    }
+    let url = state.storage.presign_url(&doc.file_url).await?;
+    Ok(Json(serde_json::json!({ "data": { "url": url, "expires_in": 900 } })))
+}

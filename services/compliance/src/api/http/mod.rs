@@ -24,6 +24,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/compliance/admin/queue",                          get(admin_routes::review_queue))
         .route("/api/v1/compliance/admin/profiles",                       get(admin_routes::list_profiles))
         .route("/api/v1/compliance/admin/profiles/:profile_id",           get(admin_routes::get_profile))
+        .route("/api/v1/compliance/admin/documents/:doc_id/url",            get(admin_routes::get_document_url))
         .route("/api/v1/compliance/admin/documents/:doc_id/approve",      post(admin_routes::approve_document))
         .route("/api/v1/compliance/admin/documents/:doc_id/reject",       post(admin_routes::reject_document))
         .route("/api/v1/compliance/admin/profiles/:profile_id/suspend",   post(admin_routes::suspend_profile))
