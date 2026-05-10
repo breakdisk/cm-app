@@ -26,4 +26,7 @@ pub struct PodCaptured {
     /// Customer email for receipt delivery.
     #[serde(default)]
     pub customer_email:      Option<String>,
+    /// AWB tracking number — empty when not provided by the driver app.
+    #[serde(default)]
+    pub awb: String,
 }

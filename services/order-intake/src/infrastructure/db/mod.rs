@@ -310,6 +310,28 @@ impl ShipmentRepository for PgShipmentRepository {
         })
     }
 
+    fn find_by_awb<'a>(
+        &'a self,
+        awb: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Shipment>>> + Send + 'a>> {
+        // Normalise compact form (CMPH1S0001234X) → dash form (CM-PH1-S0001234X);
+        // fall back to raw string if parsing fails (legacy rows, test data, etc.)
+        let normalised = Awb::parse(awb)
+            .map(|a| a.as_str().to_string())
+            .unwrap_or_else(|_| awb.to_string());
+        Box::pin(async move {
+            let query = format!(
+                "SELECT {} FROM order_intake.shipments WHERE awb = $1",
+                SHIPMENT_COLS,
+            );
+            let row = sqlx::query(&query)
+                .bind(&normalised)
+                .fetch_optional(&self.pool)
+                .await?;
+            Ok(row.map(|r| row_to_shipment_row(&r).into_shipment()))
+        })
+    }
+
     fn save<'a>(
         &'a self,
         s: &'a Shipment,

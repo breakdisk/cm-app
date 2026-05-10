@@ -139,6 +139,10 @@ pub struct PodCaptured {
     /// COD amount collected at doorstep (0 if non-COD).
     #[serde(default)]
     pub cod_amount_cents:   i64,
+    /// AWB tracking number (e.g. "CM-PH1-S0001234X").
+    /// Empty string when not available (events from legacy driver app versions).
+    #[serde(default)]
+    pub awb: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

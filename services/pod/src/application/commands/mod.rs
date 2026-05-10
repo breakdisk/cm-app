@@ -46,6 +46,10 @@ pub struct SubmitPodCommand {
     /// Customer email for payment receipt delivery.
     #[serde(default)]
     pub customer_email:       Option<String>,
+    /// AWB tracking number — validated against the CM-TTT-SNNNNNNNC format if provided.
+    /// Optional: older driver app versions won't send this field.
+    #[serde(default)]
+    pub awb: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

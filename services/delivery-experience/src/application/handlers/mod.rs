@@ -35,6 +35,8 @@ struct ShipmentCreated {
     merchant_id:         Uuid,
     origin_address:      String,
     destination_address: String,
+    #[serde(default)]
+    tracking_number:     String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -139,11 +141,18 @@ async fn handle_message(
     match msg.topic() {
         topics::SHIPMENT_CREATED => {
             let data: ShipmentCreated = serde_json::from_slice(payload)?;
-            // Generate a human-readable tracking number: CM-<last8 of shipment_id>.
-            let tracking_number = format!(
-                "CM-{}",
-                data.shipment_id.to_string().replace('-', "")[..8].to_uppercase()
-            );
+            let tracking_number = if data.tracking_number.is_empty() {
+                tracing::warn!(
+                    shipment_id = %data.shipment_id,
+                    "ShipmentCreated event missing tracking_number — using UUID fallback"
+                );
+                format!(
+                    "CM-{}",
+                    data.shipment_id.to_string().replace('-', "")[..8].to_uppercase()
+                )
+            } else {
+                data.tracking_number
+            };
             let record = TrackingRecord::new(
                 data.shipment_id,
                 tenant_id,

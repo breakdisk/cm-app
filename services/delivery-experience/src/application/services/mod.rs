@@ -36,8 +36,13 @@ impl TrackingService {
     /// Public lookup — no auth; used for customer-facing tracking page.
     /// Returns only fields safe for public display (no driver phone, no tenant internals).
     pub async fn get_public(&self, tracking_number: &str) -> AppResult<TrackingRecord> {
+        // Normalise compact barcode form (CMPH1S0001234X) → dash form (CM-PH1-S0001234X).
+        // Falls through to the raw string for non-AWB identifiers (legacy UUID-derived values).
+        let normalised = logisticos_types::awb::Awb::parse(tracking_number)
+            .map(|awb| awb.as_str().to_string())
+            .unwrap_or_else(|_| tracking_number.to_string());
         self.repo
-            .find_by_tracking_number(tracking_number)
+            .find_by_tracking_number(&normalised)
             .await
             .map_err(|e| AppError::Internal(e))?
             .ok_or_else(|| AppError::NotFound {

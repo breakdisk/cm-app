@@ -1,4 +1,7 @@
 pub mod status_consumer;
+pub mod tenant_consumer;
+
+pub use tenant_consumer::start_tenant_consumer;
 
 use std::pin::Pin;
 use std::future::Future;

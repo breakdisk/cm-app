@@ -95,6 +95,11 @@ impl HubService {
             }
         }
 
+        // Validate AWB format — reject typos before storing an invalid identifier.
+        let tracking_number = logisticos_types::awb::Awb::parse(&cmd.tracking_number)
+            .map(|a| a.as_str().to_string())
+            .map_err(|e| AppError::Validation(format!("Invalid tracking number '{}': {e}", cmd.tracking_number)))?;
+
         hub.induct_parcel().map_err(|e| AppError::BusinessRule(e.to_string()))?;
         self.hub_repo.save(&hub).await.map_err(AppError::internal)?;
 
@@ -102,7 +107,7 @@ impl HubService {
             hub_id,
             hub.tenant_id.clone(),
             cmd.shipment_id,
-            cmd.tracking_number,
+            tracking_number,
             cmd.inducted_by,
         );
         self.induction_repo.save(&induction).await.map_err(AppError::internal)?;

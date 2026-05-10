@@ -15,7 +15,9 @@ use crate::{
         awb::{FallbackAwbGenerator, PostgresAwbGenerator, RedisAwbGenerator},
         db::PgShipmentRepository,
         external::{MapboxGeocoder, PassthroughNormalizer},
-        messaging::{status_consumer::start_status_consumer, KafkaEventPublisher},
+        messaging::{
+            start_tenant_consumer, status_consumer::start_status_consumer, KafkaEventPublisher,
+        },
     },
 };
 
@@ -67,6 +69,8 @@ pub async fn run() -> anyhow::Result<()> {
         .get_connection_manager()
         .await
         .context("Failed to connect to Redis")?;
+    // Clone before moving into the AWB generator — tenant consumer needs its own handle.
+    let redis_conn_for_tenant = redis_conn.clone();
     let awb_generator: Arc<dyn crate::domain::value_objects::AwbGenerator> =
         Arc::new(FallbackAwbGenerator::new(
             Arc::new(RedisAwbGenerator::new(redis_conn)),
@@ -86,6 +90,23 @@ pub async fn run() -> anyhow::Result<()> {
         .await
         {
             tracing::error!("Status consumer error: {e}");
+        }
+    });
+
+    // Spawn Kafka tenant consumer — seeds AWB counters on TenantCreated events
+    let pool_for_tenant = pool.clone();
+    let brokers_for_tenant = cfg.kafka.brokers.clone();
+    let group_for_tenant = cfg.kafka.group_id.clone();
+    tokio::spawn(async move {
+        if let Err(e) = start_tenant_consumer(
+            &brokers_for_tenant,
+            &group_for_tenant,
+            pool_for_tenant,
+            redis_conn_for_tenant,
+        )
+        .await
+        {
+            tracing::error!("Tenant consumer error: {e}");
         }
     });
 

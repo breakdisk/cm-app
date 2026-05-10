@@ -236,6 +236,16 @@ impl PodService {
         let pod_id = pod.id;
         self.pod_repo.save(&pod).await.map_err(AppError::Internal)?;
 
+        // Validate AWB format if provided (driver app sends it; older versions omit it).
+        let awb_string = match cmd.awb.as_deref().filter(|s| !s.is_empty()) {
+            Some(raw) => {
+                logisticos_types::awb::Awb::parse(raw)
+                    .map(|a| a.as_str().to_string())
+                    .map_err(|e| AppError::Validation(format!("Invalid AWB: {e}")))?
+            }
+            None => String::new(),
+        };
+
         // Publish POD captured event — payments service reconciles COD and
         // issues a payment receipt for customer-booked shipments.
         // Fire-and-forget: POD is already persisted; a Kafka outage must not
@@ -256,6 +266,7 @@ impl PodService {
             booked_by_customer:  cmd.booked_by_customer,
             customer_id:         cmd.customer_id,
             customer_email:      cmd.customer_email.clone(),
+            awb:                 awb_string,
         });
         if let Err(e) = self.kafka.publish_event(topics::POD_CAPTURED, &event).await {
             tracing::error!(

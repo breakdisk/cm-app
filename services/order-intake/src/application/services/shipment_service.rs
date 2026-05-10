@@ -44,6 +44,11 @@ pub trait ShipmentRepository: Send + Sync {
         id: &'a ShipmentId,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Option<Shipment>>> + Send + 'a>>;
 
+    fn find_by_awb<'a>(
+        &'a self,
+        awb: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Option<Shipment>>> + Send + 'a>>;
+
     fn save<'a>(
         &'a self,
         shipment: &'a Shipment,

@@ -47,10 +47,10 @@ async fn create_shipment(
     if cmd.tenant_code.is_empty() {
         cmd.tenant_code = claims.tenant_slug
             .chars()
+            .map(|c| c.to_ascii_uppercase())
             .filter(|c| c.is_ascii_alphanumeric() && *c != 'O' && *c != 'I')
             .take(3)
-            .collect::<String>()
-            .to_uppercase();
+            .collect::<String>();
     }
     // Mark as customer-booked when the JWT role is "customer" (customer app self-booking).
     let is_customer = claims.roles.contains(&"customer".to_string());
@@ -125,6 +125,28 @@ async fn get_shipment(
     claims.require_permission(permissions::SHIPMENT_READ)?;
     let shipment = s.query.get_by_id(id).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(shipment)))
+}
+
+async fn get_shipment_by_awb(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(awb): Path<String>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_READ)?;
+    match s.svc.repo.find_by_awb(&awb).await {
+        Ok(Some(shipment)) => {
+            // Tenant isolation: only return the shipment if it belongs to the caller's tenant
+            if shipment.tenant_id != logisticos_types::TenantId::from_uuid(claims.tenant_id) {
+                return Err::<_, AppError>(AppError::Forbidden { resource: "shipment".to_owned() });
+            }
+            Ok::<_, AppError>((StatusCode::OK, Json(shipment)))
+        }
+        Ok(None) => Err(AppError::NotFound {
+            resource: "Shipment",
+            id: awb,
+        }),
+        Err(e) => Err(AppError::Internal(e)),
+    }
 }
 
 async fn cancel_shipment(
@@ -203,8 +225,9 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(|| async { axum::Json(serde_json::json!({"status":"ok","service":"order-intake"})) }))
         .nest("/v1", Router::new()
             .route("/shipments",        post(create_shipment).get(list_shipments))
-            .route("/shipments/bulk",   post(bulk_create_shipments))
-            .route("/shipments/:id",    get(get_shipment))
+            .route("/shipments/bulk",       post(bulk_create_shipments))
+            .route("/shipments/by-awb/:awb", get(get_shipment_by_awb))
+            .route("/shipments/:id",        get(get_shipment))
             .route("/shipments/:id/cancel",     post(cancel_shipment))
             .route("/shipments/:id/reschedule", post(reschedule_shipment))
             .route("/shipments/:id/status",     put(admin_override_status))
