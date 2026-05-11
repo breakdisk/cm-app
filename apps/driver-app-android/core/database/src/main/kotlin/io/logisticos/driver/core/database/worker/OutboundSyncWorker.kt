@@ -20,6 +20,7 @@ import io.logisticos.driver.core.database.entity.SyncAction
 import io.logisticos.driver.core.database.entity.SyncQueueEntity
 import android.util.Base64
 import io.logisticos.driver.core.database.dao.TaskDao
+import io.logisticos.driver.core.network.auth.SessionManager
 import io.logisticos.driver.core.network.service.AttachPhotoRequest
 import io.logisticos.driver.core.network.service.AttachSignatureRequest
 import io.logisticos.driver.core.network.service.CompleteTaskRequest
@@ -53,9 +54,21 @@ class OutboundSyncWorker @AssistedInject constructor(
     private val driverOpsApi: DriverOpsApiService,
     private val podApi: PodApiService,
     private val okHttpClient: OkHttpClient,
+    private val sessionManager: SessionManager,
 ) : CoroutineWorker(context, workerParams) {
 
     override suspend fun doWork(): Result {
+        // Guard: skip all network calls if the user is not logged in.
+        // Without this, the worker floods the server with unauthenticated 401
+        // requests after logout — saturating the OkHttp connection pool and
+        // blocking the OTP send coroutine on the login screen from getting a
+        // connection slot. Queued items remain in the DB and will be retried
+        // automatically the next time the user logs in and the periodic
+        // 15-minute worker fires (or the next kickOnce from a fresh enqueue).
+        if (!sessionManager.isLoggedIn()) {
+            android.util.Log.d("OutboundSyncWorker", "No active session — skipping sync, items remain queued")
+            return Result.success()
+        }
         val pending = syncQueueDao.getPendingItems(System.currentTimeMillis())
         pending.forEach { item ->
             try {
