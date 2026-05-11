@@ -91,6 +91,15 @@ export default function CompliancePage() {
     }
   }
 
+  function handleSuspend(_profileId: string) {
+    // Refresh profiles + queue so KPI strip updates
+    refresh();
+  }
+
+  function handleReinstate(_profileId: string) {
+    refresh();
+  }
+
   return (
     <motion.div
       variants={variants.staggerContainer}
@@ -138,6 +147,8 @@ export default function CompliancePage() {
             profileId={selectedProfile}
             onApprove={handleApprove}
             onReject={handleReject}
+            onSuspend={handleSuspend}
+            onReinstate={handleReinstate}
           />
         ) : (
           <GlassCard className="flex-1 flex items-center justify-center">
