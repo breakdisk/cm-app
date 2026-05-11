@@ -30,6 +30,8 @@ import io.logisticos.driver.core.network.service.InitiatePodRequest
 import io.logisticos.driver.core.network.service.PodApiService
 import io.logisticos.driver.core.network.service.SubmitPodRequest
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -42,6 +44,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 import java.util.concurrent.TimeUnit
+import javax.inject.Named
 
 @HiltWorker
 class OutboundSyncWorker @AssistedInject constructor(
@@ -52,19 +55,26 @@ class OutboundSyncWorker @AssistedInject constructor(
     private val taskDao: TaskDao,
     private val driverOpsApi: DriverOpsApiService,
     private val podApi: PodApiService,
-    private val okHttpClient: OkHttpClient,
+    // Must use the R2 upload client — it has writeTimeout(120s) and no callTimeout.
+    // The default API client's callTimeout(30s) kills photo uploads mid-stream on
+    // slow mobile connections, causing retries to accumulate in exponential backoff.
+    @Named("r2_upload") private val r2HttpClient: OkHttpClient,
 ) : CoroutineWorker(context, workerParams) {
 
     override suspend fun doWork(): Result {
         val pending = syncQueueDao.getPendingItems(System.currentTimeMillis())
-        pending.forEach { item ->
-            try {
-                processItem(item)
-                syncQueueDao.remove(item.id)
-            } catch (e: Exception) {
-                val backoffMs = minOf(1000L shl minOf(item.retryCount, 8), 300_000L)
-                syncQueueDao.markFailed(item.id, e.message ?: "unknown", System.currentTimeMillis() + backoffMs)
-            }
+        coroutineScope {
+            pending.map { item ->
+                async {
+                    try {
+                        processItem(item)
+                        syncQueueDao.remove(item.id)
+                    } catch (e: Exception) {
+                        val backoffMs = minOf(1000L shl minOf(item.retryCount, 8), 300_000L)
+                        syncQueueDao.markFailed(item.id, e.message ?: "unknown", System.currentTimeMillis() + backoffMs)
+                    }
+                }
+            }.forEach { it.await() }
         }
         return Result.success()
     }
@@ -148,7 +158,7 @@ class OutboundSyncWorker @AssistedInject constructor(
                         // R2 does not require x-amz-content-sha256 as a separate header when
                         // the URL is already signed correctly with the right 32-char R2 key.
                         requiredHeaders.forEach { (k, v) -> reqBuilder.addHeader(k, v) }
-                        val putResponse = okHttpClient.newCall(reqBuilder.build()).execute()
+                        val putResponse = r2HttpClient.newCall(reqBuilder.build()).execute()
                         if (!putResponse.isSuccessful) {
                             val body = try { putResponse.body?.string() ?: "empty" } catch (e: Exception) { "unreadable" }
                             android.util.Log.e("OutboundSyncWorker", "R2 PUT ${putResponse.code}: $body")

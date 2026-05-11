@@ -18,6 +18,12 @@ interface SyncQueueDao {
     @Query("UPDATE sync_queue SET retryCount = retryCount + 1, lastError = :error, nextRetryAt = :nextRetry WHERE id = :id")
     suspend fun markFailed(id: Long, error: String, nextRetry: Long)
 
+    /** Total items in queue (including those waiting for backoff). */
     @Query("SELECT COUNT(*) FROM sync_queue")
     fun getPendingCount(): Flow<Int>
+
+    /** Items that are ready to upload NOW (not blocked by backoff delay).
+     *  Use this for the driver-facing badge so it reflects real activity. */
+    @Query("SELECT COUNT(*) FROM sync_queue WHERE nextRetryAt <= :now")
+    fun getActivePendingCount(now: Long): Flow<Int>
 }
