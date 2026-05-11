@@ -65,9 +65,10 @@ class HomeViewModel @Inject constructor(
                 _uiState.update { it.copy(shift = shift) }
             }
         }
-        // Reactive — Room emits a new value any time enqueue/remove run.
+        // Show only items ready to upload NOW (not stalled in backoff).
+        // getPendingCount() would count backoff-frozen items and mislead the driver.
         viewModelScope.launch {
-            syncQueueDao.getPendingCount().collect { n ->
+            syncQueueDao.getActivePendingCount(System.currentTimeMillis()).collect { n ->
                 _uiState.update { it.copy(pendingSyncCount = n) }
             }
         }
