@@ -30,10 +30,14 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
+import io.logisticos.driver.core.common.ImageCompressor
 import io.logisticos.driver.feature.pod.presentation.FailureReason
 import io.logisticos.driver.feature.pod.presentation.PodViewModel
 import java.io.File
 import java.io.FileOutputStream
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private val Canvas = Color(0xFF050810)
 private val Cyan   = Color(0xFF00E5FF)
@@ -400,6 +404,8 @@ private fun PhotoSection(
         )
     }
 
+    val scope = rememberCoroutineScope()
+
     // TakePicture writes the photo to a FileProvider URI and returns success flag.
     val photoUri = remember(taskId) {
         FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", photoFile)
@@ -407,7 +413,12 @@ private fun PhotoSection(
     val takePictureLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
     ) { success ->
-        if (success) onCaptured(photoFile.absolutePath)
+        if (success) {
+            scope.launch(Dispatchers.IO) {
+                ImageCompressor.compressToFile(photoFile)
+                withContext(Dispatchers.Main) { onCaptured(photoFile.absolutePath) }
+            }
+        }
     }
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
