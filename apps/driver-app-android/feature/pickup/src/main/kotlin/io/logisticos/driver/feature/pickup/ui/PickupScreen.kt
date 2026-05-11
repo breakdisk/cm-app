@@ -43,9 +43,13 @@ import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
+import io.logisticos.driver.core.common.ImageCompressor
 import io.logisticos.driver.feature.pickup.presentation.PickupViewModel
 import java.io.File
 import java.io.FileOutputStream
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private val Canvas  = Color(0xFF050810)
 private val Cyan    = Color(0xFF00E5FF)
@@ -442,15 +446,16 @@ fun PickupScreen(
         // because the manifest declares <uses-permission android:name=".CAMERA"/>.
         // Without the grant, Samsung's One UI camera throws SecurityException mid-launch
         // and crashes the activity (observed on stagingDebug build #34, Galaxy device).
+        val photoScope = rememberCoroutineScope()
         val cameraLauncher = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.TakePicturePreview(),
         ) { bitmap: Bitmap? ->
             if (bitmap != null) {
                 val file = File(context.filesDir, "pickup_${taskId}.jpg")
-                FileOutputStream(file).use { out ->
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+                photoScope.launch(Dispatchers.IO) {
+                    ImageCompressor.compressBitmapToFile(bitmap, file)
+                    withContext(Dispatchers.Main) { viewModel.onPhotoCaptured(file.absolutePath) }
                 }
-                viewModel.onPhotoCaptured(file.absolutePath)
             }
         }
         // Permission-then-capture path: if the user already granted CAMERA (e.g. via the
