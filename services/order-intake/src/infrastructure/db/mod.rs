@@ -251,13 +251,17 @@ impl ShipmentRepository for PgShipmentRepository {
                      AND ($2::uuid IS NULL OR merchant_id = $2)
                      AND ($3::text IS NULL OR status = $3)
                      AND ($4::timestamptz IS NULL OR updated_at >= $4)
-                     AND ($5::timestamptz IS NULL OR updated_at < $5)"#,
+                     AND ($5::timestamptz IS NULL OR updated_at < $5)
+                     AND ($6::text IS NULL
+                          OR awb ILIKE '%' || $6 || '%'
+                          OR customer_name ILIKE '%' || $6 || '%')"#,
             )
             .bind(filter.tenant_id)
             .bind(filter.merchant_id)
             .bind(filter.status.as_deref())
             .bind(filter.updated_from)
             .bind(filter.updated_to)
+            .bind(filter.search_q.as_deref())
             .fetch_one(&self.pool)
             .await?;
 
@@ -268,8 +272,11 @@ impl ShipmentRepository for PgShipmentRepository {
                      AND ($3::text IS NULL OR status = $3)
                      AND ($4::timestamptz IS NULL OR updated_at >= $4)
                      AND ($5::timestamptz IS NULL OR updated_at < $5)
+                     AND ($6::text IS NULL
+                          OR awb ILIKE '%' || $6 || '%'
+                          OR customer_name ILIKE '%' || $6 || '%')
                    ORDER BY created_at DESC
-                   LIMIT $6 OFFSET $7"#,
+                   LIMIT $7 OFFSET $8"#,
                 SHIPMENT_COLS,
             );
 
@@ -279,6 +286,7 @@ impl ShipmentRepository for PgShipmentRepository {
                 .bind(filter.status.as_deref())
                 .bind(filter.updated_from)
                 .bind(filter.updated_to)
+                .bind(filter.search_q.as_deref())
                 .bind(filter.limit)
                 .bind(filter.offset)
                 .fetch_all(&self.pool)

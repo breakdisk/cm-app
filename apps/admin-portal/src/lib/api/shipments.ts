@@ -34,6 +34,7 @@ export interface ShipmentDto {
   service_type: string;
   origin: AddressDto;
   destination: AddressDto;
+  weight: { grams: number };
   cod_amount?: { amount: number; currency: string } | null;
   declared_value?: { amount: number; currency: string } | null;
   special_instructions?: string | null;
@@ -57,14 +58,16 @@ export interface OverrideStatusRequest {
 export interface ListShipmentsResult {
   shipments: ShipmentDto[];
   total: number;
+  page: number;
+  per_page: number;
 }
 
-/** List shipments with optional filters. */
+/** List shipments with optional filters and pagination. */
 export const listShipments = (params?: {
   status?: string;
   q?: string;
-  limit?: number;
-  offset?: number;
+  page?: number;
+  per_page?: number;
 }) =>
   createApiClient()
     .get<ListShipmentsResult>("/v1/shipments", { params })
