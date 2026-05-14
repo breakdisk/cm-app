@@ -61,13 +61,33 @@ async function fetchTimeseries() {
 /** SLA target per zone — used when the carrier's global SLA pct isn't zone-specific. */
 const DEFAULT_ZONE_TARGET = 90;
 
-const BREACH_REASONS = [
-  { reason: "Traffic / Road closure", count: 184 },
-  { reason: "Customer unavailable",   count: 142 },
-  { reason: "Wrong address",          count: 76  },
-  { reason: "Vehicle breakdown",      count: 38  },
-  { reason: "Weather",                count: 22  },
+const BREACH_REASONS_FALLBACK = [
+  { reason: "Traffic / Road closure", count: 0 },
+  { reason: "Customer unavailable",   count: 0 },
+  { reason: "Wrong address",          count: 0 },
+  { reason: "Vehicle breakdown",      count: 0 },
+  { reason: "Weather",                count: 0 },
 ];
+
+async function fetchBreachReasons(
+  analyticsUrl: string,
+  from: string,
+  to: string,
+): Promise<Array<{ reason: string; count: number }>> {
+  try {
+    const res = await authFetch(
+      `${analyticsUrl}/v1/analytics/breach-reasons?from=${from}&to=${to}`,
+    );
+    if (!res.ok) return BREACH_REASONS_FALLBACK;
+    const json = await res.json();
+    const items = json.data ?? json.reasons ?? [];
+    if (!Array.isArray(items) || items.length === 0) return BREACH_REASONS_FALLBACK;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return items.map((r: any) => ({ reason: r.reason ?? r.label ?? "Unknown", count: Number(r.count ?? 0) }));
+  } catch {
+    return BREACH_REASONS_FALLBACK;
+  }
+}
 
 const DAILY_SLA_TREND_DEFAULT = [
   { date: "Mar 1",  rate: 93.2 }, { date: "Mar 3",  rate: 94.1 },
@@ -130,6 +150,8 @@ function SLADashboardPageInner() {
   const [carrierName, setCarrierName]     = useState<string | null>(null);
   const [carrierId,   setCarrierId]       = useState<string | null>(null);
 
+  const [breachReasons, setBreachReasons] = useState<Array<{ reason: string; count: number }>>(BREACH_REASONS_FALLBACK);
+
   // Delivery history pagination
   const [history,      setHistory]        = useState<SlaRecord[]>([]);
   const [historyTotal, setHistoryTotal]   = useState<number>(0);
@@ -143,9 +165,14 @@ function SLADashboardPageInner() {
   }, [focusZone]);
 
   const loadData = useCallback(async () => {
-    // Fetch analytics KPIs + timeseries + zone SLA in parallel.
+    // Fetch analytics KPIs + timeseries + breach reasons + zone SLA in parallel.
     // Zone SLA needs the carrier ID from /me first — run it independently.
-    const [kpis, timeseries] = await Promise.all([fetchKpis(), fetchTimeseries()]);
+    const [kpis, timeseries, breachData] = await Promise.all([
+      fetchKpis(),
+      fetchTimeseries(),
+      fetchBreachReasons(ANALYTICS_URL, daysAgoStr(30), todayStr()),
+    ]);
+    setBreachReasons(breachData);
 
     if (kpis) {
       if (kpis.delivery_success_rate != null)  setOverallSla(Number(kpis.delivery_success_rate));
@@ -359,12 +386,12 @@ function SLADashboardPageInner() {
           <div className="flex items-center justify-between mb-5">
             <div>
               <h2 className="font-heading text-sm font-semibold text-white">SLA Breach Root Causes</h2>
-              <p className="text-2xs font-mono text-white/30">{breachCount} breaches MTD · categories are illustrative pending analytics endpoint</p>
+              <p className="text-2xs font-mono text-white/30">{breachCount} breaches MTD · last 30 days</p>
             </div>
             <Clock size={14} className="text-red-signal" />
           </div>
           <ResponsiveContainer width="100%" height={160}>
-            <BarChart data={BREACH_REASONS} layout="vertical" margin={{ top: 0, right: 20, bottom: 0, left: 0 }}>
+            <BarChart data={breachReasons} layout="vertical" margin={{ top: 0, right: 20, bottom: 0, left: 0 }}>
               <CartesianGrid stroke="rgba(255,255,255,0.04)" strokeDasharray="4 4" horizontal={false} />
               <XAxis type="number" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
               <YAxis type="category" dataKey="reason" tick={{ fill: "rgba(255,255,255,0.5)", fontSize: 10, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} width={140} />

@@ -274,6 +274,16 @@ impl CarrierService {
         Ok(raw_key)
     }
 
+    /// Expose repo handles so `CarrierCommandHandler` can reach them
+    /// without duplicating the Kafka consumer's outcome logic.
+    pub fn sla_repo(&self) -> &Arc<dyn crate::domain::repositories::SlaRecordRepository> {
+        &self.sla_repo
+    }
+
+    pub fn carrier_repo(&self) -> &Arc<dyn crate::domain::repositories::CarrierRepository> {
+        &self.repo
+    }
+
     /// Paginated SLA record history for a carrier (partner portal).
     pub async fn sla_history(
         &self,
