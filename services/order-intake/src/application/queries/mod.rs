@@ -15,6 +15,7 @@ use crate::{
 pub struct ListShipmentsQuery {
     pub status:      Option<String>,
     pub merchant_id: Option<Uuid>,
+    pub q:           Option<String>,
     pub page:        Option<i64>,
     pub per_page:    Option<i64>,
 }
@@ -74,6 +75,7 @@ impl ShipmentQueryService {
             tenant_id,
             merchant_id: q.merchant_id,
             status: q.status,
+            search_q: q.q,
             updated_from: None,
             updated_to:   None,
             limit:  per_page,
@@ -99,6 +101,7 @@ impl ShipmentQueryService {
                 tenant_id:    q.tenant_id,
                 merchant_id:  Some(q.merchant_id),
                 status:       Some("delivered".into()),
+                search_q:     None,
                 updated_from: Some(q.from),
                 updated_to:   Some(q.to),
                 limit:        CHUNK,

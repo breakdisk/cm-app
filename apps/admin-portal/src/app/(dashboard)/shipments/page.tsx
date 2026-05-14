@@ -3,15 +3,17 @@
  * Admin Portal — Shipments Page
  *
  * Authoritative list of every shipment across the tenant, regardless of
- * dispatch state. Customer-booked shipments (booked_by_customer=true) and
- * merchant-booked shipments appear here together; the dispatch console
- * only shows the pending subset, so this page is the place to verify an
- * ingest actually landed when dispatch is down or slow.
+ * dispatch state. Filtering and pagination are server-driven; search is
+ * debounced 300ms before hitting the API.
+ *
+ * KPI strip counts reflect the current page only — not the full tenant.
+ * A dedicated /v1/shipments/summary endpoint should back these long-term.
  *
  * Data source: GET /v1/shipments (api-gateway → order-intake).
  */
-import { useCallback, useEffect, useMemo, useState, Suspense } from "react";
+import { useMemo, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
+import { useEffect } from "react";
 import { motion } from "framer-motion";
 import { Search, RefreshCw, Package, User } from "lucide-react";
 
@@ -19,13 +21,9 @@ import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
 import { variants } from "@/lib/design-system/tokens";
-import { authFetch } from "@/lib/auth/auth-fetch";
-import { ShipmentDetailPanel, ApiShipment } from "@/components/shipments/ShipmentDetailPanel";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-
-// ApiShipment is re-exported from ShipmentDetailPanel so both the panel
-// and this list page share a single source-of-truth type definition.
+import { ShipmentDetailPanel } from "@/components/shipments/ShipmentDetailPanel";
+import { useShipments } from "@/hooks/useShipments";
+import type { ShipmentDto } from "@/lib/api/shipments";
 
 const STATUS_VARIANT: Record<string, "green" | "cyan" | "amber" | "red" | "purple"> = {
   pending:            "amber",
@@ -54,7 +52,6 @@ const STATUS_FILTERS = [
   "delivered",
   "failed",
 ] as const;
-type StatusFilter = (typeof STATUS_FILTERS)[number];
 
 function prettyStatus(s: string): string {
   return s.replace(/_/g, " ");
@@ -67,11 +64,9 @@ function formatMoney(m: { amount: number; currency: string } | null | undefined)
 }
 
 function formatRelative(iso: string): string {
-  const then = new Date(iso).getTime();
-  const now  = Date.now();
-  const sec  = Math.max(0, Math.round((now - then) / 1000));
-  if (sec < 60)   return `${sec}s ago`;
-  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  const sec = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (sec < 60)    return `${sec}s ago`;
+  if (sec < 3600)  return `${Math.floor(sec / 60)}m ago`;
   if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
   return `${Math.floor(sec / 86400)}d ago`;
 }
@@ -79,66 +74,34 @@ function formatRelative(iso: string): string {
 function ShipmentsPageInner() {
   const searchParams = useSearchParams();
 
-  const [shipments,       setShipments]       = useState<ApiShipment[]>([]);
-  const [loading,         setLoading]         = useState(false);
-  const [error,           setError]           = useState<string | null>(null);
-  const [search,          setSearch]          = useState("");
-  const [statusFilter,    setStatusFilter]    = useState<StatusFilter>("all");
-  const [selectedShipment, setSelectedShipment] = useState<ApiShipment | null>(null);
+  const {
+    shipments, total, page, totalPages,
+    loading, error,
+    search, statusFilter,
+    setSearch, setStatusFilter, setPage, refresh,
+  } = useShipments();
+
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   // Pre-populate search from ?q=<awb> deep-links (e.g. from Alerts page)
   useEffect(() => {
     const q = searchParams.get("q");
     if (q) setSearch(q);
-  }, [searchParams]);
+  }, [searchParams, setSearch]);
 
-  const fetchShipments = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await authFetch(`${API_BASE}/v1/shipments?per_page=100`);
-      if (!res.ok) {
-        throw new Error(`${res.status} ${res.statusText}`);
-      }
-      const json = await res.json();
-      setShipments(json.shipments ?? []);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to load shipments");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => { fetchShipments(); }, [fetchShipments]);
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return shipments.filter((s) => {
-      if (statusFilter !== "all" && s.status !== statusFilter) return false;
-      if (!q) return true;
-      return (
-        s.awb.toLowerCase().includes(q) ||
-        s.customer_name.toLowerCase().includes(q) ||
-        s.destination.city.toLowerCase().includes(q)
-      );
-    });
-  }, [shipments, search, statusFilter]);
-
+  // KPIs computed from current page (reflects page subset, not full tenant)
   const kpi = useMemo(() => {
-    const total         = shipments.length;
-    const pending       = shipments.filter((s) => s.status === "pending").length;
-    const inTransit     = shipments.filter((s) => ["picked_up", "in_transit", "at_hub", "out_for_delivery"].includes(s.status)).length;
+    const pending        = shipments.filter((s) => s.status === "pending").length;
+    const inTransit      = shipments.filter((s) => ["picked_up", "in_transit", "at_hub", "out_for_delivery"].includes(s.status)).length;
     const deliveredToday = shipments.filter((s) => {
       if (s.status !== "delivered") return false;
-      const updated = new Date(s.updated_at);
-      const today   = new Date();
-      return updated.toDateString() === today.toDateString();
+      return new Date(s.updated_at).toDateString() === new Date().toDateString();
     }).length;
     return [
-      { label: "Total Shipments", value: total,          trend: 0, color: "cyan"   as const, format: "number" as const },
-      { label: "Pending Ingest",  value: pending,        trend: 0, color: "amber"  as const, format: "number" as const },
-      { label: "In Transit",      value: inTransit,      trend: 0, color: "purple" as const, format: "number" as const },
-      { label: "Delivered Today", value: deliveredToday, trend: 0, color: "green"  as const, format: "number" as const },
+      { label: "Shown",          value: shipments.length, trend: 0, color: "cyan"   as const, format: "number" as const },
+      { label: "Pending",        value: pending,          trend: 0, color: "amber"  as const, format: "number" as const },
+      { label: "In Transit",     value: inTransit,        trend: 0, color: "purple" as const, format: "number" as const },
+      { label: "Delivered Today",value: deliveredToday,   trend: 0, color: "green"  as const, format: "number" as const },
     ];
   }, [shipments]);
 
@@ -155,11 +118,11 @@ function ShipmentsPageInner() {
         <div>
           <h1 className="font-heading text-2xl font-bold text-white">Shipments</h1>
           <p className="text-sm text-white/40 font-mono mt-0.5">
-            {filtered.length} of {shipments.length} shown · all origins
+            {shipments.length} of {total} total · page {page} of {totalPages}
           </p>
         </div>
         <button
-          onClick={fetchShipments}
+          onClick={refresh}
           disabled={loading}
           className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors disabled:opacity-50"
         >
@@ -217,14 +180,20 @@ function ShipmentsPageInner() {
       {/* Table */}
       <motion.div variants={variants.fadeInUp}>
         <GlassCard>
-          {filtered.length === 0 && !loading && (
+          {shipments.length === 0 && !loading && (
             <div className="flex flex-col items-center justify-center py-10 text-center">
               <Package className="h-8 w-8 text-white/20 mb-2" />
               <p className="text-sm text-white/40">No shipments match your filters.</p>
             </div>
           )}
 
-          {filtered.length > 0 && (
+          {loading && shipments.length === 0 && (
+            <div className="flex items-center justify-center py-10">
+              <RefreshCw size={18} className="animate-spin text-white/20" />
+            </div>
+          )}
+
+          {shipments.length > 0 && (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead>
@@ -240,14 +209,14 @@ function ShipmentsPageInner() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map((s) => {
-                    const variant   = STATUS_VARIANT[s.status] ?? "cyan";
-                    const cod       = formatMoney(s.cod_amount);
-                    const isSelected = selectedShipment?.id === s.id;
+                  {shipments.map((s: ShipmentDto) => {
+                    const variant    = STATUS_VARIANT[s.status] ?? "cyan";
+                    const cod        = formatMoney(s.cod_amount);
+                    const isSelected = selectedId === s.id;
                     return (
                       <tr
                         key={s.id}
-                        onClick={() => setSelectedShipment(s)}
+                        onClick={() => setSelectedId(s.id)}
                         className={[
                           "border-b border-glass-border/40 transition-colors cursor-pointer",
                           isSelected
@@ -307,13 +276,36 @@ function ShipmentsPageInner() {
           )}
         </GlassCard>
       </motion.div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <motion.div variants={variants.fadeInUp} className="flex items-center justify-between">
+          <button
+            onClick={() => setPage(Math.max(1, page - 1))}
+            disabled={page === 1 || loading}
+            className="rounded-lg border border-glass-border bg-glass-100 px-3 py-1.5 text-xs font-mono text-white/60 hover:text-white disabled:opacity-30 transition-colors"
+          >
+            ← Prev
+          </button>
+          <span className="text-2xs font-mono text-white/30">
+            Page {page} of {totalPages} · {total} total
+          </span>
+          <button
+            onClick={() => setPage(Math.min(totalPages, page + 1))}
+            disabled={page >= totalPages || loading}
+            className="rounded-lg border border-glass-border bg-glass-100 px-3 py-1.5 text-xs font-mono text-white/60 hover:text-white disabled:opacity-30 transition-colors"
+          >
+            Next →
+          </button>
+        </motion.div>
+      )}
     </motion.div>
 
     {/* Shipment detail / POD slide-over panel */}
     <ShipmentDetailPanel
-      shipment={selectedShipment}
-      onClose={() => setSelectedShipment(null)}
-      onActionComplete={() => { fetchShipments(); setSelectedShipment(null); }}
+      shipmentId={selectedId}
+      onClose={() => setSelectedId(null)}
+      onActionComplete={() => { refresh(); setSelectedId(null); }}
     />
     </>
   );

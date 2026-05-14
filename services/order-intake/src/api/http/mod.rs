@@ -249,10 +249,14 @@ async fn list_shipments(
     Query(q): Query<crate::application::queries::ListShipmentsQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
+    let page     = q.page.unwrap_or(1).max(1);
+    let per_page = q.per_page.unwrap_or(20).clamp(1, 100);
     let (shipments, total) = s.query.list(claims.tenant_id, q).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
         "shipments": shipments,
-        "total": total,
+        "total":     total,
+        "page":      page,
+        "per_page":  per_page,
     }))))
 }
 
