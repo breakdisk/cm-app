@@ -27,13 +27,21 @@ export function DocumentDetailPanel({ profileId, onApprove, onReject }: Props) {
 
   useEffect(() => {
     setDetail(null);
-    fetchProfile(profileId).then(setDetail);
+    fetchProfile(profileId).then(setDetail).catch(() => setDetail({ profile: null, documents: [] }));
   }, [profileId]);
 
   if (!detail) {
     return (
       <div className="flex-1 flex items-center justify-center text-white/25 text-sm">
         Loading…
+      </div>
+    );
+  }
+
+  if (!detail.profile) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-white/25 text-sm">
+        Failed to load profile — check backend connectivity.
       </div>
     );
   }
