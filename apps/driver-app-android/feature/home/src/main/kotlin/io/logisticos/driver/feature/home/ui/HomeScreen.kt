@@ -34,6 +34,7 @@ private val Border = Color(0x14FFFFFF)
 @Composable
 fun HomeScreen(
     onNavigateToRoute: () -> Unit,
+    onNavigateToCompliance: () -> Unit,
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -180,6 +181,43 @@ fun HomeScreen(
                             uncheckedTrackColor = Color.White.copy(alpha = 0.15f)
                         )
                     )
+                }
+            }
+        }
+
+        // Compliance warning \u2014 surfaces when the driver's documents are missing,
+        // rejected, or the profile has been suspended. Blocked drivers won't
+        // receive dispatch assignments until compliance is resolved.
+        val complianceStatus = state.complianceStatus
+        if (complianceStatus == "pending_submission" || complianceStatus == "rejected" || complianceStatus == "suspended") {
+            val isBlocked = complianceStatus == "rejected" || complianceStatus == "suspended"
+            val bannerColor = if (isBlocked) Color(0xFFFF3B5C) else Amber
+            val bannerTitle = when (complianceStatus) {
+                "rejected"   -> "Documents rejected \u2014 action required"
+                "suspended"  -> "Account suspended \u2014 contact support"
+                else         -> "Documents required before receiving jobs"
+            }
+            val bannerBody = when (complianceStatus) {
+                "rejected"  -> "One or more documents were rejected. Re-upload via Profile \u2192 Verification."
+                "suspended" -> "Your compliance profile has been suspended. Contact your fleet manager."
+                else        -> "Submit your required documents via Profile \u2192 Verification Documents."
+            }
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = bannerColor.copy(alpha = 0.12f)),
+                border = androidx.compose.foundation.BorderStroke(1.dp, bannerColor.copy(alpha = 0.40f))
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(bannerTitle, color = bannerColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Text(bannerBody, color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp)
+                    if (complianceStatus != "suspended") {
+                        TextButton(
+                            onClick = onNavigateToCompliance,
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        ) {
+                            Text("Go to Verification", color = bannerColor, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        }
+                    }
                 }
             }
         }

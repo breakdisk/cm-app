@@ -87,7 +87,10 @@ fun ShiftScaffold(rootNavController: NavHostController) {
 
             // ── Bottom tab destinations ───────────────────────────────────
             composable(HOME_ROUTE) {
-                HomeScreen(onNavigateToRoute = { shiftNavController.navigate(ROUTE_ROUTE) })
+                HomeScreen(
+                    onNavigateToRoute = { shiftNavController.navigate(ROUTE_ROUTE) },
+                    onNavigateToCompliance = { shiftNavController.navigate(COMPLIANCE_ROUTE) },
+                )
             }
 
             composable(ROUTE_ROUTE) {

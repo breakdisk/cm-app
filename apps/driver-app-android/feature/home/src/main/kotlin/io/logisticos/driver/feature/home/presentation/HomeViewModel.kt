@@ -7,6 +7,7 @@ import io.logisticos.driver.core.common.TaskSyncBus
 import io.logisticos.driver.core.database.dao.SyncQueueDao
 import io.logisticos.driver.core.database.entity.ShiftEntity
 import io.logisticos.driver.core.location.LocationRepository
+import io.logisticos.driver.core.network.service.ComplianceApiService
 import io.logisticos.driver.core.network.service.DriverOpsApiService
 import io.logisticos.driver.core.network.service.UpdateLocationRequest
 import io.logisticos.driver.feature.home.data.ShiftRepository
@@ -44,12 +45,17 @@ data class HomeUiState(
      *  renders an end-of-shift summary dialog and calls dismissShiftSummary()
      *  on close. NOT set on initial offline state — only on the toggle. */
     val showShiftSummary: Boolean = false,
+    /** Overall compliance status from the compliance service. Non-null once
+     *  the first successful fetch completes. Null while loading or if the
+     *  service is unreachable (banner stays hidden on error — non-blocking). */
+    val complianceStatus: String? = null,
 )
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     private val repo: ShiftRepository,
     private val api: DriverOpsApiService,
+    private val complianceApi: ComplianceApiService,
     private val locationRepo: LocationRepository,
     private val syncQueueDao: SyncQueueDao,
 ) : ViewModel() {
@@ -76,6 +82,17 @@ class HomeViewModel @Inject constructor(
         autoGoOnline()
         collectSyncBus()
         collectLocationUpdates()
+        loadComplianceStatus()
+    }
+
+    private fun loadComplianceStatus() {
+        viewModelScope.launch {
+            runCatching { complianceApi.getMyProfile() }
+                .onSuccess { envelope ->
+                    _uiState.update { it.copy(complianceStatus = envelope.data.profile.overallStatus) }
+                }
+            // On failure, complianceStatus stays null — banner stays hidden.
+        }
     }
 
     /** Called from HomeScreen when the OS reports a location-permission denial.
@@ -138,6 +155,7 @@ class HomeViewModel @Inject constructor(
                 .onFailure { e -> _uiState.update { it.copy(error = e.message, isOfflineMode = true) } }
                 .onSuccess { _uiState.update { it.copy(isOfflineMode = false) } }
             _uiState.update { it.copy(isLoading = false) }
+            loadComplianceStatus()
         }
     }
 
