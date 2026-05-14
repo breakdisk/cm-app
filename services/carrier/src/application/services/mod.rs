@@ -1,3 +1,7 @@
+pub mod marketplace;
+
+pub use marketplace::{CreateListingCommand, MarketplaceService, RecordPickupInput, UpdateListingPatch};
+
 use std::sync::Arc;
 use serde::Deserialize;
 use rand::RngCore;
@@ -295,5 +299,22 @@ impl CarrierService {
             .list_by_carrier(carrier_id, limit.clamp(1, 100), offset.max(0))
             .await
             .map_err(AppError::internal)
+    }
+
+    /// Record that the partner submitted compliance documents.
+    /// Flips `compliance_status` to `UnderReview` so admin can action them.
+    /// In production, the multipart bytes are streamed to object storage by
+    /// the HTTP handler before calling this method.
+    pub async fn submit_compliance_documents(
+        &self,
+        id: Uuid,
+        _doc_type: &str,
+        _filename: &str,
+    ) -> AppResult<()> {
+        let mut carrier = self.get(id).await?;
+        carrier.compliance_status = crate::domain::entities::ComplianceStatus::UnderReview;
+        carrier.updated_at = chrono::Utc::now();
+        self.repo.save(&carrier).await.map_err(AppError::internal)?;
+        Ok(())
     }
 }

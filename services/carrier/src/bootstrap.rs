@@ -7,10 +7,10 @@ use logisticos_events::producer::KafkaProducer;
 
 use crate::{
     api::http,
-    application::services::CarrierService,
+    application::services::{CarrierService, MarketplaceService},
     config::Config,
     infrastructure::{
-        db::{PgCarrierRepository, PgSlaRecordRepository},
+        db::{PgCarrierRepository, PgMarketplaceRepository, PgSlaRecordRepository},
         messaging::{start_delivery_consumer, CarrierPublisher},
     },
     AppState,
@@ -40,18 +40,22 @@ pub async fn run() -> anyhow::Result<()> {
     logisticos_common::migrations::run(&pool, "carrier", &sqlx::migrate!("./migrations")).await?;
 
     // Repositories
-    let carrier_repo = Arc::new(PgCarrierRepository::new(pool.clone()));
-    let sla_repo     = Arc::new(PgSlaRecordRepository::new(pool));
+    let carrier_repo     = Arc::new(PgCarrierRepository::new(pool.clone()));
+    let sla_repo         = Arc::new(PgSlaRecordRepository::new(pool.clone()));
+    let marketplace_repo = Arc::new(PgMarketplaceRepository::new(pool));
 
     // Kafka producer + publisher
     let kafka_producer = Arc::new(KafkaProducer::new(&cfg.kafka.brokers)?);
     let publisher      = Arc::new(CarrierPublisher::new(Arc::clone(&kafka_producer)));
 
-    // Application service
+    // Application services
     let carrier_svc = Arc::new(CarrierService::new(
         Arc::clone(&carrier_repo) as Arc<dyn crate::domain::repositories::CarrierRepository>,
         Arc::clone(&sla_repo)     as Arc<dyn crate::domain::repositories::SlaRecordRepository>,
         Arc::clone(&publisher),
+    ));
+    let marketplace_svc = Arc::new(MarketplaceService::new(
+        Arc::clone(&marketplace_repo) as Arc<dyn crate::domain::repositories::MarketplaceRepository>,
     ));
 
     // Graceful shutdown channel
@@ -75,7 +79,7 @@ pub async fn run() -> anyhow::Result<()> {
         .context("AUTH__JWT_SECRET env var not set")?;
     let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
 
-    let state = AppState { carrier_svc, jwt: Arc::clone(&jwt) };
+    let state = AppState { carrier_svc, marketplace_svc, jwt: Arc::clone(&jwt) };
 
     // Mount require_auth ahead of the carrier routes so AuthClaims extracts
     // properly. Without this layer every handler 500s with

@@ -6,8 +6,12 @@ use uuid::Uuid;
 use logisticos_types::TenantId;
 
 use crate::domain::{
-    entities::{Carrier, CarrierId, CarrierStatus, ComplianceStatus, PerformanceGrade, SlaCommitment, SlaRecord, SlaStatus, ZoneSlaRow},
-    repositories::{CarrierRepository, SlaRecordRepository},
+    entities::{
+        BookingStatus, Carrier, CarrierId, CarrierStatus, ComplianceStatus,
+        ListingStatus, MarketplaceBooking, PerformanceGrade, SizeClass,
+        SlaCommitment, SlaRecord, SlaStatus, VehicleListing, ZoneSlaRow,
+    },
+    repositories::{CarrierRepository, MarketplaceRepository, SlaRecordRepository},
 };
 
 #[derive(sqlx::FromRow)]
@@ -292,5 +296,253 @@ impl SlaRecordRepository for PgSlaRecordRepository {
                 on_time_rate,
             }
         }).collect())
+    }
+}
+
+// ── Marketplace Repository ────────────────────────────────────────────────────
+
+#[derive(sqlx::FromRow)]
+struct VehicleListingRow {
+    id:                           Uuid,
+    tenant_id:                    Uuid,
+    carrier_id:                   Uuid,
+    vehicle_plate:                String,
+    size_class:                   String,
+    max_weight_kg:                f32,
+    max_volume_m3:                Option<f32>,
+    base_price_cents:             i64,
+    per_km_cents:                 i64,
+    per_kg_cents:                 Option<i64>,
+    service_area_label:           String,
+    idle_from:                    DateTime<Utc>,
+    idle_until:                   DateTime<Utc>,
+    status:                       String,
+    carrier_response_window_mins: i32,
+    bookings_today:               i64,
+    revenue_today_cents:          i64,
+    created_at:                   DateTime<Utc>,
+    updated_at:                   DateTime<Utc>,
+}
+
+impl TryFrom<VehicleListingRow> for VehicleListing {
+    type Error = anyhow::Error;
+    fn try_from(r: VehicleListingRow) -> Result<Self, Self::Error> {
+        Ok(VehicleListing {
+            id:                           r.id,
+            tenant_id:                    r.tenant_id,
+            carrier_id:                   r.carrier_id,
+            vehicle_plate:                r.vehicle_plate,
+            size_class:                   SizeClass::from_str(&r.size_class)?,
+            max_weight_kg:                r.max_weight_kg,
+            max_volume_m3:                r.max_volume_m3,
+            base_price_cents:             r.base_price_cents,
+            per_km_cents:                 r.per_km_cents,
+            per_kg_cents:                 r.per_kg_cents,
+            service_area_label:           r.service_area_label,
+            idle_from:                    r.idle_from,
+            idle_until:                   r.idle_until,
+            status:                       ListingStatus::from_str(&r.status)?,
+            carrier_response_window_mins: r.carrier_response_window_mins,
+            bookings_today:               r.bookings_today,
+            revenue_today_cents:          r.revenue_today_cents,
+            created_at:                   r.created_at,
+            updated_at:                   r.updated_at,
+        })
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct MarketplaceBookingRow {
+    id:                 Uuid,
+    tenant_id:          Uuid,
+    listing_id:         Uuid,
+    carrier_id:         Uuid,
+    shipment_id:        Uuid,
+    awb:                String,
+    consumer_name:      String,
+    consumer_phone:     Option<String>,
+    pickup_label:       String,
+    dropoff_label:      String,
+    cargo_weight_kg:    f32,
+    cargo_volume_m3:    Option<f32>,
+    quoted_price_cents: i64,
+    status:             String,
+    pickup_at:          DateTime<Utc>,
+    picked_up_at:       Option<DateTime<Utc>>,
+    picked_up_by:       Option<String>,
+    pickup_notes:       Option<String>,
+    created_at:         DateTime<Utc>,
+    updated_at:         DateTime<Utc>,
+}
+
+impl TryFrom<MarketplaceBookingRow> for MarketplaceBooking {
+    type Error = anyhow::Error;
+    fn try_from(r: MarketplaceBookingRow) -> Result<Self, Self::Error> {
+        Ok(MarketplaceBooking {
+            id:                 r.id,
+            tenant_id:          r.tenant_id,
+            listing_id:         r.listing_id,
+            carrier_id:         r.carrier_id,
+            shipment_id:        r.shipment_id,
+            awb:                r.awb,
+            consumer_name:      r.consumer_name,
+            consumer_phone:     r.consumer_phone,
+            pickup_label:       r.pickup_label,
+            dropoff_label:      r.dropoff_label,
+            cargo_weight_kg:    r.cargo_weight_kg,
+            cargo_volume_m3:    r.cargo_volume_m3,
+            quoted_price_cents: r.quoted_price_cents,
+            status:             BookingStatus::from_str(&r.status)?,
+            pickup_at:          r.pickup_at,
+            picked_up_at:       r.picked_up_at,
+            picked_up_by:       r.picked_up_by,
+            pickup_notes:       r.pickup_notes,
+            created_at:         r.created_at,
+            updated_at:         r.updated_at,
+        })
+    }
+}
+
+const LISTING_COLS: &str =
+    "id, tenant_id, carrier_id, vehicle_plate, size_class, max_weight_kg, \
+     max_volume_m3, base_price_cents, per_km_cents, per_kg_cents, service_area_label, \
+     idle_from, idle_until, status, carrier_response_window_mins, \
+     bookings_today, revenue_today_cents, created_at, updated_at";
+
+const BOOKING_COLS: &str =
+    "id, tenant_id, listing_id, carrier_id, shipment_id, awb, consumer_name, \
+     consumer_phone, pickup_label, dropoff_label, cargo_weight_kg, cargo_volume_m3, \
+     quoted_price_cents, status, pickup_at, picked_up_at, picked_up_by, \
+     pickup_notes, created_at, updated_at";
+
+pub struct PgMarketplaceRepository {
+    pool: PgPool,
+}
+
+impl PgMarketplaceRepository {
+    pub fn new(pool: PgPool) -> Self { Self { pool } }
+}
+
+#[async_trait]
+impl MarketplaceRepository for PgMarketplaceRepository {
+    async fn create_listing(&self, l: &VehicleListing) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO carrier.vehicle_listings (
+                id, tenant_id, carrier_id, vehicle_plate, size_class,
+                max_weight_kg, max_volume_m3, base_price_cents, per_km_cents,
+                per_kg_cents, service_area_label, idle_from, idle_until, status,
+                carrier_response_window_mins, bookings_today, revenue_today_cents,
+                created_at, updated_at
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+            "#,
+        )
+        .bind(l.id).bind(l.tenant_id).bind(l.carrier_id).bind(&l.vehicle_plate)
+        .bind(l.size_class.as_str()).bind(l.max_weight_kg).bind(l.max_volume_m3)
+        .bind(l.base_price_cents).bind(l.per_km_cents).bind(l.per_kg_cents)
+        .bind(&l.service_area_label).bind(l.idle_from).bind(l.idle_until)
+        .bind(l.status.as_str()).bind(l.carrier_response_window_mins)
+        .bind(l.bookings_today).bind(l.revenue_today_cents)
+        .bind(l.created_at).bind(l.updated_at)
+        .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    async fn find_listing_by_id(&self, id: Uuid) -> anyhow::Result<Option<VehicleListing>> {
+        let row = sqlx::query_as::<_, VehicleListingRow>(
+            &format!("SELECT {LISTING_COLS} FROM carrier.vehicle_listings WHERE id = $1"),
+        ).bind(id).fetch_optional(&self.pool).await?;
+        row.map(VehicleListing::try_from).transpose()
+    }
+
+    async fn list_listings_by_carrier(
+        &self, carrier_id: Uuid, limit: i64, offset: i64,
+    ) -> anyhow::Result<Vec<VehicleListing>> {
+        let rows = sqlx::query_as::<_, VehicleListingRow>(
+            &format!(
+                "SELECT {LISTING_COLS} FROM carrier.vehicle_listings \
+                 WHERE carrier_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+            ),
+        ).bind(carrier_id).bind(limit).bind(offset).fetch_all(&self.pool).await?;
+        rows.into_iter().map(VehicleListing::try_from).collect()
+    }
+
+    async fn update_listing(&self, l: &VehicleListing) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE carrier.vehicle_listings SET \
+             vehicle_plate = $1, size_class = $2, max_weight_kg = $3, max_volume_m3 = $4, \
+             base_price_cents = $5, per_km_cents = $6, per_kg_cents = $7, \
+             service_area_label = $8, idle_from = $9, idle_until = $10, status = $11, \
+             carrier_response_window_mins = $12, bookings_today = $13, \
+             revenue_today_cents = $14, updated_at = $15 \
+             WHERE id = $16",
+        )
+        .bind(&l.vehicle_plate).bind(l.size_class.as_str()).bind(l.max_weight_kg)
+        .bind(l.max_volume_m3).bind(l.base_price_cents).bind(l.per_km_cents)
+        .bind(l.per_kg_cents).bind(&l.service_area_label).bind(l.idle_from)
+        .bind(l.idle_until).bind(l.status.as_str()).bind(l.carrier_response_window_mins)
+        .bind(l.bookings_today).bind(l.revenue_today_cents).bind(l.updated_at)
+        .bind(l.id)
+        .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    async fn delete_listing(&self, id: Uuid) -> anyhow::Result<bool> {
+        let result = sqlx::query("DELETE FROM carrier.vehicle_listings WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool).await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn create_booking(&self, b: &MarketplaceBooking) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO carrier.marketplace_bookings (
+                id, tenant_id, listing_id, carrier_id, shipment_id, awb,
+                consumer_name, consumer_phone, pickup_label, dropoff_label,
+                cargo_weight_kg, cargo_volume_m3, quoted_price_cents, status,
+                pickup_at, picked_up_at, picked_up_by, pickup_notes, created_at, updated_at
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+            "#,
+        )
+        .bind(b.id).bind(b.tenant_id).bind(b.listing_id).bind(b.carrier_id)
+        .bind(b.shipment_id).bind(&b.awb).bind(&b.consumer_name).bind(&b.consumer_phone)
+        .bind(&b.pickup_label).bind(&b.dropoff_label).bind(b.cargo_weight_kg)
+        .bind(b.cargo_volume_m3).bind(b.quoted_price_cents).bind(b.status.as_str())
+        .bind(b.pickup_at).bind(b.picked_up_at).bind(&b.picked_up_by)
+        .bind(&b.pickup_notes).bind(b.created_at).bind(b.updated_at)
+        .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    async fn find_booking_by_id(&self, id: Uuid) -> anyhow::Result<Option<MarketplaceBooking>> {
+        let row = sqlx::query_as::<_, MarketplaceBookingRow>(
+            &format!("SELECT {BOOKING_COLS} FROM carrier.marketplace_bookings WHERE id = $1"),
+        ).bind(id).fetch_optional(&self.pool).await?;
+        row.map(MarketplaceBooking::try_from).transpose()
+    }
+
+    async fn list_bookings_by_carrier(
+        &self, carrier_id: Uuid, limit: i64, offset: i64,
+    ) -> anyhow::Result<Vec<MarketplaceBooking>> {
+        let rows = sqlx::query_as::<_, MarketplaceBookingRow>(
+            &format!(
+                "SELECT {BOOKING_COLS} FROM carrier.marketplace_bookings \
+                 WHERE carrier_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+            ),
+        ).bind(carrier_id).bind(limit).bind(offset).fetch_all(&self.pool).await?;
+        rows.into_iter().map(MarketplaceBooking::try_from).collect()
+    }
+
+    async fn save_booking(&self, b: &MarketplaceBooking) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE carrier.marketplace_bookings SET \
+             status = $1, picked_up_at = $2, picked_up_by = $3, pickup_notes = $4, \
+             updated_at = $5 WHERE id = $6",
+        )
+        .bind(b.status.as_str()).bind(b.picked_up_at).bind(&b.picked_up_by)
+        .bind(&b.pickup_notes).bind(b.updated_at).bind(b.id)
+        .execute(&self.pool).await?;
+        Ok(())
     }
 }

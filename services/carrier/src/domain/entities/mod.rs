@@ -299,3 +299,240 @@ pub struct ZoneSlaRow {
     /// on_time / total * 100, or 0.0 if total == 0.
     pub on_time_rate: f64,
 }
+
+// ── Marketplace entities ──────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SizeClass {
+    Motorcycle,
+    Sedan,
+    Van,
+    L300,
+    #[serde(rename = "6wheeler")]
+    SixWheeler,
+    #[serde(rename = "10wheeler")]
+    TenWheeler,
+    Trailer,
+}
+
+impl SizeClass {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Motorcycle  => "motorcycle",
+            Self::Sedan       => "sedan",
+            Self::Van         => "van",
+            Self::L300        => "l300",
+            Self::SixWheeler  => "6wheeler",
+            Self::TenWheeler  => "10wheeler",
+            Self::Trailer     => "trailer",
+        }
+    }
+
+    pub fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "motorcycle"  => Ok(Self::Motorcycle),
+            "sedan"       => Ok(Self::Sedan),
+            "van"         => Ok(Self::Van),
+            "l300"        => Ok(Self::L300),
+            "6wheeler"    => Ok(Self::SixWheeler),
+            "10wheeler"   => Ok(Self::TenWheeler),
+            "trailer"     => Ok(Self::Trailer),
+            other         => anyhow::bail!("Unknown size class: {other}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListingStatus {
+    Active,
+    Paused,
+    Booked,
+    Expired,
+}
+
+impl ListingStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Active  => "active",
+            Self::Paused  => "paused",
+            Self::Booked  => "booked",
+            Self::Expired => "expired",
+        }
+    }
+
+    pub fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "active"  => Ok(Self::Active),
+            "paused"  => Ok(Self::Paused),
+            "booked"  => Ok(Self::Booked),
+            "expired" => Ok(Self::Expired),
+            other     => anyhow::bail!("Unknown listing status: {other}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BookingStatus {
+    Pending,
+    Accepted,
+    Rejected,
+    InTransit,
+    Delivered,
+    Cancelled,
+    Disputed,
+}
+
+impl BookingStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending   => "pending",
+            Self::Accepted  => "accepted",
+            Self::Rejected  => "rejected",
+            Self::InTransit => "in_transit",
+            Self::Delivered => "delivered",
+            Self::Cancelled => "cancelled",
+            Self::Disputed  => "disputed",
+        }
+    }
+
+    pub fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "pending"    => Ok(Self::Pending),
+            "accepted"   => Ok(Self::Accepted),
+            "rejected"   => Ok(Self::Rejected),
+            "in_transit" => Ok(Self::InTransit),
+            "delivered"  => Ok(Self::Delivered),
+            "cancelled"  => Ok(Self::Cancelled),
+            "disputed"   => Ok(Self::Disputed),
+            other        => anyhow::bail!("Unknown booking status: {other}"),
+        }
+    }
+}
+
+/// A carrier's idle vehicle available for spot bookings on the marketplace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VehicleListing {
+    pub id:                           Uuid,
+    pub tenant_id:                    Uuid,
+    pub carrier_id:                   Uuid,
+    pub vehicle_plate:                String,
+    pub size_class:                   SizeClass,
+    pub max_weight_kg:                f32,
+    pub max_volume_m3:                Option<f32>,
+    pub base_price_cents:             i64,
+    pub per_km_cents:                 i64,
+    pub per_kg_cents:                 Option<i64>,
+    pub service_area_label:           String,
+    pub idle_from:                    DateTime<Utc>,
+    pub idle_until:                   DateTime<Utc>,
+    pub status:                       ListingStatus,
+    pub carrier_response_window_mins: i32,
+    pub bookings_today:               i64,
+    pub revenue_today_cents:          i64,
+    pub created_at:                   DateTime<Utc>,
+    pub updated_at:                   DateTime<Utc>,
+}
+
+impl VehicleListing {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        tenant_id:                    Uuid,
+        carrier_id:                   Uuid,
+        vehicle_plate:                String,
+        size_class:                   SizeClass,
+        max_weight_kg:                f32,
+        max_volume_m3:                Option<f32>,
+        base_price_cents:             i64,
+        per_km_cents:                 i64,
+        per_kg_cents:                 Option<i64>,
+        service_area_label:           String,
+        idle_from:                    DateTime<Utc>,
+        idle_until:                   DateTime<Utc>,
+        carrier_response_window_mins: i32,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4(),
+            tenant_id,
+            carrier_id,
+            vehicle_plate,
+            size_class,
+            max_weight_kg,
+            max_volume_m3,
+            base_price_cents,
+            per_km_cents,
+            per_kg_cents,
+            service_area_label,
+            idle_from,
+            idle_until,
+            status: ListingStatus::Active,
+            carrier_response_window_mins,
+            bookings_today: 0,
+            revenue_today_cents: 0,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+}
+
+/// A spot booking placed against a `VehicleListing` by a merchant.
+/// Lifecycle: pending → accepted|rejected; accepted → in_transit → delivered.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketplaceBooking {
+    pub id:                 Uuid,
+    pub tenant_id:          Uuid,
+    pub listing_id:         Uuid,
+    pub carrier_id:         Uuid,
+    pub shipment_id:        Uuid,
+    pub awb:                String,
+    /// Masked pre-accept; unmasked after carrier accepts.
+    pub consumer_name:      String,
+    pub consumer_phone:     Option<String>,
+    pub pickup_label:       String,
+    pub dropoff_label:      String,
+    pub cargo_weight_kg:    f32,
+    pub cargo_volume_m3:    Option<f32>,
+    pub quoted_price_cents: i64,
+    pub status:             BookingStatus,
+    pub pickup_at:          DateTime<Utc>,
+    pub picked_up_at:       Option<DateTime<Utc>>,
+    pub picked_up_by:       Option<String>,
+    pub pickup_notes:       Option<String>,
+    pub created_at:         DateTime<Utc>,
+    pub updated_at:         DateTime<Utc>,
+}
+
+impl MarketplaceBooking {
+    pub fn accept(&mut self) -> anyhow::Result<()> {
+        if self.status != BookingStatus::Pending {
+            anyhow::bail!("Booking can only be accepted when pending, current status: {}", self.status.as_str());
+        }
+        self.status = BookingStatus::Accepted;
+        self.updated_at = Utc::now();
+        Ok(())
+    }
+
+    pub fn reject(&mut self) -> anyhow::Result<()> {
+        if self.status != BookingStatus::Pending {
+            anyhow::bail!("Booking can only be rejected when pending, current status: {}", self.status.as_str());
+        }
+        self.status = BookingStatus::Rejected;
+        self.updated_at = Utc::now();
+        Ok(())
+    }
+
+    pub fn record_pickup(&mut self, picked_up_by: Option<String>, notes: Option<String>) -> anyhow::Result<()> {
+        if self.status != BookingStatus::Accepted {
+            anyhow::bail!("Pickup can only be recorded for accepted bookings, current status: {}", self.status.as_str());
+        }
+        self.status = BookingStatus::InTransit;
+        self.picked_up_at = Some(Utc::now());
+        self.picked_up_by = picked_up_by;
+        self.pickup_notes = notes;
+        self.updated_at = Utc::now();
+        Ok(())
+    }
+}
