@@ -67,6 +67,10 @@ pub struct CodRemitted {
     pub platform_fee_cents:   i64,
     pub net_credit_cents:     i64,
     pub remitted_at:          chrono::DateTime<chrono::Utc>,
+    /// Merchant billing email — populated from MerchantBillingAccount.billing_email if found.
+    /// Empty string if no billing account is configured; engagement will skip email.
+    #[serde(default)]
+    pub merchant_email:       String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

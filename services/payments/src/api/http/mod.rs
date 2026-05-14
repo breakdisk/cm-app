@@ -53,6 +53,8 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/invoices/:id/resend",                   post(invoices::resend_invoice))
         .route("/customers/:customer_id/invoices",       get(invoices::list_customer_invoices))
         .route("/cod/reconcile",                         post(wallet::reconcile_cod))
+        .route("/cod/balance/:merchant_id",              get(wallet::get_cod_balance))
+        .route("/cod/remittances",                       get(cod_batches::list_remittances))
         .route("/wallet",                                get(wallet::get_wallet))
         .route("/wallet/transactions",                   get(wallet::list_transactions))
         .route("/wallet/withdraw",                       post(wallet::request_withdrawal))

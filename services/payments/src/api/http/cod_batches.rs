@@ -3,14 +3,18 @@
 //! API-gateway/Istio mesh enforces caller identity for `/v1/internal/*`.
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
 use std::sync::Arc;
 use uuid::Uuid;
+use serde::Deserialize;
 
+use logisticos_auth::middleware::AuthClaims;
+use logisticos_auth::require_permission;
 use logisticos_errors::AppError;
+use logisticos_types::TenantId;
 use crate::{
     api::http::AppState,
     application::commands::{ConfirmCodBatchCommand, CreateCodBatchCommand},
@@ -41,6 +45,33 @@ pub async fn confirm_batch(
     cmd.batch_id = batch_id;
     let batch = state.cod_remittance_service.confirm_batch(cmd).await?;
     Ok((StatusCode::OK, Json(render_batch(&batch))))
+}
+
+#[derive(Deserialize)]
+pub struct ListRemittancesQuery {
+    /// Required: the merchant whose batches to fetch.
+    merchant_id: Uuid,
+    limit: Option<u32>,
+}
+
+/// Protected (JWT): GET /v1/cod/remittances?merchant_id=<uuid>[&limit=50]
+///
+/// Lists COD remittance batches for a merchant within the authenticated tenant.
+pub async fn list_remittances(
+    AuthClaims(claims): AuthClaims,
+    Query(q): Query<ListRemittancesQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_VIEW);
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let limit     = q.limit.unwrap_or(50).min(200);
+
+    let batches = state.cod_remittance_service
+        .list_batches_for_merchant(&tenant_id, q.merchant_id, limit)
+        .await?;
+
+    let data: Vec<_> = batches.iter().map(render_batch).collect();
+    Ok(Json(serde_json::json!({ "data": data, "total": data.len() })))
 }
 
 fn render_batch(b: &CodRemittanceBatch) -> serde_json::Value {

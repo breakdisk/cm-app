@@ -19,6 +19,7 @@ use chrono::{Duration, NaiveTime, TimeZone, Utc};
 use logisticos_errors::{AppError, AppResult};
 use logisticos_events::{envelope::Event, producer::KafkaProducer, topics};
 use logisticos_types::{MerchantId, Money, TenantId};
+use uuid::Uuid;
 
 use crate::{
     application::commands::{ConfirmCodBatchCommand, CreateCodBatchCommand},
@@ -26,26 +27,29 @@ use crate::{
         entities::{CodBatchStatus, CodRemittanceBatch, WalletTransaction},
         events::CodRemitted,
         repositories::{
-            CodRemittanceBatchRepository, CodRepository, WalletRepository,
+            CodRemittanceBatchRepository, CodRepository, MerchantBillingAccountRepository,
+            WalletRepository,
         },
     },
 };
 
 pub struct CodRemittanceService {
-    cod_repo:      Arc<dyn CodRepository>,
-    batch_repo:    Arc<dyn CodRemittanceBatchRepository>,
-    wallet_repo:   Arc<dyn WalletRepository>,
-    kafka:         Arc<KafkaProducer>,
+    cod_repo:              Arc<dyn CodRepository>,
+    batch_repo:            Arc<dyn CodRemittanceBatchRepository>,
+    wallet_repo:           Arc<dyn WalletRepository>,
+    kafka:                 Arc<KafkaProducer>,
+    billing_account_repo:  Arc<dyn MerchantBillingAccountRepository>,
 }
 
 impl CodRemittanceService {
     pub fn new(
-        cod_repo:    Arc<dyn CodRepository>,
-        batch_repo:  Arc<dyn CodRemittanceBatchRepository>,
-        wallet_repo: Arc<dyn WalletRepository>,
-        kafka:       Arc<KafkaProducer>,
+        cod_repo:             Arc<dyn CodRepository>,
+        batch_repo:           Arc<dyn CodRemittanceBatchRepository>,
+        wallet_repo:          Arc<dyn WalletRepository>,
+        kafka:                Arc<KafkaProducer>,
+        billing_account_repo: Arc<dyn MerchantBillingAccountRepository>,
     ) -> Self {
-        Self { cod_repo, batch_repo, wallet_repo, kafka }
+        Self { cod_repo, batch_repo, wallet_repo, kafka, billing_account_repo }
     }
 
     /// Create a Created-status batch for (tenant, merchant) up to cutoff_date.
@@ -253,6 +257,16 @@ impl CodRemittanceService {
         // Persist the now-Paid batch.
         self.batch_repo.save(&batch).await.map_err(AppError::Internal)?;
 
+        // Look up billing email from merchant billing account (best-effort — no billing
+        // account configured means the merchant just won't receive an email notification).
+        let merchant_email = self.billing_account_repo
+            .find_by_merchant(batch.merchant_id.inner())
+            .await
+            .ok()
+            .flatten()
+            .map(|a| a.billing_email)
+            .unwrap_or_default();
+
         // Emit cod.remitted.
         let remitted_at = batch.paid_at.unwrap_or_else(Utc::now);
         let event_payload = CodRemitted {
@@ -265,6 +279,7 @@ impl CodRemittanceService {
             platform_fee_cents: batch.platform_fee_cents,
             net_credit_cents:   batch.net_cents,
             remitted_at,
+            merchant_email,
         };
         let event = Event::new("payments", "cod.remitted", tenant_id.inner(), event_payload);
         self.kafka
@@ -280,6 +295,18 @@ impl CodRemittanceService {
             "COD remittance batch paid; merchant wallet credited",
         );
         Ok(batch)
+    }
+
+    pub async fn list_batches_for_merchant(
+        &self,
+        tenant_id:   &TenantId,
+        merchant_id: uuid::Uuid,
+        limit:       u32,
+    ) -> AppResult<Vec<CodRemittanceBatch>> {
+        self.batch_repo
+            .list_by_merchant(tenant_id, merchant_id, limit)
+            .await
+            .map_err(AppError::Internal)
     }
 }
 
