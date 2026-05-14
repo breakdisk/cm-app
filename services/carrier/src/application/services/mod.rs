@@ -179,6 +179,11 @@ impl CarrierService {
         self.repo.list(tenant_id, limit.clamp(1, 100), offset.max(0)).await.map_err(AppError::internal)
     }
 
+    /// List all carriers in `active` status — used by rate-shop and the gRPC service.
+    pub async fn list_active(&self, tenant_id: &TenantId) -> AppResult<Vec<Carrier>> {
+        self.repo.list_active(tenant_id).await.map_err(AppError::internal)
+    }
+
     /// Rate shop: return quotes from all active carriers for a given service type and weight.
     /// Results sorted by total cost ascending (cheapest first).
     pub async fn shop_rates(

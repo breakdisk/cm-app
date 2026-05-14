@@ -2,6 +2,7 @@ use std::{net::SocketAddr, sync::Arc};
 use anyhow::Context;
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::watch;
+use tonic::transport::Server as GrpcServer;
 use logisticos_auth::jwt::JwtService;
 use logisticos_events::producer::KafkaProducer;
 
@@ -90,7 +91,27 @@ pub async fn run() -> anyhow::Result<()> {
         .with_state(state);
 
     let addr: SocketAddr = format!("{}:{}", cfg.app.host, cfg.app.port).parse()?;
-    tracing::info!(addr = %addr, "carrier service listening");
+    tracing::info!(addr = %addr, "carrier HTTP service listening");
+
+    // Optionally start the gRPC server on a secondary port.
+    if let Some(grpc_port) = cfg.app.grpc_port {
+        let grpc_addr: SocketAddr = format!("{}:{}", cfg.app.host, grpc_port).parse()?;
+        tracing::info!(addr = %grpc_addr, "carrier gRPC service listening");
+        let grpc_svc = crate::api::grpc::CarrierGrpc::new(Arc::clone(&state.carrier_svc))
+            .into_service();
+        let mut grpc_rx = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = GrpcServer::builder()
+                .add_service(grpc_svc)
+                .serve_with_shutdown(grpc_addr, async move {
+                    grpc_rx.changed().await.ok();
+                })
+                .await
+            {
+                tracing::error!("gRPC server exited with error: {e}");
+            }
+        });
+    }
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app)

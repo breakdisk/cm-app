@@ -17,7 +17,6 @@ import {
   subscribeToBus,
   type BusReceipt,
 } from "./marketplace-bus";
-import { getCurrentPartner } from "./partner-identity";
 
 const CARRIER_SVC_URL = process.env.NEXT_PUBLIC_CARRIER_URL ?? "http://localhost:8010";
 
@@ -188,9 +187,13 @@ export { subscribeToBus as subscribeToMarketplaceUpdates };
 // ── Receipts (pre-receipt-service: still uses bus) ────────────────────────────
 
 export interface IssueReceiptInput {
-  booking_id: string;
-  signed_by?: string | null;
-  notes?:     string | null;
+  booking_id:    string;
+  /** Carrier's UUID — used to populate the receipt's partner_id field. */
+  carrier_id?:   string | null;
+  /** Carrier's display name — used to populate the receipt's issued_by_name. */
+  carrier_name?: string | null;
+  signed_by?:    string | null;
+  notes?:        string | null;
 }
 
 export async function issueReceipt(input: IssueReceiptInput): Promise<BusReceipt | null> {
@@ -200,7 +203,8 @@ export async function issueReceipt(input: IssueReceiptInput): Promise<BusReceipt
   // Receipt service not yet shipped — build the artifact locally so the
   // partner portal can render it immediately. Production will POST to
   // /v1/receipts and the engagement engine will forward it to the consumer.
-  const partner = getCurrentPartner();
+  const partnerId   = input.carrier_id   ?? "unknown";
+  const partnerName = input.carrier_name ?? "Carrier";
   const issuedAt = new Date();
   const yyyy = issuedAt.getUTCFullYear();
   const mm   = String(issuedAt.getUTCMonth() + 1).padStart(2, "0");
@@ -224,8 +228,8 @@ export async function issueReceipt(input: IssueReceiptInput): Promise<BusReceipt
     booking_id:           input.booking_id,
     awb,
     shipment_id:          shipmentId,
-    partner_id:           partner.id,
-    partner_display_name: partner.name,
+    partner_id:           partnerId,
+    partner_display_name: partnerName,
     merchant_id:          null,
     merchant_display:     "",
     consumer_display:     "",
@@ -236,7 +240,7 @@ export async function issueReceipt(input: IssueReceiptInput): Promise<BusReceipt
     cargo_weight_kg:      0,
     quoted_price_cents:   0,
     issued_by:            "partner",
-    issued_by_name:       partner.name,
+    issued_by_name:       partnerName,
     signed_by:            input.signed_by ?? null,
     notes:                input.notes ?? null,
     issued_at:            issuedAt.toISOString(),

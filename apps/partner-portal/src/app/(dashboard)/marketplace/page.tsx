@@ -630,9 +630,11 @@ function MarketplacePageInner() {
   async function handleIssueReceipt(input: { signed_by: string; notes: string }) {
     if (!receiptModal.booking) return;
     const created = await issueReceipt({
-      booking_id: receiptModal.booking.id,
-      signed_by:  input.signed_by || null,
-      notes:      input.notes     || null,
+      booking_id:   receiptModal.booking.id,
+      carrier_id:   carrier ? String(carrier.id) : null,
+      carrier_name: carrier?.name ?? null,
+      signed_by:    input.signed_by || null,
+      notes:        input.notes     || null,
     });
     if (created) {
       setReceiptsByBookingId((prev) => ({ ...prev, [created.booking_id]: created }));
