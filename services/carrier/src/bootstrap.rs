@@ -80,6 +80,10 @@ pub async fn run() -> anyhow::Result<()> {
         .context("AUTH__JWT_SECRET env var not set")?;
     let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
 
+    // Clone carrier_svc before moving state into the router — gRPC server
+    // needs its own Arc handle and `with_state` consumes `state`.
+    let carrier_svc_for_grpc = Arc::clone(&carrier_svc);
+
     let state = AppState { carrier_svc, marketplace_svc, jwt: Arc::clone(&jwt) };
 
     // Mount require_auth ahead of the carrier routes so AuthClaims extracts
@@ -97,7 +101,7 @@ pub async fn run() -> anyhow::Result<()> {
     if let Some(grpc_port) = cfg.app.grpc_port {
         let grpc_addr: SocketAddr = format!("{}:{}", cfg.app.host, grpc_port).parse()?;
         tracing::info!(addr = %grpc_addr, "carrier gRPC service listening");
-        let grpc_svc = crate::api::grpc::CarrierGrpc::new(Arc::clone(&state.carrier_svc))
+        let grpc_svc = crate::api::grpc::CarrierGrpc::new(carrier_svc_for_grpc)
             .into_service();
         let mut grpc_rx = shutdown_rx.clone();
         tokio::spawn(async move {
