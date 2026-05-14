@@ -91,6 +91,7 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::clone(&cod_batch_repo) as _,
         Arc::clone(&wallet_repo) as _,
         Arc::clone(&kafka),
+        Arc::clone(&merchant_billing_account_repo) as _,
     ));
     let wallet_service = Arc::new(WalletService::new(
         Arc::clone(&wallet_repo) as _,

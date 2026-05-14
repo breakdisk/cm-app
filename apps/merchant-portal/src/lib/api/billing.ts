@@ -122,29 +122,35 @@ export const billingApi = {
       .get<ApiResponse<CodBalance>>(`/v1/cod/balance/${merchantId}`)
       .then((r) => r.data.data),
 
-  /** List COD remittances */
+  /** List COD remittance batches for a merchant */
   listCodRemittances: (
     params: {
-      merchant_id?: string;
-      status?: string;
-      page?: number;
-      per_page?: number;
+      merchant_id: string;
+      limit?: number;
     },
     token: string
   ) =>
     createApiClient(token)
-      .get<PaginatedApiResponse<CodRemittance>>("/v1/cod/remittances", {
+      .get<{ data: CodRemittance[]; total: number }>("/v1/cod/remittances", {
         params,
       })
       .then((r) => r.data),
 
-  /** Initiate COD reconciliation for a merchant */
-  reconcileCod: (merchantId: string, token: string) =>
+  /** Trigger COD reconciliation (internal/ops use only — normally called by pod service) */
+  reconcileCod: (
+    payload: {
+      shipment_id: string;
+      pod_id: string;
+      driver_id: string;
+      amount_cents: number;
+      customer_phone?: string;
+      customer_name?: string;
+    },
+    token: string
+  ) =>
     createApiClient(token)
-      .post<ApiResponse<CodRemittance>>(
-        `/v1/cod/reconcile/${merchantId}`
-      )
-      .then((r) => r.data.data),
+      .post<void>("/v1/cod/reconcile", payload)
+      .then((r) => r.data),
 
   // ── Wallet ────────────────────────────────────────────────────
 

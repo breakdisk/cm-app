@@ -81,6 +81,27 @@ impl CodRemittanceBatchRepository for PgCodRemittanceBatchRepository {
         Ok(row.map(CodRemittanceBatch::from))
     }
 
+    async fn list_by_merchant(
+        &self,
+        tenant_id:   &TenantId,
+        merchant_id: Uuid,
+        limit:       u32,
+    ) -> anyhow::Result<Vec<CodRemittanceBatch>> {
+        let sql = format!(
+            "SELECT {SELECT_COLS} FROM payments.cod_remittance_batches
+             WHERE tenant_id = $1 AND merchant_id = $2
+             ORDER BY created_at DESC
+             LIMIT $3"
+        );
+        let rows = sqlx::query_as::<_, BatchRow>(&sql)
+            .bind(tenant_id.inner())
+            .bind(merchant_id)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(CodRemittanceBatch::from).collect())
+    }
+
     async fn save(&self, b: &CodRemittanceBatch) -> anyhow::Result<()> {
         let currency = format!("{:?}", b.currency);
         sqlx::query(

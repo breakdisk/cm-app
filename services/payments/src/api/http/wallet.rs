@@ -66,6 +66,27 @@ pub async fn request_withdrawal(
     })))
 }
 
+/// Protected (JWT): GET /v1/cod/balance/:merchant_id
+///
+/// Merchants call this to see their own pending/remitted COD balance.
+/// Admins and tenant-level roles can supply any merchant_id.
+pub async fn get_cod_balance(
+    AuthClaims(claims): AuthClaims,
+    Path(merchant_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_VIEW);
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let balance = state.cod_service.cod_balance(&tenant_id, merchant_id).await?;
+    Ok(Json(serde_json::json!({
+        "merchant_id":     merchant_id,
+        "pending_cents":   balance.pending_cents,
+        "remitted_cents":  balance.remitted_cents,
+        "total_cents":     balance.total_cents,
+        "currency":        "PHP",
+    })))
+}
+
 /// Internal (no JWT): GET /v1/internal/cod/balance/:merchant_id
 ///
 /// Returns aggregated COD balance for a merchant. Called by the AI layer's

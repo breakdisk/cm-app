@@ -99,6 +99,12 @@ pub struct CodBalanceSummary {
 pub trait CodRemittanceBatchRepository: Send + Sync {
     async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<CodRemittanceBatch>>;
     async fn save(&self, batch: &CodRemittanceBatch) -> anyhow::Result<()>;
+    async fn list_by_merchant(
+        &self,
+        tenant_id:   &TenantId,
+        merchant_id: Uuid,
+        limit:       u32,
+    ) -> anyhow::Result<Vec<CodRemittanceBatch>>;
 }
 
 #[async_trait]

@@ -41,8 +41,10 @@ const SUBSCRIBED_TOPICS: &[&str] = &[
     "logisticos.driver.pickup.completed",
     "logisticos.driver.delivery.completed",
     "logisticos.driver.delivery.failed",
-    "logisticos.payments.invoice.finalized",
-    "logisticos.payments.cod.remittance_ready",
+    // invoice.generated replaces the never-published invoice.finalized topic
+    "logisticos.payments.invoice.generated",
+    // cod.remitted replaces the never-published cod.remittance_ready topic
+    "logisticos.payments.cod.remitted",
 ];
 
 const MAX_RETRY_ATTEMPTS: u32 = 3;
