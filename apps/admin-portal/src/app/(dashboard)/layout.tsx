@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 import { DriverRosterProvider } from "@/context/driver-roster-context";
+import { usePermissions, clearPermissionsCache } from "@/hooks/usePermissions";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -37,6 +38,8 @@ interface NavItem {
   href: string;
   icon: React.ElementType;
   badge?: string | number;
+  /** Permission required to see this nav item. Undefined = visible to all authenticated users. */
+  requiredPermission?: string;
 }
 
 interface DashboardLayoutProps {
@@ -46,24 +49,24 @@ interface DashboardLayoutProps {
 // ─── Nav config ───────────────────────────────────────────────────────────────
 
 const NAV_ITEMS: NavItem[] = [
-  { label: "Dispatch Console", href: "/dispatch",    icon: Map },
-  { label: "Shipments",        href: "/shipments",   icon: Package },
-  { label: "Drivers",          href: "/drivers",     icon: Users },
-  { label: "Compliance",       href: "/compliance",  icon: ShieldCheck },
-  { label: "Fleet",            href: "/fleet",       icon: Truck },
-  { label: "Hubs",             href: "/hubs",        icon: Building2 },
-  { label: "Carriers",         href: "/carriers",    icon: Boxes },
-  { label: "Marketplace",      href: "/marketplace", icon: Store },
-  { label: "Finance",          href: "/finance",     icon: Receipt },
-  { label: "Analytics",        href: "/analytics",   icon: BarChart3 },
-  { label: "AI Agents",        href: "/ai-agents",   icon: Bot },
-  { label: "Automation",       href: "/automation",  icon: Workflow },
+  { label: "Dispatch Console", href: "/dispatch",    icon: Map,        requiredPermission: "dispatch:view"      },
+  { label: "Shipments",        href: "/shipments",   icon: Package,    requiredPermission: "shipments:read"     },
+  { label: "Drivers",          href: "/drivers",     icon: Users,      requiredPermission: "drivers:read"       },
+  { label: "Compliance",       href: "/compliance",  icon: ShieldCheck,requiredPermission: "compliance:review"  },
+  { label: "Fleet",            href: "/fleet",       icon: Truck,      requiredPermission: "fleet:read"         },
+  { label: "Hubs",             href: "/hubs",        icon: Building2,  requiredPermission: "dispatch:view"      },
+  { label: "Carriers",         href: "/carriers",    icon: Boxes,      requiredPermission: "carriers:read"      },
+  { label: "Marketplace",      href: "/marketplace", icon: Store                                                },
+  { label: "Finance",          href: "/finance",     icon: Receipt,    requiredPermission: "payments:read"      },
+  { label: "Analytics",        href: "/analytics",   icon: BarChart3,  requiredPermission: "analytics:view"     },
+  { label: "AI Agents",        href: "/ai-agents",   icon: Bot,        requiredPermission: "users:manage"       },
+  { label: "Automation",       href: "/automation",  icon: Workflow,   requiredPermission: "users:manage"       },
   // Badge count will be wired once we have a lightweight `/alerts/count`
   // endpoint; polling the full aggregator from the sidebar on every page
   // is wasteful. Showing a static number was misleading.
-  { label: "Alerts",           href: "/alerts",      icon: Bell },
-  { label: "Map View",         href: "/map",         icon: MapPin },
-  { label: "Settings",         href: "/settings",    icon: Settings },
+  { label: "Alerts",           href: "/alerts",      icon: Bell,       requiredPermission: "shipments:read"     },
+  { label: "Map View",         href: "/map",         icon: MapPin,     requiredPermission: "dispatch:view"      },
+  { label: "Settings",         href: "/settings",    icon: Settings,   requiredPermission: "api_keys:manage"    },
 ];
 
 // ─── Page title map ───────────────────────────────────────────────────────────
@@ -200,6 +203,20 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const [utcTime, setUtcTime] = useState(() => formatUtcTime(new Date()));
   const pathname = usePathname();
   const pageTitle = getPageTitle(pathname);
+  const { hasPermission, displayName, displayRole, loading: identityLoading } = usePermissions();
+
+  const visibleNavItems = identityLoading
+    ? []
+    : NAV_ITEMS.filter((item) =>
+        !item.requiredPermission || hasPermission(item.requiredPermission),
+      );
+
+  const initials = displayName
+    .split(" ")
+    .map((w) => w[0] ?? "")
+    .slice(0, 2)
+    .join("")
+    .toUpperCase() || "OA";
 
   // Tick UTC clock
   useEffect(() => {
@@ -302,7 +319,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
         {/* ── Navigation ────────────────────────────────────────────────── */}
         <nav className="flex flex-1 flex-col gap-1 overflow-y-auto overflow-x-hidden p-3">
-          {NAV_ITEMS.map((item) => (
+          {visibleNavItems.map((item) => (
             <NavLink
               key={item.href}
               item={item}
@@ -332,7 +349,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
               className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
               style={{ background: "linear-gradient(135deg, #A855F7, #00E5FF)" }}
             >
-              OA
+              {initials}
             </div>
             <AnimatePresence initial={false}>
               {!collapsed && (
@@ -344,10 +361,10 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                   className="min-w-0 flex-1 overflow-hidden"
                 >
                   <p className="truncate whitespace-nowrap text-xs font-medium text-white/80">
-                    Ops Admin
+                    {identityLoading ? "Loading…" : displayName}
                   </p>
                   <p className="truncate whitespace-nowrap text-2xs text-white/40 font-mono">
-                    Admin · Super
+                    {identityLoading ? "—" : displayRole}
                   </p>
                 </motion.div>
               )}
@@ -355,6 +372,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           </div>
 
           <button
+            onClick={() => { clearPermissionsCache(); window.location.href = "/login"; }}
             className={cn(
               "group flex w-full items-center gap-3 rounded-lg px-3 py-2",
               "text-xs text-white/40 transition-all hover:bg-red-surface hover:text-red-signal",
