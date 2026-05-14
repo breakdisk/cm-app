@@ -38,3 +38,4 @@ tracing.workspace    = true
 async-trait.workspace = true
 rand.workspace        = true
 sha2.workspace        = true
+reqwest.workspace     = true
