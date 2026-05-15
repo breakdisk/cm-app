@@ -1,0 +1,100 @@
+syntax = "proto3";
+
+package logisticos.carrier.v1;
+
+// ── Carrier gRPC service ──────────────────────────────────────────────────────
+//
+// Exposed on the secondary gRPC port (APP__GRPC_PORT, default 8011).
+// Consumed by:
+//   - dispatch service  → RateShop, GetCarrier
+//   - driver-ops        → RecordDeliveryOutcome
+//   - admin / reporting → ListActiveCarriers
+//
+// All streaming methods are reserved for future use.
+
+service CarrierGrpcService {
+  // Fetch a single carrier by ID (dispatch uses this to resolve carrier info
+  // after it receives a `carrier.allocated` Kafka event).
+  rpc GetCarrier (GetCarrierRequest) returns (GetCarrierResponse);
+
+  // List all carriers currently in `active` status for a tenant.
+  rpc ListActiveCarriers (ListActiveCarriersRequest) returns (ListActiveCarriersResponse);
+
+  // Return quotes from all active carriers for a given service type and weight.
+  // Sorted by total_cost_cents ascending. Called by dispatch before assigning
+  // a carrier to a shipment.
+  rpc RateShop (RateShopRequest) returns (RateShopResponse);
+
+  // Record that a shipment was delivered or failed. Called by driver-ops when
+  // a POD is confirmed. Updates the carrier's on_time_rate and SLA record.
+  rpc RecordDeliveryOutcome (RecordDeliveryOutcomeRequest) returns (RecordDeliveryOutcomeResponse);
+}
+
+// ── Carrier messages ──────────────────────────────────────────────────────────
+
+message GetCarrierRequest {
+  string carrier_id = 1;  // UUID string
+  string tenant_id  = 2;  // UUID string (for tenant-isolation assertion)
+}
+
+message CarrierSummary {
+  string id                = 1;
+  string tenant_id         = 2;
+  string name              = 3;
+  string code              = 4;
+  string contact_email     = 5;
+  string status            = 6;  // "active" | "suspended" | ...
+  string compliance_status = 7;
+  double on_time_rate      = 8;  // 0–100
+  string performance_grade = 9;  // "excellent" | "good" | "fair" | "poor"
+  bool   has_api_key       = 10;
+}
+
+message GetCarrierResponse {
+  CarrierSummary carrier = 1;
+}
+
+message ListActiveCarriersRequest {
+  string tenant_id = 1;
+}
+
+message ListActiveCarriersResponse {
+  repeated CarrierSummary carriers = 1;
+}
+
+// ── Rate-shop messages ────────────────────────────────────────────────────────
+
+message RateShopRequest {
+  string tenant_id    = 1;
+  string service_type = 2;  // "same_day" | "next_day" | "standard"
+  float  weight_kg    = 3;
+}
+
+message CarrierQuote {
+  string carrier_id        = 1;
+  string carrier_name      = 2;
+  string carrier_code      = 3;
+  string service_type      = 4;
+  int64  total_cost_cents  = 5;
+  double on_time_rate      = 6;
+  string grade             = 7;
+  bool   eligible          = 8;
+}
+
+message RateShopResponse {
+  repeated CarrierQuote quotes = 1;
+}
+
+// ── Delivery outcome messages ─────────────────────────────────────────────────
+
+message RecordDeliveryOutcomeRequest {
+  string shipment_id    = 1;
+  bool   on_time        = 2;
+  string delivered_at   = 3;  // ISO-8601; empty when on_time=false
+  string failure_reason = 4;  // empty when on_time=true
+}
+
+message RecordDeliveryOutcomeResponse {
+  bool   success      = 1;
+  string error_detail = 2;  // non-empty on partial failures (e.g. carrier stats update failed)
+}

@@ -12,6 +12,9 @@ pub struct Config {
 pub struct AppConfig {
     pub host: String,
     pub port: u16,
+    /// Optional secondary port for the gRPC server (APP__GRPC_PORT).
+    /// If unset, the gRPC server is not started.
+    pub grpc_port: Option<u16>,
     pub env: String,
 }
 

@@ -63,13 +63,7 @@ import {
 import { findReceiptByBookingId, type BusReceipt } from "@/lib/api/marketplace-bus";
 import { ReceiptModal, type ReceiptModalBooking } from "@/components/marketplace/ReceiptModal";
 import { PickupModal, type PickupModalBooking } from "@/components/marketplace/PickupModal";
-import {
-  emitIdentityChanged,
-  getCurrentPartnerId,
-  listKnownPartners,
-  setCurrentPartnerId,
-  subscribeToIdentityChanges,
-} from "@/lib/api/partner-identity";
+import { useCarrier } from "@/contexts/carrier-context";
 
 // ── Status styling ────────────────────────────────────────────────────────────
 
@@ -557,14 +551,13 @@ function MarketplacePageInner() {
   const qpNew    = searchParams.get("new");
   const qpStatus = searchParams.get("status") as ListingStatus | null;
 
+  const { carrier } = useCarrier();
   const [listings, setListings] = useState<VehicleListing[]>([]);
   const [bookings, setBookings] = useState<MarketplaceBooking[]>([]);
   const [loading, setLoading]   = useState(true);
   const [search, setSearch]     = useState("");
   const [statusFilter, setStatusFilter] = useState<ListingStatus | "all">(qpStatus ?? "all");
   const [drawer, setDrawer] = useState<DrawerMode>(qpNew ? { kind: "create" } : { kind: "closed" });
-  const [actingPartnerId, setActingPartnerId] = useState<string>(getCurrentPartnerId());
-  const knownPartners = listKnownPartners();
 
   const refresh = useCallback(async () => {
     const [l, b] = await Promise.all([fetchListings(), fetchBookings()]);
@@ -590,24 +583,11 @@ function MarketplacePageInner() {
     // bus (ADR-0013 §Booking flow — stand-in for `marketplace.booking_created`
     // on Kafka); the storage event refreshes our table immediately.
     const unsubscribeBus = subscribeToMarketplaceUpdates(() => refresh());
-    // Acting-as switcher changes reshape what this partner sees.
-    const unsubscribeIdentity = subscribeToIdentityChanges(() => {
-      setActingPartnerId(getCurrentPartnerId());
-      refresh();
-    });
     return () => {
       clearInterval(id);
       unsubscribeBus();
-      unsubscribeIdentity();
     };
   }, [refresh]);
-
-  function handleSwitchPartner(id: string) {
-    setCurrentPartnerId(id);
-    setActingPartnerId(id);
-    emitIdentityChanged();
-    refresh();
-  }
 
   const [respondingTo, setRespondingTo] = useState<string | null>(null);
   const [receiptsByBookingId, setReceiptsByBookingId] = useState<Record<string, BusReceipt>>({});
@@ -634,7 +614,7 @@ function MarketplacePageInner() {
     const modalBooking: ReceiptModalBooking = {
       id:                   b.id,
       awb:                  b.awb,
-      partner_display_name: knownPartners.find((p) => p.id === actingPartnerId)?.name ?? "Carrier",
+      partner_display_name: carrier?.name ?? "Carrier",
       merchant_display:     b.consumer_name,  // partner's pre-accept mask; admin/merchant see real merchant_display
       consumer_display:     b.consumer_name,
       pickup_label:         b.pickup_label,
@@ -650,9 +630,12 @@ function MarketplacePageInner() {
   async function handleIssueReceipt(input: { signed_by: string; notes: string }) {
     if (!receiptModal.booking) return;
     const created = await issueReceipt({
-      booking_id: receiptModal.booking.id,
-      signed_by:  input.signed_by || null,
-      notes:      input.notes     || null,
+      booking_id:   receiptModal.booking.id,
+      booking:      receiptModal.booking,
+      carrier_id:   carrier ? String(carrier.id) : null,
+      carrier_name: carrier?.name ?? null,
+      signed_by:    input.signed_by || null,
+      notes:        input.notes     || null,
     });
     if (created) {
       setReceiptsByBookingId((prev) => ({ ...prev, [created.booking_id]: created }));
@@ -759,27 +742,19 @@ function MarketplacePageInner() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {/* Pre-backend identity switcher. Production: read-only badge showing
-              the carrier derived from the JWT `pid` claim (ADR-0013 §Auth). */}
-          <div
-            className="flex items-center gap-2 rounded-lg border border-purple-plasma/30 bg-purple-surface px-3 py-1.5"
-            title="Pre-backend demo — switch which carrier this session represents"
-          >
-            <span className="font-mono text-2xs uppercase tracking-wider text-purple-plasma">
-              Acting as
-            </span>
-            <select
-              value={actingPartnerId}
-              onChange={(e) => handleSwitchPartner(e.target.value)}
-              className="bg-transparent text-xs font-medium text-white outline-none"
+          {carrier && (
+            <div
+              className="flex items-center gap-2 rounded-lg border border-purple-plasma/30 bg-purple-surface px-3 py-1.5"
+              title="Marketplace scope is limited to your carrier account"
             >
-              {knownPartners.map((p) => (
-                <option key={p.id} value={p.id} className="bg-canvas-100 text-white">
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </div>
+              <span className="font-mono text-2xs uppercase tracking-wider text-purple-plasma">
+                Carrier
+              </span>
+              <span className="font-mono text-xs font-medium text-white">
+                {carrier.code}
+              </span>
+            </div>
+          )}
           <button
             onClick={() => setDrawer({ kind: "create" })}
             className={cn(

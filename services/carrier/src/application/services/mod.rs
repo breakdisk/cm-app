@@ -1,3 +1,7 @@
+pub mod marketplace;
+
+pub use marketplace::{CreateListingCommand, MarketplaceService, RecordPickupInput, UpdateListingPatch};
+
 use std::sync::Arc;
 use serde::Deserialize;
 use rand::RngCore;
@@ -60,18 +64,20 @@ pub struct CarrierQuote {
 }
 
 pub struct CarrierService {
-    repo:      Arc<dyn CarrierRepository>,
-    sla_repo:  Arc<dyn SlaRecordRepository>,
-    publisher: Arc<CarrierPublisher>,
+    repo:            Arc<dyn CarrierRepository>,
+    sla_repo:        Arc<dyn SlaRecordRepository>,
+    publisher:       Arc<CarrierPublisher>,
+    external_client: Arc<crate::infrastructure::external::ExternalCarrierClient>,
 }
 
 impl CarrierService {
     pub fn new(
-        repo:      Arc<dyn CarrierRepository>,
-        sla_repo:  Arc<dyn SlaRecordRepository>,
-        publisher: Arc<CarrierPublisher>,
+        repo:            Arc<dyn CarrierRepository>,
+        sla_repo:        Arc<dyn SlaRecordRepository>,
+        publisher:       Arc<CarrierPublisher>,
+        external_client: Arc<crate::infrastructure::external::ExternalCarrierClient>,
     ) -> Self {
-        Self { repo, sla_repo, publisher }
+        Self { repo, sla_repo, publisher, external_client }
     }
 
     pub async fn onboard(&self, tenant_id: &TenantId, cmd: OnboardCarrierCommand) -> AppResult<Carrier> {
@@ -175,6 +181,11 @@ impl CarrierService {
         self.repo.list(tenant_id, limit.clamp(1, 100), offset.max(0)).await.map_err(AppError::internal)
     }
 
+    /// List all carriers in `active` status — used by rate-shop and the gRPC service.
+    pub async fn list_active(&self, tenant_id: &TenantId) -> AppResult<Vec<Carrier>> {
+        self.repo.list_active(tenant_id).await.map_err(AppError::internal)
+    }
+
     /// Rate shop: return quotes from all active carriers for a given service type and weight.
     /// Results sorted by total cost ascending (cheapest first).
     pub async fn shop_rates(
@@ -229,6 +240,28 @@ impl CarrierService {
         if let Err(e) = self.publisher.carrier_allocated(record.tenant_id, payload).await {
             tracing::warn!("Failed to publish carrier_allocated event: {e}");
         }
+
+        // Push outbound webhook to the carrier's registered api_endpoint (best-effort).
+        if let Ok(Some(carrier)) = self.repo
+            .find_by_id(&crate::domain::entities::CarrierId::from_uuid(record.carrier_id))
+            .await
+        {
+            if let Some(ref endpoint) = carrier.api_endpoint {
+                let notif = crate::infrastructure::external::CarrierShipmentNotification {
+                    event:           "shipment.allocated",
+                    shipment_id:     record.shipment_id.to_string(),
+                    awb:             String::new(),
+                    service_type:    record.service_level.clone(),
+                    zone:            record.zone.clone(),
+                    promised_by:     record.promised_by.to_rfc3339(),
+                    pickup_address:  None,
+                    dropoff_address: None,
+                    weight_kg:       None,
+                };
+                self.external_client.notify_shipment_allocated(endpoint, &notif).await;
+            }
+        }
+
         Ok(record)
     }
 
@@ -274,6 +307,16 @@ impl CarrierService {
         Ok(raw_key)
     }
 
+    /// Expose repo handles so `CarrierCommandHandler` can reach them
+    /// without duplicating the Kafka consumer's outcome logic.
+    pub fn sla_repo(&self) -> &Arc<dyn crate::domain::repositories::SlaRecordRepository> {
+        &self.sla_repo
+    }
+
+    pub fn carrier_repo(&self) -> &Arc<dyn crate::domain::repositories::CarrierRepository> {
+        &self.repo
+    }
+
     /// Paginated SLA record history for a carrier (partner portal).
     pub async fn sla_history(
         &self,
@@ -285,5 +328,36 @@ impl CarrierService {
             .list_by_carrier(carrier_id, limit.clamp(1, 100), offset.max(0))
             .await
             .map_err(AppError::internal)
+    }
+
+    /// Aggregate failed deliveries by reason for a carrier over a time window.
+    /// Used by the partner portal SLA dashboard breach-reasons chart.
+    pub async fn breach_reasons(
+        &self,
+        carrier_id: Uuid,
+        from: chrono::DateTime<chrono::Utc>,
+        to: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<Vec<crate::domain::repositories::BreachReasonRow>> {
+        self.sla_repo
+            .breach_reasons(carrier_id, from, to)
+            .await
+            .map_err(AppError::internal)
+    }
+
+    /// Record that the partner submitted compliance documents.
+    /// Flips `compliance_status` to `UnderReview` so admin can action them.
+    /// In production, the multipart bytes are streamed to object storage by
+    /// the HTTP handler before calling this method.
+    pub async fn submit_compliance_documents(
+        &self,
+        id: Uuid,
+        _doc_type: &str,
+        _filename: &str,
+    ) -> AppResult<()> {
+        let mut carrier = self.get(id).await?;
+        carrier.compliance_status = crate::domain::entities::ComplianceStatus::UnderReview;
+        carrier.updated_at = chrono::Utc::now();
+        self.repo.save(&carrier).await.map_err(AppError::internal)?;
+        Ok(())
     }
 }

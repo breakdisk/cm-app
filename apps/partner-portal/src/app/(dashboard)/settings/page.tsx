@@ -11,16 +11,19 @@
  *  • API Credentials  — generate/rotate integration API key (B)
  *  • Compliance       — live compliance_status from carrier entity (admin-managed)
  */
-import { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { ComplianceBadge } from "@/components/compliance/compliance-badge";
 import {
-  RefreshCw, Save, Key, Copy, Check, AlertTriangle, RotateCcw, X,
+  RefreshCw, Save, Key, Copy, Check, AlertTriangle, RotateCcw, X, Upload, FileText, Loader2,
 } from "lucide-react";
 import { variants } from "@/lib/design-system/tokens";
 import { carriersApi, carrierIdOf, fmtPhp, type Carrier } from "@/lib/api/carriers";
+import { authFetch } from "@/lib/auth/auth-fetch";
+
+const CARRIER_SVC_URL = process.env.NEXT_PUBLIC_CARRIER_URL ?? "http://localhost:8010";
 
 function gradeBadge(grade: string): "green" | "cyan" | "amber" | "red" {
   switch (grade) {
@@ -129,6 +132,159 @@ function ApiKeyRevealModal({
       </AnimatePresence>
     </motion.div>
 
+  );
+}
+
+// ── Compliance upload card ────────────────────────────────────────────────────
+
+const COMPLIANCE_DOC_TYPES = [
+  { value: "business_registration", label: "Business Registration (SEC/DTI)" },
+  { value: "insurance_certificate", label: "Insurance Certificate" },
+  { value: "ltfrb_permit",          label: "LTFRB / Transport Permit" },
+  { value: "bir_certificate",       label: "BIR Certificate of Registration" },
+  { value: "other",                 label: "Other Supporting Document" },
+] as const;
+
+type ComplianceDocType = typeof COMPLIANCE_DOC_TYPES[number]["value"];
+
+function ComplianceUploadCard({
+  carrier,
+  carrierId,
+}: {
+  carrier: Carrier | null;
+  carrierId: string | null;
+}) {
+  const [docType,     setDocType]     = useState<ComplianceDocType>("business_registration");
+  const [file,        setFile]        = useState<File | null>(null);
+  const [uploading,   setUploading]   = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadDone,  setUploadDone]  = useState(false);
+  const inputRef                      = React.useRef<HTMLInputElement>(null);
+
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0] ?? null;
+    setFile(f);
+    setUploadError(null);
+    setUploadDone(false);
+  }
+
+  async function handleUpload() {
+    if (!file || !carrierId) return;
+    setUploading(true);
+    setUploadError(null);
+    try {
+      const body = new FormData();
+      body.append("document", file);
+      body.append("doc_type", docType);
+      const res = await authFetch(
+        `${CARRIER_SVC_URL}/v1/carriers/${carrierId}/compliance-documents`,
+        { method: "POST", body },
+      );
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || `Upload failed (${res.status})`);
+      }
+      setUploadDone(true);
+      setFile(null);
+      if (inputRef.current) inputRef.current.value = "";
+    } catch (e) {
+      setUploadError((e as Error).message ?? "Upload failed");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  return (
+    <GlassCard title="Compliance">
+      <div className="space-y-3">
+        <p className="text-xs text-white/40">
+          Document verification is required to unlock all platform features.
+          Submit your business registration, insurance, and permits to begin the
+          review process.
+        </p>
+
+        <div className="flex items-center justify-between rounded-lg border border-glass-border bg-glass-100/50 px-3 py-2.5">
+          <span className="text-xs font-mono text-white/50">Current Status</span>
+          <ComplianceBadge status={carrier?.compliance_status ?? "pending_submission"} />
+        </div>
+
+        {/* Document type selector */}
+        <div>
+          <label className="text-xs text-white/40 uppercase tracking-widest font-mono block mb-1">
+            Document Type
+          </label>
+          <select
+            value={docType}
+            onChange={(e) => setDocType(e.target.value as ComplianceDocType)}
+            className="w-full rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-sm text-white focus:border-cyan-neon/50 focus:outline-none"
+          >
+            {COMPLIANCE_DOC_TYPES.map((t) => (
+              <option key={t.value} value={t.value} className="bg-canvas-100">
+                {t.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* File picker */}
+        <div>
+          <label className="text-xs text-white/40 uppercase tracking-widest font-mono block mb-1">
+            File (PDF, JPG, PNG — max 10 MB)
+          </label>
+          <div
+            onClick={() => inputRef.current?.click()}
+            className="flex cursor-pointer items-center gap-3 rounded-lg border border-dashed border-white/15 bg-white/[0.02] px-4 py-3 transition-colors hover:border-cyan-neon/30 hover:bg-cyan-neon/5"
+          >
+            <FileText size={16} className="flex-shrink-0 text-white/40" />
+            <span className="flex-1 truncate text-sm text-white/50">
+              {file ? file.name : "Click to select a file…"}
+            </span>
+            {file && (
+              <span className="flex-shrink-0 font-mono text-2xs text-white/30">
+                {(file.size / 1024).toFixed(0)} KB
+              </span>
+            )}
+          </div>
+          <input
+            ref={inputRef}
+            type="file"
+            accept=".pdf,.jpg,.jpeg,.png"
+            className="hidden"
+            onChange={handleFileChange}
+          />
+        </div>
+
+        {uploadError && (
+          <p className="text-xs text-red-signal font-mono">{uploadError}</p>
+        )}
+
+        {uploadDone && (
+          <div className="flex items-center gap-2 rounded-lg border border-green-signal/30 bg-green-signal/10 px-3 py-2">
+            <Check size={12} className="text-green-signal" />
+            <p className="text-xs text-green-signal font-mono">
+              Document submitted — ops will review within 1–2 business days.
+            </p>
+          </div>
+        )}
+
+        <button
+          onClick={handleUpload}
+          disabled={!file || !carrierId || uploading}
+          className="flex w-full items-center justify-center gap-2 rounded-lg border border-cyan-neon/30 bg-cyan-surface px-4 py-2.5 text-sm font-semibold text-cyan-neon transition-all hover:border-cyan-neon/60 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {uploading ? (
+            <Loader2 size={13} className="animate-spin" />
+          ) : (
+            <Upload size={13} />
+          )}
+          {uploading ? "Uploading…" : "Submit Document"}
+        </button>
+
+        <p className="text-2xs text-white/25 font-mono text-center">
+          Files are encrypted at rest. Compliance status is updated by the ops team after review.
+        </p>
+      </div>
+    </GlassCard>
   );
 }
 
@@ -454,24 +610,10 @@ export default function PartnerSettingsPage() {
 
           {/* Compliance Status */}
           <motion.div variants={variants.fadeInUp}>
-            <GlassCard title="Compliance">
-              <div className="space-y-3">
-                <p className="text-xs text-white/40">
-                  Document verification is required to unlock all platform features.
-                  Submit your business registration, insurance, and permits to begin the
-                  review process.
-                </p>
-
-                <div className="flex items-center justify-between rounded-lg border border-glass-border bg-glass-100/50 px-3 py-2.5">
-                  <span className="text-xs font-mono text-white/50">Current Status</span>
-                  <ComplianceBadge status={carrier?.compliance_status ?? "pending_submission"} />
-                </div>
-
-                <p className="text-2xs text-white/25 font-mono text-center">
-                  Document upload coming soon. Contact ops to submit manually.
-                </p>
-              </div>
-            </GlassCard>
+            <ComplianceUploadCard
+              carrier={carrier}
+              carrierId={carrier ? carrierIdOf(carrier) : null}
+            />
           </motion.div>
 
         </div>

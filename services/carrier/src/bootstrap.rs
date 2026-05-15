@@ -2,15 +2,17 @@ use std::{net::SocketAddr, sync::Arc};
 use anyhow::Context;
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::watch;
+use tonic::transport::Server as GrpcServer;
 use logisticos_auth::jwt::JwtService;
 use logisticos_events::producer::KafkaProducer;
 
 use crate::{
     api::http,
-    application::services::CarrierService,
+    application::services::{CarrierService, MarketplaceService},
     config::Config,
     infrastructure::{
-        db::{PgCarrierRepository, PgSlaRecordRepository},
+        cache::CachedCarrierRepository,
+        db::{PgCarrierRepository, PgMarketplaceRepository, PgSlaRecordRepository},
         messaging::{start_delivery_consumer, CarrierPublisher},
     },
     AppState,
@@ -40,18 +42,40 @@ pub async fn run() -> anyhow::Result<()> {
     logisticos_common::migrations::run(&pool, "carrier", &sqlx::migrate!("./migrations")).await?;
 
     // Repositories
-    let carrier_repo = Arc::new(PgCarrierRepository::new(pool.clone()));
-    let sla_repo     = Arc::new(PgSlaRecordRepository::new(pool));
+    let pg_carrier_repo  = Arc::new(PgCarrierRepository::new(pool.clone()));
+    let sla_repo         = Arc::new(PgSlaRecordRepository::new(pool.clone()));
+    let marketplace_repo = Arc::new(PgMarketplaceRepository::new(pool.clone()));
+
+    // Wrap the carrier repo in a Redis write-through cache to cut latency on
+    // the hot /me and find_by_id paths (partner portal polls /me on every page).
+    let carrier_repo: Arc<dyn crate::domain::repositories::CarrierRepository> =
+        match CachedCarrierRepository::new(pg_carrier_repo.clone(), &cfg.redis.url).await {
+            Ok(cached) => Arc::new(cached),
+            Err(e) => {
+                tracing::warn!("Redis unavailable — falling back to uncached carrier repo: {e}");
+                pg_carrier_repo as Arc<dyn crate::domain::repositories::CarrierRepository>
+            }
+        };
 
     // Kafka producer + publisher
     let kafka_producer = Arc::new(KafkaProducer::new(&cfg.kafka.brokers)?);
     let publisher      = Arc::new(CarrierPublisher::new(Arc::clone(&kafka_producer)));
 
-    // Application service
+    // Outbound webhook client (notifies 3PL carriers of allocations)
+    let outbound_secret = std::env::var("CARRIER_WEBHOOK_SECRET").ok();
+    let external_client = Arc::new(
+        crate::infrastructure::external::ExternalCarrierClient::new(outbound_secret),
+    );
+
+    // Application services
     let carrier_svc = Arc::new(CarrierService::new(
-        Arc::clone(&carrier_repo) as Arc<dyn crate::domain::repositories::CarrierRepository>,
+        Arc::clone(&carrier_repo),
         Arc::clone(&sla_repo)     as Arc<dyn crate::domain::repositories::SlaRecordRepository>,
         Arc::clone(&publisher),
+        external_client,
+    ));
+    let marketplace_svc = Arc::new(MarketplaceService::new(
+        Arc::clone(&marketplace_repo) as Arc<dyn crate::domain::repositories::MarketplaceRepository>,
     ));
 
     // Graceful shutdown channel
@@ -75,7 +99,11 @@ pub async fn run() -> anyhow::Result<()> {
         .context("AUTH__JWT_SECRET env var not set")?;
     let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
 
-    let state = AppState { carrier_svc, jwt: Arc::clone(&jwt) };
+    // Clone carrier_svc before moving state into the router — gRPC server
+    // needs its own Arc handle and `with_state` consumes `state`.
+    let carrier_svc_for_grpc = Arc::clone(&carrier_svc);
+
+    let state = AppState { carrier_svc, marketplace_svc, jwt: Arc::clone(&jwt) };
 
     // Mount require_auth ahead of the carrier routes so AuthClaims extracts
     // properly. Without this layer every handler 500s with
@@ -86,7 +114,27 @@ pub async fn run() -> anyhow::Result<()> {
         .with_state(state);
 
     let addr: SocketAddr = format!("{}:{}", cfg.app.host, cfg.app.port).parse()?;
-    tracing::info!(addr = %addr, "carrier service listening");
+    tracing::info!(addr = %addr, "carrier HTTP service listening");
+
+    // Optionally start the gRPC server on a secondary port.
+    if let Some(grpc_port) = cfg.app.grpc_port {
+        let grpc_addr: SocketAddr = format!("{}:{}", cfg.app.host, grpc_port).parse()?;
+        tracing::info!(addr = %grpc_addr, "carrier gRPC service listening");
+        let grpc_svc = crate::api::grpc::CarrierGrpc::new(carrier_svc_for_grpc)
+            .into_service();
+        let mut grpc_rx = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = GrpcServer::builder()
+                .add_service(grpc_svc)
+                .serve_with_shutdown(grpc_addr, async move {
+                    grpc_rx.changed().await.ok();
+                })
+                .await
+            {
+                tracing::error!("gRPC server exited with error: {e}");
+            }
+        });
+    }
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app)
