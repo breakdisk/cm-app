@@ -63,6 +63,7 @@ pub const WALLET_WITHDRAWAL_REJECTED:     &str = "logisticos.payments.wallet.wit
 // Engagement
 pub const NOTIFICATION_QUEUED:       &str = "logisticos.engagement.notification.queued";
 pub const CAMPAIGN_TRIGGERED:        &str = "logisticos.marketing.campaign.triggered";
+pub const CAMPAIGN_COMPLETED:        &str = "logisticos.marketing.campaign.completed";
 pub const CUSTOMER_SEGMENT_UPDATED:  &str = "logisticos.cdp.segment.updated";
 
 // Tracking / customer-facing
@@ -93,7 +94,7 @@ mod tests {
             INVOICE_GENERATED, INVOICE_FINALIZED, PAYMENT_RECEIVED,
             COD_COLLECTED, COD_REMITTANCE_READY, WEIGHT_ADJUSTMENT_INVOICED,
             WALLET_WITHDRAWAL_DISBURSED, WALLET_WITHDRAWAL_REJECTED,
-            NOTIFICATION_QUEUED, CAMPAIGN_TRIGGERED, CUSTOMER_SEGMENT_UPDATED,
+            NOTIFICATION_QUEUED, CAMPAIGN_TRIGGERED, CAMPAIGN_COMPLETED, CUSTOMER_SEGMENT_UPDATED,
             TASK_ASSIGNED,
             RECEIPT_EMAIL_REQUESTED,
             SUPPORT_TICKET_OPENED, SUPPORT_TICKET_CLOSED,

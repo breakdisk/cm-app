@@ -5,7 +5,7 @@ use uuid::Uuid;
 use logisticos_types::TenantId;
 
 use crate::domain::{
-    entities::{Campaign, CampaignId, CampaignStatus, Channel},
+    entities::{Campaign, CampaignId, CampaignStatus, Channel, WeeklyStat},
     repositories::CampaignRepository,
 };
 
@@ -114,6 +114,61 @@ impl CampaignRepository for PgCampaignRepository {
             "#
         )
         .bind(tenant_id.inner()).bind(status_str)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(Campaign::try_from).collect()
+    }
+
+    async fn weekly_stats(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<WeeklyStat>> {
+        #[derive(sqlx::FromRow)]
+        struct StatRow {
+            day:     chrono::NaiveDate,
+            channel: String,
+            count:   i64,
+        }
+
+        let rows = sqlx::query_as::<_, StatRow>(
+            r#"
+            SELECT DATE(sent_at)  AS day,
+                   channel        AS channel,
+                   SUM(total_sent)::bigint AS count
+            FROM marketing.campaigns
+            WHERE tenant_id = $1
+              AND sent_at   >= NOW() - INTERVAL '7 days'
+              AND total_sent > 0
+            GROUP BY DATE(sent_at), channel
+            ORDER BY day ASC
+            "#
+        )
+        .bind(tenant_id.inner())
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| WeeklyStat {
+                day:     r.day.to_string(),
+                channel: r.channel,
+                count:   r.count,
+            })
+            .collect())
+    }
+
+    async fn find_campaigns_due(&self, limit: i64) -> anyhow::Result<Vec<Campaign>> {
+        let rows = sqlx::query_as::<_, CampaignRow>(
+            r#"
+            SELECT id, tenant_id, name, description, channel, template, targeting, status,
+                   scheduled_at, sent_at, completed_at,
+                   total_sent, total_delivered, total_failed,
+                   created_by, created_at, updated_at
+            FROM marketing.campaigns
+            WHERE status = 'scheduled'
+              AND scheduled_at <= NOW()
+            ORDER BY scheduled_at ASC
+            LIMIT $1
+            "#
+        )
+        .bind(limit)
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(Campaign::try_from).collect()

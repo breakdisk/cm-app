@@ -8,7 +8,7 @@ use logisticos_events::{topics, Event};
 use logisticos_types::TenantId;
 
 use crate::domain::{
-    entities::{Campaign, CampaignId, Channel, MessageTemplate, TargetingRule},
+    entities::{Campaign, CampaignId, Channel, MessageTemplate, TargetingRule, WeeklyStat},
     repositories::CampaignRepository,
 };
 
@@ -91,19 +91,25 @@ impl CampaignService {
         self.repo.save(&campaign).await.map_err(AppError::internal)?;
 
         // Publish CAMPAIGN_TRIGGERED event so the engagement service starts sending.
+        // Embed recipients with full contact details so the engagement consumer can
+        // fan-out without a CDP lookup.
         let payload = serde_json::json!({
             "campaign_id":  campaign.id.inner(),
             "tenant_id":    campaign.tenant_id.inner(),
             "channel":      campaign.channel,
             "template_id":  campaign.template.template_id,
+            "subject":      campaign.template.subject,
             "variables":    campaign.template.variables,
+            "recipients":   campaign.targeting.recipients,
             "targeting":    campaign.targeting,
         });
+        let payload_bytes = serde_json::to_vec(&payload)
+            .map_err(|e| AppError::internal(anyhow::anyhow!("Failed to serialize CAMPAIGN_TRIGGERED: {}", e)))?;
         self.publisher
             .publish(
                 topics::CAMPAIGN_TRIGGERED,
                 &campaign.id.inner().to_string(),
-                serde_json::to_vec(&payload).unwrap_or_default().as_slice(),
+                &payload_bytes,
             )
             .await
             .map_err(AppError::internal)?;
@@ -123,5 +129,42 @@ impl CampaignService {
         campaign.cancel().map_err(|e| AppError::BusinessRule(e.to_string()))?;
         self.repo.save(&campaign).await.map_err(AppError::internal)?;
         Ok(campaign)
+    }
+
+    /// Mark a campaign as completed after the engagement service finishes fan-out.
+    /// Called when a `CAMPAIGN_COMPLETED` Kafka event is received.
+    pub async fn complete(
+        &self,
+        id:              Uuid,
+        total_sent:      u64,
+        total_delivered: u64,
+        total_failed:    u64,
+    ) -> AppResult<Campaign> {
+        let mut campaign = self.get(id).await?;
+        campaign.complete(total_sent, total_delivered, total_failed);
+        self.repo.save(&campaign).await.map_err(AppError::internal)?;
+        Ok(campaign)
+    }
+
+    /// Return daily send totals per channel for the last 7 days.
+    /// Powers the campaign volume chart in the Merchant Portal.
+    pub async fn weekly_stats(&self, tenant_id: &TenantId) -> AppResult<Vec<WeeklyStat>> {
+        self.repo.weekly_stats(tenant_id).await.map_err(AppError::internal)
+    }
+
+    /// Activate all scheduled campaigns whose `scheduled_at` has elapsed.
+    /// Called every 60 s by the background poller in bootstrap.
+    pub async fn activate_due_campaigns(&self) -> anyhow::Result<usize> {
+        let due = self.repo.find_campaigns_due(50).await?;
+        let count = due.len();
+        for campaign in due {
+            let id = campaign.id.inner();
+            if let Err(e) = self.activate(id).await {
+                tracing::warn!(campaign_id = %id, err = %e, "Failed to auto-activate due campaign");
+            } else {
+                tracing::info!(campaign_id = %id, "Scheduled campaign auto-activated");
+            }
+        }
+        Ok(count)
     }
 }

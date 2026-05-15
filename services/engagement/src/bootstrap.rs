@@ -1,9 +1,10 @@
 use std::{net::SocketAddr, sync::Arc};
-use rdkafka::{consumer::StreamConsumer, ClientConfig};
+use rdkafka::{consumer::StreamConsumer, producer::FutureProducer, ClientConfig};
+use sqlx::postgres::PgPoolOptions;
 
 use crate::{
     application::services::{
-        event_consumer::process_event,
+        event_consumer::{handle_campaign_triggered, process_event, EngagementPublisher},
         notification_service::NotificationService,
     },
     config::Config,
@@ -17,8 +18,33 @@ use crate::{
             whatsapp::TwilioWhatsAppAdapter,
             ChannelAdapter,
         },
+        db::NotificationDb,
     },
 };
+
+// ---------------------------------------------------------------------------
+// Kafka-backed engagement event publisher (for CAMPAIGN_COMPLETED)
+// ---------------------------------------------------------------------------
+
+struct KafkaPublisher {
+    producer: FutureProducer,
+}
+
+#[async_trait::async_trait]
+impl EngagementPublisher for KafkaPublisher {
+    async fn publish(&self, topic: &str, key: &str, payload: &[u8]) -> anyhow::Result<()> {
+        use rdkafka::producer::FutureRecord;
+        use std::time::Duration;
+        self.producer
+            .send(
+                FutureRecord::to(topic).key(key).payload(payload),
+                Duration::from_secs(5),
+            )
+            .await
+            .map_err(|(e, _)| anyhow::anyhow!("Kafka publish error: {}", e))?;
+        Ok(())
+    }
+}
 
 pub async fn run() -> anyhow::Result<()> {
     let cfg = Config::load()?;
@@ -85,6 +111,21 @@ pub async fn run() -> anyhow::Result<()> {
 
     let notification_svc = Arc::new(NotificationService::new(whatsapp, sms, email, push));
 
+    // Database — used for campaign_sends tracking.
+    let pool = PgPoolOptions::new()
+        .max_connections(cfg.database.max_connections)
+        .after_connect(|conn, _meta| Box::pin(async move {
+            sqlx::query("SET search_path TO engagement, public")
+                .execute(&mut *conn)
+                .await?;
+            Ok(())
+        }))
+        .connect(&cfg.database.url)
+        .await?;
+
+    logisticos_common::migrations::run(&pool, "engagement", &sqlx::migrate!("./migrations")).await?;
+    let db = Arc::new(NotificationDb::new(pool));
+
     // Suppression cache — Redis-backed. Fails open if Redis is unavailable.
     let suppression_cache = Arc::new(
         match SuppressionCache::new(&cfg.redis.url).await {
@@ -97,6 +138,13 @@ pub async fn run() -> anyhow::Result<()> {
         }
     );
 
+    // Kafka producer — publishes CAMPAIGN_COMPLETED after fan-out.
+    let producer: FutureProducer = ClientConfig::new()
+        .set("bootstrap.servers", &cfg.kafka.brokers)
+        .set("message.timeout.ms", "5000")
+        .create()?;
+    let publisher = Arc::new(KafkaPublisher { producer });
+
     // Kafka consumer
     let consumer: Arc<StreamConsumer> = Arc::new(
         ClientConfig::new()
@@ -107,11 +155,13 @@ pub async fn run() -> anyhow::Result<()> {
             .create()?,
     );
 
-    let consumer_svc   = notification_svc.clone();
-    let consumer_cache = suppression_cache.clone();
+    let consumer_svc       = notification_svc.clone();
+    let consumer_cache     = suppression_cache.clone();
+    let consumer_db        = db.clone();
+    let consumer_publisher = publisher.clone();
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     tokio::spawn(async move {
-        run_kafka_consumer(consumer, consumer_svc, consumer_cache, shutdown_rx).await;
+        run_kafka_consumer(consumer, consumer_svc, consumer_cache, consumer_db, consumer_publisher, shutdown_rx).await;
     });
 
     // HTTP API — notification dispatch endpoint
@@ -205,9 +255,11 @@ fn build_router(svc: Arc<NotificationService>) -> axum::Router {
 // ---------------------------------------------------------------------------
 
 async fn run_kafka_consumer(
-    consumer: Arc<StreamConsumer>,
-    svc: Arc<NotificationService>,
-    cache: Arc<SuppressionCache>,
+    consumer:  Arc<StreamConsumer>,
+    svc:       Arc<NotificationService>,
+    cache:     Arc<SuppressionCache>,
+    db:        Arc<NotificationDb>,
+    publisher: Arc<KafkaPublisher>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     use rdkafka::{consumer::{CommitMode, Consumer}, Message};
@@ -248,6 +300,15 @@ async fn run_kafka_consumer(
                                     }
                                     topics::SUPPORT_TICKET_CLOSED => {
                                         handle_ticket_closed(&json, &cache).await;
+                                    }
+                                    topics::CAMPAIGN_TRIGGERED => {
+                                        handle_campaign_triggered(
+                                            &json,
+                                            &db,
+                                            &svc,
+                                            &cache,
+                                            publisher.as_ref(),
+                                        ).await;
                                     }
                                     _ => {
                                         process_event(topic, &json, &svc, &cache).await;
