@@ -306,6 +306,20 @@ impl CarrierService {
             .map_err(AppError::internal)
     }
 
+    /// Aggregate failed deliveries by reason for a carrier over a time window.
+    /// Used by the partner portal SLA dashboard breach-reasons chart.
+    pub async fn breach_reasons(
+        &self,
+        carrier_id: Uuid,
+        from: chrono::DateTime<chrono::Utc>,
+        to: chrono::DateTime<chrono::Utc>,
+    ) -> AppResult<Vec<crate::domain::repositories::BreachReasonRow>> {
+        self.sla_repo
+            .breach_reasons(carrier_id, from, to)
+            .await
+            .map_err(AppError::internal)
+    }
+
     /// Record that the partner submitted compliance documents.
     /// Flips `compliance_status` to `UnderReview` so admin can action them.
     /// In production, the multipart bytes are streamed to object storage by

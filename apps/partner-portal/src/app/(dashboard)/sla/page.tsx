@@ -21,7 +21,8 @@ import { carriersApi, carrierIdOf, type ZoneSlaRow, type SlaRecord } from "@/lib
 
 // ── API helpers ────────────────────────────────────────────────────────────────
 
-const ANALYTICS_URL = process.env.NEXT_PUBLIC_ANALYTICS_URL ?? "http://localhost:8013";
+const ANALYTICS_URL  = process.env.NEXT_PUBLIC_ANALYTICS_URL ?? "http://localhost:8013";
+const CARRIER_SVC_URL = process.env.NEXT_PUBLIC_CARRIER_URL   ?? "http://localhost:8010";
 
 function todayStr()     { return new Date().toISOString().slice(0, 10); }
 function daysAgoStr(n: number) {
@@ -70,13 +71,13 @@ const BREACH_REASONS_FALLBACK = [
 ];
 
 async function fetchBreachReasons(
-  analyticsUrl: string,
+  carrierId: string,
   from: string,
   to: string,
 ): Promise<Array<{ reason: string; count: number }>> {
   try {
     const res = await authFetch(
-      `${analyticsUrl}/v1/analytics/breach-reasons?from=${from}&to=${to}`,
+      `${CARRIER_SVC_URL}/v1/carriers/${carrierId}/breach-reasons?from=${from}T00:00:00Z&to=${to}T23:59:59Z`,
     );
     if (!res.ok) return BREACH_REASONS_FALLBACK;
     const json = await res.json();
@@ -165,14 +166,12 @@ function SLADashboardPageInner() {
   }, [focusZone]);
 
   const loadData = useCallback(async () => {
-    // Fetch analytics KPIs + timeseries + breach reasons + zone SLA in parallel.
-    // Zone SLA needs the carrier ID from /me first — run it independently.
-    const [kpis, timeseries, breachData] = await Promise.all([
+    // Fetch analytics KPIs + timeseries in parallel; breach reasons need carrier
+    // ID first so they are fetched in the carrier block below.
+    const [kpis, timeseries] = await Promise.all([
       fetchKpis(),
       fetchTimeseries(),
-      fetchBreachReasons(ANALYTICS_URL, daysAgoStr(30), todayStr()),
     ]);
-    setBreachReasons(breachData);
 
     if (kpis) {
       if (kpis.delivery_success_rate != null)  setOverallSla(Number(kpis.delivery_success_rate));
@@ -200,12 +199,12 @@ function SLADashboardPageInner() {
       if (cid) {
         const from = new Date();
         from.setDate(from.getDate() - 30);
-        const zones = await carriersApi.slaSummary(
-          cid,
-          from.toISOString(),
-          new Date().toISOString(),
-        );
+        const [zones, breachData] = await Promise.all([
+          carriersApi.slaSummary(cid, from.toISOString(), new Date().toISOString()),
+          fetchBreachReasons(cid, daysAgoStr(30), todayStr()),
+        ]);
         if (zones.length > 0) setZoneSla(zones);
+        setBreachReasons(breachData);
       }
     } catch (e) {
       // Non-fatal — zone table will show empty state or retain previous data.

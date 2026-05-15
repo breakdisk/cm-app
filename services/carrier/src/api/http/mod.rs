@@ -36,6 +36,7 @@ pub fn router() -> Router<AppState> {
         // SLA reporting
         .route("/v1/carriers/:id/sla-summary",                 get(sla_summary))
         .route("/v1/carriers/:id/sla-history",                 get(sla_history))
+        .route("/v1/carriers/:id/breach-reasons",              get(breach_reasons))
         // Marketplace — vehicle listings
         .route("/v1/marketplace/listings",                     get(list_listings).post(create_listing))
         .route("/v1/marketplace/listings/:listing_id",         put(update_listing).delete(delete_listing))
@@ -248,6 +249,19 @@ async fn sla_history(
         .await?;
     let count = records.len();
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"records": records, "count": count}))))
+}
+
+/// GET /v1/carriers/:id/breach-reasons?from=&to=
+/// Returns SLA breach reasons aggregated by count for the partner portal SLA chart.
+async fn breach_reasons(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+    Query(q): Query<SlaSummaryQuery>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::CARRIERS_READ)?;
+    let rows = state.carrier_svc.breach_reasons(id, q.from, q.to).await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"data": rows}))))
 }
 
 // ── Internal endpoints ────────────────────────────────────────────────────────

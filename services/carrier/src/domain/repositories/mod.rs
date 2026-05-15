@@ -38,6 +38,21 @@ pub trait SlaRecordRepository: Send + Sync {
         from: DateTime<Utc>,
         to: DateTime<Utc>,
     ) -> anyhow::Result<Vec<ZoneSlaRow>>;
+
+    /// Aggregate failed SLA records by failure_reason for a carrier over a time
+    /// window. Used by `GET /v1/carriers/breach-reasons` (partner-portal SLA page).
+    async fn breach_reasons(
+        &self,
+        carrier_id: Uuid,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> anyhow::Result<Vec<BreachReasonRow>>;
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct BreachReasonRow {
+    pub reason: String,
+    pub count:  i64,
 }
 
 /// Repository for the carrier marketplace — vehicle listings and spot bookings.

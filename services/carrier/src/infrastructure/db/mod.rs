@@ -297,6 +297,39 @@ impl SlaRecordRepository for PgSlaRecordRepository {
             }
         }).collect())
     }
+
+    async fn breach_reasons(
+        &self,
+        carrier_id: Uuid,
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    ) -> anyhow::Result<Vec<crate::domain::repositories::BreachReasonRow>> {
+        #[derive(sqlx::FromRow)]
+        struct Row { reason: String, count: i64 }
+
+        let rows = sqlx::query_as::<_, Row>(
+            r#"
+            SELECT
+                COALESCE(NULLIF(TRIM(failure_reason), ''), 'Unspecified') AS reason,
+                COUNT(*) AS count
+            FROM carrier.sla_records
+            WHERE carrier_id = $1
+              AND on_time    = false
+              AND created_at >= $2
+              AND created_at <  $3
+            GROUP BY reason
+            ORDER BY count DESC
+            LIMIT 20
+            "#
+        )
+        .bind(carrier_id).bind(from).bind(to)
+        .fetch_all(&self.pool).await?;
+
+        Ok(rows.into_iter().map(|r| crate::domain::repositories::BreachReasonRow {
+            reason: r.reason,
+            count:  r.count,
+        }).collect())
+    }
 }
 
 // ── Marketplace Repository ────────────────────────────────────────────────────
