@@ -309,7 +309,7 @@ function CarriersPageInner() {
       />
 
       {/* Suspend modal */}
-      {suspendTarget && (
+      {canManageCarriers && suspendTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
@@ -452,7 +452,7 @@ function CarriersPageInner() {
                 <div className="flex items-center gap-1">
                   <NeonBadge variant={variant} dot={isActive}>{label}</NeonBadge>
                   {/* Activate — shown when suspended or pending */}
-                  {(isSuspended || isPending) && (
+                  {canManageCarriers && (isSuspended || isPending) && (
                     <button
                       onClick={() => handleActivate(c)}
                       title="Activate carrier"
@@ -462,7 +462,7 @@ function CarriersPageInner() {
                     </button>
                   )}
                   {/* Suspend — shown when active or probation */}
-                  {isActive && (
+                  {canManageCarriers && isActive && (
                     <button
                       onClick={() => { setSuspendTarget(c); setSuspendReason(""); setActionError(null); }}
                       title="Suspend carrier"
