@@ -499,6 +499,64 @@ impl NotificationDb {
         Ok(campaigns)
     }
 
+    // -----------------------------------------------------------------------
+    // Campaign send tracking
+    // -----------------------------------------------------------------------
+
+    /// Insert a per-recipient send record for a campaign fan-out.
+    /// Returns the newly created row UUID, used to update status after dispatch.
+    pub async fn insert_campaign_send(
+        &self,
+        campaign_id: Uuid,
+        customer_id: Uuid,
+        channel:     &str,
+    ) -> anyhow::Result<Uuid> {
+        let id = Uuid::new_v4();
+        sqlx::query(
+            r#"
+            INSERT INTO engagement.campaign_sends
+                (id, campaign_id, customer_id, channel, status, queued_at)
+            VALUES ($1, $2, $3, $4, 'queued', NOW())
+            "#
+        )
+        .bind(id)
+        .bind(campaign_id)
+        .bind(customer_id)
+        .bind(channel)
+        .execute(&self.pool)
+        .await?;
+        Ok(id)
+    }
+
+    /// Update the delivery status of a campaign_sends row after dispatch.
+    /// Sets the appropriate lifecycle timestamp (sent_at / failed_at) automatically.
+    pub async fn update_campaign_send_status(
+        &self,
+        send_id:             Uuid,
+        status:              &str,
+        provider_message_id: Option<String>,
+        error_message:       Option<String>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE engagement.campaign_sends
+               SET status              = $2,
+                   provider_message_id = COALESCE($3, provider_message_id),
+                   error_message       = $4,
+                   sent_at    = CASE WHEN $2 = 'sent'    THEN NOW() ELSE sent_at    END,
+                   failed_at  = CASE WHEN $2 = 'failed'  THEN NOW() ELSE failed_at  END
+             WHERE id = $1
+            "#
+        )
+        .bind(send_id)
+        .bind(status)
+        .bind(provider_message_id)
+        .bind(error_message)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Find a single campaign by UUID within a tenant's scope.
     pub async fn find_campaign_by_id(
         &self,
