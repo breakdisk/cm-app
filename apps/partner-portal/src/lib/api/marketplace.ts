@@ -188,6 +188,8 @@ export { subscribeToBus as subscribeToMarketplaceUpdates };
 
 export interface IssueReceiptInput {
   booking_id:    string;
+  /** The booking object — used to populate receipt fields without an extra round-trip. */
+  booking?:      MarketplaceBooking | null;
   /** Carrier's UUID — used to populate the receipt's partner_id field. */
   carrier_id?:   string | null;
   /** Carrier's display name — used to populate the receipt's issued_by_name. */
@@ -211,34 +213,34 @@ export async function issueReceipt(input: IssueReceiptInput): Promise<BusReceipt
   const dd   = String(issuedAt.getUTCDate()).padStart(2, "0");
   const seq  = String(issuedAt.getTime()).slice(-4);
 
-  // Fetch the booking to populate the receipt fields.
-  let awb = "";
-  let shipmentId = "";
-  try {
-    const data = await apiGet<{ bookings: MarketplaceBooking[] }>("/v1/marketplace/bookings");
-    const booking = data.bookings.find((b) => b.id === input.booking_id);
-    if (booking) { awb = booking.awb; shipmentId = booking.shipment_id; }
-  } catch {
-    // Non-critical — receipt is still issued with empty AWB
+  // Use the caller-supplied booking when available; fall back to a fetch if not.
+  let booking = input.booking ?? null;
+  if (!booking) {
+    try {
+      const data = await apiGet<{ bookings: MarketplaceBooking[] }>("/v1/marketplace/bookings");
+      booking = data.bookings.find((b) => b.id === input.booking_id) ?? null;
+    } catch {
+      // Non-critical — receipt is still issued with whatever fields we have
+    }
   }
 
   const receipt: BusReceipt = {
     id:                   `r9000000-0000-0000-0000-${issuedAt.getTime().toString().padStart(12, "0")}`,
     receipt_no:           `R-${yyyy}${mm}${dd}-${seq}`,
     booking_id:           input.booking_id,
-    awb,
-    shipment_id:          shipmentId,
+    awb:                  booking?.awb          ?? "",
+    shipment_id:          booking?.shipment_id   ?? "",
     partner_id:           partnerId,
     partner_display_name: partnerName,
     merchant_id:          null,
     merchant_display:     "",
-    consumer_display:     "",
-    pickup_label:         "",
-    dropoff_label:        "",
-    pickup_at:            new Date().toISOString(),
+    consumer_display:     booking?.consumer_name ?? "",
+    pickup_label:         booking?.pickup_label  ?? "",
+    dropoff_label:        booking?.dropoff_label ?? "",
+    pickup_at:            booking?.pickup_at     ?? new Date().toISOString(),
     size_class:           "van",
-    cargo_weight_kg:      0,
-    quoted_price_cents:   0,
+    cargo_weight_kg:      booking?.cargo_weight_kg   ?? 0,
+    quoted_price_cents:   booking?.quoted_price_cents ?? 0,
     issued_by:            "partner",
     issued_by_name:       partnerName,
     signed_by:            input.signed_by ?? null,

@@ -631,6 +631,7 @@ function MarketplacePageInner() {
     if (!receiptModal.booking) return;
     const created = await issueReceipt({
       booking_id:   receiptModal.booking.id,
+      booking:      receiptModal.booking,
       carrier_id:   carrier ? String(carrier.id) : null,
       carrier_name: carrier?.name ?? null,
       signed_by:    input.signed_by || null,
