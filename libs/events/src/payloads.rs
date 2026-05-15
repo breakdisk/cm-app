@@ -419,6 +419,40 @@ pub struct CarrierStatusChanged {
     pub reason:      String,
 }
 
+// ── Marketplace events ────────────────────────────────────────────────────────
+
+/// Emitted by carrier service when a carrier accepts a marketplace booking.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketplaceBookingAccepted {
+    pub booking_id:  Uuid,
+    pub listing_id:  Uuid,
+    pub carrier_id:  Uuid,
+    pub tenant_id:   Uuid,
+    pub accepted_at: String,
+}
+
+/// Emitted by carrier service when a carrier rejects a marketplace booking.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketplaceBookingRejected {
+    pub booking_id:   Uuid,
+    pub listing_id:   Uuid,
+    pub carrier_id:   Uuid,
+    pub tenant_id:    Uuid,
+    pub rejected_at:  String,
+}
+
+/// Emitted by carrier service when a carrier confirms a cargo pickup.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketplacePickupRecorded {
+    pub booking_id:    Uuid,
+    pub listing_id:    Uuid,
+    pub carrier_id:    Uuid,
+    pub tenant_id:     Uuid,
+    pub picked_up_by:  Option<String>,
+    pub pickup_notes:  Option<String>,
+    pub picked_up_at:  String,
+}
+
 /// Emitted by carrier service when dispatch records a carrier allocation for a
 /// shipment (POST /v1/internal/sla-records). Consumed by: analytics.
 #[derive(Debug, Clone, Serialize, Deserialize)]

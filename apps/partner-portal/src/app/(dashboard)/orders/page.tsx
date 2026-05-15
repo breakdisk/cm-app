@@ -177,25 +177,20 @@ const MOCK_DRIVERS: Driver[] = [
 // and cancelled), which is too broad for what a partner actually acts on.
 // The queue gives us pending + dispatched in one call, dedup'd by shipment.
 async function fetchOrders(): Promise<IncomingOrder[]> {
-  try {
-    const res = await authFetch(`${DISPATCH_URL}/v1/queue?status=all`);
-    if (!res.ok) {
-      // Fall back to /v1/shipments + finally MOCK so the page still renders
-      // for partners on environments where dispatch isn't reachable.
-      const fallback = await authFetch(`${ORDER_INTAKE_URL}/v1/shipments`);
-      if (!fallback.ok) return MOCK_ORDERS;
-      const j = await fallback.json();
-      const items = j.data?.items ?? j.data ?? [];
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return items.map(mapShipmentRow);
-    }
-    const json = await res.json();
-    const items = json.data ?? [];
+  const res = await authFetch(`${DISPATCH_URL}/v1/queue?status=all`);
+  if (!res.ok) {
+    // Graceful degradation: try order-intake as a secondary source.
+    const fallback = await authFetch(`${ORDER_INTAKE_URL}/v1/shipments`);
+    if (!fallback.ok) return [];
+    const j = await fallback.json();
+    const items = j.data?.items ?? j.data ?? [];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return items.map(mapQueueRow);
-  } catch {
-    return MOCK_ORDERS;
+    return items.map(mapShipmentRow);
   }
+  const json = await res.json();
+  const items = json.data ?? [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return items.map(mapQueueRow);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -257,27 +252,23 @@ function mapShipmentRow(s: any): IncomingOrder {
 }
 
 async function fetchAvailableDrivers(): Promise<Driver[]> {
-  try {
-    const res = await authFetch(`${DISPATCH_URL}/v1/drivers`);
-    if (!res.ok) return MOCK_DRIVERS;
-    const json = await res.json();
-    const items = json.data ?? json.drivers ?? [];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return items.map((d: any) => ({
-      id:           d.id,
-      name:         d.name ?? `${d.first_name ?? ""} ${d.last_name ?? ""}`.trim(),
-      phone:        d.phone ?? "—",
-      vehicle:      d.vehicle_plate ?? d.vehicle ?? "—",
-      vehicleClass: d.vehicle_type ?? "motorcycle",
-      status:       d.is_available ? "available" : "on_route",
-      tasksToday:   d.tasks_today ?? 0,
-      distanceKm:   d.distance_km ?? 0,
-      etaMinutes:   d.eta_minutes ?? 0,
-      isAiPick:     false,
-    }));
-  } catch {
-    return MOCK_DRIVERS;
-  }
+  const res = await authFetch(`${DISPATCH_URL}/v1/drivers`);
+  if (!res.ok) return [];
+  const json = await res.json();
+  const items = json.data ?? json.drivers ?? [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return items.map((d: any) => ({
+    id:           d.id,
+    name:         d.name ?? `${d.first_name ?? ""} ${d.last_name ?? ""}`.trim(),
+    phone:        d.phone ?? "—",
+    vehicle:      d.vehicle_plate ?? d.vehicle ?? "—",
+    vehicleClass: d.vehicle_type ?? "motorcycle",
+    status:       d.is_available ? "available" : "on_route",
+    tasksToday:   d.tasks_today ?? 0,
+    distanceKm:   d.distance_km ?? 0,
+    etaMinutes:   d.eta_minutes ?? 0,
+    isAiPick:     false,
+  }));
 }
 
 async function dispatchOrder(shipmentId: string, driverId: string): Promise<boolean> {
@@ -693,8 +684,8 @@ function OrderRow({
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 function OrdersPageInner() {
-  const [orders,       setOrders]       = useState<IncomingOrder[]>(MOCK_ORDERS);
-  const [drivers,      setDrivers]      = useState<Driver[]>(MOCK_DRIVERS);
+  const [orders,       setOrders]       = useState<IncomingOrder[]>([]);
+  const [drivers,      setDrivers]      = useState<Driver[]>([]);
   const [assignTarget, setAssignTarget] = useState<IncomingOrder | null>(null);
   const [filter,       setFilter]       = useState<"all" | "unassigned" | "assigned" | "picked_up">("all");
   const searchParams    = useSearchParams();

@@ -7,7 +7,7 @@ use logisticos_auth::jwt::JwtService;
 use logisticos_events::producer::KafkaProducer;
 
 use crate::{
-    api::http,
+    api::{http, middleware::propagate_request_id},
     application::services::{CarrierService, MarketplaceService},
     config::Config,
     infrastructure::{
@@ -76,6 +76,7 @@ pub async fn run() -> anyhow::Result<()> {
     ));
     let marketplace_svc = Arc::new(MarketplaceService::new(
         Arc::clone(&marketplace_repo) as Arc<dyn crate::domain::repositories::MarketplaceRepository>,
+        Arc::clone(&kafka_producer),
     ));
 
     // Graceful shutdown channel
@@ -105,11 +106,14 @@ pub async fn run() -> anyhow::Result<()> {
 
     let state = AppState { carrier_svc, marketplace_svc, jwt: Arc::clone(&jwt) };
 
-    // Mount require_auth ahead of the carrier routes so AuthClaims extracts
-    // properly. Without this layer every handler 500s with
-    // "Auth middleware not mounted" — see libs/auth/src/middleware.rs.
+    // Compose the app:
+    //   • JWT-protected routes (all /v1/* except webhooks)
+    //   • Unauthenticated webhook routes (/v1/webhooks/*)
+    // Both share AppState; `propagate_request_id` and TraceLayer wrap the whole app.
     let app = http::router()
         .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth))
+        .merge(http::webhook_router())
+        .layer(axum::middleware::from_fn(propagate_request_id))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state);
 
