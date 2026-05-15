@@ -31,11 +31,12 @@ import { variants } from "@/lib/design-system/tokens";
 import { authFetch } from "@/lib/auth/auth-fetch";
 import { carriersApi, fmtPhp, carrierIdOf } from "@/lib/api/carriers";
 
-const DISPATCH_URL    = process.env.NEXT_PUBLIC_DISPATCH_URL    ?? "http://localhost:8005";
-const PAYMENTS_URL    = process.env.NEXT_PUBLIC_PAYMENTS_URL    ?? "http://localhost:8012";
-const DRIVER_OPS_URL  = process.env.NEXT_PUBLIC_DRIVER_OPS_URL  ?? "http://localhost:8006";
-const ANALYTICS_URL   = process.env.NEXT_PUBLIC_ANALYTICS_URL   ?? "http://localhost:8013";
-const MARKETPLACE_URL = process.env.NEXT_PUBLIC_MARKETPLACE_URL ?? "http://localhost:8016";
+const DISPATCH_URL   = process.env.NEXT_PUBLIC_DISPATCH_URL   ?? "http://localhost:8005";
+const PAYMENTS_URL   = process.env.NEXT_PUBLIC_PAYMENTS_URL   ?? "http://localhost:8012";
+const DRIVER_OPS_URL = process.env.NEXT_PUBLIC_DRIVER_OPS_URL ?? "http://localhost:8006";
+const ANALYTICS_URL  = process.env.NEXT_PUBLIC_ANALYTICS_URL  ?? "http://localhost:8013";
+// Marketplace is served by the carrier service — use NEXT_PUBLIC_CARRIER_URL, not a separate marketplace port.
+const CARRIER_SVC_URL = process.env.NEXT_PUBLIC_CARRIER_URL   ?? "http://localhost:8010";
 
 const CURRENT_MONTH = new Intl.DateTimeFormat("en-US", {
   month: "long",
@@ -137,7 +138,7 @@ export default function PartnerOverviewPage() {
         authFetch(`${PAYMENTS_URL}/v1/invoices`),
         authFetch(`${PAYMENTS_URL}/v1/wallet`),
         authFetch(`${ANALYTICS_URL}/v1/analytics/timeseries?from=${daysAgoStr(30)}&to=${new Date().toISOString()}`),
-        authFetch(`${MARKETPLACE_URL}/v1/marketplace/listings?limit=100`),
+        authFetch(`${CARRIER_SVC_URL}/v1/marketplace/listings?limit=100`),
       ]);
 
     // ── Active routes ──────────────────────────────────────────────────────
