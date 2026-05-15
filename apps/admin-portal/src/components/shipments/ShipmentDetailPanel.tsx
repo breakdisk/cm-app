@@ -35,6 +35,7 @@ import {
   rescheduleShipment,
   overrideShipmentStatus,
 } from "@/lib/api/shipments";
+import { usePermissions } from "@/hooks/usePermissions";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -188,6 +189,10 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
   const [podLoading, setPodLoading] = useState(false);
   const [podError,   setPodError]   = useState<string | null>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
+
+  const { hasPermission } = usePermissions();
+  const canCancel   = hasPermission("shipments:cancel");
+  const canUpdate   = hasPermission("shipments:update");
 
   // ── Action state ──────────────────────────────────────────────────────────
   const [actionBusy,    setActionBusy]    = useState(false);
@@ -540,7 +545,8 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
                 </GlassCard>
               </section>
 
-              {/* ── Admin Actions ── */}
+              {/* ── Admin Actions — only rendered when caller has at least one mutation permission ── */}
+              {(canCancel || canUpdate) && (
               <section>
                 <SectionHeading>Admin Actions</SectionHeading>
 
@@ -551,8 +557,8 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
                 )}
 
                 <div className="mt-2 flex flex-wrap gap-2">
-                  {/* Cancel button — only for Pending / Confirmed */}
-                  {(shipment.status === "pending" || shipment.status === "confirmed") && (
+                  {/* Cancel button — shipments:cancel, only for Pending / Confirmed */}
+                  {canCancel && (shipment.status === "pending" || shipment.status === "confirmed") && (
                     <button
                       onClick={handleCancel}
                       disabled={actionBusy}
@@ -562,8 +568,8 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
                     </button>
                   )}
 
-                  {/* Reschedule button — for delivery_attempted / failed */}
-                  {(shipment.status === "delivery_attempted" || shipment.status === "failed") && (
+                  {/* Reschedule button — shipments:update, for delivery_attempted / failed */}
+                  {canUpdate && (shipment.status === "delivery_attempted" || shipment.status === "failed") && (
                     <button
                       onClick={() => { setShowReschedule((v) => !v); setShowOverride(false); }}
                       disabled={actionBusy}
@@ -573,14 +579,16 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
                     </button>
                   )}
 
-                  {/* Override Status — always visible */}
-                  <button
-                    onClick={() => { setShowOverride((v) => !v); setShowReschedule(false); }}
-                    disabled={actionBusy}
-                    className="rounded-lg border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs font-mono text-purple-400 hover:bg-purple-500/20 transition-colors disabled:opacity-50"
-                  >
-                    Override Status
-                  </button>
+                  {/* Override Status — shipments:update */}
+                  {canUpdate && (
+                    <button
+                      onClick={() => { setShowOverride((v) => !v); setShowReschedule(false); }}
+                      disabled={actionBusy}
+                      className="rounded-lg border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs font-mono text-purple-400 hover:bg-purple-500/20 transition-colors disabled:opacity-50"
+                    >
+                      Override Status
+                    </button>
+                  )}
                 </div>
 
                 {/* Reschedule inline form */}
@@ -630,7 +638,7 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
                 )}
 
                 {/* Override Status inline form */}
-                {showOverride && (
+                {showOverride && canUpdate && (
                   <GlassCard size="sm" className="mt-3 space-y-3">
                     <p className="text-2xs font-mono uppercase tracking-widest text-white/40">Override Status</p>
                     <div>
@@ -666,6 +674,7 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
                   </GlassCard>
                 )}
               </section>
+              )}
 
               {/* Bottom padding so last section isn't cut by shadow */}
               <div className="h-4" />

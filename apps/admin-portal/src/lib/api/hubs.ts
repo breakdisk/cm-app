@@ -34,6 +34,12 @@ export interface HubManifest {
   count: number;
 }
 
+export interface HubThroughputBucket {
+  hour:     string;  // e.g. "6AM"
+  inducted: number;
+  sorted:   number;
+}
+
 export interface ListHubsResponse {
   hubs: Hub[];
   count: number;
@@ -87,6 +93,11 @@ export function createHubsApi() {
     async manifest(hubId: string): Promise<HubManifest> {
       const { data } = await http.get<HubManifest>(`/v1/hubs/${hubId}/manifest`);
       return data;
+    },
+
+    async throughputToday(): Promise<HubThroughputBucket[]> {
+      const { data } = await http.get<{ buckets: HubThroughputBucket[] }>("/v1/hubs/throughput/today");
+      return data.buckets ?? [];
     },
   };
 }
