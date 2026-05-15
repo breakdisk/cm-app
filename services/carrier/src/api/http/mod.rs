@@ -21,9 +21,10 @@ use crate::application::services::{
 use crate::domain::entities::SlaRecord;
 use crate::AppState;
 
+/// JWT-protected routes — mounted with `require_auth` middleware in bootstrap.
 pub fn router() -> Router<AppState> {
     Router::new()
-        // Health check — no auth required
+        // Health check — no auth required (gateway / K8s liveness probes)
         .route("/health",                                      get(health))
         // Carrier CRUD
         .route("/v1/carriers",                                 get(list_carriers).post(onboard_carrier))
@@ -48,8 +49,14 @@ pub fn router() -> Router<AppState> {
         .route("/v1/marketplace/bookings/:booking_id/pickup",  post(record_pickup))
         // Internal — called by dispatch when allocating a carrier to a shipment
         .route("/v1/internal/sla-records",                     post(create_sla_record))
-        // Inbound webhook callbacks from 3PL carrier systems (API-key auth)
-        .route("/v1/webhooks/carrier/:id/tracking",            post(carrier_tracking_webhook))
+}
+
+/// Unauthenticated webhook routes — 3PL systems authenticate with a per-carrier
+/// `X-Carrier-Api-Key` header instead of a JWT. Mounted separately in bootstrap
+/// *without* the JWT `require_auth` layer so external callbacks aren't rejected.
+pub fn webhook_router() -> Router<AppState> {
+    Router::new()
+        .route("/v1/webhooks/carrier/:id/tracking", post(carrier_tracking_webhook))
 }
 
 async fn health() -> impl IntoResponse {

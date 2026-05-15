@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use logisticos_events::{envelope::Event, producer::KafkaProducer, topics};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -55,11 +56,14 @@ pub struct RecordPickupInput {
 // ── Service ───────────────────────────────────────────────────────────────────
 
 pub struct MarketplaceService {
-    repo: Arc<dyn MarketplaceRepository>,
+    repo:  Arc<dyn MarketplaceRepository>,
+    kafka: Arc<KafkaProducer>,
 }
 
 impl MarketplaceService {
-    pub fn new(repo: Arc<dyn MarketplaceRepository>) -> Self { Self { repo } }
+    pub fn new(repo: Arc<dyn MarketplaceRepository>, kafka: Arc<KafkaProducer>) -> Self {
+        Self { repo, kafka }
+    }
 
     pub async fn create_listing(
         &self,
@@ -175,6 +179,19 @@ impl MarketplaceService {
         let mut booking = self.load_owned_booking(booking_id, carrier_id).await?;
         booking.accept().map_err(|e| AppError::BusinessRule(e.to_string()))?;
         self.repo.save_booking(&booking).await.map_err(AppError::internal)?;
+
+        let payload = logisticos_events::payloads::MarketplaceBookingAccepted {
+            booking_id:  booking.id,
+            listing_id:  booking.listing_id,
+            carrier_id:  booking.carrier_id,
+            tenant_id:   booking.tenant_id,
+            accepted_at: Utc::now().to_rfc3339(),
+        };
+        let ev = Event::new("logisticos/carrier", "marketplace.booking.accepted", booking.tenant_id, payload);
+        if let Err(e) = self.kafka.publish_event(topics::MARKETPLACE_BOOKING_ACCEPTED, &ev).await {
+            tracing::warn!("Failed to publish marketplace.booking.accepted: {e}");
+        }
+
         Ok(booking)
     }
 
@@ -186,6 +203,19 @@ impl MarketplaceService {
         let mut booking = self.load_owned_booking(booking_id, carrier_id).await?;
         booking.reject().map_err(|e| AppError::BusinessRule(e.to_string()))?;
         self.repo.save_booking(&booking).await.map_err(AppError::internal)?;
+
+        let payload = logisticos_events::payloads::MarketplaceBookingRejected {
+            booking_id:  booking.id,
+            listing_id:  booking.listing_id,
+            carrier_id:  booking.carrier_id,
+            tenant_id:   booking.tenant_id,
+            rejected_at: Utc::now().to_rfc3339(),
+        };
+        let ev = Event::new("logisticos/carrier", "marketplace.booking.rejected", booking.tenant_id, payload);
+        if let Err(e) = self.kafka.publish_event(topics::MARKETPLACE_BOOKING_REJECTED, &ev).await {
+            tracing::warn!("Failed to publish marketplace.booking.rejected: {e}");
+        }
+
         Ok(booking)
     }
 
@@ -197,9 +227,24 @@ impl MarketplaceService {
     ) -> AppResult<MarketplaceBooking> {
         let mut booking = self.load_owned_booking(booking_id, carrier_id).await?;
         booking
-            .record_pickup(input.picked_up_by, input.pickup_notes)
+            .record_pickup(input.picked_up_by.clone(), input.pickup_notes.clone())
             .map_err(|e| AppError::BusinessRule(e.to_string()))?;
         self.repo.save_booking(&booking).await.map_err(AppError::internal)?;
+
+        let payload = logisticos_events::payloads::MarketplacePickupRecorded {
+            booking_id:   booking.id,
+            listing_id:   booking.listing_id,
+            carrier_id:   booking.carrier_id,
+            tenant_id:    booking.tenant_id,
+            picked_up_by: input.picked_up_by,
+            pickup_notes: input.pickup_notes,
+            picked_up_at: Utc::now().to_rfc3339(),
+        };
+        let ev = Event::new("logisticos/carrier", "marketplace.pickup.recorded", booking.tenant_id, payload);
+        if let Err(e) = self.kafka.publish_event(topics::MARKETPLACE_PICKUP_RECORDED, &ev).await {
+            tracing::warn!("Failed to publish marketplace.pickup.recorded: {e}");
+        }
+
         Ok(booking)
     }
 
