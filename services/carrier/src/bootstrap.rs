@@ -106,6 +106,42 @@ pub async fn run() -> anyhow::Result<()> {
 
     let state = AppState { carrier_svc, marketplace_svc, jwt: Arc::clone(&jwt) };
 
+    // CORS — allow the partner, admin, and merchant portals to call the
+    // carrier service directly. Production origins are set via APP__CORS_ORIGINS
+    // (comma-separated); the defaults cover common local dev ports.
+    use axum::http::{HeaderName, HeaderValue, Method};
+    use tower_http::cors::CorsLayer;
+
+    let default_origins = [
+        "http://localhost:3001",
+        "http://localhost:3002",
+        "http://localhost:3003",
+        "http://localhost:8083",
+    ];
+    let allowed_origins: Vec<HeaderValue> = cfg.app.cors_origins
+        .as_deref()
+        .map(|s| s.split(',').map(str::trim).filter(|s| !s.is_empty()).collect::<Vec<_>>())
+        .unwrap_or_else(|| default_origins.to_vec())
+        .into_iter()
+        .filter_map(|o| o.parse::<HeaderValue>().ok())
+        .collect();
+
+    let cors = CorsLayer::new()
+        .allow_origin(allowed_origins)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            HeaderName::from_static("content-type"),
+            HeaderName::from_static("authorization"),
+            HeaderName::from_static("x-logisticos-client"),
+        ]);
+
     // Compose the app:
     //   • JWT-protected routes (all /v1/* except webhooks)
     //   • Unauthenticated webhook routes (/v1/webhooks/*)
@@ -115,6 +151,7 @@ pub async fn run() -> anyhow::Result<()> {
         .merge(http::webhook_router())
         .layer(axum::middleware::from_fn(propagate_request_id))
         .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(cors)
         .with_state(state);
 
     let addr: SocketAddr = format!("{}:{}", cfg.app.host, cfg.app.port).parse()?;

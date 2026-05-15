@@ -555,15 +555,22 @@ function MarketplacePageInner() {
   const [listings, setListings] = useState<VehicleListing[]>([]);
   const [bookings, setBookings] = useState<MarketplaceBooking[]>([]);
   const [loading, setLoading]   = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [search, setSearch]     = useState("");
   const [statusFilter, setStatusFilter] = useState<ListingStatus | "all">(qpStatus ?? "all");
   const [drawer, setDrawer] = useState<DrawerMode>(qpNew ? { kind: "create" } : { kind: "closed" });
 
   const refresh = useCallback(async () => {
-    const [l, b] = await Promise.all([fetchListings(), fetchBookings()]);
-    setListings(l);
-    setBookings(b);
-    setLoading(false);
+    try {
+      const [l, b] = await Promise.all([fetchListings(), fetchBookings()]);
+      setListings(l);
+      setBookings(b);
+      setLoadError(null);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "Failed to load marketplace data");
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -871,6 +878,12 @@ function MarketplacePageInner() {
                 <tr>
                   <td colSpan={7} className="px-5 py-10 text-center text-xs text-white/40">
                     Loading listings…
+                  </td>
+                </tr>
+              ) : loadError ? (
+                <tr>
+                  <td colSpan={7} className="px-5 py-10 text-center text-xs text-red-signal">
+                    {loadError}
                   </td>
                 </tr>
               ) : filtered.length === 0 ? (

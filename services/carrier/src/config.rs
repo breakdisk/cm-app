@@ -16,6 +16,9 @@ pub struct AppConfig {
     /// If unset, the gRPC server is not started.
     pub grpc_port: Option<u16>,
     pub env: String,
+    /// Comma-separated list of allowed CORS origins (APP__CORS_ORIGINS).
+    /// Defaults to common local dev ports if unset.
+    pub cors_origins: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
