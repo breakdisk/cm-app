@@ -1,12 +1,13 @@
 use axum::{
     extract::{Multipart, Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Json},
     routing::{delete, get, post, put},
     Router,
 };
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use logisticos_auth::middleware::AuthClaims;
@@ -47,6 +48,8 @@ pub fn router() -> Router<AppState> {
         .route("/v1/marketplace/bookings/:booking_id/pickup",  post(record_pickup))
         // Internal — called by dispatch when allocating a carrier to a shipment
         .route("/v1/internal/sla-records",                     post(create_sla_record))
+        // Inbound webhook callbacks from 3PL carrier systems (API-key auth)
+        .route("/v1/webhooks/carrier/:id/tracking",            post(carrier_tracking_webhook))
 }
 
 async fn health() -> impl IntoResponse {
@@ -497,4 +500,71 @@ async fn record_pickup(
     let carrier   = state.carrier_svc.get_by_email(&tenant_id, &claims.email).await?;
     let booking   = state.marketplace_svc.record_pickup(booking_id, carrier.id.inner(), body).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(booking)))
+}
+
+// ── Inbound 3PL webhook ───────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct TrackingWebhookBody {
+    /// Carrier's own shipment/tracking reference.
+    reference:  Option<String>,
+    /// Canonical LogisticOS shipment UUID (preferred).
+    shipment_id: Option<Uuid>,
+    /// Event type — e.g. "picked_up", "in_transit", "delivered", "failed".
+    event:      String,
+    /// Human-readable status message from the 3PL.
+    message:    Option<String>,
+}
+
+/// POST /v1/webhooks/carrier/:id/tracking
+///
+/// Receives inbound tracking events from 3PL carrier systems. Authentication
+/// is via the `X-Carrier-Api-Key` header (SHA-256 hash checked against the
+/// carrier record). Events are logged for audit; in production they would be
+/// forwarded to the engagement engine and update the shipment's live status.
+async fn carrier_tracking_webhook(
+    State(state): State<AppState>,
+    Path(carrier_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(body): Json<TrackingWebhookBody>,
+) -> impl IntoResponse {
+    // Verify API key — same logic as the require_carrier_api_key middleware.
+    let raw_key = match headers.get("X-Carrier-Api-Key").and_then(|v| v.to_str().ok()) {
+        Some(k) => k.to_owned(),
+        None => return Ok::<_, AppError>((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Missing X-Carrier-Api-Key header"})),
+        )),
+    };
+    let carrier = state.carrier_svc.get(carrier_id).await?;
+    let expected = match &carrier.api_key_hash {
+        Some(h) => h.clone(),
+        None => return Ok((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "No API key configured for this carrier"})),
+        )),
+    };
+    let presented = {
+        let mut h = Sha256::new();
+        h.update(raw_key.as_bytes());
+        format!("{:x}", h.finalize())
+    };
+    if presented != expected {
+        return Ok((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Invalid API key"})),
+        ));
+    }
+
+    tracing::info!(
+        carrier_id = %carrier_id,
+        event      = %body.event,
+        reference  = ?body.reference,
+        shipment_id = ?body.shipment_id,
+        message    = ?body.message,
+        "Inbound 3PL tracking event received",
+    );
+
+    // Future: forward event to engagement engine / update shipment status.
+    Ok((StatusCode::OK, Json(serde_json::json!({"received": true, "event": body.event}))))
 }

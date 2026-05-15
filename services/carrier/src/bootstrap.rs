@@ -11,6 +11,7 @@ use crate::{
     application::services::{CarrierService, MarketplaceService},
     config::Config,
     infrastructure::{
+        cache::CachedCarrierRepository,
         db::{PgCarrierRepository, PgMarketplaceRepository, PgSlaRecordRepository},
         messaging::{start_delivery_consumer, CarrierPublisher},
     },
@@ -41,9 +42,20 @@ pub async fn run() -> anyhow::Result<()> {
     logisticos_common::migrations::run(&pool, "carrier", &sqlx::migrate!("./migrations")).await?;
 
     // Repositories
-    let carrier_repo     = Arc::new(PgCarrierRepository::new(pool.clone()));
+    let pg_carrier_repo  = Arc::new(PgCarrierRepository::new(pool.clone()));
     let sla_repo         = Arc::new(PgSlaRecordRepository::new(pool.clone()));
-    let marketplace_repo = Arc::new(PgMarketplaceRepository::new(pool));
+    let marketplace_repo = Arc::new(PgMarketplaceRepository::new(pool.clone()));
+
+    // Wrap the carrier repo in a Redis write-through cache to cut latency on
+    // the hot /me and find_by_id paths (partner portal polls /me on every page).
+    let carrier_repo: Arc<dyn crate::domain::repositories::CarrierRepository> =
+        match CachedCarrierRepository::new(pg_carrier_repo.clone(), &cfg.redis.url).await {
+            Ok(cached) => Arc::new(cached),
+            Err(e) => {
+                tracing::warn!("Redis unavailable — falling back to uncached carrier repo: {e}");
+                pg_carrier_repo as Arc<dyn crate::domain::repositories::CarrierRepository>
+            }
+        };
 
     // Kafka producer + publisher
     let kafka_producer = Arc::new(KafkaProducer::new(&cfg.kafka.brokers)?);
@@ -57,7 +69,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     // Application services
     let carrier_svc = Arc::new(CarrierService::new(
-        Arc::clone(&carrier_repo) as Arc<dyn crate::domain::repositories::CarrierRepository>,
+        Arc::clone(&carrier_repo),
         Arc::clone(&sla_repo)     as Arc<dyn crate::domain::repositories::SlaRecordRepository>,
         Arc::clone(&publisher),
         external_client,
