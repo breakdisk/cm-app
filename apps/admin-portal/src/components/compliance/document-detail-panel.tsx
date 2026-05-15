@@ -6,9 +6,11 @@ import { cn } from "@/lib/design-system/cn";
 import { Check, X, ExternalLink } from "lucide-react";
 
 interface Props {
-  profileId: string;
-  onApprove: (docId: string) => void;
-  onReject:  (docId: string, reason: string) => void;
+  profileId:  string;
+  onApprove:  (docId: string) => void;
+  onReject:   (docId: string, reason: string) => void;
+  /** Set false to hide approve/reject buttons for non-reviewers. Defaults true. */
+  canReview?: boolean;
 }
 
 const STATUS_BADGE: Record<string, string> = {
@@ -20,7 +22,7 @@ const STATUS_BADGE: Record<string, string> = {
   suspended:          "bg-red-surface/20 border-red-glow/25 text-red-signal",
 };
 
-export function DocumentDetailPanel({ profileId, onApprove, onReject }: Props) {
+export function DocumentDetailPanel({ profileId, onApprove, onReject, canReview = true }: Props) {
   const [detail,       setDetail]       = useState<{ profile: any; documents: DriverDocument[] } | null>(null);
   const [rejectDocId,  setRejectDocId]  = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState("");
@@ -159,7 +161,7 @@ export function DocumentDetailPanel({ profileId, onApprove, onReject }: Props) {
               </div>
 
               {/* Approve / Reject actions */}
-              {isPending && (
+              {isPending && canReview && (
                 <div className="mt-3">
                   <div className="flex gap-2">
                     <button

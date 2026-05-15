@@ -20,6 +20,7 @@ import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
 import { Workflow, RefreshCw, Zap, Power, ChevronDown, ChevronUp } from "lucide-react";
 import { rulesApi, enumLabel, type AutomationRule } from "@/lib/api/rules";
+import { usePermissions } from "@/hooks/usePermissions";
 
 export default function AutomationPage() {
   const [rules, setRules]     = useState<AutomationRule[]>([]);
@@ -28,6 +29,8 @@ export default function AutomationPage() {
   const [busyId, setBusyId]   = useState<string | null>(null);
   const [reloading, setReloading] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const { hasPermission } = usePermissions();
+  const canManage = hasPermission("users:manage");
 
   const load = useCallback(async () => {
     setError(null);
@@ -106,14 +109,16 @@ export default function AutomationPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={handleReload}
-            disabled={reloading}
-            className="flex items-center gap-1.5 rounded-lg border border-glass-border px-3 py-2 text-xs text-white/60 hover:text-white transition-colors disabled:opacity-40"
-            title="Hot-reload rules engine from DB"
-          >
-            <Zap size={13} /> {reloading ? "Reloading…" : "Reload engine"}
-          </button>
+          {canManage && (
+            <button
+              onClick={handleReload}
+              disabled={reloading}
+              className="flex items-center gap-1.5 rounded-lg border border-glass-border px-3 py-2 text-xs text-white/60 hover:text-white transition-colors disabled:opacity-40"
+              title="Hot-reload rules engine from DB"
+            >
+              <Zap size={13} /> {reloading ? "Reloading…" : "Reload engine"}
+            </button>
+          )}
           <button
             onClick={load}
             className="flex items-center gap-1.5 rounded-lg border border-glass-border px-3 py-2 text-xs text-white/60 hover:text-white transition-colors"
@@ -185,16 +190,18 @@ export default function AutomationPage() {
                       {r.is_active ? "active" : "disabled"}
                     </NeonBadge>
                     <div className="flex items-center gap-1 justify-end">
-                      <button
-                        onClick={() => handleToggle(r.id)}
-                        disabled={busy}
-                        className="rounded p-1.5 text-white/30 hover:text-cyan-neon hover:bg-glass-200 transition-colors disabled:opacity-40"
-                        title={r.is_active ? "Disable" : "Enable"}
-                      >
-                        {busy
-                          ? <span className="block h-3 w-3 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                          : <Power size={12} />}
-                      </button>
+                      {canManage && (
+                        <button
+                          onClick={() => handleToggle(r.id)}
+                          disabled={busy}
+                          className="rounded p-1.5 text-white/30 hover:text-cyan-neon hover:bg-glass-200 transition-colors disabled:opacity-40"
+                          title={r.is_active ? "Disable" : "Enable"}
+                        >
+                          {busy
+                            ? <span className="block h-3 w-3 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                            : <Power size={12} />}
+                        </button>
+                      )}
                       <button
                         onClick={() => setExpandedId(expanded ? null : r.id)}
                         className="rounded p-1.5 text-white/30 hover:text-white hover:bg-glass-200 transition-colors"

@@ -18,6 +18,7 @@ import {
   type ApiKey, type CreateApiKeyResult,
 } from "@/lib/api/api-keys";
 import { authFetch } from "@/lib/auth/auth-fetch";
+import { usePermissions } from "@/hooks/usePermissions";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -45,8 +46,16 @@ const ROLE_DESCRIPTIONS: Record<string, string> = {
 
 const ROLE_ORDER = ["admin", "dispatcher", "merchant", "driver", "finance", "readonly", "customer"];
 
-const TABS = ["General", "API Keys", "Webhooks", "Roles & Permissions", "Audit Log"] as const;
-type Tab = (typeof TABS)[number];
+const ALL_TABS = ["General", "API Keys", "Webhooks", "Roles & Permissions", "Audit Log"] as const;
+type Tab = (typeof ALL_TABS)[number];
+
+const TAB_PERMISSIONS: Record<Tab, string> = {
+  "General":              "users:manage",
+  "API Keys":             "api_keys:manage",
+  "Webhooks":             "webhooks:manage",
+  "Roles & Permissions":  "users:manage",
+  "Audit Log":            "users:manage",
+};
 
 interface AuditEntry {
   id:          string;
@@ -72,7 +81,10 @@ const ACTION_COLOR: Record<string, string> = {
 };
 
 export default function SettingsPage() {
+  const { hasPermission } = usePermissions();
+  const tabs = ALL_TABS.filter((t) => hasPermission(TAB_PERMISSIONS[t]));
   const [activeTab, setActiveTab] = useState<Tab>("General");
+  const effectiveTab: Tab = tabs.includes(activeTab) ? activeTab : (tabs[0] ?? "General");
 
   return (
     <motion.div
@@ -89,25 +101,31 @@ export default function SettingsPage() {
 
       {/* Tab bar */}
       <motion.div variants={variants.fadeInUp}>
-        <div className="flex gap-1 bg-white/[0.03] border border-white/[0.08] rounded-xl p-1 w-fit">
-          {TABS.map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                activeTab === tab
-                  ? "bg-[#00E5FF]/10 text-[#00E5FF] border border-[#00E5FF]/20"
-                  : "text-white/40 hover:text-white/70"
-              }`}
-            >
-              {tab}
-            </button>
-          ))}
-        </div>
+        {tabs.length === 0 ? (
+          <p className="text-sm text-white/40 font-mono">
+            You don&apos;t have permission to view any settings.
+          </p>
+        ) : (
+          <div className="flex gap-1 bg-white/[0.03] border border-white/[0.08] rounded-xl p-1 w-fit">
+            {tabs.map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                  effectiveTab === tab
+                    ? "bg-[#00E5FF]/10 text-[#00E5FF] border border-[#00E5FF]/20"
+                    : "text-white/40 hover:text-white/70"
+                }`}
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
+        )}
       </motion.div>
 
       {/* General */}
-      {activeTab === "General" && (
+      {effectiveTab === "General" && tabs.includes("General") && (
         <motion.div variants={variants.fadeInUp} className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <TenantProfileCard />
 
@@ -118,18 +136,18 @@ export default function SettingsPage() {
       )}
 
       {/* API Keys — live */}
-      {activeTab === "API Keys" && <ApiKeysTab />}
+      {effectiveTab === "API Keys" && tabs.includes("API Keys") && <ApiKeysTab />}
 
       {/* Webhooks — backed by /v1/webhooks (CRUD) on the new webhooks
           service. The signing secret is returned exactly once at create
           time; the modal surfaces it for copy-paste. */}
-      {activeTab === "Webhooks" && <WebhooksTab />}
+      {effectiveTab === "Webhooks" && tabs.includes("Webhooks") && <WebhooksTab />}
 
       {/* Roles — derived from identity /v1/users grouped by role. */}
-      {activeTab === "Roles & Permissions" && <RolesTab />}
+      {effectiveTab === "Roles & Permissions" && tabs.includes("Roles & Permissions") && <RolesTab />}
 
       {/* Audit Log — live from identity /v1/audit-log (100 most recent). */}
-      {activeTab === "Audit Log" && <AuditLogTab />}
+      {effectiveTab === "Audit Log" && tabs.includes("Audit Log") && <AuditLogTab />}
     </motion.div>
   );
 }
