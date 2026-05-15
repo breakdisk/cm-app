@@ -15,9 +15,9 @@ use rdkafka::{
 use tokio::sync::watch;
 use uuid::Uuid;
 
-use crate::{
-    domain::{entities::CarrierId, repositories::{CarrierRepository, SlaRecordRepository}},
-    infrastructure::db::PgCarrierRepository,
+use crate::domain::{
+    entities::CarrierId,
+    repositories::{CarrierRepository, SlaRecordRepository},
 };
 
 // ── Publisher ─────────────────────────────────────────────────────────────────
@@ -75,7 +75,7 @@ impl CarrierPublisher {
 pub async fn start_delivery_consumer(
     brokers: &str,
     group_id: &str,
-    carrier_repo: Arc<PgCarrierRepository>,
+    carrier_repo: Arc<dyn CarrierRepository>,
     sla_repo: Arc<dyn SlaRecordRepository>,
     mut shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
