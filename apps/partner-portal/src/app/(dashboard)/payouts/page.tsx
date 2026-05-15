@@ -122,6 +122,52 @@ function WithdrawModal({
   );
 }
 
+// ── CSV export ────────────────────────────────────────────────────────────────
+
+function exportCsv(invoices: Invoice[], transactions: WalletTransaction[]) {
+  const rows: string[][] = [];
+
+  rows.push(["=== INVOICES ==="]);
+  rows.push(["Invoice #", "Status", "Period From", "Period To", "Total (₱)", "Due Date", "Paid At"]);
+  for (const inv of invoices) {
+    rows.push([
+      inv.invoice_number,
+      inv.status,
+      inv.period_from,
+      inv.period_to,
+      String(inv.total_php),
+      inv.due_date,
+      inv.paid_at ?? "",
+    ]);
+  }
+
+  rows.push([]);
+  rows.push(["=== TRANSACTIONS ==="]);
+  rows.push(["ID", "Type", "Amount (₱)", "Description", "Balance After (₱)", "Date"]);
+  for (const tx of transactions) {
+    rows.push([
+      tx.id,
+      tx.type,
+      String(tx.amount_php),
+      tx.description,
+      String(tx.balance_after_php),
+      tx.created_at,
+    ]);
+  }
+
+  const csv = rows
+    .map(r => r.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+    .join("\n");
+
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href     = url;
+  a.download = `payouts-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ── Page ─────────────────────────────────────────────────────────────────────
 export default function PayoutsPage() {
   const [wallet,       setWallet]       = useState<Wallet | null>(null);
@@ -229,7 +275,11 @@ export default function PayoutsPage() {
             </h1>
             <p className="text-sm text-white/40 font-mono mt-0.5">Payout schedule: 5th of each month</p>
           </div>
-          <button className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors">
+          <button
+            onClick={() => exportCsv(invoices, transactions)}
+            disabled={loading || (invoices.length === 0 && transactions.length === 0)}
+            className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
             <Download size={12} /> Export CSV
           </button>
         </motion.div>
