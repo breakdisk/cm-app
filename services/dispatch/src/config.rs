@@ -18,6 +18,10 @@ pub struct AppConfig {
     /// AI layer is unreachable.
     #[serde(default)]
     pub ai_dispatch_enabled: bool,
+    /// Comma-separated allowed CORS origins. Defaults to localhost dev ports.
+    /// Production example: `https://app.cargomarket.net,https://admin.cargomarket.net`
+    #[serde(default)]
+    pub cors_origins: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

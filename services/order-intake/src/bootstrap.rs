@@ -103,9 +103,9 @@ pub async fn run() -> anyhow::Result<()> {
 
     // Axum router
     use axum::http::{HeaderName, HeaderValue, Method};
-    use tower_http::cors::CorsLayer;
+    use tower_http::cors::{AllowOrigin, CorsLayer};
 
-    let default_origins = [
+    const DEFAULT_ORIGINS: &[&str] = &[
         "http://localhost:3001",
         "http://localhost:3002",
         "http://localhost:3003",
@@ -114,13 +114,12 @@ pub async fn run() -> anyhow::Result<()> {
     let allowed_origins: Vec<HeaderValue> = cfg.app.cors_origins
         .as_deref()
         .map(|s| s.split(',').map(str::trim).filter(|s| !s.is_empty()).collect::<Vec<_>>())
-        .unwrap_or_else(|| default_origins.to_vec())
+        .unwrap_or_else(|| DEFAULT_ORIGINS.to_vec())
         .into_iter()
         .filter_map(|o| o.parse::<HeaderValue>().ok())
         .collect();
-
     let cors = CorsLayer::new()
-        .allow_origin(allowed_origins)
+        .allow_origin(AllowOrigin::list(allowed_origins))
         .allow_methods([
             Method::GET,
             Method::POST,
