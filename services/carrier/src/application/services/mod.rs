@@ -64,18 +64,20 @@ pub struct CarrierQuote {
 }
 
 pub struct CarrierService {
-    repo:      Arc<dyn CarrierRepository>,
-    sla_repo:  Arc<dyn SlaRecordRepository>,
-    publisher: Arc<CarrierPublisher>,
+    repo:            Arc<dyn CarrierRepository>,
+    sla_repo:        Arc<dyn SlaRecordRepository>,
+    publisher:       Arc<CarrierPublisher>,
+    external_client: Arc<crate::infrastructure::external::ExternalCarrierClient>,
 }
 
 impl CarrierService {
     pub fn new(
-        repo:      Arc<dyn CarrierRepository>,
-        sla_repo:  Arc<dyn SlaRecordRepository>,
-        publisher: Arc<CarrierPublisher>,
+        repo:            Arc<dyn CarrierRepository>,
+        sla_repo:        Arc<dyn SlaRecordRepository>,
+        publisher:       Arc<CarrierPublisher>,
+        external_client: Arc<crate::infrastructure::external::ExternalCarrierClient>,
     ) -> Self {
-        Self { repo, sla_repo, publisher }
+        Self { repo, sla_repo, publisher, external_client }
     }
 
     pub async fn onboard(&self, tenant_id: &TenantId, cmd: OnboardCarrierCommand) -> AppResult<Carrier> {
@@ -238,6 +240,28 @@ impl CarrierService {
         if let Err(e) = self.publisher.carrier_allocated(record.tenant_id, payload).await {
             tracing::warn!("Failed to publish carrier_allocated event: {e}");
         }
+
+        // Push outbound webhook to the carrier's registered api_endpoint (best-effort).
+        if let Ok(Some(carrier)) = self.repo
+            .find_by_id(&crate::domain::entities::CarrierId::from_uuid(record.carrier_id))
+            .await
+        {
+            if let Some(ref endpoint) = carrier.api_endpoint {
+                let notif = crate::infrastructure::external::CarrierShipmentNotification {
+                    event:           "shipment.allocated",
+                    shipment_id:     record.shipment_id.to_string(),
+                    awb:             String::new(),
+                    service_type:    record.service_level.clone(),
+                    zone:            record.zone.clone(),
+                    promised_by:     record.promised_by.to_rfc3339(),
+                    pickup_address:  None,
+                    dropoff_address: None,
+                    weight_kg:       None,
+                };
+                self.external_client.notify_shipment_allocated(endpoint, &notif).await;
+            }
+        }
+
         Ok(record)
     }
 

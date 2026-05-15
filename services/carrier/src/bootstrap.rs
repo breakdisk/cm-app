@@ -49,11 +49,18 @@ pub async fn run() -> anyhow::Result<()> {
     let kafka_producer = Arc::new(KafkaProducer::new(&cfg.kafka.brokers)?);
     let publisher      = Arc::new(CarrierPublisher::new(Arc::clone(&kafka_producer)));
 
+    // Outbound webhook client (notifies 3PL carriers of allocations)
+    let outbound_secret = std::env::var("CARRIER_WEBHOOK_SECRET").ok();
+    let external_client = Arc::new(
+        crate::infrastructure::external::ExternalCarrierClient::new(outbound_secret),
+    );
+
     // Application services
     let carrier_svc = Arc::new(CarrierService::new(
         Arc::clone(&carrier_repo) as Arc<dyn crate::domain::repositories::CarrierRepository>,
         Arc::clone(&sla_repo)     as Arc<dyn crate::domain::repositories::SlaRecordRepository>,
         Arc::clone(&publisher),
+        external_client,
     ));
     let marketplace_svc = Arc::new(MarketplaceService::new(
         Arc::clone(&marketplace_repo) as Arc<dyn crate::domain::repositories::MarketplaceRepository>,
