@@ -15,6 +15,7 @@ import { variants } from "@/lib/design-system/tokens";
 import { authFetch } from "@/lib/auth/auth-fetch";
 import { readBus, subscribeToBus, type BusBooking } from "@/lib/api/marketplace-bus";
 import { useDriverRoster } from "@/context/driver-roster-context";
+import { usePermissions } from "@/hooks/usePermissions";
 
 // Route through the api-gateway (same base as every other admin-portal caller).
 // Gateway proxies /v1/queue + /v1/drivers to dispatch+driver-ops — no service-specific URL needed.
@@ -223,6 +224,8 @@ function DispatchPageInner() {
   const [cancellingTasks,   setCancellingTasks]   = useState(false);
 
   const { drivers: rosterDrivers } = useDriverRoster();
+  const { hasPermission } = usePermissions();
+  const canAssign = hasPermission("dispatch:assign");
 
   const searchParams  = useSearchParams();
   const focusOrderId  = searchParams.get("order");
@@ -613,23 +616,29 @@ function DispatchPageInner() {
                     </p>
                   )}
                   <div className="flex items-center gap-2">
-                    {item.status !== "dispatched" ? (
-                      <button
-                        onClick={() => handleDispatch(item.shipment_id)}
-                        disabled={dispatching === item.shipment_id}
-                        className="flex-1 rounded-lg border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs font-mono text-purple-300 hover:bg-purple-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                      >
-                        {dispatching === item.shipment_id ? "Dispatching…" : "⚡ Dispatch"}
-                      </button>
+                    {canAssign ? (
+                      item.status !== "dispatched" ? (
+                        <button
+                          onClick={() => handleDispatch(item.shipment_id)}
+                          disabled={dispatching === item.shipment_id}
+                          className="flex-1 rounded-lg border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs font-mono text-purple-300 hover:bg-purple-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          {dispatching === item.shipment_id ? "Dispatching…" : "⚡ Dispatch"}
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => handleCancelDispatch(item.shipment_id)}
+                          disabled={cancellingDispatch === item.shipment_id || item.origin === "marketplace"}
+                          title={item.origin === "marketplace" ? "Marketplace bookings cannot be cancelled here" : "Return to pending queue"}
+                          className="flex-1 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-1.5 text-xs font-mono text-red-400/80 hover:bg-red-500/15 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          {cancellingDispatch === item.shipment_id ? "Cancelling…" : "✕ Cancel Dispatch"}
+                        </button>
+                      )
                     ) : (
-                      <button
-                        onClick={() => handleCancelDispatch(item.shipment_id)}
-                        disabled={cancellingDispatch === item.shipment_id || item.origin === "marketplace"}
-                        title={item.origin === "marketplace" ? "Marketplace bookings cannot be cancelled here" : "Return to pending queue"}
-                        className="flex-1 rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-1.5 text-xs font-mono text-red-400/80 hover:bg-red-500/15 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                      >
-                        {cancellingDispatch === item.shipment_id ? "Cancelling…" : "✕ Cancel Dispatch"}
-                      </button>
+                      <span className="flex-1 text-center text-2xs font-mono text-white/25 py-1.5">
+                        {item.status === "dispatched" ? "Dispatched" : "Pending dispatch"}
+                      </span>
                     )}
                     {item.tracking_number && (
                       <a

@@ -18,7 +18,7 @@ import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { Building2, Package, Truck, AlertTriangle, FileText, RefreshCw } from "lucide-react";
-import { createHubsApi, hubIdOf, hubUtilization, hubStatusTier, type Hub, type HubStatusTier } from "@/lib/api/hubs";
+import { createHubsApi, hubIdOf, hubUtilization, hubStatusTier, type Hub, type HubStatusTier, type HubThroughputBucket } from "@/lib/api/hubs";
 
 const STATUS_CONFIG: Record<HubStatusTier, { label: string; variant: "green" | "amber" | "red"; color: string }> = {
   normal:   { label: "Normal",   variant: "green", color: "#00FF88" },
@@ -26,27 +26,32 @@ const STATUS_CONFIG: Record<HubStatusTier, { label: string; variant: "green" | "
   critical: { label: "Critical", variant: "red",   color: "#FF3B5C" },
 };
 
-// Hourly throughput chart — no backend endpoint exists for this yet.
-// Renders as flat zeros with a "no data" note below when the field is unavailable.
-const HOURLY_THROUGHPUT_STATIC = [
-  { hour: "6AM", sorted: 0, inducted: 0 },
-  { hour: "8AM", sorted: 0, inducted: 0 },
+const THROUGHPUT_FALLBACK: HubThroughputBucket[] = [
+  { hour: "6AM",  sorted: 0, inducted: 0 },
+  { hour: "8AM",  sorted: 0, inducted: 0 },
   { hour: "10AM", sorted: 0, inducted: 0 },
   { hour: "12PM", sorted: 0, inducted: 0 },
-  { hour: "2PM", sorted: 0, inducted: 0 },
+  { hour: "2PM",  sorted: 0, inducted: 0 },
 ];
 
 export default function HubOpsPage() {
   const api = useMemo(() => createHubsApi(), []);
 
-  const [hubs, setHubs]       = useState<Hub[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState<string | null>(null);
+  const [hubs, setHubs]               = useState<Hub[]>([]);
+  const [loading, setLoading]         = useState(true);
+  const [error, setError]             = useState<string | null>(null);
+  const [throughput, setThroughput]   = useState<HubThroughputBucket[]>(THROUGHPUT_FALLBACK);
+  const [throughputLive, setThroughputLive] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
     try {
-      const list = await api.list();
+      const [list] = await Promise.all([
+        api.list(),
+        api.throughputToday()
+          .then((buckets) => { setThroughput(buckets.length > 0 ? buckets : THROUGHPUT_FALLBACK); setThroughputLive(true); })
+          .catch(() => { /* endpoint not yet deployed — keep fallback zeros */ }),
+      ]);
       setHubs(list);
     } catch (e) {
       const err = e as { message?: string };
@@ -198,20 +203,22 @@ export default function HubOpsPage() {
         </motion.div>
       )}
 
-      {/* Hourly throughput — placeholder, no backend endpoint yet */}
+      {/* Hourly throughput — live from /v1/hubs/throughput/today; falls back to zeros if endpoint not yet deployed */}
       <motion.div variants={variants.fadeInUp}>
         <GlassCard glow="purple">
           <div className="flex items-center justify-between mb-5">
             <div>
               <h2 className="font-heading text-sm font-semibold text-white">Sorting Throughput — Today</h2>
               <p className="text-2xs font-mono text-white/30">
-                Per-hour induction + sort counts (hub-ops endpoint pending)
+                Per-hour induction + sort counts · {throughputLive ? "live" : "endpoint pending"}
               </p>
             </div>
-            <NeonBadge variant="muted">Not yet wired</NeonBadge>
+            <NeonBadge variant={throughputLive ? "green" : "muted"} dot={throughputLive}>
+              {throughputLive ? "Live" : "Pending"}
+            </NeonBadge>
           </div>
           <ResponsiveContainer width="100%" height={160}>
-            <BarChart data={HOURLY_THROUGHPUT_STATIC} margin={{ top: 0, right: 0, bottom: 0, left: -24 }}>
+            <BarChart data={throughput} margin={{ top: 0, right: 0, bottom: 0, left: -24 }}>
               <CartesianGrid stroke="rgba(255,255,255,0.04)" strokeDasharray="4 4" vertical={false} />
               <XAxis dataKey="hour" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
               <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />

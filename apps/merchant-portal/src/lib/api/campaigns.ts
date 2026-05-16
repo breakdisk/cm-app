@@ -21,12 +21,29 @@ export interface MessageTemplate {
   variables: Record<string, unknown>;
 }
 
+/** A single campaign recipient with embedded contact details. */
+export interface CampaignRecipient {
+  customer_id?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  name?: string | null;
+}
+
 /** CDP-driven recipient filter — resolved server-side at activation time. */
 export interface TargetingRule {
   min_clv_score?: number | null;
   last_active_days?: number | null;
   customer_ids: string[];
+  /** Explicit recipient list with contact details — used for direct-address sends. */
+  recipients?: CampaignRecipient[];
   estimated_reach: number;
+}
+
+/** Daily send-volume row returned by GET /v1/campaigns/weekly-stats */
+export interface WeeklyStat {
+  day:     string;   // ISO date, e.g. "2026-05-13"
+  channel: Channel;
+  count:   number;
 }
 
 export interface Campaign {
@@ -110,6 +127,12 @@ export function createCampaignsApi() {
     async cancel(id: string): Promise<Campaign> {
       const { data } = await http.post<Campaign>(`/v1/campaigns/${id}/cancel`);
       return data;
+    },
+
+    /** Daily send-volume for the last 7 days, by channel. Powers the chart. */
+    async weeklyStats(): Promise<WeeklyStat[]> {
+      const { data } = await http.get<{ stats: WeeklyStat[] }>("/v1/campaigns/weekly-stats");
+      return data.stats ?? [];
     },
   };
 }

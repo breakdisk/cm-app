@@ -16,6 +16,7 @@ import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
 import { OnboardDriverModal } from "@/components/drivers/OnboardDriverModal";
 import { Search, MapPin, Package, RefreshCw, Briefcase, UserPlus } from "lucide-react";
+import { usePermissions } from "@/hooks/usePermissions";
 
 // ── Types & mock data ─────────────────────────────────────────────────────────
 
@@ -100,6 +101,8 @@ export default function DriversPage() {
   const [onboardOpen, setOnboardOpen] = useState(false);
 
   const { driverMap, connected, refresh } = useDriverRoster();
+  const { hasPermission } = usePermissions();
+  const canCreateDriver = hasPermission("drivers:create");
 
   const fetchDrivers = useCallback(async () => {
     setLoading(true);
@@ -199,12 +202,14 @@ export default function DriversPage() {
           >
             <RefreshCw size={12} className={loading ? "animate-spin" : ""} /> Refresh
           </button>
-          <button
-            onClick={() => setOnboardOpen(true)}
-            className="flex items-center gap-1.5 rounded-lg border border-cyan-neon/30 bg-cyan-neon/10 px-3 py-2 text-xs font-semibold text-cyan-neon hover:bg-cyan-neon/20 transition-all"
-          >
-            <UserPlus size={12} /> Onboard Driver
-          </button>
+          {canCreateDriver && (
+            <button
+              onClick={() => setOnboardOpen(true)}
+              className="flex items-center gap-1.5 rounded-lg border border-cyan-neon/30 bg-cyan-neon/10 px-3 py-2 text-xs font-semibold text-cyan-neon hover:bg-cyan-neon/20 transition-all"
+            >
+              <UserPlus size={12} /> Onboard Driver
+            </button>
+          )}
         </div>
       </motion.div>
 

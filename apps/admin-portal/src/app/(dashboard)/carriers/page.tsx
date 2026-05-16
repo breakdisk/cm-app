@@ -19,6 +19,7 @@ import { LiveMetric } from "@/components/ui/live-metric";
 import { OnboardCarrierModal } from "@/components/carriers/OnboardCarrierModal";
 import { GitBranch, Plus, LineChart, Wallet, X, Store, RefreshCw, Power, PauseCircle, ExternalLink } from "lucide-react";
 import { authFetch } from "@/lib/auth/auth-fetch";
+import { usePermissions } from "@/hooks/usePermissions";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -159,6 +160,8 @@ function CarriersPageInner() {
   const [loading,       setLoading]       = useState(true);
   const [error,         setError]         = useState<string | null>(null);
   const [onboardOpen,   setOnboardOpen]   = useState(false);
+  const { hasPermission } = usePermissions();
+  const canManageCarriers = hasPermission("carriers:manage");
 
   // Suspend modal state
   const [suspendTarget, setSuspendTarget] = useState<Carrier | null>(null);
@@ -279,12 +282,14 @@ function CarriersPageInner() {
           >
             <RefreshCw size={12} />
           </button>
-          <button
-            onClick={() => setOnboardOpen(true)}
-            className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-cyan-neon to-purple-plasma px-4 py-2 text-xs font-semibold text-canvas hover:opacity-90 transition-opacity"
-          >
-            <Plus size={12} /> Onboard Carrier
-          </button>
+          {canManageCarriers && (
+            <button
+              onClick={() => setOnboardOpen(true)}
+              className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-cyan-neon to-purple-plasma px-4 py-2 text-xs font-semibold text-canvas hover:opacity-90 transition-opacity"
+            >
+              <Plus size={12} /> Onboard Carrier
+            </button>
+          )}
         </div>
       </motion.div>
 
@@ -304,7 +309,7 @@ function CarriersPageInner() {
       />
 
       {/* Suspend modal */}
-      {suspendTarget && (
+      {canManageCarriers && suspendTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
@@ -447,7 +452,7 @@ function CarriersPageInner() {
                 <div className="flex items-center gap-1">
                   <NeonBadge variant={variant} dot={isActive}>{label}</NeonBadge>
                   {/* Activate — shown when suspended or pending */}
-                  {(isSuspended || isPending) && (
+                  {canManageCarriers && (isSuspended || isPending) && (
                     <button
                       onClick={() => handleActivate(c)}
                       title="Activate carrier"
@@ -457,7 +462,7 @@ function CarriersPageInner() {
                     </button>
                   )}
                   {/* Suspend — shown when active or probation */}
-                  {isActive && (
+                  {canManageCarriers && isActive && (
                     <button
                       onClick={() => { setSuspendTarget(c); setSuspendReason(""); setActionError(null); }}
                       title="Suspend carrier"

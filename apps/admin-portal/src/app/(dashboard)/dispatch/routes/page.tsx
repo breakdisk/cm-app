@@ -13,6 +13,7 @@ import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { variants } from "@/lib/design-system/tokens";
 import { authFetch } from "@/lib/auth/auth-fetch";
+import { usePermissions } from "@/hooks/usePermissions";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -40,6 +41,9 @@ function statusBadge(status: string) {
 }
 
 export default function RoutesPage() {
+  const { hasPermission } = usePermissions();
+  const canCancelRoute = hasPermission("dispatch:assign");
+
   const [routes,          setRoutes]          = useState<RouteView[]>([]);
   const [loading,         setLoading]         = useState(false);
   const [error,           setError]           = useState<string | null>(null);
@@ -184,7 +188,7 @@ export default function RoutesPage() {
                       month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
                     })}
                   </p>
-                  {canCancel && (
+                  {canCancel && canCancelRoute && (
                     <button
                       onClick={() => handleCancelRoute(route.route_id)}
                       disabled={cancellingRoute === route.route_id}

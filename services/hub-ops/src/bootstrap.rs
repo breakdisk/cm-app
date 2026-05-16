@@ -1,7 +1,8 @@
 use std::{net::SocketAddr, sync::Arc};
+use anyhow::Context;
 use sqlx::postgres::PgPoolOptions;
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Json},
     routing::{get, post},
@@ -10,6 +11,7 @@ use axum::{
 use serde::Deserialize;
 use uuid::Uuid;
 
+use logisticos_auth::jwt::JwtService;
 use logisticos_auth::middleware::AuthClaims;
 use logisticos_auth::rbac::permissions;
 use logisticos_errors::AppError;
@@ -260,12 +262,27 @@ pub async fn run() -> anyhow::Result<()> {
     let svc = Arc::new(HubService::new(hub_repo, induction_repo));
     let state = AppState { svc };
 
-    let app = Router::new()
-        .route("/v1/hubs",                          get(list_hubs).post(create_hub))
-        .route("/v1/hubs/:id/manifest",             get(manifest))
-        .route("/v1/hubs/induct",                   post(induct))
-        .route("/v1/hubs/sort",                     post(sort))
-        .route("/v1/hubs/dispatch/:id",             post(dispatch))
+    let jwt_secret = std::env::var("AUTH__JWT_SECRET")
+        .context("AUTH__JWT_SECRET env var not set")?;
+    let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
+
+    // Protected business routes — JWT required on all /v1/* endpoints.
+    let protected = Router::new()
+        .route("/v1/hubs",              get(list_hubs).post(create_hub))
+        .route("/v1/hubs/:id/manifest", get(manifest))
+        .route("/v1/hubs/induct",       post(induct))
+        .route("/v1/hubs/sort",         post(sort))
+        .route("/v1/hubs/dispatch/:id", post(dispatch))
+        .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth));
+
+    // Observability endpoints — no auth required (scraped by infra, not user-facing).
+    let observability = Router::new()
+        .route("/health",  get(|| async { axum::Json(serde_json::json!({"status":"ok","service":"hub-ops"})) }))
+        .route("/ready",   get(|| async { axum::Json(serde_json::json!({"status":"ready"})) }))
+        .route("/metrics", get(|| async { "" }));
+
+    let app = protected
+        .merge(observability)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state);
 

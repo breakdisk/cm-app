@@ -19,7 +19,15 @@ use tracing::{error, info, warn};
 use crate::application::services::notification_service::NotificationService;
 use crate::domain::entities::notification::NotificationPriority;
 use crate::infrastructure::cache::SuppressionCache;
+use crate::infrastructure::db::NotificationDb;
 use logisticos_events::topics;
+
+/// Minimal Kafka publisher interface used by the engagement service to emit
+/// `CAMPAIGN_COMPLETED` after fan-out finishes.
+#[async_trait::async_trait]
+pub trait EngagementPublisher: Send + Sync {
+    async fn publish(&self, topic: &str, key: &str, payload: &[u8]) -> anyhow::Result<()>;
+}
 
 /// Maps a Kafka event type to the template ID and channel priority.
 struct EventNotificationMapping {
@@ -70,11 +78,7 @@ fn get_mapping(event_type: &str) -> Option<EventNotificationMapping> {
             priority: NotificationPriority::Normal,
             channels: &["email"],
         }),
-        topics::CAMPAIGN_TRIGGERED => Some(EventNotificationMapping {
-            template_id: "campaign_message",
-            priority: NotificationPriority::Low,
-            channels: &["whatsapp", "sms", "email", "push"],
-        }),
+        // CAMPAIGN_TRIGGERED is handled by handle_campaign_triggered() — not routed here.
         // INVOICE_GENERATED channels/template differ by recipient_type.
         // Routing is handled in process_event(); return a placeholder here so
         // the event is not silently dropped by the None arm.
@@ -208,36 +212,16 @@ pub async fn process_event(
     } else {
         let is_receipt_resend = event_type == topics::RECEIPT_EMAIL_REQUESTED;
 
-        // CAMPAIGN_TRIGGERED requires a real customer_id for suppression checks.
-        // All other transactional events (delivery_confirmed, pickup_scheduled, etc.)
-        // may not carry customer_id — TaskCompleted/TaskAssigned only carry customer
-        // contact fields (phone/email). Fall back to shipment_id as the notification
-        // audit key so the message is still delivered to the correct phone/email even
-        // when customer_id is absent from the event payload.
+        // Transactional events may not carry customer_id — TaskCompleted/TaskAssigned
+        // only carry contact fields. Fall back to shipment_id as the notification
+        // audit key so the message is still delivered to the correct phone/email.
         let customer_id = data["customer_id"].as_str()
             .and_then(|s| s.parse::<uuid::Uuid>().ok())
-            .or_else(|| if event_type != topics::CAMPAIGN_TRIGGERED {
-                data["shipment_id"].as_str().and_then(|s| s.parse::<uuid::Uuid>().ok())
-            } else {
-                None
-            });
+            .or_else(|| data["shipment_id"].as_str().and_then(|s| s.parse::<uuid::Uuid>().ok()));
         let Some(customer_id) = customer_id else {
             warn!(event_type, "Event missing customer_id and shipment_id — skipping notification");
             return;
         };
-
-        // Campaign suppression: customers with an open support ticket must not
-        // receive marketing messages until the ticket is resolved.
-        if event_type == topics::CAMPAIGN_TRIGGERED
-            && suppression_cache.is_suppressed(customer_id).await
-        {
-            info!(
-                event_type,
-                customer_id = %customer_id,
-                "Campaign notification suppressed — customer has open support ticket"
-            );
-            return;
-        }
 
         let phone = data["customer_phone"].as_str().unwrap_or("").to_owned();
         let email = if is_receipt_resend {
@@ -448,5 +432,271 @@ pub async fn process_event(
             Ok(_)  => info!(event_type, channel, recipient = %recipient, template = resolved_template, "Notification sent"),
             Err(e) => error!(event_type, channel, err = %e, "Notification dispatch failed"),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Campaign fan-out handler
+// ---------------------------------------------------------------------------
+
+/// Handle a `CAMPAIGN_TRIGGERED` event by fanning out to all embedded recipients.
+///
+/// For each recipient:
+///   1. Check suppression (open support ticket) — skip if suppressed.
+///   2. Insert a `campaign_sends` row (status = queued).
+///   3. Dispatch the notification on the campaign's channel.
+///   4. Update the row to sent / failed.
+///
+/// After all sends, publish `CAMPAIGN_COMPLETED` so the marketing service can
+/// flip the campaign status to Completed and record the final counters.
+pub async fn handle_campaign_triggered(
+    payload:              &serde_json::Value,
+    db:                   &NotificationDb,
+    notification_service: &NotificationService,
+    suppression_cache:    &SuppressionCache,
+    publisher:            &dyn EngagementPublisher,
+) {
+    use crate::domain::entities::template::{NotificationChannel, NotificationTemplate};
+
+    // Payload is flat (no data: wrapper) — the marketing service publishes directly.
+    let data = payload.get("data").unwrap_or(payload);
+
+    let Some(campaign_id_str) = data["campaign_id"].as_str() else {
+        warn!("CAMPAIGN_TRIGGERED missing campaign_id — skipping");
+        return;
+    };
+    let Ok(campaign_id) = campaign_id_str.parse::<uuid::Uuid>() else {
+        warn!(campaign_id = campaign_id_str, "CAMPAIGN_TRIGGERED invalid campaign_id UUID");
+        return;
+    };
+
+    let tenant_id = data["tenant_id"].as_str()
+        .or_else(|| payload["tenant_id"].as_str())
+        .and_then(|s| s.parse::<uuid::Uuid>().ok());
+    let Some(tenant_id) = tenant_id else {
+        warn!(campaign_id = %campaign_id, "CAMPAIGN_TRIGGERED missing tenant_id — skipping");
+        return;
+    };
+
+    // Campaign channel — send only on this channel, not all four.
+    let channel_str = data["channel"].as_str().unwrap_or("sms");
+    let notif_channel = match channel_str {
+        "whatsapp" => NotificationChannel::WhatsApp,
+        "sms"      => NotificationChannel::Sms,
+        "email"    => NotificationChannel::Email,
+        "push"     => NotificationChannel::Push,
+        other => {
+            warn!(campaign_id = %campaign_id, channel = other, "CAMPAIGN_TRIGGERED unknown channel");
+            return;
+        }
+    };
+
+    // Body / subject resolution — two-tier:
+    //   1. Inline: variables.body is set, OR template_id starts with "inline_"
+    //      → use variables.body directly (backwards-compat with legacy payloads).
+    //   2. Registry: template_id is a valid UUID
+    //      → look up engagement.templates; fallback to default string if not found.
+    let template_id_str = data["template_id"].as_str().unwrap_or("");
+    let inline_body = data["variables"]["body"].as_str()
+        .or_else(|| data["body"].as_str());
+
+    let (body, subject) = if inline_body.is_some() || template_id_str.starts_with("inline_") {
+        // Inline path — merchant typed the body directly in the campaign builder.
+        let b = inline_body
+            .unwrap_or("Hi {{customer_name}}, we have an update for you!")
+            .to_owned();
+        let s = data["subject"].as_str()
+            .or_else(|| data["variables"]["subject"].as_str())
+            .map(str::to_owned);
+        (b, s)
+    } else if let Ok(tmpl_uuid) = template_id_str.parse::<uuid::Uuid>() {
+        // Registry path — look up the template row from engagement.templates.
+        match db.find_template_by_id(tmpl_uuid, tenant_id).await {
+            Ok(Some(tmpl)) => {
+                info!(
+                    campaign_id = %campaign_id,
+                    template_id = %tmpl_uuid,
+                    "Campaign using registered template"
+                );
+                (tmpl.body.clone(), tmpl.subject.clone())
+            }
+            Ok(None) => {
+                warn!(
+                    campaign_id = %campaign_id,
+                    template_id = %tmpl_uuid,
+                    "Template not found in registry — using fallback body"
+                );
+                ("Hi {{customer_name}}, we have an update for you!".to_owned(), None)
+            }
+            Err(e) => {
+                warn!(
+                    campaign_id = %campaign_id,
+                    template_id = %tmpl_uuid,
+                    err = %e,
+                    "Template registry lookup failed — using fallback body"
+                );
+                ("Hi {{customer_name}}, we have an update for you!".to_owned(), None)
+            }
+        }
+    } else {
+        // template_id is neither "inline_*" nor a UUID (e.g. a slug) — use fallback.
+        warn!(
+            campaign_id = %campaign_id,
+            template_id = template_id_str,
+            "Unrecognised template_id format — using fallback body"
+        );
+        ("Hi {{customer_name}}, we have an update for you!".to_owned(), None)
+    };
+
+    let Some(recipients) = data["recipients"].as_array() else {
+        warn!(campaign_id = %campaign_id, "CAMPAIGN_TRIGGERED has no recipients array — nothing to send");
+        return;
+    };
+
+    if recipients.is_empty() {
+        warn!(campaign_id = %campaign_id, "CAMPAIGN_TRIGGERED recipients list is empty");
+        return;
+    }
+
+    info!(
+        campaign_id = %campaign_id,
+        channel = channel_str,
+        recipient_count = recipients.len(),
+        "Campaign fan-out starting"
+    );
+
+    let mut total_sent:   u64 = 0;
+    let mut total_failed: u64 = 0;
+
+    for r in recipients {
+        let customer_id = r["customer_id"].as_str()
+            .and_then(|s| s.parse::<uuid::Uuid>().ok())
+            .unwrap_or(uuid::Uuid::nil());
+
+        // Skip if the customer has an open support ticket.
+        if customer_id != uuid::Uuid::nil()
+            && suppression_cache.is_suppressed(customer_id).await
+        {
+            info!(
+                campaign_id = %campaign_id,
+                customer_id = %customer_id,
+                "Campaign send suppressed — customer has open support ticket"
+            );
+            continue;
+        }
+
+        // Resolve the channel-specific address.
+        let recipient = match channel_str {
+            "whatsapp" | "sms" => r["phone"].as_str().unwrap_or("").to_owned(),
+            "email"            => r["email"].as_str().unwrap_or("").to_owned(),
+            "push"             => customer_id.to_string(),
+            _                  => continue,
+        };
+
+        if recipient.is_empty() && channel_str != "push" {
+            warn!(
+                campaign_id = %campaign_id,
+                channel = channel_str,
+                "Recipient missing contact for channel — skipping"
+            );
+            continue;
+        }
+
+        // Persist a campaign_sends row before dispatching.
+        let send_id = match db.insert_campaign_send(campaign_id, customer_id, channel_str).await {
+            Ok(id) => id,
+            Err(e) => {
+                error!(campaign_id = %campaign_id, err = %e, "Failed to insert campaign_send row");
+                total_failed += 1;
+                continue;
+            }
+        };
+
+        // Build template variables — substitute the recipient's name.
+        let customer_name = r["name"].as_str().unwrap_or("Customer");
+        let vars = serde_json::json!({ "customer_name": customer_name });
+
+        let template = NotificationTemplate {
+            id:          uuid::Uuid::new_v4(),
+            tenant_id:   Some(tenant_id),
+            template_id: "campaign_message".to_owned(),
+            channel:     notif_channel,
+            language:    "en".into(),
+            subject:     subject.clone(),
+            body:        body.clone(),
+            variables:   vec!["customer_name".to_owned()],
+            is_active:   true,
+        };
+
+        let mut notification = match NotificationService::build_from_template(
+            &template,
+            tenant_id,
+            customer_id,
+            recipient.clone(),
+            &vars,
+            NotificationPriority::Low,
+        ) {
+            Ok(n)  => n,
+            Err(e) => {
+                error!(campaign_id = %campaign_id, err = %e, "Failed to build campaign notification");
+                db.update_campaign_send_status(send_id, "failed", None, Some(e.to_string()))
+                    .await.ok();
+                total_failed += 1;
+                continue;
+            }
+        };
+
+        match notification_service.dispatch(&mut notification).await {
+            Ok(_) => {
+                db.update_campaign_send_status(
+                    send_id,
+                    "sent",
+                    notification.provider_message_id.clone(),
+                    None,
+                )
+                .await.ok();
+                total_sent += 1;
+                info!(
+                    campaign_id = %campaign_id,
+                    channel = channel_str,
+                    recipient = %recipient,
+                    "Campaign send dispatched"
+                );
+            }
+            Err(e) => {
+                db.update_campaign_send_status(send_id, "failed", None, Some(e.to_string()))
+                    .await.ok();
+                total_failed += 1;
+                error!(
+                    campaign_id = %campaign_id,
+                    channel = channel_str,
+                    err = %e,
+                    "Campaign send failed"
+                );
+            }
+        }
+    }
+
+    info!(
+        campaign_id = %campaign_id,
+        total_sent,
+        total_failed,
+        "Campaign fan-out complete — publishing CAMPAIGN_COMPLETED"
+    );
+
+    // Signal the marketing service to flip status → Completed and record counters.
+    let completed_payload = serde_json::json!({
+        "campaign_id":     campaign_id,
+        "tenant_id":       tenant_id,
+        "total_sent":      total_sent,
+        "total_delivered": 0u64,   // updated later by delivery receipt webhooks
+        "total_failed":    total_failed,
+    });
+    if let Err(e) = publisher.publish(
+        topics::CAMPAIGN_COMPLETED,
+        &campaign_id.to_string(),
+        &serde_json::to_vec(&completed_payload).unwrap_or_default(),
+    ).await {
+        error!(campaign_id = %campaign_id, err = %e, "Failed to publish CAMPAIGN_COMPLETED");
     }
 }

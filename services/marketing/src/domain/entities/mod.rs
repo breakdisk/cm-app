@@ -37,6 +37,20 @@ pub enum CampaignStatus {
     Failed,
 }
 
+/// A single recipient with full contact details embedded in the campaign payload.
+/// Used for explicit list-based targeting — bypasses CDP segment resolution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CampaignRecipient {
+    /// CDP customer profile ID, if known.
+    pub customer_id: Option<Uuid>,
+    /// Phone number in E.164 format (e.g. "+63912345678"). Used for WhatsApp/SMS.
+    pub phone:       Option<String>,
+    /// Email address. Used for the email channel.
+    pub email:       Option<String>,
+    /// Display name used in template variables ({{customer_name}}).
+    pub name:        Option<String>,
+}
+
 /// Targeting rule: recipients are customers matching these CDP criteria.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TargetingRule {
@@ -46,6 +60,10 @@ pub struct TargetingRule {
     pub last_active_days:    Option<u32>,
     /// Specific customer_ids (if set, bypasses other rules).
     pub customer_ids:        Vec<Uuid>,
+    /// Explicit recipient list with embedded contact details.
+    /// When non-empty, fan-out uses this list directly — no CDP lookup required.
+    #[serde(default)]
+    pub recipients:          Vec<CampaignRecipient>,
     /// Estimated recipient count (filled at campaign creation time via CDP query).
     pub estimated_reach:     u64,
 }
@@ -53,12 +71,22 @@ pub struct TargetingRule {
 impl Default for TargetingRule {
     fn default() -> Self {
         Self {
-            min_clv_score:   None,
+            min_clv_score:    None,
             last_active_days: None,
-            customer_ids:    Vec::new(),
-            estimated_reach: 0,
+            customer_ids:     Vec::new(),
+            recipients:       Vec::new(),
+            estimated_reach:  0,
         }
     }
+}
+
+/// Daily message-volume aggregation returned by the weekly-stats endpoint.
+#[derive(Debug, Clone, Serialize)]
+pub struct WeeklyStat {
+    /// ISO 8601 date string, e.g. "2026-05-13".
+    pub day:     String,
+    pub channel: String,
+    pub count:   i64,
 }
 
 /// Per-channel message template references.

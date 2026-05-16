@@ -19,6 +19,7 @@ import {
   Globe, Shield, Calendar, ChevronRight, X,
 } from "lucide-react";
 import { createCarriersApi, type Carrier, type ZoneSlaRow, type ComplianceStatus } from "@/lib/api/carriers";
+import { usePermissions } from "@/hooks/usePermissions";
 
 const COMPLIANCE_OPTIONS: { value: ComplianceStatus; label: string; variant: "green" | "cyan" | "amber" | "red" | "muted" }[] = [
   { value: "pending_submission", label: "Pending Submission", variant: "amber"  },
@@ -62,6 +63,10 @@ function CarrierDetailInner() {
   const router = useRouter();
   const carrierId = params.id;
   const api = createCarriersApi();
+  const { hasPermission } = usePermissions();
+  const canManageCarriers  = hasPermission("carriers:manage");
+  const canManageApiKeys   = hasPermission("api_keys:manage");
+  const canManageCompliance = hasPermission("compliance:admin");
 
   const [carrier,      setCarrier]      = useState<Carrier | null>(null);
   const [zones,        setZones]        = useState<ZoneSlaRow[]>([]);
@@ -237,7 +242,7 @@ function CarrierDetailInner() {
           >
             <RefreshCw size={12} />
           </button>
-          {(isSuspended || isPending) && (
+          {canManageCarriers && (isSuspended || isPending) && (
             <button
               onClick={handleActivate}
               className="flex items-center gap-1.5 rounded-lg border border-green-signal/40 bg-green-signal/10 px-3 py-2 text-xs font-semibold text-green-signal hover:bg-green-signal/20 transition-colors"
@@ -245,7 +250,7 @@ function CarrierDetailInner() {
               <Power size={12} /> Activate
             </button>
           )}
-          {isActive && (
+          {canManageCarriers && isActive && (
             <button
               onClick={() => { setSuspendOpen(true); setSuspendReason(""); }}
               className="flex items-center gap-1.5 rounded-lg border border-amber-signal/40 bg-amber-signal/10 px-3 py-2 text-xs font-semibold text-amber-signal hover:bg-amber-signal/20 transition-colors"
@@ -342,7 +347,7 @@ function CarrierDetailInner() {
                   </NeonBadge>
                 </div>
 
-                {!complianceEdit ? (
+                {canManageCompliance && (!complianceEdit ? (
                   <button
                     onClick={() => { setComplianceEdit(true); setPendingCompliance(carrier.compliance_status); }}
                     className="w-full rounded-lg border border-glass-border py-2 text-xs text-white/50 hover:text-white hover:border-cyan-neon/30 transition-colors font-mono"
@@ -382,7 +387,7 @@ function CarrierDetailInner() {
                       </button>
                     </div>
                   </div>
-                )}
+                ))}
               </div>
             </GlassCard>
           </motion.div>
@@ -404,14 +409,16 @@ function CarrierDetailInner() {
               {carrier.has_api_key && (
                 <NeonBadge variant="green" dot>Active</NeonBadge>
               )}
-              <button
-                onClick={handleGenerateKey}
-                disabled={generatingKey}
-                className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs font-semibold text-white/70 hover:text-white hover:border-cyan-neon/30 disabled:opacity-40 transition-colors"
-              >
-                <Key size={11} />
-                {generatingKey ? "Generating…" : carrier.has_api_key ? "Rotate Key" : "Generate Key"}
-              </button>
+              {canManageApiKeys && (
+                <button
+                  onClick={handleGenerateKey}
+                  disabled={generatingKey}
+                  className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs font-semibold text-white/70 hover:text-white hover:border-cyan-neon/30 disabled:opacity-40 transition-colors"
+                >
+                  <Key size={11} />
+                  {generatingKey ? "Generating…" : carrier.has_api_key ? "Rotate Key" : "Generate Key"}
+                </button>
+              )}
             </div>
           </div>
 
@@ -540,7 +547,7 @@ function CarrierDetailInner() {
 
       {/* Suspend modal */}
       <AnimatePresence>
-        {suspendOpen && (
+        {canManageCarriers && suspendOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}

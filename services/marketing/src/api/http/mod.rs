@@ -18,6 +18,7 @@ use crate::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/campaigns",                  get(list_campaigns).post(create_campaign))
+        .route("/v1/campaigns/weekly-stats",     get(weekly_stats_handler))
         .route("/v1/campaigns/:id",              get(get_campaign))
         .route("/v1/campaigns/:id/schedule",     post(schedule_campaign))
         .route("/v1/campaigns/:id/activate",     post(activate_campaign))
@@ -95,4 +96,15 @@ async fn cancel_campaign(
     claims.require_permission(permissions::CAMPAIGNS_SEND)?;
     let campaign = state.campaign_svc.cancel(id).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(campaign)))
+}
+
+async fn weekly_stats_handler(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+) -> impl IntoResponse {
+    use logisticos_types::TenantId;
+    claims.require_permission(permissions::CAMPAIGNS_CREATE)?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let stats = state.campaign_svc.weekly_stats(&tenant_id).await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "stats": stats }))))
 }

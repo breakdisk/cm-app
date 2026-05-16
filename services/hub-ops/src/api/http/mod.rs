@@ -297,24 +297,34 @@ async fn metrics() -> &'static str {
 // ---------------------------------------------------------------------------
 
 /// Builds the Axum router for the hub-ops service.
-/// Pass the fully-constructed `AppState` during bootstrap.
-pub fn router(state: AppState) -> Router {
-    Router::new()
+///
+/// Protected `/v1/*` routes require a valid JWT via `require_auth`.
+/// Observability routes (`/health`, `/ready`, `/metrics`) are unauthenticated.
+pub fn router(state: AppState, jwt: Arc<logisticos_auth::jwt::JwtService>) -> Router {
+    let auth_layer = axum::middleware::from_fn_with_state(
+        Arc::clone(&jwt),
+        logisticos_auth::middleware::require_auth,
+    );
+
+    let protected = Router::new()
         // ── Hubs ────────────────────────────────────────────────────
         .route("/v1/hubs",                    get(list_hubs).post(create_hub))
         .route("/v1/hubs/:hub_id",            get(get_hub))
         .route("/v1/hubs/:hub_id/capacity",   get(hub_capacity))
         .route("/v1/hubs/:hub_id/manifest",   get(hub_manifest))
         // ── Inductions ──────────────────────────────────────────────
-        // Note: the spec lists `/v1/inductionss` (double-s) which is a typo;
-        // canonical path is `/v1/inductions`.
         .route("/v1/inductions",              post(create_induction))
         .route("/v1/inductions/:id",          get(get_induction))
         .route("/v1/inductions/:id/sort",     post(sort_induction))
         .route("/v1/inductions/:id/dispatch", post(dispatch_induction))
-        // ── Observability ───────────────────────────────────────────
-        .route("/health",                     get(health))
-        .route("/ready",                      get(ready))
-        .route("/metrics",                    get(metrics))
+        .layer(auth_layer);
+
+    let observability = Router::new()
+        .route("/health",  get(health))
+        .route("/ready",   get(ready))
+        .route("/metrics", get(metrics));
+
+    protected
+        .merge(observability)
         .with_state(state)
 }

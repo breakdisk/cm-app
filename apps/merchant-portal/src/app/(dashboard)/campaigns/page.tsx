@@ -29,6 +29,8 @@ import {
   type Campaign,
   type Channel,
   type CampaignStatus,
+  type CampaignRecipient,
+  type WeeklyStat,
   type CreateCampaignPayload,
 } from "@/lib/api/campaigns";
 
@@ -43,26 +45,34 @@ const STATUS_VARIANT: Record<CampaignStatus, "green" | "amber" | "purple" | "red
   draft:     "purple",
   scheduled: "cyan",
   sending:   "green",
-  completed: "red",
+  completed: "green",
   cancelled: "amber",
   failed:    "red",
 };
 
-/**
- * The backend does not yet expose a per-day message-volume timeseries, so the
- * chart is left as a visual placeholder until an analytics endpoint exists.
- * When analytics/engagement ship `/v1/analytics/campaign-sends?range=week`,
- * swap this constant for a `useQuery`.
- */
-const SEND_TREND = [
-  { day: "Mon", whatsapp: 0, sms: 0, email: 0 },
-  { day: "Tue", whatsapp: 0, sms: 0, email: 0 },
-  { day: "Wed", whatsapp: 0, sms: 0, email: 0 },
-  { day: "Thu", whatsapp: 0, sms: 0, email: 0 },
-  { day: "Fri", whatsapp: 0, sms: 0, email: 0 },
-  { day: "Sat", whatsapp: 0, sms: 0, email: 0 },
-  { day: "Sun", whatsapp: 0, sms: 0, email: 0 },
-];
+/** Short day labels used on the chart x-axis. */
+const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/** Transform flat WeeklyStat rows into the shape Recharts expects. */
+function buildChartData(stats: WeeklyStat[]) {
+  // Generate last-7-days date strings (oldest first).
+  const days: string[] = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    days.push(d.toISOString().slice(0, 10));
+  }
+
+  return days.map((iso) => {
+    const label = DAY_LABELS[new Date(iso + "T12:00:00Z").getUTCDay()];
+    const row: Record<string, string | number> = { day: label };
+    for (const channel of ["whatsapp", "sms", "email", "push"] as const) {
+      const match = stats.find((s) => s.day === iso && s.channel === channel);
+      row[channel] = match ? match.count : 0;
+    }
+    return row;
+  });
+}
 
 // ── NewCampaignModal ───────────────────────────────────────────────────────────
 
@@ -83,22 +93,44 @@ const TRIGGER_OPTIONS = [
   "Manual / Scheduled",
 ];
 
+/** Parse a recipients textarea into CampaignRecipient objects. */
+function parseRecipients(raw: string, channel: Channel): CampaignRecipient[] {
+  return raw
+    .split(/[\n,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((contact) => {
+      if (channel === "email") return { email: contact };
+      if (channel === "push")  return { customer_id: contact };
+      return { phone: contact }; // whatsapp / sms
+    });
+}
+
 function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreated?: () => void }) {
-  const [name,    setName]    = useState("");
-  const [channel, setChannel] = useState<Channel>("whatsapp");
-  const [trigger, setTrigger] = useState(TRIGGER_OPTIONS[0]);
-  const [message, setMessage] = useState("");
-  const [saving,  setSaving]  = useState(false);
-  const [done,    setDone]    = useState(false);
-  const [error,   setError]   = useState<string | null>(null);
+  const [name,       setName]       = useState("");
+  const [channel,    setChannel]    = useState<Channel>("whatsapp");
+  const [trigger,    setTrigger]    = useState(TRIGGER_OPTIONS[0]);
+  const [message,    setMessage]    = useState("");
+  const [recipients, setRecipients] = useState("");
+  const [saving,         setSaving]         = useState(false);
+  const [done,           setDone]           = useState(false);
+  const [error,          setError]          = useState<string | null>(null);
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [scheduleFor,     setScheduleFor]     = useState("");
 
   const charMax = channel === "sms" ? 160 : 1000;
+
+  const recipientPlaceholder =
+    channel === "email" ? "juan@example.com\nmaria@example.com"
+    : channel === "push"  ? "customer-uuid-1\ncustomer-uuid-2"
+    : "+63912345678\n+63917654321";
 
   async function handleCreate() {
     if (!name.trim() || !message.trim()) return;
     setSaving(true);
     setError(null);
     try {
+      const parsedRecipients = parseRecipients(recipients, channel);
       // Marketing service's CreateCampaignCommand shape: name, description,
       // channel, template{template_id, subject?, variables}, targeting.
       // The `trigger` drop-down is a UX label and is stored as description
@@ -114,10 +146,16 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
         },
         targeting: {
           customer_ids: [],
-          estimated_reach: 0,
+          recipients: parsedRecipients,
+          estimated_reach: parsedRecipients.length,
         },
       };
-      await createCampaignsApi().create(payload);
+      const api = createCampaignsApi();
+      const created = await api.create(payload);
+      // If the merchant picked a future date/time, schedule the campaign immediately.
+      if (scheduleEnabled && scheduleFor) {
+        await api.schedule(created.id, { scheduled_at: new Date(scheduleFor).toISOString() });
+      }
       setDone(true);
       onCreated?.();
     } catch (e) {
@@ -226,6 +264,70 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
               <p className="mt-1 text-2xs text-white/25">Variables: {'{{name}}'}, {'{{awb}}'}, {'{{eta}}'}, {'{{cod_amount}}'}</p>
             </div>
 
+            {/* Recipients */}
+            <div>
+              <div className="mb-1.5 flex items-center justify-between">
+                <label className="text-xs font-medium text-white/50">Recipients</label>
+                {recipients.trim() && (
+                  <span className="text-2xs font-mono text-white/30">
+                    {parseRecipients(recipients, channel).length} recipient{parseRecipients(recipients, channel).length !== 1 ? "s" : ""}
+                  </span>
+                )}
+              </div>
+              <textarea
+                value={recipients}
+                onChange={(e) => setRecipients(e.target.value)}
+                rows={3}
+                placeholder={recipientPlaceholder}
+                className="w-full resize-none rounded-xl border border-glass-border bg-glass-100 px-3.5 py-2.5 text-sm text-white placeholder-white/15 outline-none focus:border-cyan-neon/50 transition-colors font-mono"
+              />
+              <p className="mt-1 text-2xs text-white/25">
+                {channel === "email" ? "One email per line (or comma-separated)"
+                : channel === "push"  ? "One customer UUID per line"
+                : "One phone number per line in E.164 format (+63...)"}
+              </p>
+            </div>
+
+            {/* Schedule for later */}
+            <div className="rounded-xl border border-glass-border bg-glass-100 px-3.5 py-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-white/80">Schedule for later</p>
+                  <p className="text-2xs text-white/30 mt-0.5">Send at a specific date &amp; time</p>
+                </div>
+                {/* Toggle */}
+                <button
+                  type="button"
+                  onClick={() => { setScheduleEnabled((v) => !v); setScheduleFor(""); }}
+                  className="relative h-5 w-9 rounded-full transition-colors duration-200 focus:outline-none"
+                  style={{ background: scheduleEnabled ? "rgba(168,85,247,0.7)" : "rgba(255,255,255,0.12)" }}
+                  aria-checked={scheduleEnabled}
+                  role="switch"
+                >
+                  <span
+                    className="absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform duration-200"
+                    style={{ transform: scheduleEnabled ? "translateX(16px)" : "translateX(0)" }}
+                  />
+                </button>
+              </div>
+              {scheduleEnabled && (
+                <div className="mt-3">
+                  <input
+                    type="datetime-local"
+                    value={scheduleFor}
+                    min={new Date(Date.now() + 60_000).toISOString().slice(0, 16)}
+                    onChange={(e) => setScheduleFor(e.target.value)}
+                    className="w-full rounded-xl border border-glass-border bg-glass-100 px-3.5 py-2.5 text-sm text-white outline-none focus:border-purple-plasma/50 transition-colors font-mono [color-scheme:dark]"
+                  />
+                  {scheduleFor && (
+                    <p className="mt-1 text-2xs text-white/30 font-mono">
+                      Sends {new Date(scheduleFor).toLocaleString()}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+
             {error && (
               <p className="rounded-lg border border-red-signal/30 bg-red-signal/10 px-3 py-2 text-xs text-red-signal">
                 {error}
@@ -239,14 +341,14 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
               </button>
               <button
                 onClick={handleCreate}
-                disabled={!name.trim() || !message.trim() || message.length > charMax || saving}
+                disabled={!name.trim() || !message.trim() || message.length > charMax || saving || (scheduleEnabled && !scheduleFor)}
                 className="flex items-center gap-2 rounded-lg px-5 py-2 text-sm font-semibold text-white transition-all disabled:opacity-40"
                 style={{ background: "linear-gradient(135deg, #A855F7, #00E5FF)" }}
               >
                 {saving ? (
-                  <><span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" /> Creating…</>
+                  <><span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" /> {scheduleEnabled ? "Scheduling…" : "Creating…"}</>
                 ) : (
-                  <><Plus size={14} /> Create Campaign</>
+                  <><Plus size={14} /> {scheduleEnabled ? "Schedule Campaign" : "Create Campaign"}</>
                 )}
               </button>
             </div>
@@ -258,7 +360,11 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
             </div>
             <div>
               <p className="font-heading text-lg font-bold text-white">Campaign Created</p>
-              <p className="text-sm text-white/40 mt-1">"{name}" is now saved as a draft.</p>
+              <p className="text-sm text-white/40 mt-1">
+                {scheduleEnabled && scheduleFor
+                  ? `"${name}" is scheduled for ${new Date(scheduleFor).toLocaleString()}.`
+                  : `"${name}" is now saved as a draft.`}
+              </p>
             </div>
             <button
               onClick={onClose}
@@ -281,9 +387,10 @@ function CampaignsContent() {
   const router = useRouter();
   const [showNew, setShowNew] = useState(false);
 
-  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [loading, setLoading]     = useState(true);
-  const [error, setError]         = useState<string | null>(null);
+  const [campaigns,  setCampaigns]  = useState<Campaign[]>([]);
+  const [chartStats, setChartStats] = useState<WeeklyStat[]>([]);
+  const [loading,    setLoading]    = useState(true);
+  const [error,      setError]      = useState<string | null>(null);
   const [mutatingId, setMutatingId] = useState<string | null>(null);
 
   const api = useMemo(() => createCampaignsApi(), []);
@@ -291,8 +398,12 @@ function CampaignsContent() {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const resp = await api.list();
-      setCampaigns(resp.campaigns ?? []);
+      const [listResp, statsResp] = await Promise.all([
+        api.list(),
+        api.weeklyStats().catch(() => [] as WeeklyStat[]), // non-fatal
+      ]);
+      setCampaigns(listResp.campaigns ?? []);
+      setChartStats(statsResp);
     } catch (e) {
       const err = e as { message?: string };
       setError(err?.message ?? "Failed to load campaigns");
@@ -423,7 +534,7 @@ function CampaignsContent() {
             <BarChart2 size={15} className="text-purple-plasma" />
           </div>
           <ResponsiveContainer width="100%" height={180}>
-            <AreaChart data={SEND_TREND} margin={{ top: 0, right: 0, bottom: 0, left: -24 }}>
+            <AreaChart data={buildChartData(chartStats)} margin={{ top: 0, right: 0, bottom: 0, left: -24 }}>
               <defs>
                 <linearGradient id="grad-wa" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%"  stopColor="#00FF88" stopOpacity={0.3} />
@@ -437,6 +548,10 @@ function CampaignsContent() {
                   <stop offset="5%"  stopColor="#A855F7" stopOpacity={0.25} />
                   <stop offset="95%" stopColor="#A855F7" stopOpacity={0}    />
                 </linearGradient>
+                <linearGradient id="grad-push" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%"  stopColor="#FFAB00" stopOpacity={0.25} />
+                  <stop offset="95%" stopColor="#FFAB00" stopOpacity={0}    />
+                </linearGradient>
               </defs>
               <CartesianGrid stroke="rgba(255,255,255,0.04)" strokeDasharray="4 4" vertical={false} />
               <XAxis dataKey="day" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 11, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
@@ -448,6 +563,7 @@ function CampaignsContent() {
               <Area type="monotone" dataKey="whatsapp" stroke="#00FF88" fill="url(#grad-wa)"    strokeWidth={2} />
               <Area type="monotone" dataKey="sms"      stroke="#00E5FF" fill="url(#grad-sms)"   strokeWidth={2} />
               <Area type="monotone" dataKey="email"    stroke="#A855F7" fill="url(#grad-email)" strokeWidth={2} />
+              <Area type="monotone" dataKey="push"     stroke="#FFAB00" fill="url(#grad-push)"  strokeWidth={2} />
             </AreaChart>
           </ResponsiveContainer>
         </GlassCard>
@@ -483,7 +599,7 @@ function CampaignsContent() {
             const trigger = c.description?.trim() || "Manual / Scheduled";
             const busy = mutatingId === c.id;
             return (
-              <div key={c.id} className="grid grid-cols-[2fr_80px_100px_80px_100px_1fr_80px] gap-3 items-center px-5 py-3.5 border-b border-glass-border/50 hover:bg-glass-100 transition-colors">
+              <div key={c.id} onClick={() => router.push(`/campaigns/${c.id}`)} className="grid grid-cols-[2fr_80px_100px_80px_100px_1fr_80px] gap-3 items-center px-5 py-3.5 border-b border-glass-border/50 hover:bg-glass-100 transition-colors cursor-pointer">
                 <div>
                   <p className="text-xs font-medium text-white">{c.name}</p>
                   <p className="text-2xs font-mono text-white/30 mt-0.5">
@@ -509,7 +625,7 @@ function CampaignsContent() {
                 <div className="flex items-center gap-1">
                   {(c.status === "draft" || c.status === "scheduled") && (
                     <button
-                      onClick={() => handleActivate(c.id)}
+                      onClick={(e) => { e.stopPropagation(); handleActivate(c.id); }}
                       disabled={busy}
                       className="rounded p-1.5 text-white/30 hover:text-green-signal hover:bg-glass-200 transition-colors disabled:opacity-40"
                       title="Activate (start sending)"
@@ -519,7 +635,7 @@ function CampaignsContent() {
                   )}
                   {(c.status === "draft" || c.status === "scheduled") && (
                     <button
-                      onClick={() => handleCancel(c.id)}
+                      onClick={(e) => { e.stopPropagation(); handleCancel(c.id); }}
                       disabled={busy}
                       className="rounded p-1.5 text-white/30 hover:text-red-signal hover:bg-glass-200 transition-colors disabled:opacity-40"
                       title="Cancel"

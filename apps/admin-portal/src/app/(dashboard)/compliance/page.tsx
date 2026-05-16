@@ -19,6 +19,7 @@ import {
   type DriverDocument,
   type ComplianceProfile,
 } from "@/lib/api/compliance";
+import { usePermissions } from "@/hooks/usePermissions";
 
 // ── Mock data (used when backend is not yet deployed) ─────────────────────────
 
@@ -43,6 +44,8 @@ export default function CompliancePage() {
   const [profiles,        setProfiles]        = useState<ComplianceProfile[]>(MOCK_PROFILES);
   const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
   const [loading,         setLoading]         = useState(false);
+  const { hasPermission } = usePermissions();
+  const canReview = hasPermission("compliance:review") || hasPermission("compliance:admin");
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -138,6 +141,7 @@ export default function CompliancePage() {
             profileId={selectedProfile}
             onApprove={handleApprove}
             onReject={handleReject}
+            canReview={canReview}
           />
         ) : (
           <GlassCard className="flex-1 flex items-center justify-center">

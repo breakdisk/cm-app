@@ -24,6 +24,7 @@ import {
 } from "recharts";
 import { Bot, Zap, Brain, ShieldCheck, Headphones, Route, RefreshCw, ArrowUpRight, AlertCircle, CheckCircle2, Sparkles } from "lucide-react";
 import { authFetch } from "@/lib/auth/auth-fetch";
+import { usePermissions } from "@/hooks/usePermissions";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -186,6 +187,9 @@ interface AggregateStats {
 }
 
 export default function AIAgentsPage() {
+  const { hasPermission } = usePermissions();
+  const canResolve = hasPermission("dispatch:assign");
+
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
 
   const [escalated, setEscalated] = useState<EscalatedSession[]>([]);
@@ -395,13 +399,17 @@ export default function AIAgentsPage() {
                 <span className="text-2xs font-mono text-white/60">
                   conf {Math.round(s.confidence_score * 100)}%
                 </span>
-                <button
-                  onClick={() => handleResolve(s.id)}
-                  disabled={resolvingId === s.id}
-                  className="rounded-md border border-green-signal/30 bg-green-signal/10 px-2.5 py-1 text-2xs font-mono text-green-signal hover:bg-green-signal/20 disabled:opacity-40 transition-colors"
-                >
-                  {resolvingId === s.id ? "…" : "Resolve"}
-                </button>
+                {canResolve ? (
+                  <button
+                    onClick={() => handleResolve(s.id)}
+                    disabled={resolvingId === s.id}
+                    className="rounded-md border border-green-signal/30 bg-green-signal/10 px-2.5 py-1 text-2xs font-mono text-green-signal hover:bg-green-signal/20 disabled:opacity-40 transition-colors"
+                  >
+                    {resolvingId === s.id ? "…" : "Resolve"}
+                  </button>
+                ) : (
+                  <span className="text-2xs font-mono text-white/30">Pending review</span>
+                )}
               </div>
             ))
           )}
