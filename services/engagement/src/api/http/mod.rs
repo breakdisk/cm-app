@@ -283,13 +283,14 @@ async fn list_notifications(
             .map_err(|e| AppError::Internal(e))?
     };
 
+    let count = notifications.len();
     Ok::<_, AppError>((
         StatusCode::OK,
         Json(serde_json::json!({
             "notifications": notifications,
             "page":          q.page,
             "limit":         q.clamp_limit(),
-            "count":         notifications.len(),
+            "count":         count,
         })),
     ))
 }
@@ -345,11 +346,12 @@ async fn list_templates(
         .await
         .map_err(|e| AppError::Internal(e))?;
 
+    let count = templates.len();
     Ok::<_, AppError>((
         StatusCode::OK,
         Json(serde_json::json!({
             "templates": templates,
-            "count":     templates.len(),
+            "count":     count,
         })),
     ))
 }
@@ -446,13 +448,14 @@ async fn list_campaigns(
         .await
         .map_err(|e| AppError::Internal(e))?;
 
+    let count = campaigns.len();
     Ok::<_, AppError>((
         StatusCode::OK,
         Json(serde_json::json!({
             "campaigns": campaigns,
             "page":      q.page,
             "limit":     limit,
-            "count":     campaigns.len(),
+            "count":     count,
         })),
     ))
 }
@@ -473,6 +476,50 @@ async fn get_campaign(
         .ok_or_else(|| AppError::NotFound { resource: "campaign", id: id.to_string() })?;
 
     Ok::<_, AppError>((StatusCode::OK, Json(campaign)))
+}
+
+/// `GET /v1/campaigns/:id/sends?page=&limit=`
+///
+/// Returns per-recipient send rows for one campaign.  Useful for Merchant Portal
+/// drill-down: see exactly which recipients were sent to, which failed, and any
+/// provider error messages — without requiring a separate query to the marketing
+/// service.
+async fn list_campaign_sends(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+    Query(q): Query<ListCampaignsQuery>,
+) -> impl IntoResponse {
+    claims.require_permission(PERM_READ)?;
+
+    let limit  = q.limit.clamp(1, 200) as i64;
+    let offset = ((q.page.saturating_sub(1)) * q.limit.clamp(1, 200)) as i64;
+
+    let db = NotificationDb::new(state.db.clone());
+
+    // Verify the campaign exists and belongs to this tenant before listing sends.
+    let campaign = db
+        .find_campaign_by_id(id, claims.tenant_id)
+        .await
+        .map_err(|e| AppError::Internal(e))?
+        .ok_or_else(|| AppError::NotFound { resource: "campaign", id: id.to_string() })?;
+
+    let sends = db
+        .list_campaign_sends(id, claims.tenant_id, limit, offset)
+        .await
+        .map_err(|e| AppError::Internal(e))?;
+
+    let count = sends.len();
+    Ok::<_, AppError>((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "campaign": campaign,
+            "sends":    sends,
+            "page":     q.page,
+            "limit":    limit,
+            "count":    count,
+        })),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -523,8 +570,9 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/templates",          post(create_template).get(list_templates))
         .route("/v1/templates/:id",      get(get_template).put(update_template))
         // ── Campaigns (read-only projection) ────────────────────────
-        .route("/v1/campaigns",          get(list_campaigns))
-        .route("/v1/campaigns/:id",      get(get_campaign))
+        .route("/v1/campaigns",              get(list_campaigns))
+        .route("/v1/campaigns/:id",          get(get_campaign))
+        .route("/v1/campaigns/:id/sends",    get(list_campaign_sends))
         // ── Observability ───────────────────────────────────────────
         .route("/health",                get(health))
         .route("/ready",                 get(ready))

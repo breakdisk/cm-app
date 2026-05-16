@@ -479,7 +479,13 @@ pub async fn handle_campaign_triggered(
     };
 
     // Campaign channel — send only on this channel, not all four.
-    let channel_str = data["channel"].as_str().unwrap_or("sms");
+    let channel_str = match data["channel"].as_str() {
+        Some(c) => c,
+        None => {
+            warn!(campaign_id = %campaign_id, "CAMPAIGN_TRIGGERED missing channel field — skipping");
+            return;
+        }
+    };
     let notif_channel = match channel_str {
         "whatsapp" => NotificationChannel::WhatsApp,
         "sms"      => NotificationChannel::Sms,
@@ -556,6 +562,23 @@ pub async fn handle_campaign_triggered(
     if recipients.is_empty() {
         warn!(campaign_id = %campaign_id, "CAMPAIGN_TRIGGERED recipients list is empty");
         return;
+    }
+
+    // Upsert a row into engagement.campaigns before inserting campaign_sends rows.
+    // This satisfies the engagement read projection and avoids any residual FK issue.
+    let campaign_name = data["name"].as_str().unwrap_or("Campaign");
+    let created_by_str = data["created_by"].as_str()
+        .and_then(|s| s.parse::<uuid::Uuid>().ok())
+        .unwrap_or(uuid::Uuid::nil());
+    if let Err(e) = db.upsert_campaign_from_trigger(
+        campaign_id,
+        tenant_id,
+        campaign_name,
+        channel_str,
+        created_by_str,
+        recipients.len() as i64,
+    ).await {
+        warn!(campaign_id = %campaign_id, err = %e, "Failed to upsert engagement.campaigns row — proceeding with fan-out");
     }
 
     info!(
@@ -677,9 +700,30 @@ pub async fn handle_campaign_triggered(
         }
     }
 
+    // Count rows that reached 'sent' status as the best available proxy for
+    // "delivered" — delivery receipt webhooks would update these later when wired.
+    let total_delivered: u64 = db
+        .count_campaign_sends_by_status(campaign_id, "sent")
+        .await
+        .unwrap_or_else(|e| {
+            warn!(campaign_id = %campaign_id, err = %e, "Failed to count sent rows — falling back to total_sent for total_delivered");
+            total_sent as i64
+        }) as u64;
+
+    // Update the engagement-side campaign record to 'completed'.
+    db.complete_engagement_campaign(
+        campaign_id,
+        total_sent as i64,
+        total_delivered as i64,
+        total_failed as i64,
+    )
+    .await
+    .ok();
+
     info!(
         campaign_id = %campaign_id,
         total_sent,
+        total_delivered,
         total_failed,
         "Campaign fan-out complete — publishing CAMPAIGN_COMPLETED"
     );
@@ -689,7 +733,7 @@ pub async fn handle_campaign_triggered(
         "campaign_id":     campaign_id,
         "tenant_id":       tenant_id,
         "total_sent":      total_sent,
-        "total_delivered": 0u64,   // updated later by delivery receipt webhooks
+        "total_delivered": total_delivered,
         "total_failed":    total_failed,
     });
     if let Err(e) = publisher.publish(

@@ -5,7 +5,7 @@ use uuid::Uuid;
 use logisticos_types::TenantId;
 
 use crate::domain::{
-    entities::{Campaign, CampaignId, CampaignStatus, Channel, WeeklyStat},
+    entities::{Campaign, CampaignId, CampaignRecipient, CampaignStatus, Channel, WeeklyStat},
     repositories::CampaignRepository,
 };
 
@@ -152,6 +152,29 @@ impl CampaignRepository for PgCampaignRepository {
                 count:   r.count,
             })
             .collect())
+    }
+
+    async fn patch_recipients(
+        &self,
+        id:         &CampaignId,
+        recipients: Vec<CampaignRecipient>,
+    ) -> anyhow::Result<()> {
+        // Serialise recipients into JSON and merge them into the targeting JSONB
+        // column using jsonb_set — this avoids a full round-trip read+rewrite.
+        let recipients_json = serde_json::to_value(&recipients)?;
+        sqlx::query(
+            r#"
+            UPDATE marketing.campaigns
+               SET targeting   = jsonb_set(targeting, '{recipients}', $2::jsonb, true),
+                   updated_at  = NOW()
+             WHERE id = $1
+            "#
+        )
+        .bind(id.inner())
+        .bind(recipients_json)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     async fn find_campaigns_due(&self, limit: i64) -> anyhow::Result<Vec<Campaign>> {

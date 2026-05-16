@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Json},
     routing::{get, post},
     Router,
@@ -13,6 +13,7 @@ use logisticos_auth::rbac::permissions;
 use logisticos_errors::AppError;
 
 use crate::application::services::{CreateCampaignCommand, ScheduleCampaignCommand};
+use crate::domain::entities::CampaignStatus;
 use crate::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -23,10 +24,72 @@ pub fn router() -> Router<AppState> {
         .route("/v1/campaigns/:id/schedule",     post(schedule_campaign))
         .route("/v1/campaigns/:id/activate",     post(activate_campaign))
         .route("/v1/campaigns/:id/cancel",       post(cancel_campaign))
+        // MCP server endpoint — consumed by the AI layer and API gateway registry
+        .route("/mcp",                           post(mcp_handler))
+}
+
+// ---------------------------------------------------------------------------
+// MCP handler — JSON-RPC style: { "method": "tools/list" | "tools/call", "params": {...} }
+// ---------------------------------------------------------------------------
+
+async fn mcp_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    use crate::mcp::{audit, auth, tools};
+    use std::time::Instant;
+
+    let method = body.get("method").and_then(|v| v.as_str()).unwrap_or("");
+
+    match method {
+        "tools/list" => {
+            let payload = serde_json::json!({ "tools": tools::list() });
+            (StatusCode::OK, Json(payload)).into_response()
+        }
+        "tools/call" => {
+            let ctx = match auth::extract_context(&headers, &state.jwt) {
+                Ok(c)  => c,
+                Err(e) => {
+                    let resp = serde_json::json!({ "error": e });
+                    return (StatusCode::UNAUTHORIZED, Json(resp)).into_response();
+                }
+            };
+
+            let params    = body.get("params").unwrap_or(&serde_json::Value::Null);
+            let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let args      = params.get("arguments").unwrap_or(&serde_json::Value::Null);
+            let start     = Instant::now();
+
+            let state_arc = std::sync::Arc::new(state.clone());
+            match tools::dispatch(tool_name, args, &ctx, &state_arc).await {
+                Ok(result) => {
+                    audit::audit_tool_call(&ctx, tool_name, true, start);
+                    let payload = serde_json::json!({
+                        "content": [{ "type": "text", "text": result.to_string() }]
+                    });
+                    (StatusCode::OK, Json(payload)).into_response()
+                }
+                Err(e) => {
+                    audit::audit_tool_call(&ctx, tool_name, false, start);
+                    let payload = serde_json::json!({ "error": e });
+                    (StatusCode::BAD_REQUEST, Json(payload)).into_response()
+                }
+            }
+        }
+        other => {
+            let payload = serde_json::json!({ "error": format!("Unknown method: {other}") });
+            (StatusCode::BAD_REQUEST, Json(payload)).into_response()
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
-struct ListQuery { limit: Option<i64>, offset: Option<i64> }
+struct ListQuery {
+    limit:  Option<i64>,
+    offset: Option<i64>,
+    status: Option<String>,
+}
 
 async fn list_campaigns(
     State(state): State<AppState>,
@@ -36,7 +99,15 @@ async fn list_campaigns(
     use logisticos_types::TenantId;
     claims.require_permission(permissions::CAMPAIGNS_CREATE)?;
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
-    let campaigns = state.campaign_svc.list(&tenant_id, q.limit.unwrap_or(50), q.offset.unwrap_or(0)).await?;
+
+    let campaigns = if let Some(status_str) = q.status.as_deref() {
+        let status: CampaignStatus = serde_json::from_value(serde_json::Value::String(status_str.to_owned()))
+            .map_err(|_| AppError::Validation(format!("unknown campaign status: {status_str}")))?;
+        state.campaign_svc.list_by_status(&tenant_id, &status).await?
+    } else {
+        state.campaign_svc.list(&tenant_id, q.limit.unwrap_or(50), q.offset.unwrap_or(0)).await?
+    };
+
     let count = campaigns.len();
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"campaigns": campaigns, "count": count}))))
 }
@@ -84,6 +155,25 @@ async fn activate_campaign(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::CAMPAIGNS_SEND)?;
+
+    // CDP audience resolution: if the campaign targets by CLV/customer_ids but
+    // has no explicit recipients, resolve them from the CDP before activating.
+    if let Some(ref cdp) = state.cdp_client {
+        let campaign = state.campaign_svc.get(id).await?;
+        if campaign.targeting.recipients.is_empty()
+            && (campaign.targeting.min_clv_score.is_some()
+                || !campaign.targeting.customer_ids.is_empty())
+        {
+            let recipients = cdp
+                .resolve_audience(claims.tenant_id, &campaign.targeting)
+                .await
+                .map_err(AppError::internal)?;
+            state.campaign_svc
+                .patch_recipients(id, recipients)
+                .await?;
+        }
+    }
+
     let campaign = state.campaign_svc.activate(id).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(campaign)))
 }

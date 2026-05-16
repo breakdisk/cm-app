@@ -6,35 +6,15 @@ use anyhow::Context;
 use logisticos_auth::jwt::JwtService;
 use crate::{
     api::http,
-    application::services::{CampaignService, EventPublisher},
+    application::services::CampaignService,
     config::Config,
-    infrastructure::db::PgCampaignRepository,
+    infrastructure::{
+        db::PgCampaignRepository,
+        external::CdpClient,
+        messaging::KafkaEventPublisher,
+    },
     AppState,
 };
-
-// ---------------------------------------------------------------------------
-// Kafka-backed event publisher
-// ---------------------------------------------------------------------------
-
-struct KafkaPublisher {
-    producer: FutureProducer,
-}
-
-#[async_trait::async_trait]
-impl EventPublisher for KafkaPublisher {
-    async fn publish(&self, topic: &str, key: &str, payload: &[u8]) -> anyhow::Result<()> {
-        use rdkafka::producer::FutureRecord;
-        use std::time::Duration;
-        self.producer
-            .send(
-                FutureRecord::to(topic).key(key).payload(payload),
-                Duration::from_secs(5),
-            )
-            .await
-            .map_err(|(e, _)| anyhow::anyhow!("Kafka publish error: {}", e))?;
-        Ok(())
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -69,7 +49,7 @@ pub async fn run() -> anyhow::Result<()> {
         .create()?;
 
     let campaign_repo = Arc::new(PgCampaignRepository::new(pool));
-    let publisher     = Arc::new(KafkaPublisher { producer });
+    let publisher     = Arc::new(KafkaEventPublisher::new(producer));
     let campaign_svc  = Arc::new(CampaignService::new(campaign_repo, publisher));
 
     // Spawn a background consumer that receives CAMPAIGN_COMPLETED events from
@@ -103,7 +83,24 @@ pub async fn run() -> anyhow::Result<()> {
         .context("AUTH__JWT_SECRET env var not set")?;
     let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
 
-    let state = AppState { campaign_svc, jwt: Arc::clone(&jwt) };
+    // Build the CDP client when both CDP_URL and CDP_TOKEN are configured.
+    // Absence of either means the service runs without CDP audience resolution;
+    // campaigns with explicit recipient lists still work fully.
+    let cdp_client: Option<Arc<CdpClient>> = match (
+        cfg.services.cdp_url.clone(),
+        cfg.services.cdp_token.clone(),
+    ) {
+        (Some(url), Some(token)) => {
+            tracing::info!(cdp_url = %url, "CDP client initialised");
+            Some(Arc::new(CdpClient::new(url, token)))
+        }
+        _ => {
+            tracing::warn!("SERVICES__CDP_URL or SERVICES__CDP_TOKEN not set — CDP audience resolution disabled");
+            None
+        }
+    };
+
+    let state = AppState { campaign_svc, jwt: Arc::clone(&jwt), cdp_client };
 
     let app = http::router()
         .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth))

@@ -2,7 +2,7 @@
 //!
 //! `NotificationDb` wraps a `PgPool` and provides typed access to:
 //!   - `engagement.notifications`
-//!   - `engagement.templates`
+//!   - `engagement.notification_templates`
 //!   - `engagement.campaigns` (read-only projection for the HTTP layer)
 //!
 //! Every method returns `anyhow::Result` so callers can wrap the error with
@@ -147,8 +147,25 @@ fn channel_str(c: &NotificationChannel) -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
-// Campaign row type for the read-only campaigns projection
+// Campaign row types for the read-only campaigns projection
 // ---------------------------------------------------------------------------
+
+/// Per-recipient send row returned by `list_campaign_sends`.
+/// Defined at module scope so `sqlx::FromRow` proc-macro can resolve correctly
+/// (inner-function struct derives work in stable Rust but are non-standard).
+#[derive(sqlx::FromRow)]
+struct SendRow {
+    id:                  Uuid,
+    campaign_id:         Uuid,
+    customer_id:         Uuid,
+    channel:             String,
+    status:              String,
+    provider_message_id: Option<String>,
+    error_message:       Option<String>,
+    queued_at:           chrono::DateTime<chrono::Utc>,
+    sent_at:             Option<chrono::DateTime<chrono::Utc>>,
+    failed_at:           Option<chrono::DateTime<chrono::Utc>>,
+}
 
 #[derive(sqlx::FromRow)]
 struct CampaignRow {
@@ -350,7 +367,7 @@ impl NotificationDb {
     pub async fn insert_template(&self, t: &NotificationTemplate) -> anyhow::Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO engagement.templates (
+            INSERT INTO engagement.notification_templates (
                 id, tenant_id, template_id, channel, language,
                 subject, body, variables, is_active
             ) VALUES (
@@ -385,7 +402,7 @@ impl NotificationDb {
             r#"
             SELECT id, tenant_id, template_id, channel, language,
                    subject, body, variables, is_active
-            FROM engagement.templates
+            FROM engagement.notification_templates
             WHERE id = $1
               AND (tenant_id = $2 OR tenant_id IS NULL)
             "#
@@ -408,7 +425,7 @@ impl NotificationDb {
             r#"
             SELECT id, tenant_id, template_id, channel, language,
                    subject, body, variables, is_active
-            FROM engagement.templates
+            FROM engagement.notification_templates
             WHERE tenant_id = $1 OR tenant_id IS NULL
             ORDER BY template_id ASC
             "#
@@ -425,7 +442,7 @@ impl NotificationDb {
     pub async fn update_template(&self, t: &NotificationTemplate) -> anyhow::Result<()> {
         sqlx::query(
             r#"
-            UPDATE engagement.templates
+            UPDATE engagement.notification_templates
                SET template_id = $2,
                    channel     = $3,
                    language    = $4,
@@ -465,7 +482,11 @@ impl NotificationDb {
     ) -> anyhow::Result<Vec<serde_json::Value>> {
         let rows = sqlx::query_as::<_, CampaignRow>(
             r#"
-            SELECT id, name, channel, status, scheduled_at, total_sent, total_delivered, total_failed, created_at
+            SELECT id, name, channel, status, scheduled_at,
+                   sent_count      AS total_sent,
+                   delivered_count AS total_delivered,
+                   0::bigint       AS total_failed,
+                   created_at
             FROM engagement.campaigns
             WHERE tenant_id = $1
             ORDER BY created_at DESC
@@ -557,6 +578,149 @@ impl NotificationDb {
         Ok(())
     }
 
+    /// Upsert a campaign row into `engagement.campaigns` when a CAMPAIGN_TRIGGERED
+    /// event is received.  This satisfies the schema's record-keeping requirement
+    /// and enables the engagement read endpoints without a separate sync job.
+    /// Status is set to 'running'; template_id is left NULL (inline templates).
+    pub async fn upsert_campaign_from_trigger(
+        &self,
+        id:              Uuid,
+        tenant_id:       Uuid,
+        name:            &str,
+        channel:         &str,
+        created_by:      Uuid,
+        recipient_count: i64,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO engagement.campaigns
+                (id, tenant_id, name, status, channel, template_id, audience_filter,
+                 started_at, total_recipients, created_by_user_id)
+            VALUES ($1, $2, $3, 'running', $4, NULL, '{}', NOW(), $5, $6)
+            ON CONFLICT (id) DO UPDATE SET
+                status           = 'running',
+                started_at       = COALESCE(engagement.campaigns.started_at, NOW()),
+                total_recipients = EXCLUDED.total_recipients
+            "#,
+        )
+        .bind(id)
+        .bind(tenant_id)
+        .bind(name)
+        .bind(channel)
+        .bind(recipient_count)
+        .bind(created_by)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Update engagement.campaigns after a fan-out completes.
+    /// Sets status to 'completed' and records the final send counters.
+    pub async fn complete_engagement_campaign(
+        &self,
+        id:              Uuid,
+        sent_count:      i64,
+        delivered_count: i64,
+        failed_count:    i64,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE engagement.campaigns
+               SET status          = 'completed',
+                   completed_at    = NOW(),
+                   sent_count      = $2,
+                   delivered_count = $3
+             WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .bind(sent_count)
+        .bind(delivered_count)
+        .execute(&self.pool)
+        .await?;
+        let _ = failed_count; // stored only in marketing service totals
+        Ok(())
+    }
+
+    /// Count campaign_sends rows matching a given status for one campaign.
+    /// Used to derive accurate delivery counters at fan-out completion time.
+    pub async fn count_campaign_sends_by_status(
+        &self,
+        campaign_id: Uuid,
+        status:      &str,
+    ) -> anyhow::Result<i64> {
+        let row: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM engagement.campaign_sends WHERE campaign_id = $1 AND status = $2",
+        )
+        .bind(campaign_id)
+        .bind(status)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.0)
+    }
+
+    /// Return a paginated list of individual send rows for a campaign.
+    ///
+    /// Used by `GET /v1/campaigns/:id/sends` to let the Merchant Portal drill
+    /// into per-recipient delivery status without querying the marketing service.
+    pub async fn list_campaign_sends(
+        &self,
+        campaign_id: Uuid,
+        tenant_id:   Uuid,
+        limit:       i64,
+        offset:      i64,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        // Verify the campaign belongs to this tenant before returning rows.
+        let campaign_exists: Option<(Uuid,)> = sqlx::query_as(
+            "SELECT id FROM engagement.campaigns WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(campaign_id)
+        .bind(tenant_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if campaign_exists.is_none() {
+            // Return empty rather than leaking tenant data on a 404.
+            return Ok(vec![]);
+        }
+
+        let rows = sqlx::query_as::<_, SendRow>(
+            r#"
+            SELECT id, campaign_id, customer_id, channel, status,
+                   provider_message_id, error_message,
+                   queued_at, sent_at, failed_at
+            FROM engagement.campaign_sends
+            WHERE campaign_id = $1
+            ORDER BY queued_at DESC
+            LIMIT  $2
+            OFFSET $3
+            "#,
+        )
+        .bind(campaign_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                serde_json::json!({
+                    "id":                  r.id,
+                    "campaign_id":         r.campaign_id,
+                    "customer_id":         r.customer_id,
+                    "channel":             r.channel,
+                    "status":              r.status,
+                    "provider_message_id": r.provider_message_id,
+                    "error_message":       r.error_message,
+                    "queued_at":           r.queued_at,
+                    "sent_at":             r.sent_at,
+                    "failed_at":           r.failed_at,
+                })
+            })
+            .collect())
+    }
+
     /// Find a single campaign by UUID within a tenant's scope.
     pub async fn find_campaign_by_id(
         &self,
@@ -565,7 +729,11 @@ impl NotificationDb {
     ) -> anyhow::Result<Option<serde_json::Value>> {
         let row = sqlx::query_as::<_, CampaignRow>(
             r#"
-            SELECT id, name, channel, status, scheduled_at, total_sent, total_delivered, total_failed, created_at
+            SELECT id, name, channel, status, scheduled_at,
+                   sent_count      AS total_sent,
+                   delivered_count AS total_delivered,
+                   0::bigint       AS total_failed,
+                   created_at
             FROM engagement.campaigns
             WHERE id = $1
               AND tenant_id = $2
