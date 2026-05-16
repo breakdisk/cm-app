@@ -15,9 +15,9 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
  * The optional `token` parameter is retained only for legacy callers — it is
  * ignored; the interceptor is the single source of truth.
  */
-export function createApiClient(_legacyToken?: string): AxiosInstance {
+export function createApiClient(_legacyToken?: string, baseURL?: string): AxiosInstance {
   const client = axios.create({
-    baseURL: API_BASE,
+    baseURL: baseURL ?? API_BASE,
     headers: { "Content-Type": "application/json" },
     timeout: 15_000,
   });
