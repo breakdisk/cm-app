@@ -90,6 +90,7 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/tenants/me",          get(tenants::get_self))
         .route("/tenants/me/finalize", post(tenants::finalize_self))
         .route("/tenants/:id",         put(tenants::update_tenant))
+        .route("/tenants/:id/tier",    put(tenants::upgrade_tier))
         .route("/audit-log",           get(audit_log::list))
         .layer(auth_layer)
 }
