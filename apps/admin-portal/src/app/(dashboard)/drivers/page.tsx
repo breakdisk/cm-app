@@ -15,6 +15,7 @@ import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
 import { OnboardDriverModal } from "@/components/drivers/OnboardDriverModal";
+import { DriverDetailDrawer } from "@/components/drivers/DriverDetailDrawer";
 import { Search, MapPin, Package, RefreshCw, Briefcase, UserPlus } from "lucide-react";
 import { usePermissions } from "@/hooks/usePermissions";
 
@@ -39,7 +40,7 @@ interface Driver {
   tasks_done: number;
   last_location: string;
   last_seen: string;
-  grade: "A" | "B" | "C" | "D";
+  grade: "A" | "B" | "C" | "D" | null;
   cod_collected: number;
 }
 
@@ -99,6 +100,8 @@ export default function DriversPage() {
   const [kpi, setKpi] = useState(KPI);
   const [loading, setLoading] = useState(false);
   const [onboardOpen, setOnboardOpen] = useState(false);
+  const [drawerDriverId, setDrawerDriverId] = useState<string | null>(null);
+  const [drawerDriverName, setDrawerDriverName] = useState("");
 
   const { driverMap, connected, refresh } = useDriverRoster();
   const { hasPermission } = usePermissions();
@@ -115,15 +118,18 @@ export default function DriversPage() {
       setDrivers(listRes.data.map((d: ApiDriver) => ({
         id:            d.id,
         name:          d.name || `${d.first_name} ${d.last_name}`.trim(),
-        vehicle:       d.vehicle_type,
-        plate:         d.vehicle_plate,
+        vehicle:       d.vehicle_type ?? "",
+        plate:         d.vehicle_plate ?? "",
         status:        normalizeStatus(d.status as string),
-        tasks_total:   d.tasks_total,
-        tasks_done:    d.tasks_done,
+        tasks_total:   d.tasks_total ?? 0,
+        tasks_done:    d.tasks_done ?? 0,
         last_location: d.last_location ?? "Unknown",
-        last_seen:     d.last_seen_at ? new Date(d.last_seen_at).toLocaleTimeString() : "—",
-        grade:         d.performance_grade,
-        cod_collected: d.cod_collected,
+        // backend sends last_location_at; last_seen_at is a legacy alias kept for WS patches
+        last_seen:     (d.last_location_at ?? d.last_seen_at)
+                         ? new Date((d.last_location_at ?? d.last_seen_at)!).toLocaleTimeString()
+                         : "—",
+        grade:         d.performance_grade ?? null,
+        cod_collected: d.cod_collected ?? 0,
       })));
       const s = summaryRes.data;
       setKpi([
@@ -261,6 +267,14 @@ export default function DriversPage() {
         onSuccess={fetchDrivers}
       />
 
+      {/* Driver detail / edit drawer */}
+      <DriverDetailDrawer
+        driverId={drawerDriverId}
+        driverName={drawerDriverName}
+        onClose={() => setDrawerDriverId(null)}
+        onUpdated={fetchDrivers}
+      />
+
       {/* Empty state — shown when the API returns no drivers (or returned
           an error and we cleared the roster). The Onboard button above is
           the only path forward, so highlight it visually. */}
@@ -298,7 +312,11 @@ export default function DriversPage() {
           const cfg = STATUS_CONFIG[driver.status];
           const progress = driver.tasks_total > 0 ? (driver.tasks_done / driver.tasks_total) * 100 : 0;
           return (
-            <GlassCard key={driver.id} className="hover:border-glass-border-bright transition-colors cursor-pointer">
+            <GlassCard
+              key={driver.id}
+              className="hover:border-glass-border-bright transition-colors cursor-pointer"
+              onClick={() => { setDrawerDriverId(driver.id); setDrawerDriverName(driver.name); }}
+            >
               <div className="flex items-start justify-between mb-3">
                 <div className="flex items-center gap-3">
                   <div className="relative">
@@ -315,7 +333,9 @@ export default function DriversPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className={`text-lg font-bold font-heading ${GRADE_COLOR[driver.grade]}`}>{driver.grade}</span>
+                  {driver.grade && (
+                    <span className={`text-lg font-bold font-heading ${GRADE_COLOR[driver.grade] ?? ""}`}>{driver.grade}</span>
+                  )}
                   <NeonBadge variant={cfg.variant} dot={cfg.dot}>{cfg.label}</NeonBadge>
                 </div>
               </div>

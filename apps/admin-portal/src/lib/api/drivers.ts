@@ -10,22 +10,27 @@ export interface Driver {
   last_name: string;
   name: string;
   phone: string;
-  vehicle_type: string;
-  vehicle_plate: string;
-  status: DriverStatus;
+  vehicle_type?: string | null;
+  vehicle_plate?: string | null;
+  status: string;                         // backend emits snake_case: available / en_route / …
+  is_online: boolean;
   driver_type: DriverType;
-  zone?: string;
+  zone?: string | null;
   per_delivery_rate_cents: number;
   cod_commission_rate_bps: number;
   is_active: boolean;
-  tasks_total: number;
-  tasks_done: number;
-  lat?: number;
-  lng?: number;
-  last_location?: string;
-  last_seen_at?: string;
-  performance_grade: "A" | "B" | "C" | "D";
-  cod_collected: number;
+  tasks_total?: number | null;
+  tasks_done?: number | null;
+  lat?: number | null;
+  lng?: number | null;
+  last_location?: string | null;          // human-readable (not in DTO — kept for compat)
+  last_location_at?: string | null;       // ISO timestamp from backend DriverDto
+  last_seen_at?: string | null;           // alias used in older roster patches
+  active_route_id?: string | null;        // present in DriverDto — gates Cancel Tasks
+  performance_grade?: "A" | "B" | "C" | "D" | null;
+  cod_collected?: number | null;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface DriverSummary {
@@ -59,11 +64,40 @@ export interface UpdateDriverPayload {
   is_active?: boolean;
 }
 
+/** Shape returned by GET /v1/drivers/:id/tasks/history */
+export interface DriverTaskHistory {
+  id: string;
+  route_id: string;
+  shipment_id: string;
+  /** "Pickup" | "Delivery" — capitalised by Rust serde default */
+  task_type: "Pickup" | "Delivery";
+  sequence: number;
+  /** "Completed" | "Failed" | "Cancelled" — capitalised */
+  status: "Completed" | "Failed" | "Cancelled";
+  customer_name: string;
+  customer_phone: string;
+  tracking_number?: string | null;
+  cod_amount_cents?: number | null;
+  special_instructions?: string | null;
+  failed_reason?: string | null;
+  pod_id?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  address: {
+    line1: string;
+    line2?: string | null;
+    city: string;
+    province?: string | null;
+    postal_code?: string | null;
+    country?: string | null;
+  };
+}
+
 export function createDriversApi() {
   const client = createApiClient();
 
   return {
-    listDrivers: (params?: { status?: DriverStatus; search?: string; page?: number; per_page?: number }) =>
+    listDrivers: (params?: { status?: string; search?: string; page?: number; per_page?: number }) =>
       client
         .get<PaginatedApiResponse<Driver>>("/v1/drivers", { params })
         .then((r) => r.data),
@@ -91,6 +125,31 @@ export function createDriversApi() {
     setDriverStatus: (driverId: string, status: "available" | "offline" | "on_break") =>
       client
         .put<ApiResponse<Driver>>(`/v1/drivers/${driverId}/status`, { status })
+        .then((r) => r.data),
+
+    cancelTasks: (driverId: string) =>
+      client
+        .post<ApiResponse<{ tasks_cancelled: number }>>(`/v1/drivers/${driverId}/cancel-tasks`, {})
+        .then((r) => r.data),
+
+    /**
+     * Backend requires both `instruction_type` and `message`.
+     * instructionType defaults to "custom" for free-form ops messages.
+     */
+    sendInstruction: (driverId: string, message: string, instructionType = "custom") =>
+      client
+        .post<ApiResponse<void>>(`/v1/drivers/${driverId}/instructions`, {
+          instruction_type: instructionType,
+          message,
+        })
+        .then((r) => r.data),
+
+    getTaskHistory: (driverId: string, params?: { page?: number; per_page?: number }) =>
+      client
+        .get<{ data: DriverTaskHistory[]; count: number }>(
+          `/v1/drivers/${driverId}/tasks/history`,
+          { params },
+        )
         .then((r) => r.data),
   };
 }

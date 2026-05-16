@@ -6,6 +6,7 @@ import { X, UserPlus, Truck, CheckCircle2, ChevronRight, Loader2, Eye, EyeOff } 
 import { GlassCard } from "@/components/ui/glass-card";
 import { createIdentityApi } from "@/lib/api/identity";
 import { createDriversApi } from "@/lib/api/drivers";
+import { VEHICLE_TYPES, ZONES } from "@/lib/constants/driver-options";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -37,8 +38,7 @@ interface Props {
   onSuccess: () => void;
 }
 
-const VEHICLE_TYPES = ["Motorcycle", "Van", "Truck", "Bicycle", "Car"];
-const ZONES = ["Makati", "BGC", "Quezon City", "Pasig", "Mandaluyong", "Caloocan", "Parañaque", "Las Piñas", "Valenzuela", "Other"];
+// VEHICLE_TYPES and ZONES imported from @/lib/constants/driver-options
 
 const inputCls =
   "w-full rounded-lg border border-glass-border bg-glass-100 px-3 py-2.5 text-sm text-white " +
