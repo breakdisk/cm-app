@@ -227,6 +227,15 @@ pub struct OtpVerifyResult {
     pub token_type: String,
 }
 
+/// Upgrade (or downgrade) the subscription tier for a tenant.
+/// Accepted values match the `SubscriptionTier` snake_case variants:
+/// "starter" | "growth" | "business" | "enterprise".
+#[derive(Debug, Deserialize, Validate)]
+pub struct UpgradeTierCommand {
+    #[validate(length(min = 1))]
+    pub tier: String,
+}
+
 /// Partial self-update — authenticated user edits their own profile.
 /// All fields are optional; absent fields are left unchanged.
 #[derive(Debug, Deserialize, Validate)]

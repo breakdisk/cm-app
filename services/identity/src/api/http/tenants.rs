@@ -6,7 +6,7 @@ use logisticos_auth::require_permission;
 use logisticos_errors::AppError;
 use crate::{
     api::http::AppState,
-    application::commands::{CreateTenantCommand, FinalizeTenantCommand, UpdateTenantCommand},
+    application::commands::{CreateTenantCommand, FinalizeTenantCommand, UpdateTenantCommand, UpgradeTierCommand},
     infrastructure::db::NewAuditEntry,
 };
 
@@ -88,4 +88,35 @@ pub async fn update_tenant(
     };
     tokio::spawn(async move { let _ = audit.append(&entry).await; });
     Ok(Json(serde_json::json!({ "data": tenant })))
+}
+
+/// PUT /v1/tenants/:id/tier — set the subscription tier for a tenant.
+///
+/// Requires `TENANT_MANAGE` and the path id must be the caller's own tenant
+/// (cross-tenant edits return NotFound). The new tier is validated against the
+/// known snake_case variants: `starter | growth | business | enterprise`.
+/// An audit entry is written for every successful change.
+pub async fn upgrade_tier(
+    AuthClaims(claims): AuthClaims,
+    Path(id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+    Json(cmd): Json<UpgradeTierCommand>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_permission!(claims, logisticos_auth::rbac::permissions::TENANT_MANAGE);
+    if claims.tenant_id != id {
+        return Err(AppError::NotFound { resource: "Tenant", id: id.to_string() });
+    }
+    let tenant_id = logisticos_types::TenantId::from_uuid(id);
+    let tier = state.tenant_service.upgrade_tier(&tenant_id, cmd).await?;
+    let audit = Arc::clone(&state.audit_log);
+    let tier_str = format!("{:?}", tier).to_lowercase();
+    let entry = NewAuditEntry {
+        tenant_id:   claims.tenant_id,
+        actor_id:    claims.user_id,
+        actor_email: claims.email.clone(),
+        action:      "tenant.tier_updated".into(),
+        resource:    tier_str.clone(),
+    };
+    tokio::spawn(async move { let _ = audit.append(&entry).await; });
+    Ok(Json(serde_json::json!({ "data": { "subscription_tier": tier_str } })))
 }

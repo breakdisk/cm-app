@@ -199,6 +199,43 @@ impl TenantService {
         Ok(user)
     }
 
+    /// Set the subscription tier for a tenant. Accepts snake_case tier names
+    /// matching `SubscriptionTier`: "starter" | "growth" | "business" | "enterprise".
+    /// An audit entry is written by the HTTP handler (not here) so the actor
+    /// context (claims) is preserved without threading it through the service.
+    pub async fn upgrade_tier(
+        &self,
+        tenant_id: &logisticos_types::TenantId,
+        cmd: crate::application::commands::UpgradeTierCommand,
+    ) -> AppResult<logisticos_types::SubscriptionTier> {
+        use validator::Validate;
+        cmd.validate().map_err(|e| AppError::Validation(e.to_string()))?;
+
+        let new_tier = match cmd.tier.as_str() {
+            "starter"    => logisticos_types::SubscriptionTier::Starter,
+            "growth"     => logisticos_types::SubscriptionTier::Growth,
+            "business"   => logisticos_types::SubscriptionTier::Business,
+            "enterprise" => logisticos_types::SubscriptionTier::Enterprise,
+            other => return Err(AppError::Validation(format!(
+                "Unknown tier '{}'. Valid values: starter, growth, business, enterprise", other
+            ))),
+        };
+
+        let mut tenant = self.tenant_repo
+            .find_by_id(tenant_id).await
+            .map_err(AppError::Internal)?
+            .ok_or_else(|| AppError::NotFound {
+                resource: "Tenant",
+                id: tenant_id.inner().to_string(),
+            })?;
+
+        tenant.upgrade_tier(new_tier);
+        self.tenant_repo.save(&tenant).await.map_err(AppError::Internal)?;
+
+        tracing::info!(tenant_id = %tenant.id, tier = %cmd.tier, "Tenant tier updated");
+        Ok(new_tier)
+    }
+
     pub async fn invite_user(&self, tenant_id: &logisticos_types::TenantId, cmd: InviteUserCommand) -> AppResult<(User, String)> {
         // Verify tenant is active before allowing user creation
         let tenant = self.tenant_repo.find_by_id(tenant_id).await.map_err(AppError::Internal)?
