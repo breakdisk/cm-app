@@ -118,6 +118,36 @@ pub fn seed_platform_servers(registry: &mut McpRegistry, cfg: &crate::config::Se
             tenant_id: None,
             is_active: true,
         },
+        McpServerEntry {
+            id: Uuid::new_v4(),
+            name: "Marketing MCP".into(),
+            service: "marketing".into(),
+            endpoint: format!("{}/mcp", cfg.marketing_url),
+            tools: vec![
+                McpTool {
+                    name: "list_campaigns".into(),
+                    description: "List marketing campaigns for the caller's tenant with optional pagination".into(),
+                    input_schema: serde_json::json!({"type":"object","properties":{"limit":{"type":"integer","description":"Max results (1–50, default 20)"},"offset":{"type":"integer","description":"Pagination offset (default 0)"}},"required":[]}),
+                },
+                McpTool {
+                    name: "create_campaign".into(),
+                    description: "Create a new marketing campaign in Draft state".into(),
+                    input_schema: serde_json::json!({"type":"object","properties":{"name":{"type":"string"},"channel":{"type":"string","enum":["whatsapp","sms","email","push"]},"template":{"type":"object"},"targeting":{"type":"object"}},"required":["name","channel","template","targeting"]}),
+                },
+                McpTool {
+                    name: "activate_campaign".into(),
+                    description: "Activate a Draft or Scheduled campaign — triggers fan-out via the Engagement Engine. Resolves CDP audiences automatically if CDP criteria are set.".into(),
+                    input_schema: serde_json::json!({"type":"object","properties":{"campaign_id":{"type":"string","format":"uuid"}},"required":["campaign_id"]}),
+                },
+                McpTool {
+                    name: "get_campaign_stats".into(),
+                    description: "Retrieve send metrics and delivery rate for a specific campaign".into(),
+                    input_schema: serde_json::json!({"type":"object","properties":{"campaign_id":{"type":"string","format":"uuid"}},"required":["campaign_id"]}),
+                },
+            ],
+            tenant_id: None,
+            is_active: true,
+        },
     ];
 
     for server in servers {

@@ -8,7 +8,7 @@ use logisticos_events::{topics, Event};
 use logisticos_types::TenantId;
 
 use crate::domain::{
-    entities::{Campaign, CampaignId, Channel, MessageTemplate, TargetingRule, WeeklyStat},
+    entities::{Campaign, CampaignId, CampaignRecipient, Channel, MessageTemplate, TargetingRule, WeeklyStat},
     repositories::CampaignRepository,
 };
 
@@ -76,12 +76,54 @@ impl CampaignService {
             .map_err(AppError::internal)
     }
 
+    pub async fn list_by_status(
+        &self,
+        tenant_id: &TenantId,
+        status:    &crate::domain::entities::CampaignStatus,
+    ) -> AppResult<Vec<Campaign>> {
+        self.repo
+            .list_by_status(tenant_id, status)
+            .await
+            .map_err(AppError::internal)
+    }
+
     pub async fn schedule(&self, id: Uuid, cmd: ScheduleCampaignCommand) -> AppResult<Campaign> {
         let mut campaign = self.get(id).await?;
         campaign.schedule(cmd.scheduled_at)
             .map_err(|e| AppError::BusinessRule(e.to_string()))?;
         self.repo.save(&campaign).await.map_err(AppError::internal)?;
         Ok(campaign)
+    }
+
+    /// Overwrite the explicit recipient list on a campaign.
+    ///
+    /// Called by the CDP audience-resolution path (both HTTP and MCP) after
+    /// `CdpClient::resolve_audience` returns a populated list.  The campaign
+    /// must still be in Draft or Scheduled state; activating it is a separate
+    /// call so that the caller retains full control over the sequence.
+    pub async fn patch_recipients(
+        &self,
+        id:         Uuid,
+        recipients: Vec<CampaignRecipient>,
+    ) -> AppResult<()> {
+        let campaign = self.get(id).await?;
+        if !matches!(
+            campaign.status,
+            crate::domain::entities::CampaignStatus::Draft
+                | crate::domain::entities::CampaignStatus::Scheduled
+        ) {
+            return Err(AppError::BusinessRule(format!(
+                "Cannot patch recipients on a campaign with status {:?}",
+                campaign.status
+            )));
+        }
+        let count = recipients.len();
+        self.repo
+            .patch_recipients(&campaign.id, recipients)
+            .await
+            .map_err(AppError::internal)?;
+        tracing::debug!(campaign_id = %id, recipient_count = count, "Campaign recipients patched from CDP");
+        Ok(())
     }
 
     /// Activate campaign — queues notification sends via Kafka → engagement service.
@@ -92,16 +134,22 @@ impl CampaignService {
 
         // Publish CAMPAIGN_TRIGGERED event so the engagement service starts sending.
         // Embed recipients with full contact details so the engagement consumer can
-        // fan-out without a CDP lookup.
+        // fan-out without a CDP lookup.  Also include `name` and `created_by` so the
+        // engagement service can upsert an engagement.campaigns row before fan-out.
+        // Embed recipients at the top level so the engagement consumer can read
+        // `data["recipients"]` without unwrapping a nested targeting object.
+        // `targeting` is omitted from the payload — recipients is the canonical
+        // fan-out list after CDP resolution has already run.
         let payload = serde_json::json!({
             "campaign_id":  campaign.id.inner(),
             "tenant_id":    campaign.tenant_id.inner(),
+            "name":         campaign.name,
+            "created_by":   campaign.created_by,
             "channel":      campaign.channel,
             "template_id":  campaign.template.template_id,
             "subject":      campaign.template.subject,
             "variables":    campaign.template.variables,
             "recipients":   campaign.targeting.recipients,
-            "targeting":    campaign.targeting,
         });
         let payload_bytes = serde_json::to_vec(&payload)
             .map_err(|e| AppError::internal(anyhow::anyhow!("Failed to serialize CAMPAIGN_TRIGGERED: {}", e)))?;

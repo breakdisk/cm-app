@@ -18,11 +18,12 @@ use tokio::sync::Mutex;
 use tower::ServiceExt; // for `.oneshot()`
 use uuid::Uuid;
 
+use logisticos_auth::{claims::Claims, jwt::JwtService, rbac::permissions};
 use logisticos_marketing::{
     api::http,
     application::services::{CampaignService, EventPublisher},
     domain::{
-        entities::{Campaign, CampaignId, CampaignStatus, Channel, MessageTemplate, TargetingRule},
+        entities::{Campaign, CampaignId, CampaignRecipient, CampaignStatus, Channel, MessageTemplate, TargetingRule},
         repositories::CampaignRepository,
     },
     AppState,
@@ -73,6 +74,26 @@ impl CampaignRepository for MockCampaignRepo {
         store.insert(campaign.id.inner(), campaign.clone());
         Ok(())
     }
+
+    async fn patch_recipients(
+        &self,
+        id:         &CampaignId,
+        recipients: Vec<CampaignRecipient>,
+    ) -> anyhow::Result<()> {
+        let mut store = self.store.lock().await;
+        if let Some(campaign) = store.get_mut(&id.inner()) {
+            campaign.targeting.recipients = recipients;
+        }
+        Ok(())
+    }
+
+    async fn weekly_stats(&self, _tenant_id: &TenantId) -> anyhow::Result<Vec<logisticos_marketing::domain::entities::WeeklyStat>> {
+        Ok(vec![])
+    }
+
+    async fn find_campaigns_due(&self, _limit: i64) -> anyhow::Result<Vec<Campaign>> {
+        Ok(vec![])
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -97,24 +118,55 @@ impl EventPublisher for MockPublisher {
 // ---------------------------------------------------------------------------
 
 struct TestApp {
-    router: axum::Router,
-    tenant_id: TenantId,
+    router:     axum::Router,
+    tenant_id:  TenantId,
+    /// Bearer token carrying the test tenant_id and full campaign permissions.
+    test_token: String,
     /// Shared publisher so individual tests can inspect published events.
-    publisher: Arc<MockPublisher>,
+    publisher:  Arc<MockPublisher>,
 }
 
 impl TestApp {
     fn new() -> Self {
+        let tenant_id = TenantId::new();
+        let user_id   = Uuid::new_v4();
+
         let repo      = Arc::new(MockCampaignRepo::default());
         let publisher = Arc::new(MockPublisher::default());
         let svc       = Arc::new(CampaignService::new(repo, publisher.clone()));
-        let state     = AppState { campaign_svc: svc };
-        let router    = http::router().with_state(state);
-        Self {
-            router,
-            tenant_id: TenantId::new(),
-            publisher,
-        }
+        let jwt       = Arc::new(JwtService::new("test-secret-for-unit-tests", 3600, 86400));
+        let state     = AppState { campaign_svc: svc, jwt: Arc::clone(&jwt), cdp_client: None };
+
+        // Mint a real JWT so the production `require_auth` middleware can validate it.
+        // The token carries both campaign permissions so every handler under test
+        // passes its permission guard without role-to-permission table lookups.
+        let claims = Claims::new(
+            user_id,
+            tenant_id.inner(),
+            "test-tenant".to_string(),
+            "business".to_string(),
+            "test@example.com".to_string(),
+            vec!["tenant_admin".to_string()],
+            vec![
+                permissions::CAMPAIGNS_CREATE.to_string(),
+                permissions::CAMPAIGNS_SEND.to_string(),
+            ],
+            3600,
+        );
+        let test_token = jwt
+            .issue_access_token(claims)
+            .expect("Failed to mint test JWT");
+
+        // Wire the same auth middleware the production bootstrap applies so
+        // `AuthClaims` extractor finds validated `Claims` in request extensions.
+        let router = http::router()
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&jwt),
+                logisticos_auth::middleware::require_auth,
+            ))
+            .with_state(state);
+
+        Self { router, tenant_id, test_token, publisher }
     }
 
     /// Issue a one-shot HTTP request to the in-process router.
@@ -122,15 +174,13 @@ impl TestApp {
         self.router.clone().oneshot(req).await.unwrap()
     }
 
-    /// Build a JSON POST request with a fake JWT claim header that the
-    /// middleware accepts in test mode.
+    /// Build a JSON POST request authenticated with the test JWT.
     fn post_json(&self, uri: &str, body: Value) -> Request<Body> {
         Request::builder()
             .method("POST")
             .uri(uri)
             .header("Content-Type", "application/json")
-            .header("X-Test-Tenant-Id", self.tenant_id.inner().to_string())
-            .header("X-Test-User-Id", Uuid::new_v4().to_string())
+            .header("Authorization", format!("Bearer {}", self.test_token))
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap()
     }
@@ -139,8 +189,7 @@ impl TestApp {
         Request::builder()
             .method("GET")
             .uri(uri)
-            .header("X-Test-Tenant-Id", self.tenant_id.inner().to_string())
-            .header("X-Test-User-Id", Uuid::new_v4().to_string())
+            .header("Authorization", format!("Bearer {}", self.test_token))
             .body(Body::empty())
             .unwrap()
     }
