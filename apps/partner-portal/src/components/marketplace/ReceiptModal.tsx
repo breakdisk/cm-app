@@ -15,7 +15,8 @@ import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, Printer, Share2, CheckCircle2, FileText, Loader2 } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
-import type { BusReceipt, BusBookingStatus } from "@/lib/api/marketplace-bus";
+import type { BusReceipt } from "@/lib/api/marketplace-bus";
+import type { BookingStatus } from "@/lib/api/marketplace";
 
 export interface ReceiptModalBooking {
   id:                   string;
@@ -28,7 +29,7 @@ export interface ReceiptModalBooking {
   pickup_at:            string;
   cargo_weight_kg:      number;
   quoted_price_cents:   number;
-  status:               BusBookingStatus;
+  status:               BookingStatus;
 }
 
 interface Props {
