@@ -8,19 +8,26 @@
 use std::sync::Arc;
 use chrono::Utc;
 use logisticos_errors::{AppError, AppResult};
+use sqlx::PgPool;
 use crate::{
     domain::entities::{
         notification::{Notification, NotificationPriority, NotificationStatus},
         template::{NotificationChannel, NotificationTemplate},
     },
-    infrastructure::channels::ChannelAdapter,
+    infrastructure::{
+        channels::ChannelAdapter,
+        db::NotificationDb,
+    },
 };
 
 pub struct NotificationService {
+    /// Global fallback adapters — used when the tenant has no custom credentials.
     whatsapp: Arc<dyn ChannelAdapter>,
     sms:      Arc<dyn ChannelAdapter>,
     email:    Arc<dyn ChannelAdapter>,
     push:     Arc<dyn ChannelAdapter>,
+    /// DB pool used to look up per-tenant channel config at dispatch time.
+    db_pool:  Option<PgPool>,
 }
 
 impl NotificationService {
@@ -30,10 +37,33 @@ impl NotificationService {
         email:    Arc<dyn ChannelAdapter>,
         push:     Arc<dyn ChannelAdapter>,
     ) -> Self {
-        Self { whatsapp, sms, email, push }
+        Self { whatsapp, sms, email, push, db_pool: None }
+    }
+
+    pub fn with_db(mut self, pool: PgPool) -> Self {
+        self.db_pool = Some(pool);
+        self
     }
 
     pub async fn dispatch(&self, notification: &mut Notification) -> AppResult<()> {
+        // Check per-tenant channel config when DB is available.
+        if let Some(pool) = &self.db_pool {
+            let db = NotificationDb::new(pool.clone());
+            if let Ok(Some(cfg)) = db.get_channel_config(notification.tenant_id).await {
+                if !cfg.is_channel_enabled(notification.channel) {
+                    return Err(AppError::BusinessRule(format!(
+                        "{} channel is disabled for this tenant",
+                        notification.channel.as_str()
+                    )));
+                }
+                // Use per-tenant adapter if credentials are configured.
+                if let Some(tenant_adapter) = cfg.build_adapter(notification.channel) {
+                    return self.dispatch_with(notification, tenant_adapter.as_ref()).await;
+                }
+            }
+        }
+
+        // Fall back to global env-var-backed adapter.
         let adapter: &dyn ChannelAdapter = match notification.channel {
             NotificationChannel::WhatsApp => self.whatsapp.as_ref(),
             NotificationChannel::Sms      => self.sms.as_ref(),
@@ -41,6 +71,14 @@ impl NotificationService {
             NotificationChannel::Push     => self.push.as_ref(),
         };
 
+        self.dispatch_with(notification, adapter).await
+    }
+
+    async fn dispatch_with(
+        &self,
+        notification: &mut Notification,
+        adapter: &dyn ChannelAdapter,
+    ) -> AppResult<()> {
         match adapter.send(&notification.recipient, &notification.rendered_body, notification.subject.as_deref()).await {
             Ok(provider_id) => {
                 notification.mark_sent(provider_id);

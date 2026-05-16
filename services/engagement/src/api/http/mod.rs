@@ -25,6 +25,7 @@ use logisticos_errors::AppError;
 use crate::{
     application::services::notification_service::NotificationService,
     domain::entities::{
+        channel_config::UpdateChannelConfigRequest,
         notification::{NotificationPriority, NotificationStatus},
         template::{NotificationChannel, NotificationTemplate},
     },
@@ -39,6 +40,7 @@ use crate::{
 const PERM_SEND:             &str = "engagement:send";
 const PERM_READ:             &str = "engagement:read";
 const PERM_TEMPLATES_WRITE:  &str = "engagement:templates:write";
+const PERM_CHANNELS_WRITE:   &str = "engagement:channels:write";
 
 // ---------------------------------------------------------------------------
 // AppState
@@ -523,6 +525,154 @@ async fn list_campaign_sends(
 }
 
 // ---------------------------------------------------------------------------
+// Channel config handlers
+// ---------------------------------------------------------------------------
+
+/// `GET /v1/channel-configs`
+///
+/// Returns the tenant's channel configuration as a masked view (tokens never
+/// returned; account SID shown as last-4 hint only).
+async fn get_channel_config(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+) -> impl IntoResponse {
+    claims.require_permission(PERM_READ)?;
+
+    let db = NotificationDb::new(state.db.clone());
+    let cfg = db.get_channel_config(claims.tenant_id).await
+        .map_err(|e| AppError::Internal(e))?;
+
+    // Return view (or empty defaults if not yet created).
+    let view = cfg
+        .map(|c| c.to_view())
+        .unwrap_or_else(|| {
+            use crate::domain::entities::channel_config::{ChannelConfigView, ChannelView};
+            let default_ch = |_| ChannelView {
+                enabled: false, configured: false,
+                account_sid_hint: None, from_number: None,
+                from_address: None, from_name: None,
+            };
+            ChannelConfigView {
+                whatsapp: default_ch(()),
+                sms:      default_ch(()),
+                email:    default_ch(()),
+                push:     ChannelView {
+                    enabled: false, configured: true, // Expo needs no creds
+                    account_sid_hint: None, from_number: None,
+                    from_address: None, from_name: None,
+                },
+            }
+        });
+
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "config": view }))))
+}
+
+/// `PUT /v1/channel-configs`
+///
+/// Upserts per-tenant channel configuration. Only supplied fields are updated;
+/// omitted fields retain their current values. Auth tokens submitted as empty
+/// strings are ignored (re-enter to update pattern).
+async fn put_channel_config(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Json(mut req): Json<UpdateChannelConfigRequest>,
+) -> impl IntoResponse {
+    claims.require_permission(PERM_CHANNELS_WRITE)?;
+
+    // Treat empty strings as None so they don't clobber existing tokens.
+    let normalize = |s: Option<String>| -> Option<String> {
+        s.and_then(|v| if v.trim().is_empty() { None } else { Some(v) })
+    };
+
+    if let Some(w) = req.whatsapp.as_mut() {
+        w.auth_token  = normalize(w.auth_token.take());
+        w.account_sid = normalize(w.account_sid.take());
+        w.from_number = normalize(w.from_number.take());
+    }
+    if let Some(s) = req.sms.as_mut() {
+        s.auth_token  = normalize(s.auth_token.take());
+        s.account_sid = normalize(s.account_sid.take());
+        s.from_number = normalize(s.from_number.take());
+    }
+    if let Some(e) = req.email.as_mut() {
+        e.from_address = normalize(e.from_address.take());
+        e.from_name    = normalize(e.from_name.take());
+    }
+
+    let db = NotificationDb::new(state.db.clone());
+    let updated = db.upsert_channel_config(claims.tenant_id, &req).await
+        .map_err(|e| AppError::Internal(e))?;
+
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+        "config": updated.to_view()
+    }))))
+}
+
+/// `GET /v1/channels/health`
+///
+/// Returns per-channel health status: enabled, configured, and whether the
+/// global provider is ready (env vars set at service boot).
+async fn get_channels_health(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+) -> impl IntoResponse {
+    claims.require_permission(PERM_READ)?;
+
+    let db = NotificationDb::new(state.db.clone());
+    let cfg = db.get_channel_config(claims.tenant_id).await
+        .map_err(|e| AppError::Internal(e))?;
+
+    // Global provider readiness flags (set once at boot via env vars).
+    let twilio_ready = std::env::var("TWILIO_ACCOUNT_SID")
+        .ok()
+        .as_deref()
+        .is_some_and(|v| !v.is_empty() && v != "placeholder" && v != "dev-placeholder");
+    let ses_ready = std::env::var("SES_FROM_EMAIL")
+        .ok()
+        .as_deref()
+        .is_some_and(|v| !v.is_empty() && v != "noreply@logisticos.app" && v != "noreply@cargomarket.net");
+
+    let (wa_en, wa_cfg, sms_en, sms_cfg, em_en, em_cfg, push_en) =
+        if let Some(c) = &cfg {
+            (c.whatsapp_enabled, c.whatsapp_configured(),
+             c.sms_enabled,      c.sms_configured(),
+             c.email_enabled,    c.email_configured(),
+             c.push_enabled)
+        } else {
+            (false, false, false, false, false, false, false)
+        };
+
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+        "channels": {
+            "whatsapp": {
+                "enabled":        wa_en,
+                "configured":     wa_cfg || twilio_ready,
+                "provider":       "twilio",
+                "provider_ready": twilio_ready || wa_cfg,
+            },
+            "sms": {
+                "enabled":        sms_en,
+                "configured":     sms_cfg || twilio_ready,
+                "provider":       "twilio",
+                "provider_ready": twilio_ready || sms_cfg,
+            },
+            "email": {
+                "enabled":        em_en,
+                "configured":     em_cfg || ses_ready,
+                "provider":       "ses",
+                "provider_ready": ses_ready,
+            },
+            "push": {
+                "enabled":        push_en,
+                "configured":     true,
+                "provider":       "expo",
+                "provider_ready": true,
+            },
+        }
+    }))))
+}
+
+// ---------------------------------------------------------------------------
 // Observability handlers
 // ---------------------------------------------------------------------------
 
@@ -573,6 +723,9 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/campaigns",              get(list_campaigns))
         .route("/v1/campaigns/:id",          get(get_campaign))
         .route("/v1/campaigns/:id/sends",    get(list_campaign_sends))
+        // ── Channel config ──────────────────────────────────────────
+        .route("/v1/channel-configs",        get(get_channel_config).put(put_channel_config))
+        .route("/v1/channels/health",        get(get_channels_health))
         // ── Observability ───────────────────────────────────────────
         .route("/health",                get(health))
         .route("/ready",                 get(ready))
