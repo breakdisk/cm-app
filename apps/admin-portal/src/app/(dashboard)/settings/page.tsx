@@ -455,14 +455,17 @@ function FeatureFlagsTab() {
 // Live: identity /v1/api-keys list + create + revoke.
 
 function ApiKeysTab() {
-  const [keys, setKeys]               = useState<ApiKey[]>([]);
-  const [loading, setLoading]         = useState(true);
-  const [error, setError]             = useState<string | null>(null);
-  const [creating, setCreating]       = useState(false);
-  const [newName, setNewName]         = useState("");
-  const [newScopes, setNewScopes]     = useState("shipments:read,shipments:write");
-  const [justCreated, setJustCreated] = useState<CreateApiKeyResult | null>(null);
-  const [revokingId, setRevokingId]   = useState<string | null>(null);
+  const [keys, setKeys]                   = useState<ApiKey[]>([]);
+  const [loading, setLoading]             = useState(true);
+  const [error, setError]                 = useState<string | null>(null);
+  const [creating, setCreating]           = useState(false);
+  const [newName, setNewName]             = useState("");
+  const [newScopes, setNewScopes]         = useState("shipments:read,shipments:write");
+  const [newExpiryDays, setNewExpiryDays] = useState<number>(0);
+  const [justCreated, setJustCreated]     = useState<CreateApiKeyResult | null>(null);
+  const [revokingId, setRevokingId]       = useState<string | null>(null);
+  const [pendingRevokeId, setPendingRevokeId] = useState<string | null>(null);
+  const [showRevoked, setShowRevoked]     = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
@@ -484,11 +487,13 @@ function ApiKeysTab() {
     setError(null);
     try {
       const result = await apiKeysApi.create({
-        name:   newName.trim(),
-        scopes: newScopes.split(",").map((s) => s.trim()).filter(Boolean),
+        name:            newName.trim(),
+        scopes:          newScopes.split(",").map((s) => s.trim()).filter(Boolean),
+        expires_in_days: newExpiryDays > 0 ? newExpiryDays : undefined,
       });
       setJustCreated(result);
       setNewName("");
+      setNewExpiryDays(0);
       await load();
     } catch (e) {
       const err = e as { message?: string };
@@ -499,6 +504,7 @@ function ApiKeysTab() {
   }
 
   async function handleRevoke(id: string) {
+    setPendingRevokeId(null);
     setRevokingId(id);
     try {
       await apiKeysApi.revoke(id);
@@ -549,7 +555,7 @@ function ApiKeysTab() {
       {/* Create form */}
       <GlassCard>
         <h3 className="text-sm font-semibold text-white mb-3">Generate new API key</h3>
-        <div className="grid grid-cols-1 md:grid-cols-[2fr_3fr_auto] gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-[2fr_3fr_1fr_auto] gap-3">
           <input
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
@@ -563,6 +569,17 @@ function ApiKeysTab() {
             placeholder="Scopes (comma-separated)"
             className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm font-mono text-white placeholder-white/25 outline-none focus:border-[#00E5FF]/40"
           />
+          <select
+            value={newExpiryDays}
+            onChange={(e) => setNewExpiryDays(Number(e.target.value))}
+            className="rounded-lg border border-white/10 bg-[#050810] px-3 py-2 text-sm text-white outline-none focus:border-[#00E5FF]/40"
+          >
+            <option value={0}>No expiry</option>
+            <option value={30}>30 days</option>
+            <option value={60}>60 days</option>
+            <option value={90}>90 days</option>
+            <option value={365}>1 year</option>
+          </select>
           <button
             onClick={handleCreate}
             disabled={creating || !newName.trim()}
@@ -576,30 +593,48 @@ function ApiKeysTab() {
       {/* Existing keys */}
       <GlassCard padding="none">
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/[0.08]">
-          <h2 className="font-heading text-sm font-semibold text-white">Active API Keys</h2>
-          <span className="text-2xs font-mono text-white/30">
-            {loading ? "loading…" : `${keys.length} key${keys.length === 1 ? "" : "s"}`}
-          </span>
+          <h2 className="font-heading text-sm font-semibold text-white">
+            {showRevoked ? "All API Keys" : "Active API Keys"}
+          </h2>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setShowRevoked(!showRevoked)}
+              className={`text-[10px] font-mono px-2.5 py-1 rounded border transition-colors ${
+                showRevoked
+                  ? "border-[#FF3B5C]/40 text-[#FF3B5C] bg-[#FF3B5C]/5"
+                  : "border-white/10 text-white/30 hover:text-white/50"
+              }`}
+            >
+              {showRevoked ? "hide revoked" : "show revoked"}
+            </button>
+            <span className="text-2xs font-mono text-white/30">
+              {loading ? "loading…" : (() => {
+                const displayed = showRevoked ? keys : keys.filter(k => k.is_active);
+                return `${displayed.length} key${displayed.length === 1 ? "" : "s"}`;
+              })()}
+            </span>
+          </div>
         </div>
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-white/[0.08]">
-              {["Name", "Prefix", "Scopes", "Last Used", "Status", ""].map((h) => (
+              {["Name", "Prefix", "Scopes", "Last Used", "Expires", "Status", ""].map((h) => (
                 <th key={h} className="text-left px-4 py-3 text-xs text-white/30 uppercase tracking-widest font-mono">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {!loading && keys.length === 0 ? (
+            {!loading && keys.filter(k => showRevoked || k.is_active).length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-5 py-10 text-center text-xs text-white/40 font-mono">
+                <td colSpan={7} className="px-5 py-10 text-center text-xs text-white/40 font-mono">
                   No API keys yet. Generate one above.
                 </td>
               </tr>
             ) : (
-              keys.map((k) => {
+              keys.filter(k => showRevoked || k.is_active).map((k) => {
                 const id = apiKeyIdOf(k);
                 const busy = revokingId === id;
+                const confirmingRevoke = pendingRevokeId === id;
                 return (
                   <tr key={id} className="border-b border-white/[0.04] hover:bg-white/[0.02]">
                     <td className="px-4 py-3 text-white font-medium">{k.name}</td>
@@ -618,6 +653,9 @@ function ApiKeysTab() {
                     <td className="px-4 py-3 text-white/40 text-xs font-mono">
                       {k.last_used_at ? new Date(k.last_used_at).toLocaleDateString() : "never"}
                     </td>
+                    <td className="px-4 py-3 text-white/40 text-xs font-mono">
+                      {k.expires_at ? new Date(k.expires_at).toLocaleDateString() : "never"}
+                    </td>
                     <td className="px-4 py-3">
                       <NeonBadge variant={k.is_active ? "green" : "red"} dot>
                         {k.is_active ? "active" : "revoked"}
@@ -625,13 +663,32 @@ function ApiKeysTab() {
                     </td>
                     <td className="px-4 py-3">
                       {k.is_active && (
-                        <button
-                          onClick={() => handleRevoke(id)}
-                          disabled={busy}
-                          className="text-xs text-[#FF3B5C] hover:text-[#FF3B5C]/70 disabled:opacity-40"
-                        >
-                          {busy ? "…" : "Revoke"}
-                        </button>
+                        confirmingRevoke ? (
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] text-white/40 font-mono">Confirm?</span>
+                            <button
+                              onClick={() => handleRevoke(id)}
+                              disabled={busy}
+                              className="text-[10px] text-[#FF3B5C] font-mono hover:opacity-70 disabled:opacity-40"
+                            >
+                              Yes
+                            </button>
+                            <button
+                              onClick={() => setPendingRevokeId(null)}
+                              className="text-[10px] text-white/40 font-mono hover:opacity-70"
+                            >
+                              No
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => setPendingRevokeId(id)}
+                            disabled={busy}
+                            className="text-xs text-[#FF3B5C] hover:text-[#FF3B5C]/70 disabled:opacity-40"
+                          >
+                            {busy ? "…" : "Revoke"}
+                          </button>
+                        )
                       )}
                     </td>
                   </tr>
