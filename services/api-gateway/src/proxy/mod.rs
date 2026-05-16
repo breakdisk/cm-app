@@ -33,8 +33,8 @@ impl ProxyClient {
         if path.starts_with("/v1/internal") || path.contains("/internal/") {
             return None;
         }
-        // Identity & Auth
-        if path.starts_with("/v1/auth") || path.starts_with("/v1/users") || path.starts_with("/v1/tenants") || path.starts_with("/v1/api-keys") || path.starts_with("/v1/audit-log") || path.starts_with("/v1/push-tokens") {
+        // Identity & Auth (includes /v1/pickup-addresses managed by identity service)
+        if path.starts_with("/v1/auth") || path.starts_with("/v1/users") || path.starts_with("/v1/tenants") || path.starts_with("/v1/api-keys") || path.starts_with("/v1/audit-log") || path.starts_with("/v1/push-tokens") || path.starts_with("/v1/pickup-addresses") {
             Some(&self.services.identity_url)
         // Order & Shipment Intake
         } else if path.starts_with("/v1/shipments") || path.starts_with("/v1/orders") {
@@ -75,8 +75,8 @@ impl ProxyClient {
         // Customer Data Platform
         } else if path.starts_with("/v1/customers") || path.starts_with("/v1/profiles") {
             Some(&self.services.cdp_url)
-        // Engagement & Notifications
-        } else if path.starts_with("/v1/notifications") || path.starts_with("/v1/engagement") {
+        // Engagement & Notifications (includes /v1/templates used by Settings → Notification Channels)
+        } else if path.starts_with("/v1/notifications") || path.starts_with("/v1/engagement") || path.starts_with("/v1/templates") {
             Some(&self.services.engagement_url)
         // AI Intelligence Layer
         } else if path.starts_with("/v1/ai") || path.starts_with("/v1/agents") {

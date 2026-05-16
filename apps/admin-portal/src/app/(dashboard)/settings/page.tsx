@@ -17,6 +17,7 @@ import {
   apiKeysApi, apiKeyIdOf,
   type ApiKey, type CreateApiKeyResult,
 } from "@/lib/api/api-keys";
+import { createIdentityApi } from "@/lib/api/identity";
 import { authFetch } from "@/lib/auth/auth-fetch";
 import { usePermissions } from "@/hooks/usePermissions";
 
@@ -333,10 +334,11 @@ function ApiKeysTab() {
   const [keys, setKeys]               = useState<ApiKey[]>([]);
   const [loading, setLoading]         = useState(true);
   const [error, setError]             = useState<string | null>(null);
-  const [creating, setCreating]       = useState(false);
-  const [newName, setNewName]         = useState("");
-  const [newScopes, setNewScopes]     = useState("shipments:read,shipments:write");
-  const [justCreated, setJustCreated] = useState<CreateApiKeyResult | null>(null);
+  const [creating, setCreating]         = useState(false);
+  const [newName, setNewName]           = useState("");
+  const [newScopes, setNewScopes]       = useState("shipments:read,shipments:write");
+  const [newExpiryDays, setNewExpiryDays] = useState<string>("");
+  const [justCreated, setJustCreated]   = useState<CreateApiKeyResult | null>(null);
   const [revokingId, setRevokingId]   = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -358,12 +360,15 @@ function ApiKeysTab() {
     setCreating(true);
     setError(null);
     try {
+      const expiryNum = parseInt(newExpiryDays, 10);
       const result = await apiKeysApi.create({
-        name:   newName.trim(),
-        scopes: newScopes.split(",").map((s) => s.trim()).filter(Boolean),
+        name:            newName.trim(),
+        scopes:          newScopes.split(",").map((s) => s.trim()).filter(Boolean),
+        expires_in_days: Number.isFinite(expiryNum) && expiryNum > 0 ? expiryNum : undefined,
       });
       setJustCreated(result);
       setNewName("");
+      setNewExpiryDays("");
       await load();
     } catch (e) {
       const err = e as { message?: string };
@@ -424,7 +429,7 @@ function ApiKeysTab() {
       {/* Create form */}
       <GlassCard>
         <h3 className="text-sm font-semibold text-white mb-3">Generate new API key</h3>
-        <div className="grid grid-cols-1 md:grid-cols-[2fr_3fr_auto] gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-[2fr_3fr_1fr_auto] gap-3">
           <input
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
@@ -437,6 +442,15 @@ function ApiKeysTab() {
             onChange={(e) => setNewScopes(e.target.value)}
             placeholder="Scopes (comma-separated)"
             className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm font-mono text-white placeholder-white/25 outline-none focus:border-[#00E5FF]/40"
+          />
+          <input
+            type="number"
+            min={1}
+            max={3650}
+            value={newExpiryDays}
+            onChange={(e) => setNewExpiryDays(e.target.value)}
+            placeholder="Expires (days)"
+            className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white placeholder-white/25 outline-none focus:border-[#00E5FF]/40"
           />
           <button
             onClick={handleCreate}
@@ -520,12 +534,26 @@ function ApiKeysTab() {
   );
 }
 
-// ── Roles tab — live from /v1/users grouped by role ──────────────────────────
+// ── Roles tab — live from /v1/users grouped by role + invite ─────────────────
+
+const INVITABLE_ROLES = ["admin", "dispatcher", "merchant", "finance", "readonly", "partner"];
 
 function RolesTab() {
+  const { hasPermission } = usePermissions();
   const [users, setUsers]     = useState<IdentityUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
+
+  // Invite modal state
+  const [showInvite,      setShowInvite]      = useState(false);
+  const [inviteEmail,     setInviteEmail]     = useState("");
+  const [inviteFirstName, setInviteFirstName] = useState("");
+  const [inviteLastName,  setInviteLastName]  = useState("");
+  const [invitePhone,     setInvitePhone]     = useState("");
+  const [inviteRole,      setInviteRole]      = useState("dispatcher");
+  const [inviting,        setInviting]        = useState(false);
+  const [inviteError,     setInviteError]     = useState<string | null>(null);
+  const [invitedEmail,    setInvitedEmail]    = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -566,11 +594,61 @@ function RolesTab() {
     }));
   }, [users]);
 
+  async function handleInvite() {
+    if (!inviteEmail.trim() || !inviteFirstName.trim() || !inviteLastName.trim()) return;
+    setInviting(true);
+    setInviteError(null);
+    try {
+      await createIdentityApi().inviteUser({
+        email:        inviteEmail.trim(),
+        first_name:   inviteFirstName.trim(),
+        last_name:    inviteLastName.trim(),
+        roles:        [inviteRole],
+        phone_number: invitePhone.trim() || undefined,
+      });
+      setInvitedEmail(inviteEmail.trim());
+      setInviteEmail("");
+      setInviteFirstName("");
+      setInviteLastName("");
+      setInvitePhone("");
+      await load();
+    } catch (e) {
+      const err = e as { response?: { data?: { error?: { message?: string } } }; message?: string };
+      setInviteError(err?.response?.data?.error?.message ?? err?.message ?? "Invite failed");
+    } finally {
+      setInviting(false);
+    }
+  }
+
+  function closeInviteModal() {
+    setShowInvite(false);
+    setInviteEmail("");
+    setInviteFirstName("");
+    setInviteLastName("");
+    setInvitePhone("");
+    setInviteRole("dispatcher");
+    setInviteError(null);
+    setInvitedEmail(null);
+  }
+
   return (
     <motion.div variants={variants.fadeInUp} className="space-y-4">
-      {error && (
-        <p className="text-xs text-red-signal font-mono">{error}</p>
-      )}
+      <div className="flex justify-between items-center">
+        <p className="text-sm text-white/40">
+          Users grouped by role · a user can hold multiple roles.
+        </p>
+        {hasPermission("users:invite") && (
+          <button
+            onClick={() => setShowInvite(true)}
+            className="px-4 py-2 text-sm font-medium text-[#050810] bg-[#00FF88] rounded-lg hover:bg-[#00FF88]/90 transition-colors"
+          >
+            + Invite User
+          </button>
+        )}
+      </div>
+
+      {error && <p className="text-xs text-red-signal font-mono">{error}</p>}
+
       <GlassCard padding="none">
         <table className="w-full text-sm">
           <thead>
@@ -605,6 +683,121 @@ function RolesTab() {
         Source: identity <span className="text-[#00E5FF]">/v1/users</span> · grouped by user.roles[]
         · descriptions mirror libs/auth/src/rbac.rs::default_permissions_for_role.
       </p>
+
+      {/* Invite user modal */}
+      {showInvite && (
+        <div className="fixed inset-0 bg-canvas/80 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-canvas border border-white/10 rounded-xl p-6 w-full max-w-md space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-white">Invite User</h3>
+              <button onClick={closeInviteModal} className="text-white/40 hover:text-white">✕</button>
+            </div>
+
+            {invitedEmail ? (
+              <>
+                <div className="rounded-md border border-[#00FF88]/30 bg-[#00FF88]/5 p-3">
+                  <p className="text-sm text-[#00FF88] font-mono">
+                    Invited <span className="font-semibold">{invitedEmail}</span>. They will receive a temporary password via email.
+                  </p>
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button
+                    onClick={() => { setInvitedEmail(null); }}
+                    className="px-3 py-1.5 text-xs text-white/60 hover:text-white border border-white/10 rounded"
+                  >
+                    Invite Another
+                  </button>
+                  <button
+                    onClick={closeInviteModal}
+                    className="px-4 py-2 text-sm font-medium text-[#050810] bg-[#00FF88] rounded-lg hover:bg-[#00FF88]/90 transition-colors"
+                  >
+                    Done
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block">
+                    <span className="text-xs text-white/40 uppercase tracking-widest font-mono block mb-1">First Name</span>
+                    <input
+                      type="text"
+                      value={inviteFirstName}
+                      onChange={(e) => setInviteFirstName(e.target.value)}
+                      placeholder="Jane"
+                      className="w-full rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-sm text-white focus:border-cyan-neon/50 focus:outline-none"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-xs text-white/40 uppercase tracking-widest font-mono block mb-1">Last Name</span>
+                    <input
+                      type="text"
+                      value={inviteLastName}
+                      onChange={(e) => setInviteLastName(e.target.value)}
+                      placeholder="Santos"
+                      className="w-full rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-sm text-white focus:border-cyan-neon/50 focus:outline-none"
+                    />
+                  </label>
+                </div>
+                <label className="block">
+                  <span className="text-xs text-white/40 uppercase tracking-widest font-mono block mb-1">Email</span>
+                  <input
+                    type="email"
+                    value={inviteEmail}
+                    onChange={(e) => setInviteEmail(e.target.value)}
+                    placeholder="user@example.com"
+                    className="w-full rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-sm text-white focus:border-cyan-neon/50 focus:outline-none"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs text-white/40 uppercase tracking-widest font-mono block mb-1">Role</span>
+                  <select
+                    value={inviteRole}
+                    onChange={(e) => setInviteRole(e.target.value)}
+                    className="w-full rounded-md border border-white/10 bg-[#050810] px-3 py-1.5 text-sm text-white focus:border-cyan-neon/50 focus:outline-none"
+                  >
+                    {INVITABLE_ROLES.map((r) => (
+                      <option key={r} value={r}>{r}</option>
+                    ))}
+                  </select>
+                  <p className="text-2xs font-mono text-white/30 mt-1">
+                    {ROLE_DESCRIPTIONS[inviteRole] ?? ""}
+                  </p>
+                </label>
+                {inviteRole === "driver" && (
+                  <label className="block">
+                    <span className="text-xs text-white/40 uppercase tracking-widest font-mono block mb-1">Phone (E.164) — required for driver OTP login</span>
+                    <input
+                      type="tel"
+                      value={invitePhone}
+                      onChange={(e) => setInvitePhone(e.target.value)}
+                      placeholder="+639171234567"
+                      className="w-full rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-sm text-white font-mono focus:border-cyan-neon/50 focus:outline-none"
+                    />
+                  </label>
+                )}
+                {inviteError && <p className="text-xs text-red-signal font-mono">{inviteError}</p>}
+                <div className="flex justify-end gap-2">
+                  <button
+                    onClick={closeInviteModal}
+                    disabled={inviting}
+                    className="px-3 py-1.5 text-xs text-white/60 hover:text-white"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleInvite}
+                    disabled={inviting || !inviteEmail.trim() || !inviteFirstName.trim() || !inviteLastName.trim()}
+                    className="px-4 py-2 text-sm font-medium text-[#050810] bg-[#00FF88] rounded-lg hover:bg-[#00FF88]/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {inviting ? "Inviting…" : "Send Invite"}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </motion.div>
   );
 }
@@ -661,12 +854,20 @@ function TenantProfileCard() {
 
   async function handleSave() {
     if (!tenant || !form) return;
+    if (!form.name.trim()) { setError("Tenant name cannot be empty."); return; }
+    if (form.owner_email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.owner_email.trim())) {
+      setError("Owner email is not a valid email address."); return;
+    }
     setSaving(true);
     setError(null);
     try {
+      // Only send owner_email if non-empty; backend Option<String> with #[validate(email)]
+      // rejects "" as an invalid email, so omit the field rather than sending blank.
+      const body: Record<string, string> = { name: form.name.trim() };
+      if (form.owner_email.trim()) body.owner_email = form.owner_email.trim();
       const res = await authFetch(`${API_BASE}/v1/tenants/${tenantIdOf(tenant)}`, {
         method: "PUT",
-        body: JSON.stringify({ name: form.name, owner_email: form.owner_email }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
@@ -1063,26 +1264,38 @@ function WebhooksTab() {
 
 // ── Audit Log tab — live from identity /v1/audit-log ─────────────────────────
 
-function AuditLogTab() {
-  const [entries,  setEntries]  = useState<AuditEntry[]>([]);
-  const [loading,  setLoading]  = useState(true);
-  const [error,    setError]    = useState<string | null>(null);
+const AUDIT_PAGE_SIZE = 50;
 
-  const load = useCallback(async () => {
+function AuditLogTab() {
+  const [entries,    setEntries]    = useState<AuditEntry[]>([]);
+  const [loading,    setLoading]    = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore,    setHasMore]    = useState(false);
+  const [offset,     setOffset]     = useState(0);
+  const [error,      setError]      = useState<string | null>(null);
+
+  const load = useCallback(async (currentOffset: number, append: boolean) => {
+    if (append) setLoadingMore(true); else setLoading(true);
     setError(null);
     try {
-      const res = await authFetch(`${API_BASE}/v1/audit-log`);
+      const res = await authFetch(
+        `${API_BASE}/v1/audit-log?limit=${AUDIT_PAGE_SIZE}&offset=${currentOffset}`,
+      );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
-      setEntries(Array.isArray(json.data) ? json.data : []);
+      const page: AuditEntry[] = Array.isArray(json.data) ? json.data : [];
+      setEntries((prev) => append ? [...prev, ...page] : page);
+      setHasMore(json.has_more === true);
+      setOffset(currentOffset + page.length);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load audit log");
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(0, false); }, [load]);
 
   return (
     <motion.div variants={variants.fadeInUp} className="space-y-4">
@@ -1129,6 +1342,17 @@ function AuditLogTab() {
             ))}
           </tbody>
         </table>
+        {hasMore && (
+          <div className="flex justify-center px-4 py-3 border-t border-white/[0.08]">
+            <button
+              onClick={() => load(offset, true)}
+              disabled={loadingMore}
+              className="px-4 py-2 text-xs font-mono text-white/50 hover:text-white border border-white/10 rounded-lg hover:border-white/20 transition-colors disabled:opacity-40"
+            >
+              {loadingMore ? "Loading…" : `Load more · showing ${entries.length}`}
+            </button>
+          </div>
+        )}
       </GlassCard>
     </motion.div>
   );
