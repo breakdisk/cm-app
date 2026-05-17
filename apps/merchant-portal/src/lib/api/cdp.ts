@@ -77,6 +77,45 @@ export interface UpsertProfilePayload {
   phone?: string;
 }
 
+export interface ChurnScore {
+  external_customer_id: string;
+  churn_score: number;
+  risk_tier: "low" | "medium" | "high";
+  signals: {
+    clv_score: number;
+    engagement_score: number;
+    last_shipment_at?: string | null;
+    total_shipments: number;
+  };
+}
+
+export interface CustomerPreferences {
+  external_customer_id: string;
+  preferred_channel: "whatsapp" | "sms" | "email" | "push";
+  opt_in: {
+    whatsapp: boolean;
+    sms: boolean;
+    email: boolean;
+    push: boolean;
+  };
+  language: string;
+  delivery_time_window: {
+    preferred_from_hour: number;
+    preferred_to_hour: number;
+  };
+}
+
+export interface OpenTicketPayload {
+  subject?: string;
+  message?: string;
+}
+
+export interface SupportTicketResponse {
+  ticket_id: string;
+  customer_id: string;
+  status: "open" | "closed";
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 export function profileIdOf(p: CustomerProfile): string {
@@ -134,6 +173,31 @@ export function createCdpApi() {
     async events(externalId: string): Promise<BehavioralEvent[]> {
       const { data } = await http.get<{ events: BehavioralEvent[] }>(`/v1/customers/${externalId}/events`);
       return data.events ?? [];
+    },
+
+    async churnScore(externalId: string): Promise<ChurnScore> {
+      const { data } = await http.get<ChurnScore>(`/v1/customers/${externalId}/churn-score`);
+      return data;
+    },
+
+    async preferences(externalId: string): Promise<CustomerPreferences> {
+      const { data } = await http.get<CustomerPreferences>(`/v1/customers/${externalId}/preferences`);
+      return data;
+    },
+
+    async openSupportTicket(externalId: string, payload: OpenTicketPayload): Promise<SupportTicketResponse> {
+      const { data } = await http.post<SupportTicketResponse>(
+        `/v1/customers/${externalId}/support-tickets`,
+        payload,
+      );
+      return data;
+    },
+
+    async closeSupportTicket(externalId: string, ticketId: string): Promise<SupportTicketResponse> {
+      const { data } = await http.post<SupportTicketResponse>(
+        `/v1/customers/${externalId}/support-tickets/${ticketId}/close`,
+      );
+      return data;
     },
   };
 }
