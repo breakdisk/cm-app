@@ -21,8 +21,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 import java.time.Instant
 import java.time.format.DateTimeFormatter
 import javax.inject.Inject
@@ -209,7 +207,7 @@ class HomeViewModel @Inject constructor(
                 syncQueueDao.enqueue(
                     SyncQueueEntity(
                         action      = if (goingOnline) SyncAction.SHIFT_START else SyncAction.SHIFT_END,
-                        payloadJson = Json.encodeToString(mapOf("goingOnline" to goingOnline.toString())),
+                        payloadJson = "{}",   // action itself encodes intent; no extra fields needed
                         createdAt   = System.currentTimeMillis()
                     )
                 )
