@@ -227,8 +227,21 @@ class OutboundSyncWorker @AssistedInject constructor(
                 podDao.markSynced(taskId)
             }
 
-            // Actions with no backend wiring. Log and drop deliberately so they
-            // don't block the queue forever.
+            SyncAction.SHIFT_START -> {
+                // Retry POST /v1/drivers/go-online that failed in HomeViewModel
+                // (network unavailable at toggle time). The worker removes this item
+                // on success, so the driver's availability flips server-side as soon
+                // as connectivity returns — dispatch's proximity query can then find them.
+                driverOpsApi.goOnline()
+            }
+
+            SyncAction.SHIFT_END -> {
+                // Mirror of SHIFT_START — retry POST /v1/drivers/go-offline.
+                driverOpsApi.goOffline()
+            }
+
+            // SCAN_EVENT, COD_CONFIRM, and any future actions without a handler.
+            // Log and drop deliberately so they don't block the queue forever.
             else -> {
                 android.util.Log.w(
                     "OutboundSyncWorker",

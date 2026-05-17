@@ -26,6 +26,7 @@ import io.logisticos.driver.feature.pod.ui.PodScreen
 import io.logisticos.driver.feature.profile.presentation.ProfileViewModel
 import io.logisticos.driver.feature.profile.ui.ComplianceScreen
 import io.logisticos.driver.feature.profile.ui.ProfileScreen
+import io.logisticos.driver.feature.route.presentation.RouteViewModel
 import io.logisticos.driver.feature.route.ui.RouteScreen
 import io.logisticos.driver.feature.scanner.ui.ScannerScreen
 
@@ -103,8 +104,15 @@ fun ShiftScaffold(rootNavController: NavHostController) {
             }
 
             composable(SCAN_ROUTE) {
+                // RouteViewModel.Factory with shiftId="" reactively resolves the active
+                // shift from Room — the AWB list updates in real-time as syncs complete.
+                // Previously passing emptyList() made the scanner always show 0/0.
+                val routeVm: RouteViewModel = hiltViewModel<RouteViewModel, RouteViewModel.Factory>(
+                    creationCallback = { factory -> factory.create("") }
+                )
+                val routeState by routeVm.uiState.collectAsState()
                 ScannerScreen(
-                    expectedAwbs = emptyList(),
+                    expectedAwbs = routeState.activeTasks.map { it.awb },
                     onAllScanned = { shiftNavController.popBackStack() }
                 )
             }
@@ -117,21 +125,16 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                 val vm: ProfileViewModel = hiltViewModel()
                 val context = LocalContext.current
                 ProfileScreen(
-                    sessionManager = vm.sessionManager,
-                    isOfflineMode = vm.isOfflineMode,
                     onNavigateToCompliance = {
                         shiftNavController.navigate(COMPLIANCE_ROUTE)
                     },
                     onLogout = {
-                        // Clear session then recreate the Activity so all ViewModels,
-                        // background coroutines, and WorkManager workers start fresh.
-                        // Simple nav-to-AUTH_GRAPH leaves stale in-memory state that
-                        // causes the OTP send viewModelScope.launch to never fire after
-                        // logout — recreate() is the reliable fix (same pattern Android
-                        // uses for account switching).
-                        vm.sessionManager.clearSession()
+                        // vm.logout() clears the JWT/session; recreate() tears down all
+                        // ViewModels and WorkManager workers so no stale state remains.
+                        vm.logout()
                         (context as? Activity)?.recreate()
-                    }
+                    },
+                    viewModel = vm
                 )
             }
 

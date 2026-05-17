@@ -9,6 +9,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import io.logisticos.driver.core.database.DriverDatabase
 import io.logisticos.driver.core.database.MIGRATION_3_4
+import io.logisticos.driver.core.database.MIGRATION_4_5
 import io.logisticos.driver.core.database.dao.*
 import javax.inject.Singleton
 
@@ -19,7 +20,7 @@ object DatabaseModule {
     @Provides @Singleton
     fun provideDatabase(@ApplicationContext context: Context): DriverDatabase =
         Room.databaseBuilder(context, DriverDatabase::class.java, "driver_app.db")
-            .addMigrations(MIGRATION_3_4)
+            .addMigrations(MIGRATION_3_4, MIGRATION_4_5)
             .fallbackToDestructiveMigration()
             .build()
 
@@ -30,4 +31,5 @@ object DatabaseModule {
     @Provides fun provideLocationBreadcrumbDao(db: DriverDatabase): LocationBreadcrumbDao = db.locationBreadcrumbDao()
     @Provides fun provideScanEventDao(db: DriverDatabase): ScanEventDao = db.scanEventDao()
     @Provides fun provideSyncQueueDao(db: DriverDatabase): SyncQueueDao = db.syncQueueDao()
+    @Provides fun provideNotificationDao(db: DriverDatabase): NotificationDao = db.notificationDao()
 }

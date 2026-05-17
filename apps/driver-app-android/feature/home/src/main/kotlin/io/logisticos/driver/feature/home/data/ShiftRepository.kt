@@ -108,6 +108,7 @@ class ShiftRepository @Inject constructor(
                 requiresOtp = t.requiresOtp,
                 isCod = (t.codAmountCents ?: 0L) > 0L,
                 codAmount = (t.codAmountCents ?: 0L) / 100.0,
+                notes = t.notes,
                 syncedAt = System.currentTimeMillis()
             )
         }

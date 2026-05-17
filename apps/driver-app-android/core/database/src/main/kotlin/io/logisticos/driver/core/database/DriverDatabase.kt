@@ -16,6 +16,23 @@ val MIGRATION_3_4 = object : Migration(3, 4) {
     }
 }
 
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(database: SupportSQLiteDatabase) {
+        database.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS notifications (
+                id TEXT NOT NULL PRIMARY KEY,
+                type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                body TEXT NOT NULL,
+                receivedAt INTEGER NOT NULL,
+                isRead INTEGER NOT NULL DEFAULT 0
+            )
+            """.trimIndent()
+        )
+    }
+}
+
 @TypeConverters(Converters::class)
 @Database(
     entities = [
@@ -26,8 +43,9 @@ val MIGRATION_3_4 = object : Migration(3, 4) {
         LocationBreadcrumbEntity::class,
         ScanEventEntity::class,
         SyncQueueEntity::class,
+        NotificationEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true
 )
 abstract class DriverDatabase : RoomDatabase() {
@@ -38,4 +56,5 @@ abstract class DriverDatabase : RoomDatabase() {
     abstract fun locationBreadcrumbDao(): LocationBreadcrumbDao
     abstract fun scanEventDao(): ScanEventDao
     abstract fun syncQueueDao(): SyncQueueDao
+    abstract fun notificationDao(): NotificationDao
 }

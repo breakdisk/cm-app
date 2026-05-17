@@ -3,6 +3,7 @@ package io.logisticos.driver.core.network.service
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import retrofit2.http.Body
+import retrofit2.http.GET
 import retrofit2.http.POST
 
 @Serializable
@@ -36,6 +37,28 @@ data class OtpVerifyResponse(
     @SerialName("tenant_id") val tenantId: String
 )
 
+/**
+ * Driver profile from GET /v1/users/me.
+ * password_hash is deliberately omitted — the field leaks a bcrypt hash but
+ * has no legitimate use on the client; skipping it here also future-proofs
+ * the app against a server-side #[serde(skip)] fix.
+ */
+@Serializable
+data class MeResponse(val data: UserDto)
+
+@Serializable
+data class UserDto(
+    val id: String,
+    @SerialName("tenant_id")    val tenantId: String,
+    val email: String,
+    @SerialName("first_name")   val firstName: String,
+    @SerialName("last_name")    val lastName: String,
+    val roles: List<String> = emptyList(),
+    @SerialName("is_active")    val isActive: Boolean = true,
+    @SerialName("email_verified") val emailVerified: Boolean = false,
+    @SerialName("phone_number") val phoneNumber: String? = null,
+)
+
 @Serializable
 data class RegisterPushTokenRequest(
     val token: String,
@@ -53,6 +76,10 @@ interface IdentityApiService {
 
     @POST("v1/auth/refresh")
     suspend fun refreshToken(@Body request: io.logisticos.driver.core.network.model.RefreshRequest): ApiResponse<io.logisticos.driver.core.network.model.TokenResponse>
+
+    /** GET /v1/users/me — authenticated driver's own profile */
+    @GET("v1/users/me")
+    suspend fun getMe(): MeResponse
 
     @POST("v1/push-tokens")
     suspend fun registerPushToken(@Body request: RegisterPushTokenRequest): retrofit2.Response<Unit>

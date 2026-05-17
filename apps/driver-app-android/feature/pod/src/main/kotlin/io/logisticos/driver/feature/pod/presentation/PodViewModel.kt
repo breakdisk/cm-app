@@ -29,6 +29,7 @@ data class PodUiState(
     val taskId: String = "",
     val shipmentId: String = "",
     val recipientName: String = "",
+    val recipientPhone: String = "",
     val requiresPhoto: Boolean = false,
     val requiresSignature: Boolean = false,
     val requiresOtp: Boolean = false,
@@ -37,6 +38,12 @@ data class PodUiState(
     val photoPath: String? = null,
     val signaturePath: String? = null,
     val otpToken: String? = null,
+    /** True after a successful POST /v1/otps/generate — the SMS was dispatched. */
+    val otpSent: Boolean = false,
+    val isSendingOtp: Boolean = false,
+    val isVerifyingOtp: Boolean = false,
+    /** Inline OTP-specific error (send failure, wrong code, expired). */
+    val otpError: String? = null,
     val codCollected: Boolean = false,
     val isSubmitting: Boolean = false,
     val isSubmitted: Boolean = false,
@@ -87,8 +94,9 @@ class PodViewModel @Inject constructor(
     }
 
     /**
-     * Loads shipmentId and recipientName from local DB when the screen only has taskId.
-     * Called from LaunchedEffect when those values aren't passed via navigation args.
+     * Loads task metadata from local DB when the screen only has taskId.
+     * Backfills shipmentId / recipientName when not passed via nav args.
+     * Also populates recipientPhone (needed for OTP SMS) and GPS fallback coords.
      */
     fun loadTaskMeta(taskId: String) {
         viewModelScope.launch {
@@ -97,6 +105,7 @@ class PodViewModel @Inject constructor(
                 prev.copy(
                     shipmentId = if (prev.shipmentId.isBlank()) task.shipmentId else prev.shipmentId,
                     recipientName = if (prev.recipientName.isBlank()) task.recipientName else prev.recipientName,
+                    recipientPhone = if (prev.recipientPhone.isBlank()) task.recipientPhone else prev.recipientPhone,
                     taskLat = task.lat,
                     taskLng = task.lng
                 )
@@ -106,11 +115,54 @@ class PodViewModel @Inject constructor(
 
     fun onPhotoCaptured(path: String)    { _uiState.update { it.copy(photoPath = path) } }
     fun onSignatureSaved(path: String)   { _uiState.update { it.copy(signaturePath = path) } }
-    fun onOtpEntered(token: String)      { _uiState.update { it.copy(otpToken = token) } }
     fun onCodToggled(collected: Boolean) { _uiState.update { it.copy(codCollected = collected) } }
 
     fun showFailureSheet()    { _uiState.update { it.copy(showFailureSheet = true) } }
     fun dismissFailureSheet() { _uiState.update { it.copy(showFailureSheet = false) } }
+
+    /**
+     * Calls POST /v1/otps/generate to send an OTP SMS to the recipient.
+     * Sets otpSent=true on success so the entry field becomes visible.
+     * Idempotent — re-clicking "Resend" while a request is in-flight is a no-op.
+     */
+    fun sendOtpToRecipient() {
+        val state = _uiState.value
+        if (state.isSendingOtp) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isSendingOtp = true, otpError = null) }
+            runCatching {
+                repo.generateOtp(state.shipmentId, state.recipientPhone)
+            }.onSuccess {
+                _uiState.update { it.copy(isSendingOtp = false, otpSent = true) }
+            }.onFailure { e ->
+                _uiState.update {
+                    it.copy(isSendingOtp = false, otpError = "Failed to send code: ${e.message}")
+                }
+            }
+        }
+    }
+
+    /**
+     * Calls POST /v1/otps/verify to authenticate the 6-digit code with the backend.
+     * On success, stores the code as otpToken, which satisfies canSubmit.
+     * On failure, surfaces an inline error without blocking the entry field.
+     */
+    fun confirmOtp(code: String) {
+        val state = _uiState.value
+        if (state.isVerifyingOtp || state.otpToken != null) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isVerifyingOtp = true, otpError = null) }
+            runCatching {
+                repo.verifyOtp(state.shipmentId, code)
+            }.onSuccess {
+                _uiState.update { it.copy(isVerifyingOtp = false, otpToken = code) }
+            }.onFailure { e ->
+                _uiState.update {
+                    it.copy(isVerifyingOtp = false, otpError = "Invalid code — ${e.message}")
+                }
+            }
+        }
+    }
 
     /**
      * Executes full POD flow:

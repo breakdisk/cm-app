@@ -19,10 +19,12 @@ import io.logisticos.driver.core.network.service.AttachPhotoRequest
 import io.logisticos.driver.core.network.service.AttachSignatureRequest
 import io.logisticos.driver.core.network.service.CompleteTaskRequest
 import io.logisticos.driver.core.network.service.DriverOpsApiService
+import io.logisticos.driver.core.network.service.GenerateOtpRequest
 import io.logisticos.driver.core.network.service.GetUploadUrlRequest
 import io.logisticos.driver.core.network.service.InitiatePodRequest
 import io.logisticos.driver.core.network.service.PodApiService
 import io.logisticos.driver.core.network.service.SubmitPodRequest
+import io.logisticos.driver.core.network.service.VerifyOtpRequest
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -293,5 +295,24 @@ class DeliveryRepository @Inject constructor(
      */
     suspend fun confirmCod(shiftId: String, taskId: String, amount: Double) {
         shiftDao.addCodCollected(shiftId, amount)
+    }
+
+    /**
+     * Triggers an OTP SMS to the recipient via POST /v1/otps/generate.
+     * Returns the otp_id from the server (stored by the caller for audit if needed).
+     */
+    suspend fun generateOtp(shipmentId: String, recipientPhone: String): String {
+        val response = podApi.generateOtp(
+            GenerateOtpRequest(shipmentId = shipmentId, recipientPhone = recipientPhone)
+        )
+        return response.data.otpId
+    }
+
+    /**
+     * Verifies the 6-digit OTP code against the backend via POST /v1/otps/verify.
+     * Throws on failure (wrong code, expired, etc.) so the caller can surface the error.
+     */
+    suspend fun verifyOtp(shipmentId: String, code: String) {
+        podApi.verifyOtp(VerifyOtpRequest(shipmentId = shipmentId, code = code))
     }
 }

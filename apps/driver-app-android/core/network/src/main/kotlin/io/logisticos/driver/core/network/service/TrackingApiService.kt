@@ -23,6 +23,6 @@ data class BreadcrumbBatchRequest(
 )
 
 interface TrackingApiService {
-    @POST("location/batch")
+    @POST("v1/location/batch")
     suspend fun uploadBreadcrumbs(@Body request: BreadcrumbBatchRequest): Response<Unit>
 }

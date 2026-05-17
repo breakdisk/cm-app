@@ -236,7 +236,13 @@ fun PodScreen(
         if (requiresOtp) {
             OtpPodSection(
                 otpToken = state.otpToken,
-                onOtpEntered = viewModel::onOtpEntered
+                recipientPhone = state.recipientPhone,
+                otpSent = state.otpSent,
+                isSendingOtp = state.isSendingOtp,
+                isVerifyingOtp = state.isVerifyingOtp,
+                otpError = state.otpError,
+                onSendOtp = viewModel::sendOtpToRecipient,
+                onConfirmOtp = viewModel::confirmOtp
             )
             Spacer(Modifier.height(12.dp))
         }
@@ -509,9 +515,31 @@ private fun PhotoSection(
     }
 }
 
+/**
+ * OTP capture section with a two-step flow:
+ *
+ *  1. "Send Code" button  →  POST /v1/otps/generate  → SMS dispatched to recipient
+ *  2. Driver asks recipient for the code; types it here
+ *     → 6 digits entered  →  POST /v1/otps/verify  → backend confirms or rejects
+ *  3. On success: section turns green, otpToken is set, submit button unlocks.
+ *
+ * Inline OTP errors (send failure, wrong/expired code) are shown inside the
+ * section rather than the global error surface so the rest of the form stays usable.
+ */
 @Composable
-private fun OtpPodSection(otpToken: String?, onOtpEntered: (String) -> Unit) {
+private fun OtpPodSection(
+    otpToken: String?,
+    recipientPhone: String,
+    otpSent: Boolean,
+    isSendingOtp: Boolean,
+    isVerifyingOtp: Boolean,
+    otpError: String?,
+    onSendOtp: () -> Unit,
+    onConfirmOtp: (String) -> Unit,
+) {
+    // Local input buffer — reset on each composition instance (one task = one screen).
     var entered by remember { mutableStateOf("") }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -526,6 +554,7 @@ private fun OtpPodSection(otpToken: String?, onOtpEntered: (String) -> Unit) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // Section header
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
@@ -533,33 +562,109 @@ private fun OtpPodSection(otpToken: String?, onOtpEntered: (String) -> Unit) {
             Text("OTP Verification", color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp)
             if (otpToken != null) Text("Verified ✓", color = Green, fontSize = 11.sp)
         }
-        Text("Ask recipient for their one-time delivery code", color = Color.White.copy(alpha = 0.5f), fontSize = 13.sp)
-        OutlinedTextField(
-            value = entered,
-            onValueChange = { input ->
-                if (input.length <= 6) {
-                    entered = input
-                    // Auto-confirm as soon as 6 digits are entered — no extra button tap needed.
-                    if (input.length == 6 && otpToken == null) onOtpEntered(input)
+
+        when {
+            // ── Step 3: already verified ──────────────────────────────────────
+            otpToken != null -> {
+                Text(
+                    "Code verified — recipient confirmed delivery.",
+                    color = Green.copy(alpha = 0.85f),
+                    fontSize = 13.sp
+                )
+            }
+
+            // ── Step 1: OTP not yet sent — show "Send Code" button ────────────
+            !otpSent -> {
+                val phoneHint = if (recipientPhone.isNotBlank()) " to $recipientPhone" else ""
+                Text(
+                    "Send a one-time code$phoneHint and ask the recipient to read it back.",
+                    color = Color.White.copy(alpha = 0.5f),
+                    fontSize = 13.sp
+                )
+                Button(
+                    onClick = onSendOtp,
+                    enabled = !isSendingOtp,
+                    modifier = Modifier.fillMaxWidth().height(44.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Cyan.copy(alpha = 0.15f),
+                        disabledContainerColor = Glass
+                    )
+                ) {
+                    if (isSendingOtp) {
+                        CircularProgressIndicator(
+                            color = Cyan,
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text(
+                            "Send Code to Recipient",
+                            color = Cyan,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp
+                        )
+                    }
                 }
-            },
-            label = { Text(if (otpToken != null) "OTP confirmed" else "6-digit OTP") },
-            singleLine = true,
-            enabled = otpToken == null,
-            modifier = Modifier.fillMaxWidth(),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = if (otpToken != null) Green else Cyan,
-                unfocusedBorderColor = if (otpToken != null) Green.copy(alpha = 0.5f) else Border,
-                focusedTextColor = Color.White,
-                unfocusedTextColor = Color.White,
-                focusedLabelColor = if (otpToken != null) Green else Cyan,
-                unfocusedLabelColor = Color.White.copy(alpha = 0.5f),
-                cursorColor = Cyan,
-                disabledTextColor = Green,
-                disabledBorderColor = Green.copy(alpha = 0.5f),
-                disabledLabelColor = Green
-            )
-        )
+            }
+
+            // ── Step 2: OTP sent — show entry field ───────────────────────────
+            else -> {
+                Text(
+                    "Enter the 6-digit code shown on the recipient's phone.",
+                    color = Color.White.copy(alpha = 0.5f),
+                    fontSize = 13.sp
+                )
+                OutlinedTextField(
+                    value = entered,
+                    onValueChange = { input ->
+                        if (input.length <= 6) {
+                            entered = input
+                            // Auto-submit as soon as 6 digits are entered — fires verifyOtp.
+                            if (input.length == 6 && !isVerifyingOtp) onConfirmOtp(input)
+                        }
+                    },
+                    label = { Text("6-digit OTP") },
+                    singleLine = true,
+                    enabled = !isVerifyingOtp,
+                    modifier = Modifier.fillMaxWidth(),
+                    trailingIcon = {
+                        if (isVerifyingOtp) {
+                            CircularProgressIndicator(
+                                color = Cyan,
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp
+                            )
+                        }
+                    },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Cyan,
+                        unfocusedBorderColor = Border,
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedLabelColor = Cyan,
+                        unfocusedLabelColor = Color.White.copy(alpha = 0.5f),
+                        cursorColor = Cyan,
+                        disabledTextColor = Color.White.copy(alpha = 0.4f),
+                        disabledBorderColor = Border,
+                        disabledLabelColor = Color.White.copy(alpha = 0.3f)
+                    )
+                )
+                // Resend affordance — clears otpSent so the "Send Code" button re-appears.
+                TextButton(
+                    onClick = onSendOtp,
+                    modifier = Modifier.align(Alignment.End)
+                ) {
+                    Text("Resend Code", color = Cyan.copy(alpha = 0.55f), fontSize = 12.sp)
+                }
+            }
+        }
+
+        // Inline OTP error (wrong code, network failure, expired OTP).
+        // Shown inside the section so the global error surface stays clean.
+        otpError?.let { err ->
+            Text(err, color = Red, fontSize = 12.sp, lineHeight = 17.sp)
+        }
     }
 }
 

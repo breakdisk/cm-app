@@ -28,6 +28,7 @@ data class TaskItem(
     @SerialName("requires_photo")     val requiresPhoto: Boolean = false,
     @SerialName("requires_signature") val requiresSignature: Boolean = false,
     @SerialName("requires_otp")       val requiresOtp: Boolean = false,
+    val notes: String? = null,
 )
 
 @Serializable

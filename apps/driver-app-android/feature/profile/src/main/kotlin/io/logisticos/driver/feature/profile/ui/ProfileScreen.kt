@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.VerifiedUser
@@ -11,26 +12,30 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import io.logisticos.driver.core.network.auth.SessionManager
+import androidx.hilt.navigation.compose.hiltViewModel
+import io.logisticos.driver.feature.profile.presentation.ProfileViewModel
 
 private val ProfileCanvas = Color(0xFF050810)
-private val ProfileRed = Color(0xFFFF3B5C)
-private val ProfileGlass = Color(0x0AFFFFFF)
+private val ProfileRed    = Color(0xFFFF3B5C)
+private val ProfileGlass  = Color(0x0AFFFFFF)
 private val ProfileBorder = Color(0x14FFFFFF)
-private val ProfileAmber = Color(0xFFFFAB00)
-private val ProfileCyan = Color(0xFF00E5FF)
+private val ProfileAmber  = Color(0xFFFFAB00)
+private val ProfileCyan   = Color(0xFF00E5FF)
 
 @Composable
 fun ProfileScreen(
-    sessionManager: SessionManager,
-    isOfflineMode: Boolean,
     onNavigateToCompliance: () -> Unit = {},
-    onLogout: () -> Unit
+    onLogout: () -> Unit,
+    viewModel: ProfileViewModel = hiltViewModel()
 ) {
+    val state by viewModel.uiState.collectAsState()
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -40,6 +45,7 @@ fun ProfileScreen(
     ) {
         Text("Profile", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
 
+        // ── Driver identity card ──────────────────────────────────────────────
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = ProfileGlass),
@@ -47,26 +53,104 @@ fun ProfileScreen(
         ) {
             Column(
                 modifier = Modifier.padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text("Driver ID", color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp)
-                Text(
-                    sessionManager.getDriverId() ?: "—",
-                    color = Color.White,
-                    fontSize = 15.sp
-                )
-                Text(
-                    "Tenant: ${sessionManager.getTenantId() ?: "—"}",
-                    color = Color.White.copy(alpha = 0.6f),
-                    fontSize = 13.sp
-                )
+                // Avatar initial + name
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Avatar circle — first letter of display name or "?" while loading
+                    val initial = state.displayName.firstOrNull()?.uppercaseChar()?.toString() ?: "?"
+                    Box(
+                        modifier = Modifier
+                            .size(52.dp)
+                            .clip(RoundedCornerShape(26.dp))
+                            .background(ProfileCyan.copy(alpha = 0.12f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (state.isLoading) {
+                            CircularProgressIndicator(
+                                color = ProfileCyan,
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Text(
+                                initial,
+                                color = ProfileCyan,
+                                fontSize = 22.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                    Column {
+                        if (state.displayName.isNotBlank()) {
+                            Text(
+                                state.displayName,
+                                color = Color.White,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        } else if (!state.isLoading) {
+                            // Fall back to Driver ID if the API doesn't return a name yet
+                            Text(
+                                "Driver ${state.driverId.take(8)}",
+                                color = Color.White.copy(alpha = 0.7f),
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                        if (state.email.isNotBlank()) {
+                            Text(
+                                state.email,
+                                color = Color.White.copy(alpha = 0.55f),
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = ProfileBorder)
+
+                // Phone
+                if (state.phone.isNotBlank()) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("📞", fontSize = 14.sp)
+                        Text(
+                            state.phone,
+                            color = ProfileCyan.copy(alpha = 0.85f),
+                            fontSize = 14.sp
+                        )
+                    }
+                }
+
+                // Raw IDs (smaller, secondary row)
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        "Driver ID: ${state.driverId.ifBlank { "—" }}",
+                        color = Color.White.copy(alpha = 0.35f),
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Text(
+                        "Tenant: ${state.tenantId.ifBlank { "—" }}",
+                        color = Color.White.copy(alpha = 0.35f),
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
             }
         }
 
+        // ── Verification documents ────────────────────────────────────────────
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(enabled = !isOfflineMode, onClick = onNavigateToCompliance),
+                .clickable(enabled = !state.isOfflineMode, onClick = onNavigateToCompliance),
             colors = CardDefaults.cardColors(containerColor = ProfileGlass),
             border = BorderStroke(1.dp, ProfileCyan.copy(alpha = 0.3f))
         ) {
@@ -108,7 +192,8 @@ fun ProfileScreen(
             }
         }
 
-        if (isOfflineMode) {
+        // ── Offline mode banner ───────────────────────────────────────────────
+        if (state.isOfflineMode) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
@@ -129,7 +214,7 @@ fun ProfileScreen(
 
         Button(
             onClick = onLogout,
-            enabled = !isOfflineMode,
+            enabled = !state.isOfflineMode,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(52.dp),

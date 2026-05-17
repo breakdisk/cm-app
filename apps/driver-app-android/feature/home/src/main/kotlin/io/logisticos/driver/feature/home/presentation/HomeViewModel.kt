@@ -1,11 +1,16 @@
 package io.logisticos.driver.feature.home.presentation
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import io.logisticos.driver.core.common.TaskSyncBus
 import io.logisticos.driver.core.database.dao.SyncQueueDao
 import io.logisticos.driver.core.database.entity.ShiftEntity
+import io.logisticos.driver.core.database.entity.SyncAction
+import io.logisticos.driver.core.database.entity.SyncQueueEntity
+import io.logisticos.driver.core.database.worker.OutboundSyncWorker
 import io.logisticos.driver.core.location.LocationRepository
 import io.logisticos.driver.core.network.service.ComplianceApiService
 import io.logisticos.driver.core.network.service.DriverOpsApiService
@@ -16,6 +21,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import java.time.Instant
 import java.time.format.DateTimeFormatter
 import javax.inject.Inject
@@ -53,6 +60,7 @@ data class HomeUiState(
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val repo: ShiftRepository,
     private val api: DriverOpsApiService,
     private val complianceApi: ComplianceApiService,
@@ -163,7 +171,7 @@ class HomeViewModel @Inject constructor(
         val goingOnline = !_uiState.value.isOnline
         viewModelScope.launch {
             _uiState.update { it.copy(isTogglingStatus = true, error = null) }
-            runCatching {
+            val result = runCatching {
                 if (goingOnline) {
                     api.goOnline()
                     // Start the foreground service immediately so FusedLocation-
@@ -179,7 +187,8 @@ class HomeViewModel @Inject constructor(
                     api.goOffline()
                     locationRepo.stopShiftTracking()
                 }
-            }.onSuccess {
+            }
+            result.onSuccess {
                 _uiState.update {
                     it.copy(
                         isOnline = goingOnline,
@@ -190,8 +199,21 @@ class HomeViewModel @Inject constructor(
                     )
                 }
                 if (goingOnline) startLocationHeartbeat() else stopLocationHeartbeat()
-            }.onFailure { e ->
-                _uiState.update { it.copy(error = e.message) }
+            }
+            if (result.isFailure) {
+                _uiState.update { it.copy(error = result.exceptionOrNull()?.message) }
+                // Network error — enqueue SHIFT_START / SHIFT_END so the status
+                // flips server-side once connectivity returns. OutboundSyncWorker
+                // will call goOnline() / goOffline() on the next successful network
+                // window (kick fires immediately; 15-min periodic fires as safety net).
+                syncQueueDao.enqueue(
+                    SyncQueueEntity(
+                        action      = if (goingOnline) SyncAction.SHIFT_START else SyncAction.SHIFT_END,
+                        payloadJson = Json.encodeToString(mapOf("goingOnline" to goingOnline.toString())),
+                        createdAt   = System.currentTimeMillis()
+                    )
+                )
+                OutboundSyncWorker.kickOnce(context)
             }
             _uiState.update { it.copy(isTogglingStatus = false) }
         }
