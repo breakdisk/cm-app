@@ -1,27 +1,27 @@
 "use client";
 /**
  * Merchant Portal — Customers Page
- * Surfaces the Customer Data Platform (cdp service) for the logged-in tenant:
- *   GET /v1/customers           → full list (with search filters)
- *   GET /v1/customers/top-clv   → top-N customers by CLV score
- *
- * Clicking a row navigates to /customers/:external_id (detail page — future work).
- * For now we show the list + top-CLV leaderboard; the detail view is a
- * placeholder navigation target.
+ * Surfaces the Customer Data Platform (cdp service) for the logged-in tenant.
+ *   GET /v1/customers         → paginated list (name/email/phone/CLV filters)
+ *   GET /v1/customers/top-clv → top-N customers by CLV score
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
-import { Users, Search, RefreshCw, TrendingUp, Package, Mail, Phone } from "lucide-react";
+import {
+  Users, Search, RefreshCw, TrendingUp, Package,
+  Mail, Phone, SlidersHorizontal, X,
+} from "lucide-react";
 import {
   createCdpApi,
   deliverySuccessRate,
   type CustomerProfile,
+  type ListProfilesQuery,
 } from "@/lib/api/cdp";
 
 function clvTier(score: number): { label: string; variant: "green" | "cyan" | "purple" | "amber" | "muted" } {
@@ -36,38 +36,76 @@ function fmtPhp(cents: number): string {
   return `₱${(cents / 100).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 }
 
+const PAGE_SIZE = 50;
+
 export default function CustomersPage() {
   const api    = useMemo(() => createCdpApi(), []);
   const router = useRouter();
 
   const [profiles, setProfiles] = useState<CustomerProfile[]>([]);
-  const [top, setTop]           = useState<CustomerProfile[]>([]);
-  const [search, setSearch]     = useState("");
-  const [loading, setLoading]   = useState(true);
-  const [error, setError]       = useState<string | null>(null);
+  const [top,      setTop]      = useState<CustomerProfile[]>([]);
+  const [loading,  setLoading]  = useState(true);
+  const [error,    setError]    = useState<string | null>(null);
+
+  // Raw filter inputs (update instantly on keystroke)
+  const [nameInput,   setNameInput]   = useState("");
+  const [emailInput,  setEmailInput]  = useState("");
+  const [phoneInput,  setPhoneInput]  = useState("");
+  const [minClvInput, setMinClvInput] = useState("");
+  const [showFilters, setShowFilters] = useState(false);
+
+  // Debounced values used for the actual fetch
+  const [debouncedName,   setDebouncedName]   = useState("");
+  const [debouncedEmail,  setDebouncedEmail]  = useState("");
+  const [debouncedPhone,  setDebouncedPhone]  = useState("");
+  const [debouncedMinClv, setDebouncedMinClv] = useState<number | undefined>(undefined);
+
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      setDebouncedName(nameInput);
+      setDebouncedEmail(emailInput);
+      setDebouncedPhone(phoneInput);
+      const parsed = parseFloat(minClvInput);
+      setDebouncedMinClv(isNaN(parsed) ? undefined : parsed);
+    }, 350);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [nameInput, emailInput, phoneInput, minClvInput]);
+
+  const activeFilterCount = [debouncedEmail, debouncedPhone, debouncedMinClv !== undefined ? "1" : ""].filter(Boolean).length;
 
   const load = useCallback(async () => {
     setError(null);
+    setLoading(true);
     try {
-      const [list, top] = await Promise.all([
-        api.list({ name: search || undefined, limit: 100 }),
+      const query: ListProfilesQuery = {
+        name:    debouncedName   || undefined,
+        email:   debouncedEmail  || undefined,
+        phone:   debouncedPhone  || undefined,
+        min_clv: debouncedMinClv,
+        limit:   PAGE_SIZE,
+        offset:  0,
+      };
+      const [list, topClv] = await Promise.all([
+        api.list(query),
         api.topByClv(5),
       ]);
       setProfiles(list.profiles ?? []);
-      setTop(top.profiles ?? []);
+      setTop(topClv.profiles ?? []);
     } catch (e) {
       const err = e as { message?: string };
       setError(err?.message ?? "Failed to load customers");
     } finally {
       setLoading(false);
     }
-  }, [api, search]);
+  }, [api, debouncedName, debouncedEmail, debouncedPhone, debouncedMinClv]);
 
   useEffect(() => { load(); }, [load]);
 
-  // Derived KPIs — server doesn't return aggregate counts at tenant scope yet,
-  // so we compute from the fetched list. For tenants with > 100 customers this
-  // undercounts; a follow-up ticket adds a /v1/customers/stats endpoint.
   const kpis = useMemo(() => {
     const totalShipments = profiles.reduce((n, p) => n + p.total_shipments, 0);
     const avgClv = profiles.length === 0 ? 0
@@ -81,6 +119,13 @@ export default function CustomersPage() {
       { label: "Success Rate",    value: successRate,     trend: 0, color: "green"  as const, format: "percent" as const },
     ];
   }, [profiles]);
+
+  function clearFilters() {
+    setNameInput("");
+    setEmailInput("");
+    setPhoneInput("");
+    setMinClvInput("");
+  }
 
   return (
     <motion.div
@@ -126,23 +171,62 @@ export default function CustomersPage() {
         ))}
       </motion.div>
 
-      {/* Top CLV leaderboard + search */}
+      {/* Top CLV leaderboard + list */}
       <motion.div variants={variants.fadeInUp} className="grid gap-4 lg:grid-cols-[1fr_320px]">
-        {/* Search + list */}
+        {/* Search + filters + list */}
         <GlassCard padding="none">
-          <div className="flex items-center justify-between px-5 py-4 border-b border-glass-border gap-3">
+          {/* Toolbar */}
+          <div className="flex items-center justify-between px-5 py-4 border-b border-glass-border gap-3 flex-wrap">
             <h2 className="font-heading text-sm font-semibold text-white whitespace-nowrap">All Customers</h2>
-            <div className="relative flex-1 max-w-md">
-              <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search by name…"
-                className="w-full rounded-lg border border-glass-border bg-glass-100 pl-9 pr-3 py-2 text-xs text-white placeholder-white/25 outline-none focus:border-cyan-neon/40 transition-colors"
-              />
+            <div className="flex items-center gap-2 flex-1">
+              {/* Name search */}
+              <div className="relative flex-1 max-w-xs">
+                <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
+                <input
+                  value={nameInput}
+                  onChange={(e) => setNameInput(e.target.value)}
+                  placeholder="Search by name…"
+                  className="w-full rounded-lg border border-glass-border bg-glass-100 pl-9 pr-3 py-2 text-xs text-white placeholder-white/25 outline-none focus:border-cyan-neon/40 transition-colors"
+                />
+              </div>
+              {/* Filters toggle */}
+              <button
+                onClick={() => setShowFilters((v) => !v)}
+                className={`relative flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs transition-colors ${
+                  showFilters
+                    ? "border-cyan-neon/40 text-cyan-neon bg-cyan-neon/5"
+                    : "border-glass-border text-white/50 hover:text-white"
+                }`}
+              >
+                <SlidersHorizontal size={13} />
+                Filters
+                {activeFilterCount > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-cyan-neon text-[9px] font-bold text-canvas-100">
+                    {activeFilterCount}
+                  </span>
+                )}
+              </button>
             </div>
           </div>
 
+          {/* Expanded filter row */}
+          {showFilters && (
+            <div className="flex items-end gap-3 flex-wrap px-5 py-3 border-b border-glass-border bg-glass-50/30">
+              <FilterField label="Email" value={emailInput} onChange={setEmailInput} placeholder="customer@example.com" icon={<Mail size={12} />} />
+              <FilterField label="Phone" value={phoneInput} onChange={setPhoneInput} placeholder="+63 912…" icon={<Phone size={12} />} />
+              <FilterField label="Min CLV" value={minClvInput} onChange={setMinClvInput} placeholder="e.g. 40" type="number" />
+              {(emailInput || phoneInput || minClvInput) && (
+                <button
+                  onClick={clearFilters}
+                  className="flex items-center gap-1 text-xs text-white/40 hover:text-white/70 transition-colors mb-0.5"
+                >
+                  <X size={12} /> Clear
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Column headers */}
           <div className="grid grid-cols-[2fr_90px_90px_90px_1fr] gap-3 px-5 py-2.5 border-b border-glass-border">
             {["Customer", "CLV", "Shipments", "Success", "Recent Address"].map((h) => (
               <span key={h} className="text-2xs font-mono text-white/30 uppercase tracking-wider">{h}</span>
@@ -154,14 +238,16 @@ export default function CustomersPage() {
           ) : profiles.length === 0 ? (
             <div className="px-5 py-10 text-center">
               <p className="text-xs text-white/40 font-mono">
-                {search ? `No customers match "${search}"` : "No customers yet"}
+                {nameInput || emailInput || phoneInput || minClvInput
+                  ? "No customers match the current filters"
+                  : "No customers yet"}
               </p>
             </div>
           ) : (
             profiles.map((p) => {
               const tier = clvTier(p.clv_score);
               const successRate = deliverySuccessRate(p);
-              const topAddr = p.address_history[0]?.address ?? "—";
+              const topAddr = (p.address_history ?? [])[0]?.address ?? "—";
               return (
                 <div
                   key={p.external_customer_id}
@@ -207,8 +293,12 @@ export default function CustomersPage() {
             ) : top.map((p, i) => {
               const tier = clvTier(p.clv_score);
               return (
-                <div key={p.external_customer_id} className="flex items-center gap-3">
-                  <div className="flex h-7 w-7 items-center justify-center rounded-full bg-glass-100 border border-glass-border text-xs font-mono text-white/60">
+                <div
+                  key={p.external_customer_id}
+                  onClick={() => router.push(`/customers/${p.external_customer_id}`)}
+                  className="flex items-center gap-3 cursor-pointer hover:opacity-80 transition-opacity"
+                >
+                  <div className="flex h-7 w-7 items-center justify-center rounded-full bg-glass-100 border border-glass-border text-xs font-mono text-white/60 flex-shrink-0">
                     {i + 1}
                   </div>
                   <div className="min-w-0 flex-1">
@@ -229,5 +319,38 @@ export default function CustomersPage() {
         </GlassCard>
       </motion.div>
     </motion.div>
+  );
+}
+
+// ── FilterField ────────────────────────────────────────────────────────────────
+
+function FilterField({
+  label, value, onChange, placeholder, type = "text", icon,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  type?: string;
+  icon?: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-2xs font-mono text-white/30 uppercase tracking-wider">{label}</span>
+      <div className="relative">
+        {icon && (
+          <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-white/30">
+            {icon}
+          </span>
+        )}
+        <input
+          type={type}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          className={`rounded-lg border border-glass-border bg-glass-100 py-1.5 pr-3 text-xs text-white placeholder-white/20 outline-none focus:border-cyan-neon/40 transition-colors ${icon ? "pl-7" : "pl-2.5"}`}
+        />
+      </div>
+    </div>
   );
 }
