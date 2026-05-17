@@ -11,8 +11,9 @@ interface Props {
   refreshKey:  number;
   onApprove:   (docId: string) => void;
   onReject:    (docId: string, reason: string) => void;
-  onSuspend:   (profileId: string, reason?: string) => void;
-  onReinstate: (profileId: string) => void;
+  /** Only present for users with compliance:admin permission. */
+  onSuspend?:   (profileId: string, reason?: string) => void;
+  onReinstate?: (profileId: string) => void;
 }
 
 const STATUS_BADGE: Record<string, string> = {
@@ -106,11 +107,12 @@ export function DocumentDetailPanel({
         )}
       </div>
 
-      {/* Suspend / Reinstate admin actions */}
+      {/* Suspend / Reinstate admin actions (only shown when admin callbacks provided) */}
+      {(onSuspend || onReinstate) && (
       <div className="px-4 py-2.5 border-b border-glass-border flex items-center gap-2 flex-wrap">
         {isSuspended ? (
           <button
-            onClick={() => onReinstate(profileId)}
+            onClick={() => onReinstate?.(profileId)}
             className="flex items-center gap-1.5 rounded-lg border border-green-glow/35 bg-green-surface/10 px-3 py-1.5 text-xs font-bold text-green-signal hover:bg-green-surface/20 transition-colors"
           >
             <ShieldCheck className="h-3 w-3" /> Reinstate Driver
@@ -133,7 +135,7 @@ export function DocumentDetailPanel({
                 />
                 <button
                   onClick={() => {
-                    onSuspend(profileId, suspendReason || undefined);
+                    onSuspend?.(profileId, suspendReason || undefined);
                     setSuspendOpen(false);
                     setSuspendReason("");
                   }}
@@ -152,6 +154,7 @@ export function DocumentDetailPanel({
           </>
         )}
       </div>
+      )}
 
       {/* Document list */}
       <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">

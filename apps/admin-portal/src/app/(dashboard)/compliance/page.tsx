@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 /**
  * Admin Portal — Compliance Console
  * KPI strip + review queue + document detail panel.
@@ -22,8 +22,9 @@ import {
   type DriverDocument,
   type ComplianceProfile,
 } from "@/lib/api/compliance";
+import { usePermissions } from "@/hooks/usePermissions";
 
-// ── Mock data (used when backend is not yet deployed) ─────────────────────────
+// -- Mock data (Storybook / local dev without backend) -------------------------
 
 const MOCK_PROFILES: ComplianceProfile[] = [
   { id: "p1", entity_type: "driver", entity_id: "drv-001", overall_status: "compliant",          jurisdiction: "PH-NCR", last_reviewed_at: "2026-03-20T08:00:00Z", suspended_at: null },
@@ -36,28 +37,34 @@ const MOCK_PROFILES: ComplianceProfile[] = [
 ];
 
 const MOCK_QUEUE: DriverDocument[] = [
-  { id: "doc-1", compliance_profile_id: "p2", document_type_id: "dt-license",    document_number: "LTO-2024-789012", expiry_date: "2027-06-30", file_url: "#", status: "submitted",     rejection_reason: null, reviewed_by: null, reviewed_at: null, submitted_at: "2026-03-25T10:00:00Z" },
-  { id: "doc-2", compliance_profile_id: "p7", document_type_id: "dt-insurance",  document_number: "INS-2026-003",    expiry_date: "2027-03-31", file_url: "#", status: "under_review",  rejection_reason: null, reviewed_by: null, reviewed_at: null, submitted_at: "2026-03-24T15:30:00Z" },
-  { id: "doc-3", compliance_profile_id: "p2", document_type_id: "dt-vehicle-reg",document_number: "LTO-REG-456",     expiry_date: "2026-12-31", file_url: "#", status: "submitted",     rejection_reason: null, reviewed_by: null, reviewed_at: null, submitted_at: "2026-03-25T11:20:00Z" },
+  { id: "doc-1", compliance_profile_id: "p2", document_type_id: "dt-license",    document_number: "LTO-2024-789012", expiry_date: "2027-06-30", file_url: "#", status: "submitted",    rejection_reason: null, reviewed_by: null, reviewed_at: null, submitted_at: "2026-03-25T10:00:00Z" },
+  { id: "doc-2", compliance_profile_id: "p7", document_type_id: "dt-insurance",  document_number: "INS-2026-003",    expiry_date: "2027-03-31", file_url: "#", status: "under_review", rejection_reason: null, reviewed_by: null, reviewed_at: null, submitted_at: "2026-03-24T15:30:00Z" },
+  { id: "doc-3", compliance_profile_id: "p2", document_type_id: "dt-vehicle-reg",document_number: "LTO-REG-456",     expiry_date: "2026-12-31", file_url: "#", status: "submitted",    rejection_reason: null, reviewed_by: null, reviewed_at: null, submitted_at: "2026-03-25T11:20:00Z" },
 ];
 
 export default function CompliancePage() {
-  const [queue,            setQueue]            = useState<DriverDocument[]>(MOCK_QUEUE);
-  const [profiles,         setProfiles]         = useState<ComplianceProfile[]>(MOCK_PROFILES);
-  const [selectedProfile,  setSelectedProfile]  = useState<string | null>(null);
-  const [loading,          setLoading]          = useState(false);
-  // Incrementing this key forces DocumentDetailPanel to re-fetch its profile
-  // after an approve / reject / suspend / reinstate action.
-  const [panelRefreshKey,  setPanelRefreshKey]  = useState(0);
+  const [queue,           setQueue]           = useState<DriverDocument[]>([]);
+  const [profiles,        setProfiles]        = useState<ComplianceProfile[]>([]);
+  const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
+  const [loading,         setLoading]         = useState(true);
+  const [error,           setError]           = useState<string | null>(null);
+  const [panelRefreshKey, setPanelRefreshKey] = useState(0);
+
+  const { hasPermission } = usePermissions();
+  const canAdmin = hasPermission("compliance:admin");
 
   const refresh = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const [q, p] = await Promise.all([fetchReviewQueue(), fetchProfiles()]);
       setQueue(q);
       setProfiles(p);
-    } catch (err) {
-      toast.error((err as Error).message ?? "Failed to load compliance data");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Failed to load compliance data";
+      setError(msg);
+      setQueue((prev) => (prev.length === 0 ? MOCK_QUEUE : prev));
+      setProfiles((prev) => (prev.length === 0 ? MOCK_PROFILES : prev));
     } finally {
       setLoading(false);
     }
@@ -65,13 +72,13 @@ export default function CompliancePage() {
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  // ── Document actions ────────────────────────────────────────────────────────
-  // The panel calls these callbacks after the user confirms — the parent owns
-  // the API call so it can update the queue list and show a toast. The
-  // panelRefreshKey bump causes the panel to re-fetch its local detail view.
+  useEffect(() => {
+    const id = setInterval(refresh, 30_000);
+    return () => clearInterval(id);
+  }, [refresh]);
 
   async function handleApprove(docId: string) {
-    const tid = toast.loading("Approving document…");
+    const tid = toast.loading("Approving document...");
     setQueue((prev) => prev.filter((d) => d.id !== docId));
     try {
       await approveDocument(docId);
@@ -80,12 +87,12 @@ export default function CompliancePage() {
       refresh();
     } catch (err) {
       toast.error((err as Error).message ?? "Approval failed", { id: tid });
-      refresh(); // restore queue row
+      refresh();
     }
   }
 
   async function handleReject(docId: string, reason: string) {
-    const tid = toast.loading("Rejecting document…");
+    const tid = toast.loading("Rejecting document...");
     setQueue((prev) => prev.filter((d) => d.id !== docId));
     try {
       await rejectDocument(docId, reason);
@@ -99,7 +106,7 @@ export default function CompliancePage() {
   }
 
   async function handleSuspend(profileId: string, reason?: string) {
-    const tid = toast.loading("Suspending driver profile…");
+    const tid = toast.loading("Suspending driver profile...");
     try {
       await suspendProfile(profileId, reason);
       toast.success("Driver suspended", { id: tid });
@@ -111,7 +118,7 @@ export default function CompliancePage() {
   }
 
   async function handleReinstate(profileId: string) {
-    const tid = toast.loading("Reinstating driver profile…");
+    const tid = toast.loading("Reinstating driver profile...");
     try {
       await reinstateProfile(profileId);
       toast.success("Driver reinstated", { id: tid });
@@ -129,7 +136,6 @@ export default function CompliancePage() {
       animate="visible"
       className="flex flex-col gap-5 p-6"
     >
-      {/* Header */}
       <motion.div variants={variants.fadeInUp} className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-xl bg-cyan-surface/20 border border-cyan-glow/25 flex items-center justify-center">
@@ -138,7 +144,7 @@ export default function CompliancePage() {
           <div>
             <h1 className="font-heading text-2xl font-bold text-white">Compliance</h1>
             <p className="text-sm text-white/40 font-mono mt-0.5">
-              {queue.length} pending review · {profiles.length} total drivers
+              {queue.length} pending review {"·"} {profiles.length} total drivers
             </p>
           </div>
         </div>
@@ -151,12 +157,21 @@ export default function CompliancePage() {
         </button>
       </motion.div>
 
-      {/* KPI strip */}
+      {error && (
+        <motion.div variants={variants.fadeInUp}>
+          <div className="rounded-lg border border-red-signal/30 bg-red-signal/5 px-4 py-3 text-xs text-red-signal font-mono">
+            {error} {"—"}{" "}
+            <button onClick={refresh} className="underline hover:text-white transition-colors">
+              Retry
+            </button>
+          </div>
+        </motion.div>
+      )}
+
       <motion.div variants={variants.fadeInUp}>
         <ComplianceKpiStrip profiles={profiles} />
       </motion.div>
 
-      {/* Two-panel layout */}
       <motion.div variants={variants.fadeInUp} className="flex gap-4 h-[600px]">
         <ReviewQueue
           items={queue}
@@ -170,8 +185,8 @@ export default function CompliancePage() {
             refreshKey={panelRefreshKey}
             onApprove={handleApprove}
             onReject={handleReject}
-            onSuspend={handleSuspend}
-            onReinstate={handleReinstate}
+            onSuspend={canAdmin ? handleSuspend : undefined}
+            onReinstate={canAdmin ? handleReinstate : undefined}
           />
         ) : (
           <GlassCard className="flex-1 flex items-center justify-center">
