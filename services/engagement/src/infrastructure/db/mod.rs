@@ -758,4 +758,180 @@ impl NotificationDb {
             })
         }))
     }
+
+    // -----------------------------------------------------------------------
+    // Channel config operations
+    // -----------------------------------------------------------------------
+
+    /// Return the tenant's channel config, or None if not yet created.
+    pub async fn get_channel_config(
+        &self,
+        tenant_id: Uuid,
+    ) -> anyhow::Result<Option<crate::domain::entities::channel_config::TenantChannelConfig>> {
+        let row = sqlx::query_as::<_, ChannelConfigRow>(
+            r#"
+            SELECT id, tenant_id,
+                   whatsapp_enabled, whatsapp_account_sid, whatsapp_auth_token, whatsapp_from_number,
+                   sms_enabled, sms_account_sid, sms_auth_token, sms_from_number,
+                   email_enabled, email_from_address, email_from_name,
+                   push_enabled,
+                   created_at, updated_at
+            FROM engagement.tenant_channel_configs
+            WHERE tenant_id = $1
+            "#,
+        )
+        .bind(tenant_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(ChannelConfigRow::into_config))
+    }
+
+    /// Upsert a channel config for a tenant, applying only the supplied fields.
+    /// Fields that are `None` in the update request are NOT overwritten.
+    pub async fn upsert_channel_config(
+        &self,
+        tenant_id: Uuid,
+        req: &crate::domain::entities::channel_config::UpdateChannelConfigRequest,
+    ) -> anyhow::Result<crate::domain::entities::channel_config::TenantChannelConfig> {
+        // Load existing (or default) first so we can merge partial updates.
+        let existing = self.get_channel_config(tenant_id).await?;
+
+        let mut wa_enabled  = existing.as_ref().map(|c| c.whatsapp_enabled).unwrap_or(false);
+        let mut wa_sid      = existing.as_ref().and_then(|c| c.whatsapp_account_sid.clone());
+        let mut wa_token    = existing.as_ref().and_then(|c| c.whatsapp_auth_token.clone());
+        let mut wa_from     = existing.as_ref().and_then(|c| c.whatsapp_from_number.clone());
+        let mut sms_enabled = existing.as_ref().map(|c| c.sms_enabled).unwrap_or(false);
+        let mut sms_sid     = existing.as_ref().and_then(|c| c.sms_account_sid.clone());
+        let mut sms_token   = existing.as_ref().and_then(|c| c.sms_auth_token.clone());
+        let mut sms_from    = existing.as_ref().and_then(|c| c.sms_from_number.clone());
+        let mut em_enabled  = existing.as_ref().map(|c| c.email_enabled).unwrap_or(false);
+        let mut em_from_addr = existing.as_ref().and_then(|c| c.email_from_address.clone());
+        let mut em_from_name = existing.as_ref().and_then(|c| c.email_from_name.clone());
+        let mut push_enabled = existing.as_ref().map(|c| c.push_enabled).unwrap_or(false);
+
+        if let Some(w) = &req.whatsapp {
+            if let Some(v) = w.enabled      { wa_enabled = v; }
+            if let Some(v) = &w.account_sid { wa_sid = Some(v.clone()); }
+            if let Some(v) = &w.auth_token  { wa_token = Some(v.clone()); }
+            if let Some(v) = &w.from_number { wa_from = Some(v.clone()); }
+        }
+        if let Some(s) = &req.sms {
+            if let Some(v) = s.enabled      { sms_enabled = v; }
+            if let Some(v) = &s.account_sid { sms_sid = Some(v.clone()); }
+            if let Some(v) = &s.auth_token  { sms_token = Some(v.clone()); }
+            if let Some(v) = &s.from_number { sms_from = Some(v.clone()); }
+        }
+        if let Some(e) = &req.email {
+            if let Some(v) = e.enabled        { em_enabled = v; }
+            if let Some(v) = &e.from_address  { em_from_addr = Some(v.clone()); }
+            if let Some(v) = &e.from_name     { em_from_name = Some(v.clone()); }
+        }
+        if let Some(p) = &req.push {
+            if let Some(v) = p.enabled { push_enabled = v; }
+        }
+
+        let row = sqlx::query_as::<_, ChannelConfigRow>(
+            r#"
+            INSERT INTO engagement.tenant_channel_configs (
+                tenant_id,
+                whatsapp_enabled, whatsapp_account_sid, whatsapp_auth_token, whatsapp_from_number,
+                sms_enabled, sms_account_sid, sms_auth_token, sms_from_number,
+                email_enabled, email_from_address, email_from_name,
+                push_enabled
+            ) VALUES (
+                $1,
+                $2, $3, $4, $5,
+                $6, $7, $8, $9,
+                $10, $11, $12,
+                $13
+            )
+            ON CONFLICT (tenant_id) DO UPDATE SET
+                whatsapp_enabled     = EXCLUDED.whatsapp_enabled,
+                whatsapp_account_sid = EXCLUDED.whatsapp_account_sid,
+                whatsapp_auth_token  = COALESCE(EXCLUDED.whatsapp_auth_token, engagement.tenant_channel_configs.whatsapp_auth_token),
+                whatsapp_from_number = EXCLUDED.whatsapp_from_number,
+                sms_enabled          = EXCLUDED.sms_enabled,
+                sms_account_sid      = EXCLUDED.sms_account_sid,
+                sms_auth_token       = COALESCE(EXCLUDED.sms_auth_token, engagement.tenant_channel_configs.sms_auth_token),
+                sms_from_number      = EXCLUDED.sms_from_number,
+                email_enabled        = EXCLUDED.email_enabled,
+                email_from_address   = EXCLUDED.email_from_address,
+                email_from_name      = EXCLUDED.email_from_name,
+                push_enabled         = EXCLUDED.push_enabled,
+                updated_at           = now()
+            RETURNING
+                id, tenant_id,
+                whatsapp_enabled, whatsapp_account_sid, whatsapp_auth_token, whatsapp_from_number,
+                sms_enabled, sms_account_sid, sms_auth_token, sms_from_number,
+                email_enabled, email_from_address, email_from_name,
+                push_enabled,
+                created_at, updated_at
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(wa_enabled)
+        .bind(&wa_sid)
+        .bind(&wa_token)
+        .bind(&wa_from)
+        .bind(sms_enabled)
+        .bind(&sms_sid)
+        .bind(&sms_token)
+        .bind(&sms_from)
+        .bind(em_enabled)
+        .bind(&em_from_addr)
+        .bind(&em_from_name)
+        .bind(push_enabled)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(ChannelConfigRow::into_config(row))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ChannelConfigRow — flat struct mirroring the DB table
+// ---------------------------------------------------------------------------
+
+#[derive(sqlx::FromRow)]
+struct ChannelConfigRow {
+    id:                   Uuid,
+    tenant_id:            Uuid,
+    whatsapp_enabled:     bool,
+    whatsapp_account_sid: Option<String>,
+    whatsapp_auth_token:  Option<String>,
+    whatsapp_from_number: Option<String>,
+    sms_enabled:          bool,
+    sms_account_sid:      Option<String>,
+    sms_auth_token:       Option<String>,
+    sms_from_number:      Option<String>,
+    email_enabled:        bool,
+    email_from_address:   Option<String>,
+    email_from_name:      Option<String>,
+    push_enabled:         bool,
+    created_at:           chrono::DateTime<chrono::Utc>,
+    updated_at:           chrono::DateTime<chrono::Utc>,
+}
+
+impl ChannelConfigRow {
+    fn into_config(self) -> crate::domain::entities::channel_config::TenantChannelConfig {
+        crate::domain::entities::channel_config::TenantChannelConfig {
+            id:                   self.id,
+            tenant_id:            self.tenant_id,
+            whatsapp_enabled:     self.whatsapp_enabled,
+            whatsapp_account_sid: self.whatsapp_account_sid,
+            whatsapp_auth_token:  self.whatsapp_auth_token,
+            whatsapp_from_number: self.whatsapp_from_number,
+            sms_enabled:          self.sms_enabled,
+            sms_account_sid:      self.sms_account_sid,
+            sms_auth_token:       self.sms_auth_token,
+            sms_from_number:      self.sms_from_number,
+            email_enabled:        self.email_enabled,
+            email_from_address:   self.email_from_address,
+            email_from_name:      self.email_from_name,
+            push_enabled:         self.push_enabled,
+            created_at:           self.created_at,
+            updated_at:           self.updated_at,
+        }
+    }
 }

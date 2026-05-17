@@ -18,6 +18,7 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     "customers:read", "customers:manage",
     "compliance:review", "compliance:admin",
     "webhooks:read", "webhooks:manage",
+    "engagement:read", "engagement:send", "engagement:templates:write", "engagement:channels:write",
   ],
   tenant_admin: [
     "shipments:create", "shipments:read", "shipments:update", "shipments:cancel", "shipments:bulk", "shipments:export",
@@ -33,6 +34,7 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
     "customers:read", "customers:manage",
     "compliance:review", "compliance:admin",
     "webhooks:read", "webhooks:manage",
+    "engagement:read", "engagement:send", "engagement:templates:write", "engagement:channels:write",
   ],
   dispatcher: [
     "shipments:read", "shipments:update",

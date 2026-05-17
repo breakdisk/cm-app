@@ -109,9 +109,7 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::new(ExpoPushAdapter::new(identity_base_url))
     };
 
-    let notification_svc = Arc::new(NotificationService::new(whatsapp, sms, email, push));
-
-    // Database — used for campaign_sends tracking.
+    // Database — used for campaign_sends tracking and per-tenant channel config.
     let pool = PgPoolOptions::new()
         .max_connections(cfg.database.max_connections)
         .after_connect(|conn, _meta| Box::pin(async move {
@@ -124,7 +122,9 @@ pub async fn run() -> anyhow::Result<()> {
         .await?;
 
     logisticos_common::migrations::run(&pool, "engagement", &sqlx::migrate!("./migrations")).await?;
-    let db = Arc::new(NotificationDb::new(pool));
+    let db = Arc::new(NotificationDb::new(pool.clone()));
+
+    let notification_svc = Arc::new(NotificationService::new(whatsapp, sms, email, push).with_db(pool.clone()));
 
     // Suppression cache — Redis-backed. Fails open if Redis is unavailable.
     let suppression_cache = Arc::new(
@@ -164,8 +164,12 @@ pub async fn run() -> anyhow::Result<()> {
         run_kafka_consumer(consumer, consumer_svc, consumer_cache, consumer_db, consumer_publisher, shutdown_rx).await;
     });
 
-    // HTTP API — notification dispatch endpoint
-    let app = build_router(notification_svc)
+    // HTTP API — full engagement API (templates, channel-configs, campaigns, notifications)
+    let http_state = crate::api::http::AppState {
+        notification_svc: notification_svc.clone(),
+        db: pool.clone(),
+    };
+    let app = crate::api::http::router(http_state)
         .layer(tower_http::trace::TraceLayer::new_for_http());
 
     let addr: SocketAddr = format!("{}:{}", cfg.app.host, cfg.app.port).parse()?;
@@ -180,74 +184,6 @@ pub async fn run() -> anyhow::Result<()> {
     shutdown_tx.send(true).ok();
 
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// HTTP router for direct notification dispatch
-// ---------------------------------------------------------------------------
-
-fn build_router(svc: Arc<NotificationService>) -> axum::Router {
-    use axum::{extract::State, http::StatusCode, response::Json, routing::post, Router};
-    use serde::Deserialize;
-    use crate::domain::entities::notification::NotificationPriority;
-    use crate::domain::entities::template::{NotificationChannel, NotificationTemplate};
-
-    #[derive(Debug, Deserialize)]
-    struct SendRequest {
-        customer_id:  uuid::Uuid,
-        tenant_id:    uuid::Uuid,
-        channel:      String,
-        template_id:  String,
-        recipient:    String,
-        variables:    serde_json::Value,
-    }
-
-    Router::new()
-        .route("/v1/notifications", post(
-            |State(svc): State<Arc<NotificationService>>, Json(req): Json<SendRequest>| async move {
-                let channel = match req.channel.as_str() {
-                    "whatsapp" => NotificationChannel::WhatsApp,
-                    "sms"      => NotificationChannel::Sms,
-                    "email"    => NotificationChannel::Email,
-                    "push"     => NotificationChannel::Push,
-                    _          => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid channel"}))),
-                };
-
-                // Minimal template inline — production loads from DB template registry.
-                let template = NotificationTemplate {
-                    id:          uuid::Uuid::new_v4(),
-                    tenant_id:   Some(req.tenant_id),
-                    template_id: req.template_id.clone(),
-                    channel,
-                    language:    "en".into(),
-                    subject:     None,
-                    body:        req.variables.get("body").and_then(|v| v.as_str()).unwrap_or("{{body}}").to_owned(),
-                    variables:   req.variables.as_object()
-                        .map(|o| o.keys().cloned().collect())
-                        .unwrap_or_default(),
-                    is_active: true,
-                };
-
-                let mut notification = match NotificationService::build_from_template(
-                    &template,
-                    req.tenant_id,
-                    req.customer_id,
-                    req.recipient,
-                    &req.variables,
-                    NotificationPriority::Normal,
-                ) {
-                    Ok(n) => n,
-                    Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))),
-                };
-
-                match svc.dispatch(&mut notification).await {
-                    Ok(_)  => (StatusCode::OK, Json(serde_json::json!({"id": notification.id, "status": "sent"}))),
-                    Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))),
-                }
-            }
-        ))
-        .route("/health", axum::routing::get(|| async { (StatusCode::OK, "ok") }))
-        .with_state(svc)
 }
 
 // ---------------------------------------------------------------------------

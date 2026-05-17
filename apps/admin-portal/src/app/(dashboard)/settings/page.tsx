@@ -10,7 +10,7 @@
  *         Feature Flags → identity /v1/tenants/me + PUT /v1/tenants/:id/tier
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { variants } from "@/lib/design-system/tokens";
@@ -22,6 +22,12 @@ import {
   createIdentityApi, tenantIdOf,
   type TenantSnapshot, type TenantTier, type TenantUser,
 } from "@/lib/api/identity";
+import {
+  channelsApi,
+  type ChannelConfigView,
+  type ChannelView,
+  type UpdateChannelConfigRequest,
+} from "@/lib/api/channels";
 import { authFetch } from "@/lib/auth/auth-fetch";
 import { usePermissions } from "@/hooks/usePermissions";
 
@@ -153,92 +159,376 @@ export default function SettingsPage() {
 }
 
 // ── Notification Channels card (General tab) ────────────────────────────────
-// Live: engagement /v1/templates — counts active templates per channel as the
-// "configured" signal. A channel with zero active templates can't dispatch
-// anything, so it's the right gating signal in the absence of a dedicated
-// per-channel health endpoint. When engagement ships /v1/channels/health
-// (delivery rates), swap the rate column to that.
+// Live: engagement /v1/channel-configs (GET/PUT) for per-tenant config,
+// and /v1/channels/health for provider readiness signals.
 
-const ENGAGEMENT_URL = process.env.NEXT_PUBLIC_ENGAGEMENT_URL ?? "http://localhost:8003";
+type ChannelKey = "whatsapp" | "sms" | "email" | "push";
 
-interface TemplateRow {
-  id:         string;
-  channel:    string;   // "WhatsApp" | "Sms" | "Email" | "Push"
-  is_active:  boolean;
-  language:   string;
-  template_id: string;
-}
-
-const KNOWN_CHANNELS: Array<{ key: string; label: string }> = [
-  { key: "WhatsApp", label: "WhatsApp" },
-  { key: "Sms",      label: "SMS"      },
-  { key: "Email",    label: "Email"    },
-  { key: "Push",     label: "Push"     },
+const CHANNEL_META: Array<{ key: ChannelKey; label: string; provider: string }> = [
+  { key: "whatsapp", label: "WhatsApp", provider: "Twilio" },
+  { key: "sms",      label: "SMS",      provider: "Twilio" },
+  { key: "email",    label: "Email",    provider: "AWS SES" },
+  { key: "push",     label: "Push",     provider: "Expo" },
 ];
 
-function NotificationChannelsCard() {
-  const [rows, setRows]       = useState<TemplateRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState<string | null>(null);
+// ── Config form for a single channel ────────────────────────────────────────
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await authFetch(`${ENGAGEMENT_URL}/v1/templates`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json() as { templates?: TemplateRow[] };
-        setRows(json.templates ?? []);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load templates");
-      } finally {
-        setLoading(false);
+interface ChannelFormState {
+  enabled: boolean;
+  account_sid: string;
+  auth_token: string;
+  from_number: string;
+  from_address: string;
+  from_name: string;
+}
+
+function defaultForm(ch: ChannelKey, view: ChannelView): ChannelFormState {
+  return {
+    enabled:      view.enabled,
+    account_sid:  view.account_sid_hint ? "" : "",  // never pre-fill; show hint only
+    auth_token:   "",
+    from_number:  view.from_number ?? "",
+    from_address: view.from_address ?? "",
+    from_name:    view.from_name ?? "",
+  };
+}
+
+interface ChannelConfigDrawerProps {
+  channelKey: ChannelKey;
+  label: string;
+  provider: string;
+  view: ChannelView;
+  onClose: () => void;
+  onSaved: (updated: ChannelConfigView) => void;
+}
+
+function ChannelConfigDrawer({ channelKey, label, provider, view, onClose, onSaved }: ChannelConfigDrawerProps) {
+  const [form, setForm] = useState<ChannelFormState>(() => defaultForm(channelKey, view));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const set = (k: keyof ChannelFormState, v: string | boolean) =>
+    setForm((f) => ({ ...f, [k]: v }));
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const req: UpdateChannelConfigRequest = {};
+      if (channelKey === "whatsapp") {
+        req.whatsapp = {
+          enabled:     form.enabled,
+          account_sid: form.account_sid || undefined,
+          auth_token:  form.auth_token  || undefined,
+          from_number: form.from_number || undefined,
+        };
+      } else if (channelKey === "sms") {
+        req.sms = {
+          enabled:     form.enabled,
+          account_sid: form.account_sid || undefined,
+          auth_token:  form.auth_token  || undefined,
+          from_number: form.from_number || undefined,
+        };
+      } else if (channelKey === "email") {
+        req.email = {
+          enabled:      form.enabled,
+          from_address: form.from_address || undefined,
+          from_name:    form.from_name    || undefined,
+        };
+      } else {
+        req.push = { enabled: form.enabled };
       }
-    })();
-  }, []);
-
-  const byChannel = useMemo(() => {
-    const m = new Map<string, { active: number; total: number }>();
-    for (const t of rows) {
-      const cur = m.get(t.channel) ?? { active: 0, total: 0 };
-      cur.total += 1;
-      if (t.is_active) cur.active += 1;
-      m.set(t.channel, cur);
+      const updated = await channelsApi.updateConfig(req);
+      onSaved(updated);
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setSaving(false);
     }
-    return m;
-  }, [rows]);
+  };
+
+  const showTwilio = channelKey === "whatsapp" || channelKey === "sms";
+  const showEmail  = channelKey === "email";
 
   return (
-    <GlassCard>
-      <h3 className="text-sm font-semibold text-white mb-3">Notification Channels</h3>
-      {error && <p className="text-xs text-red-signal font-mono mb-2">{error}</p>}
-      <div className="space-y-3">
-        {loading ? (
-          <p className="text-xs text-white/40 font-mono py-4 text-center">loading channels…</p>
-        ) : (
-          KNOWN_CHANNELS.map(({ key, label }) => {
-            const stats = byChannel.get(key);
-            const enabled = !!stats && stats.active > 0;
-            return (
-              <div key={key} className="flex items-center justify-between p-3 bg-white/[0.03] rounded-lg border border-white/[0.06]">
-                <div className="flex items-center gap-3">
-                  <div className={`w-2 h-2 rounded-full ${enabled ? "bg-[#00FF88]" : "bg-white/20"}`} />
-                  <span className="text-sm text-white">{label}</span>
-                </div>
-                <span className="text-xs text-white/40 font-mono">
-                  {stats
-                    ? `${stats.active} active · ${stats.total} template${stats.total === 1 ? "" : "s"}`
-                    : "No templates"}
-                </span>
-              </div>
-            );
-          })
+    <motion.div
+      initial={{ opacity: 0, x: 32 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: 32 }}
+      transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+      className="fixed inset-y-0 right-0 w-full max-w-sm z-50 flex flex-col bg-[#0a0e1a]/95 backdrop-blur-xl border-l border-white/[0.08] shadow-2xl"
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between px-6 py-5 border-b border-white/[0.08]">
+        <div>
+          <p className="text-xs text-white/40 font-mono">{provider}</p>
+          <h3 className="text-base font-semibold text-white">{label} Channel</h3>
+        </div>
+        <button
+          onClick={onClose}
+          className="text-white/40 hover:text-white transition-colors text-lg font-mono"
+        >
+          ✕
+        </button>
+      </div>
+
+      {/* Body */}
+      <div className="flex-1 overflow-y-auto px-6 py-6 space-y-5">
+        {error && (
+          <p className="text-xs text-red-400 font-mono bg-red-400/10 border border-red-400/20 rounded-lg px-3 py-2">
+            {error}
+          </p>
+        )}
+
+        {/* Enable toggle */}
+        <div className="flex items-center justify-between p-3 bg-white/[0.03] rounded-lg border border-white/[0.06]">
+          <span className="text-sm text-white">Enable channel</span>
+          <button
+            onClick={() => set("enabled", !form.enabled)}
+            className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${
+              form.enabled ? "bg-[#00E5FF]/30 border border-[#00E5FF]/40" : "bg-white/10 border border-white/20"
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full transition-transform duration-200 ${
+                form.enabled
+                  ? "translate-x-5 bg-[#00E5FF] shadow-[0_0_8px_rgba(0,229,255,0.6)]"
+                  : "translate-x-0 bg-white/40"
+              }`}
+            />
+          </button>
+        </div>
+
+        {/* Twilio credentials */}
+        {showTwilio && (
+          <>
+            <div className="space-y-1">
+              <label className="text-xs text-white/50 font-mono uppercase tracking-wide">
+                Account SID{view.account_sid_hint && <span className="ml-2 text-white/30 normal-case">current: {view.account_sid_hint}</span>}
+              </label>
+              <input
+                type="text"
+                value={form.account_sid}
+                onChange={(e) => set("account_sid", e.target.value)}
+                placeholder="ACxxxxxxxxxxxxxxxxx"
+                className="w-full bg-white/[0.04] border border-white/[0.1] rounded-lg px-3 py-2 text-sm text-white font-mono placeholder:text-white/20 focus:outline-none focus:border-[#00E5FF]/40"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-white/50 font-mono uppercase tracking-wide">
+                Auth Token <span className="text-white/30 normal-case">(leave blank to keep current)</span>
+              </label>
+              <input
+                type="password"
+                value={form.auth_token}
+                onChange={(e) => set("auth_token", e.target.value)}
+                placeholder="••••••••••••••••••••••••••••••••"
+                className="w-full bg-white/[0.04] border border-white/[0.1] rounded-lg px-3 py-2 text-sm text-white font-mono placeholder:text-white/20 focus:outline-none focus:border-[#00E5FF]/40"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-white/50 font-mono uppercase tracking-wide">From Number</label>
+              <input
+                type="text"
+                value={form.from_number}
+                onChange={(e) => set("from_number", e.target.value)}
+                placeholder={channelKey === "whatsapp" ? "whatsapp:+15005550006" : "+15005550006"}
+                className="w-full bg-white/[0.04] border border-white/[0.1] rounded-lg px-3 py-2 text-sm text-white font-mono placeholder:text-white/20 focus:outline-none focus:border-[#00E5FF]/40"
+              />
+            </div>
+          </>
+        )}
+
+        {/* Email credentials */}
+        {showEmail && (
+          <>
+            <div className="space-y-1">
+              <label className="text-xs text-white/50 font-mono uppercase tracking-wide">From Address</label>
+              <input
+                type="email"
+                value={form.from_address}
+                onChange={(e) => set("from_address", e.target.value)}
+                placeholder="noreply@yourcompany.com"
+                className="w-full bg-white/[0.04] border border-white/[0.1] rounded-lg px-3 py-2 text-sm text-white font-mono placeholder:text-white/20 focus:outline-none focus:border-[#00E5FF]/40"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-white/50 font-mono uppercase tracking-wide">Sender Name</label>
+              <input
+                type="text"
+                value={form.from_name}
+                onChange={(e) => set("from_name", e.target.value)}
+                placeholder="Your Company"
+                className="w-full bg-white/[0.04] border border-white/[0.1] rounded-lg px-3 py-2 text-sm text-white font-mono placeholder:text-white/20 focus:outline-none focus:border-[#00E5FF]/40"
+              />
+              <p className="text-2xs font-mono text-white/30">
+                AWS SES handles email delivery. IAM credentials come from server env vars.
+              </p>
+            </div>
+          </>
+        )}
+
+        {/* Push — no extra credentials */}
+        {channelKey === "push" && (
+          <p className="text-xs text-white/40 font-mono bg-white/[0.03] border border-white/[0.06] rounded-lg px-3 py-4 text-center">
+            Push notifications use Expo with tokens resolved via the identity service.
+            No additional credentials required.
+          </p>
         )}
       </div>
-      <p className="text-2xs font-mono text-white/30 mt-3">
-        Source: engagement <span className="text-[#00E5FF]">/v1/templates</span> ·
-        a channel is &quot;enabled&quot; when ≥1 active template exists.
-      </p>
-    </GlassCard>
+
+      {/* Footer */}
+      <div className="px-6 py-4 border-t border-white/[0.08]">
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="w-full py-2.5 rounded-lg text-sm font-semibold transition-all
+            bg-[#00E5FF]/10 text-[#00E5FF] border border-[#00E5FF]/30
+            hover:bg-[#00E5FF]/20 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {saving ? "Saving…" : "Save Changes"}
+        </button>
+      </div>
+    </motion.div>
+  );
+}
+
+// ── Main card ────────────────────────────────────────────────────────────────
+
+function NotificationChannelsCard() {
+  const [config, setConfig]   = useState<ChannelConfigView | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState<string | null>(null);
+  const [editing, setEditing] = useState<ChannelKey | null>(null);
+  const [toggling, setToggling] = useState<ChannelKey | null>(null);
+
+  useEffect(() => {
+    channelsApi.getConfig()
+      .then(setConfig)
+      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load channel config"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleToggle = async (key: ChannelKey) => {
+    if (!config || toggling) return;
+    setToggling(key);
+    try {
+      const current = config[key];
+      const req: UpdateChannelConfigRequest = { [key]: { enabled: !current.enabled } };
+      const updated = await channelsApi.updateConfig(req);
+      setConfig(updated);
+    } catch {
+      // silent — user can open drawer for details
+    } finally {
+      setToggling(null);
+    }
+  };
+
+  const statusDot = (view: ChannelView) => {
+    if (view.enabled && view.configured) return "bg-[#00FF88] shadow-[0_0_6px_rgba(0,255,136,0.5)]";
+    if (view.enabled && !view.configured) return "bg-[#FFAB00] shadow-[0_0_6px_rgba(255,171,0,0.5)]";
+    return "bg-white/20";
+  };
+
+  const statusLabel = (view: ChannelView) => {
+    if (view.enabled && view.configured) return "active";
+    if (view.enabled && !view.configured) return "not configured";
+    return "disabled";
+  };
+
+  return (
+    <>
+      <GlassCard>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-semibold text-white">Notification Channels</h3>
+          <NeonBadge variant="cyan">
+            {loading ? "…" : `${config ? Object.values(config).filter((v) => (v as ChannelView).enabled).length : 0} active`}
+          </NeonBadge>
+        </div>
+        {error && (
+          <p className="text-xs text-red-400 font-mono mb-3">{error}</p>
+        )}
+        <div className="space-y-2">
+          {loading ? (
+            <p className="text-xs text-white/40 font-mono py-4 text-center">loading channels…</p>
+          ) : (
+            CHANNEL_META.map(({ key, label, provider }) => {
+              const view = config?.[key] ?? { enabled: false, configured: false };
+              const isToggling = toggling === key;
+              return (
+                <div
+                  key={key}
+                  className="flex items-center gap-3 p-3 bg-white/[0.03] rounded-lg border border-white/[0.06] group"
+                >
+                  {/* Status dot */}
+                  <div className={`w-2 h-2 rounded-full flex-shrink-0 transition-all ${statusDot(view)}`} />
+
+                  {/* Name + provider */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-white">{label}</span>
+                      <span className="text-2xs text-white/30 font-mono">{provider}</span>
+                    </div>
+                    <span className="text-2xs font-mono text-white/30">{statusLabel(view)}</span>
+                  </div>
+
+                  {/* Toggle */}
+                  <button
+                    onClick={() => handleToggle(key)}
+                    disabled={!!isToggling}
+                    title={view.enabled ? "Disable" : "Enable"}
+                    className={`relative w-9 h-5 rounded-full flex-shrink-0 transition-colors duration-200 disabled:opacity-50 ${
+                      view.enabled
+                        ? "bg-[#00E5FF]/30 border border-[#00E5FF]/40"
+                        : "bg-white/10 border border-white/20"
+                    }`}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full transition-transform duration-200 ${
+                        view.enabled
+                          ? "translate-x-4 bg-[#00E5FF] shadow-[0_0_6px_rgba(0,229,255,0.5)]"
+                          : "translate-x-0 bg-white/40"
+                      }`}
+                    />
+                  </button>
+
+                  {/* Configure button */}
+                  <button
+                    onClick={() => setEditing(key)}
+                    className="text-xs text-white/30 hover:text-[#00E5FF] font-mono transition-colors flex-shrink-0"
+                  >
+                    configure
+                  </button>
+                </div>
+              );
+            })
+          )}
+        </div>
+        <p className="text-2xs font-mono text-white/30 mt-3">
+          Source: engagement <span className="text-[#00E5FF]">/v1/channel-configs</span> ·
+          amber = enabled but missing credentials
+        </p>
+      </GlassCard>
+
+      {/* Config drawer */}
+      <AnimatePresence>
+        {editing && config && (() => {
+          const meta = CHANNEL_META.find((m) => m.key === editing)!;
+          return (
+            <ChannelConfigDrawer
+              key={editing}
+              channelKey={editing}
+              label={meta.label}
+              provider={meta.provider}
+              view={config[editing]}
+              onClose={() => setEditing(null)}
+              onSaved={(updated) => setConfig(updated)}
+            />
+          );
+        })()}
+      </AnimatePresence>
+    </>
   );
 }
 

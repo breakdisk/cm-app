@@ -79,6 +79,12 @@ pub mod permissions {
     // ── Webhooks ─────────────────────────────────────────────
     pub const WEBHOOKS_READ:     &str = "webhooks:read";
     pub const WEBHOOKS_MANAGE:   &str = "webhooks:manage";
+
+    // ── Engagement / Notifications ────────────────────────────
+    pub const ENGAGEMENT_READ:         &str = "engagement:read";
+    pub const ENGAGEMENT_SEND:         &str = "engagement:send";
+    pub const ENGAGEMENT_TEMPLATES:    &str = "engagement:templates:write";
+    pub const ENGAGEMENT_CHANNELS:     &str = "engagement:channels:write";
 }
 
 /// Predefined role → permissions mappings applied at tenant setup.
@@ -102,6 +108,8 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::CUSTOMERS_VIEW, permissions::CUSTOMERS_MANAGE,
             permissions::COMPLIANCE_REVIEW, permissions::COMPLIANCE_ADMIN,
             permissions::WEBHOOKS_READ, permissions::WEBHOOKS_MANAGE,
+            permissions::ENGAGEMENT_READ, permissions::ENGAGEMENT_SEND,
+            permissions::ENGAGEMENT_TEMPLATES, permissions::ENGAGEMENT_CHANNELS,
         ],
         "dispatcher" => vec![
             permissions::SHIPMENT_READ, permissions::SHIPMENT_UPDATE,
@@ -155,6 +163,8 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::CUSTOMERS_VIEW, permissions::CUSTOMERS_MANAGE,
             permissions::COMPLIANCE_REVIEW, permissions::COMPLIANCE_ADMIN,
             permissions::WEBHOOKS_READ, permissions::WEBHOOKS_MANAGE,
+            permissions::ENGAGEMENT_READ, permissions::ENGAGEMENT_SEND,
+            permissions::ENGAGEMENT_TEMPLATES, permissions::ENGAGEMENT_CHANNELS,
         ],
         _ => vec![],
     }
