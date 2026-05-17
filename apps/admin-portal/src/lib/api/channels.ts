@@ -1,7 +1,10 @@
 import { authFetch } from "@/lib/auth/auth-fetch";
 
-const ENGAGEMENT_URL =
-  process.env.NEXT_PUBLIC_ENGAGEMENT_URL ?? "http://localhost:8003";
+// Engagement channel-config endpoints are routed through the API gateway
+// (NEXT_PUBLIC_API_URL → /v1/channel-configs → engagement service).
+// Never call the engagement service directly from the browser — it is an
+// internal Docker service and is not publicly accessible.
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -73,7 +76,7 @@ export interface UpdateChannelConfigRequest {
 // ── Client ─────────────────────────────────────────────────────────────────────
 
 async function engagementFetch(path: string, init?: RequestInit): Promise<Response> {
-  return authFetch(`${ENGAGEMENT_URL}${path}`, init);
+  return authFetch(`${API_BASE}${path}`, init);
 }
 
 export const channelsApi = {
