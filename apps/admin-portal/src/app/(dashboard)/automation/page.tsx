@@ -13,13 +13,13 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
-import { Workflow, RefreshCw, Zap, Power, ChevronDown, ChevronUp } from "lucide-react";
-import { rulesApi, enumLabel, type AutomationRule } from "@/lib/api/rules";
+import { Workflow, RefreshCw, Zap, Power, ChevronDown, ChevronUp, Clock, CheckCircle2, XCircle } from "lucide-react";
+import { rulesApi, enumLabel, type AutomationRule, type RuleExecution } from "@/lib/api/rules";
 import { usePermissions } from "@/hooks/usePermissions";
 
 export default function AutomationPage() {
@@ -29,6 +29,9 @@ export default function AutomationPage() {
   const [busyId, setBusyId]   = useState<string | null>(null);
   const [reloading, setReloading] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Per-rule execution history — keyed by rule id
+  const [execMap,       setExecMap]       = useState<Record<string, RuleExecution[]>>({});
+  const [execLoadingId, setExecLoadingId] = useState<string | null>(null);
   const { hasPermission } = usePermissions();
   const canManage = hasPermission("users:manage");
 
@@ -50,6 +53,29 @@ export default function AutomationPage() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // Poll every 60s — rule states can change via the engine reload or external updates.
+  useEffect(() => {
+    const id = setInterval(load, 60_000);
+    return () => clearInterval(id);
+  }, [load]);
+
+  // Fetch execution history whenever a rule row is expanded (and we don't have
+  // a cached copy yet). Results are cached for the session; pressing Refresh
+  // clears them by reloading the page state.
+  const loadExecutions = useCallback(async (ruleId: string) => {
+    if (execMap[ruleId]) return; // already loaded
+    setExecLoadingId(ruleId);
+    try {
+      const rows = await rulesApi.executions(ruleId);
+      setExecMap((prev) => ({ ...prev, [ruleId]: rows }));
+    } catch {
+      // endpoint may not be deployed yet — set empty so we don't retry every expand
+      setExecMap((prev) => ({ ...prev, [ruleId]: [] }));
+    } finally {
+      setExecLoadingId(null);
+    }
+  }, [execMap]);
 
   async function handleToggle(id: string) {
     setBusyId(id);
@@ -203,7 +229,11 @@ export default function AutomationPage() {
                         </button>
                       )}
                       <button
-                        onClick={() => setExpandedId(expanded ? null : r.id)}
+                        onClick={() => {
+                          const next = expanded ? null : r.id;
+                          setExpandedId(next);
+                          if (next) loadExecutions(next);
+                        }}
                         className="rounded p-1.5 text-white/30 hover:text-white hover:bg-glass-200 transition-colors"
                         title={expanded ? "Collapse" : "Expand"}
                       >
@@ -212,34 +242,95 @@ export default function AutomationPage() {
                     </div>
                   </div>
 
+                  <AnimatePresence>
                   {expanded && (
-                    <div className="bg-glass-50 px-5 py-4 grid gap-4 md:grid-cols-2 border-t border-glass-border/30">
-                      <div>
-                        <p className="text-2xs font-mono text-white/40 uppercase tracking-wider mb-2">Conditions</p>
-                        {r.conditions.length === 0 ? (
-                          <p className="text-xs text-white/30">No conditions — fires on every trigger</p>
-                        ) : (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: "auto", opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.2, ease: "easeInOut" }}
+                      className="overflow-hidden border-t border-glass-border/30"
+                    >
+                      <div className="bg-glass-50 px-5 py-4 grid gap-4 md:grid-cols-2">
+                        <div>
+                          <p className="text-2xs font-mono text-white/40 uppercase tracking-wider mb-2">Conditions</p>
+                          {r.conditions.length === 0 ? (
+                            <p className="text-xs text-white/30">No conditions — fires on every trigger</p>
+                          ) : (
+                            <ul className="flex flex-col gap-1">
+                              {r.conditions.map((c, i) => (
+                                <li key={i} className="text-xs text-white/70 font-mono">
+                                  • {enumLabel(c)}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                        <div>
+                          <p className="text-2xs font-mono text-white/40 uppercase tracking-wider mb-2">Actions</p>
                           <ul className="flex flex-col gap-1">
-                            {r.conditions.map((c, i) => (
-                              <li key={i} className="text-xs text-white/70 font-mono">
-                                • {enumLabel(c)}
+                            {r.actions.map((a, i) => (
+                              <li key={i} className="text-xs text-green-signal font-mono">
+                                → {enumLabel(a)}
                               </li>
                             ))}
                           </ul>
+                        </div>
+                      </div>
+
+                      {/* Execution history */}
+                      <div className="bg-glass-50 border-t border-glass-border/20 px-5 pb-4">
+                        <div className="flex items-center gap-2 mb-3">
+                          <Clock size={11} className="text-white/30" />
+                          <p className="text-2xs font-mono text-white/40 uppercase tracking-wider">Recent Executions</p>
+                          {execLoadingId === r.id && (
+                            <span className="text-2xs font-mono text-white/25 animate-pulse">loading…</span>
+                          )}
+                        </div>
+                        {execLoadingId !== r.id && (execMap[r.id]?.length ?? 0) === 0 ? (
+                          <p className="text-xs font-mono text-white/25 italic">
+                            No executions recorded yet — endpoint may not be deployed.
+                          </p>
+                        ) : (
+                          <div className="flex flex-col gap-1.5">
+                            {(execMap[r.id] ?? []).slice(0, 8).map((ex) => (
+                              <div
+                                key={ex.id}
+                                className="flex items-center justify-between gap-3 rounded-md border border-glass-border bg-glass-100 px-3 py-1.5"
+                              >
+                                <div className="flex items-center gap-2 min-w-0">
+                                  {ex.matched ? (
+                                    <CheckCircle2 size={11} className="text-green-signal shrink-0" />
+                                  ) : (
+                                    <XCircle size={11} className="text-white/25 shrink-0" />
+                                  )}
+                                  <span className="text-2xs font-mono text-white/50 truncate">
+                                    {enumLabel(ex.event_type)}
+                                  </span>
+                                  {ex.error && (
+                                    <span className="text-2xs font-mono text-red-signal truncate" title={ex.error}>
+                                      ⚠ {ex.error}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-3 shrink-0 text-2xs font-mono text-white/30">
+                                  <span>{ex.actions_executed} action{ex.actions_executed === 1 ? "" : "s"}</span>
+                                  <span>{ex.duration_ms}ms</span>
+                                  <span>
+                                    {new Date(ex.occurred_at).toLocaleString("en-PH", {
+                                      month: "short", day: "numeric",
+                                      hour: "2-digit", minute: "2-digit",
+                                    })}
+                                  </span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
                         )}
                       </div>
-                      <div>
-                        <p className="text-2xs font-mono text-white/40 uppercase tracking-wider mb-2">Actions</p>
-                        <ul className="flex flex-col gap-1">
-                          {r.actions.map((a, i) => (
-                            <li key={i} className="text-xs text-green-signal font-mono">
-                              → {enumLabel(a)}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    </div>
+                    </motion.div>
                   )}
+                  </AnimatePresence>
                 </div>
               );
             })

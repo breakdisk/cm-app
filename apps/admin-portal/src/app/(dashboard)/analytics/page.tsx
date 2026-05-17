@@ -3,7 +3,7 @@
  * Admin Portal — Analytics Page
  * Network-wide delivery performance, zone heatmap, SLA trends, AI model accuracy.
  */
-import { useState, useEffect, useRef, Suspense } from "react";
+import { useState, useEffect, useRef, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { createAnalyticsApi } from "@/lib/api/analytics";
@@ -16,40 +16,20 @@ import {
   AreaChart, Area, BarChart, Bar, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
-import { BarChart3, TrendingUp, Brain, Calendar, LineChart as LineChartIcon } from "lucide-react";
+import { BarChart3, TrendingUp, Brain, Calendar, ChevronLeft, ChevronRight, LineChart as LineChartIcon } from "lucide-react";
 
-// ── Mock data ──────────────────────────────────────────────────────────────────
+// ── Types ──────────────────────────────────────────────────────────────────────
 
-const KPI = [
-  { label: "Shipments Today",  value: 1284,   trend: +8.2,  color: "cyan"   as const, format: "number"  as const },
-  { label: "Delivery Rate",    value: 94.2,   trend: +1.8,  color: "green"  as const, format: "percent" as const },
-  { label: "Avg Delivery Time",value: 1.8,    trend: -0.2,  color: "purple" as const, format: "number"  as const },
-  { label: "Revenue MTD",      value: 2840000, trend: +14.2, color: "amber" as const, format: "currency" as const },
-];
+type KpiEntry = { label: string; value: number; trend: number; color: "cyan" | "green" | "purple" | "amber"; format: "number" | "percent" | "currency" };
+type WeeklyVolumeEntry = { day: string; delivered: number; failed: number };
+type SlaTrendEntry = { date: string; rate: number; target: number };
+type ZoneEntry = { zone: string; deliveries: number; rate: number; revenue: number };
 
-const WEEKLY_VOLUME = [
-  { day: "Mon", delivered: 1180, failed: 48 },
-  { day: "Tue", delivered: 1340, failed: 42 },
-  { day: "Wed", delivered: 1280, failed: 61 },
-  { day: "Thu", delivered: 1420, failed: 38 },
-  { day: "Fri", delivered: 1640, failed: 52 },
-  { day: "Sat", delivered: 1280, failed: 28 },
-  { day: "Sun", delivered: 840,  failed: 18 },
-];
-
-const SLA_TREND = [
-  { date: "W1",  rate: 92.8, target: 95 }, { date: "W2", rate: 93.4, target: 95 },
-  { date: "W3",  rate: 94.1, target: 95 }, { date: "W4", rate: 95.2, target: 95 },
-  { date: "W5",  rate: 94.8, target: 95 }, { date: "W6", rate: 96.1, target: 95 },
-  { date: "W7",  rate: 95.4, target: 95 }, { date: "W8", rate: 94.2, target: 95 },
-  { date: "W9",  rate: 94.8, target: 95 },
-];
-
-const ZONE_PERFORMANCE = [
-  { zone: "Metro Manila",    deliveries: 8420, rate: 96.5, revenue: 1842000 },
-  { zone: "Luzon Provinces", deliveries: 2840, rate: 93.2, revenue: 682000  },
-  { zone: "Visayas",         deliveries: 980,  rate: 89.8, revenue: 284000  },
-  { zone: "Mindanao",        deliveries: 520,  rate: 86.4, revenue: 148000  },
+const EMPTY_KPI: KpiEntry[] = [
+  { label: "Shipments Today",   value: 0, trend: 0, color: "cyan",   format: "number"   },
+  { label: "Delivery Rate",     value: 0, trend: 0, color: "green",  format: "percent"  },
+  { label: "Avg Delivery Time", value: 0, trend: 0, color: "purple", format: "number"   },
+  { label: "Revenue MTD",       value: 0, trend: 0, color: "amber",  format: "currency" },
 ];
 
 const AI_METRICS = [
@@ -59,17 +39,25 @@ const AI_METRICS = [
   { label: "Demand Forecast",     value: 91.8, color: "#FFAB00" },
 ];
 
-function AnalyticsPageInner() {
-  const searchParams   = useSearchParams();
-  // Deep-link from partner/rates + partner/sla: /admin/analytics?zone=<name>
-  // Fuzzy match so "Metro Manila" matches both exact and "Metro Manila NCR" etc.
-  const focusZone      = searchParams.get("zone");
-  const focusRowRef    = useRef<HTMLDivElement | null>(null);
+const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
-  const [kpi, setKpi] = useState(KPI);
-  const [weeklyVolume, setWeeklyVolume] = useState(WEEKLY_VOLUME);
-  const [zonePerformance, setZonePerformance] = useState(ZONE_PERFORMANCE);
-  const [slaTrend, setSlaTrend] = useState(SLA_TREND);
+function AnalyticsPageInner() {
+  const searchParams = useSearchParams();
+  const focusZone    = searchParams.get("zone");
+  const focusRowRef  = useRef<HTMLDivElement | null>(null);
+
+  // Date range state — default to current month.
+  const now = new Date();
+  const [selectedYear,  setSelectedYear]  = useState(now.getFullYear());
+  const [selectedMonth, setSelectedMonth] = useState(now.getMonth()); // 0-indexed
+  const [showCalendar,  setShowCalendar]  = useState(false);
+
+  const [kpi,             setKpi]             = useState<KpiEntry[]>(EMPTY_KPI);
+  const [weeklyVolume,    setWeeklyVolume]    = useState<WeeklyVolumeEntry[]>([]);
+  const [zonePerformance, setZonePerformance] = useState<ZoneEntry[]>([]);
+  const [slaTrend,        setSlaTrend]        = useState<SlaTrendEntry[]>([]);
+  const [loading,         setLoading]         = useState(true);
+  const [error,           setError]           = useState<string | null>(null);
 
   useEffect(() => {
     if (focusZone && focusRowRef.current) {
@@ -77,41 +65,54 @@ function AnalyticsPageInner() {
     }
   }, [focusZone, zonePerformance]);
 
-  useEffect(() => {
-    const api = createAnalyticsApi();
-    api.getDashboard().then((res) => {
-      const m = res.data.metrics;
-      setKpi([
-        { label: "Shipments Today",   value: m.shipments_today,   trend: m.shipments_today_trend,   color: "cyan"   as const, format: "number"   as const },
-        { label: "Delivery Rate",     value: m.delivery_rate,     trend: m.delivery_rate_trend,     color: "green"  as const, format: "percent"  as const },
-        { label: "Avg Delivery Time", value: m.avg_delivery_days, trend: m.avg_delivery_days_trend, color: "purple" as const, format: "number"   as const },
-        { label: "Revenue MTD",       value: m.revenue_mtd,       trend: m.revenue_mtd_trend,       color: "amber"  as const, format: "currency" as const },
-      ]);
-      if (res.data.weekly_volume?.length) setWeeklyVolume(res.data.weekly_volume);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      if (res.data.zone_performance?.length) setZonePerformance(res.data.zone_performance as any);
-    }).catch(() => { /* retain mock on error */ });
-  }, []);
+  const fetchDashboard = useCallback(async () => {
+    setError(null);
+    setLoading(true);
+    try {
+      const api  = createAnalyticsApi();
+      const base = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+      // Build from/to for the selected month.
+      const from = new Date(selectedYear, selectedMonth, 1).toISOString().slice(0, 10);
+      const to   = new Date(selectedYear, selectedMonth + 1, 0).toISOString().slice(0, 10);
 
-  // SLA trend — pull last 30 days of pre-aggregated on-time rate from
-  // analytics.daily_kpis. Falls back to the static mock if the endpoint
-  // 404s (e.g. older analytics image without /v1/analytics/sla-trend).
-  useEffect(() => {
-    const base = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-    authFetch(`${base}/v1/analytics/sla-trend?days=30`)
-      .then((res) => res.ok ? res.json() : null)
-      .then((json) => {
-        if (!json?.data?.length) return;
+      const [dashRes, slaRes] = await Promise.allSettled([
+        api.getDashboard(),
+        authFetch(`${base}/v1/analytics/sla-trend?days=30&from=${from}&to=${to}`),
+      ]);
+
+      if (dashRes.status === "fulfilled") {
+        const m = dashRes.value.data.metrics;
+        setKpi([
+          { label: "Shipments Today",   value: m.shipments_today,   trend: m.shipments_today_trend,   color: "cyan",   format: "number"   },
+          { label: "Delivery Rate",     value: m.delivery_rate,     trend: m.delivery_rate_trend,     color: "green",  format: "percent"  },
+          { label: "Avg Delivery Time", value: m.avg_delivery_days, trend: m.avg_delivery_days_trend, color: "purple", format: "number"   },
+          { label: "Revenue MTD",       value: m.revenue_mtd,       trend: m.revenue_mtd_trend,       color: "amber",  format: "currency" },
+        ]);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const points = (json.data as Array<{ date: string; on_time_pct: number }>).map((p) => ({
-          date:   p.date.slice(5).replace("-", "/"),  // MM/DD label keeps the X axis tight
-          rate:   Number(p.on_time_pct.toFixed(1)),
-          target: 95,
-        }));
-        setSlaTrend(points);
-      })
-      .catch(() => { /* keep mock */ });
-  }, []);
+        if (dashRes.value.data.weekly_volume?.length)    setWeeklyVolume(dashRes.value.data.weekly_volume);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if (dashRes.value.data.zone_performance?.length) setZonePerformance(dashRes.value.data.zone_performance as any);
+      } else {
+        setError("Failed to load analytics — check the analytics service.");
+      }
+
+      if (slaRes.status === "fulfilled" && slaRes.value.ok) {
+        const json = await slaRes.value.json();
+        if (json?.data?.length) {
+          const points = (json.data as Array<{ date: string; on_time_pct: number }>).map((p) => ({
+            date:   p.date.slice(5).replace("-", "/"),
+            rate:   Number(p.on_time_pct.toFixed(1)),
+            target: 95,
+          }));
+          setSlaTrend(points);
+        }
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedYear, selectedMonth]);
+
+  useEffect(() => { fetchDashboard(); }, [fetchDashboard]);
 
   return (
     <motion.div
@@ -121,18 +122,62 @@ function AnalyticsPageInner() {
       className="flex flex-col gap-5 p-6"
     >
       {/* Header */}
-      <motion.div variants={variants.fadeInUp} className="flex items-center justify-between">
+      <motion.div variants={variants.fadeInUp} className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="font-heading text-2xl font-bold text-white flex items-center gap-2">
             <BarChart3 size={22} className="text-cyan-neon" />
             Analytics
           </h1>
-          <p className="text-sm text-white/40 font-mono mt-0.5">Network-wide · March 2026 · All tenants</p>
+          <p className="text-sm text-white/40 font-mono mt-0.5">
+            Network-wide · {MONTH_NAMES[selectedMonth]} {selectedYear} · All tenants
+            {loading && <span className="ml-2 text-white/20">loading…</span>}
+          </p>
         </div>
-        <button className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors">
-          <Calendar size={12} /> Mar 2026
-        </button>
+        {/* Month picker */}
+        <div className="relative">
+          <button
+            onClick={() => setShowCalendar((v) => !v)}
+            className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs transition-colors ${
+              showCalendar ? "border-cyan-neon/40 bg-cyan-neon/10 text-cyan-neon" : "border-glass-border bg-glass-100 text-white/60 hover:text-white"
+            }`}
+          >
+            <Calendar size={12} /> {MONTH_NAMES[selectedMonth]} {selectedYear}
+          </button>
+          {showCalendar && (
+            <div className="absolute right-0 top-full mt-2 z-30 w-52 rounded-xl border border-glass-border bg-canvas-100 shadow-xl p-3">
+              <div className="flex items-center justify-between mb-3">
+                <button
+                  onClick={() => { if (selectedMonth === 0) { setSelectedMonth(11); setSelectedYear(y => y - 1); } else setSelectedMonth(m => m - 1); }}
+                  className="text-white/40 hover:text-white transition-colors"
+                ><ChevronLeft size={14} /></button>
+                <span className="text-xs font-mono text-white/60">{selectedYear}</span>
+                <button
+                  onClick={() => { if (selectedMonth === 11) { setSelectedMonth(0); setSelectedYear(y => y + 1); } else setSelectedMonth(m => m + 1); }}
+                  className="text-white/40 hover:text-white transition-colors"
+                ><ChevronRight size={14} /></button>
+              </div>
+              <div className="grid grid-cols-3 gap-1">
+                {MONTH_NAMES.map((name, i) => (
+                  <button
+                    key={name}
+                    onClick={() => { setSelectedMonth(i); setShowCalendar(false); }}
+                    className={`rounded-lg py-1.5 text-2xs font-mono transition-colors ${
+                      i === selectedMonth ? "bg-cyan-neon/20 text-cyan-neon border border-cyan-neon/40" : "text-white/50 hover:bg-glass-100 hover:text-white"
+                    }`}
+                  >{name}</button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </motion.div>
+
+      {/* Error banner */}
+      {error && (
+        <motion.div variants={variants.fadeInUp}>
+          <div className="rounded-lg border border-red-signal/30 bg-red-signal/5 px-4 py-3 text-xs text-red-signal font-mono">{error}</div>
+        </motion.div>
+      )}
 
       {/* KPI row */}
       <motion.div variants={variants.fadeInUp} className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -154,19 +199,25 @@ function AnalyticsPageInner() {
               </div>
               <TrendingUp size={15} className="text-purple-plasma" />
             </div>
-            <ResponsiveContainer width="100%" height={180}>
-              <BarChart data={weeklyVolume} margin={{ top: 0, right: 0, bottom: 0, left: -24 }}>
-                <CartesianGrid stroke="rgba(255,255,255,0.04)" strokeDasharray="4 4" vertical={false} />
-                <XAxis dataKey="day" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 11, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 11, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
-                <Tooltip
-                  contentStyle={{ background: "rgba(13,20,34,0.95)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, fontFamily: "JetBrains Mono", fontSize: 11 }}
-                  labelStyle={{ color: "rgba(255,255,255,0.4)" }}
-                />
-                <Bar dataKey="delivered" fill="#A855F7" radius={[4,4,0,0]} fillOpacity={0.85} />
-                <Bar dataKey="failed"    fill="#FF3B5C" radius={[4,4,0,0]} fillOpacity={0.7}  />
-              </BarChart>
-            </ResponsiveContainer>
+            {weeklyVolume.length === 0 ? (
+              <div className="flex h-[180px] items-center justify-center text-xs text-white/20 font-mono">
+                {loading ? "Loading…" : "No data for selected period"}
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={180}>
+                <BarChart data={weeklyVolume} margin={{ top: 0, right: 0, bottom: 0, left: -24 }}>
+                  <CartesianGrid stroke="rgba(255,255,255,0.04)" strokeDasharray="4 4" vertical={false} />
+                  <XAxis dataKey="day" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 11, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 11, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
+                  <Tooltip
+                    contentStyle={{ background: "rgba(13,20,34,0.95)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, fontFamily: "JetBrains Mono", fontSize: 11 }}
+                    labelStyle={{ color: "rgba(255,255,255,0.4)" }}
+                  />
+                  <Bar dataKey="delivered" fill="#A855F7" radius={[4,4,0,0]} fillOpacity={0.85} />
+                  <Bar dataKey="failed"    fill="#FF3B5C" radius={[4,4,0,0]} fillOpacity={0.7}  />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
           </GlassCard>
         </motion.div>
 
@@ -201,6 +252,11 @@ function AnalyticsPageInner() {
           <div className="px-5 py-4 border-b border-glass-border">
             <h2 className="font-heading text-sm font-semibold text-white">Performance by Zone — MTD</h2>
           </div>
+          {zonePerformance.length === 0 ? (
+            <div className="px-5 py-8 text-center text-xs text-white/20 font-mono">
+              {loading ? "Loading zone data…" : "No zone data available for this period"}
+            </div>
+          ) : (<>
           <div className="grid grid-cols-[1fr_100px_1fr_120px_60px] gap-3 px-5 py-2.5 border-b border-glass-border">
             {["Zone", "Deliveries", "Success Rate", "Revenue", ""].map((h) => (
               <span key={h} className="text-2xs font-mono text-white/30 uppercase tracking-wider">{h}</span>
@@ -243,6 +299,7 @@ function AnalyticsPageInner() {
             </div>
             );
           })}
+          </>)}
         </GlassCard>
       </motion.div>
 
@@ -257,7 +314,7 @@ function AnalyticsPageInner() {
               </h2>
               <p className="text-2xs font-mono text-white/30">Live model accuracy metrics</p>
             </div>
-            <NeonBadge variant="purple">claude-opus-4-6</NeonBadge>
+            <NeonBadge variant="purple">{process.env.NEXT_PUBLIC_AI_MODEL ?? "claude-opus-4-6"}</NeonBadge>
           </div>
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             {AI_METRICS.map((m) => (

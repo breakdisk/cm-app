@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useMemo, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { useRosterEvents } from "@/hooks/useRosterEvents";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   Truck,
   Package,
@@ -33,6 +34,9 @@ import {
   User as UserIcon,
   X,
   Receipt as ReceiptIcon,
+  AlertTriangle,
+  CheckCircle2,
+  MessageSquare,
 } from "lucide-react";
 
 import { GlassCard } from "@/components/ui/glass-card";
@@ -55,6 +59,8 @@ import {
 import { findReceiptByBookingId, type BusReceipt } from "@/lib/api/marketplace-bus";
 import { ReceiptModal, type ReceiptModalBooking } from "@/components/marketplace/ReceiptModal";
 import { authFetch } from "@/lib/auth/auth-fetch";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 // ── Status styling ────────────────────────────────────────────────────────────
 
@@ -178,6 +184,7 @@ function AdminMarketplacePageInner() {
   const [receiptModal, setReceiptModal] = useState<
     { open: boolean; booking: ReceiptModalBooking | null; receipt: BusReceipt | null }
   >({ open: false, booking: null, receipt: null });
+  const [disputeBooking, setDisputeBooking] = useState<AdminBooking | null>(null);
   const [tab, setTab]           = useState<Tab>(qpAwb || qpStatus ? "bookings" : "listings");
   const [search, setSearch]     = useState(qpAwb ?? "");
   const [partnerFilter, setPartnerFilter]     = useState<string>(qpPartner ?? "all");
@@ -509,6 +516,7 @@ function AdminMarketplacePageInner() {
           loading={loading}
           receipts={receiptsByBookingId}
           onOpenReceipt={openReceiptFor}
+          onResolveDispute={(b) => setDisputeBooking(b)}
         />
       )}
 
@@ -518,6 +526,12 @@ function AdminMarketplacePageInner() {
         onClose={() => setReceiptModal({ open: false, booking: null, receipt: null })}
         booking={receiptModal.booking}
         receipt={receiptModal.receipt}
+      />
+
+      {/* Dispute resolution modal */}
+      <DisputeResolutionModal
+        booking={disputeBooking}
+        onClose={() => { setDisputeBooking(null); void refresh(); }}
       />
     </div>
   );
@@ -546,6 +560,156 @@ function merchantPortalDeepLink(awb: string): string {
   // Cross-portal — jumps into the merchant's own marketplace view with the
   // AWB surfaced for support/escalation context. Plain <a> preserves /merchant basePath.
   return `/merchant/marketplace?awb=${encodeURIComponent(awb)}`;
+}
+
+// ── Dispute Resolution Modal ──────────────────────────────────────────────────
+
+function DisputeResolutionModal({
+  booking,
+  onClose,
+}: {
+  booking: AdminBooking | null;
+  onClose: () => void;
+}) {
+  const [notes, setNotes]       = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError]       = useState<string | null>(null);
+  const [done, setDone]         = useState(false);
+
+  const open = booking !== null;
+
+  function reset() {
+    setNotes("");
+    setError(null);
+    setDone(false);
+    setSubmitting(false);
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!booking) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await authFetch(
+        `${API_BASE}/v1/marketplace/bookings/${booking.id}/resolve-dispute`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ resolution_notes: notes.trim() || "Resolved via admin portal" }),
+        },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setDone(true);
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Failed to submit resolution");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+          onClick={(e) => { if (e.target === e.currentTarget) { reset(); onClose(); } }}
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 10 }}
+            transition={{ type: "spring", stiffness: 360, damping: 30 }}
+            className="w-full max-w-md rounded-2xl border border-glass-border bg-canvas-100 p-6 shadow-2xl"
+          >
+            <div className="flex items-center justify-between mb-5">
+              <div className="flex items-center gap-2">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-red-surface border border-red-signal/30">
+                  <AlertTriangle size={14} className="text-red-signal" />
+                </div>
+                <h2 className="font-heading text-base font-semibold text-white">Resolve Dispute</h2>
+              </div>
+              <button onClick={() => { reset(); onClose(); }} className="text-white/30 hover:text-white/70 transition-colors">
+                <X size={16} />
+              </button>
+            </div>
+
+            {booking && (
+              <div className="mb-4 rounded-lg bg-glass-100 border border-glass-border px-3 py-2.5">
+                <p className="text-2xs font-mono text-white/40 mb-0.5">Booking</p>
+                <p className="text-xs font-mono text-white">{booking.awb}</p>
+                <p className="text-2xs text-white/50 mt-0.5">
+                  {booking.partner_display_name} · {booking.consumer_display}
+                </p>
+              </div>
+            )}
+
+            {done ? (
+              <div className="space-y-4">
+                <div className="flex items-center gap-3 rounded-xl border border-green-signal/30 bg-green-surface p-3">
+                  <CheckCircle2 size={16} className="text-green-signal flex-shrink-0" />
+                  <div>
+                    <p className="text-xs font-semibold text-white">Dispute flagged for ops review</p>
+                    <p className="text-2xs font-mono text-white/50 mt-0.5">
+                      Resolution notes submitted to the partner portal.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => { reset(); onClose(); }}
+                  className="w-full rounded-xl border border-glass-border bg-glass-100 py-2.5 text-xs text-white/70 hover:text-white transition-colors"
+                >
+                  Close
+                </button>
+              </div>
+            ) : (
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div>
+                  <label className="block text-2xs font-mono text-white/40 uppercase tracking-wider mb-1.5">
+                    Resolution notes
+                  </label>
+                  <textarea
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    rows={3}
+                    placeholder="Describe the resolution or action taken…"
+                    className="w-full rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/80 outline-none focus:border-red-signal/40 resize-none placeholder:text-white/20 font-mono"
+                  />
+                </div>
+                {error && (
+                  <p className="text-xs text-red-signal font-mono">{error}</p>
+                )}
+                <div className="flex gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => { reset(); onClose(); }}
+                    className="flex-1 rounded-xl border border-glass-border bg-glass-100 py-2.5 text-xs text-white/60 hover:text-white transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={submitting}
+                    className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-red-signal/80 py-2.5 text-xs font-semibold text-white hover:bg-red-signal disabled:opacity-40 transition-all"
+                  >
+                    {submitting ? (
+                      <>Submitting…</>
+                    ) : (
+                      <><MessageSquare size={11} /> Submit Resolution</>
+                    )}
+                  </button>
+                </div>
+              </form>
+            )}
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
 }
 
 // ── Tab button ────────────────────────────────────────────────────────────────
@@ -729,12 +893,14 @@ function BookingsTable({
   loading,
   receipts,
   onOpenReceipt,
+  onResolveDispute,
 }: {
   rows: AdminBooking[];
   total: number;
   loading: boolean;
   receipts: Record<string, BusReceipt>;
   onOpenReceipt: (b: AdminBooking) => void;
+  onResolveDispute: (b: AdminBooking) => void;
 }) {
   return (
     <GlassCard size="sm" padding="none" accent glow="cyan">
@@ -838,20 +1004,32 @@ function BookingsTable({
                     )}
                   </td>
                   <td className="px-5 py-3">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-col gap-1.5">
                       <NeonBadge variant={BOOKING_STATUS_VARIANT[b.status]} dot>
                         {b.status.replace("_", " ")}
                       </NeonBadge>
-                      {receipts[b.id] && (
-                        <button
-                          onClick={() => onOpenReceipt(b)}
-                          className="flex h-6 items-center gap-1 rounded-md border border-cyan-neon/40 bg-cyan-surface px-1.5 text-2xs font-mono text-cyan-neon transition-all hover:shadow-[0_0_8px_rgba(0,229,255,0.4)]"
-                          title="View shipment receipt"
-                        >
-                          <ReceiptIcon className="h-3 w-3" />
-                          Receipt
-                        </button>
-                      )}
+                      <div className="flex items-center gap-1.5">
+                        {receipts[b.id] && (
+                          <button
+                            onClick={() => onOpenReceipt(b)}
+                            className="flex h-6 items-center gap-1 rounded-md border border-cyan-neon/40 bg-cyan-surface px-1.5 text-2xs font-mono text-cyan-neon transition-all hover:shadow-[0_0_8px_rgba(0,229,255,0.4)]"
+                            title="View shipment receipt"
+                          >
+                            <ReceiptIcon className="h-3 w-3" />
+                            Receipt
+                          </button>
+                        )}
+                        {b.status === "disputed" && (
+                          <button
+                            onClick={() => onResolveDispute(b)}
+                            className="flex h-6 items-center gap-1 rounded-md border border-red-signal/40 bg-red-surface px-1.5 text-2xs font-mono text-red-signal transition-all hover:bg-red-signal/20 hover:shadow-[0_0_8px_rgba(255,59,92,0.3)]"
+                            title="Resolve this dispute"
+                          >
+                            <AlertTriangle className="h-3 w-3" />
+                            Resolve
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </td>
                 </tr>
@@ -885,7 +1063,6 @@ type DriverOpsDriver = {
   last_location_at?: string | null;
 };
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const HEARTBEAT_WINDOW_MIN = 5;            // Dead-Man's Switch threshold per ADR-0014
 
 interface PartnerCapacity {
@@ -948,7 +1125,10 @@ function ShadowMarketplacePanel({ listings }: { listings: AdminListing[] }) {
     // check, not a full partner roster.)
     const byPartner = new Map<string, { display: string; active_listings: number }>();
     for (const l of listings) {
-      if (l.status !== "available") continue;
+      // Only count "active" listings (the correct ListingStatus value).
+      // NOTE: "available" is NOT a valid ListingStatus — the valid values are
+      // "active" | "paused" | "booked" | "expired" (see marketplace.ts).
+      if (l.status !== "active") continue;
       const existing = byPartner.get(l.partner_id);
       if (existing) existing.active_listings += 1;
       else byPartner.set(l.partner_id, { display: l.partner_display_name, active_listings: 1 });
