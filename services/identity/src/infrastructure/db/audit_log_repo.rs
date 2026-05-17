@@ -49,16 +49,18 @@ impl PgAuditLogRepository {
         &self,
         tenant_id: Uuid,
         limit: i64,
+        offset: i64,
     ) -> anyhow::Result<Vec<AuditEntry>> {
         let rows = sqlx::query(
             r#"SELECT id, tenant_id, actor_id, actor_email, action, resource, ip, created_at
                FROM identity.tenant_audit_log
                WHERE tenant_id = $1
                ORDER BY created_at DESC
-               LIMIT $2"#,
+               LIMIT $2 OFFSET $3"#,
         )
         .bind(tenant_id)
         .bind(limit)
+        .bind(offset)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.iter().map(|r| AuditEntry {

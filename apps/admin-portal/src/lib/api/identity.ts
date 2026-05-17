@@ -1,16 +1,25 @@
-import { createApiClient, ApiResponse, PaginatedApiResponse } from "./client";
+import { createApiClient, ApiResponse } from "./client";
 
 // ── User types ─────────────────────────────────────────────────────────────────
 
+/**
+ * Canonical user shape returned by identity /v1/users and /v1/users/:id.
+ * Mirrors services/identity/src/domain/entities/user.rs.
+ * password_hash is absent — skipped server-side via #[serde(skip_serializing)].
+ */
 export interface TenantUser {
-  id: string;
+  id: string | { 0: string };
+  tenant_id: string | { 0: string };
   email: string;
   first_name: string;
   last_name: string;
   roles: string[];
-  email_verified: boolean;
   is_active: boolean;
+  email_verified: boolean;
+  phone_number?: string | null;
+  last_login_at?: string | null;
   created_at: string;
+  updated_at: string;
 }
 
 export interface InviteUserPayload {
@@ -74,9 +83,10 @@ export function createIdentityApi() {
         .post<ApiResponse<InviteUserResult>>("/v1/users", payload)
         .then((r) => r.data),
 
-    listUsers: (params?: { page?: number; per_page?: number }) =>
+    // Backend returns { "data": User[] } — not paginated at this endpoint.
+    listUsers: () =>
       client
-        .get<PaginatedApiResponse<TenantUser>>("/v1/users", { params })
+        .get<ApiResponse<TenantUser[]>>("/v1/users")
         .then((r) => r.data),
 
     getUser: (userId: string) =>
