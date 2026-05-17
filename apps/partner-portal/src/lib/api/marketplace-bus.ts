@@ -10,6 +10,7 @@
  */
 
 export type BusSizeClass =
+  | "scooter"
   | "motorcycle"
   | "sedan"
   | "van"

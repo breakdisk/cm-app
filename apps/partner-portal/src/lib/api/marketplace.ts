@@ -25,6 +25,7 @@ const CARRIER_SVC_URL = process.env.NEXT_PUBLIC_CARRIER_URL ?? "http://localhost
 export type ListingStatus = "active" | "paused" | "booked" | "expired";
 
 export type SizeClass =
+  | "scooter"
   | "motorcycle"
   | "sedan"
   | "van"
@@ -258,6 +259,7 @@ export async function fetchReceiptForBooking(bookingId: string): Promise<BusRece
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 export const SIZE_CLASS_LABEL: Record<SizeClass, string> = {
+  scooter:     "Scooter",
   motorcycle:  "Motorcycle",
   sedan:       "Sedan",
   van:         "Van",
@@ -268,6 +270,7 @@ export const SIZE_CLASS_LABEL: Record<SizeClass, string> = {
 };
 
 export const SIZE_CLASS_CAPACITY_HINT: Record<SizeClass, string> = {
+  scooter:     "Up to 10 kg · 0.05 m³",
   motorcycle:  "Up to 30 kg · 0.25 m³",
   sedan:       "Up to 200 kg · 1.2 m³",
   van:         "Up to 800 kg · 5 m³",
