@@ -1,16 +1,18 @@
 "use client";
 import { useEffect, useState } from "react";
-import { fetchProfile, approveDocument, rejectDocument } from "@/lib/api/compliance";
+import { fetchProfile } from "@/lib/api/compliance";
 import type { DriverDocument } from "@/lib/api/compliance";
 import { cn } from "@/lib/design-system/cn";
-import { Check, X, ExternalLink } from "lucide-react";
+import { Check, X, ExternalLink, ShieldOff, ShieldCheck } from "lucide-react";
 
 interface Props {
-  profileId:  string;
-  onApprove:  (docId: string) => void;
-  onReject:   (docId: string, reason: string) => void;
-  /** Set false to hide approve/reject buttons for non-reviewers. Defaults true. */
-  canReview?: boolean;
+  profileId:   string;
+  /** Increment to force a re-fetch (after approve / reject / suspend / reinstate). */
+  refreshKey:  number;
+  onApprove:   (docId: string) => void;
+  onReject:    (docId: string, reason: string) => void;
+  onSuspend:   (profileId: string, reason?: string) => void;
+  onReinstate: (profileId: string) => void;
 }
 
 const STATUS_BADGE: Record<string, string> = {
@@ -22,15 +24,26 @@ const STATUS_BADGE: Record<string, string> = {
   suspended:          "bg-red-surface/20 border-red-glow/25 text-red-signal",
 };
 
-export function DocumentDetailPanel({ profileId, onApprove, onReject, canReview = true }: Props) {
-  const [detail,       setDetail]       = useState<{ profile: any; documents: DriverDocument[] } | null>(null);
-  const [rejectDocId,  setRejectDocId]  = useState<string | null>(null);
-  const [rejectReason, setRejectReason] = useState("");
+export function DocumentDetailPanel({
+  profileId,
+  refreshKey,
+  onApprove,
+  onReject,
+  onSuspend,
+  onReinstate,
+}: Props) {
+  const [detail,          setDetail]          = useState<{ profile: any; documents: DriverDocument[] } | null>(null);
+  const [rejectDocId,     setRejectDocId]     = useState<string | null>(null);
+  const [rejectReason,    setRejectReason]    = useState("");
+  const [suspendReason,   setSuspendReason]   = useState("");
+  const [suspendOpen,     setSuspendOpen]     = useState(false);
 
   useEffect(() => {
     setDetail(null);
-    fetchProfile(profileId).then(setDetail).catch(() => setDetail({ profile: null, documents: [] }));
-  }, [profileId]);
+    fetchProfile(profileId)
+      .then(setDetail)
+      .catch(() => setDetail({ profile: null, documents: [] }));
+  }, [profileId, refreshKey]);
 
   if (!detail) {
     return (
@@ -49,31 +62,15 @@ export function DocumentDetailPanel({ profileId, onApprove, onReject, canReview 
   }
 
   const { profile, documents } = detail;
+  const isSuspended = profile.overall_status === "suspended";
 
   // Sort: pending/under_review first
   const sorted = [...documents].sort((a, b) => {
-    const rank = (s: string) =>
-      s === "submitted" || s === "under_review" ? 0 : 1;
+    const rank = (s: string) => (s === "submitted" || s === "under_review" ? 0 : 1);
     return rank(a.status) - rank(b.status);
   });
 
-  async function handleApprove(docId: string) {
-    await approveDocument(docId);
-    onApprove(docId);
-    fetchProfile(profileId).then(setDetail);
-  }
-
-  async function handleReject(docId: string) {
-    if (!rejectReason.trim()) return;
-    await rejectDocument(docId, rejectReason);
-    onReject(docId, rejectReason);
-    setRejectDocId(null);
-    setRejectReason("");
-    fetchProfile(profileId).then(setDetail);
-  }
-
-  const badgeClass =
-    STATUS_BADGE[profile.overall_status] ?? STATUS_BADGE.pending_submission;
+  const badgeClass = STATUS_BADGE[profile.overall_status] ?? STATUS_BADGE.pending_submission;
 
   return (
     <div className="flex-1 rounded-xl border border-cyan-glow/20 bg-cyan-surface/5 flex flex-col overflow-hidden">
@@ -96,8 +93,8 @@ export function DocumentDetailPanel({ profileId, onApprove, onReject, canReview 
         >
           {String(profile.overall_status ?? "").replace(/_/g, " ")}
         </span>
-        {/* Cross-portal — drivers are managed (commission, zone, SLA) in partner-portal.
-            Plain <a> so the /partner basePath persists after the jump. */}
+
+        {/* Cross-portal link */}
         {profile.entity_type === "driver" && profile.entity_id && (
           <a
             href={`/partner/drivers?focus=${encodeURIComponent(String(profile.entity_id))}`}
@@ -109,11 +106,62 @@ export function DocumentDetailPanel({ profileId, onApprove, onReject, canReview 
         )}
       </div>
 
+      {/* Suspend / Reinstate admin actions */}
+      <div className="px-4 py-2.5 border-b border-glass-border flex items-center gap-2 flex-wrap">
+        {isSuspended ? (
+          <button
+            onClick={() => onReinstate(profileId)}
+            className="flex items-center gap-1.5 rounded-lg border border-green-glow/35 bg-green-surface/10 px-3 py-1.5 text-xs font-bold text-green-signal hover:bg-green-surface/20 transition-colors"
+          >
+            <ShieldCheck className="h-3 w-3" /> Reinstate Driver
+          </button>
+        ) : (
+          <>
+            <button
+              onClick={() => setSuspendOpen((o) => !o)}
+              className="flex items-center gap-1.5 rounded-lg border border-red-glow/30 bg-red-surface/10 px-3 py-1.5 text-xs font-bold text-red-signal hover:bg-red-surface/20 transition-colors"
+            >
+              <ShieldOff className="h-3 w-3" /> Suspend Driver
+            </button>
+            {suspendOpen && (
+              <div className="flex flex-1 gap-2 min-w-0">
+                <input
+                  value={suspendReason}
+                  onChange={(e) => setSuspendReason(e.target.value)}
+                  placeholder="Suspension reason (optional)…"
+                  className="flex-1 bg-red-surface/20 border border-red-glow/20 rounded-lg px-3 py-1.5 text-xs font-mono text-white/60 placeholder:text-white/25 outline-none"
+                />
+                <button
+                  onClick={() => {
+                    onSuspend(profileId, suspendReason || undefined);
+                    setSuspendOpen(false);
+                    setSuspendReason("");
+                  }}
+                  className="px-3 py-1.5 rounded-lg text-xs font-bold bg-red-surface/20 border border-red-glow/30 text-red-signal hover:bg-red-surface/30 transition-colors"
+                >
+                  Confirm
+                </button>
+                <button
+                  onClick={() => { setSuspendOpen(false); setSuspendReason(""); }}
+                  className="px-3 py-1.5 rounded-lg text-xs border border-glass-border text-white/40 hover:text-white/60 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
       {/* Document list */}
       <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
+        {sorted.length === 0 && (
+          <div className="flex items-center justify-center h-24 text-xs text-white/25">
+            No documents on file
+          </div>
+        )}
         {sorted.map((doc) => {
-          const isPending =
-            doc.status === "submitted" || doc.status === "under_review";
+          const isPending = doc.status === "submitted" || doc.status === "under_review";
 
           return (
             <div
@@ -148,7 +196,7 @@ export function DocumentDetailPanel({ profileId, onApprove, onReject, canReview 
                     </div>
                   )}
                 </div>
-                {doc.file_url && (
+                {doc.file_url && doc.file_url !== "#" && (
                   <a
                     href={doc.file_url}
                     target="_blank"
@@ -160,20 +208,18 @@ export function DocumentDetailPanel({ profileId, onApprove, onReject, canReview 
                 )}
               </div>
 
-              {/* Approve / Reject actions */}
-              {isPending && canReview && (
+              {/* Approve / Reject actions — panel calls parent callbacks; parent owns API call */}
+              {isPending && !isSuspended && (
                 <div className="mt-3">
                   <div className="flex gap-2">
                     <button
-                      onClick={() => handleApprove(doc.id)}
+                      onClick={() => onApprove(doc.id)}
                       className="flex-1 py-1.5 rounded-lg text-xs font-bold bg-green-surface/20 border border-green-glow/35 text-green-signal flex items-center justify-center gap-1 hover:bg-green-surface/30 transition-colors"
                     >
                       <Check className="h-3 w-3" /> Approve
                     </button>
                     <button
-                      onClick={() =>
-                        setRejectDocId(rejectDocId === doc.id ? null : doc.id)
-                      }
+                      onClick={() => setRejectDocId(rejectDocId === doc.id ? null : doc.id)}
                       className="flex-1 py-1.5 rounded-lg text-xs font-bold bg-red-surface/20 border border-red-glow/30 text-red-signal flex items-center justify-center gap-1 hover:bg-red-surface/30 transition-colors"
                     >
                       <X className="h-3 w-3" /> Reject
@@ -189,7 +235,12 @@ export function DocumentDetailPanel({ profileId, onApprove, onReject, canReview 
                         className="flex-1 bg-red-surface/30 border border-red-glow/25 rounded-lg px-3 py-1.5 text-xs font-mono text-white/60 placeholder:text-white/25 outline-none"
                       />
                       <button
-                        onClick={() => handleReject(doc.id)}
+                        onClick={() => {
+                          if (!rejectReason.trim()) return;
+                          onReject(doc.id, rejectReason);
+                          setRejectDocId(null);
+                          setRejectReason("");
+                        }}
                         disabled={!rejectReason.trim()}
                         className="px-3 py-1.5 rounded-lg text-xs font-bold bg-red-surface/20 border border-red-glow/30 text-red-signal disabled:opacity-40 transition-colors"
                       >
