@@ -500,6 +500,16 @@ impl MarketplaceRepository for PgMarketplaceRepository {
         rows.into_iter().map(VehicleListing::try_from).collect()
     }
 
+    async fn list_all_active_listings(&self) -> anyhow::Result<Vec<VehicleListing>> {
+        let rows = sqlx::query_as::<_, VehicleListingRow>(
+            &format!(
+                "SELECT {LISTING_COLS} FROM carrier.vehicle_listings \
+                 WHERE status = 'active' ORDER BY created_at DESC"
+            ),
+        ).fetch_all(&self.pool).await?;
+        rows.into_iter().map(VehicleListing::try_from).collect()
+    }
+
     async fn update_listing(&self, l: &VehicleListing) -> anyhow::Result<()> {
         sqlx::query(
             "UPDATE carrier.vehicle_listings SET \

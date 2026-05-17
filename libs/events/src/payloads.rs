@@ -421,6 +421,19 @@ pub struct CarrierStatusChanged {
 
 // ── Marketplace events ────────────────────────────────────────────────────────
 
+/// Emitted by carrier service when a marketplace booking is created.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketplaceBookingCreated {
+    pub booking_id:    Uuid,
+    pub listing_id:    Uuid,
+    pub carrier_id:    Uuid,
+    pub tenant_id:     Uuid,
+    pub shipment_id:   Uuid,
+    pub consumer_name: String,
+    pub pickup_at:     String,
+    pub created_at:    String,
+}
+
 /// Emitted by carrier service when a carrier accepts a marketplace booking.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketplaceBookingAccepted {

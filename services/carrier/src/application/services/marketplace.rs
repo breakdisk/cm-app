@@ -53,6 +53,18 @@ pub struct RecordPickupInput {
     pub pickup_notes:  Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CreateBookingCommand {
+    pub listing_id:        Uuid,
+    pub consumer_name:     String,
+    pub consumer_phone:    Option<String>,
+    pub pickup_label:      String,
+    pub dropoff_label:     String,
+    pub cargo_weight_kg:   f32,
+    pub cargo_volume_m3:   Option<f32>,
+    pub pickup_at:         DateTime<Utc>,
+}
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 pub struct MarketplaceService {
@@ -157,6 +169,88 @@ impl MarketplaceService {
         }
         self.repo.delete_listing(listing_id).await.map_err(AppError::internal)?;
         Ok(())
+    }
+
+    pub async fn create_booking(
+        &self,
+        tenant_id: Uuid,
+        carrier_id: Uuid,
+        cmd: CreateBookingCommand,
+    ) -> AppResult<MarketplaceBooking> {
+        // 1. Load listing by ID and verify status=active
+        let listing = self
+            .repo
+            .find_listing_by_id(cmd.listing_id)
+            .await
+            .map_err(AppError::internal)?
+            .ok_or_else(|| AppError::NotFound { resource: "VehicleListing", id: cmd.listing_id.to_string() })?;
+
+        if listing.status != ListingStatus::Active {
+            return Err(AppError::BusinessRule(
+                format!("Listing must be active to accept bookings, current status: {}", listing.status.as_str())
+            ));
+        }
+
+        // 2. Return error if listing's idle_until < NOW()
+        if listing.idle_until < Utc::now() {
+            return Err(AppError::BusinessRule(
+                "Listing availability window has expired".into()
+            ));
+        }
+
+        // 3. Return error if any suspension condition is true
+        // TODO: Cross-service calls placeholders:
+        // - Check if carrier is suspended (carrier service)
+        // - Check if carrier is deactivated (carrier service)
+        // - Check if carrier's compliance status is not Compliant (carrier service)
+        // - Check if merchant is suspended (order-intake service)
+        // - Check if tenant is in any suspension state (identity service)
+
+        // 4. Create the MarketplaceBooking with status=pending
+        let booking = MarketplaceBooking {
+            id:                 Uuid::new_v4(),
+            tenant_id,
+            listing_id:         cmd.listing_id,
+            carrier_id:         listing.carrier_id,
+            shipment_id:        Uuid::new_v4(),  // Generated for tracking
+            awb:                format!("MP-{}", Uuid::new_v4()),  // Temporary AWB for marketplace bookings
+            consumer_name:      cmd.consumer_name,
+            consumer_phone:     cmd.consumer_phone,
+            pickup_label:       cmd.pickup_label,
+            dropoff_label:      cmd.dropoff_label,
+            cargo_weight_kg:    cmd.cargo_weight_kg,
+            cargo_volume_m3:    cmd.cargo_volume_m3,
+            quoted_price_cents: listing.base_price_cents,  // TODO: Calculate based on weight/volume
+            status:             BookingStatus::Pending,
+            pickup_at:          cmd.pickup_at,
+            picked_up_at:       None,
+            picked_up_by:       None,
+            pickup_notes:       None,
+            created_at:         Utc::now(),
+            updated_at:         Utc::now(),
+        };
+
+        // 5. Save it
+        self.repo.create_booking(&booking).await.map_err(AppError::internal)?;
+
+        // 6. Emit marketplace.booking.created event to Kafka
+        let payload = logisticos_events::payloads::MarketplaceBookingCreated {
+            booking_id:    booking.id,
+            listing_id:    booking.listing_id,
+            carrier_id:    booking.carrier_id,
+            tenant_id:     booking.tenant_id,
+            shipment_id:   booking.shipment_id,
+            consumer_name: booking.consumer_name.clone(),
+            pickup_at:     booking.pickup_at.to_rfc3339(),
+            created_at:    Utc::now().to_rfc3339(),
+        };
+        let ev = Event::new("logisticos/carrier", "marketplace.booking.created", tenant_id, payload);
+        if let Err(e) = self.kafka.publish_event(topics::MARKETPLACE_BOOKING_CREATED, &ev).await {
+            tracing::warn!("Failed to publish marketplace.booking.created: {e}");
+        }
+
+        // Return the created booking with PII masked
+        Ok(Self::apply_pii_mask(booking))
     }
 
     pub async fn list_bookings(

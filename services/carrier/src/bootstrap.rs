@@ -96,6 +96,22 @@ pub async fn run() -> anyhow::Result<()> {
         });
     }
 
+    // Spawn marketplace dead-man's switch background task
+    {
+        let m_repo = Arc::clone(&marketplace_repo);
+        let fleet_url = std::env::var("FLEET_SERVICE_URL")
+            .unwrap_or_else(|_| "http://fleet:8015".to_string());
+        let driver_url = std::env::var("DRIVER_OPS_SERVICE_URL")
+            .unwrap_or_else(|_| "http://driver-ops:8016".to_string());
+        let rx = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let dms = crate::infrastructure::dms::DeadMansSwitch::new(m_repo, fleet_url, driver_url);
+            if let Err(e) = dms.start(rx).await {
+                tracing::error!("DMS background task exited with error: {e}");
+            }
+        });
+    }
+
     let jwt_secret = std::env::var("AUTH__JWT_SECRET")
         .context("AUTH__JWT_SECRET env var not set")?;
     let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));

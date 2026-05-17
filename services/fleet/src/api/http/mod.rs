@@ -26,6 +26,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/vehicles/:id/unassign-driver",          post(unassign_driver))
         .route("/v1/vehicles/:id/maintenance",              post(schedule_maintenance))
         .route("/v1/vehicles/:id/maintenance/complete",     post(complete_maintenance))
+        .route("/v1/internal/vehicles/:id/operational",     get(is_vehicle_operational))
 }
 
 #[derive(Debug, Deserialize)]
@@ -143,4 +144,32 @@ async fn maintenance_alerts(
     let vehicles = state.fleet_svc.maintenance_due_alerts(&tenant_id, q.within_days.unwrap_or(7)).await?;
     let count = vehicles.len();
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"alerts": vehicles, "count": count}))))
+}
+
+/// Internal endpoint used by marketplace to validate vehicle operational status
+/// for the dead-man's switch (no auth required — called by internal services only)
+async fn is_vehicle_operational(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    match state.fleet_svc.get(id).await {
+        Ok(vehicle) => {
+            let is_operational = matches!(vehicle.status, crate::domain::entities::VehicleStatus::Active);
+            Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+                "data": {
+                    "vehicle_id": id,
+                    "is_operational": is_operational,
+                    "status": format!("{:?}", vehicle.status),
+                }
+            }))))
+        }
+        Err(_) => {
+            Ok((StatusCode::NOT_FOUND, Json(serde_json::json!({
+                "data": {
+                    "vehicle_id": id,
+                    "is_operational": false,
+                }
+            }))))
+        }
+    }
 }
