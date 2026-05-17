@@ -11,13 +11,13 @@
  *        with real endpoints when those ship.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
-import { Building2, Package, Truck, AlertTriangle, FileText, RefreshCw } from "lucide-react";
+import { Building2, Package, Truck, AlertTriangle, FileText, RefreshCw, X, MapPin, Layers, ExternalLink } from "lucide-react";
 import { createHubsApi, hubIdOf, hubUtilization, hubStatusTier, type Hub, type HubStatusTier, type HubThroughputBucket } from "@/lib/api/hubs";
 
 const STATUS_CONFIG: Record<HubStatusTier, { label: string; variant: "green" | "amber" | "red"; color: string }> = {
@@ -33,6 +33,164 @@ const THROUGHPUT_FALLBACK: HubThroughputBucket[] = [
   { hour: "12PM", sorted: 0, inducted: 0 },
   { hour: "2PM",  sorted: 0, inducted: 0 },
 ];
+
+// ── Hub Detail Drawer ─────────────────────────────────────────────────────────
+function HubDetailDrawer({ hub, onClose }: { hub: Hub; onClose: () => void }) {
+  const id = hubIdOf(hub);
+  const tier = hubStatusTier(hub);
+  const { label, variant, color } = STATUS_CONFIG[tier];
+  const capacityPct = Math.round(hubUtilization(hub));
+
+  return (
+    <motion.div
+      key="hub-drawer-backdrop"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex justify-end"
+      onClick={onClose}
+    >
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+
+      {/* Panel */}
+      <motion.div
+        key="hub-drawer-panel"
+        initial={{ x: "100%" }}
+        animate={{ x: 0 }}
+        exit={{ x: "100%" }}
+        transition={{ type: "spring", damping: 28, stiffness: 260 }}
+        className="relative w-full max-w-md bg-[#0d1422] border-l border-glass-border flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between p-5 border-b border-glass-border">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <Building2 size={16} className="text-purple-plasma shrink-0" />
+              <h2 className="font-heading text-base font-bold text-white truncate">{hub.name}</h2>
+            </div>
+            <p className="text-2xs font-mono text-white/30 truncate">{id}</p>
+          </div>
+          <div className="flex items-center gap-2 ml-3 shrink-0">
+            <NeonBadge variant={variant} dot={tier !== "normal"}>{label}</NeonBadge>
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg hover:bg-glass-200 text-white/50 hover:text-white transition-colors"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+
+        {/* Scrollable body */}
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          {/* Address */}
+          <div className="flex items-start gap-2 text-sm text-white/60">
+            <MapPin size={13} className="text-white/30 mt-0.5 shrink-0" />
+            <span className="font-mono text-xs leading-relaxed">{hub.address}</span>
+          </div>
+
+          {/* Capacity */}
+          <GlassCard size="sm">
+            <p className="text-2xs font-mono text-white/40 uppercase tracking-widest mb-2">Capacity</p>
+            <div className="flex items-end justify-between mb-2">
+              <span className="text-xl font-bold font-mono text-white">
+                {hub.current_load.toLocaleString()}
+                <span className="text-sm text-white/30 ml-1">/ {hub.capacity.toLocaleString()}</span>
+              </span>
+              <span className="text-sm font-mono font-bold" style={{ color }}>{capacityPct}%</span>
+            </div>
+            <div className="h-2.5 rounded-full bg-glass-300 overflow-hidden">
+              <motion.div
+                className="h-full rounded-full"
+                initial={{ width: 0 }}
+                animate={{ width: `${Math.min(capacityPct, 100)}%` }}
+                transition={{ duration: 0.6, ease: "easeOut" }}
+                style={{ background: color }}
+              />
+            </div>
+            {tier === "critical" && (
+              <p className="text-2xs font-mono text-red-signal mt-2 flex items-center gap-1">
+                <AlertTriangle size={10} /> Near capacity — consider redistributing parcels
+              </p>
+            )}
+          </GlassCard>
+
+          {/* Status & Activity */}
+          <GlassCard size="sm">
+            <p className="text-2xs font-mono text-white/40 uppercase tracking-widest mb-3">Status</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <p className="text-2xs font-mono text-white/30 mb-0.5">Operational</p>
+                <p className={`text-xs font-mono font-semibold ${hub.is_active ? "text-green-signal" : "text-white/40"}`}>
+                  {hub.is_active ? "Active" : "Inactive"}
+                </p>
+              </div>
+              <div>
+                <p className="text-2xs font-mono text-white/30 mb-0.5">Utilization</p>
+                <p className="text-xs font-mono font-semibold" style={{ color }}>{capacityPct}%</p>
+              </div>
+              <div>
+                <p className="text-2xs font-mono text-white/30 mb-0.5">Parcels In Hub</p>
+                <p className="text-xs font-mono font-semibold text-white">{hub.current_load.toLocaleString()}</p>
+              </div>
+              <div>
+                <p className="text-2xs font-mono text-white/30 mb-0.5">Total Capacity</p>
+                <p className="text-xs font-mono font-semibold text-white">{hub.capacity.toLocaleString()}</p>
+              </div>
+            </div>
+          </GlassCard>
+
+          {/* Serving Zones */}
+          {hub.serving_zones.length > 0 && (
+            <GlassCard size="sm">
+              <div className="flex items-center gap-2 mb-3">
+                <Layers size={12} className="text-white/30" />
+                <p className="text-2xs font-mono text-white/40 uppercase tracking-widest">
+                  Serving Zones ({hub.serving_zones.length})
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {hub.serving_zones.map((zone) => (
+                  <span
+                    key={zone}
+                    className="px-2 py-0.5 rounded-md bg-glass-200 border border-glass-border text-2xs font-mono text-white/60"
+                  >
+                    {zone}
+                  </span>
+                ))}
+              </div>
+            </GlassCard>
+          )}
+
+          {/* Quick links */}
+          <GlassCard size="sm">
+            <p className="text-2xs font-mono text-white/40 uppercase tracking-widest mb-3">Quick Links</p>
+            <div className="space-y-2">
+              <a
+                href={`/partner/manifests?hub=${encodeURIComponent(id)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-between w-full px-3 py-2 rounded-lg border border-glass-border bg-glass-100 text-xs font-mono text-white/60 hover:border-cyan-neon/40 hover:text-cyan-neon transition-colors"
+              >
+                <span className="flex items-center gap-2"><FileText size={11} /> Hub Manifests</span>
+                <ExternalLink size={10} />
+              </a>
+              <a
+                href={`/analytics?hub=${encodeURIComponent(id)}`}
+                className="flex items-center justify-between w-full px-3 py-2 rounded-lg border border-glass-border bg-glass-100 text-xs font-mono text-white/60 hover:border-purple-plasma/40 hover:text-purple-plasma transition-colors"
+              >
+                <span className="flex items-center gap-2"><Truck size={11} /> Hub Analytics</span>
+                <ExternalLink size={10} />
+              </a>
+            </div>
+          </GlassCard>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
 
 export default function HubOpsPage() {
   const api = useMemo(() => createHubsApi(), []);
@@ -62,6 +220,14 @@ export default function HubOpsPage() {
   }, [api]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Poll every 60s — hub current_load changes as parcels are inducted and sorted.
+  useEffect(() => {
+    const id = setInterval(load, 60_000);
+    return () => clearInterval(id);
+  }, [load]);
+
+  const [drawerHub, setDrawerHub] = useState<Hub | null>(null);
 
   const kpis = useMemo(() => {
     const inHub     = hubs.reduce((n, h) => n + h.current_load, 0);
@@ -152,6 +318,7 @@ export default function HubOpsPage() {
                 key={id}
                 glow={tier === "critical" ? "red" : tier === "high" ? "amber" : undefined}
                 className="cursor-pointer hover:border-glass-border-bright transition-all"
+                onClick={() => setDrawerHub(hub)}
               >
                 <div className="flex items-start justify-between mb-3">
                   <div className="min-w-0">
@@ -202,6 +369,13 @@ export default function HubOpsPage() {
           })}
         </motion.div>
       )}
+
+      {/* Hub Detail Drawer */}
+      <AnimatePresence>
+        {drawerHub && (
+          <HubDetailDrawer hub={drawerHub} onClose={() => setDrawerHub(null)} />
+        )}
+      </AnimatePresence>
 
       {/* Hourly throughput — live from /v1/hubs/throughput/today; falls back to zeros if endpoint not yet deployed */}
       <motion.div variants={variants.fadeInUp}>

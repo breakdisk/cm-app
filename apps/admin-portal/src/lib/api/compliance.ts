@@ -28,7 +28,8 @@ export interface DriverDocument {
 
 async function okJson(r: Response) {
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j?.error ?? j?.message ?? `HTTP ${r.status}`);
+  // Backend wraps errors as { "error": { "code": "...", "message": "..." } }
+  if (!r.ok) throw new Error(j?.error?.message ?? j?.message ?? `HTTP ${r.status}`);
   return j;
 }
 
@@ -57,5 +58,18 @@ export async function rejectDocument(docId: string, reason: string): Promise<voi
   await okJson(await authFetch(`${BASE}/api/v1/compliance/admin/documents/${docId}/reject`, {
     method: "POST",
     body: JSON.stringify({ reason }),
+  }));
+}
+
+export async function suspendProfile(profileId: string, reason?: string): Promise<void> {
+  await okJson(await authFetch(`${BASE}/api/v1/compliance/admin/profiles/${profileId}/suspend`, {
+    method: "POST",
+    body: JSON.stringify({ reason: reason ?? null }),
+  }));
+}
+
+export async function reinstateProfile(profileId: string): Promise<void> {
+  await okJson(await authFetch(`${BASE}/api/v1/compliance/admin/profiles/${profileId}/reinstate`, {
+    method: "POST",
   }));
 }

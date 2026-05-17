@@ -7,6 +7,7 @@
  *         General → identity /v1/tenants/me + PUT /v1/tenants/:id
  *         Webhooks → /v1/webhooks CRUD
  *         Audit Log → identity /v1/audit-log (100 most recent mutations)
+ *         Feature Flags → identity /v1/tenants/me + PUT /v1/tenants/:id/tier
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
@@ -17,20 +18,17 @@ import {
   apiKeysApi, apiKeyIdOf,
   type ApiKey, type CreateApiKeyResult,
 } from "@/lib/api/api-keys";
-import { createIdentityApi } from "@/lib/api/identity";
+import {
+  createIdentityApi, tenantIdOf,
+  type TenantSnapshot, type TenantTier, type TenantUser,
+} from "@/lib/api/identity";
+import { createApiClient } from "@/lib/api/client";
 import { authFetch } from "@/lib/auth/auth-fetch";
 import { usePermissions } from "@/hooks/usePermissions";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const identityApi = createIdentityApi();
 
-interface IdentityUser {
-  id: string | { 0: string };
-  email: string;
-  first_name?: string;
-  last_name?: string;
-  roles: string[];
-  is_active?: boolean;
-}
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 // Friendly role descriptions paired with permission summaries from
 // libs/auth/src/rbac.rs::default_permissions_for_role. Kept here as a UI
@@ -47,7 +45,7 @@ const ROLE_DESCRIPTIONS: Record<string, string> = {
 
 const ROLE_ORDER = ["admin", "dispatcher", "merchant", "driver", "finance", "readonly", "customer"];
 
-const ALL_TABS = ["General", "API Keys", "Webhooks", "Roles & Permissions", "Audit Log"] as const;
+const ALL_TABS = ["General", "API Keys", "Webhooks", "Roles & Permissions", "Feature Flags", "Audit Log"] as const;
 type Tab = (typeof ALL_TABS)[number];
 
 const TAB_PERMISSIONS: Record<Tab, string> = {
@@ -55,6 +53,7 @@ const TAB_PERMISSIONS: Record<Tab, string> = {
   "API Keys":             "api_keys:manage",
   "Webhooks":             "webhooks:manage",
   "Roles & Permissions":  "users:manage",
+  "Feature Flags":        "users:manage",
   "Audit Log":            "users:manage",
 };
 
@@ -79,6 +78,7 @@ const ACTION_COLOR: Record<string, string> = {
   "shipment.manual_override": "amber",
   "tenant.updated":           "cyan",
   "tenant.settings_updated":  "cyan",
+  "tenant.tier_updated":      "purple",
 };
 
 export default function SettingsPage() {
@@ -129,10 +129,7 @@ export default function SettingsPage() {
       {effectiveTab === "General" && tabs.includes("General") && (
         <motion.div variants={variants.fadeInUp} className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <TenantProfileCard />
-
           <NotificationChannelsCard />
-
-          <FeatureFlagsCard />
         </motion.div>
       )}
 
@@ -147,6 +144,9 @@ export default function SettingsPage() {
       {/* Roles — derived from identity /v1/users grouped by role. */}
       {effectiveTab === "Roles & Permissions" && tabs.includes("Roles & Permissions") && <RolesTab />}
 
+      {/* Feature Flags — tier-driven entitlements + admin plan change. */}
+      {effectiveTab === "Feature Flags" && tabs.includes("Feature Flags") && <FeatureFlagsTab />}
+
       {/* Audit Log — live from identity /v1/audit-log (100 most recent). */}
       {effectiveTab === "Audit Log" && tabs.includes("Audit Log") && <AuditLogTab />}
     </motion.div>
@@ -154,13 +154,12 @@ export default function SettingsPage() {
 }
 
 // ── Notification Channels card (General tab) ────────────────────────────────
-// Live: engagement /v1/templates — counts active templates per channel as the
-// "configured" signal. A channel with zero active templates can't dispatch
-// anything, so it's the right gating signal in the absence of a dedicated
-// per-channel health endpoint. When engagement ships /v1/channels/health
-// (delivery rates), swap the rate column to that.
-
-const ENGAGEMENT_URL = process.env.NEXT_PUBLIC_ENGAGEMENT_URL ?? "http://localhost:8003";
+// Live: engagement /v1/templates via the API gateway — counts active templates
+// per channel as the "configured" signal. Routes through the gateway so all
+// traffic flows through a single origin and CORS is never an issue.
+// Previously called NEXT_PUBLIC_ENGAGEMENT_URL directly; now uses
+// createApiClient() → NEXT_PUBLIC_API_URL with /v1/templates proxied to
+// the engagement service by the gateway routing table.
 
 interface TemplateRow {
   id:         string;
@@ -183,18 +182,11 @@ function NotificationChannelsCard() {
   const [error, setError]     = useState<string | null>(null);
 
   useEffect(() => {
-    (async () => {
-      try {
-        const res = await authFetch(`${ENGAGEMENT_URL}/v1/templates`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json() as { templates?: TemplateRow[] };
-        setRows(json.templates ?? []);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load templates");
-      } finally {
-        setLoading(false);
-      }
-    })();
+    createApiClient()
+      .get<{ templates?: TemplateRow[] }>("/v1/templates")
+      .then((r) => setRows(r.data.templates ?? []))
+      .catch((e: { message?: string }) => setError(e?.message ?? "Failed to load templates"))
+      .finally(() => setLoading(false));
   }, []);
 
   const byChannel = useMemo(() => {
@@ -236,21 +228,17 @@ function NotificationChannelsCard() {
         )}
       </div>
       <p className="text-2xs font-mono text-white/30 mt-3">
-        Source: engagement <span className="text-[#00E5FF]">/v1/templates</span> ·
+        Source: <span className="text-[#00E5FF]">/v1/templates</span> via gateway → engagement ·
         a channel is &quot;enabled&quot; when ≥1 active template exists.
       </p>
     </GlassCard>
   );
 }
 
-// ── Feature Flags card (General tab) ────────────────────────────────────────
-// Driven by tenant.subscription_tier (free | starter | business | enterprise).
-// The platform doesn't yet ship a dedicated feature-flags service; gating
-// today is tier-based at the API layer (see services/identity middleware).
-// This panel makes the effective tier-derived flag set visible so ops can
-// confirm a tenant has the entitlements they expect.
-
-type TenantTier = "free" | "starter" | "business" | "enterprise";
+// ── Feature Flags tab ────────────────────────────────────────────────────────
+// Driven by tenant.subscription_tier — backend serialises as snake_case:
+// "starter" | "growth" | "business" | "enterprise".
+// Tier changes call PUT /v1/tenants/:id/tier (admin only, audited).
 
 interface TierFlag {
   flag:    string;
@@ -259,71 +247,200 @@ interface TierFlag {
 }
 
 const TIER_RANK: Record<TenantTier, number> = {
-  free: 0, starter: 1, business: 2, enterprise: 3,
+  starter: 0, growth: 1, business: 2, enterprise: 3,
 };
 
+const TIER_LABELS: Record<TenantTier, string> = {
+  starter:    "Starter",
+  growth:     "Growth",
+  business:   "Business",
+  enterprise: "Enterprise",
+};
+
+// Thresholds aligned with libs/types/src/lib.rs::SubscriptionTier capability methods.
+// allows_ai_features() → Business+; allows_white_label() → Enterprise.
 const TIER_FLAGS: TierFlag[] = [
-  { flag: "AI Dispatch Agent",         minTier: "starter"    },
-  { flag: "AI Recovery Agent",         minTier: "business"   },
+  { flag: "Real-Time Driver Tracking", minTier: "starter"    },
   { flag: "COD Auto-Reconciliation",   minTier: "starter"    },
   { flag: "Balikbayan Box Service",    minTier: "starter"    },
-  { flag: "Same-Day Delivery",         minTier: "business"   },
-  { flag: "Real-Time Driver Tracking", minTier: "starter"    },
+  { flag: "AI Dispatch Agent",         minTier: "growth"     },
+  { flag: "Same-Day Delivery",         minTier: "growth"     },
+  { flag: "AI Recovery Agent",         minTier: "business"   },
   { flag: "Loyalty Program",           minTier: "business"   },
   { flag: "Dynamic Pricing",           minTier: "business"   },
   { flag: "Enterprise MCP Extension",  minTier: "enterprise" },
 ];
 
-function FeatureFlagsCard() {
-  const [tier, setTier]       = useState<TenantTier | null>(null);
-  const [error, setError]     = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+const ALL_TIERS: TenantTier[] = ["starter", "growth", "business", "enterprise"];
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await authFetch(`${API_BASE}/v1/tenants/me`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json();
-        const t = json?.data?.subscription_tier;
-        setTier((t as TenantTier) ?? "starter");
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load tenant tier");
-      } finally {
-        setLoading(false);
-      }
-    })();
+function FeatureFlagsTab() {
+  const { hasPermission } = usePermissions();
+  const canManage = hasPermission("users:manage");
+
+  const [tenant,        setTenant]        = useState<TenantSnapshot | null>(null);
+  const [error,         setError]         = useState<string | null>(null);
+  const [loading,       setLoading]       = useState(true);
+  const [showUpgrade,   setShowUpgrade]   = useState(false);
+  const [selectedTier,  setSelectedTier]  = useState<TenantTier>("starter");
+  const [upgrading,     setUpgrading]     = useState(false);
+  const [upgradeError,  setUpgradeError]  = useState<string | null>(null);
+  const [upgradeSaved,  setUpgradeSaved]  = useState(false);
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      const t = await identityApi.getTenant();
+      setTenant(t);
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Failed to load tenant tier");
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
+  useEffect(() => { load(); }, [load]);
+
+  async function handleUpgrade() {
+    if (!tenant) return;
+    setUpgrading(true);
+    setUpgradeError(null);
+    try {
+      await identityApi.upgradeTier(tenantIdOf(tenant), selectedTier);
+      setUpgradeSaved(true);
+      setShowUpgrade(false);
+      await load();
+      setTimeout(() => setUpgradeSaved(false), 2500);
+    } catch (e) {
+      const err = e as { message?: string };
+      setUpgradeError(err?.message ?? "Upgrade failed");
+    } finally {
+      setUpgrading(false);
+    }
+  }
+
+  const tier = tenant?.subscription_tier ?? null;
+
   return (
-    <GlassCard className="lg:col-span-2">
-      <h3 className="text-sm font-semibold text-white mb-3">Feature Flags</h3>
-      {error && <p className="text-xs text-red-signal font-mono mb-2">{error}</p>}
-      <div className="flex items-center gap-2 mb-3">
+    <motion.div variants={variants.fadeInUp} className="space-y-4">
+      {/* Header row */}
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm text-white/40">
+            Tier-derived feature entitlements for this tenant.
+            Admin plan changes are audited and take effect immediately.
+          </p>
+        </div>
+        {canManage && !loading && (
+          <button
+            onClick={() => {
+              setSelectedTier(tier ?? "starter");
+              setUpgradeError(null);
+              setShowUpgrade(true);
+            }}
+            className="shrink-0 px-4 py-2 text-sm font-medium text-[#050810] bg-[#A855F7] rounded-lg hover:bg-[#A855F7]/90 transition-colors"
+          >
+            Change Plan
+          </button>
+        )}
+      </div>
+
+      {error && <p className="text-xs text-red-signal font-mono">{error}</p>}
+      {upgradeSaved && <p className="text-xs text-green-signal font-mono">✓ Plan updated</p>}
+
+      {/* Effective tier badge */}
+      <div className="flex items-center gap-2">
         <span className="text-xs text-white/40">Effective tier:</span>
         <NeonBadge variant="purple">
-          {loading ? "loading…" : (tier ?? "unknown")}
+          {loading ? "loading…" : (tier ? TIER_LABELS[tier] : "unknown")}
         </NeonBadge>
       </div>
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-        {TIER_FLAGS.map((f) => {
-          const enabled = tier !== null && TIER_RANK[tier] >= TIER_RANK[f.minTier];
-          return (
-            <div key={f.flag} className="flex items-center justify-between p-3 bg-white/[0.03] border border-white/[0.06] rounded-lg">
-              <div className="flex flex-col">
-                <span className="text-xs text-white/70">{f.flag}</span>
-                <span className="text-2xs font-mono text-white/30">requires {f.minTier}+</span>
+
+      {/* Flag grid */}
+      <GlassCard padding="none">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+          {TIER_FLAGS.map((f, i) => {
+            const enabled = tier !== null && TIER_RANK[tier] >= TIER_RANK[f.minTier];
+            return (
+              <div
+                key={f.flag}
+                className={`flex items-center justify-between px-5 py-4 border-white/[0.06] ${
+                  i % 3 !== 2 ? "border-r" : ""
+                } ${i < TIER_FLAGS.length - 3 ? "border-b" : ""}`}
+              >
+                <div className="flex flex-col">
+                  <span className="text-sm text-white/80 font-medium">{f.flag}</span>
+                  <span className="text-2xs font-mono text-white/30 mt-0.5">{TIER_LABELS[f.minTier]}+</span>
+                </div>
+                <NeonBadge variant={enabled ? "green" : "red"}>{enabled ? "ON" : "OFF"}</NeonBadge>
               </div>
-              <NeonBadge variant={enabled ? "green" : "red"}>{enabled ? "ON" : "OFF"}</NeonBadge>
-            </div>
-          );
-        })}
-      </div>
-      <p className="text-2xs font-mono text-white/30 mt-3">
-        Driven by <span className="text-[#00E5FF]">tenant.subscription_tier</span>.
-        Tier upgrades flow through the billing service.
+            );
+          })}
+        </div>
+      </GlassCard>
+
+      <p className="text-2xs font-mono text-white/30">
+        Source: identity <span className="text-[#00E5FF]">GET /v1/tenants/me</span> ·
+        changes via <span className="text-[#00E5FF]">PUT /v1/tenants/:id/tier</span>
       </p>
-    </GlassCard>
+
+      {/* Change Plan modal */}
+      {showUpgrade && (
+        <div className="fixed inset-0 bg-canvas/80 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-canvas border border-white/10 rounded-xl p-6 w-full max-w-sm space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-bold text-white">Change Plan</h3>
+              <button
+                onClick={() => setShowUpgrade(false)}
+                className="text-white/40 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              {ALL_TIERS.map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setSelectedTier(t)}
+                  className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border transition-colors ${
+                    selectedTier === t
+                      ? "border-[#A855F7]/60 bg-[#A855F7]/10 text-[#A855F7]"
+                      : "border-white/10 bg-white/[0.02] text-white/60 hover:border-white/20"
+                  }`}
+                >
+                  <span className="text-sm font-medium">{TIER_LABELS[t]}</span>
+                  {tier === t && (
+                    <span className="text-2xs font-mono text-white/40">current</span>
+                  )}
+                </button>
+              ))}
+            </div>
+
+            {upgradeError && (
+              <p className="text-xs text-red-signal font-mono">{upgradeError}</p>
+            )}
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                onClick={() => setShowUpgrade(false)}
+                disabled={upgrading}
+                className="px-3 py-1.5 text-xs text-white/60 hover:text-white"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleUpgrade}
+                disabled={upgrading || selectedTier === tier}
+                className="px-4 py-2 text-sm font-medium text-[#050810] bg-[#A855F7] rounded-lg hover:bg-[#A855F7]/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {upgrading ? "Saving…" : "Set Plan"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </motion.div>
   );
 }
 
@@ -540,7 +657,7 @@ const INVITABLE_ROLES = ["admin", "dispatcher", "merchant", "finance", "readonly
 
 function RolesTab() {
   const { hasPermission } = usePermissions();
-  const [users, setUsers]     = useState<IdentityUser[]>([]);
+  const [users, setUsers]     = useState<TenantUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
 
@@ -558,12 +675,11 @@ function RolesTab() {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const res = await authFetch(`${API_BASE}/v1/users`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
-      setUsers(Array.isArray(json.data) ? json.data : []);
+      const result = await identityApi.listUsers();
+      setUsers(Array.isArray(result.data) ? result.data : []);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load users");
+      const err = e as { message?: string };
+      setError(err?.message ?? "Failed to load users");
     } finally {
       setLoading(false);
     }
@@ -803,28 +919,9 @@ function RolesTab() {
 }
 
 // ── Tenant Profile (General tab) ─────────────────────────────────────────────
-// Backed by GET /v1/tenants/me (read) + PUT /v1/tenants/:id (write).
+// Backed by identityApi.getTenant() (read) + identityApi.updateTenant() (write).
 // Slug + tier + status are intentionally read-only — those have first-class
 // endpoints with cross-service side-effects.
-
-interface TenantSnapshot {
-  id:                string | { 0: string };
-  name:              string;
-  slug:              string;
-  subscription_tier: string;
-  status:            string;
-  is_active:         boolean;
-  owner_email:       string;
-  created_at:        string;
-  updated_at:        string;
-}
-
-function tenantIdOf(t: TenantSnapshot): string {
-  const raw = t.id as unknown;
-  if (typeof raw === "string") return raw;
-  if (raw && typeof raw === "object" && "0" in raw) return String((raw as { 0: string })[0]);
-  return "";
-}
 
 function TenantProfileCard() {
   const [tenant,  setTenant]  = useState<TenantSnapshot | null>(null);
@@ -837,14 +934,12 @@ function TenantProfileCard() {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const res = await authFetch(`${API_BASE}/v1/tenants/me`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
-      const t: TenantSnapshot = json.data;
+      const t = await identityApi.getTenant();
       setTenant(t);
       setForm({ name: t.name, owner_email: t.owner_email });
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load tenant");
+      const err = e as { message?: string };
+      setError(err?.message ?? "Failed to load tenant");
     } finally {
       setLoading(false);
     }
@@ -863,22 +958,16 @@ function TenantProfileCard() {
     try {
       // Only send owner_email if non-empty; backend Option<String> with #[validate(email)]
       // rejects "" as an invalid email, so omit the field rather than sending blank.
-      const body: Record<string, string> = { name: form.name.trim() };
-      if (form.owner_email.trim()) body.owner_email = form.owner_email.trim();
-      const res = await authFetch(`${API_BASE}/v1/tenants/${tenantIdOf(tenant)}`, {
-        method: "PUT",
-        body: JSON.stringify(body),
+      const updated = await identityApi.updateTenant(tenantIdOf(tenant), {
+        name: form.name.trim(),
+        ...(form.owner_email.trim() ? { owner_email: form.owner_email.trim() } : {}),
       });
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        throw new Error(j.error?.message ?? `HTTP ${res.status}`);
-      }
-      const j = await res.json();
-      setTenant(j.data);
+      setTenant(updated);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Save failed");
+      const err = e as { message?: string };
+      setError(err?.message ?? "Save failed");
     } finally {
       setSaving(false);
     }
@@ -1267,12 +1356,13 @@ function WebhooksTab() {
 const AUDIT_PAGE_SIZE = 50;
 
 function AuditLogTab() {
-  const [entries,    setEntries]    = useState<AuditEntry[]>([]);
-  const [loading,    setLoading]    = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [hasMore,    setHasMore]    = useState(false);
-  const [offset,     setOffset]     = useState(0);
-  const [error,      setError]      = useState<string | null>(null);
+  const [entries,      setEntries]      = useState<AuditEntry[]>([]);
+  const [loading,      setLoading]      = useState(true);
+  const [loadingMore,  setLoadingMore]  = useState(false);
+  const [exportingAll, setExportingAll] = useState(false);
+  const [hasMore,      setHasMore]      = useState(false);
+  const [offset,       setOffset]       = useState(0);
+  const [error,        setError]        = useState<string | null>(null);
 
   const load = useCallback(async (currentOffset: number, append: boolean) => {
     if (append) setLoadingMore(true); else setLoading(true);
@@ -1297,6 +1387,32 @@ function AuditLogTab() {
 
   useEffect(() => { load(0, false); }, [load]);
 
+  // Pages through all audit entries (max 200/request) and downloads the full
+  // log as CSV without mutating the table state.
+  async function handleExportAll() {
+    setExportingAll(true);
+    setError(null);
+    try {
+      const PAGE = 200;
+      const all: AuditEntry[] = [];
+      let off = 0;
+      while (true) {
+        const res = await authFetch(`${API_BASE}/v1/audit-log?limit=${PAGE}&offset=${off}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        const page: AuditEntry[] = Array.isArray(json.data) ? json.data : [];
+        all.push(...page);
+        if (!json.has_more) break;
+        off += page.length;
+      }
+      downloadAuditCsv(all);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Export failed");
+    } finally {
+      setExportingAll(false);
+    }
+  }
+
   return (
     <motion.div variants={variants.fadeInUp} className="space-y-4">
       <div className="flex justify-between items-center">
@@ -1308,7 +1424,14 @@ function AuditLogTab() {
             disabled={entries.length === 0}
             className="px-4 py-2 text-sm font-medium text-white/70 border border-white/[0.08] rounded-lg hover:bg-white/[0.05] transition-colors disabled:opacity-40"
           >
-            Export CSV
+            Export loaded ({entries.length})
+          </button>
+          <button
+            onClick={handleExportAll}
+            disabled={exportingAll || entries.length === 0}
+            className="px-4 py-2 text-sm font-medium text-[#00E5FF] border border-[#00E5FF]/20 rounded-lg hover:bg-[#00E5FF]/5 transition-colors disabled:opacity-40"
+          >
+            {exportingAll ? "Exporting…" : "Export all"}
           </button>
         </div>
       </div>

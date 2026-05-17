@@ -4,6 +4,7 @@
  * Dashboard chrome (sidebar, header) lives in (dashboard)/layout.tsx.
  */
 import { Inter, Space_Grotesk, JetBrains_Mono } from "next/font/google";
+import { Toaster } from "sonner";
 import { cn } from "@/lib/design-system/cn";
 import "./globals.css";
 
@@ -25,6 +26,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           aria-hidden
         />
         {children}
+        <Toaster
+          position="bottom-right"
+          theme="dark"
+          toastOptions={{
+            style: {
+              background: "rgba(13,20,34,0.95)",
+              border: "1px solid rgba(255,255,255,0.08)",
+              color: "#fff",
+              backdropFilter: "blur(12px)",
+            },
+          }}
+        />
       </body>
     </html>
   );

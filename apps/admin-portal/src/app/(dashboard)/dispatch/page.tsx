@@ -264,6 +264,13 @@ function DispatchPageInner() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
+  // Poll every 30s — dispatch queue and driver roster change frequently as drivers
+  // pick up tasks, go online/offline, and auto-dispatch assigns new shipments.
+  useEffect(() => {
+    const id = setInterval(fetchData, 30_000);
+    return () => clearInterval(id);
+  }, [fetchData]);
+
   // Marketplace-origin queue: accepted bookings from the bus become synthetic queue rows
   const refreshMarketplaceQueue = useCallback(() => {
     const accepted = readBus()

@@ -44,9 +44,9 @@ async fn aggregate_stats(
     State(state): State<AppState>,
     claims: AuthClaims,
 ) -> impl IntoResponse {
-    // Same permission guard as list_sessions — anyone who can see sessions
-    // can see the rollup.
-    let _ = claims.user_id; // touched to silence unused-var when permission gate is added
+    if !claims.can_use_ai() {
+        return Err(AppError::Forbidden { resource: "ai_features".into() });
+    }
     let stats = state.session_repo
         .aggregate(claims.tenant_id)
         .await
@@ -71,8 +71,9 @@ async fn run_agent(
     claims: AuthClaims,
     Json(req): Json<RunAgentRequest>,
 ) -> impl IntoResponse {
-    // Any authenticated user can trigger an on-demand agent.
-    // Specific agents (Dispatch, Recovery) are triggered automatically.
+    if !claims.can_use_ai() {
+        return Err(AppError::Forbidden { resource: "ai_features".into() });
+    }
     let trigger = req.context.unwrap_or(serde_json::json!({"tenant_id": claims.tenant_id.to_string()}));
 
     let session = state
@@ -110,6 +111,9 @@ async fn list_sessions(
     claims: AuthClaims,
     Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
+    if !claims.can_use_ai() {
+        return Err(AppError::Forbidden { resource: "ai_features".into() });
+    }
     let sessions = state
         .session_repo
         .list_by_tenant(
@@ -144,6 +148,9 @@ async fn list_escalated(
     State(state): State<AppState>,
     claims: AuthClaims,
 ) -> impl IntoResponse {
+    if !claims.can_use_ai() {
+        return Err(AppError::Forbidden { resource: "ai_features".into() });
+    }
     let sessions = state
         .session_repo
         .list_escalated(claims.tenant_id)
@@ -162,6 +169,9 @@ async fn get_session(
     claims: AuthClaims,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
+    if !claims.can_use_ai() {
+        return Err(AppError::Forbidden { resource: "ai_features".into() });
+    }
     let session = state
         .session_repo
         .find_by_id(id)
@@ -192,6 +202,9 @@ async fn resolve_escalation(
     Path(id): Path<Uuid>,
     Json(body): Json<ResolveRequest>,
 ) -> impl IntoResponse {
+    if !claims.can_use_ai() {
+        return Err(AppError::Forbidden { resource: "ai_features".into() });
+    }
     let mut session = state
         .session_repo
         .find_by_id(id)
