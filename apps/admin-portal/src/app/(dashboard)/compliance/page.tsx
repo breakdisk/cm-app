@@ -40,15 +40,19 @@ const MOCK_QUEUE: DriverDocument[] = [
 ];
 
 export default function CompliancePage() {
-  const [queue,           setQueue]           = useState<DriverDocument[]>(MOCK_QUEUE);
-  const [profiles,        setProfiles]        = useState<ComplianceProfile[]>(MOCK_PROFILES);
+  // Start with empty state — mock data only shown in Storybook/dev preview.
+  // The refresh() on mount populates from the real compliance service.
+  const [queue,           setQueue]           = useState<DriverDocument[]>([]);
+  const [profiles,        setProfiles]        = useState<ComplianceProfile[]>([]);
   const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
-  const [loading,         setLoading]         = useState(false);
+  const [loading,         setLoading]         = useState(true);
+  const [error,           setError]           = useState<string | null>(null);
   const { hasPermission } = usePermissions();
   const canReview = hasPermission("compliance:review") || hasPermission("compliance:admin");
 
   const refresh = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const [q, p] = await Promise.all([
         fetchReviewQueue(),
@@ -56,14 +60,20 @@ export default function CompliancePage() {
       ]);
       setQueue(q);
       setProfiles(p);
-    } catch {
-      // retain mock data on network failure
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load compliance data");
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  // Poll every 30s — new document submissions arrive asynchronously from the driver app.
+  useEffect(() => {
+    const id = setInterval(refresh, 30_000);
+    return () => clearInterval(id);
+  }, [refresh]);
 
   // Approve/reject were drag-only on local state — the panel buttons looked
   // like they worked but the server-side compliance.documents row stayed
@@ -122,6 +132,15 @@ export default function CompliancePage() {
           <RefreshCw size={12} className={loading ? "animate-spin" : ""} /> Refresh
         </button>
       </motion.div>
+
+      {/* Error banner */}
+      {error && (
+        <motion.div variants={variants.fadeInUp}>
+          <div className="rounded-lg border border-red-signal/30 bg-red-signal/5 px-4 py-3 text-xs text-red-signal font-mono">
+            {error} — <button onClick={refresh} className="underline hover:text-white transition-colors">Retry</button>
+          </div>
+        </motion.div>
+      )}
 
       {/* KPI strip */}
       <motion.div variants={variants.fadeInUp}>

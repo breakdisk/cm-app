@@ -213,16 +213,21 @@ function CarriersPageInner() {
       const list: ServerCarrier[] = json.carriers ?? json.data ?? [];
       setCarriers(list.map(mapCarrier));
     } catch (e) {
-      // Fall back to the canned list so the page still renders something
-      // useful in dev or when the carrier service is briefly unreachable.
+      // Show error — do NOT silently replace with mock data as that would
+      // show fabricated carrier names (FastLine, SpeedEx, etc.) to real ops.
       setError(e instanceof Error ? e.message : "Failed to load carriers");
-      setCarriers(CARRIERS_FALLBACK);
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // Poll every 2 minutes — carrier status changes (activation, suspension) are low-frequency.
+  useEffect(() => {
+    const id = setInterval(load, 120_000);
+    return () => clearInterval(id);
+  }, [load]);
 
   const visibleCarriers = useMemo(() => coverageFilter
     ? carriers.filter((c) =>

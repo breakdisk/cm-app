@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, type ReactNode } from "react";
+import { useState, useEffect, useCallback, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
@@ -30,6 +30,9 @@ import {
 import { cn } from "@/lib/design-system/cn";
 import { DriverRosterProvider } from "@/context/driver-roster-context";
 import { usePermissions, clearPermissionsCache } from "@/hooks/usePermissions";
+import { authFetch } from "@/lib/auth/auth-fetch";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -201,9 +204,50 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [utcTime, setUtcTime] = useState(() => formatUtcTime(new Date()));
+  const [alertCount, setAlertCount] = useState(0);
+  const [systemOk, setSystemOk]     = useState(true);
   const pathname = usePathname();
   const pageTitle = getPageTitle(pathname);
   const { hasPermission, displayName, displayRole, loading: identityLoading } = usePermissions();
+
+  // Poll live alert count from AI-escalation + compliance queues (30s cadence).
+  const checkAlerts = useCallback(async () => {
+    try {
+      const [ai, compliance] = await Promise.all([
+        authFetch(`${API_BASE}/v1/agents/sessions/escalated`)
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null) as Promise<{ count?: number } | null>,
+        authFetch(`${API_BASE}/v1/compliance/admin/queue?limit=1`)
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null) as Promise<{ total?: number } | null>,
+      ]);
+      setAlertCount((ai?.count ?? 0) + (compliance?.total ?? 0));
+    } catch {
+      // Keep previous count on transient errors.
+    }
+  }, []);
+
+  // Poll backend health — uses unauthenticated /health endpoint (60s cadence).
+  const checkHealth = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(5_000) });
+      setSystemOk(res.ok);
+    } catch {
+      setSystemOk(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    checkAlerts();
+    const id = setInterval(checkAlerts, 30_000);
+    return () => clearInterval(id);
+  }, [checkAlerts]);
+
+  useEffect(() => {
+    checkHealth();
+    const id = setInterval(checkHealth, 60_000);
+    return () => clearInterval(id);
+  }, [checkHealth]);
 
   const visibleNavItems = identityLoading
     ? []
@@ -449,17 +493,17 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
           {/* Right controls — live status + UTC time */}
           <div className="flex items-center gap-4">
-            {/* System Operational indicator */}
+            {/* System health indicator — live from /health (60s poll) */}
             <div className="flex items-center gap-2">
               <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-beacon rounded-full bg-green-signal opacity-75" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-green-signal" />
+                <span className={`absolute inline-flex h-full w-full animate-beacon rounded-full opacity-75 ${systemOk ? "bg-green-signal" : "bg-red-signal"}`} />
+                <span className={`relative inline-flex h-2 w-2 rounded-full ${systemOk ? "bg-green-signal" : "bg-red-signal"}`} />
               </span>
               <span
-                className="text-xs font-medium text-green-signal hidden sm:block"
-                style={{ textShadow: "0 0 8px rgba(0,255,136,0.4)" }}
+                className={`text-xs font-medium hidden sm:block ${systemOk ? "text-green-signal" : "text-red-signal"}`}
+                style={{ textShadow: systemOk ? "0 0 8px rgba(0,255,136,0.4)" : "0 0 8px rgba(255,59,92,0.4)" }}
               >
-                System Operational
+                {systemOk ? "System Operational" : "Degraded"}
               </span>
             </div>
 
@@ -471,8 +515,9 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
               {utcTime}
             </span>
 
-            {/* Notifications */}
-            <button
+            {/* Notifications — count polled live every 30s from escalated + compliance queues */}
+            <Link
+              href="/alerts"
               className={cn(
                 "relative flex h-9 w-9 items-center justify-center rounded-lg",
                 "border border-glass-border bg-glass-100 text-white/50",
@@ -481,16 +526,18 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
               aria-label="Alerts"
             >
               <Bell className="h-4 w-4" />
-              <span
-                className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full text-2xs font-bold text-white"
-                style={{
-                  background: "#FF3B5C",
-                  boxShadow: "0 0 8px rgba(255,59,92,0.6)",
-                }}
-              >
-                3
-              </span>
-            </button>
+              {alertCount > 0 && (
+                <span
+                  className="absolute -right-1 -top-1 flex h-4 min-w-[1rem] items-center justify-center rounded-full px-0.5 text-2xs font-bold text-white"
+                  style={{
+                    background: "#FF3B5C",
+                    boxShadow: "0 0 8px rgba(255,59,92,0.6)",
+                  }}
+                >
+                  {alertCount > 99 ? "99+" : alertCount}
+                </span>
+              )}
+            </Link>
           </div>
         </header>
 
