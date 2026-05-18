@@ -8,13 +8,15 @@ use crate::{
     application::commands::{
         InitiatePodCommand, AttachSignatureCommand, AttachPhotoCommand,
         SubmitPodCommand, GenerateOtpCommand, VerifyOtpCommand, UploadUrlResponse,
+        InitiatePickupCommand, SubmitPickupCommand,
     },
     domain::{
-        entities::{ProofOfDelivery, PodPhoto, OtpCode},
-        events::PodCaptured,
-        repositories::{PodRepository, OtpRepository},
+        entities::{ProofOfDelivery, PodPhoto, OtpCode, ProofOfPickup},
+        events::{PodCaptured, PickupCaptured},
+        repositories::{PodRepository, OtpRepository, PickupRepository, TelemetryRepository, TelemetryEntry},
         value_objects::{
-            POD_GEOFENCE_METERS, MAX_PHOTOS_PER_POD, MAX_PHOTO_SIZE_BYTES,
+            POD_GEOFENCE_METERS, OUT_OF_BOUNDS_HANDOVER_METERS,
+            MAX_PHOTOS_PER_POD, MAX_PHOTO_SIZE_BYTES,
             is_allowed_content_type, generate_otp, hash_otp, verify_otp,
         },
     },
@@ -23,22 +25,26 @@ use crate::{
 };
 
 pub struct PodService {
-    pod_repo: Arc<dyn PodRepository>,
-    otp_repo: Arc<dyn OtpRepository>,
-    storage: Arc<dyn StorageAdapter>,
-    sms: Arc<dyn SmsAdapter>,
-    kafka: Arc<KafkaProducer>,
+    pod_repo:     Arc<dyn PodRepository>,
+    otp_repo:     Arc<dyn OtpRepository>,
+    pickup_repo:  Arc<dyn PickupRepository>,
+    telemetry:    Arc<dyn TelemetryRepository>,
+    storage:      Arc<dyn StorageAdapter>,
+    sms:          Arc<dyn SmsAdapter>,
+    kafka:        Arc<KafkaProducer>,
 }
 
 impl PodService {
     pub fn new(
-        pod_repo: Arc<dyn PodRepository>,
-        otp_repo: Arc<dyn OtpRepository>,
-        storage: Arc<dyn StorageAdapter>,
-        sms: Arc<dyn SmsAdapter>,
-        kafka: Arc<KafkaProducer>,
+        pod_repo:    Arc<dyn PodRepository>,
+        otp_repo:    Arc<dyn OtpRepository>,
+        pickup_repo: Arc<dyn PickupRepository>,
+        telemetry:   Arc<dyn TelemetryRepository>,
+        storage:     Arc<dyn StorageAdapter>,
+        sms:         Arc<dyn SmsAdapter>,
+        kafka:       Arc<KafkaProducer>,
     ) -> Self {
-        Self { pod_repo, otp_repo, storage, sms, kafka }
+        Self { pod_repo, otp_repo, pickup_repo, telemetry, storage, sms, kafka }
     }
 
     /// Step 1: Driver initiates POD capture at delivery location.
@@ -80,12 +86,29 @@ impl PodService {
         let distance_m = driver_pos.distance_km(&delivery_pos) * 1000.0;
         let geofence_verified = distance_m <= POD_GEOFENCE_METERS;
 
+        // OUT_OF_BOUNDS_HANDOVER — soft audit flag for distances > 50m.
+        // Non-blocking: driver can still submit. Recorded on the entity and forwarded
+        // in PodCaptured so payments billing can write it to workflow_metadata.
+        let out_of_bounds_handover = distance_m > OUT_OF_BOUNDS_HANDOVER_METERS;
+
         tracing::info!(
-            driver_id = %driver_id,
-            distance_m = %distance_m,
-            geofence_verified = %geofence_verified,
+            driver_id              = %driver_id,
+            distance_m             = %distance_m,
+            geofence_verified      = %geofence_verified,
+            out_of_bounds_handover = %out_of_bounds_handover,
             "POD geofence check"
         );
+
+        if out_of_bounds_handover {
+            tracing::warn!(
+                driver_id   = %driver_id,
+                distance_m  = %distance_m,
+                shipment_id = %cmd.shipment_id,
+                "OUT_OF_BOUNDS_HANDOVER: driver is >{}m from delivery address; \
+                 audit flag set on POD (non-blocking)",
+                OUT_OF_BOUNDS_HANDOVER_METERS as u32
+            );
+        }
 
         let pod = ProofOfDelivery::new(
             tenant_id.inner(),
@@ -96,6 +119,8 @@ impl PodService {
             cmd.capture_lat,
             cmd.capture_lng,
             geofence_verified,
+            out_of_bounds_handover,
+            cmd.device_timestamp,
             cmd.requires_photo,
             cmd.requires_signature,
         );
@@ -241,24 +266,28 @@ impl PodService {
         // Fire-and-forget: POD is already persisted; a Kafka outage must not
         // fail the driver's submit. Missed events are recovered by reconciliation.
         let event = Event::new("pod", "pod.captured", tenant_id.inner(), PodCaptured {
-            pod_id:             pod.id,
-            shipment_id:        pod.shipment_id,
-            task_id:            pod.task_id,
-            tenant_id:          tenant_id.inner(),
-            driver_id:          driver_id.inner(),
-            recipient_name:     pod.recipient_name.clone(),
-            has_signature:      pod.signature_data.is_some(),
-            photo_count:        pod.photos.len(),
-            otp_verified:       pod.otp_verified,
-            cod_amount_cents:   pod.cod_collected_cents.unwrap_or(0),
-            captured_at:        pod.captured_at.to_rfc3339(),
-            tenant_code:        cmd.tenant_code.clone(),
-            booked_by_customer: cmd.booked_by_customer,
-            customer_id:        cmd.customer_id,
-            customer_email:     cmd.customer_email.clone(),
+            pod_id:                 pod.id,
+            shipment_id:            pod.shipment_id,
+            task_id:                pod.task_id,
+            tenant_id:              tenant_id.inner(),
+            driver_id:              driver_id.inner(),
+            recipient_name:         pod.recipient_name.clone(),
+            has_signature:          pod.signature_data.is_some(),
+            photo_count:            pod.photos.len(),
+            otp_verified:           pod.otp_verified,
+            cod_amount_cents:       pod.cod_collected_cents.unwrap_or(0),
+            captured_at:            pod.captured_at.to_rfc3339(),
+            // device_timestamp forwarded for chain-of-custody audit; absent on older clients.
+            device_timestamp:       pod.device_timestamp.map(|t| t.to_rfc3339()),
+            // Soft audit flag written to billing workflow_metadata by payments consumer.
+            out_of_bounds_handover: pod.out_of_bounds_handover,
+            tenant_code:            cmd.tenant_code.clone(),
+            booked_by_customer:     cmd.booked_by_customer,
+            customer_id:            cmd.customer_id,
+            customer_email:         cmd.customer_email.clone(),
             // customer_phone from driver app task screen — enables payments/engagement
             // to send WhatsApp receipts without a cross-service customer lookup.
-            customer_phone:     cmd.customer_phone.clone(),
+            customer_phone:         cmd.customer_phone.clone(),
         });
         if let Err(e) = self.kafka.publish_event(topics::POD_CAPTURED, &event).await {
             tracing::error!(
@@ -269,13 +298,204 @@ impl PodService {
             );
         }
 
+        // Append telemetry log entry (fire-and-forget — never block the POD submit).
+        let device_ts = cmd.device_timestamp.unwrap_or(pod.captured_at);
+        let telemetry_meta = if pod.out_of_bounds_handover {
+            serde_json::json!({
+                "telemetry_exception": "OUT_OF_BOUNDS_HANDOVER",
+                "geofence_verified": pod.geofence_verified,
+            })
+        } else {
+            serde_json::json!({
+                "geofence_verified": pod.geofence_verified,
+            })
+        };
+        if let Err(e) = self.telemetry.append(TelemetryEntry {
+            tenant_id:        tenant_id.inner(),
+            shipment_id:      pod.shipment_id,
+            task_id:          Some(pod.task_id),
+            driver_id:        Some(driver_id.inner()),
+            event_type:       "pod_submitted".into(),
+            device_timestamp: device_ts,
+            server_timestamp: chrono::Utc::now(),
+            lat:              Some(pod.capture_lat),
+            lng:              Some(pod.capture_lng),
+            metadata:         telemetry_meta,
+        }).await {
+            tracing::warn!(error = %e, pod_id = %pod_id, "Failed to append pod_submitted telemetry — non-fatal");
+        }
+
         tracing::info!(
             pod_id = %pod_id,
             shipment_id = %pod.shipment_id,
             driver_id = %driver_id,
+            out_of_bounds_handover = %pod.out_of_bounds_handover,
             "POD submitted"
         );
         Ok(pod_id)
+    }
+
+    // ── Proof of Pickup ────────────────────────────────────────────────────────
+
+    /// Step P1: Driver initiates a Proof of Pickup at the merchant/hub.
+    /// Performs geofence + OUT_OF_BOUNDS_HANDOVER checks against the pickup address.
+    pub async fn initiate_pickup(
+        &self,
+        driver_id: &DriverId,
+        tenant_id: &TenantId,
+        cmd: InitiatePickupCommand,
+    ) -> AppResult<ProofOfPickup> {
+        // Idempotency: return existing draft if this driver already started one.
+        if let Some(existing) = self.pickup_repo.find_by_shipment(cmd.shipment_id).await.map_err(AppError::Internal)? {
+            if existing.driver_id == driver_id.inner() {
+                return Ok(existing);
+            }
+            return Err(AppError::BusinessRule(format!(
+                "POP for shipment {} already initiated by another driver. Ask ops to clear the draft.",
+                cmd.shipment_id
+            )));
+        }
+
+        let driver_pos  = Coordinates { lat: cmd.capture_lat, lng: cmd.capture_lng };
+        let pickup_pos  = Coordinates { lat: cmd.pickup_lat,  lng: cmd.pickup_lng  };
+        let distance_m  = driver_pos.distance_km(&pickup_pos) * 1000.0;
+        let geofence_verified       = distance_m <= POD_GEOFENCE_METERS;
+        let out_of_bounds_handover  = distance_m > OUT_OF_BOUNDS_HANDOVER_METERS;
+
+        tracing::info!(
+            driver_id              = %driver_id,
+            distance_m             = %distance_m,
+            geofence_verified      = %geofence_verified,
+            out_of_bounds_handover = %out_of_bounds_handover,
+            "POP geofence check"
+        );
+
+        if out_of_bounds_handover {
+            tracing::warn!(
+                driver_id   = %driver_id,
+                distance_m  = %distance_m,
+                shipment_id = %cmd.shipment_id,
+                "OUT_OF_BOUNDS_HANDOVER: driver is >{}m from pickup address; \
+                 audit flag set on POP (non-blocking)",
+                OUT_OF_BOUNDS_HANDOVER_METERS as u32
+            );
+        }
+
+        let mut pop = ProofOfPickup::new(
+            tenant_id.inner(),
+            cmd.shipment_id,
+            cmd.task_id,
+            driver_id.inner(),
+            cmd.capture_lat,
+            cmd.capture_lng,
+            geofence_verified,
+            out_of_bounds_handover,
+            cmd.device_timestamp,
+        );
+
+        if let Some(declared_g) = cmd.declared_weight_g {
+            pop.record_weight(0, declared_g); // actual weight recorded at submit
+        }
+
+        self.pickup_repo.save(&pop).await.map_err(AppError::Internal)?;
+        Ok(pop)
+    }
+
+    /// Step P2: Driver submits a completed Proof of Pickup.
+    /// Validates barcode, records weight, publishes PickupCaptured event.
+    pub async fn submit_pickup(
+        &self,
+        driver_id: &DriverId,
+        tenant_id: &TenantId,
+        cmd:       SubmitPickupCommand,
+        tenant_code: String,
+    ) -> AppResult<Uuid> {
+        let mut pop = self.pickup_repo.find_by_id(cmd.pop_id).await.map_err(AppError::Internal)?
+            .ok_or_else(|| AppError::NotFound { resource: "POP", id: cmd.pop_id.to_string() })?;
+
+        if pop.driver_id != driver_id.inner() {
+            return Err(AppError::Forbidden { resource: "POP".into() });
+        }
+        if pop.status == crate::domain::entities::PopStatus::Submitted {
+            return Err(AppError::BusinessRule("POP has already been submitted".into()));
+        }
+
+        pop.record_scan(cmd.scanned_barcode.clone());
+
+        if let Some(actual_g) = cmd.actual_weight_g {
+            let declared_g = pop.declared_weight_g.unwrap_or(actual_g);
+            pop.record_weight(actual_g, declared_g);
+        }
+
+        if let Some(ref key) = cmd.photo_s3_key {
+            pop.attach_photo(key.clone(), cmd.photo_size_bytes.unwrap_or(0));
+        }
+
+        // Override device_timestamp if provided at submit time (more accurate).
+        if cmd.device_timestamp.is_some() {
+            pop.device_timestamp = cmd.device_timestamp;
+        }
+
+        pop.submit();
+        let pop_id = pop.id;
+        self.pickup_repo.save(&pop).await.map_err(AppError::Internal)?;
+
+        // Append telemetry log (fire-and-forget).
+        let device_ts = pop.device_timestamp.unwrap_or(pop.captured_at);
+        let mut tele_meta = serde_json::json!({
+            "scanned_barcode": pop.scanned_barcode,
+            "geofence_verified": pop.geofence_verified,
+        });
+        if pop.out_of_bounds_handover {
+            tele_meta["telemetry_exception"] = serde_json::json!("OUT_OF_BOUNDS_HANDOVER");
+        }
+        if let Some(ratio) = pop.weight_overage_ratio() {
+            tele_meta["weight_overage_ratio"] = serde_json::json!(ratio);
+        }
+        if let Err(e) = self.telemetry.append(TelemetryEntry {
+            tenant_id:        tenant_id.inner(),
+            shipment_id:      pop.shipment_id,
+            task_id:          Some(pop.task_id),
+            driver_id:        Some(driver_id.inner()),
+            event_type:       "pop_submitted".into(),
+            device_timestamp: device_ts,
+            server_timestamp: chrono::Utc::now(),
+            lat:              Some(pop.capture_lat),
+            lng:              Some(pop.capture_lng),
+            metadata:         tele_meta,
+        }).await {
+            tracing::warn!(error = %e, pop_id = %pop_id, "Failed to append pop_submitted telemetry — non-fatal");
+        }
+
+        // Publish PickupCaptured — driver-ops marks task IN_PROGRESS; payments opens
+        // the billing chain of custody for Track A/B invoicing.
+        let event = Event::new("pod", "pickup.captured", tenant_id.inner(), PickupCaptured {
+            pop_id:               pop.id,
+            shipment_id:          pop.shipment_id,
+            task_id:              pop.task_id,
+            tenant_id:            tenant_id.inner(),
+            driver_id:            driver_id.inner(),
+            geofence_verified:    pop.geofence_verified,
+            out_of_bounds_handover: pop.out_of_bounds_handover,
+            barcode_scanned:      pop.barcode_scanned,
+            actual_weight_g:      pop.actual_weight_g,
+            declared_weight_g:    pop.declared_weight_g,
+            weight_overage_ratio: pop.weight_overage_ratio(),
+            photo_s3_key:         pop.photo_s3_key.clone(),
+            captured_at:          pop.captured_at.to_rfc3339(),
+            device_timestamp:     pop.device_timestamp.map(|t| t.to_rfc3339()),
+            tenant_code,
+        });
+        if let Err(e) = self.kafka.publish_event(topics::PICKUP_CAPTURED, &event).await {
+            tracing::error!(
+                error = %e,
+                pop_id = %pop_id,
+                "PICKUP_CAPTURED event publish failed — POP saved, event will be reconciled"
+            );
+        }
+
+        tracing::info!(pop_id = %pop_id, shipment_id = %pop.shipment_id, driver_id = %driver_id, "POP submitted");
+        Ok(pop_id)
     }
 
     /// Generate and send OTP to recipient's phone for high-value deliveries.

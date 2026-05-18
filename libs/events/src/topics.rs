@@ -49,8 +49,10 @@ pub const DELIVERY_FAILED:           &str = "logisticos.driver.delivery.failed";
 pub const LOCATION_UPDATED:          &str = "logisticos.driver.location.updated";
 pub const DRIVER_LOCATION_UPDATED:   &str = "logisticos.driver.location.updated";
 
-// POD
+// POD / POP
 pub const POD_CAPTURED:              &str = "logisticos.pod.captured";
+/// Emitted when a driver submits a Proof of Pickup — opens the chain of custody.
+pub const PICKUP_CAPTURED:           &str = "logisticos.pod.pickup.captured";
 
 // Payments
 pub const INVOICE_GENERATED:              &str = "logisticos.payments.invoice.generated";
@@ -90,7 +92,7 @@ mod tests {
             DRIVER_AVAILABLE,
             PICKUP_COMPLETED, DELIVERY_ATTEMPTED, DELIVERY_COMPLETED, DELIVERY_FAILED,
             LOCATION_UPDATED, DRIVER_LOCATION_UPDATED,
-            POD_CAPTURED,
+            POD_CAPTURED, PICKUP_CAPTURED,
             INVOICE_GENERATED, INVOICE_FINALIZED, PAYMENT_RECEIVED,
             COD_COLLECTED, COD_REMITTANCE_READY, WEIGHT_ADJUSTMENT_INVOICED,
             WALLET_WITHDRAWAL_DISBURSED, WALLET_WITHDRAWAL_REJECTED,

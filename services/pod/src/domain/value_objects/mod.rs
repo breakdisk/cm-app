@@ -10,8 +10,16 @@ pub const ALLOWED_PHOTO_TYPES: &[&str] = &["image/jpeg", "image/png", "image/web
 /// OTP code length — 6 digits.
 pub const OTP_LENGTH: usize = 6;
 
-/// Geofence for POD capture — must be within 200m of delivery address.
+/// Geofence for POD capture — driver must be within this radius of the delivery address.
+/// Controls `geofence_verified` on the entity (hard check at initiate time).
 pub const POD_GEOFENCE_METERS: f64 = 200.0;
+
+/// Soft audit threshold for out-of-bounds handover annotation.
+/// When the driver is farther than this value from the address polygon edge,
+/// `out_of_bounds_handover = true` is set on the POD/POP entity and written to
+/// billing `workflow_metadata`. NOT a block — only an audit flag for SLA review.
+/// Applies to both pickup and delivery; distinct from the 200 m geofence.
+pub const OUT_OF_BOUNDS_HANDOVER_METERS: f64 = 50.0;
 
 pub fn is_allowed_content_type(content_type: &str) -> bool {
     ALLOWED_PHOTO_TYPES.contains(&content_type)

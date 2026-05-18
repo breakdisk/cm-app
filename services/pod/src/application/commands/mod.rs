@@ -1,13 +1,14 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Deserialize)]
 pub struct InitiatePodCommand {
-    pub shipment_id: Uuid,
-    pub task_id: Uuid,
+    pub shipment_id:    Uuid,
+    pub task_id:        Uuid,
     pub recipient_name: String,
-    pub capture_lat: f64,
-    pub capture_lng: f64,
+    pub capture_lat:    f64,
+    pub capture_lng:    f64,
     /// Whether the task requires a delivery photo. Defaults to true for backward
     /// compatibility — older clients that don't send this field still enforce evidence.
     #[serde(default = "default_true")]
@@ -15,6 +16,10 @@ pub struct InitiatePodCommand {
     /// Whether the task requires a recipient signature. Defaults to true.
     #[serde(default = "default_true")]
     pub requires_signature: bool,
+    /// Hardware clock timestamp from the driver's device at the moment of POD initiation.
+    /// Optional — absent when client is an older build that does not yet send it.
+    #[serde(default)]
+    pub device_timestamp: Option<DateTime<Utc>>,
 }
 
 fn default_true() -> bool { true }
@@ -51,6 +56,51 @@ pub struct SubmitPodCommand {
     /// for receipt and COD notifications without a cross-service lookup.
     #[serde(default)]
     pub customer_phone:       String,
+    /// Hardware clock timestamp from the driver's device at moment of submission.
+    /// Forwarded into PodCaptured and telemetry log as the canonical event time.
+    #[serde(default)]
+    pub device_timestamp:     Option<DateTime<Utc>>,
+}
+
+// ── Pickup commands ────────────────────────────────────────────────────────────
+
+/// Driver initiates a Proof of Pickup at the merchant/hub.
+#[derive(Debug, Deserialize)]
+pub struct InitiatePickupCommand {
+    pub shipment_id:   Uuid,
+    pub task_id:       Uuid,
+    pub capture_lat:   f64,
+    pub capture_lng:   f64,
+    /// Pickup address coordinates — used for geofence and OUT_OF_BOUNDS_HANDOVER check.
+    pub pickup_lat:    f64,
+    pub pickup_lng:    f64,
+    /// Declared weight in grams from the shipment booking (for Track B overage detection).
+    #[serde(default)]
+    pub declared_weight_g: Option<i64>,
+    /// Hardware clock timestamp from driver device.
+    #[serde(default)]
+    pub device_timestamp:  Option<DateTime<Utc>>,
+}
+
+/// Driver submits a completed Proof of Pickup.
+#[derive(Debug, Deserialize)]
+pub struct SubmitPickupCommand {
+    // Path param — see SubmitPodCommand for rationale.
+    #[serde(default)]
+    pub pop_id:            Uuid,
+    /// Barcode scanned from the physical AWB label.
+    pub scanned_barcode:   String,
+    /// Actual weight in grams as measured at pickup (Track B).
+    #[serde(default)]
+    pub actual_weight_g:   Option<i64>,
+    /// S3 key of the parcel photo uploaded via presigned URL (optional).
+    #[serde(default)]
+    pub photo_s3_key:      Option<String>,
+    #[serde(default)]
+    pub photo_size_bytes:  Option<u64>,
+    /// Hardware clock timestamp from driver device.
+    #[serde(default)]
+    pub device_timestamp:  Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Deserialize)]

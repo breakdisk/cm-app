@@ -17,25 +17,27 @@ impl PgPodRepository {
 
 #[derive(sqlx::FromRow)]
 struct PodRow {
-    id:                  Uuid,
-    tenant_id:           Uuid,
-    shipment_id:         Uuid,
-    task_id:             Uuid,
-    driver_id:           Uuid,
-    status:              String,
-    signature_data:      Option<String>,
-    recipient_name:      String,
-    photos:              serde_json::Value,   // JSONB array of PodPhoto
-    capture_lat:         f64,
-    capture_lng:         f64,
-    geofence_verified:   bool,
-    otp_verified:        bool,
-    otp_id:              Option<Uuid>,
-    cod_collected_cents: Option<i64>,
-    requires_photo:      bool,
-    requires_signature:  bool,
-    captured_at:         chrono::DateTime<chrono::Utc>,
-    created_at:          chrono::DateTime<chrono::Utc>,
+    id:                     Uuid,
+    tenant_id:              Uuid,
+    shipment_id:            Uuid,
+    task_id:                Uuid,
+    driver_id:              Uuid,
+    status:                 String,
+    signature_data:         Option<String>,
+    recipient_name:         String,
+    photos:                 serde_json::Value,   // JSONB array of PodPhoto
+    capture_lat:            f64,
+    capture_lng:            f64,
+    geofence_verified:      bool,
+    out_of_bounds_handover: bool,
+    device_timestamp:       Option<chrono::DateTime<chrono::Utc>>,
+    otp_verified:           bool,
+    otp_id:                 Option<Uuid>,
+    cod_collected_cents:    Option<i64>,
+    requires_photo:         bool,
+    requires_signature:     bool,
+    captured_at:            chrono::DateTime<chrono::Utc>,
+    created_at:             chrono::DateTime<chrono::Utc>,
 }
 
 fn parse_status(s: &str) -> PodStatus {
@@ -60,25 +62,27 @@ impl From<PodRow> for ProofOfDelivery {
     fn from(r: PodRow) -> Self {
         let photos: Vec<PodPhoto> = serde_json::from_value(r.photos).unwrap_or_default();
         ProofOfDelivery {
-            id: r.id,
-            tenant_id: r.tenant_id,
-            shipment_id: r.shipment_id,
-            task_id: r.task_id,
-            driver_id: r.driver_id,
-            status: parse_status(&r.status),
-            signature_data: r.signature_data,
-            recipient_name: r.recipient_name,
+            id:                     r.id,
+            tenant_id:              r.tenant_id,
+            shipment_id:            r.shipment_id,
+            task_id:                r.task_id,
+            driver_id:              r.driver_id,
+            status:                 parse_status(&r.status),
+            signature_data:         r.signature_data,
+            recipient_name:         r.recipient_name,
             photos,
-            capture_lat: r.capture_lat,
-            capture_lng: r.capture_lng,
-            geofence_verified: r.geofence_verified,
-            otp_verified: r.otp_verified,
-            otp_id: r.otp_id,
-            cod_collected_cents: r.cod_collected_cents,
-            requires_photo: r.requires_photo,
-            requires_signature: r.requires_signature,
-            captured_at: r.captured_at,
-            created_at: r.created_at,
+            capture_lat:            r.capture_lat,
+            capture_lng:            r.capture_lng,
+            geofence_verified:      r.geofence_verified,
+            out_of_bounds_handover: r.out_of_bounds_handover,
+            device_timestamp:       r.device_timestamp,
+            otp_verified:           r.otp_verified,
+            otp_id:                 r.otp_id,
+            cod_collected_cents:    r.cod_collected_cents,
+            requires_photo:         r.requires_photo,
+            requires_signature:     r.requires_signature,
+            captured_at:            r.captured_at,
+            created_at:             r.created_at,
         }
     }
 }
@@ -90,6 +94,8 @@ impl PodRepository for PgPodRepository {
             r#"SELECT id, tenant_id, shipment_id, task_id, driver_id, status,
                       signature_data, recipient_name, photos,
                       capture_lat, capture_lng, geofence_verified,
+                      COALESCE(out_of_bounds_handover, false) AS out_of_bounds_handover,
+                      device_timestamp,
                       otp_verified, otp_id, cod_collected_cents,
                       requires_photo, requires_signature,
                       captured_at, created_at
@@ -106,6 +112,8 @@ impl PodRepository for PgPodRepository {
             r#"SELECT id, tenant_id, shipment_id, task_id, driver_id, status,
                       signature_data, recipient_name, photos,
                       capture_lat, capture_lng, geofence_verified,
+                      COALESCE(out_of_bounds_handover, false) AS out_of_bounds_handover,
+                      device_timestamp,
                       otp_verified, otp_id, cod_collected_cents,
                       requires_photo, requires_signature,
                       captured_at, created_at
@@ -126,17 +134,20 @@ impl PodRepository for PgPodRepository {
                    (id, tenant_id, shipment_id, task_id, driver_id, status,
                     signature_data, recipient_name, photos,
                     capture_lat, capture_lng, geofence_verified,
+                    out_of_bounds_handover, device_timestamp,
                     otp_verified, otp_id, cod_collected_cents,
                     requires_photo, requires_signature,
                     captured_at, created_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
                ON CONFLICT (id) DO UPDATE SET
-                   status              = EXCLUDED.status,
-                   signature_data      = EXCLUDED.signature_data,
-                   photos              = EXCLUDED.photos,
-                   otp_verified        = EXCLUDED.otp_verified,
-                   otp_id              = EXCLUDED.otp_id,
-                   cod_collected_cents = EXCLUDED.cod_collected_cents"#
+                   status                 = EXCLUDED.status,
+                   signature_data         = EXCLUDED.signature_data,
+                   photos                 = EXCLUDED.photos,
+                   out_of_bounds_handover = EXCLUDED.out_of_bounds_handover,
+                   device_timestamp       = EXCLUDED.device_timestamp,
+                   otp_verified           = EXCLUDED.otp_verified,
+                   otp_id                 = EXCLUDED.otp_id,
+                   cod_collected_cents    = EXCLUDED.cod_collected_cents"#
         )
         .bind(pod.id)
         .bind(pod.tenant_id)
@@ -150,6 +161,8 @@ impl PodRepository for PgPodRepository {
         .bind(pod.capture_lat)
         .bind(pod.capture_lng)
         .bind(pod.geofence_verified)
+        .bind(pod.out_of_bounds_handover)
+        .bind(pod.device_timestamp)
         .bind(pod.otp_verified)
         .bind(pod.otp_id)
         .bind(pod.cod_collected_cents)

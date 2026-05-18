@@ -3,7 +3,7 @@ use sqlx::postgres::PgPoolOptions;
 use anyhow::Context;
 use crate::config::Config;
 use crate::application::services::PodService;
-use crate::infrastructure::db::{PgPodRepository, PgOtpRepository};
+use crate::infrastructure::db::{PgPodRepository, PgOtpRepository, PgPickupRepository, PgTelemetryRepository};
 use crate::infrastructure::external::storage::S3StorageAdapter;
 use crate::infrastructure::external::sms::{NoOpSmsAdapter, TwilioSmsAdapter};
 use crate::api::http::{router, AppState};
@@ -144,14 +144,18 @@ pub async fn run() -> anyhow::Result<()> {
     };
 
     // Repositories
-    let pod_repo = Arc::new(PgPodRepository::new(pool.clone()));
-    let otp_repo = Arc::new(PgOtpRepository::new(pool.clone()));
+    let pod_repo      = Arc::new(PgPodRepository::new(pool.clone()));
+    let otp_repo      = Arc::new(PgOtpRepository::new(pool.clone()));
+    let pickup_repo   = Arc::new(PgPickupRepository::new(pool.clone()));
+    let telemetry     = Arc::new(PgTelemetryRepository::new(pool.clone()));
 
     let pod_service = Arc::new(PodService::new(
-        Arc::clone(&pod_repo) as _,
-        Arc::clone(&otp_repo) as _,
-        Arc::clone(&storage) as _,
-        Arc::clone(&sms) as _,
+        Arc::clone(&pod_repo)    as _,
+        Arc::clone(&otp_repo)    as _,
+        Arc::clone(&pickup_repo) as _,
+        Arc::clone(&telemetry)   as _,
+        Arc::clone(&storage)     as _,
+        Arc::clone(&sms)         as _,
         Arc::clone(&kafka),
     ));
 

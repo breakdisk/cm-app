@@ -25,6 +25,19 @@ pub struct ProofOfDelivery {
     pub capture_lng: f64,
     pub geofence_verified: bool,
 
+    /// Soft audit flag — set when driver is > 50m from delivery address polygon edge.
+    /// NOT a block; written to billing `workflow_metadata` for audit and SLA review.
+    /// Distinct from `geofence_verified`: a distance of 51–200m sets this flag
+    /// while still leaving `geofence_verified = true`.
+    #[serde(default)]
+    pub out_of_bounds_handover: bool,
+
+    /// Hardware clock timestamp from the driver's device at moment of capture.
+    /// Use for chain-of-custody and SLA calculations; compare with `captured_at`
+    /// (server receipt time) to detect > 5 min clock drift.
+    #[serde(default)]
+    pub device_timestamp: Option<DateTime<Utc>>,
+
     // OTP verification — optional extra confirmation for high-value shipments
     pub otp_verified: bool,
     pub otp_id: Option<Uuid>,
@@ -64,17 +77,20 @@ pub struct PodPhoto {
 }
 
 impl ProofOfDelivery {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        tenant_id: Uuid,
-        shipment_id: Uuid,
-        task_id: Uuid,
-        driver_id: Uuid,
-        recipient_name: String,
-        capture_lat: f64,
-        capture_lng: f64,
-        geofence_verified: bool,
-        requires_photo: bool,
-        requires_signature: bool,
+        tenant_id:              Uuid,
+        shipment_id:            Uuid,
+        task_id:                Uuid,
+        driver_id:              Uuid,
+        recipient_name:         String,
+        capture_lat:            f64,
+        capture_lng:            f64,
+        geofence_verified:      bool,
+        out_of_bounds_handover: bool,
+        device_timestamp:       Option<DateTime<Utc>>,
+        requires_photo:         bool,
+        requires_signature:     bool,
     ) -> Self {
         let now = Utc::now();
         Self {
@@ -90,6 +106,8 @@ impl ProofOfDelivery {
             capture_lat,
             capture_lng,
             geofence_verified,
+            out_of_bounds_handover,
+            device_timestamp,
             otp_verified: false,
             otp_id: None,
             cod_collected_cents: None,
