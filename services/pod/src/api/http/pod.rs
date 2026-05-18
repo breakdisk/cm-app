@@ -141,3 +141,84 @@ pub async fn verify_otp(
     let otp_id = state.pod_service.verify_otp_standalone(claims.tenant_id, cmd).await?;
     Ok(Json(serde_json::json!({ "data": { "otp_id": otp_id, "verified": true } })))
 }
+
+// ── Proof of Pickup (POP) handlers ────────────────────────────────────────────
+
+/// POST /v1/pops — driver initiates a Proof of Pickup at the merchant/hub.
+///
+/// Body includes both the capture GPS (`capture_lat`, `capture_lng`) and the
+/// pickup address GPS (`pickup_lat`, `pickup_lng`). The service computes the
+/// geofence and OUT_OF_BOUNDS_HANDOVER flag from the distance between them.
+pub async fn initiate_pickup(
+    AuthClaims(claims): AuthClaims,
+    State(state): State<Arc<AppState>>,
+    Json(cmd): Json<InitiatePickupCommand>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let driver_id = DriverId::from_uuid(claims.user_id);
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+
+    let pop = state.pod_service
+        .initiate_pickup(&driver_id, &tenant_id, cmd)
+        .await?;
+
+    Ok(Json(serde_json::json!({
+        "data": {
+            "pop_id":                pop.id,
+            "geofence_verified":     pop.geofence_verified,
+            "out_of_bounds_handover": pop.out_of_bounds_handover,
+            "status":                "draft"
+        }
+    })))
+}
+
+/// PUT /v1/pops/:id/submit — driver finalises a Proof of Pickup.
+///
+/// Validates the barcode scan, records actual weight (Track B), registers
+/// any uploaded parcel photo, and publishes the `pickup.captured` Kafka event.
+pub async fn submit_pickup(
+    AuthClaims(claims): AuthClaims,
+    Path(pop_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+    Json(cmd): Json<SubmitPickupCommand>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let driver_id   = DriverId::from_uuid(claims.user_id);
+    let tenant_id   = TenantId::from_uuid(claims.tenant_id);
+    let tenant_code = cmd.tenant_code.clone();
+    let cmd = SubmitPickupCommand { pop_id, ..cmd };
+
+    let pop_id = state.pod_service
+        .submit_pickup(&driver_id, &tenant_id, cmd, tenant_code)
+        .await?;
+
+    Ok(Json(serde_json::json!({
+        "data": { "pop_id": pop_id, "status": "submitted" }
+    })))
+}
+
+/// GET /v1/pops/:id — fetch a single POP record (ops / admin portal).
+pub async fn get_pop(
+    AuthClaims(_claims): AuthClaims,
+    Path(pop_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let pop = state.pod_service.get_pop_by_id(pop_id).await?;
+    Ok(Json(serde_json::json!({ "data": {
+        "pop_id":                pop.id,
+        "shipment_id":           pop.shipment_id,
+        "task_id":               pop.task_id,
+        "driver_id":             pop.driver_id,
+        "status":                if pop.status == crate::domain::entities::PopStatus::Submitted { "submitted" } else { "draft" },
+        "capture_lat":           pop.capture_lat,
+        "capture_lng":           pop.capture_lng,
+        "geofence_verified":     pop.geofence_verified,
+        "out_of_bounds_handover": pop.out_of_bounds_handover,
+        "barcode_scanned":       pop.barcode_scanned,
+        "scanned_barcode":       pop.scanned_barcode,
+        "actual_weight_g":       pop.actual_weight_g,
+        "declared_weight_g":     pop.declared_weight_g,
+        "weight_overage_ratio":  pop.weight_overage_ratio(),
+        "photo_s3_key":          pop.photo_s3_key,
+        "device_timestamp":      pop.device_timestamp,
+        "captured_at":           pop.captured_at,
+    } })))
+}

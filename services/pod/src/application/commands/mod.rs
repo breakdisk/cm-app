@@ -101,6 +101,10 @@ pub struct SubmitPickupCommand {
     /// Hardware clock timestamp from driver device.
     #[serde(default)]
     pub device_timestamp:  Option<DateTime<Utc>>,
+    /// 3-char tenant code for invoice number generation (e.g. "PH1").
+    /// Forwarded into PickupCaptured so payments can issue the Track A/B invoice.
+    #[serde(default)]
+    pub tenant_code:       String,
 }
 
 #[derive(Debug, Deserialize)]

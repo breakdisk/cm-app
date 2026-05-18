@@ -557,6 +557,12 @@ impl PodService {
         self.load_pod(pod_id).await
     }
 
+    /// Retrieve a POP record by ID (for admin/ops views).
+    pub async fn get_pop_by_id(&self, pop_id: Uuid) -> AppResult<ProofOfPickup> {
+        self.pickup_repo.find_by_id(pop_id).await.map_err(AppError::Internal)?
+            .ok_or_else(|| AppError::NotFound { resource: "POP", id: pop_id.to_string() })
+    }
+
     /// Retrieve the most recent POD for a shipment (for admin portal panel).
     pub async fn get_by_shipment(&self, shipment_id: Uuid) -> AppResult<Option<ProofOfDelivery>> {
         self.pod_repo.find_by_shipment(shipment_id).await.map_err(AppError::Internal)
