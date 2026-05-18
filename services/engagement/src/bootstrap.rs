@@ -1,6 +1,8 @@
 use std::{net::SocketAddr, sync::Arc};
 use rdkafka::{consumer::StreamConsumer, producer::FutureProducer, ClientConfig};
 use sqlx::postgres::PgPoolOptions;
+use anyhow::Context as _;
+use logisticos_auth::jwt::JwtService;
 
 use crate::{
     application::services::{
@@ -124,7 +126,7 @@ pub async fn run() -> anyhow::Result<()> {
         .await?;
 
     logisticos_common::migrations::run(&pool, "engagement", &sqlx::migrate!("./migrations")).await?;
-    let db = Arc::new(NotificationDb::new(pool));
+    let db = Arc::new(NotificationDb::new(pool.clone()));
 
     // Suppression cache — Redis-backed. Fails open if Redis is unavailable.
     let suppression_cache = Arc::new(
@@ -164,9 +166,42 @@ pub async fn run() -> anyhow::Result<()> {
         run_kafka_consumer(consumer, consumer_svc, consumer_cache, consumer_db, consumer_publisher, shutdown_rx).await;
     });
 
-    // HTTP API — notification dispatch endpoint
-    let app = build_router(notification_svc)
-        .layer(tower_http::trace::TraceLayer::new_for_http());
+    // HTTP API — full REST router (templates, campaigns, notifications)
+    let jwt_secret = std::env::var("AUTH__JWT_SECRET")
+        .context("AUTH__JWT_SECRET env var not set")?;
+    let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
+
+    let http_state = crate::api::http::AppState {
+        notification_svc: notification_svc.clone(),
+        db: pool,
+    };
+
+    use tower_http::cors::CorsLayer;
+    use axum::http::{HeaderName, HeaderValue, Method};
+    let cors = CorsLayer::new()
+        .allow_origin([
+            "http://localhost:3000".parse::<HeaderValue>().unwrap(),
+            "http://localhost:3001".parse::<HeaderValue>().unwrap(),
+            "http://localhost:3002".parse::<HeaderValue>().unwrap(),
+            "http://localhost:3003".parse::<HeaderValue>().unwrap(),
+        ])
+        .allow_methods([
+            Method::GET, Method::POST, Method::PUT,
+            Method::PATCH, Method::DELETE, Method::OPTIONS,
+        ])
+        .allow_headers([
+            HeaderName::from_static("content-type"),
+            HeaderName::from_static("authorization"),
+            HeaderName::from_static("x-logisticos-client"),
+        ]);
+
+    let app = crate::api::http::router(http_state)
+        .layer(axum::middleware::from_fn_with_state(
+            jwt,
+            logisticos_auth::middleware::require_auth,
+        ))
+        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(cors);
 
     let addr: SocketAddr = format!("{}:{}", cfg.app.host, cfg.app.port).parse()?;
     tracing::info!(addr = %addr, "engagement service listening");
