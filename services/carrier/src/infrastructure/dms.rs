@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use tokio::sync::watch;
 use logisticos_errors::AppResult;
