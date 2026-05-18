@@ -17,19 +17,10 @@ pub fn is_allowed_content_type(content_type: &str) -> bool {
     ALLOWED_PHOTO_TYPES.contains(&content_type)
 }
 
-/// Generate a random 6-digit OTP code.
+/// Generate a cryptographically secure random 6-digit OTP code.
 pub fn generate_otp() -> String {
-    use std::time::SystemTime;
-    let seed = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-    // XOR-shift for deterministic randomness — replace with rand::OsRng in production
-    let mut state = seed as u64 ^ (seed as u64 >> 17) ^ 0xDEADBEEF;
-    state ^= state << 13;
-    state ^= state >> 7;
-    state ^= state << 17;
-    format!("{:06}", state % 1_000_000)
+    use rand::{Rng, rngs::OsRng};
+    format!("{:06}", OsRng.gen_range(0u32..1_000_000))
 }
 
 /// SHA-256 hash of an OTP code for safe storage.

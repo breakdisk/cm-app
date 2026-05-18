@@ -41,3 +41,4 @@ subtle.workspace       = true
 reqwest.workspace      = true
 aws-sdk-s3.workspace   = true
 aws-config.workspace   = true
+rand.workspace         = true

@@ -498,7 +498,9 @@ spec:
     - name: pod-route
       match:
         - uri:
-            prefix: "/v1/pod/"
+            prefix: "/v1/pods"
+        - uri:
+            prefix: "/v1/otps"
       corsPolicy:
         allowOrigins:
           - exact: "https://merchant.logisticos.io"
