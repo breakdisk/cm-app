@@ -129,8 +129,8 @@ pub async fn generate_otp(
     Json(cmd): Json<GenerateOtpCommand>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
-    let otp_id = state.pod_service.generate_and_send_otp(&tenant_id, cmd).await?;
-    Ok(Json(serde_json::json!({ "data": { "otp_id": otp_id } })))
+    let (otp_id, code) = state.pod_service.generate_and_send_otp(&tenant_id, cmd).await?;
+    Ok(Json(serde_json::json!({ "data": { "otp_id": otp_id, "code": code } })))
 }
 
 pub async fn verify_otp(

@@ -18,11 +18,13 @@ pub struct NoOpSmsAdapter;
 
 #[async_trait]
 impl SmsAdapter for NoOpSmsAdapter {
-    async fn send(&self, to: &str, _body: &str) -> anyhow::Result<()> {
+    async fn send(&self, to: &str, body: &str) -> anyhow::Result<()> {
         tracing::warn!(
-            to = %to,
-            "NoOpSmsAdapter: TWILIO_ACCOUNT_SID not configured — SMS not sent. \
-             Set TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM_NUMBER to enable real OTP delivery."
+            to   = %to,
+            body = %body,
+            "NoOpSmsAdapter: SMS not sent (no Twilio configured). \
+             OTP code is in the API response `data.code` and logged above. \
+             Set TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM_NUMBER for real delivery."
         );
         Ok(())
     }

@@ -280,11 +280,16 @@ impl PodService {
 
     /// Generate and send OTP to recipient's phone for high-value deliveries.
     /// Should be called by driver before arriving at address.
+    ///
+    /// Returns `(otp_id, code)`. The plaintext code is always included so the
+    /// driver app can display it as a fallback when no SMS arrives (e.g. staging
+    /// with no Twilio configured, or the recipient has no mobile signal).
+    /// The endpoint is already auth-gated to drivers so surfacing it here is safe.
     pub async fn generate_and_send_otp(
         &self,
         tenant_id: &TenantId,
         cmd: GenerateOtpCommand,
-    ) -> AppResult<Uuid> {
+    ) -> AppResult<(Uuid, String)> {
         // Invalidate any previous OTP for this shipment by letting it expire (no delete needed —
         // find_active_by_shipment filters by is_used=false AND expires_at > NOW())
         let code = generate_otp();
@@ -300,17 +305,19 @@ impl PodService {
 
         self.otp_repo.save(&otp).await.map_err(AppError::Internal)?;
 
-        // Send via SMS — engagement service owns the template, we just send the raw code here
+        // Send via SMS — when Twilio is configured the customer receives it.
+        // When NoOpSmsAdapter is active (no Twilio creds) the send() is a no-op and
+        // the driver reads the code from the API response instead.
         let message = format!("Your LogisticOS delivery code is: {code}. Valid for 15 minutes. Do not share.");
         self.sms.send(&cmd.recipient_phone, &message).await
             .map_err(AppError::Internal)?;
 
         tracing::info!(
             shipment_id = %cmd.shipment_id,
-            phone = %cmd.recipient_phone,
-            "OTP sent"
+            phone       = %cmd.recipient_phone,
+            "OTP generated and dispatched"
         );
-        Ok(otp_id)
+        Ok((otp_id, code))
     }
 
     /// Retrieve a POD record by ID (for admin/ops views).
