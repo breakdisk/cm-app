@@ -1,5 +1,13 @@
 import { createApiClient } from "./client";
 
+const CARRIER_SVC_URL = process.env.NEXT_PUBLIC_CARRIER_URL    ?? "http://localhost:8010";
+const DRIVER_OPS_URL  = process.env.NEXT_PUBLIC_DRIVER_OPS_URL ?? "http://localhost:8006";
+
+// Module-level lazy clients — one per target service so the Axios interceptors
+// (auth header, 401 retry) are shared across all calls to the same base URL.
+const carrierClient   = () => createApiClient(undefined, CARRIER_SVC_URL);
+const driverOpsClient = () => createApiClient(undefined, DRIVER_OPS_URL);
+
 // ── Types ──────────────────────────────────────────────────────────────────────
 // Mirrors services/carrier/src/domain/entities/mod.rs. Backend uses tuple-struct
 // CarrierId newtypes over Uuid which serialize as either bare strings or `{0:
@@ -149,7 +157,7 @@ export const carriersApi = {
    * Use this in the partner portal instead of a hardcoded carrier ID.
    */
   async me(): Promise<Carrier> {
-    const { data } = await createApiClient().get<Carrier>("/v1/carriers/me");
+    const { data } = await carrierClient().get<Carrier>("/v1/carriers/me");
     return data;
   },
 
@@ -162,7 +170,7 @@ export const carriersApi = {
    * Requires `carriers:manage` (admin/tenant_admin token).
    */
   async generateApiKey(carrierId: string): Promise<GenerateApiKeyResult> {
-    const { data } = await createApiClient().post<GenerateApiKeyResult>(
+    const { data } = await carrierClient().post<GenerateApiKeyResult>(
       `/v1/carriers/${carrierId}/api-key`,
     );
     return data;
@@ -170,20 +178,20 @@ export const carriersApi = {
 
   /** Fetch a single carrier's full record including embedded rate_cards. */
   async get(carrierId: string): Promise<Carrier> {
-    const { data } = await createApiClient().get<Carrier>(`/v1/carriers/${carrierId}`);
+    const { data } = await carrierClient().get<Carrier>(`/v1/carriers/${carrierId}`);
     return data;
   },
 
   /** Apply a partial update to the carrier — name/contact/sla/rate_cards.
    *  Server clamps SLA target to [0, 100] and floors max_delivery_days at 1. */
   async update(carrierId: string, body: UpdateCarrierBody): Promise<Carrier> {
-    const { data } = await createApiClient().put<Carrier>(`/v1/carriers/${carrierId}`, body);
+    const { data } = await carrierClient().put<Carrier>(`/v1/carriers/${carrierId}`, body);
     return data;
   },
 
   /** List carriers for the logged-in tenant (ops view). */
   async list(): Promise<Carrier[]> {
-    const { data } = await createApiClient().get<{ carriers: Carrier[] }>("/v1/carriers");
+    const { data } = await carrierClient().get<{ carriers: Carrier[] }>("/v1/carriers");
     return data.carriers ?? [];
   },
 
@@ -193,7 +201,7 @@ export const carriersApi = {
    * server-side.
    */
   async rateShop(q: RateShopQuery): Promise<RateQuote[]> {
-    const { data } = await createApiClient().get<RateShopResponse>("/v1/carriers/rate-shop", {
+    const { data } = await carrierClient().get<RateShopResponse>("/v1/carriers/rate-shop", {
       params: { service_type: q.service_type, weight_kg: q.weight_kg },
     });
     return data.quotes ?? [];
@@ -204,7 +212,7 @@ export const carriersApi = {
    * Backed by `GET /v1/carriers/:id/sla-summary?from=&to=`.
    */
   async slaSummary(carrierId: string, from: string, to: string): Promise<ZoneSlaRow[]> {
-    const { data } = await createApiClient().get<SlaSummaryResponse>(
+    const { data } = await carrierClient().get<SlaSummaryResponse>(
       `/v1/carriers/${carrierId}/sla-summary`,
       { params: { from, to } },
     );
@@ -216,7 +224,7 @@ export const carriersApi = {
    * Backed by `GET /v1/carriers/:id/sla-history?limit=&offset=`.
    */
   async slaHistory(carrierId: string, limit = 20, offset = 0): Promise<SlaHistoryResponse> {
-    const { data } = await createApiClient().get<SlaHistoryResponse>(
+    const { data } = await carrierClient().get<SlaHistoryResponse>(
       `/v1/carriers/${carrierId}/sla-history`,
       { params: { limit, offset } },
     );
@@ -229,7 +237,7 @@ export const carriersApi = {
    * the whole-tenant view (useful for admin-scoped callers).
    */
   async manifest(date: string, carrierId?: string | null): Promise<ManifestResponse> {
-    const { data } = await createApiClient().get<ManifestResponse>("/v1/tasks/manifest", {
+    const { data } = await driverOpsClient().get<ManifestResponse>("/v1/tasks/manifest", {
       params: { date, carrier_id: carrierId ?? undefined },
     });
     return data;

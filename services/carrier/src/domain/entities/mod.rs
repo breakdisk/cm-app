@@ -305,6 +305,7 @@ pub struct ZoneSlaRow {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SizeClass {
+    Scooter,
     Motorcycle,
     Sedan,
     Van,
@@ -319,6 +320,7 @@ pub enum SizeClass {
 impl SizeClass {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::Scooter     => "scooter",
             Self::Motorcycle  => "motorcycle",
             Self::Sedan       => "sedan",
             Self::Van         => "van",
@@ -331,6 +333,7 @@ impl SizeClass {
 
     pub fn from_str(s: &str) -> anyhow::Result<Self> {
         match s {
+            "scooter"     => Ok(Self::Scooter),
             "motorcycle"  => Ok(Self::Motorcycle),
             "sedan"       => Ok(Self::Sedan),
             "van"         => Ok(Self::Van),

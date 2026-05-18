@@ -174,7 +174,7 @@ function ComplianceUploadCard({
     setUploadError(null);
     try {
       const body = new FormData();
-      body.append("document", file);
+      body.append("file", file);
       body.append("doc_type", docType);
       const res = await authFetch(
         `${CARRIER_SVC_URL}/v1/carriers/${carrierId}/compliance-documents`,

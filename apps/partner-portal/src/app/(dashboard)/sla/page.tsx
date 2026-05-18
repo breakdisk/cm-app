@@ -62,14 +62,6 @@ async function fetchTimeseries() {
 /** SLA target per zone — used when the carrier's global SLA pct isn't zone-specific. */
 const DEFAULT_ZONE_TARGET = 90;
 
-const BREACH_REASONS_FALLBACK = [
-  { reason: "Traffic / Road closure", count: 0 },
-  { reason: "Customer unavailable",   count: 0 },
-  { reason: "Wrong address",          count: 0 },
-  { reason: "Vehicle breakdown",      count: 0 },
-  { reason: "Weather",                count: 0 },
-];
-
 async function fetchBreachReasons(
   carrierId: string,
   from: string,
@@ -79,14 +71,14 @@ async function fetchBreachReasons(
     const res = await authFetch(
       `${CARRIER_SVC_URL}/v1/carriers/${carrierId}/breach-reasons?from=${from}T00:00:00Z&to=${to}T23:59:59Z`,
     );
-    if (!res.ok) return BREACH_REASONS_FALLBACK;
+    if (!res.ok) return [];
     const json = await res.json();
     const items = json.data ?? json.reasons ?? [];
-    if (!Array.isArray(items) || items.length === 0) return BREACH_REASONS_FALLBACK;
+    if (!Array.isArray(items)) return [];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return items.map((r: any) => ({ reason: r.reason ?? r.label ?? "Unknown", count: Number(r.count ?? 0) }));
   } catch {
-    return BREACH_REASONS_FALLBACK;
+    return [];
   }
 }
 
@@ -151,7 +143,7 @@ function SLADashboardPageInner() {
   const [carrierName, setCarrierName]     = useState<string | null>(null);
   const [carrierId,   setCarrierId]       = useState<string | null>(null);
 
-  const [breachReasons, setBreachReasons] = useState<Array<{ reason: string; count: number }>>(BREACH_REASONS_FALLBACK);
+  const [breachReasons, setBreachReasons] = useState<Array<{ reason: string; count: number }>>([]);
 
   // Delivery history pagination
   const [history,      setHistory]        = useState<SlaRecord[]>([]);
@@ -389,17 +381,23 @@ function SLADashboardPageInner() {
             </div>
             <Clock size={14} className="text-red-signal" />
           </div>
-          <ResponsiveContainer width="100%" height={160}>
-            <BarChart data={breachReasons} layout="vertical" margin={{ top: 0, right: 20, bottom: 0, left: 0 }}>
-              <CartesianGrid stroke="rgba(255,255,255,0.04)" strokeDasharray="4 4" horizontal={false} />
-              <XAxis type="number" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
-              <YAxis type="category" dataKey="reason" tick={{ fill: "rgba(255,255,255,0.5)", fontSize: 10, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} width={140} />
-              <Tooltip
-                contentStyle={{ background: "rgba(13,20,34,0.95)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, fontFamily: "JetBrains Mono", fontSize: 11 }}
-              />
-              <Bar dataKey="count" fill="#FF3B5C" radius={[0,4,4,0]} fillOpacity={0.8} />
-            </BarChart>
-          </ResponsiveContainer>
+          {breachReasons.length === 0 ? (
+            <div className="flex items-center justify-center h-[160px]">
+              <p className="text-xs font-mono text-white/20">No breaches recorded in this period</p>
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height={160}>
+              <BarChart data={breachReasons} layout="vertical" margin={{ top: 0, right: 20, bottom: 0, left: 0 }}>
+                <CartesianGrid stroke="rgba(255,255,255,0.04)" strokeDasharray="4 4" horizontal={false} />
+                <XAxis type="number" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
+                <YAxis type="category" dataKey="reason" tick={{ fill: "rgba(255,255,255,0.5)", fontSize: 10, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} width={140} />
+                <Tooltip
+                  contentStyle={{ background: "rgba(13,20,34,0.95)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, fontFamily: "JetBrains Mono", fontSize: 11 }}
+                />
+                <Bar dataKey="count" fill="#FF3B5C" radius={[0,4,4,0]} fillOpacity={0.8} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
         </GlassCard>
       </motion.div>
 
