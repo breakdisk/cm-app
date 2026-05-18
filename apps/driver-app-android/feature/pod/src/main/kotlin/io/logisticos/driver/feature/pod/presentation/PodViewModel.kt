@@ -90,7 +90,9 @@ class PodViewModel @Inject constructor(
                 recipientName = recipientName,
                 requiresPhoto = requiresPhoto,
                 requiresSignature = requiresSignature,
-                requiresOtp = requiresOtp,
+                // OTP temporarily disabled — re-enable once Twilio subscription is active.
+                // To re-enable: replace `false` with the `requiresOtp` parameter.
+                requiresOtp = false,
                 isCod = isCod,
                 codAmount = codAmount
             )
