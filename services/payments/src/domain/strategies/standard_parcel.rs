@@ -160,10 +160,15 @@ impl StandardParcelStrategy {
 
         invoice.issue().map_err(|e| AppError::BusinessRule(e.to_string()))?;
 
-        // ── Detect weight overage ─────────────────────────────────────────────
+        // ── Detect weight overage (5% tolerance band) ────────────────────────
+        // Per LogisticOS billing policy: minor measurement variance of ≤5% is
+        // absorbed without surcharge — only genuine misrepresentation triggers
+        // the HELD_FOR_PAYMENT_OVERAGE flow. Above 5%, the surcharge is applied
+        // to the FULL delta (actual − declared), not just the excess over 5%.
         let actual_g   = ctx.actual_weight_grams.unwrap_or(0);
         let declared_g = ctx.declared_weight_grams.unwrap_or(0);
-        let has_overage = actual_g > declared_g && declared_g > 0;
+        let has_overage = declared_g > 0
+            && (actual_g as f64 - declared_g as f64) / declared_g as f64 > 0.05;
 
         let overage_cents = if has_overage {
             let delta_grams = (actual_g - declared_g) as i64;
@@ -288,9 +293,11 @@ impl StandardParcelStrategy {
                 invoice_id: overage_invoice_id,
                 overage_cents,
                 reason: format!(
-                    "Weight mismatch: declared {}g, actual {}g. \
-                     Overage surcharge {} cents must be paid before release.",
-                    declared_g, actual_g, overage_cents
+                    "Weight mismatch exceeds 5% tolerance: declared {}g, actual {}g \
+                     ({:.1}% over). Overage surcharge {} cents must be paid before release.",
+                    declared_g, actual_g,
+                    (actual_g as f64 - declared_g as f64) / declared_g as f64 * 100.0,
+                    overage_cents
                 ),
             });
         }
