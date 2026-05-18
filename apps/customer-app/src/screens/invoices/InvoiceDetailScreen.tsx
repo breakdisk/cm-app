@@ -58,7 +58,9 @@ export function InvoiceDetailScreen() {
   const route      = useRoute<any>();
   const dispatch   = useDispatch<AppDispatch>();
 
-  const invoiceId = route.params?.invoiceId as string;
+  // Support both param names: 'invoiceId' (from InvoicesScreen) and 'id' (from push
+  // deep-link handler in notifications.ts and the linking config "invoices/:id").
+  const invoiceId = (route.params?.invoiceId ?? route.params?.id) as string;
   const detail    = useSelector((s: RootState) => s.invoices.byId[invoiceId]);
   const loading   = useSelector((s: RootState) => s.invoices.loading);
   const error     = useSelector((s: RootState) => s.invoices.error);

@@ -1,7 +1,10 @@
 use async_trait::async_trait;
 use logisticos_types::{CustomerId, InvoiceId, MerchantId, TenantId};
 use uuid::Uuid;
-use crate::domain::entities::{Invoice, CodCollection, CodRemittanceBatch, Wallet, WalletTransaction};
+use crate::domain::entities::{
+    Invoice, CodCollection, CodRemittanceBatch, Wallet, WalletTransaction,
+    DriverLedger,
+};
 
 #[async_trait]
 pub trait InvoiceRepository: Send + Sync {
@@ -22,6 +25,66 @@ pub trait InvoiceRepository: Send + Sync {
         tenant_id:   &TenantId,
         merchant_id: &MerchantId,
     ) -> anyhow::Result<Option<Invoice>>;
+
+    // ── Billing Strategy extensions ───────────────────────────────────────────
+
+    /// Find the first invoice linked to a shipment in the given billing domain.
+    /// Used by strategies as an idempotency guard — if an invoice already exists
+    /// for this shipment+domain, the strategy should return `MilestoneOutcome::NoAction`.
+    async fn find_by_shipment_and_domain(
+        &self,
+        tenant_id:   &TenantId,
+        shipment_id: Uuid,
+        domain:      &str,
+    ) -> anyhow::Result<Option<Invoice>>;
+
+    /// Returns `true` if any invoice for the shipment in this domain is already paid.
+    /// Shorthand guard used by Balikbayan Stage 1 to skip re-issuing after idempotent retry.
+    async fn exists_paid_for_shipment_and_domain(
+        &self,
+        tenant_id:   &TenantId,
+        shipment_id: Uuid,
+        domain:      &str,
+    ) -> anyhow::Result<bool>;
+
+    /// Returns billing clearance state for manifest gating.
+    /// Returns `None` if no invoices exist for the shipment (not Balikbayan domain).
+    /// Returns `Some(BillingClearance)` with `is_cleared = true` when all invoices are Paid.
+    async fn get_billing_clearance(
+        &self,
+        tenant_id:   &TenantId,
+        shipment_id: Uuid,
+    ) -> anyhow::Result<Option<BillingClearance>>;
+
+    /// Upserts an invoice and tags it with a billing domain (e.g. "cod", "balikbayan",
+    /// "standard_parcel") plus freeform workflow metadata stored as JSONB.
+    /// Maps to `billing_domain` and `workflow_metadata` columns added in migration 0011.
+    async fn save_with_domain(
+        &self,
+        invoice:  &Invoice,
+        domain:   &str,
+        metadata: serde_json::Value,
+    ) -> anyhow::Result<()>;
+
+    /// Returns true when any invoice tagged with `domain` already exists for the shipment,
+    /// regardless of payment status. Used as a broad idempotency guard before invoice creation.
+    async fn exists_for_shipment_and_domain(
+        &self,
+        shipment_id: Uuid,
+        domain:      &str,
+    ) -> anyhow::Result<bool>;
+}
+
+/// Manifest gate response — returned by `InvoiceRepository::get_billing_clearance`.
+#[derive(Debug, Clone)]
+pub struct BillingClearance {
+    /// True when all invoices for this shipment are in `Paid` status.
+    pub is_cleared:          bool,
+    /// Invoice IDs that are not yet paid (empty when `is_cleared` is true).
+    pub unpaid_invoice_ids:  Vec<Uuid>,
+    /// Convenience count — equals `unpaid_invoice_ids.len()` but avoids re-traversal.
+    pub unpaid_invoice_count: i64,
+    pub billing_domain:      Option<String>,
 }
 
 #[async_trait]
@@ -196,4 +259,66 @@ pub struct BillingRunRecord {
 pub trait MerchantBillingAccountRepository: Send + Sync {
     async fn find_by_merchant(&self, merchant_id: Uuid) -> anyhow::Result<Option<crate::domain::entities::MerchantBillingAccount>>;
     async fn upsert(&self, account: &crate::domain::entities::MerchantBillingAccount) -> anyhow::Result<()>;
+}
+
+// ── Driver Ledger Repository ──────────────────────────────────────────────────
+
+#[async_trait]
+pub trait DriverLedgerRepository: Send + Sync {
+    /// Find the active ledger for a driver on the given shift.
+    /// Returns `None` if no ledger row exists yet for this (tenant, driver, shift) triple.
+    async fn find_for_shift(
+        &self,
+        tenant_id: &TenantId,
+        driver_id: Uuid,
+        shift_id:  Uuid,
+    ) -> anyhow::Result<Option<DriverLedger>>;
+
+    /// Find the most recent ledger for a driver regardless of shift (useful for end-of-day queries).
+    async fn find_active_for_driver(
+        &self,
+        tenant_id: &TenantId,
+        driver_id: Uuid,
+    ) -> anyhow::Result<Option<DriverLedger>>;
+
+    /// Persist the ledger and all its new entries atomically.
+    ///
+    /// Uses optimistic concurrency: the `version` field is incremented on every write.
+    /// Returns `Err` if the version has already been bumped by a concurrent writer
+    /// (callers must retry from a fresh `find_for_shift`).
+    async fn save(&self, ledger: &DriverLedger) -> anyhow::Result<()>;
+
+    /// Create a new ledger row for (tenant, driver, shift) if one doesn't exist yet.
+    /// Returns the freshly-created (or already-existing) ledger.
+    ///
+    /// Implementation must use `INSERT … ON CONFLICT DO NOTHING` to be idempotent.
+    async fn find_or_create_for_shift(
+        &self,
+        tenant_id: &TenantId,
+        driver_id: Uuid,
+        shift_id:  Uuid,
+    ) -> anyhow::Result<DriverLedger>;
+
+    /// Aggregated summary for the driver cash liability endpoint.
+    async fn cash_liability_summary(
+        &self,
+        tenant_id: &TenantId,
+        driver_id: Uuid,
+        shift_id:  Option<Uuid>,
+    ) -> anyhow::Result<CashLiabilitySummary>;
+}
+
+/// Aggregated driver cash liability for a given driver / shift.
+#[derive(Debug, Clone)]
+pub struct CashLiabilitySummary {
+    pub driver_id:              Uuid,
+    pub shift_id:               Option<Uuid>,
+    /// Total cash collected across all active milestones (positive = owed to platform).
+    pub total_collected_cents:  i64,
+    /// Amount already handed to hub / remitted.
+    pub total_remitted_cents:   i64,
+    /// Net outstanding = collected - remitted (should equal `DriverLedger.balance_cents`).
+    pub net_outstanding_cents:  i64,
+    pub currency:               String,
+    pub reconciliation_status:  String,
 }

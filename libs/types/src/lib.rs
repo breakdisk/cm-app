@@ -107,6 +107,8 @@ pub enum Currency {
     SGD,
     MYR,
     IDR,
+    /// UAE Dirham — used for Balikbayan box UAE→PH corridor deposits and ocean freight.
+    AED,
 }
 
 // ── Address ──────────────────────────────────────────────────

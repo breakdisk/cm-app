@@ -282,35 +282,77 @@ pub enum ChargeType {
     RescheduleFee,
     /// Ad-hoc adjustment — requires reason text.
     ManualAdjustment,
+
+    // ── Track A: Balikbayan box (sea-freight, UAE → PH) ───────────────────────
+    /// Flat AED deposit collected at empty-box delivery (Stage 1).
+    BalikbayanDeposit,
+    /// Flat ocean freight rate by standard box size (Stage 2 gross charge).
+    BalikbayanOceanFreight,
+    /// Negative line item on Stage 2 invoice crediting back the Stage 1 deposit.
+    BalikbayanDepositCredit,
+
+    // ── Track B: Standard Parcel (B2B/B2C prepaid marketplace) ───────────────
+    /// Freight charge triggered at hub inbound scan (not at pickup).
+    HubInboundFreight,
+    /// Auto-generated overage surcharge when hub scale detects a weight mismatch.
+    WeightOverageSurcharge,
+
+    // ── Track C: COD supplement ───────────────────────────────────────────────
+    /// Platform handling fee on cash collected at doorstep (1.5% of COD amount).
+    CodCollectionFee,
 }
 
 impl ChargeType {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::BaseFreight          => "base_freight",
-            Self::WeightSurcharge      => "weight_surcharge",
-            Self::DimensionalSurcharge => "dimensional_surcharge",
-            Self::RemoteAreaSurcharge  => "remote_area_surcharge",
-            Self::FuelSurcharge        => "fuel_surcharge",
-            Self::CodHandlingFee       => "cod_handling_fee",
-            Self::FailedDeliveryFee    => "failed_delivery_fee",
-            Self::ReturnFee            => "return_fee",
-            Self::InsuranceFee         => "insurance_fee",
-            Self::CustomsDuty          => "customs_duty",
-            Self::StorageFee           => "storage_fee",
-            Self::RescheduleFee        => "reschedule_fee",
-            Self::ManualAdjustment     => "manual_adjustment",
+            Self::BaseFreight            => "base_freight",
+            Self::WeightSurcharge        => "weight_surcharge",
+            Self::DimensionalSurcharge   => "dimensional_surcharge",
+            Self::RemoteAreaSurcharge    => "remote_area_surcharge",
+            Self::FuelSurcharge          => "fuel_surcharge",
+            Self::CodHandlingFee         => "cod_handling_fee",
+            Self::FailedDeliveryFee      => "failed_delivery_fee",
+            Self::ReturnFee              => "return_fee",
+            Self::InsuranceFee           => "insurance_fee",
+            Self::CustomsDuty            => "customs_duty",
+            Self::StorageFee             => "storage_fee",
+            Self::RescheduleFee          => "reschedule_fee",
+            Self::ManualAdjustment       => "manual_adjustment",
+            // Track A
+            Self::BalikbayanDeposit      => "balikbayan_deposit",
+            Self::BalikbayanOceanFreight => "balikbayan_ocean_freight",
+            Self::BalikbayanDepositCredit => "balikbayan_deposit_credit",
+            // Track B
+            Self::HubInboundFreight      => "hub_inbound_freight",
+            Self::WeightOverageSurcharge => "weight_overage_surcharge",
+            // Track C
+            Self::CodCollectionFee       => "cod_collection_fee",
         }
     }
 
     /// Whether this charge type requires an AWB reference on the line item.
     pub fn requires_awb(self) -> bool {
-        !matches!(self, Self::FuelSurcharge | Self::ManualAdjustment)
+        !matches!(
+            self,
+            Self::FuelSurcharge
+                | Self::ManualAdjustment
+                | Self::BalikbayanDeposit
+                | Self::BalikbayanOceanFreight
+                | Self::BalikbayanDepositCredit
+                | Self::HubInboundFreight
+                | Self::WeightOverageSurcharge
+                | Self::CodCollectionFee
+        )
     }
 
     /// Whether this charge type can appear on a COD remittance document.
     pub fn is_remittance_charge(self) -> bool {
-        matches!(self, Self::CodHandlingFee)
+        matches!(self, Self::CodHandlingFee | Self::CodCollectionFee)
+    }
+
+    /// Whether this is a credit line (reduces invoice total).
+    pub fn is_credit(self) -> bool {
+        matches!(self, Self::BalikbayanDepositCredit)
     }
 }
 

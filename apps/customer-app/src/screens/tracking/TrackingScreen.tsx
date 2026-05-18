@@ -15,7 +15,7 @@ import { useDispatch, useSelector } from "react-redux";
 import { trackingActions } from "../../store";
 import type { RootState } from "../../store";
 import { useTracking } from "../../hooks/useTracking";
-import { useRoute } from "@react-navigation/native";
+import { useNavigation, useRoute } from "@react-navigation/native";
 import { useNetInfo } from "@react-native-community/netinfo";
 import { getDatabase } from "../../db/sqlite";
 import OfflineIndicator from "../../components/OfflineIndicator";
@@ -75,6 +75,7 @@ const STATUS_ORDER: ShipmentStatus[] = [
 
 export function TrackingScreen() {
   const dispatch    = useDispatch();
+  const navigation  = useNavigation<any>();
   const route = useRoute();
   const { isConnected } = useNetInfo();
   const recentSearches = useSelector((s: RootState) => s.tracking.history);
@@ -92,6 +93,8 @@ export function TrackingScreen() {
   const [feedbackRating, setFeedbackRating] = useState(0);
   const [feedbackComment, setFeedbackComment] = useState("");
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  // Captured after customer taps "I Received My Package" — used to deep-link into the receipt.
+  const [confirmedInvoiceId, setConfirmedInvoiceId] = useState<string | null>(null);
 
   // Use the tracking hook for the current AWB
   const { data: trackingData, loading: hookLoading, error: hookError, refetch } = useTracking(
@@ -188,7 +191,10 @@ export function TrackingScreen() {
     if (!currentAwb) return;
     setConfirmLoading(true);
     try {
-      await trackingApi.confirmReceipt(currentAwb);
+      const response = await trackingApi.confirmReceipt(currentAwb);
+      // Stash the invoice_id so the "View Receipt" CTA can deep-link directly to it.
+      const invoiceId = response.data?.invoice_id ?? null;
+      if (invoiceId) setConfirmedInvoiceId(invoiceId);
       setConfirmModal(false);
       // Update local status optimistically
       setResult(prev => prev ? { ...prev, status: "delivered" } : prev);
@@ -387,6 +393,23 @@ export function TrackingScreen() {
             >
               <Ionicons name="star-outline" size={16} color={AMBER} />
               <Text style={s.feedbackCtaText}>Rate Your Delivery</Text>
+            </Pressable>
+          )}
+
+          {/* View Receipt CTA — shown after delivery.
+              If the customer just confirmed (confirmedInvoiceId set), navigate directly to
+              the receipt detail. Otherwise fall back to the invoices list. */}
+          {displayResult.status === "delivered" && isConnected && (
+            <Pressable
+              onPress={() =>
+                confirmedInvoiceId
+                  ? navigation.navigate("InvoiceDetail", { invoiceId: confirmedInvoiceId })
+                  : navigation.navigate("Invoices")
+              }
+              style={({ pressed }) => [s.receiptCta, { opacity: pressed ? 0.8 : 1 }]}
+            >
+              <Ionicons name="receipt-outline" size={16} color={CYAN} />
+              <Text style={s.receiptCtaText}>View Receipt</Text>
             </Pressable>
           )}
 
@@ -599,6 +622,10 @@ const s = StyleSheet.create({
   // Feedback CTA
   feedbackCta:    { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 12, paddingHorizontal: 20, backgroundColor: AMBER + "12", borderWidth: 1, borderColor: AMBER + "30", borderRadius: 12 },
   feedbackCtaText:{ fontSize: 13, fontWeight: "600", color: AMBER },
+
+  // View Receipt CTA
+  receiptCta:     { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 12, paddingHorizontal: 20, backgroundColor: CYAN + "10", borderWidth: 1, borderColor: CYAN + "30", borderRadius: 12 },
+  receiptCtaText: { fontSize: 13, fontWeight: "600", color: CYAN },
 
   // Modals
   modalOverlay:   { flex: 1, backgroundColor: "rgba(0,0,0,0.85)", justifyContent: "flex-end" },
