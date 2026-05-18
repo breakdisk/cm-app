@@ -18,6 +18,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":core:common"))
     implementation(project(":core:network"))
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
