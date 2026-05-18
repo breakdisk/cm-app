@@ -154,6 +154,7 @@ impl InvoiceService {
                 customer_name:   String::new(),
                 customer_phone:  String::new(),
                 paid_at:         String::new(),
+                billing_domain:  "merchant_periodic".into(),
             },
         );
         self.kafka
@@ -337,6 +338,10 @@ impl InvoiceService {
                 customer_phone:  cmd.customer_phone.clone(),
                 // Delivery date as ISO date string — shown as "Paid on" in receipt.
                 paid_at:         cmd.delivered_on.to_string(),
+                // issue_payment_receipt() is called by Balikbayan Stage 2 and StandardParcel
+                // strategies only — never for COD (CodStrategy has its own emission).
+                // Empty string → engagement sends WhatsApp + email + push (full channel set).
+                billing_domain:  String::new(),
             },
         );
         self.kafka
@@ -441,6 +446,10 @@ impl InvoiceService {
                 customer_name:   String::new(),
                 customer_phone:  String::new(),
                 paid_at:         String::new(),
+                // Resend path: billing_domain is unknown at this point (invoice entity
+                // doesn't cache it). Empty string → engagement uses full channel set,
+                // which is correct since WhatsApp is not duplicate-suppressed on resend.
+                billing_domain:  String::new(),
             },
         );
 

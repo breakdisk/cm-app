@@ -10,8 +10,9 @@ use crate::infrastructure::cache::RedisSequenceSource;
 use crate::infrastructure::db::{
     PgBillingRunRepository, PgCodRemittanceBatchRepository, PgCodRepository,
     PgInvoiceRepository, PgWalletRepository, PgMerchantBillingAccountRepository,
-    PgWithdrawalRequestRepository,
+    PgWithdrawalRequestRepository, PgDriverLedgerRepository,
 };
+use crate::domain::strategies::{BalikbayanStrategy, CodStrategy, StandardParcelStrategy};
 use crate::infrastructure::http::OrderIntakeClient;
 use crate::api::http::{router, AppState};
 use crate::infrastructure::messaging::{PodConsumer, WeightDiscrepancyConsumer};
@@ -78,7 +79,7 @@ pub async fn run() -> anyhow::Result<()> {
     let invoice_service = Arc::new(InvoiceService::new(
         Arc::clone(&invoice_repo) as _,
         Arc::clone(&kafka),
-        sequence_source as _,
+        Arc::clone(&sequence_source) as _,
         Arc::clone(&order_intake_client) as _,
     ));
     let cod_service = Arc::new(CodService::new(
@@ -157,10 +158,37 @@ pub async fn run() -> anyhow::Result<()> {
         }
     });
 
+    // ── Billing strategies (unified billing state machine) ─────────────────────
+    let ledger_repo = Arc::new(PgDriverLedgerRepository::new(pool.clone()));
+
+    let balikbayan_strat = Arc::new(BalikbayanStrategy::new(
+        Arc::clone(&invoice_repo) as _,
+        Arc::clone(&ledger_repo) as _,
+        Arc::clone(&kafka),
+        Arc::clone(&sequence_source) as _,
+    ));
+    let standard_strat = Arc::new(StandardParcelStrategy::new(
+        Arc::clone(&invoice_repo) as _,
+        Arc::clone(&kafka),
+        Arc::clone(&sequence_source) as _,
+        Arc::clone(&order_intake_client) as _,
+    ));
+    let cod_strat = Arc::new(CodStrategy::new(
+        Arc::clone(&invoice_repo) as _,
+        Arc::clone(&cod_repo) as _,
+        Arc::clone(&ledger_repo) as _,
+        Arc::clone(&kafka),
+        Arc::clone(&sequence_source) as _,
+        Arc::clone(&order_intake_client) as _,
+    ));
+
     // Spawn Kafka consumer for pod.captured — runs for the lifetime of the process.
     let pod_consumer = PodConsumer::new(
         &cfg.kafka.brokers,
         &cfg.kafka.group_id,
+        balikbayan_strat,
+        standard_strat,
+        cod_strat,
         Arc::clone(&cod_service),
         Arc::clone(&invoice_service),
     )

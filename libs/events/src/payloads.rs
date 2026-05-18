@@ -151,6 +151,51 @@ pub struct PodCaptured {
     /// COD amount collected at doorstep (0 if non-COD).
     #[serde(default)]
     pub cod_amount_cents:   i64,
+
+    // ── Billing domain routing ─────────────────────────────────────────────────
+    /// Which billing strategy to invoke.
+    /// "balikbayan" | "standard_parcel" | "cod" | "merchant_periodic"
+    /// Absent on pre-strategy events → payments falls back to legacy path.
+    #[serde(default)]
+    pub billing_domain:        Option<String>,
+
+    // ── Track A: Balikbayan box ────────────────────────────────────────────────
+    /// "stage_1_empty_box" — driver delivers empty box and collects deposit.
+    /// "stage_2_full_box"  — driver retrieves full box and collects balance.
+    #[serde(default)]
+    pub balikbayan_stage:      Option<String>,
+    /// Physical sticker / barcode ID on the box (e.g. "BBX-00123").
+    #[serde(default)]
+    pub box_id:                Option<String>,
+    /// "small" | "medium" | "large" | "jumbo" — maps to flat AED rate table.
+    #[serde(default)]
+    pub box_size:              Option<String>,
+    /// Stage 2 only: pre-calculated ocean freight total (AED cents).
+    #[serde(default)]
+    pub ocean_freight_cents:   Option<i64>,
+    /// Stage 2 only: deposit already collected in Stage 1 (AED cents).
+    #[serde(default)]
+    pub deposit_paid_cents:    Option<i64>,
+    /// Stage 2 only: UUID of the Stage 1 invoice (so payments can credit it).
+    #[serde(default)]
+    pub stage_1_invoice_id:    Option<Uuid>,
+
+    // ── Track B: Standard Parcel ───────────────────────────────────────────────
+    /// Hub-measured actual weight in grams (populated on hub_inbound_scanned events).
+    #[serde(default)]
+    pub actual_weight_grams:   Option<u32>,
+    /// Shipper-declared weight at booking (grams).
+    #[serde(default)]
+    pub declared_weight_grams: Option<u32>,
+
+    // ── Common ─────────────────────────────────────────────────────────────────
+    /// Driver's active shift UUID — used to identify which `driver_ledgers` row to debit.
+    #[serde(default)]
+    pub shift_id:              Option<Uuid>,
+    /// AWB tracking number (e.g. "CM-PH1-B0001234X").
+    /// Carried through so engagement can send receipts without querying order-intake.
+    #[serde(default)]
+    pub tracking_number:       String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,11 +234,11 @@ pub struct AwbIssued {
 
 /// Emitted by hub-ops when an individual piece is scanned at a hub.
 /// Consumed by: delivery-experience (translate to customer-visible status),
-/// payments (trigger storage fee timer), analytics.
+/// payments (trigger storage fee timer + StandardParcel hub-inbound billing), analytics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PieceScanned {
     pub piece_awb:    String,   // e.g. "CM-PH1-B0009012Z-002"
-    pub master_awb:   String,   // e.g. "CM-PH1-B0009012Z"
+    pub master_awb:   String,   // e.g. "CM-PH1-B0009012Z" — used as tracking_number by payments
     pub shipment_id:  Uuid,
     pub tenant_id:    Uuid,
     pub hub_id:       Uuid,
@@ -202,6 +247,14 @@ pub struct PieceScanned {
     pub piece_count:  u16,      // total pieces in this shipment
     pub scanned_at:   String,   // ISO-8601
     pub scanned_by:   Uuid,     // user_id of hub operator
+    /// Billing domain — used by payments to route to the correct strategy.
+    /// "standard_parcel" triggers freight invoice issuance at hub inbound.
+    /// Absent on pre-strategy events → no billing triggered from this event.
+    #[serde(default)]
+    pub billing_domain: Option<String>,
+    /// Merchant UUID — forwarded so payments can skip an extra lookup.
+    #[serde(default)]
+    pub merchant_id: Option<Uuid>,
 }
 
 /// Emitted by hub-ops when re-weighing reveals a discrepancy vs declared weight.
@@ -467,4 +520,124 @@ pub struct CarrierAllocated {
     pub promised_by:      String,
     /// "rate_shop" (auto-selected cheapest) | "manual" (operator chose).
     pub method:           String,
+}
+
+// ── Track A — Balikbayan Box Billing Events ───────────────────────────────────
+
+/// Emitted after Track A Stage 1: empty box delivered, flat AED deposit collected.
+/// Consumers: engagement (WhatsApp deposit receipt), carrier (manifest lock monitor).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BalikbayanDepositCollected {
+    pub invoice_id:      Uuid,
+    pub invoice_number:  String,
+    pub shipment_id:     Uuid,
+    pub driver_id:       Uuid,
+    /// Physical sticker ID on the box.
+    pub box_id:          String,
+    pub deposit_cents:   i64,
+    pub currency:        String,
+    pub customer_id:     Uuid,
+    pub customer_name:   String,
+    pub customer_phone:  String,
+    pub tenant_id:       Uuid,
+    pub tracking_number: String,
+    /// ISO-8601 — when cash was physically collected.
+    pub collected_at:    String,
+}
+
+/// Emitted after Track A Stage 2: full box measured, final ocean-freight balance collected.
+/// `manifest_lock_cleared = true` signals carrier/fleet to allow sea-container assignment.
+/// Consumers: engagement (WhatsApp final receipt), carrier (manifest gate clearance).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BalikbayanFinalCollected {
+    pub invoice_id:              Uuid,
+    pub invoice_number:          String,
+    pub stage_1_invoice_id:      Uuid,
+    pub shipment_id:             Uuid,
+    pub driver_id:               Uuid,
+    pub box_id:                  String,
+    /// "small" | "medium" | "large" | "jumbo"
+    pub box_size:                String,
+    pub ocean_freight_cents:     i64,
+    pub deposit_deducted_cents:  i64,
+    pub balance_collected_cents: i64,
+    pub total_invoice_cents:     i64,
+    pub currency:                String,
+    pub customer_id:             Uuid,
+    pub customer_name:           String,
+    pub customer_phone:          String,
+    pub tenant_id:               Uuid,
+    pub tracking_number:         String,
+    /// True once both Stage 1 and Stage 2 invoices are Paid.
+    /// Carrier service reads this to release the manifest lock.
+    pub manifest_lock_cleared:   bool,
+    pub collected_at:            String,
+}
+
+// ── Track B — Standard Parcel Billing Events ─────────────────────────────────
+
+/// Emitted when a standard parcel freight invoice is issued at Hub Inbound (no weight mismatch).
+/// Consumers: engagement (invoice email to merchant), analytics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StandardParcelInvoiced {
+    pub invoice_id:      Uuid,
+    pub invoice_number:  String,
+    pub shipment_id:     Uuid,
+    pub tracking_number: String,
+    pub total_cents:     i64,
+    pub currency:        String,
+    pub tenant_id:       Uuid,
+    pub issued_at:       String,
+}
+
+/// Emitted when hub scale detects a weight/dimension mismatch.
+/// Shipment is HELD — driver cannot release package until merchant pays the overage.
+/// Consumers: driver-ops (mobile lock), engagement (merchant overage notification), carrier.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StandardParcelHeldForOverage {
+    pub freight_invoice_id:      Uuid,
+    pub overage_invoice_id:      Uuid,
+    pub shipment_id:             Uuid,
+    pub tracking_number:         String,
+    pub declared_weight_grams:   u32,
+    pub actual_weight_grams:     u32,
+    pub overage_surcharge_cents: i64,
+    pub base_freight_cents:      i64,
+    pub currency:                String,
+    pub tenant_id:               Uuid,
+    pub held_since:              String,
+}
+
+// ── Driver Ledger Events ──────────────────────────────────────────────────────
+
+/// Emitted after a hub manager executes `ReconcileCash` and the driver's shift ledger
+/// balance reaches zero.
+/// Consumers: engagement (push/SMS to driver), analytics (shift closure audit).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriverCashReconciled {
+    pub ledger_id:              Uuid,
+    pub tenant_id:              Uuid,
+    pub driver_id:              Uuid,
+    pub shift_id:               Option<Uuid>,
+    pub total_collected_cents:  i64,
+    pub total_remitted_cents:   i64,
+    /// Should be 0 after a clean reconciliation.
+    pub final_balance_cents:    i64,
+    pub currency:               String,
+    pub reconciled_by:          Uuid,
+    pub reconciled_at:          String,
+}
+
+/// Emitted when `ReconcileCash` detects a non-zero balance (driver owes more than remitted).
+/// Consumers: ops portal (dispute queue), engagement (alert to ops manager).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriverCashDisputed {
+    pub ledger_id:              Uuid,
+    pub tenant_id:              Uuid,
+    pub driver_id:              Uuid,
+    pub shift_id:               Option<Uuid>,
+    pub outstanding_cents:      i64,
+    pub currency:               String,
+    pub flagged_by:             Uuid,
+    pub flagged_at:             String,
 }

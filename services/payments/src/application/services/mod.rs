@@ -6,7 +6,7 @@ pub mod billing_aggregation_service;
 pub mod withdrawal_service;
 pub mod pdf_renderer;
 
-pub use invoice_service::InvoiceService;
+pub use invoice_service::{InvoiceService, InvoiceSequenceSource};
 pub use cod_service::CodService;
 pub use cod_remittance_service::CodRemittanceService;
 pub use wallet_service::WalletService;

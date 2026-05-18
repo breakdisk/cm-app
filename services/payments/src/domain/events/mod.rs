@@ -1,3 +1,14 @@
+// Re-export shared event payloads from the events lib so strategy implementations
+// can import from one place without depending on logisticos_events directly.
+pub use logisticos_events::payloads::{
+    BalikbayanDepositCollected,
+    BalikbayanFinalCollected,
+    StandardParcelInvoiced,
+    StandardParcelHeldForOverage,
+    DriverCashReconciled,
+    DriverCashDisputed,
+};
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -34,6 +45,14 @@ pub struct InvoiceGenerated {
     /// Empty for periodic merchant invoices.
     #[serde(default)]
     pub paid_at:        String,
+    /// Billing domain that generated this invoice: "cod", "balikbayan",
+    /// "standard_parcel", or empty for periodic merchant invoices.
+    /// The engagement service uses this to suppress duplicate WhatsApp messages:
+    /// COD already sends a WhatsApp via the separate `cod.collected` event
+    /// (template: "cod_receipt"), so `INVOICE_GENERATED` for COD should only
+    /// trigger push + email (not a second WhatsApp).
+    #[serde(default)]
+    pub billing_domain: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

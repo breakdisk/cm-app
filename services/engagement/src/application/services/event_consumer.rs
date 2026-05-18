@@ -127,9 +127,17 @@ pub async fn process_event(
     // For invoice events we resolve (template_id, channels) dynamically here
     // and override the sentinel values from get_mapping().
     let (resolved_template, resolved_channels): (&str, &[&str]) = if is_invoice_event {
-        let recipient_type = data["recipient_type"].as_str().unwrap_or("merchant");
+        let recipient_type  = data["recipient_type"].as_str().unwrap_or("merchant");
+        let billing_domain  = data["billing_domain"].as_str().unwrap_or("");
         if recipient_type == "customer" {
-            ("payment_receipt", &["whatsapp", "email", "push"])
+            // COD deliveries already sent a WhatsApp "cod_receipt" via the
+            // payments.cod.collected event. Suppress the duplicate here — only
+            // deliver push notification + email for the payment receipt.
+            if billing_domain == "cod" {
+                ("payment_receipt", &["email", "push"] as &[&str])
+            } else {
+                ("payment_receipt", &["whatsapp", "email", "push"])
+            }
         } else {
             ("invoice_issued", &["email"])
         }

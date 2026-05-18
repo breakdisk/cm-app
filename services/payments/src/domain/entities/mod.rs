@@ -1,6 +1,7 @@
 pub mod invoice;
 pub mod cod_reconciliation;
 pub mod cod_remittance_batch;
+pub mod driver_ledger;
 pub mod wallet;
 pub mod merchant_billing_account;
 pub mod withdrawal_request;
@@ -11,6 +12,10 @@ pub use invoice::{
 };
 pub use cod_reconciliation::{CodCollection, CodStatus};
 pub use cod_remittance_batch::{CodRemittanceBatch, CodBatchStatus};
+pub use driver_ledger::{
+    DriverLedger, LedgerEntry, LedgerEntryType,
+    LedgerReconciliationStatus, DriverLedgerError,
+};
 pub use wallet::{Wallet, WalletTransaction, TransactionType};
 pub use merchant_billing_account::MerchantBillingAccount;
 pub use withdrawal_request::{WithdrawalRequest, WithdrawalStatus};

@@ -62,6 +62,19 @@ pub const COD_REMITTED:                   &str = "logisticos.payments.cod.remitt
 pub const WALLET_WITHDRAWAL_DISBURSED:    &str = "logisticos.payments.wallet.withdrawal_disbursed";
 pub const WALLET_WITHDRAWAL_REJECTED:     &str = "logisticos.payments.wallet.withdrawal_rejected";
 
+// Track A — Balikbayan box billing events
+pub const BALIKBAYAN_DEPOSIT_COLLECTED:   &str = "logisticos.payments.balikbayan.deposit.collected";
+pub const BALIKBAYAN_FINAL_COLLECTED:     &str = "logisticos.payments.balikbayan.final.collected";
+
+// Track B — Standard Parcel billing events
+pub const STANDARD_PARCEL_INVOICED:       &str = "logisticos.payments.standard_parcel.invoiced";
+pub const STANDARD_PARCEL_HELD_FOR_OVERAGE: &str = "logisticos.payments.standard_parcel.held_for_overage";
+pub const STANDARD_PARCEL_HOLD_RELEASED:  &str = "logisticos.payments.standard_parcel.hold_released";
+
+// Driver ledger events
+pub const DRIVER_CASH_RECONCILED:         &str = "logisticos.payments.driver.cash.reconciled";
+pub const DRIVER_CASH_DISPUTED:           &str = "logisticos.payments.driver.cash.disputed";
+
 // Engagement
 pub const NOTIFICATION_QUEUED:       &str = "logisticos.engagement.notification.queued";
 pub const CAMPAIGN_TRIGGERED:        &str = "logisticos.marketing.campaign.triggered";
@@ -100,6 +113,12 @@ mod tests {
             TASK_ASSIGNED,
             RECEIPT_EMAIL_REQUESTED,
             SUPPORT_TICKET_OPENED, SUPPORT_TICKET_CLOSED,
+            // Track A
+            BALIKBAYAN_DEPOSIT_COLLECTED, BALIKBAYAN_FINAL_COLLECTED,
+            // Track B
+            STANDARD_PARCEL_INVOICED, STANDARD_PARCEL_HELD_FOR_OVERAGE, STANDARD_PARCEL_HOLD_RELEASED,
+            // Driver ledger
+            DRIVER_CASH_RECONCILED, DRIVER_CASH_DISPUTED,
         ];
         for t in topics {
             assert!(t.chars().all(|c: char| c.is_ascii_lowercase() || c == '.' || c == '_'),

@@ -3,6 +3,7 @@ pub mod invoice_pdf;
 pub mod wallet;
 pub mod billing;
 pub mod cod_batches;
+pub mod driver_cash;
 pub mod health;
 pub mod merchant_billing_accounts;
 pub mod partner_commission;
