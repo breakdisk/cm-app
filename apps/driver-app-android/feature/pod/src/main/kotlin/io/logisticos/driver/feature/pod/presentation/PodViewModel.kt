@@ -7,6 +7,7 @@ import io.logisticos.driver.core.database.entity.TaskStatus
 import io.logisticos.driver.core.location.LocationRepository
 import io.logisticos.driver.feature.delivery.data.DeliveryRepository
 import kotlinx.coroutines.flow.MutableStateFlow
+import retrofit2.HttpException
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.filterNotNull
@@ -151,7 +152,7 @@ class PodViewModel @Inject constructor(
                 result.code?.let { confirmOtp(it) }
             }.onFailure { e ->
                 _uiState.update {
-                    it.copy(isSendingOtp = false, otpError = "Failed to send code: ${e.message}")
+                    it.copy(isSendingOtp = false, otpError = "Failed to send code: ${e.httpMessage()}")
                 }
             }
         }
@@ -242,4 +243,28 @@ class PodViewModel @Inject constructor(
             }
         }
     }
+}
+
+/**
+ * Returns a human-readable error message from any Throwable.
+ * For [HttpException] (Retrofit HTTP error responses) the JSON body is
+ * read so we surface the backend's `error.message` instead of just "HTTP 500".
+ * Falls back to [Throwable.message] for all other exception types.
+ */
+private fun Throwable.httpMessage(): String {
+    if (this is HttpException) {
+        val body = response()?.errorBody()?.string()?.trimIndent()
+        if (!body.isNullOrBlank()) {
+            // Try to extract error.message from {"error":{"code":"...","message":"..."}}
+            val msg = runCatching {
+                val json = org.json.JSONObject(body)
+                json.optJSONObject("error")?.optString("message")
+                    ?.takeIf { it.isNotBlank() }
+            }.getOrNull()
+            if (msg != null) return "HTTP ${code()} — $msg"
+            return "HTTP ${code()} — $body"
+        }
+        return "HTTP ${code()}"
+    }
+    return message ?: toString()
 }

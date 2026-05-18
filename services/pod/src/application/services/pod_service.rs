@@ -305,18 +305,30 @@ impl PodService {
 
         self.otp_repo.save(&otp).await.map_err(AppError::Internal)?;
 
-        // Send via SMS — when Twilio is configured the customer receives it.
-        // When NoOpSmsAdapter is active (no Twilio creds) the send() is a no-op and
-        // the driver reads the code from the API response instead.
+        // SMS is best-effort. A Twilio failure (wrong creds, network, rate-limit)
+        // must NOT prevent the OTP from being issued — the driver app displays
+        // data.code as a fallback so the delivery can still be completed.
         let message = format!("Your LogisticOS delivery code is: {code}. Valid for 15 minutes. Do not share.");
-        self.sms.send(&cmd.recipient_phone, &message).await
-            .map_err(AppError::Internal)?;
+        match self.sms.send(&cmd.recipient_phone, &message).await {
+            Ok(()) => {
+                tracing::info!(
+                    shipment_id = %cmd.shipment_id,
+                    phone       = %cmd.recipient_phone,
+                    "OTP dispatched via SMS"
+                );
+            }
+            Err(e) => {
+                // Log at ERROR so it shows up in monitoring, but return 200 so
+                // the driver app can proceed using the code from the response.
+                tracing::error!(
+                    error       = %e,
+                    shipment_id = %cmd.shipment_id,
+                    phone       = %cmd.recipient_phone,
+                    "SMS delivery failed — OTP still valid; code returned in API response"
+                );
+            }
+        }
 
-        tracing::info!(
-            shipment_id = %cmd.shipment_id,
-            phone       = %cmd.recipient_phone,
-            "OTP generated and dispatched"
-        );
         Ok((otp_id, code))
     }
 
