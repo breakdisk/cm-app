@@ -400,6 +400,42 @@ impl InvoiceService {
     /// Re-publish the `invoice.generated` Kafka event so the engagement engine
     /// re-sends the email/SMS receipt.  Only the invoice's customer (or an admin
     /// with BILLING_MANAGE) may request a resend.
+    /// Billing clearance check for a batch of shipment IDs.
+    ///
+    /// Returns one `ShipmentClearance` per requested shipment.
+    /// A shipment is **cleared** when it has no per-shipment invoice in
+    /// `draft` or `issued` status (i.e. no outstanding billing obligation).
+    ///
+    /// Shipments with no per-shipment invoice at all are also considered cleared —
+    /// they are either standard parcels billed in a monthly batch (not per-shipment)
+    /// or they haven't been invoiced yet, which is not a blocking condition.
+    pub async fn check_billing_clearance_batch(
+        &self,
+        shipment_ids: &[uuid::Uuid],
+    ) -> AppResult<Vec<crate::api::http::billing_clearance::ShipmentClearance>> {
+        let unpaid = self.invoice_repo
+            .find_unpaid_by_shipments(shipment_ids)
+            .await
+            .map_err(AppError::Internal)?;
+
+        // Group unpaid invoices by shipment_id.
+        let mut blocked: std::collections::HashMap<uuid::Uuid, Vec<uuid::Uuid>> = std::collections::HashMap::new();
+        for (shipment_id, invoice_id) in unpaid {
+            blocked.entry(shipment_id).or_default().push(invoice_id);
+        }
+
+        let clearances = shipment_ids.iter().map(|sid| {
+            let unpaid_ids = blocked.get(sid).cloned().unwrap_or_default();
+            crate::api::http::billing_clearance::ShipmentClearance {
+                shipment_id:        *sid,
+                is_cleared:         unpaid_ids.is_empty(),
+                unpaid_invoice_ids: unpaid_ids,
+            }
+        }).collect();
+
+        Ok(clearances)
+    }
+
     pub async fn resend(
         &self,
         invoice_id: &InvoiceId,

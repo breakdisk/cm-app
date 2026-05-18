@@ -14,6 +14,8 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import io.logisticos.driver.core.common.ImageCompressor
+import io.logisticos.driver.core.database.dao.LocationBreadcrumbDao
 import io.logisticos.driver.core.database.dao.PodDao
 import io.logisticos.driver.core.database.dao.SyncQueueDao
 import io.logisticos.driver.core.database.entity.SyncAction
@@ -23,13 +25,18 @@ import io.logisticos.driver.core.database.dao.TaskDao
 import io.logisticos.driver.core.network.auth.SessionManager
 import io.logisticos.driver.core.network.service.AttachPhotoRequest
 import io.logisticos.driver.core.network.service.AttachSignatureRequest
+import io.logisticos.driver.core.network.service.BulkLocationRequest
 import io.logisticos.driver.core.network.service.CompleteTaskRequest
 import io.logisticos.driver.core.network.service.DriverOpsApiService
 import io.logisticos.driver.core.network.service.FailTaskRequest
 import io.logisticos.driver.core.network.service.GetUploadUrlRequest
 import io.logisticos.driver.core.network.service.InitiatePodRequest
+import io.logisticos.driver.core.network.service.LocationBreadcrumb
 import io.logisticos.driver.core.network.service.PodApiService
 import io.logisticos.driver.core.network.service.SubmitPodRequest
+import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -51,6 +58,7 @@ class OutboundSyncWorker @AssistedInject constructor(
     private val syncQueueDao: SyncQueueDao,
     private val podDao: PodDao,
     private val taskDao: TaskDao,
+    private val locationDao: LocationBreadcrumbDao,
     private val driverOpsApi: DriverOpsApiService,
     private val podApi: PodApiService,
     private val okHttpClient: OkHttpClient,
@@ -141,16 +149,29 @@ class OutboundSyncWorker @AssistedInject constructor(
                 val podId = initiateResp.data.podId
 
                 // 2. Upload photo via presigned R2 URL if the file is available.
-                //    Runs on IO because OkHttp .execute() is blocking.
+                //    Compress to ≤800 KB JPEG before upload to stay within Cloudflare
+                //    R2 body limits and keep downstream OCR/display snappy.
+                //    Runs on IO because ImageCompressor and OkHttp are both blocking.
                 if (photoFile != null) {
                     val contentType = "image/jpeg"
+
                     val uploadResp = podApi.getUploadUrl(podId, GetUploadUrlRequest(contentType))
                     val presignedUrl = uploadResp.data.uploadUrl
                     val s3Key = uploadResp.data.s3Key
                     val requiredHeaders = uploadResp.data.uploadHeaders
 
                     withContext(Dispatchers.IO) {
+                        // Compress in-place before reading bytes for upload.
+                        // If the file is already ≤800 KB this is still a fast no-op
+                        // (BitmapFactory decode + single-pass compress at quality 85).
+                        ImageCompressor.compressToFile(photoFile)
+
                         val photoBytes = photoFile.readBytes()
+                        android.util.Log.d(
+                            "OutboundSyncWorker",
+                            "Photo compressed: ${photoBytes.size / 1024} KB (limit ${ImageCompressor.MAX_SIZE_BYTES / 1024} KB)"
+                        )
+
                         val reqBuilder = Request.Builder()
                             .url(presignedUrl)
                             .put(photoBytes.toRequestBody(contentType.toMediaType()))
@@ -186,6 +207,40 @@ class OutboundSyncWorker @AssistedInject constructor(
 
                 // 4. Submit POD
                 podApi.submit(podId, SubmitPodRequest(otpCode = pod.otpToken))
+
+                // 4c. Flush offline GPS breadcrumbs accumulated since last sync.
+                //     Runs right after POD submit so chain-of-custody telemetry
+                //     reaches the server before the task is marked complete.
+                //     Non-fatal: a failed flush must never roll back the POD —
+                //     the breadcrumbs remain in the local DB and will be retried
+                //     on the next periodic worker tick.
+                try {
+                    val crumbs = locationDao.getUnsynced()
+                    if (crumbs.isNotEmpty()) {
+                        val bulk = BulkLocationRequest(crumbs.map { c ->
+                            LocationBreadcrumb(
+                                lat        = c.lat,
+                                lng        = c.lng,
+                                accuracyM  = c.accuracy,
+                                speedKmh   = c.speedMps * 3.6f,
+                                heading    = c.bearing,
+                                recordedAt = DateTimeFormatter.ISO_INSTANT
+                                    .format(Instant.ofEpochMilli(c.timestamp)),
+                            )
+                        })
+                        driverOpsApi.bulkUpdateLocation(bulk)
+                        locationDao.markSynced(crumbs.map { it.id })
+                        android.util.Log.d(
+                            "OutboundSyncWorker",
+                            "GPS flush: ${crumbs.size} breadcrumbs sent"
+                        )
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w(
+                        "OutboundSyncWorker",
+                        "GPS breadcrumb flush failed — non-fatal: ${e.message}"
+                    )
+                }
 
                 // 4b. Mark POD as synced now that it's on the server.
                 podDao.markSynced(taskId)

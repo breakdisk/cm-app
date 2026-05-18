@@ -10,11 +10,11 @@ use crate::infrastructure::cache::RedisSequenceSource;
 use crate::infrastructure::db::{
     PgBillingRunRepository, PgCodRemittanceBatchRepository, PgCodRepository,
     PgInvoiceRepository, PgWalletRepository, PgMerchantBillingAccountRepository,
-    PgWithdrawalRequestRepository,
+    PgWithdrawalRequestRepository, PgDriverLedgerRepository,
 };
 use crate::infrastructure::http::OrderIntakeClient;
 use crate::api::http::{router, AppState};
-use crate::infrastructure::messaging::{PodConsumer, WeightDiscrepancyConsumer};
+use crate::infrastructure::messaging::{PodConsumer, WeightDiscrepancyConsumer, PickupCapturedConsumer};
 use logisticos_auth::jwt::JwtService;
 use logisticos_events::producer::KafkaProducer;
 
@@ -67,6 +67,8 @@ pub async fn run() -> anyhow::Result<()> {
         RedisSequenceSource::new(&cfg.redis.url).context("Failed to connect to Redis for sequences")?
     );
     let order_intake_client = Arc::new(OrderIntakeClient::new(&cfg.order_intake.url));
+
+    let driver_ledger_repo = Arc::new(PgDriverLedgerRepository::new(pool.clone()));
 
     let partner_bonus_repo = Arc::new(
         crate::infrastructure::db::partner_bonus_repo::PgPartnerBonusRepo::new(pool.clone())
@@ -178,6 +180,16 @@ pub async fn run() -> anyhow::Result<()> {
     )
     .context("Failed to create WeightDiscrepancyConsumer")?;
     tokio::spawn(async move { weight_consumer.run(weight_shutdown_rx).await });
+
+    // Spawn pickup.captured consumer — debits the driver's cash-flow ledger for
+    // Track A (Balikbayan) pickups so finance can see liability before remittance.
+    let pickup_consumer = PickupCapturedConsumer::new(
+        &cfg.kafka.brokers,
+        &cfg.kafka.group_id,
+        Arc::clone(&driver_ledger_repo) as Arc<dyn crate::domain::repositories::DriverLedgerRepository>,
+    )
+    .context("Failed to create PickupCapturedConsumer")?;
+    tokio::spawn(async move { pickup_consumer.run().await });
 
     let addr = format!("{}:{}", cfg.app.host, cfg.app.port);
     let listener = tokio::net::TcpListener::bind(&addr)

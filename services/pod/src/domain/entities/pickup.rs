@@ -48,6 +48,12 @@ pub struct ProofOfPickup {
     pub barcode_scanned:  bool,
     pub scanned_barcode:  Option<String>,
 
+    /// Service classification for billing routing — carried from the booking.
+    /// "balikbayan" → Track A driver ledger debit; "standard" → Track B weight billing.
+    pub service_code:         String,
+    /// Declared value in cents — populated for Track A (Balikbayan) shipments.
+    pub declared_value_cents: Option<i64>,
+
     /// Hardware clock timestamp from the driver's device at the moment of scan/capture.
     /// Always use this for chain-of-custody audit and SLA calculations.
     /// Pair with `captured_at` (server receipt time) to detect clock drift > 5 minutes.
@@ -78,6 +84,9 @@ impl ProofOfPickup {
         capture_lng:            f64,
         geofence_verified:      bool,
         out_of_bounds_handover: bool,
+        declared_weight_g:      Option<i64>,
+        service_code:           String,
+        declared_value_cents:   Option<i64>,
         device_timestamp:       Option<DateTime<Utc>>,
     ) -> Self {
         let now = Utc::now();
@@ -95,9 +104,11 @@ impl ProofOfPickup {
             photo_s3_key: None,
             photo_size_bytes: None,
             actual_weight_g: None,
-            declared_weight_g: None,
+            declared_weight_g,
             barcode_scanned: false,
             scanned_barcode: None,
+            service_code,
+            declared_value_cents,
             device_timestamp,
             captured_at: now,
             created_at: now,

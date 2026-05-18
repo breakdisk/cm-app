@@ -2,6 +2,7 @@ pub mod invoices;
 pub mod invoice_pdf;
 pub mod wallet;
 pub mod billing;
+pub mod billing_clearance;
 pub mod cod_batches;
 pub mod health;
 pub mod merchant_billing_accounts;
@@ -80,4 +81,7 @@ fn internal_router(_state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/cod/batches",                  post(cod_batches::create_batch))
         .route("/cod/batches/:id/confirm",      post(cod_batches::confirm_batch))
         .route("/cod/balance/:merchant_id",     get(wallet::get_cod_balance_internal))
+        // Billing clearance — called by hub-ops before container departure.
+        // No JWT: Istio mTLS gates caller identity on /v1/internal/*.
+        .route("/billing-clearance",            get(billing_clearance::get_billing_clearance))
 }

@@ -381,7 +381,7 @@ impl PodService {
             );
         }
 
-        let mut pop = ProofOfPickup::new(
+        let pop = ProofOfPickup::new(
             tenant_id.inner(),
             cmd.shipment_id,
             cmd.task_id,
@@ -390,12 +390,11 @@ impl PodService {
             cmd.capture_lng,
             geofence_verified,
             out_of_bounds_handover,
+            cmd.declared_weight_g,
+            cmd.service_code,
+            cmd.declared_value_cents,
             cmd.device_timestamp,
         );
-
-        if let Some(declared_g) = cmd.declared_weight_g {
-            pop.record_weight(0, declared_g); // actual weight recorded at submit
-        }
 
         self.pickup_repo.save(&pop).await.map_err(AppError::Internal)?;
         Ok(pop)
@@ -478,6 +477,9 @@ impl PodService {
             geofence_verified:    pop.geofence_verified,
             out_of_bounds_handover: pop.out_of_bounds_handover,
             barcode_scanned:      pop.barcode_scanned,
+            // Billing routing — "balikbayan" triggers Track A driver ledger debit.
+            service_code:         pop.service_code.clone(),
+            declared_value_cents: pop.declared_value_cents,
             actual_weight_g:      pop.actual_weight_g,
             declared_weight_g:    pop.declared_weight_g,
             weight_overage_ratio: pop.weight_overage_ratio(),

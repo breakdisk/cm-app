@@ -384,6 +384,51 @@ pub struct ReceiptEmailRequested {
     pub customer_name:       String,
 }
 
+/// Emitted by pod service when a driver submits a Proof of Pickup.
+/// Opens the chain of custody. Consumed by:
+///   - payments (driver ledger debit for Track A balikbayan pickups)
+///   - driver-ops (mark task IN_PROGRESS)
+///   - analytics (chain-of-custody audit trail)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PickupCaptured {
+    pub pop_id:             Uuid,
+    pub shipment_id:        Uuid,
+    pub task_id:            Uuid,
+    pub tenant_id:          Uuid,
+    pub driver_id:          Uuid,
+    pub geofence_verified:  bool,
+    /// Soft audit flag — driver was > 50m from pickup address.
+    #[serde(default)]
+    pub out_of_bounds_handover: bool,
+    pub barcode_scanned:    bool,
+    /// Service code from the shipment booking:
+    /// "standard" | "express" | "same_day" | "balikbayan" | "international"
+    /// Payments uses this to select the billing strategy for ledger debit.
+    #[serde(default)]
+    pub service_code:       String,
+    /// Declared cargo value in cents — used for Track A (balikbayan) driver
+    /// custody liability debit. Absent when not provided at booking.
+    #[serde(default)]
+    pub declared_value_cents: Option<i64>,
+    #[serde(default)]
+    pub actual_weight_g:    Option<i64>,
+    #[serde(default)]
+    pub declared_weight_g:  Option<i64>,
+    /// Weight overage ratio (actual−declared)/declared — positive = over declared.
+    #[serde(default)]
+    pub weight_overage_ratio: Option<f64>,
+    #[serde(default)]
+    pub photo_s3_key:       Option<String>,
+    /// Server receipt timestamp (ISO-8601).
+    pub captured_at:        String,
+    /// Driver device clock timestamp (ISO-8601). Use for SLA / chain-of-custody.
+    #[serde(default)]
+    pub device_timestamp:   Option<String>,
+    /// 3-char tenant code for invoice number generation.
+    #[serde(default)]
+    pub tenant_code:        String,
+}
+
 /// Emitted by driver-ops when a driver taps "Go Online" in the app.
 /// Consumed by: dispatch (retry any pending queue items for this tenant).
 #[derive(Debug, Clone, Serialize, Deserialize)]

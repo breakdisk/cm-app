@@ -195,6 +195,27 @@ impl InvoiceRepository for PgInvoiceRepository {
         Ok(row.map(Invoice::from))
     }
 
+    async fn find_unpaid_by_shipments(
+        &self,
+        shipment_ids: &[Uuid],
+    ) -> anyhow::Result<Vec<(Uuid, Uuid)>> {
+        if shipment_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        // Returns (shipment_id, invoice_id) for any per-shipment invoice that is
+        // still outstanding (draft or issued — not yet paid/voided/cancelled).
+        let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
+            "SELECT shipment_id, id
+               FROM payments.invoices
+              WHERE shipment_id = ANY($1)
+                AND status IN ('draft', 'issued')"
+        )
+        .bind(shipment_ids)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     async fn save(&self, inv: &Invoice) -> anyhow::Result<()> {
         let status       = status_str(inv.status);
         let inv_type     = invoice_type_str(inv.invoice_type);

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use logisticos_types::{CustomerId, InvoiceId, MerchantId, TenantId};
 use uuid::Uuid;
-use crate::domain::entities::{Invoice, CodCollection, CodRemittanceBatch, Wallet, WalletTransaction};
+use crate::domain::entities::{Invoice, CodCollection, CodRemittanceBatch, Wallet, WalletTransaction, DriverLedger};
 
 #[async_trait]
 pub trait InvoiceRepository: Send + Sync {
@@ -22,6 +22,17 @@ pub trait InvoiceRepository: Send + Sync {
         tenant_id:   &TenantId,
         merchant_id: &MerchantId,
     ) -> anyhow::Result<Option<Invoice>>;
+
+    /// Returns all invoices that:
+    ///   - Have their `shipment_id` in the provided list, AND
+    ///   - Are in `draft` or `issued` status (i.e., not yet paid/voided).
+    ///
+    /// Used by the billing clearance gate at container departure to identify
+    /// per-shipment invoices that are still outstanding.
+    async fn find_unpaid_by_shipments(
+        &self,
+        shipment_ids: &[Uuid],
+    ) -> anyhow::Result<Vec<(Uuid, Uuid)>>;  // (shipment_id, invoice_id)
 }
 
 #[async_trait]
@@ -196,4 +207,35 @@ pub struct BillingRunRecord {
 pub trait MerchantBillingAccountRepository: Send + Sync {
     async fn find_by_merchant(&self, merchant_id: Uuid) -> anyhow::Result<Option<crate::domain::entities::MerchantBillingAccount>>;
     async fn upsert(&self, account: &crate::domain::entities::MerchantBillingAccount) -> anyhow::Result<()>;
+}
+
+/// Repository for the driver cash-flow ledger.
+///
+/// Invariants the implementation must enforce:
+/// - `find_or_create_for_shift` is idempotent — concurrent Kafka events for
+///   the same driver/shift must converge to the same ledger row.
+/// - `save` increments `version` and enforces optimistic locking to prevent
+///   lost updates when two events arrive simultaneously.
+#[async_trait]
+pub trait DriverLedgerRepository: Send + Sync {
+    /// Returns the most recent open (non-reconciled) ledger for a driver,
+    /// or `None` if no ledger is currently open.
+    async fn find_active_for_driver(
+        &self,
+        tenant_id: &TenantId,
+        driver_id: Uuid,
+    ) -> anyhow::Result<Option<DriverLedger>>;
+
+    /// Returns the ledger for (tenant, driver, shift), creating a fresh one
+    /// if none exists. Idempotent — duplicate Kafka replays must not fork ledgers.
+    async fn find_or_create_for_shift(
+        &self,
+        tenant_id: &TenantId,
+        driver_id: Uuid,
+        shift_id:  Option<Uuid>,
+    ) -> anyhow::Result<DriverLedger>;
+
+    /// Persists the ledger header and all unsaved entries atomically.
+    /// Must increment `version` and enforce optimistic locking.
+    async fn save(&self, ledger: &DriverLedger) -> anyhow::Result<()>;
 }

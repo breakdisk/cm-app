@@ -53,6 +53,26 @@ data class UpdateLocationRequest(
     @SerialName("recorded_at") val recordedAt: String
 )
 
+/**
+ * Single breadcrumb item for bulk GPS flush.
+ * Mirrors the single-location request but allows batching up to 200 samples
+ * accumulated while the driver was offline.
+ */
+@Serializable
+data class LocationBreadcrumb(
+    val lat: Double,
+    val lng: Double,
+    @SerialName("accuracy_m")  val accuracyM: Float? = null,
+    @SerialName("speed_kmh")   val speedKmh: Float? = null,
+    val heading: Float? = null,
+    @SerialName("recorded_at") val recordedAt: String,   // ISO-8601
+)
+
+@Serializable
+data class BulkLocationRequest(
+    val locations: List<LocationBreadcrumb>
+)
+
 @Serializable
 data class RejectAssignmentRequest(
     val reason: String
@@ -87,6 +107,15 @@ interface DriverOpsApiService {
     /** POST /v1/location — update driver GPS position */
     @POST("v1/location")
     suspend fun updateLocation(@Body body: UpdateLocationRequest)
+
+    /**
+     * POST /v1/location/bulk — flush offline GPS breadcrumbs accumulated while
+     * the driver was offline. Called by OutboundSyncWorker on reconnect to
+     * preserve chain-of-custody telemetry for the entire offline window.
+     * Falls back gracefully when the backend hasn't deployed this endpoint yet.
+     */
+    @POST("v1/location/bulk")
+    suspend fun bulkUpdateLocation(@Body body: BulkLocationRequest)
 
     /** POST /v1/drivers/go-online */
     @POST("v1/drivers/go-online")

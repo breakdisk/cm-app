@@ -179,11 +179,141 @@ impl InductionRepository for PgInductionRepository {
 }
 
 // ---------------------------------------------------------------------------
+// Container repository (minimal — find by ID + save departure timestamp)
+// ---------------------------------------------------------------------------
+
+struct PgContainerRepository { pool: sqlx::PgPool }
+
+#[derive(sqlx::FromRow)]
+struct ContainerRow {
+    id:               Uuid,
+    tenant_id:        Uuid,
+    status:           String,
+    departed_at:      Option<chrono::DateTime<chrono::Utc>>,
+    estimated_arrival: Option<chrono::DateTime<chrono::Utc>>,
+    // master_awbs TEXT[] — we use these to look up shipment IDs via inductions.
+    master_awbs:      Vec<String>,
+}
+
+impl PgContainerRepository {
+    async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<ContainerRow>> {
+        let row = sqlx::query_as::<_, ContainerRow>(
+            "SELECT id, tenant_id, status, departed_at, estimated_arrival, master_awbs
+               FROM hub_ops.containers WHERE id = $1"
+        ).bind(id).fetch_optional(&self.pool).await?;
+        Ok(row)
+    }
+
+    /// Returns all shipment IDs for parcels in this container by joining
+    /// through `hub_ops.parcel_inductions` on `tracking_number = master_awb`.
+    async fn shipment_ids_for_container(&self, id: Uuid) -> anyhow::Result<Vec<Uuid>> {
+        let rows: Vec<(Uuid,)> = sqlx::query_as(
+            r#"SELECT DISTINCT i.shipment_id
+               FROM hub_ops.parcel_inductions i
+              WHERE i.tracking_number = ANY(
+                  SELECT unnest(master_awbs) FROM hub_ops.containers WHERE id = $1
+              )"#
+        ).bind(id).fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(|(sid,)| sid).collect())
+    }
+
+    async fn mark_departed(
+        &self,
+        id:  Uuid,
+        eta: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> anyhow::Result<()> {
+        let now = chrono::Utc::now();
+        let affected = sqlx::query(
+            "UPDATE hub_ops.containers
+                SET status = 'in_transit', departed_at = $1, estimated_arrival = $2, updated_at = $3
+              WHERE id = $4 AND status IN ('manifested', 'sealed')"
+        )
+        .bind(now)
+        .bind(eta)
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+
+        if affected == 0 {
+            anyhow::bail!(
+                "Container {} cannot depart: not found or not in manifested/sealed status", id
+            );
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Billing clearance HTTP client
+// ---------------------------------------------------------------------------
+
+/// Calls payments service `GET /v1/internal/billing-clearance?shipment_ids=...`
+/// Returns (all_cleared, blocked_shipment_ids, unpaid_invoice_ids).
+async fn check_billing_clearance(
+    payments_url: &str,
+    shipment_ids: &[Uuid],
+) -> anyhow::Result<(bool, Vec<Uuid>, Vec<Uuid>)> {
+    if payments_url.is_empty() || shipment_ids.is_empty() {
+        return Ok((true, vec![], vec![]));
+    }
+
+    let client = reqwest::Client::new();
+
+    // Build query string: ?shipment_ids=uuid&shipment_ids=uuid...
+    let qs: String = shipment_ids.iter()
+        .map(|id| format!("shipment_ids={id}"))
+        .collect::<Vec<_>>()
+        .join("&");
+
+    let url = format!("{payments_url}/v1/internal/billing-clearance?{qs}");
+
+    let resp = client.get(&url).send().await
+        .map_err(|e| anyhow::anyhow!("Failed to call payments billing-clearance: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        anyhow::bail!("Payments billing-clearance returned HTTP {status}");
+    }
+
+    let body: serde_json::Value = resp.json().await
+        .map_err(|e| anyhow::anyhow!("Failed to parse billing-clearance response: {e}"))?;
+
+    let all_cleared = body["all_cleared"].as_bool().unwrap_or(true);
+
+    let mut blocked_shipments = vec![];
+    let mut unpaid_invoices   = vec![];
+    if let Some(clearances) = body["clearances"].as_array() {
+        for c in clearances {
+            if !c["is_cleared"].as_bool().unwrap_or(true) {
+                if let Some(sid) = c["shipment_id"].as_str().and_then(|s| s.parse().ok()) {
+                    blocked_shipments.push(sid);
+                }
+                if let Some(invoice_ids) = c["unpaid_invoice_ids"].as_array() {
+                    for iid in invoice_ids {
+                        if let Some(iid_str) = iid.as_str().and_then(|s| s.parse().ok()) {
+                            unpaid_invoices.push(iid_str);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok((all_cleared, blocked_shipments, unpaid_invoices))
+}
+
+// ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
-struct AppState { svc: Arc<HubService> }
+struct AppState {
+    svc:          Arc<HubService>,
+    containers:   Arc<PgContainerRepository>,
+    payments_url: String,
+}
 
 // ---------------------------------------------------------------------------
 // HTTP handlers
@@ -195,6 +325,87 @@ async fn create_hub(State(s): State<AppState>, claims: AuthClaims, Json(cmd): Js
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let hub = s.svc.create_hub(&tenant_id, cmd).await?;
     Ok::<_, AppError>((StatusCode::CREATED, Json(hub)))
+}
+
+// ---------------------------------------------------------------------------
+// Container departure handler
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct DepartRequest {
+    #[serde(default)]
+    eta: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// `PUT /v1/containers/:id/depart`
+///
+/// Hard billing clearance gate: if any shipment in the container has an
+/// outstanding (draft or issued) per-shipment invoice in the payments service,
+/// the departure is blocked and HTTP 402 is returned with the unpaid invoice IDs.
+///
+/// If `PAYMENTS__URL` is not configured, the clearance check is skipped and
+/// departure is always allowed (graceful fallback for environments without
+/// payments service).
+async fn depart_container(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(container_id): Path<Uuid>,
+    Json(req): Json<DepartRequest>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+
+    let container = s.containers.find_by_id(container_id).await
+        .map_err(|e| AppError::Internal(e))?
+        .ok_or_else(|| AppError::NotFound { resource: "container", id: container_id.to_string() })?;
+
+    // Billing clearance guard — only applies to sea/air containers where Balikbayan
+    // boxes are loaded (Track A billing). Road containers for last-mile skip this.
+    if !s.payments_url.is_empty() {
+        let shipment_ids = s.containers.shipment_ids_for_container(container_id).await
+            .map_err(|e| AppError::Internal(e))?;
+
+        if !shipment_ids.is_empty() {
+            let (all_cleared, blocked_shipments, unpaid_invoice_ids) =
+                check_billing_clearance(&s.payments_url, &shipment_ids).await
+                    .map_err(|e| AppError::Internal(e))?;
+
+            if !all_cleared {
+                tracing::warn!(
+                    container_id    = %container_id,
+                    blocked_count   = %blocked_shipments.len(),
+                    "Container departure blocked — unpaid invoices outstanding"
+                );
+                return Ok::<_, AppError>((
+                    StatusCode::PAYMENT_REQUIRED,
+                    Json(serde_json::json!({
+                        "error": "BILLING_CLEARANCE_REQUIRED",
+                        "message": "Container cannot depart: some shipments have outstanding invoices.",
+                        "blocked_shipment_ids": blocked_shipments,
+                        "unpaid_invoice_ids":   unpaid_invoice_ids,
+                    })),
+                ));
+            }
+        }
+    }
+
+    // All clear — mark the container as departed.
+    s.containers.mark_departed(container_id, req.eta).await
+        .map_err(|e| AppError::BusinessRule(e.to_string()))?;
+
+    tracing::info!(
+        container_id = %container_id,
+        tenant_id    = %container.tenant_id,
+        "Container departed"
+    );
+
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "container_id": container_id,
+            "status":       "in_transit",
+            "departed_at":  chrono::Utc::now(),
+        })),
+    ))
 }
 
 async fn list_hubs(State(s): State<AppState>, claims: AuthClaims) -> impl IntoResponse {
@@ -258,9 +469,11 @@ pub async fn run() -> anyhow::Result<()> {
     logisticos_common::migrations::run(&pool, "hub_ops", &sqlx::migrate!("./migrations")).await?;
 
     let hub_repo       = Arc::new(PgHubRepository { pool: pool.clone() });
-    let induction_repo = Arc::new(PgInductionRepository { pool });
+    let induction_repo = Arc::new(PgInductionRepository { pool: pool.clone() });
+    let container_repo = Arc::new(PgContainerRepository { pool: pool.clone() });
     let svc = Arc::new(HubService::new(hub_repo, induction_repo));
-    let state = AppState { svc };
+    let payments_url = cfg.payments.url.clone();
+    let state = AppState { svc, containers: container_repo, payments_url };
 
     let jwt_secret = std::env::var("AUTH__JWT_SECRET")
         .context("AUTH__JWT_SECRET env var not set")?;
@@ -273,6 +486,8 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/v1/hubs/induct",       post(induct))
         .route("/v1/hubs/sort",         post(sort))
         .route("/v1/hubs/dispatch/:id", post(dispatch))
+        // Container departure — billing clearance guard before CONTAINER_DEPARTED event.
+        .route("/v1/containers/:id/depart", axum::routing::put(depart_container))
         .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth));
 
     // Observability endpoints — no auth required (scraped by infra, not user-facing).

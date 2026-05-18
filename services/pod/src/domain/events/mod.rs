@@ -62,6 +62,14 @@ pub struct PickupCaptured {
     #[serde(default)]
     pub out_of_bounds_handover: bool,
     pub barcode_scanned:    bool,
+    /// Service classification carried from the booking — "balikbayan" triggers
+    /// Track A driver ledger debit in the payments consumer; "standard" triggers
+    /// Track B weight-based surcharge at hub weigh-in.
+    #[serde(default)]
+    pub service_code:       String,
+    /// Declared value in cents — populated for Track A (Balikbayan) pickups.
+    #[serde(default)]
+    pub declared_value_cents: Option<i64>,
     /// Actual weight in grams as measured at pickup (for Track B overage billing).
     #[serde(default)]
     pub actual_weight_g:    Option<i64>,

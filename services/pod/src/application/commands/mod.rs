@@ -23,6 +23,7 @@ pub struct InitiatePodCommand {
 }
 
 fn default_true() -> bool { true }
+fn default_standard() -> String { "standard".to_owned() }
 
 #[derive(Debug, Deserialize)]
 pub struct AttachSignatureCommand {
@@ -80,6 +81,16 @@ pub struct InitiatePickupCommand {
     /// Hardware clock timestamp from driver device.
     #[serde(default)]
     pub device_timestamp:  Option<DateTime<Utc>>,
+    /// Service code that classifies the shipment for billing routing.
+    /// "balikbayan" → Track A driver ledger debit at pickup.
+    /// "standard"   → Track B weight-based surcharge at hub weigh-in.
+    /// Defaults to "standard" when absent (backward compat).
+    #[serde(default = "default_standard")]
+    pub service_code: String,
+    /// Declared value of the shipment in cents (for insurance / Track A base billing).
+    /// Optional — absent for standard parcels where billing is weight-based.
+    #[serde(default)]
+    pub declared_value_cents: Option<i64>,
 }
 
 /// Driver submits a completed Proof of Pickup.

@@ -32,6 +32,8 @@ struct PopRow {
     declared_weight_g:      Option<i64>,
     barcode_scanned:        bool,
     scanned_barcode:        Option<String>,
+    service_code:           String,
+    declared_value_cents:   Option<i64>,
     device_timestamp:       Option<chrono::DateTime<chrono::Utc>>,
     captured_at:            chrono::DateTime<chrono::Utc>,
     created_at:             chrono::DateTime<chrono::Utc>,
@@ -56,6 +58,8 @@ impl From<PopRow> for ProofOfPickup {
             declared_weight_g:      r.declared_weight_g,
             barcode_scanned:        r.barcode_scanned,
             scanned_barcode:        r.scanned_barcode,
+            service_code:           r.service_code,
+            declared_value_cents:   r.declared_value_cents,
             device_timestamp:       r.device_timestamp,
             captured_at:            r.captured_at,
             created_at:             r.created_at,
@@ -69,6 +73,8 @@ const SELECT_COLS: &str = r#"
     photo_s3_key, photo_size_bytes,
     actual_weight_g, declared_weight_g,
     barcode_scanned, scanned_barcode,
+    COALESCE(service_code, 'standard') AS service_code,
+    declared_value_cents,
     device_timestamp, captured_at, created_at
 "#;
 
@@ -104,8 +110,9 @@ impl PickupRepository for PgPickupRepository {
                     photo_s3_key, photo_size_bytes,
                     actual_weight_g, declared_weight_g,
                     barcode_scanned, scanned_barcode,
+                    service_code, declared_value_cents,
                     device_timestamp, captured_at, created_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
                ON CONFLICT (id) DO UPDATE SET
                    status                 = EXCLUDED.status,
                    photo_s3_key           = EXCLUDED.photo_s3_key,
@@ -115,6 +122,8 @@ impl PickupRepository for PgPickupRepository {
                    barcode_scanned        = EXCLUDED.barcode_scanned,
                    scanned_barcode        = EXCLUDED.scanned_barcode,
                    out_of_bounds_handover = EXCLUDED.out_of_bounds_handover,
+                   service_code           = EXCLUDED.service_code,
+                   declared_value_cents   = EXCLUDED.declared_value_cents,
                    device_timestamp       = EXCLUDED.device_timestamp"#
         )
         .bind(pop.id)
@@ -133,6 +142,8 @@ impl PickupRepository for PgPickupRepository {
         .bind(pop.declared_weight_g)
         .bind(pop.barcode_scanned)
         .bind(&pop.scanned_barcode)
+        .bind(&pop.service_code)
+        .bind(pop.declared_value_cents)
         .bind(pop.device_timestamp)
         .bind(pop.captured_at)
         .bind(pop.created_at)

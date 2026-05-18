@@ -6,6 +6,17 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub redis: RedisConfig,
     pub kafka: KafkaConfig,
+    #[serde(default)]
+    pub payments: PaymentsConfig,
+}
+
+/// Downstream payments service config for billing clearance checks.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct PaymentsConfig {
+    /// Base URL of the payments service (e.g. "http://payments:8080").
+    /// When empty, billing clearance checks are skipped (container departure always passes).
+    #[serde(default)]
+    pub url: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
