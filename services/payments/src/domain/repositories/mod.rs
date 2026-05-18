@@ -271,7 +271,7 @@ pub trait DriverLedgerRepository: Send + Sync {
         &self,
         tenant_id: &TenantId,
         driver_id: Uuid,
-        shift_id:  Uuid,
+        shift_id:  Option<Uuid>,
     ) -> anyhow::Result<Option<DriverLedger>>;
 
     /// Find the most recent ledger for a driver regardless of shift (useful for end-of-day queries).
@@ -296,7 +296,7 @@ pub trait DriverLedgerRepository: Send + Sync {
         &self,
         tenant_id: &TenantId,
         driver_id: Uuid,
-        shift_id:  Uuid,
+        shift_id:  Option<Uuid>,
     ) -> anyhow::Result<DriverLedger>;
 
     /// Aggregated summary for the driver cash liability endpoint.

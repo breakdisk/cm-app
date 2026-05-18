@@ -9,7 +9,7 @@ use logisticos_types::{
 
 use crate::domain::{
     entities::{BillingPeriod, Invoice, InvoiceAdjustment, InvoiceLineItem, InvoiceStatus},
-    repositories::InvoiceRepository,
+    repositories::{BillingClearance, InvoiceRepository},
 };
 
 pub struct PgInvoiceRepository { pool: PgPool }
@@ -239,5 +239,158 @@ impl InvoiceRepository for PgInvoiceRepository {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn find_by_shipment_and_domain(
+        &self,
+        tenant_id:   &TenantId,
+        shipment_id: Uuid,
+        domain:      &str,
+    ) -> anyhow::Result<Option<Invoice>> {
+        let row = sqlx::query_as::<_, InvoiceRow>(
+            &format!(
+                "{SELECT} WHERE tenant_id = $1 \
+                 AND (workflow_metadata->>'shipment_id')::UUID = $2 \
+                 AND billing_domain = $3 \
+                 ORDER BY issued_at DESC LIMIT 1"
+            ),
+        )
+        .bind(tenant_id.inner())
+        .bind(shipment_id)
+        .bind(domain)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(Invoice::from))
+    }
+
+    async fn exists_paid_for_shipment_and_domain(
+        &self,
+        tenant_id:   &TenantId,
+        shipment_id: Uuid,
+        domain:      &str,
+    ) -> anyhow::Result<bool> {
+        let row: (bool,) = sqlx::query_as(
+            "SELECT EXISTS(
+                SELECT 1 FROM payments.invoices
+                WHERE tenant_id = $1
+                  AND (workflow_metadata->>'shipment_id')::UUID = $2
+                  AND billing_domain = $3
+                  AND status = 'paid'
+             )",
+        )
+        .bind(tenant_id.inner())
+        .bind(shipment_id)
+        .bind(domain)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.0)
+    }
+
+    async fn get_billing_clearance(
+        &self,
+        tenant_id:   &TenantId,
+        shipment_id: Uuid,
+    ) -> anyhow::Result<Option<BillingClearance>> {
+        // Query the billing_clearance view created in migration 0011.
+        // unpaid_invoice_ids is a uuid[] array from ARRAY_AGG.
+        #[derive(sqlx::FromRow)]
+        struct ClearanceRow {
+            billing_domain:       Option<String>,
+            is_cleared:           bool,
+            unpaid_invoice_count: i64,
+            unpaid_invoice_ids:   Option<Vec<Uuid>>,
+        }
+
+        let row = sqlx::query_as::<_, ClearanceRow>(
+            "SELECT billing_domain, is_cleared, unpaid_invoice_count, unpaid_invoice_ids
+             FROM payments.billing_clearance
+             WHERE tenant_id = $1 AND shipment_id = $2",
+        )
+        .bind(tenant_id.inner())
+        .bind(shipment_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| BillingClearance {
+            billing_domain:       r.billing_domain,
+            is_cleared:           r.is_cleared,
+            unpaid_invoice_count: r.unpaid_invoice_count,
+            unpaid_invoice_ids:   r.unpaid_invoice_ids.unwrap_or_default(),
+        }))
+    }
+
+    async fn save_with_domain(
+        &self,
+        inv:      &Invoice,
+        domain:   &str,
+        metadata: serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let status       = status_str(inv.status);
+        let inv_type     = invoice_type_str(inv.invoice_type);
+        let currency     = format!("{:?}", inv.currency);
+        let line_items   = serde_json::to_value(&inv.line_items)?;
+        let adjustments  = serde_json::to_value(&inv.adjustments)?;
+        let inv_num      = inv.invoice_number.to_string();
+        let customer_id  = inv.customer_id.as_ref().map(|c| c.inner());
+
+        sqlx::query(
+            r#"INSERT INTO payments.invoices
+                   (id, invoice_number, invoice_type, tenant_id, merchant_id, customer_id,
+                    billing_start, billing_end,
+                    status, line_items, adjustments, currency,
+                    issued_at, due_at, paid_at, created_at, updated_at,
+                    billing_domain, workflow_metadata)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+               ON CONFLICT (id) DO UPDATE SET
+                   status            = EXCLUDED.status,
+                   line_items        = EXCLUDED.line_items,
+                   adjustments       = EXCLUDED.adjustments,
+                   paid_at           = EXCLUDED.paid_at,
+                   customer_id       = EXCLUDED.customer_id,
+                   updated_at        = EXCLUDED.updated_at,
+                   billing_domain    = EXCLUDED.billing_domain,
+                   workflow_metadata = EXCLUDED.workflow_metadata"#,
+        )
+        .bind(inv.id.inner())
+        .bind(&inv_num)
+        .bind(inv_type)
+        .bind(inv.tenant_id.inner())
+        .bind(inv.merchant_id.inner())
+        .bind(customer_id)
+        .bind(inv.billing_period.start)
+        .bind(inv.billing_period.end)
+        .bind(status)
+        .bind(line_items)
+        .bind(adjustments)
+        .bind(&currency)
+        .bind(inv.issued_at)
+        .bind(inv.due_at)
+        .bind(inv.paid_at)
+        .bind(inv.created_at)
+        .bind(inv.updated_at)
+        .bind(domain)
+        .bind(metadata)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn exists_for_shipment_and_domain(
+        &self,
+        shipment_id: Uuid,
+        domain:      &str,
+    ) -> anyhow::Result<bool> {
+        let row: (bool,) = sqlx::query_as(
+            "SELECT EXISTS(
+                SELECT 1 FROM payments.invoices
+                WHERE (workflow_metadata->>'shipment_id')::UUID = $1
+                  AND billing_domain = $2
+             )",
+        )
+        .bind(shipment_id)
+        .bind(domain)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.0)
     }
 }

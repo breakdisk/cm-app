@@ -115,8 +115,7 @@ impl CodStrategy {
             .map_err(AppError::Internal)?;
 
         let currency    = parse_currency(&billing.currency);
-        let merchant_id = billing.merchant_id.map(MerchantId::from_uuid)
-            .unwrap_or_else(|| MerchantId::from_uuid(Uuid::nil()));
+        let merchant_id = MerchantId::from_uuid(billing.merchant_id);
         let today       = Utc::now().date_naive();
 
         // ── 1. Record COD collection (per-shipment cash row) ──────────────────

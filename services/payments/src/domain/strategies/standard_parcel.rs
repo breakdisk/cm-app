@@ -116,10 +116,8 @@ impl StandardParcelStrategy {
             InvoiceType::ShipmentCharges, &ctx.tenant_code, today, seq,
         ).map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
 
-        // merchant_id comes from billing source; fall back to nil if not available.
-        let merchant_id = billing.merchant_id
-            .map(MerchantId::from_uuid)
-            .unwrap_or_else(|| MerchantId::from_uuid(Uuid::nil()));
+        // merchant_id comes from billing source.
+        let merchant_id = MerchantId::from_uuid(billing.merchant_id);
 
         let mut invoice = Invoice::new(
             inv_number,

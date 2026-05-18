@@ -404,7 +404,7 @@ pub async fn reconcile_cash(
             // Fire-and-forget Kafka — reconciliation audit is not blocking
             let kafka = Arc::clone(&state.kafka);
             tokio::spawn(async move {
-                let evt = Event::new_raw("payments", topic, tenant_id.inner(), event_payload);
+                let evt = Event::new("payments", topic, tenant_id.inner(), event_payload);
                 if let Err(e) = kafka.publish_event(topic, &evt).await {
                     tracing::error!(error = %e, "Failed to publish reconciliation event");
                 }
@@ -442,7 +442,7 @@ pub async fn get_billing_clearance(
     {
         Ok(Some(clearance)) => Json(BillingClearanceResponse {
             shipment_id,
-            billing_domain:       Some(clearance.billing_domain),
+            billing_domain:       clearance.billing_domain,
             is_cleared:           clearance.is_cleared,
             unpaid_invoice_count: clearance.unpaid_invoice_count,
             unpaid_invoice_ids:   clearance.unpaid_invoice_ids,
