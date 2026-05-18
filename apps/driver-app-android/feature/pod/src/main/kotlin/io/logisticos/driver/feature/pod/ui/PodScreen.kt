@@ -241,6 +241,7 @@ fun PodScreen(
                 isSendingOtp = state.isSendingOtp,
                 isVerifyingOtp = state.isVerifyingOtp,
                 otpError = state.otpError,
+                dummyOtpCode = state.dummyOtpCode,
                 onSendOtp = viewModel::sendOtpToRecipient,
                 onConfirmOtp = viewModel::confirmOtp
             )
@@ -534,11 +535,16 @@ private fun OtpPodSection(
     isSendingOtp: Boolean,
     isVerifyingOtp: Boolean,
     otpError: String?,
+    /** Non-null in dummy/dev mode — backend returned the code directly (no SMS sent).
+     *  Pre-fills the entry field and is shown as a visible badge for QA purposes. */
+    dummyOtpCode: String?,
     onSendOtp: () -> Unit,
     onConfirmOtp: (String) -> Unit,
 ) {
-    // Local input buffer — reset on each composition instance (one task = one screen).
-    var entered by remember { mutableStateOf("") }
+    // Local input buffer — pre-filled with dummy code when available.
+    var entered by remember { mutableStateOf(dummyOtpCode ?: "") }
+    // Keep in sync if dummyOtpCode arrives after initial composition (race: state update).
+    LaunchedEffect(dummyOtpCode) { if (dummyOtpCode != null) entered = dummyOtpCode }
 
     Column(
         modifier = Modifier
@@ -610,8 +616,18 @@ private fun OtpPodSection(
 
             // ── Step 2: OTP sent — show entry field ───────────────────────────
             else -> {
+                // Dev/dummy mode badge — visible when backend returned code directly.
+                if (dummyOtpCode != null) {
+                    Text(
+                        "Dev mode — code: $dummyOtpCode",
+                        color = Cyan.copy(alpha = 0.75f),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
                 Text(
-                    "Enter the 6-digit code shown on the recipient's phone.",
+                    if (dummyOtpCode != null) "Verifying automatically…"
+                    else "Enter the 6-digit code shown on the recipient's phone.",
                     color = Color.White.copy(alpha = 0.5f),
                     fontSize = 13.sp
                 )

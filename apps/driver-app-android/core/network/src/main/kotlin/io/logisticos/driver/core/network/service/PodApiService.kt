@@ -66,7 +66,11 @@ data class GenerateOtpResponse(
 
 @Serializable
 data class GenerateOtpData(
-    @SerialName("otp_id") val otpId: String
+    @SerialName("otp_id") val otpId: String,
+    /** Present when no SMS adapter is configured (dev/staging dummy mode).
+     *  The app uses this to auto-verify without requiring the driver to
+     *  type a code the recipient never received via SMS. */
+    @SerialName("code") val code: String? = null,
 )
 
 @Serializable

@@ -37,6 +37,11 @@ import java.io.File
 import javax.inject.Inject
 import javax.inject.Named
 
+/** Result of POST /v1/otps/generate. [code] is non-null in dummy/dev mode
+ *  (no Twilio configured) — the app auto-verifies using it so the driver
+ *  can complete the POD flow without a real SMS being delivered. */
+data class OtpGenerateResult(val otpId: String, val code: String?)
+
 class DeliveryRepository @Inject constructor(
     @ApplicationContext private val context: Context,
     private val taskDao: TaskDao,
@@ -298,14 +303,17 @@ class DeliveryRepository @Inject constructor(
     }
 
     /**
-     * Triggers an OTP SMS to the recipient via POST /v1/otps/generate.
-     * Returns the otp_id from the server (stored by the caller for audit if needed).
+     * Triggers an OTP to the recipient via POST /v1/otps/generate.
+     * Returns [OtpGenerateResult] containing the otp_id and, when the server
+     * has no real SMS adapter configured, the plaintext code so the app can
+     * auto-verify without requiring the driver to read a code from an SMS
+     * the recipient never received (dummy / dev mode).
      */
-    suspend fun generateOtp(shipmentId: String, recipientPhone: String): String {
+    suspend fun generateOtp(shipmentId: String, recipientPhone: String): OtpGenerateResult {
         val response = podApi.generateOtp(
             GenerateOtpRequest(shipmentId = shipmentId, recipientPhone = recipientPhone)
         )
-        return response.data.otpId
+        return OtpGenerateResult(otpId = response.data.otpId, code = response.data.code)
     }
 
     /**

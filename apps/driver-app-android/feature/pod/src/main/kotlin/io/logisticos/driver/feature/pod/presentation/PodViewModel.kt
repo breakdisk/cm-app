@@ -38,12 +38,15 @@ data class PodUiState(
     val photoPath: String? = null,
     val signaturePath: String? = null,
     val otpToken: String? = null,
-    /** True after a successful POST /v1/otps/generate — the SMS was dispatched. */
+    /** True after a successful POST /v1/otps/generate — the SMS was dispatched (or dummy mode). */
     val otpSent: Boolean = false,
     val isSendingOtp: Boolean = false,
     val isVerifyingOtp: Boolean = false,
     /** Inline OTP-specific error (send failure, wrong code, expired). */
     val otpError: String? = null,
+    /** Non-null when the backend returned the OTP code directly (no SMS / dev mode).
+     *  Displayed on-screen so the driver can see the code and auto-verification proceeds. */
+    val dummyOtpCode: String? = null,
     val codCollected: Boolean = false,
     val isSubmitting: Boolean = false,
     val isSubmitted: Boolean = false,
@@ -121,8 +124,15 @@ class PodViewModel @Inject constructor(
     fun dismissFailureSheet() { _uiState.update { it.copy(showFailureSheet = false) } }
 
     /**
-     * Calls POST /v1/otps/generate to send an OTP SMS to the recipient.
+     * Calls POST /v1/otps/generate to send an OTP to the recipient.
      * Sets otpSent=true on success so the entry field becomes visible.
+     *
+     * Dummy mode: when the backend returns `code` in the response (no real SMS
+     * adapter configured), the code is stored in [PodUiState.dummyOtpCode] and
+     * shown on-screen, and [confirmOtp] is called automatically so the driver
+     * can proceed without typing anything. This lets POD testing work without
+     * a live Twilio account.
+     *
      * Idempotent — re-clicking "Resend" while a request is in-flight is a no-op.
      */
     fun sendOtpToRecipient() {
@@ -132,8 +142,13 @@ class PodViewModel @Inject constructor(
             _uiState.update { it.copy(isSendingOtp = true, otpError = null) }
             runCatching {
                 repo.generateOtp(state.shipmentId, state.recipientPhone)
-            }.onSuccess {
-                _uiState.update { it.copy(isSendingOtp = false, otpSent = true) }
+            }.onSuccess { result ->
+                _uiState.update {
+                    it.copy(isSendingOtp = false, otpSent = true, dummyOtpCode = result.code)
+                }
+                // Dummy mode: backend returned the code directly — auto-verify so the
+                // driver doesn't need to manually enter a code that was never sent via SMS.
+                result.code?.let { confirmOtp(it) }
             }.onFailure { e ->
                 _uiState.update {
                     it.copy(isSendingOtp = false, otpError = "Failed to send code: ${e.message}")
