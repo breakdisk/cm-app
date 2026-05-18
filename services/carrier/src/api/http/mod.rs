@@ -43,7 +43,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/marketplace/listings",                     get(list_listings).post(create_listing))
         .route("/v1/marketplace/listings/:listing_id",         put(update_listing).delete(delete_listing))
         // Marketplace — bookings
-        .route("/v1/marketplace/bookings",                     get(list_bookings))
+        .route("/v1/marketplace/bookings",                     get(list_bookings).post(create_booking))
         .route("/v1/marketplace/bookings/:booking_id/accept",  post(accept_booking))
         .route("/v1/marketplace/bookings/:booking_id/reject",  post(reject_booking))
         .route("/v1/marketplace/bookings/:booking_id/pickup",  post(record_pickup))
@@ -464,6 +464,23 @@ async fn list_bookings(
         .collect();
     let count = bookings.len();
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"bookings": bookings, "count": count}))))
+}
+
+/// POST /v1/marketplace/bookings
+/// Creates a new booking against an active vehicle listing (merchant/consumer).
+/// Returns the created booking with PII masked (initials only, phone hidden).
+async fn create_booking(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Json(cmd): Json<CreateBookingCommand>,
+) -> impl IntoResponse {
+    use logisticos_types::TenantId;
+    claims.require_permission(permissions::MARKETPLACE_BOOK)?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let booking = state.marketplace_svc
+        .create_booking(tenant_id.inner(), Uuid::nil(), cmd)
+        .await?;
+    Ok::<_, AppError>((StatusCode::CREATED, Json(booking)))
 }
 
 /// POST /v1/marketplace/bookings/:booking_id/accept

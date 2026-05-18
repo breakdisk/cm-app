@@ -68,6 +68,7 @@ pub trait MarketplaceRepository: Send + Sync {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<VehicleListing>>;
+    async fn list_all_active_listings(&self) -> anyhow::Result<Vec<VehicleListing>>;
     async fn update_listing(&self, listing: &VehicleListing) -> anyhow::Result<()>;
     async fn delete_listing(&self, id: Uuid) -> anyhow::Result<bool>;
 

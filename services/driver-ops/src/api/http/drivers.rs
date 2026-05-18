@@ -372,3 +372,43 @@ pub async fn cancel_driver_tasks(
         }
     })))
 }
+
+/// Internal endpoint used by marketplace to check if a partner has any available drivers.
+/// Used by the dead-man's switch to validate listing availability.
+/// Returns: { has_available_drivers: bool, count: i32, last_pinged_at: Option<DateTime> }
+pub async fn check_partner_available_drivers(
+    AuthClaims(claims): AuthClaims,
+    Path(partner_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_permission!(claims, logisticos_auth::rbac::permissions::CARRIERS_READ);
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+
+    // Fetch all drivers for tenant
+    let drivers = state.driver_service.list_by_tenant(&tenant_id).await?;
+
+    // Filter: driver status is Available AND is_active=true AND last_location_at < 5 minutes
+    let now = chrono::Utc::now();
+    let five_min_ago = now - chrono::Duration::minutes(5);
+
+    let available_drivers: Vec<_> = drivers.iter()
+        .filter(|d| {
+            d.status == DriverStatus::Available &&
+            d.is_active &&
+            d.last_location_at.map_or(false, |t| t > five_min_ago)
+        })
+        .collect();
+
+    let has_available = !available_drivers.is_empty();
+    let count = available_drivers.len() as i32;
+    let last_pinged_at = available_drivers.first().and_then(|d| d.last_location_at);
+
+    Ok(Json(serde_json::json!({
+        "data": {
+            "partner_id": partner_id,
+            "has_available_drivers": has_available,
+            "available_count": count,
+            "last_pinged_at": last_pinged_at,
+        }
+    })))
+}
