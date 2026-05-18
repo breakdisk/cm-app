@@ -12,6 +12,8 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.format.DateTimeFormatter
 import javax.inject.Inject
 
 data class PickupUiState(
@@ -71,11 +73,29 @@ class PickupViewModel @Inject constructor(
 
     fun confirmPickup(taskId: String, onDone: () -> Unit) {
         val state = _uiState.value
+        val task  = state.task ?: return
         if (!state.canConfirm) return
+
+        // Capture ISO-8601 device timestamp at the moment the driver taps Confirm.
+        // This is the canonical chain-of-custody event time forwarded to the POP
+        // record and the PickupCaptured Kafka event.
+        val deviceTimestamp = DateTimeFormatter.ISO_INSTANT.format(Instant.now())
+
         viewModelScope.launch {
             _uiState.update { it.copy(isConfirming = true) }
             runCatching {
-                repo.confirmPickup(taskId, state.photoPath)
+                repo.confirmPickup(
+                    taskId          = taskId,
+                    shipmentId      = task.shipmentId,
+                    // Use scannedAwb when a real scan happened; fall back to task AWB
+                    // for auto-confirmed UUID AWBs (repo will also do this, belt+braces).
+                    scannedAwb      = state.scannedAwb.ifBlank { task.awb },
+                    captureLat      = task.lat,
+                    captureLng      = task.lng,
+                    pickupLat       = task.lat,
+                    pickupLng       = task.lng,
+                    deviceTimestamp = deviceTimestamp,
+                )
             }.onSuccess {
                 _uiState.update { it.copy(isConfirming = false, isCompleted = true) }
                 onDone()

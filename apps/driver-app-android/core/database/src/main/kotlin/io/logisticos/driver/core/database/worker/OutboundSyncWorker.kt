@@ -30,9 +30,11 @@ import io.logisticos.driver.core.network.service.CompleteTaskRequest
 import io.logisticos.driver.core.network.service.DriverOpsApiService
 import io.logisticos.driver.core.network.service.FailTaskRequest
 import io.logisticos.driver.core.network.service.GetUploadUrlRequest
+import io.logisticos.driver.core.network.service.InitiatePopRequest
 import io.logisticos.driver.core.network.service.InitiatePodRequest
 import io.logisticos.driver.core.network.service.LocationBreadcrumb
 import io.logisticos.driver.core.network.service.PodApiService
+import io.logisticos.driver.core.network.service.SubmitPopRequest
 import io.logisticos.driver.core.network.service.SubmitPodRequest
 import java.time.Instant
 import java.time.ZoneOffset
@@ -260,6 +262,46 @@ class OutboundSyncWorker @AssistedInject constructor(
                     )
                 )
                 OutboundSyncWorker.kickOnce(applicationContext)
+            }
+
+            // Offline fallback for PickupRepository.confirmPickup() when the inline
+            // POP API call failed (no connectivity at the moment of driver tap).
+            // Calls initiate + submit sequentially; task completion is handled
+            // separately by the TASK_STATUS_UPDATE entry that was also enqueued.
+            SyncAction.POP_SUBMIT -> {
+                val taskId     = payload["taskId"]?.jsonPrimitive?.contentOrNull
+                    ?: run { syncQueueDao.remove(item.id); return }
+                val shipmentId = payload["shipmentId"]?.jsonPrimitive?.contentOrNull
+                    ?: run { syncQueueDao.remove(item.id); return }
+                val scannedBarcode = payload["scannedBarcode"]?.jsonPrimitive?.contentOrNull ?: ""
+                val captureLat = payload["captureLat"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull() ?: 0.0
+                val captureLng = payload["captureLng"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull() ?: 0.0
+                val pickupLat  = payload["pickupLat"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()  ?: captureLat
+                val pickupLng  = payload["pickupLng"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()  ?: captureLng
+                val deviceTs   = payload["deviceTimestamp"]?.jsonPrimitive?.contentOrNull
+
+                val popResp = podApi.initiatePop(
+                    InitiatePopRequest(
+                        shipmentId      = shipmentId,
+                        taskId          = taskId,
+                        captureLat      = captureLat,
+                        captureLng      = captureLng,
+                        pickupLat       = pickupLat,
+                        pickupLng       = pickupLng,
+                        deviceTimestamp = deviceTs,
+                    )
+                )
+                podApi.submitPop(
+                    popResp.data.popId,
+                    SubmitPopRequest(
+                        scannedBarcode  = scannedBarcode,
+                        deviceTimestamp = deviceTs,
+                    )
+                )
+                android.util.Log.d(
+                    "OutboundSyncWorker",
+                    "POP submitted: pop_id=${popResp.data.popId} task=$taskId"
+                )
             }
 
             SyncAction.TASK_COMPLETE -> {

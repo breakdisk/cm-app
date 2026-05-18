@@ -106,6 +106,46 @@ data class AttachPhotoRequest(
     @SerialName("size_bytes")   val sizeBytes: Long
 )
 
+// ─── POP (Proof of Pickup) models ────────────────────────────────────────────
+
+@Serializable
+data class InitiatePopRequest(
+    @SerialName("shipment_id")           val shipmentId: String,
+    @SerialName("task_id")               val taskId: String,
+    @SerialName("capture_lat")           val captureLat: Double,
+    @SerialName("capture_lng")           val captureLng: Double,
+    /** Pickup address coordinates — used for geofence and OUT_OF_BOUNDS_HANDOVER
+     *  calculation on the server. Pass the task's lat/lng here. */
+    @SerialName("pickup_lat")            val pickupLat: Double,
+    @SerialName("pickup_lng")            val pickupLng: Double,
+    /** ISO-8601 UTC timestamp from the driver's device clock. */
+    @SerialName("device_timestamp")      val deviceTimestamp: String? = null,
+    /** "balikbayan" | "standard" — drives billing track selection. */
+    @SerialName("service_code")          val serviceCode: String = "standard",
+    @SerialName("declared_value_cents")  val declaredValueCents: Long? = null,
+)
+
+@Serializable
+data class InitiatePopResponse(
+    val data: InitiatePopData
+)
+
+@Serializable
+data class InitiatePopData(
+    @SerialName("pop_id")                 val popId: String,
+    @SerialName("geofence_verified")      val geofenceVerified: Boolean,
+    @SerialName("out_of_bounds_handover") val outOfBoundsHandover: Boolean = false,
+    val status: String,
+)
+
+@Serializable
+data class SubmitPopRequest(
+    /** Barcode value scanned from the physical AWB label.
+     *  If the AWB was auto-confirmed (no real scan), pass the task AWB string. */
+    @SerialName("scanned_barcode")   val scannedBarcode: String,
+    @SerialName("device_timestamp")  val deviceTimestamp: String? = null,
+)
+
 // ─── API interface ────────────────────────────────────────────────────────────
 
 interface PodApiService {
@@ -148,6 +188,19 @@ interface PodApiService {
         @Path("id") podId: String,
         @Body body: SubmitPodRequest
     ): SubmitPodResponse
+
+    // ── POP endpoints ──────────────────────────────────────────────────────
+
+    /** POST /v1/pops — initiate a Proof of Pickup, returns pop_id + geofence result */
+    @POST("v1/pops")
+    suspend fun initiatePop(@Body body: InitiatePopRequest): InitiatePopResponse
+
+    /** PUT /v1/pops/{id}/submit — finalise POP; publishes pickup.captured Kafka event */
+    @PUT("v1/pops/{id}/submit")
+    suspend fun submitPop(
+        @Path("id") popId: String,
+        @Body body: SubmitPopRequest
+    )
 
     /** POST /v1/otps/generate — send OTP SMS to recipient */
     @POST("v1/otps/generate")
