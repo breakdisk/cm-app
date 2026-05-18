@@ -75,8 +75,8 @@ impl ProxyClient {
         // Customer Data Platform
         } else if path.starts_with("/v1/customers") || path.starts_with("/v1/profiles") {
             Some(&self.services.cdp_url)
-        // Engagement & Notifications
-        } else if path.starts_with("/v1/notifications") || path.starts_with("/v1/engagement") {
+        // Engagement & Notifications (templates are managed by the engagement service)
+        } else if path.starts_with("/v1/notifications") || path.starts_with("/v1/engagement") || path.starts_with("/v1/templates") {
             Some(&self.services.engagement_url)
         // AI Intelligence Layer
         } else if path.starts_with("/v1/ai") || path.starts_with("/v1/agents") {
