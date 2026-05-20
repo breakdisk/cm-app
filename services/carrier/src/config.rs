@@ -2,10 +2,81 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
-    pub app: AppConfig,
+    pub app:      AppConfig,
     pub database: DatabaseConfig,
-    pub redis: RedisConfig,
-    pub kafka: KafkaConfig,
+    pub redis:    RedisConfig,
+    pub kafka:    KafkaConfig,
+    /// Per-carrier API credentials. Each sub-section is optional;
+    /// if absent, that carrier's adapter is not registered at startup.
+    #[serde(default)]
+    pub carriers: CarriersConfig,
+}
+
+/// Top-level carrier credentials container.
+/// Each carrier section maps to env vars:
+///   CARRIERS__DHL__API_KEY, CARRIERS__FEDEX__CLIENT_ID, etc.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct CarriersConfig {
+    pub dhl:    Option<DhlConfig>,
+    pub fedex:  Option<FedexConfig>,
+    pub ups:    Option<UpsConfig>,
+    pub tnt:    Option<TntConfig>,
+    pub dpd:    Option<DpdConfig>,
+    pub aramex: Option<AramexConfig>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct DhlConfig {
+    pub base_url:       String,
+    pub account_number: String,
+    pub api_key:        String,
+    pub api_secret:     String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct FedexConfig {
+    pub base_url:       String,
+    pub client_id:      String,
+    pub client_secret:  String,
+    pub account_number: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct UpsConfig {
+    pub base_url:       String,
+    pub client_id:      String,
+    pub client_secret:  String,
+    pub account_number: String,
+}
+
+/// TNT uses the FedEx OAuth2 infrastructure — configure with a FedEx account
+/// that has TNT international lanes activated.
+#[derive(Debug, Deserialize, Clone)]
+pub struct TntConfig {
+    pub base_url:       String,
+    pub client_id:      String,
+    pub client_secret:  String,
+    pub account_number: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct DpdConfig {
+    pub base_url: String,
+    pub username: String,
+    pub password: String,
+    pub account:  String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct AramexConfig {
+    pub base_url:             String,
+    pub username:             String,
+    pub password:             String,
+    pub version:              String,
+    pub entity:               String,
+    pub account_number:       String,
+    pub account_pin:          String,
+    pub account_country_code: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]

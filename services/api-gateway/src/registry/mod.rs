@@ -120,6 +120,91 @@ pub fn seed_platform_servers(registry: &mut McpRegistry, cfg: &crate::config::Se
         },
         McpServerEntry {
             id: Uuid::new_v4(),
+            name: "Carrier MCP".into(),
+            service: "carrier".into(),
+            endpoint: format!("{}/mcp", cfg.carrier_url),
+            tools: vec![
+                McpTool {
+                    name: "get_carrier_rates".into(),
+                    description: "Shop rates across all configured 3PL carriers (DHL, FedEx, UPS, TNT, DPD, Aramex). Returns quotes sorted by price ascending. Optionally filter by carrier_code or service_type.".into(),
+                    input_schema: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "origin":      { "type": "object", "description": "Pickup address with street1, city, postal_code, country (ISO-3166-1-alpha-2)" },
+                            "destination": { "type": "object", "description": "Delivery address" },
+                            "weight_kg":   { "type": "number" },
+                            "length_cm":   { "type": "number" },
+                            "width_cm":    { "type": "number" },
+                            "height_cm":   { "type": "number" },
+                            "service_type":{ "type": "string", "description": "Optional carrier-specific service code filter" },
+                            "currency":    { "type": "string", "description": "ISO 4217 (default: USD)" },
+                            "carrier_code":{ "type": "string", "enum": ["DHL","FEDEX","UPS","TNT","DPD","ARAMEX"], "description": "Restrict to one carrier (omit to shop all)" }
+                        },
+                        "required": ["origin", "destination", "weight_kg"]
+                    }),
+                },
+                McpTool {
+                    name: "book_carrier_shipment".into(),
+                    description: "Book a shipment with a specific 3PL carrier using a service code from get_carrier_rates. Returns booking_ref, tracking_number, and label_url.".into(),
+                    input_schema: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "carrier_code":          { "type": "string", "enum": ["DHL","FEDEX","UPS","TNT","DPD","ARAMEX"] },
+                            "service_code":          { "type": "string" },
+                            "shipper":               { "type": "object" },
+                            "consignee":             { "type": "object" },
+                            "weight_kg":             { "type": "number" },
+                            "description":           { "type": "string" },
+                            "declared_value_cents":  { "type": "integer" },
+                            "currency":              { "type": "string" },
+                            "reference":             { "type": "string", "description": "Platform AWB" }
+                        },
+                        "required": ["carrier_code", "service_code", "shipper", "consignee", "weight_kg"]
+                    }),
+                },
+                McpTool {
+                    name: "track_carrier_shipment".into(),
+                    description: "Get live tracking events for a tracking number. Specify carrier_code or omit to auto-detect across all configured carriers.".into(),
+                    input_schema: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "tracking_number": { "type": "string" },
+                            "carrier_code":    { "type": "string", "enum": ["DHL","FEDEX","UPS","TNT","DPD","ARAMEX"] }
+                        },
+                        "required": ["tracking_number"]
+                    }),
+                },
+                McpTool {
+                    name: "cancel_carrier_shipment".into(),
+                    description: "Cancel a booked shipment using the booking_ref from book_carrier_shipment. DHL requires manual cancellation via support.".into(),
+                    input_schema: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "carrier_code": { "type": "string", "enum": ["DHL","FEDEX","UPS","TNT","DPD","ARAMEX"] },
+                            "booking_ref":  { "type": "string" }
+                        },
+                        "required": ["carrier_code", "booking_ref"]
+                    }),
+                },
+                McpTool {
+                    name: "get_carrier_label".into(),
+                    description: "Retrieve the shipping label as base64-encoded bytes (PDF/ZPL/PNG) for a booked shipment.".into(),
+                    input_schema: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "carrier_code": { "type": "string", "enum": ["DHL","FEDEX","UPS","TNT","DPD","ARAMEX"] },
+                            "booking_ref":  { "type": "string" },
+                            "format":       { "type": "string", "enum": ["PDF","ZPL","PNG"], "description": "Default: PDF" }
+                        },
+                        "required": ["carrier_code", "booking_ref"]
+                    }),
+                },
+            ],
+            tenant_id: None,
+            is_active: true,
+        },
+        McpServerEntry {
+            id: Uuid::new_v4(),
             name: "Marketing MCP".into(),
             service: "marketing".into(),
             endpoint: format!("{}/mcp", cfg.marketing_url),

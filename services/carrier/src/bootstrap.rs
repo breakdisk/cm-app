@@ -11,6 +11,15 @@ use crate::{
     application::services::{CarrierService, MarketplaceService},
     config::Config,
     infrastructure::{
+        adapters::{
+            AdapterRegistry,
+            dhl::DhlAdapter,
+            fedex::FedexAdapter,
+            ups::UpsAdapter,
+            tnt::TntAdapter,
+            dpd::DpdAdapter,
+            aramex::AramexAdapter,
+        },
         cache::CachedCarrierRepository,
         db::{PgCarrierRepository, PgMarketplaceRepository, PgSlaRecordRepository},
         messaging::{start_delivery_consumer, CarrierPublisher},
@@ -96,6 +105,62 @@ pub async fn run() -> anyhow::Result<()> {
         });
     }
 
+    // Build 3PL adapter registry — only adapters with credentials are registered.
+    let mut registry = AdapterRegistry::new();
+
+    if let Some(c) = &cfg.carriers.dhl {
+        registry.register(Arc::new(DhlAdapter::new(
+            c.base_url.clone(), c.account_number.clone(), c.api_key.clone(), c.api_secret.clone(),
+        )));
+        tracing::info!("DHL adapter registered (base: {})", c.base_url);
+    }
+    if let Some(c) = &cfg.carriers.fedex {
+        registry.register(Arc::new(FedexAdapter::new(
+            c.base_url.clone(), c.client_id.clone(), c.client_secret.clone(), c.account_number.clone(),
+        )));
+        tracing::info!("FedEx adapter registered (base: {})", c.base_url);
+    }
+    if let Some(c) = &cfg.carriers.ups {
+        registry.register(Arc::new(UpsAdapter::new(
+            c.base_url.clone(), c.client_id.clone(), c.client_secret.clone(), c.account_number.clone(),
+        )));
+        tracing::info!("UPS adapter registered (base: {})", c.base_url);
+    }
+    if let Some(c) = &cfg.carriers.tnt {
+        registry.register(Arc::new(TntAdapter::new(
+            c.base_url.clone(), c.client_id.clone(), c.client_secret.clone(), c.account_number.clone(),
+        )));
+        tracing::info!("TNT adapter registered (via FedEx infra, base: {})", c.base_url);
+    }
+    if let Some(c) = &cfg.carriers.dpd {
+        registry.register(Arc::new(DpdAdapter::new(
+            c.base_url.clone(), c.username.clone(), c.password.clone(), c.account.clone(),
+        )));
+        tracing::info!("DPD adapter registered (base: {})", c.base_url);
+    }
+    if let Some(c) = &cfg.carriers.aramex {
+        registry.register(Arc::new(AramexAdapter::new(
+            c.base_url.clone(),
+            c.username.clone(),
+            c.password.clone(),
+            c.version.clone(),
+            c.entity.clone(),
+            c.account_number.clone(),
+            c.account_pin.clone(),
+            c.account_country_code.clone(),
+        )));
+        tracing::info!("Aramex adapter registered (base: {})", c.base_url);
+    }
+
+    let active_codes: Vec<_> = registry.codes().iter().map(|s| s.to_string()).collect();
+    if active_codes.is_empty() {
+        tracing::warn!("No 3PL carrier adapters configured — MCP carrier tools will return NotConfigured errors");
+    } else {
+        tracing::info!(carriers = ?active_codes, "Carrier adapter registry ready");
+    }
+
+    let adapter_registry = Arc::new(registry);
+
     let jwt_secret = std::env::var("AUTH__JWT_SECRET")
         .context("AUTH__JWT_SECRET env var not set")?;
     let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
@@ -104,13 +169,20 @@ pub async fn run() -> anyhow::Result<()> {
     // needs its own Arc handle and `with_state` consumes `state`.
     let carrier_svc_for_grpc = Arc::clone(&carrier_svc);
 
-    let state = AppState { carrier_svc, marketplace_svc, jwt: Arc::clone(&jwt) };
+    let state = AppState {
+        carrier_svc,
+        marketplace_svc,
+        jwt: Arc::clone(&jwt),
+        adapter_registry,
+    };
 
     // Compose the app:
     //   • JWT-protected routes (all /v1/* except webhooks)
+    //   • MCP server routes (/mcp/*) — protected by the same JWT middleware
     //   • Unauthenticated webhook routes (/v1/webhooks/*)
     // Both share AppState; `propagate_request_id` and TraceLayer wrap the whole app.
     let app = http::router()
+        .merge(mcp_router())
         .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth))
         .merge(http::webhook_router())
         .layer(axum::middleware::from_fn(propagate_request_id))
@@ -146,6 +218,61 @@ pub async fn run() -> anyhow::Result<()> {
         .await?;
     Ok(())
 }
+
+// ── MCP router ───────────────────────────────────────────────────────────────
+
+fn mcp_router() -> axum::Router<AppState> {
+    use axum::{
+        extract::State,
+        http::{HeaderMap, StatusCode},
+        response::{IntoResponse, Json},
+        routing::{get, post},
+        Router,
+    };
+    use serde_json::{json, Value};
+    use std::time::Instant;
+    use crate::mcp::{auth, audit, tools};
+
+    async fn tools_list() -> impl IntoResponse {
+        Json(json!({ "tools": tools::list() }))
+    }
+
+    async fn tools_call(
+        State(state): State<Arc<AppState>>,
+        headers: HeaderMap,
+        Json(body): Json<Value>,
+    ) -> impl IntoResponse {
+        let ctx = match auth::extract_context(&headers, &state.jwt) {
+            Ok(c)  => c,
+            Err(e) => return (StatusCode::UNAUTHORIZED, Json(json!({ "error": e }))).into_response(),
+        };
+
+        let tool_name = match body["params"]["name"].as_str() {
+            Some(n) => n.to_string(),
+            None    => return (StatusCode::BAD_REQUEST, Json(json!({ "error": "params.name is required" }))).into_response(),
+        };
+
+        let args  = body["params"]["arguments"].clone();
+        let start = Instant::now();
+
+        match tools::dispatch(&tool_name, &args, &ctx, &state).await {
+            Ok(result) => {
+                audit::audit_tool_call(&ctx, &tool_name, true, start);
+                Json(json!({ "result": result })).into_response()
+            }
+            Err(e) => {
+                audit::audit_tool_call(&ctx, &tool_name, false, start);
+                (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": e }))).into_response()
+            }
+        }
+    }
+
+    Router::new()
+        .route("/mcp/tools",      get(tools_list))
+        .route("/mcp/tools/call", post(tools_call))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 async fn shutdown_signal(shutdown_tx: watch::Sender<bool>) {
     use tokio::signal;
