@@ -2,6 +2,8 @@
 import { useState } from "react";
 import { Plus, Trash2, Download } from "lucide-react";
 import { GlassCard } from "@/components/ui/glass-card";
+import { CurrencySelect } from "@/components/balikbayan/CurrencySelect";
+import { fmtCurrency } from "@/lib/data/currencies";
 import type { SeaCargoRate, BoxSize } from "@/lib/api/balikbayan-rates";
 
 interface Props {
@@ -14,13 +16,13 @@ interface Props {
 function emptyRow(boxSizes: BoxSize[]): SeaCargoRate {
   const prices: Record<string, number> = {};
   boxSizes.forEach((s) => { prices[s.id] = 0; });
-  return { origin: "", transit_days: "", prices };
+  return { origin: "", transit_days: "", currency: "USD", prices };
 }
 
 function exportCsv(rows: SeaCargoRate[], boxSizes: BoxSize[]) {
-  const header = ["origin", "transit_days", ...boxSizes.map((s) => s.id)].join(",");
+  const header = ["origin", "currency", "transit_days", ...boxSizes.map((s) => s.id)].join(",");
   const body   = rows.map((r) =>
-    [`"${r.origin}"`, r.transit_days, ...boxSizes.map((s) => r.prices[s.id] ?? 0)].join(",")
+    [`"${r.origin}"`, r.currency, r.transit_days, ...boxSizes.map((s) => r.prices[s.id] ?? 0)].join(",")
   );
   const blob = new Blob([[header, ...body].join("\n")], { type: "text/csv;charset=utf-8" });
   const url  = URL.createObjectURL(blob);
@@ -28,14 +30,22 @@ function exportCsv(rows: SeaCargoRate[], boxSizes: BoxSize[]) {
   document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
 }
 
+const selectCls = "rounded-md border border-glass-border bg-glass-100 px-2 py-1.5 text-xs text-white outline-none focus:border-cyan-neon/40 w-full";
+
 export function SeaCargoTab({ rows, boxSizes, editing, onChange }: Props) {
   const [search, setSearch] = useState("");
 
-  const colTemplate = `2fr 110px ${boxSizes.map(() => "80px").join(" ")} 36px`;
+  // grid: Origin | Currency | Transit | [size cols] | Delete
+  const colTemplate = `2fr 70px 100px ${boxSizes.map(() => "80px").join(" ")} 36px`;
 
   function patchMeta(idx: number, key: "origin" | "transit_days", value: string) {
     const next = rows.slice();
     next[idx] = { ...next[idx], [key]: value };
+    onChange(next);
+  }
+  function patchCurrency(idx: number, code: string) {
+    const next = rows.slice();
+    next[idx] = { ...next[idx], currency: code };
     onChange(next);
   }
   function patchPrice(idx: number, sizeId: string, value: number) {
@@ -59,7 +69,7 @@ export function SeaCargoTab({ rows, boxSizes, editing, onChange }: Props) {
         <div>
           <h3 className="font-heading text-sm font-semibold text-white">Sea Cargo Rates</h3>
           <p className="text-2xs font-mono text-white/30 mt-0.5">
-            FROM origin country → TO Philippines (Port of Manila / Cebu) · per box · USD
+            FROM origin country → TO Philippines · per box · native origin currency
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -82,11 +92,9 @@ export function SeaCargoTab({ rows, boxSizes, editing, onChange }: Props) {
 
       <div className="overflow-x-auto">
         {/* Column headers */}
-        <div
-          className="grid gap-2 px-5 py-2.5 border-b border-glass-border min-w-max"
-          style={{ gridTemplateColumns: colTemplate }}
-        >
+        <div className="grid gap-2 px-5 py-2.5 border-b border-glass-border min-w-max" style={{ gridTemplateColumns: colTemplate }}>
           <span className="text-2xs font-mono text-white/30 uppercase tracking-wider">Origin Country / City</span>
+          <span className="text-2xs font-mono text-white/30 uppercase tracking-wider text-center">Currency</span>
           <span className="text-2xs font-mono text-white/30 uppercase tracking-wider text-center">Transit</span>
           {boxSizes.map((s) => (
             <span key={s.id} className="text-2xs font-mono text-white/30 uppercase tracking-wider text-center">{s.name}</span>
@@ -95,11 +103,8 @@ export function SeaCargoTab({ rows, boxSizes, editing, onChange }: Props) {
         </div>
 
         {/* Dimensions sub-header */}
-        <div
-          className="grid gap-2 px-5 py-1 border-b border-glass-border/40 bg-glass-100/30 min-w-max"
-          style={{ gridTemplateColumns: colTemplate }}
-        >
-          <span /><span />
+        <div className="grid gap-2 px-5 py-1 border-b border-glass-border/40 bg-glass-100/30 min-w-max" style={{ gridTemplateColumns: colTemplate }}>
+          <span /><span /><span />
           {boxSizes.map((s) => (
             <span key={s.id} className="text-2xs font-mono text-white/20 text-center truncate">{s.dimensions}</span>
           ))}
@@ -128,6 +133,18 @@ export function SeaCargoTab({ rows, boxSizes, editing, onChange }: Props) {
             )}
 
             {editing ? (
+              <CurrencySelect
+                value={r.currency ?? "USD"}
+                onChange={(code) => patchCurrency(idx, code)}
+                className={selectCls}
+              />
+            ) : (
+              <span className="text-2xs font-mono font-bold text-center text-white/50 border border-glass-border/40 rounded px-1 py-0.5 mx-auto">
+                {r.currency ?? "USD"}
+              </span>
+            )}
+
+            {editing ? (
               <input
                 value={r.transit_days}
                 onChange={(e) => patchMeta(idx, "transit_days", e.target.value)}
@@ -151,7 +168,7 @@ export function SeaCargoTab({ rows, boxSizes, editing, onChange }: Props) {
                 />
               ) : (
                 <span key={s.id} className="text-xs font-bold font-mono text-cyan-neon text-center">
-                  ${r.prices[s.id] ?? 0}
+                  {fmtCurrency(r.prices[s.id] ?? 0, r.currency ?? "USD")}
                 </span>
               )
             )}
@@ -180,8 +197,8 @@ export function SeaCargoTab({ rows, boxSizes, editing, onChange }: Props) {
 
       <div className="px-5 py-2 border-t border-glass-border/40">
         <p className="text-2xs font-mono text-white/20">
-          ★ Rates are door-to-port. Philippine local delivery charged separately (PH Delivery Zones tab).
-          Peak season surcharge (Oct–Jan) of 15–20% applies.
+          ★ Each origin row is priced in its native local currency. Rates are door-to-port.
+          PH local delivery charged separately (PH Delivery Zones tab). Peak season surcharge (Oct–Jan) of 15–20% applies.
         </p>
       </div>
     </GlassCard>

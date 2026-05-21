@@ -7,7 +7,7 @@ import { carrierIdOf, type Carrier } from "./carriers";
 export interface BoxSize {
   id: string;           // stable slug, unique per carrier — e.g. "jumbo", "bulilit"
   name: string;         // display label — e.g. "Jumbo", "Bulilit"
-  dimensions: string;   // e.g. '24"×24"×24"'
+  dimensions: string;   // e.g. '61×61×61 cm'
   max_weight_kg: number;
   sort_order: number;
 }
@@ -26,7 +26,8 @@ export interface BoxBundle {
   name: string;
   description: string;
   items: BoxBundleItem[];
-  price_usd: number;
+  currency: string;     // ISO 4217 — currency the bundle price is quoted in
+  price_usd: number;    // amount in `currency` (field name kept for compat)
   valid_for: BundleScope;
   notes: string;
 }
@@ -37,27 +38,30 @@ export interface BoxBundle {
 export interface SeaCargoRate {
   origin: string;
   transit_days: string;
+  currency: string;     // ISO 4217 — native currency for this origin
   prices: Record<string, number>;
 }
 
 export interface AirCargoZone {
   zone_name: string;
   origins: string;
-  rate_per_kg_usd: number;
+  currency: string;     // ISO 4217 — currency rate_per_kg and dist. surcharge are quoted in
+  rate_per_kg_usd: number;   // amount in `currency` (field name kept for compat)
   distance_surcharge_per_km: number;
   transit_days: string;
 }
 
 export interface AirCargoFixed {
-  awb_fee_usd: number;
-  fuel_surcharge_pct: number;
-  thc_usd: number;
-  customs_clearance_usd: number;
+  currency: string;     // ISO 4217 — currency for awb_fee, thc, customs_clearance
+  awb_fee_usd: number;          // amount in `currency`
+  fuel_surcharge_pct: number;   // percentage — currency-agnostic
+  thc_usd: number;              // amount in `currency`
+  customs_clearance_usd: number;// amount in `currency`
   min_weight_kg: number;
   volumetric_divisor: number;
 }
 
-// prices is keyed by BoxSize.id
+// prices is keyed by BoxSize.id — always PHP (Philippine Peso)
 export interface PhDeliveryZone {
   zone_code: string;
   zone_name: string;
@@ -70,10 +74,11 @@ export type VolumetricGroupName = "Manila" | "Luzon" | "Visayas" | "Mindanao" | 
 
 export interface VolumetricGroup {
   group: VolumetricGroupName;
+  currency: string;     // ISO 4217 — currency for base_rate, rate_per_cbm, min_charge
   divisor: number;
-  base_rate_usd: number;
-  rate_per_cbm_usd: number;
-  min_charge_usd: number;
+  base_rate_usd: number;       // amount in `currency`
+  rate_per_cbm_usd: number;    // amount in `currency`
+  min_charge_usd: number;      // amount in `currency`
   surcharge_pct: number;
 }
 
@@ -84,6 +89,7 @@ export interface AddOnService {
   id: string;
   name: string;
   category: AddOnCategory;
+  currency: string;     // ISO 4217 — currency for rate and min_charge (ignored for percent type)
   rate: number;
   rate_type: AddOnRateType;
   min_charge: number;
@@ -98,7 +104,7 @@ export interface BalikbayanRates {
   sea_cargo: SeaCargoRate[];
   air_cargo_zones: AirCargoZone[];
   air_cargo_fixed: AirCargoFixed;
-  ph_delivery_zones: PhDeliveryZone[];
+  ph_delivery_zones: PhDeliveryZone[];  // always PHP
   volumetric_groups: VolumetricGroup[];
   bundles: BoxBundle[];
   addons: AddOnService[];

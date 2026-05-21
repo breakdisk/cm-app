@@ -3,6 +3,8 @@ import { useState } from "react";
 import { Plus, Trash2, Download } from "lucide-react";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
+import { CurrencySelect } from "@/components/balikbayan/CurrencySelect";
+import { fmtCurrency } from "@/lib/data/currencies";
 import type { AddOnService, AddOnCategory, AddOnRateType } from "@/lib/api/balikbayan-rates";
 
 interface Props {
@@ -29,20 +31,21 @@ const CAT_LABELS: Record<AddOnCategory, string> = {
 };
 
 function emptyAddon(): AddOnService {
-  return { id: `addon-${Date.now()}`, name: "", category: "packing", rate: 0, rate_type: "fixed", min_charge: 0, description: "" };
+  return { id: `addon-${Date.now()}`, name: "", category: "packing", currency: "USD", rate: 0, rate_type: "fixed", min_charge: 0, description: "" };
 }
 
 function formatRate(addon: AddOnService): string {
+  const cur = addon.currency ?? "USD";
   if (addon.rate_type === "percent") return `${(addon.rate * 100).toFixed(addon.rate < 0.01 ? 2 : 1)}%`;
-  if (addon.rate_type === "per_kg")  return `$${addon.rate}/kg`;
-  if (addon.rate_type === "per_day") return `$${addon.rate}/day`;
-  return `$${addon.rate}`;
+  if (addon.rate_type === "per_kg")  return `${fmtCurrency(addon.rate, cur)}/kg`;
+  if (addon.rate_type === "per_day") return `${fmtCurrency(addon.rate, cur)}/day`;
+  return fmtCurrency(addon.rate, cur);
 }
 
 function exportCsv(addons: AddOnService[]) {
-  const header = "id,name,category,rate,rate_type,min_charge,description";
+  const header = "id,name,category,currency,rate,rate_type,min_charge,description";
   const rows = addons.map((a) =>
-    [a.id, `"${a.name}"`, a.category, a.rate, a.rate_type, a.min_charge, `"${a.description}"`].join(",")
+    [a.id, `"${a.name}"`, a.category, a.currency ?? "USD", a.rate, a.rate_type, a.min_charge, `"${a.description}"`].join(",")
   );
   const blob = new Blob([[header, ...rows].join("\n")], { type: "text/csv;charset=utf-8" });
   const url  = URL.createObjectURL(blob);
@@ -50,6 +53,8 @@ function exportCsv(addons: AddOnService[]) {
   document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
 }
 
+// grid: Name | Category | Currency | Rate | Rate Type | Min Charge | Description | Delete
+const GRID = "1fr 90px 70px 80px 90px 90px 1fr 36px";
 const inputCls = "rounded-md border border-glass-border bg-glass-100 px-2 py-1.5 text-xs text-white outline-none focus:border-amber-signal/40 w-full";
 
 export function AddOnsTab({ addons, editing, onChange }: Props) {
@@ -71,7 +76,7 @@ export function AddOnsTab({ addons, editing, onChange }: Props) {
         <div>
           <h3 className="font-heading text-sm font-semibold text-white">Add-On Services</h3>
           <p className="text-2xs font-mono text-white/30 mt-0.5">
-            Optional charges added on top of sea or air freight rate · per box unless stated
+            Optional charges added on top of sea or air freight rate · per box unless stated · per-service currency
           </p>
         </div>
         {!editing && (
@@ -101,8 +106,8 @@ export function AddOnsTab({ addons, editing, onChange }: Props) {
       </div>
 
       {/* Column headers */}
-      <div className="grid grid-cols-[1fr_90px_80px_90px_90px_1fr_36px] gap-2 px-5 py-2.5 border-b border-glass-border">
-        {["Name", "Category", "Rate", "Rate Type", "Min Charge", "Description", ""].map((h, i) => (
+      <div className={`grid grid-cols-[${GRID}] gap-2 px-5 py-2.5 border-b border-glass-border`}>
+        {["Name", "Category", "Currency", "Rate", "Rate Type", "Min Charge", "Description", ""].map((h, i) => (
           <span key={i} className="text-2xs font-mono text-white/30 uppercase tracking-wider">{h}</span>
         ))}
       </div>
@@ -113,9 +118,11 @@ export function AddOnsTab({ addons, editing, onChange }: Props) {
 
       {visible.map((a) => {
         const globalIdx = addons.indexOf(a);
+        const cur = a.currency ?? "USD";
         return (
           <div key={a.id}
-            className="grid grid-cols-[1fr_90px_80px_90px_90px_1fr_36px] gap-2 items-center px-5 py-2.5 border-b border-glass-border/40 hover:bg-glass-100/40 transition-colors">
+            className={`grid grid-cols-[${GRID}] gap-2 items-center px-5 py-2.5 border-b border-glass-border/40 hover:bg-glass-100/40 transition-colors`}>
+
             {editing ? (
               <input value={a.name} onChange={(e) => patch(globalIdx, "name", e.target.value)} placeholder="Service name" className={inputCls} />
             ) : (
@@ -123,12 +130,17 @@ export function AddOnsTab({ addons, editing, onChange }: Props) {
             )}
 
             {editing ? (
-              <select value={a.category} onChange={(e) => patch(globalIdx, "category", e.target.value)}
-                className={inputCls}>
+              <select value={a.category} onChange={(e) => patch(globalIdx, "category", e.target.value)} className={inputCls}>
                 {CATEGORIES.map((c) => <option key={c} value={c} style={{ background: "#0d1422" }}>{CAT_LABELS[c]}</option>)}
               </select>
             ) : (
               <NeonBadge variant={CAT_BADGE[a.category]}>{CAT_LABELS[a.category]}</NeonBadge>
+            )}
+
+            {editing ? (
+              <CurrencySelect value={cur} onChange={(code) => patch(globalIdx, "currency", code)} className={inputCls} />
+            ) : (
+              <span className="text-2xs font-mono font-bold text-white/50 border border-glass-border/40 rounded px-1 py-0.5">{cur}</span>
             )}
 
             {editing ? (
@@ -140,8 +152,7 @@ export function AddOnsTab({ addons, editing, onChange }: Props) {
             )}
 
             {editing ? (
-              <select value={a.rate_type} onChange={(e) => patch(globalIdx, "rate_type", e.target.value)}
-                className={inputCls}>
+              <select value={a.rate_type} onChange={(e) => patch(globalIdx, "rate_type", e.target.value)} className={inputCls}>
                 {RATE_TYPES.map((t) => <option key={t} value={t} style={{ background: "#0d1422" }}>{t}</option>)}
               </select>
             ) : (
@@ -153,7 +164,9 @@ export function AddOnsTab({ addons, editing, onChange }: Props) {
                 onChange={(e) => patch(globalIdx, "min_charge", parseFloat(e.target.value || "0"))}
                 className={inputCls} />
             ) : (
-              <span className="text-xs font-mono text-white/40">{a.min_charge > 0 ? `$${a.min_charge} min` : "—"}</span>
+              <span className="text-xs font-mono text-white/40">
+                {a.min_charge > 0 ? `${fmtCurrency(a.min_charge, cur)} min` : "—"}
+              </span>
             )}
 
             {editing ? (

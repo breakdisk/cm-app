@@ -46,7 +46,7 @@ function exportCsv(zones: PhDeliveryZone[], boxSizes: BoxSize[]) {
 export function PhDeliveryTab({ zones, boxSizes, editing, onChange }: Props) {
   const [search, setSearch] = useState("");
 
-  const colTemplate = `80px 160px 1fr ${boxSizes.map(() => "80px").join(" ")} 90px 36px`;
+  const colTemplate = `80px 160px 1fr ${boxSizes.map(() => "90px").join(" ")} 90px 36px`;
 
   function patchMeta(idx: number, key: "zone_code" | "zone_name" | "coverage" | "transit_days", value: string) {
     const next = zones.slice(); next[idx] = { ...next[idx], [key]: value }; onChange(next);
@@ -80,7 +80,7 @@ export function PhDeliveryTab({ zones, boxSizes, editing, onChange }: Props) {
         <div>
           <h3 className="font-heading text-sm font-semibold text-white">Philippine Local Delivery Zones</h3>
           <p className="text-2xs font-mono text-white/30 mt-0.5">
-            From port of Manila / Cebu → to recipient's province · per box · USD · added on top of sea/air freight
+            From port of Manila / Cebu → to recipient's province · always <span className="text-green-signal font-bold">₱ PHP</span> · added on top of sea/air freight
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -139,11 +139,13 @@ export function PhDeliveryTab({ zones, boxSizes, editing, onChange }: Props) {
                   )}
                   {boxSizes.map((s) =>
                     editing ? (
-                      <input key={s.id} type="number" min={0} step={1} value={z.prices[s.id] ?? 0}
+                      <input key={s.id} type="number" min={0} step={50} value={z.prices[s.id] ?? 0}
                         onChange={(e) => patchPrice(globalIdx, s.id, parseFloat(e.target.value || "0"))}
                         className={inputCls + " text-center"} />
                     ) : (
-                      <span key={s.id} className="text-xs font-bold font-mono text-green-signal text-center">${z.prices[s.id] ?? 0}</span>
+                      <span key={s.id} className="text-xs font-bold font-mono text-green-signal text-center">
+                        ₱{(z.prices[s.id] ?? 0).toLocaleString()}
+                      </span>
                     )
                   )}
                   {editing ? (
@@ -173,7 +175,7 @@ export function PhDeliveryTab({ zones, boxSizes, editing, onChange }: Props) {
 
       <div className="px-5 py-2 border-t border-glass-border/40">
         <p className="text-2xs font-mono text-white/20">
-          ★ Transit days start from port arrival — add sea or air transit for total door-to-door time.
+          ★ PH local delivery is always charged in Philippine Peso (₱). Transit days start from port arrival.
           BARMM zones may require additional security clearance. Island deliveries subject to vessel schedule.
         </p>
       </div>
