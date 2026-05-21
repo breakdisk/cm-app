@@ -17,6 +17,8 @@ import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { GitBranch, RefreshCw, Calculator, Download, Pencil, Plus, Trash2, Save, X } from "lucide-react";
+import Link from "next/link";
+import { Package2 } from "lucide-react";
 import {
   carriersApi, carrierIdOf, fmtPhp,
   type Carrier, type RateCard, type RateQuote,
@@ -382,6 +384,32 @@ export default function RateCardsPage() {
             ))
           )}
         </GlassCard>
+      </motion.div>
+
+      {/* Balikbayan Box rates entry point */}
+      <motion.div variants={variants.fadeInUp}>
+        <Link href="/rates/balikbayan" className="block group">
+          <GlassCard glow="cyan" accent className="cursor-pointer">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-cyan-neon/30 bg-cyan-neon/10 group-hover:bg-cyan-neon/20 transition-colors">
+                  <Package2 size={20} className="text-cyan-neon" />
+                </div>
+                <div>
+                  <h2 className="font-heading text-sm font-semibold text-white group-hover:text-cyan-neon transition-colors">
+                    Balikbayan Box Rate Cards
+                  </h2>
+                  <p className="text-2xs font-mono text-white/40 mt-0.5">
+                    Sea cargo · Air cargo · PH delivery zones · Volumetric pricing · Add-ons
+                  </p>
+                </div>
+              </div>
+              <span className="text-xs font-mono text-cyan-neon/60 group-hover:text-cyan-neon transition-colors">
+                View →
+              </span>
+            </div>
+          </GlassCard>
+        </Link>
       </motion.div>
 
       {/* Rate-shop calculator */}
