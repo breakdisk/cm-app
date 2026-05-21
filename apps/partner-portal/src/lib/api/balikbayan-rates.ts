@@ -2,15 +2,42 @@
 import { createApiClient } from "./client";
 import { carrierIdOf, type Carrier } from "./carriers";
 
-// ── Domain types ───────────────────────────────────────────────────────────────
+// ── Box size config ────────────────────────────────────────────────────────────
 
+export interface BoxSize {
+  id: string;           // stable slug, unique per carrier — e.g. "jumbo", "bulilit"
+  name: string;         // display label — e.g. "Jumbo", "Bulilit"
+  dimensions: string;   // e.g. '24"×24"×24"'
+  max_weight_kg: number;
+  sort_order: number;
+}
+
+// ── Bundle config ──────────────────────────────────────────────────────────────
+
+export interface BoxBundleItem {
+  size_id: string;
+  quantity: number;
+}
+
+export type BundleScope = "sea" | "air" | "both";
+
+export interface BoxBundle {
+  id: string;
+  name: string;
+  description: string;
+  items: BoxBundleItem[];
+  price_usd: number;
+  valid_for: BundleScope;
+  notes: string;
+}
+
+// ── Rate table types ───────────────────────────────────────────────────────────
+
+// prices is keyed by BoxSize.id — columns are fully dynamic, driven by box_sizes
 export interface SeaCargoRate {
   origin: string;
   transit_days: string;
-  jumbo_usd: number;
-  xl_usd: number;
-  large_usd: number;
-  small_usd: number;
+  prices: Record<string, number>;
 }
 
 export interface AirCargoZone {
@@ -30,14 +57,12 @@ export interface AirCargoFixed {
   volumetric_divisor: number;
 }
 
+// prices is keyed by BoxSize.id
 export interface PhDeliveryZone {
   zone_code: string;
   zone_name: string;
   coverage: string;
-  jumbo_usd: number;
-  xl_usd: number;
-  large_usd: number;
-  small_usd: number;
+  prices: Record<string, number>;
   transit_days: string;
 }
 
@@ -65,13 +90,17 @@ export interface AddOnService {
   description: string;
 }
 
+// ── Root document ──────────────────────────────────────────────────────────────
+
 export interface BalikbayanRates {
   carrier_id: string;
+  box_sizes: BoxSize[];
   sea_cargo: SeaCargoRate[];
   air_cargo_zones: AirCargoZone[];
   air_cargo_fixed: AirCargoFixed;
   ph_delivery_zones: PhDeliveryZone[];
   volumetric_groups: VolumetricGroup[];
+  bundles: BoxBundle[];
   addons: AddOnService[];
   updated_at: string;
 }
@@ -93,7 +122,10 @@ export const balikbayanRatesApi = {
     }
   },
 
-  async save(carrier: Carrier, rates: Omit<BalikbayanRates, "carrier_id" | "updated_at">): Promise<BalikbayanRates> {
+  async save(
+    carrier: Carrier,
+    rates: Omit<BalikbayanRates, "carrier_id" | "updated_at">,
+  ): Promise<BalikbayanRates> {
     const { data } = await createApiClient().put<BalikbayanRates>(
       `/v1/carriers/${carrierIdOf(carrier)}/balikbayan-rates`,
       rates,

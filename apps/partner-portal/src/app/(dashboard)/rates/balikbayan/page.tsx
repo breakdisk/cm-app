@@ -3,11 +3,13 @@
  * /rates/balikbayan — Balikbayan Box Rate Cards
  *
  * Per-carrier editable rate tables covering:
- *   Sea Cargo      — origin country × box size → USD
- *   Air Cargo      — zone rate/kg + distance surcharge + fixed charges
- *   PH Delivery    — province delivery zone surcharge (on top of sea/air)
- *   Volumetric     — per-group (Manila/Luzon/Visayas/Mindanao/Islands) pricing
- *   Add-Ons        — insurance, crate, packing, surcharges
+ *   Box Sizes   — partner-configurable size catalogue (add / rename / remove)
+ *   Sea Cargo   — origin country × box size → USD (dynamic columns)
+ *   Air Cargo   — zone rate/kg + distance surcharge + fixed charges
+ *   PH Delivery — province delivery zone surcharge (on top of sea/air)
+ *   Volumetric  — per-group (Manila/Luzon/Visayas/Mindanao/Islands) pricing
+ *   Add-Ons     — insurance, crate, packing, surcharges
+ *   Bundles     — pre-packaged multi-box deals with fixed price
  *
  * Data source: GET /v1/carriers/:id/balikbayan-rates
  * Falls back to built-in defaults on 404 (backend endpoint pending).
@@ -18,37 +20,49 @@ import Link from "next/link";
 import { motion } from "framer-motion";
 import * as Tabs from "@radix-ui/react-tabs";
 import {
-  ArrowLeft, Package, Plane, MapPin, Box, Layers,
+  ArrowLeft, Package, Plane, MapPin, Box, Layers, Gift,
   Pencil, Save, X, RefreshCw, Download,
 } from "lucide-react";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { carriersApi } from "@/lib/api/carriers";
-import { balikbayanRatesApi, type BalikbayanRates } from "@/lib/api/balikbayan-rates";
+import {
+  balikbayanRatesApi,
+  type BalikbayanRates,
+  type BoxSize,
+} from "@/lib/api/balikbayan-rates";
 import { buildDefaultRates } from "@/lib/data/balikbayan-defaults";
-import { SeaCargoTab }  from "@/components/balikbayan/SeaCargoTab";
-import { AirCargoTab }  from "@/components/balikbayan/AirCargoTab";
-import { PhDeliveryTab } from "@/components/balikbayan/PhDeliveryTab";
-import { VolumetricTab } from "@/components/balikbayan/VolumetricTab";
-import { AddOnsTab }    from "@/components/balikbayan/AddOnsTab";
+import { BoxSizesManager } from "@/components/balikbayan/BoxSizesManager";
+import { SeaCargoTab }    from "@/components/balikbayan/SeaCargoTab";
+import { AirCargoTab }    from "@/components/balikbayan/AirCargoTab";
+import { PhDeliveryTab }  from "@/components/balikbayan/PhDeliveryTab";
+import { VolumetricTab }  from "@/components/balikbayan/VolumetricTab";
+import { AddOnsTab }      from "@/components/balikbayan/AddOnsTab";
+import { BundlesTab }     from "@/components/balikbayan/BundlesTab";
 
 const TABS = [
-  { id: "sea",        label: "Sea Cargo",       icon: Package  },
-  { id: "air",        label: "Air Cargo",        icon: Plane    },
-  { id: "ph",         label: "PH Delivery Zones",icon: MapPin   },
-  { id: "volumetric", label: "Volumetric",       icon: Box      },
-  { id: "addons",     label: "Add-Ons",          icon: Layers   },
+  { id: "sea",        label: "Sea Cargo",        icon: Package },
+  { id: "air",        label: "Air Cargo",         icon: Plane   },
+  { id: "ph",         label: "PH Delivery Zones", icon: MapPin  },
+  { id: "volumetric", label: "Volumetric",         icon: Box     },
+  { id: "addons",     label: "Add-Ons",            icon: Layers  },
+  { id: "bundles",    label: "Bundles",            icon: Gift    },
 ] as const;
 
 type TabId = typeof TABS[number]["id"];
 
 function exportAllCsv(rates: BalikbayanRates) {
+  const sizes = rates.box_sizes;
   const sections: string[] = [
+    "=== BOX SIZES ===",
+    "id,name,dimensions,max_weight_kg,sort_order",
+    ...sizes.map((s) => [s.id, `"${s.name}"`, `"${s.dimensions}"`, s.max_weight_kg, s.sort_order].join(",")),
+    "",
     "=== SEA CARGO RATES ===",
-    "origin,transit_days,jumbo_usd,xl_usd,large_usd,small_usd",
+    ["origin", "transit_days", ...sizes.map((s) => s.name)].join(","),
     ...rates.sea_cargo.map((r) =>
-      [`"${r.origin}"`, r.transit_days, r.jumbo_usd, r.xl_usd, r.large_usd, r.small_usd].join(",")
+      [`"${r.origin}"`, r.transit_days, ...sizes.map((s) => r.prices[s.id] ?? 0)].join(",")
     ),
     "",
     "=== AIR CARGO ZONES ===",
@@ -58,15 +72,21 @@ function exportAllCsv(rates: BalikbayanRates) {
     ),
     "",
     "=== PH DELIVERY ZONES ===",
-    "zone_code,zone_name,coverage,jumbo_usd,xl_usd,large_usd,small_usd,transit_days",
+    ["zone_code", "zone_name", "coverage", ...sizes.map((s) => s.name), "transit_days"].join(","),
     ...rates.ph_delivery_zones.map((z) =>
-      [`"${z.zone_code}"`, `"${z.zone_name}"`, `"${z.coverage}"`, z.jumbo_usd, z.xl_usd, z.large_usd, z.small_usd, `"${z.transit_days}"`].join(",")
+      [`"${z.zone_code}"`, `"${z.zone_name}"`, `"${z.coverage}"`, ...sizes.map((s) => z.prices[s.id] ?? 0), `"${z.transit_days}"`].join(",")
     ),
     "",
     "=== VOLUMETRIC GROUPS ===",
     "group,divisor,base_rate_usd,rate_per_cbm_usd,min_charge_usd,surcharge_pct",
     ...rates.volumetric_groups.map((g) =>
       [g.group, g.divisor, g.base_rate_usd, g.rate_per_cbm_usd, g.min_charge_usd, g.surcharge_pct].join(",")
+    ),
+    "",
+    "=== BUNDLES ===",
+    "id,name,description,items,price_usd,valid_for,notes",
+    ...rates.bundles.map((b) =>
+      [b.id, `"${b.name}"`, `"${b.description}"`, `"${b.items.map((i) => `${i.size_id}×${i.quantity}`).join("; ")}"`, b.price_usd, b.valid_for, `"${b.notes}"`].join(",")
     ),
     "",
     "=== ADD-ONS ===",
@@ -125,6 +145,23 @@ export default function BalikbayanRatesPage() {
 
   function cancelEdit() { setEditing(null); setError(null); }
 
+  function handleSizesChange(newSizes: BoxSize[], deletedIds: string[]) {
+    if (!editing) return;
+    const seaCargo = editing.sea_cargo.map((row) => {
+      if (!deletedIds.length) return row;
+      const prices = { ...row.prices };
+      deletedIds.forEach((id) => delete prices[id]);
+      return { ...row, prices };
+    });
+    const phZones = editing.ph_delivery_zones.map((zone) => {
+      if (!deletedIds.length) return zone;
+      const prices = { ...zone.prices };
+      deletedIds.forEach((id) => delete prices[id]);
+      return { ...zone, prices };
+    });
+    setEditing({ ...editing, box_sizes: newSizes, sea_cargo: seaCargo, ph_delivery_zones: phZones });
+  }
+
   async function handleSave() {
     if (!editing) return;
     setSaving(true);
@@ -132,11 +169,13 @@ export default function BalikbayanRatesPage() {
     try {
       const carrier = await carriersApi.me();
       const saved_rates = await balikbayanRatesApi.save(carrier, {
+        box_sizes:         editing.box_sizes,
         sea_cargo:         editing.sea_cargo,
         air_cargo_zones:   editing.air_cargo_zones,
         air_cargo_fixed:   editing.air_cargo_fixed,
         ph_delivery_zones: editing.ph_delivery_zones,
         volumetric_groups: editing.volumetric_groups,
+        bundles:           editing.bundles,
         addons:            editing.addons,
       });
       setRates(saved_rates);
@@ -160,7 +199,7 @@ export default function BalikbayanRatesPage() {
     }
   }
 
-  const display = editing ?? rates;
+  const display   = editing ?? rates;
   const isEditing = editing !== null;
 
   return (
@@ -244,7 +283,8 @@ export default function BalikbayanRatesPage() {
         <motion.div variants={variants.fadeInUp}>
           <GlassCard glow="amber" accent size="sm">
             <p className="text-xs font-mono text-amber-signal">
-              ✎ Editing mode — changes are local until you tap Save All. All five tabs share one save action.
+              ✎ Editing mode — changes are local until you tap Save All. All tabs share one save action.
+              Box size changes cascade to Sea Cargo and PH Delivery pricing columns.
             </p>
           </GlassCard>
         </motion.div>
@@ -261,13 +301,14 @@ export default function BalikbayanRatesPage() {
 
       {/* ── KPI strip ─────────────────────────────────────────────────────── */}
       {display && (
-        <motion.div variants={variants.fadeInUp} className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+        <motion.div variants={variants.fadeInUp} className="grid grid-cols-3 gap-3 sm:grid-cols-6">
           {[
-            { label: "Sea Origins",    value: display.sea_cargo.length,         color: "text-cyan-neon"    },
-            { label: "Air Zones",      value: display.air_cargo_zones.length,   color: "text-purple-plasma"},
-            { label: "PH Zones",       value: display.ph_delivery_zones.length, color: "text-green-signal" },
-            { label: "Vol. Groups",    value: display.volumetric_groups.length, color: "text-amber-signal" },
-            { label: "Add-Ons",        value: display.addons.length,            color: "text-white"        },
+            { label: "Box Sizes",    value: display.box_sizes.length,          color: "text-purple-plasma" },
+            { label: "Sea Origins",  value: display.sea_cargo.length,           color: "text-cyan-neon"    },
+            { label: "Air Zones",    value: display.air_cargo_zones.length,     color: "text-purple-plasma"},
+            { label: "PH Zones",     value: display.ph_delivery_zones.length,   color: "text-green-signal" },
+            { label: "Vol. Groups",  value: display.volumetric_groups.length,   color: "text-amber-signal" },
+            { label: "Bundles",      value: display.bundles.length,             color: "text-cyan-neon"    },
           ].map((m) => (
             <GlassCard key={m.label} size="sm">
               <p className="text-2xs font-mono text-white/30 uppercase tracking-wider">{m.label}</p>
@@ -287,6 +328,16 @@ export default function BalikbayanRatesPage() {
               ))}
             </div>
           </GlassCard>
+        </motion.div>
+      )}
+
+      {/* ── Box sizes manager (edit mode only) ────────────────────────────── */}
+      {isEditing && editing && (
+        <motion.div variants={variants.fadeInUp}>
+          <BoxSizesManager
+            sizes={editing.box_sizes}
+            onSizesChange={handleSizesChange}
+          />
         </motion.div>
       )}
 
@@ -323,6 +374,7 @@ export default function BalikbayanRatesPage() {
             <Tabs.Content value="sea" className="outline-none">
               <SeaCargoTab
                 rows={display.sea_cargo}
+                boxSizes={display.box_sizes}
                 editing={isEditing}
                 onChange={(rows) => editing && setEditing({ ...editing, sea_cargo: rows })}
               />
@@ -341,6 +393,7 @@ export default function BalikbayanRatesPage() {
             <Tabs.Content value="ph" className="outline-none">
               <PhDeliveryTab
                 zones={display.ph_delivery_zones}
+                boxSizes={display.box_sizes}
                 editing={isEditing}
                 onChange={(zones) => editing && setEditing({ ...editing, ph_delivery_zones: zones })}
               />
@@ -359,6 +412,15 @@ export default function BalikbayanRatesPage() {
                 addons={display.addons}
                 editing={isEditing}
                 onChange={(addons) => editing && setEditing({ ...editing, addons })}
+              />
+            </Tabs.Content>
+
+            <Tabs.Content value="bundles" className="outline-none">
+              <BundlesTab
+                bundles={display.bundles}
+                boxSizes={display.box_sizes}
+                editing={isEditing}
+                onChange={(bundles) => editing && setEditing({ ...editing, bundles })}
               />
             </Tabs.Content>
           </Tabs.Root>
