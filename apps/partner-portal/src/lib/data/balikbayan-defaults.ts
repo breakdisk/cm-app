@@ -21,12 +21,12 @@ import type {
 // ── Box sizes ──────────────────────────────────────────────────────────────────
 
 export const DEFAULT_BOX_SIZES: BoxSize[] = [
-  { id: "xl",      name: "XL",      dimensions: '24"×18"×18"', max_weight_kg: 25, sort_order: 0 },
-  { id: "jumbo",   name: "Jumbo",   dimensions: '24"×24"×24"', max_weight_kg: 30, sort_order: 1 },
-  { id: "large",   name: "Large",   dimensions: '20"×16"×16"', max_weight_kg: 20, sort_order: 2 },
-  { id: "medium",  name: "Medium",  dimensions: '18"×14"×14"', max_weight_kg: 18, sort_order: 3 },
-  { id: "small",   name: "Small",   dimensions: '16"×12"×12"', max_weight_kg: 15, sort_order: 4 },
-  { id: "bulilit", name: "Bulilit", dimensions: '12"×10"×10"', max_weight_kg: 10, sort_order: 5 },
+  { id: "xl",      name: "XL",      dimensions: "61×46×46 cm", max_weight_kg: 25, sort_order: 0 },
+  { id: "jumbo",   name: "Jumbo",   dimensions: "61×61×61 cm", max_weight_kg: 30, sort_order: 1 },
+  { id: "large",   name: "Large",   dimensions: "51×41×41 cm", max_weight_kg: 20, sort_order: 2 },
+  { id: "medium",  name: "Medium",  dimensions: "46×36×36 cm", max_weight_kg: 18, sort_order: 3 },
+  { id: "small",   name: "Small",   dimensions: "41×30×30 cm", max_weight_kg: 15, sort_order: 4 },
+  { id: "bulilit", name: "Bulilit", dimensions: "30×25×25 cm", max_weight_kg: 10, sort_order: 5 },
 ];
 
 // Helper — build a prices map for all 6 default sizes.

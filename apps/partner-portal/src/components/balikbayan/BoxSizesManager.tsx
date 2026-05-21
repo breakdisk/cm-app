@@ -112,7 +112,7 @@ export function BoxSizesManager({ sizes, onSizesChange }: Props) {
               <input
                 value={s.dimensions}
                 onChange={(e) => patch(idx, "dimensions", e.target.value)}
-                placeholder='24"×24"×24"'
+                placeholder="61×61×61 cm"
                 className={inputCls}
               />
               <input
