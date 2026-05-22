@@ -23,8 +23,7 @@
       "permissions": [
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_FINE_LOCATION"
-      ],
-      "usesCleartextTraffic": true
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -44,7 +43,8 @@
         {
           "locationWhenInUsePermission": "Allow LogisticOS to use your location for delivery tracking."
         }
-      ]
+      ],
+      "./plugins/withNetworkSecurityConfig"
     ],
     "extra": {
       "eas": {
