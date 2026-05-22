@@ -51,9 +51,15 @@ class PhoneViewModel @Inject constructor(
             }
             viewModelScope.launch {
                 _uiState.update { it.copy(isLoading = true, error = null) }
-                repo.sendOtp(email = email)
-                    .onSuccess { _uiState.update { it.copy(isLoading = false, otpSent = true) } }
-                    .onFailure { e -> _uiState.update { it.copy(isLoading = false, error = e.message ?: "Something went wrong") } }
+                try {
+                    repo.sendOtp(email = email)
+                        .onSuccess { _uiState.update { it.copy(isLoading = false, otpSent = true) } }
+                        .onFailure { e -> _uiState.update { it.copy(isLoading = false, error = e.message ?: "Something went wrong") } }
+                } finally {
+                    // Guarantee spinner is cleared even when the coroutine is cancelled
+                    // mid-flight (e.g. back-press or viewModelScope teardown).
+                    _uiState.update { if (it.isLoading) it.copy(isLoading = false) else it }
+                }
             }
         } else {
             val phone = state.phone.trim()
@@ -63,10 +69,22 @@ class PhoneViewModel @Inject constructor(
             }
             viewModelScope.launch {
                 _uiState.update { it.copy(isLoading = true, error = null) }
-                repo.sendOtp(phone = phone)
-                    .onSuccess { _uiState.update { it.copy(isLoading = false, otpSent = true) } }
-                    .onFailure { e -> _uiState.update { it.copy(isLoading = false, error = e.message ?: "Something went wrong") } }
+                try {
+                    repo.sendOtp(phone = phone)
+                        .onSuccess { _uiState.update { it.copy(isLoading = false, otpSent = true) } }
+                        .onFailure { e -> _uiState.update { it.copy(isLoading = false, error = e.message ?: "Something went wrong") } }
+                } finally {
+                    // Guarantee spinner is cleared even when the coroutine is cancelled
+                    // mid-flight (e.g. back-press or viewModelScope teardown).
+                    _uiState.update { if (it.isLoading) it.copy(isLoading = false) else it }
+                }
             }
         }
+    }
+
+    /** Call this immediately after consuming the otpSent event so that
+     *  navigating back to PhoneScreen does not fire a stale re-navigation. */
+    fun onOtpSentConsumed() {
+        _uiState.update { it.copy(otpSent = false) }
     }
 }

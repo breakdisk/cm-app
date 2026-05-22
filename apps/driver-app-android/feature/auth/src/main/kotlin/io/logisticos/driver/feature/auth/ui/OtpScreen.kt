@@ -39,7 +39,10 @@ fun OtpScreen(
         }
     }
     LaunchedEffect(state.isSuccess) {
-        if (state.isSuccess) onAuthenticated()
+        if (state.isSuccess) {
+            viewModel.onSuccessConsumed()
+            onAuthenticated()
+        }
     }
 
     Box(

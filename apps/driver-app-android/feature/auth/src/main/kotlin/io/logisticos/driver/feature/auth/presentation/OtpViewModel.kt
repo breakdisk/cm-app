@@ -43,13 +43,23 @@ class OtpViewModel @Inject constructor(
     fun verifyOtp(identifier: String, otp: String) {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }
-            val result = if (identifier.contains("@"))
-                repo.verifyOtp(email = identifier, otp = otp)
-            else
-                repo.verifyOtp(phone = identifier, otp = otp)
-            result
-                .onSuccess { _uiState.update { it.copy(isLoading = false, isSuccess = true) } }
-                .onFailure { e -> _uiState.update { it.copy(isLoading = false, error = e.message ?: "Invalid OTP") } }
+            try {
+                val result = if (identifier.contains("@"))
+                    repo.verifyOtp(email = identifier, otp = otp)
+                else
+                    repo.verifyOtp(phone = identifier, otp = otp)
+                result
+                    .onSuccess { _uiState.update { it.copy(isLoading = false, isSuccess = true) } }
+                    .onFailure { e -> _uiState.update { it.copy(isLoading = false, error = e.message ?: "Invalid OTP") } }
+            } finally {
+                // Guarantee spinner is cleared on cancellation (back-press mid-request).
+                _uiState.update { if (it.isLoading) it.copy(isLoading = false) else it }
+            }
         }
+    }
+
+    /** Call after consuming isSuccess so back-navigation can't re-trigger it. */
+    fun onSuccessConsumed() {
+        _uiState.update { it.copy(isSuccess = false) }
     }
 }

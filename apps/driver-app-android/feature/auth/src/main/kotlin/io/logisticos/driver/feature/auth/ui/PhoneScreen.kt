@@ -28,8 +28,14 @@ fun PhoneScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
 
+    // LaunchedEffect key is `true` only while otpSent is true.  We consume the
+    // flag immediately after triggering navigation so that pressing Back from
+    // the OTP screen and returning here does not re-fire the navigation.
     LaunchedEffect(state.otpSent) {
-        if (state.otpSent) onOtpSent(state.identifier)
+        if (state.otpSent) {
+            viewModel.onOtpSentConsumed()
+            onOtpSent(state.identifier)
+        }
     }
 
     Box(
