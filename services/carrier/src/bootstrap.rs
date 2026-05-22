@@ -238,10 +238,11 @@ fn mcp_router() -> axum::Router<AppState> {
     }
 
     async fn tools_call(
-        State(state): State<Arc<AppState>>,
+        State(state): State<AppState>,
         headers: HeaderMap,
         Json(body): Json<Value>,
     ) -> impl IntoResponse {
+        let state = Arc::new(state);
         let ctx = match auth::extract_context(&headers, &state.jwt) {
             Ok(c)  => c,
             Err(e) => return (StatusCode::UNAUTHORIZED, Json(json!({ "error": e }))).into_response(),

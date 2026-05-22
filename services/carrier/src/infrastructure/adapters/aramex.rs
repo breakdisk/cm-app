@@ -8,6 +8,7 @@
 /// and Africa — a key partner for LogisticOS's target markets.
 
 use async_trait::async_trait;
+use base64::Engine as _;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::time::Duration;
