@@ -95,6 +95,7 @@ jobs:
             ai-layer:           'services/ai-layer/**'
             compliance:         'services/compliance/**'
             webhooks:           'services/webhooks/**'
+            connectors:         'services/connectors/**'
             admin-portal:       'apps/admin-portal/**'
             merchant-portal:    'apps/merchant-portal/**'
             customer-portal:    'apps/customer-portal/**'
@@ -136,6 +137,7 @@ jobs:
           AI_LAYER:            ${{ steps.per_image.outputs.ai-layer }}
           COMPLIANCE:          ${{ steps.per_image.outputs.compliance }}
           WEBHOOKS:            ${{ steps.per_image.outputs.webhooks }}
+          CONNECTORS:          ${{ steps.per_image.outputs.connectors }}
           ADMIN_PORTAL:        ${{ steps.per_image.outputs.admin-portal }}
           MERCHANT_PORTAL:     ${{ steps.per_image.outputs.merchant-portal }}
           CUSTOMER_PORTAL:     ${{ steps.per_image.outputs.customer-portal }}
@@ -146,7 +148,7 @@ jobs:
           services=()
           portals=()
           if [ "$BUILD_ALL" = "true" ]; then
-            services=('"api-gateway"' '"identity"' '"cdp"' '"engagement"' '"order-intake"' '"dispatch"' '"driver-ops"' '"delivery-experience"' '"fleet"' '"hub-ops"' '"carrier"' '"pod"' '"payments"' '"analytics"' '"marketing"' '"business-logic"' '"ai-layer"' '"compliance"' '"webhooks"')
+            services=('"api-gateway"' '"identity"' '"cdp"' '"engagement"' '"order-intake"' '"dispatch"' '"driver-ops"' '"delivery-experience"' '"fleet"' '"hub-ops"' '"carrier"' '"pod"' '"payments"' '"analytics"' '"marketing"' '"business-logic"' '"ai-layer"' '"compliance"' '"webhooks"' '"connectors"')
             portals=('"admin-portal"' '"merchant-portal"' '"customer-portal"' '"partner-portal"' '"landing"')
           else
             [ "$API_GATEWAY"         = "true" ] && services+=('"api-gateway"') || true
@@ -168,6 +170,7 @@ jobs:
             [ "$AI_LAYER"            = "true" ] && services+=('"ai-layer"') || true
             [ "$COMPLIANCE"          = "true" ] && services+=('"compliance"') || true
             [ "$WEBHOOKS"            = "true" ] && services+=('"webhooks"') || true
+            [ "$CONNECTORS"          = "true" ] && services+=('"connectors"') || true
             [ "$ADMIN_PORTAL"        = "true" ] && portals+=('"admin-portal"') || true
             [ "$MERCHANT_PORTAL"     = "true" ] && portals+=('"merchant-portal"') || true
             [ "$CUSTOMER_PORTAL"     = "true" ] && portals+=('"customer-portal"') || true
