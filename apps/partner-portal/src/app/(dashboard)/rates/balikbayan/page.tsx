@@ -3,13 +3,15 @@
  * /rates/balikbayan — Balikbayan Box Rate Cards
  *
  * Per-carrier editable rate tables covering:
- *   Box Sizes   — partner-configurable size catalogue (add / rename / remove)
- *   Sea Cargo   — origin country × box size → USD (dynamic columns)
- *   Air Cargo   — zone rate/kg + distance surcharge + fixed charges
- *   PH Delivery — province delivery zone surcharge (on top of sea/air)
- *   Volumetric  — per-group (Manila/Luzon/Visayas/Mindanao/Islands) pricing
- *   Add-Ons     — insurance, crate, packing, surcharges
- *   Bundles     — pre-packaged multi-box deals with fixed price
+ *   Box Sizes      — partner-configurable size catalogue (add / rename / remove)
+ *   Sea Cargo      — origin country × box size → native currency (dynamic columns)
+ *   Air Cargo      — zone rate/kg + distance surcharge + fixed charges
+ *   PH Delivery    — province delivery zone surcharge (configurable currency)
+ *   Volumetric     — per-group (Manila/Luzon/Visayas/Mindanao/Islands) pricing
+ *   Add-Ons        — insurance, crate, packing, surcharges
+ *   Bundles        — pre-packaged multi-box deals with fixed price
+ *   Province Map   — maps province/city names → zone codes for quote resolution
+ *   Quote Calc     — live simulator: origin + boxes/weight + recipient → itemized quote
  *
  * Data source: GET /v1/carriers/:id/balikbayan-rates
  * Falls back to built-in defaults on 404 (backend endpoint pending).
@@ -21,7 +23,7 @@ import { motion } from "framer-motion";
 import * as Tabs from "@radix-ui/react-tabs";
 import {
   ArrowLeft, Package, Plane, MapPin, Box, Layers, Gift,
-  Pencil, Save, X, RefreshCw, Download,
+  Pencil, Save, X, RefreshCw, Download, Map, Calculator,
 } from "lucide-react";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
@@ -33,21 +35,25 @@ import {
   type BoxSize,
 } from "@/lib/api/balikbayan-rates";
 import { buildDefaultRates } from "@/lib/data/balikbayan-defaults";
-import { BoxSizesManager } from "@/components/balikbayan/BoxSizesManager";
-import { SeaCargoTab }    from "@/components/balikbayan/SeaCargoTab";
-import { AirCargoTab }    from "@/components/balikbayan/AirCargoTab";
-import { PhDeliveryTab }  from "@/components/balikbayan/PhDeliveryTab";
-import { VolumetricTab }  from "@/components/balikbayan/VolumetricTab";
-import { AddOnsTab }      from "@/components/balikbayan/AddOnsTab";
-import { BundlesTab }     from "@/components/balikbayan/BundlesTab";
+import { BoxSizesManager }      from "@/components/balikbayan/BoxSizesManager";
+import { SeaCargoTab }           from "@/components/balikbayan/SeaCargoTab";
+import { AirCargoTab }           from "@/components/balikbayan/AirCargoTab";
+import { PhDeliveryTab }         from "@/components/balikbayan/PhDeliveryTab";
+import { VolumetricTab }         from "@/components/balikbayan/VolumetricTab";
+import { AddOnsTab }             from "@/components/balikbayan/AddOnsTab";
+import { BundlesTab }            from "@/components/balikbayan/BundlesTab";
+import { ProvinceZoneMapTab }    from "@/components/balikbayan/ProvinceZoneMapTab";
+import { QuoteCalculatorTab }    from "@/components/balikbayan/QuoteCalculatorTab";
 
 const TABS = [
-  { id: "sea",        label: "Sea Cargo",        icon: Package },
-  { id: "air",        label: "Air Cargo",         icon: Plane   },
-  { id: "ph",         label: "PH Delivery Zones", icon: MapPin  },
-  { id: "volumetric", label: "Volumetric",         icon: Box     },
-  { id: "addons",     label: "Add-Ons",            icon: Layers  },
-  { id: "bundles",    label: "Bundles",            icon: Gift    },
+  { id: "sea",          label: "Sea Cargo",        icon: Package,    editable: true  },
+  { id: "air",          label: "Air Cargo",         icon: Plane,      editable: true  },
+  { id: "ph",           label: "PH Delivery Zones", icon: MapPin,     editable: true  },
+  { id: "volumetric",   label: "Volumetric",         icon: Box,        editable: true  },
+  { id: "addons",       label: "Add-Ons",            icon: Layers,     editable: true  },
+  { id: "bundles",      label: "Bundles",            icon: Gift,       editable: true  },
+  { id: "province-map", label: "Province Map",       icon: Map,        editable: true  },
+  { id: "quote",        label: "Quote Calculator",   icon: Calculator, editable: false },
 ] as const;
 
 type TabId = typeof TABS[number]["id"];
@@ -82,6 +88,13 @@ function exportAllCsv(rates: BalikbayanRates) {
     ...rates.volumetric_groups.map((g) =>
       [g.group, g.divisor, g.base_rate_usd, g.rate_per_cbm_usd, g.min_charge_usd, g.surcharge_pct].join(",")
     ),
+    "",
+    "=== PH DELIVERY CURRENCY ===",
+    `ph_delivery_currency,${rates.ph_delivery_currency ?? "PHP"}`,
+    "",
+    "=== PROVINCE ZONE MAP ===",
+    "province,zone_code",
+    ...(rates.province_zone_map ?? []).map((e) => [`"${e.province}"`, `"${e.zone_code}"`].join(",")),
     "",
     "=== BUNDLES ===",
     "id,name,description,items,price_usd,valid_for,notes",
@@ -169,14 +182,16 @@ export default function BalikbayanRatesPage() {
     try {
       const carrier = await carriersApi.me();
       const saved_rates = await balikbayanRatesApi.save(carrier, {
-        box_sizes:         editing.box_sizes,
-        sea_cargo:         editing.sea_cargo,
-        air_cargo_zones:   editing.air_cargo_zones,
-        air_cargo_fixed:   editing.air_cargo_fixed,
-        ph_delivery_zones: editing.ph_delivery_zones,
-        volumetric_groups: editing.volumetric_groups,
-        bundles:           editing.bundles,
-        addons:            editing.addons,
+        box_sizes:            editing.box_sizes,
+        sea_cargo:            editing.sea_cargo,
+        air_cargo_zones:      editing.air_cargo_zones,
+        air_cargo_fixed:      editing.air_cargo_fixed,
+        ph_delivery_zones:    editing.ph_delivery_zones,
+        ph_delivery_currency: editing.ph_delivery_currency ?? "PHP",
+        province_zone_map:    editing.province_zone_map ?? [],
+        volumetric_groups:    editing.volumetric_groups,
+        bundles:              editing.bundles,
+        addons:               editing.addons,
       });
       setRates(saved_rates);
       setEditing(null);
@@ -186,7 +201,12 @@ export default function BalikbayanRatesPage() {
       // Backend endpoint may not exist yet — persist locally and show warning
       const err = e as { response?: { status?: number }; message?: string };
       if (err?.response?.status === 404 || err?.response?.status === 405) {
-        setRates({ ...editing, updated_at: new Date().toISOString() });
+        setRates({
+          ...editing,
+          ph_delivery_currency: editing.ph_delivery_currency ?? "PHP",
+          province_zone_map:    editing.province_zone_map    ?? [],
+          updated_at:           new Date().toISOString(),
+        });
         setEditing(null);
         setSaved(true);
         setTimeout(() => setSaved(false), 2500);
@@ -301,14 +321,15 @@ export default function BalikbayanRatesPage() {
 
       {/* ── KPI strip ─────────────────────────────────────────────────────── */}
       {display && (
-        <motion.div variants={variants.fadeInUp} className="grid grid-cols-3 gap-3 sm:grid-cols-6">
+        <motion.div variants={variants.fadeInUp} className="grid grid-cols-3 gap-3 sm:grid-cols-4 lg:grid-cols-7">
           {[
-            { label: "Box Sizes",    value: display.box_sizes.length,          color: "text-purple-plasma" },
-            { label: "Sea Origins",  value: display.sea_cargo.length,           color: "text-cyan-neon"    },
-            { label: "Air Zones",    value: display.air_cargo_zones.length,     color: "text-purple-plasma"},
-            { label: "PH Zones",     value: display.ph_delivery_zones.length,   color: "text-green-signal" },
-            { label: "Vol. Groups",  value: display.volumetric_groups.length,   color: "text-amber-signal" },
-            { label: "Bundles",      value: display.bundles.length,             color: "text-cyan-neon"    },
+            { label: "Box Sizes",    value: display.box_sizes.length,                       color: "text-purple-plasma" },
+            { label: "Sea Origins",  value: display.sea_cargo.length,                        color: "text-cyan-neon"    },
+            { label: "Air Zones",    value: display.air_cargo_zones.length,                  color: "text-purple-plasma"},
+            { label: "PH Zones",     value: display.ph_delivery_zones.length,                color: "text-green-signal" },
+            { label: "Province Map", value: (display.province_zone_map ?? []).length,        color: "text-green-signal" },
+            { label: "Vol. Groups",  value: display.volumetric_groups.length,                color: "text-amber-signal" },
+            { label: "Bundles",      value: display.bundles.length,                          color: "text-cyan-neon"    },
           ].map((m) => (
             <GlassCard key={m.label} size="sm">
               <p className="text-2xs font-mono text-white/30 uppercase tracking-wider">{m.label}</p>
@@ -350,7 +371,7 @@ export default function BalikbayanRatesPage() {
           >
             {/* Tab list */}
             <Tabs.List className="flex gap-1 overflow-x-auto border-b border-glass-border pb-0 mb-5">
-              {TABS.map(({ id, label, icon: Icon }) => (
+              {TABS.map(({ id, label, icon: Icon, editable }) => (
                 <Tabs.Trigger
                   key={id}
                   value={id}
@@ -364,7 +385,7 @@ export default function BalikbayanRatesPage() {
                 >
                   <Icon size={13} />
                   {label}
-                  {isEditing && (
+                  {isEditing && editable && (
                     <NeonBadge variant="amber" className="ml-1">edit</NeonBadge>
                   )}
                 </Tabs.Trigger>
@@ -394,6 +415,8 @@ export default function BalikbayanRatesPage() {
               <PhDeliveryTab
                 zones={display.ph_delivery_zones}
                 boxSizes={display.box_sizes}
+                currency={display.ph_delivery_currency ?? "PHP"}
+                onCurrencyChange={(code) => editing && setEditing({ ...editing, ph_delivery_currency: code })}
                 editing={isEditing}
                 onChange={(zones) => editing && setEditing({ ...editing, ph_delivery_zones: zones })}
               />
@@ -422,6 +445,19 @@ export default function BalikbayanRatesPage() {
                 editing={isEditing}
                 onChange={(bundles) => editing && setEditing({ ...editing, bundles })}
               />
+            </Tabs.Content>
+
+            <Tabs.Content value="province-map" className="outline-none">
+              <ProvinceZoneMapTab
+                entries={display.province_zone_map ?? []}
+                zones={display.ph_delivery_zones}
+                editing={isEditing}
+                onChange={(entries) => editing && setEditing({ ...editing, province_zone_map: entries })}
+              />
+            </Tabs.Content>
+
+            <Tabs.Content value="quote" className="outline-none">
+              <QuoteCalculatorTab rates={display} />
             </Tabs.Content>
           </Tabs.Root>
         </motion.div>

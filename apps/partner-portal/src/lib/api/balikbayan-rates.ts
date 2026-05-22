@@ -61,13 +61,20 @@ export interface AirCargoFixed {
   volumetric_divisor: number;
 }
 
-// prices is keyed by BoxSize.id — always PHP (Philippine Peso)
+// prices keyed by BoxSize.id — currency set at rate-card level via ph_delivery_currency
 export interface PhDeliveryZone {
   zone_code: string;
   zone_name: string;
   coverage: string;
   prices: Record<string, number>;
   transit_days: string;
+}
+
+// Maps a recipient province or city name → PH delivery zone code
+// Used by the quote calculator and the public /balikbayan-quote API
+export interface PhProvinceZoneEntry {
+  province: string;   // province or city name — matched case-insensitively
+  zone_code: string;  // must match a PhDeliveryZone.zone_code
 }
 
 export type VolumetricGroupName = "Manila" | "Luzon" | "Visayas" | "Mindanao" | "Islands";
@@ -104,7 +111,9 @@ export interface BalikbayanRates {
   sea_cargo: SeaCargoRate[];
   air_cargo_zones: AirCargoZone[];
   air_cargo_fixed: AirCargoFixed;
-  ph_delivery_zones: PhDeliveryZone[];  // always PHP
+  ph_delivery_zones: PhDeliveryZone[];
+  ph_delivery_currency: string;          // ISO 4217 — currency for all ph_delivery_zones prices (default: "PHP")
+  province_zone_map: PhProvinceZoneEntry[];  // province / city → zone_code lookup table
   volumetric_groups: VolumetricGroup[];
   bundles: BoxBundle[];
   addons: AddOnService[];

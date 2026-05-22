@@ -3,8 +3,9 @@
  * customised their rates (backend returns 404).
  *
  * Sea cargo: each row carries its native origin currency (USD, AED, SAR, etc.)
- * PH Delivery: always Philippine Peso (₱) — no currency field needed
+ * PH Delivery: currency set via ph_delivery_currency (default: "PHP")
  * All other sections: currency field defaults to USD; partners update as needed
+ * Province zone map: comprehensive PH province → zone_code lookup (editable by partner)
  */
 import type {
   AirCargoFixed,
@@ -14,6 +15,7 @@ import type {
   BoxBundle,
   BoxSize,
   PhDeliveryZone,
+  PhProvinceZoneEntry,
   SeaCargoRate,
   VolumetricGroup,
 } from "@/lib/api/balikbayan-rates";
@@ -252,19 +254,230 @@ export const DEFAULT_ADDONS: AddOnService[] = [
   { id: "sur-customs",     name: "Customs Clearance Assist",  category: "surcharge", currency: "USD", rate: 30,  rate_type: "fixed",   min_charge: 30, description: "PH BOC query support; excludes duties & taxes" },
 ];
 
+// ── Province → Zone map ────────────────────────────────────────────────────────
+// Comprehensive mapping of PH provinces and cities to delivery zone codes.
+// Partners can add city-level overrides; lookup is case-insensitive, exact match
+// first then prefix/substring fallback.
+
+export const DEFAULT_PROVINCE_ZONE_MAP: PhProvinceZoneEntry[] = [
+  // Zone 1A — Metro Manila / NCR
+  { province: "Metro Manila",         zone_code: "Zone 1A" },
+  { province: "Makati",               zone_code: "Zone 1A" },
+  { province: "Makati City",          zone_code: "Zone 1A" },
+  { province: "Quezon City",          zone_code: "Zone 1A" },
+  { province: "Manila",               zone_code: "Zone 1A" },
+  { province: "Pasig",                zone_code: "Zone 1A" },
+  { province: "Taguig",               zone_code: "Zone 1A" },
+  { province: "Parañaque",            zone_code: "Zone 1A" },
+  { province: "Paranaque",            zone_code: "Zone 1A" },
+  { province: "Caloocan",             zone_code: "Zone 1A" },
+  { province: "Mandaluyong",          zone_code: "Zone 1A" },
+  { province: "Marikina",             zone_code: "Zone 1A" },
+  { province: "Muntinlupa",           zone_code: "Zone 1A" },
+  { province: "Las Piñas",            zone_code: "Zone 1A" },
+  { province: "Las Pinas",            zone_code: "Zone 1A" },
+  { province: "Navotas",              zone_code: "Zone 1A" },
+  { province: "Pasay",                zone_code: "Zone 1A" },
+  { province: "San Juan",             zone_code: "Zone 1A" },
+  { province: "Valenzuela",           zone_code: "Zone 1A" },
+  { province: "Malabon",              zone_code: "Zone 1A" },
+  { province: "Pateros",              zone_code: "Zone 1A" },
+  // Zone 2A — Region III
+  { province: "Bulacan",              zone_code: "Zone 2A" },
+  { province: "Pampanga",             zone_code: "Zone 2A" },
+  { province: "Angeles",              zone_code: "Zone 2A" },
+  { province: "Angeles City",         zone_code: "Zone 2A" },
+  { province: "Tarlac",               zone_code: "Zone 2A" },
+  { province: "Nueva Ecija",          zone_code: "Zone 2A" },
+  { province: "Cabanatuan",           zone_code: "Zone 2A" },
+  { province: "Bataan",               zone_code: "Zone 2A" },
+  { province: "Zambales",             zone_code: "Zone 2A" },
+  { province: "Olongapo",             zone_code: "Zone 2A" },
+  // Zone 2B — CALABARZON
+  { province: "Cavite",               zone_code: "Zone 2B" },
+  { province: "Laguna",               zone_code: "Zone 2B" },
+  { province: "Batangas",             zone_code: "Zone 2B" },
+  { province: "Rizal",                zone_code: "Zone 2B" },
+  { province: "Antipolo",             zone_code: "Zone 2B" },
+  // Zone 2C — Quezon Province
+  { province: "Quezon",               zone_code: "Zone 2C" },
+  { province: "Quezon Province",      zone_code: "Zone 2C" },
+  { province: "Lucena",               zone_code: "Zone 2C" },
+  { province: "Lucena City",          zone_code: "Zone 2C" },
+  // Zone 3A — Ilocos / Pangasinan
+  { province: "Pangasinan",           zone_code: "Zone 3A" },
+  { province: "Dagupan",              zone_code: "Zone 3A" },
+  { province: "La Union",             zone_code: "Zone 3A" },
+  { province: "San Fernando",         zone_code: "Zone 3A" },
+  { province: "Ilocos Norte",         zone_code: "Zone 3A" },
+  { province: "Laoag",                zone_code: "Zone 3A" },
+  { province: "Ilocos Sur",           zone_code: "Zone 3A" },
+  { province: "Vigan",                zone_code: "Zone 3A" },
+  // Zone 3B — Cagayan Valley
+  { province: "Cagayan",              zone_code: "Zone 3B" },
+  { province: "Tuguegarao",           zone_code: "Zone 3B" },
+  { province: "Isabela",              zone_code: "Zone 3B" },
+  { province: "Ilagan",               zone_code: "Zone 3B" },
+  { province: "Nueva Vizcaya",        zone_code: "Zone 3B" },
+  { province: "Quirino",              zone_code: "Zone 3B" },
+  { province: "Aurora",               zone_code: "Zone 3B" },
+  // Zone 3C — CAR / Cordillera
+  { province: "Benguet",              zone_code: "Zone 3C" },
+  { province: "Baguio",               zone_code: "Zone 3C" },
+  { province: "Baguio City",          zone_code: "Zone 3C" },
+  { province: "Mountain Province",    zone_code: "Zone 3C" },
+  { province: "Ifugao",               zone_code: "Zone 3C" },
+  { province: "Kalinga",              zone_code: "Zone 3C" },
+  { province: "Abra",                 zone_code: "Zone 3C" },
+  { province: "Apayao",               zone_code: "Zone 3C" },
+  // Zone 4A — Camarines / Naga
+  { province: "Camarines Norte",      zone_code: "Zone 4A" },
+  { province: "Camarines Sur",        zone_code: "Zone 4A" },
+  { province: "Naga",                 zone_code: "Zone 4A" },
+  { province: "Naga City",            zone_code: "Zone 4A" },
+  // Zone 4B — Albay / Sorsogon / Islands
+  { province: "Albay",                zone_code: "Zone 4B" },
+  { province: "Legazpi",              zone_code: "Zone 4B" },
+  { province: "Legazpi City",         zone_code: "Zone 4B" },
+  { province: "Sorsogon",             zone_code: "Zone 4B" },
+  { province: "Catanduanes",          zone_code: "Zone 4B" },
+  { province: "Masbate",              zone_code: "Zone 4B" },
+  // Zone 4C — MIMAROPA
+  { province: "Marinduque",           zone_code: "Zone 4C" },
+  { province: "Occidental Mindoro",   zone_code: "Zone 4C" },
+  { province: "Oriental Mindoro",     zone_code: "Zone 4C" },
+  { province: "Calapan",              zone_code: "Zone 4C" },
+  { province: "Romblon",              zone_code: "Zone 4C" },
+  // Zone 4D — Palawan (main)
+  { province: "Palawan",              zone_code: "Zone 4D" },
+  { province: "Puerto Princesa",      zone_code: "Zone 4D" },
+  // Zone 4E — Palawan remote
+  { province: "Coron",                zone_code: "Zone 4E" },
+  { province: "El Nido",              zone_code: "Zone 4E" },
+  // Zone 5A — Metro Cebu
+  { province: "Cebu City",            zone_code: "Zone 5A" },
+  { province: "Mandaue",              zone_code: "Zone 5A" },
+  { province: "Mandaue City",         zone_code: "Zone 5A" },
+  { province: "Lapu-Lapu",            zone_code: "Zone 5A" },
+  { province: "Lapu-Lapu City",       zone_code: "Zone 5A" },
+  { province: "Talisay",              zone_code: "Zone 5A" },
+  // Zone 5B — Cebu Province
+  { province: "Cebu",                 zone_code: "Zone 5B" },
+  // Zone 5C — Iloilo City / Bacolod City
+  { province: "Iloilo City",          zone_code: "Zone 5C" },
+  { province: "Bacolod",              zone_code: "Zone 5C" },
+  { province: "Bacolod City",         zone_code: "Zone 5C" },
+  // Zone 5D — Western Visayas Provinces
+  { province: "Iloilo",               zone_code: "Zone 5D" },
+  { province: "Negros Occidental",    zone_code: "Zone 5D" },
+  // Zone 5E — Negros Oriental / Bohol / Siquijor
+  { province: "Negros Oriental",      zone_code: "Zone 5E" },
+  { province: "Dumaguete",            zone_code: "Zone 5E" },
+  { province: "Dumaguete City",       zone_code: "Zone 5E" },
+  { province: "Bohol",                zone_code: "Zone 5E" },
+  { province: "Tagbilaran",           zone_code: "Zone 5E" },
+  { province: "Siquijor",             zone_code: "Zone 5E" },
+  // Zone 5F — Eastern Visayas
+  { province: "Leyte",                zone_code: "Zone 5F" },
+  { province: "Tacloban",             zone_code: "Zone 5F" },
+  { province: "Tacloban City",        zone_code: "Zone 5F" },
+  { province: "Samar",                zone_code: "Zone 5F" },
+  { province: "Eastern Samar",        zone_code: "Zone 5F" },
+  { province: "Northern Samar",       zone_code: "Zone 5F" },
+  { province: "Southern Leyte",       zone_code: "Zone 5F" },
+  { province: "Biliran",              zone_code: "Zone 5F" },
+  // Zone 5G — Aklan / Antique / Capiz / Guimaras
+  { province: "Aklan",                zone_code: "Zone 5G" },
+  { province: "Kalibo",               zone_code: "Zone 5G" },
+  { province: "Boracay",              zone_code: "Zone 5G" },
+  { province: "Antique",              zone_code: "Zone 5G" },
+  { province: "Capiz",                zone_code: "Zone 5G" },
+  { province: "Roxas",                zone_code: "Zone 5G" },
+  { province: "Roxas City",           zone_code: "Zone 5G" },
+  { province: "Guimaras",             zone_code: "Zone 5G" },
+  // Zone 6A — Metro Davao
+  { province: "Davao City",           zone_code: "Zone 6A" },
+  { province: "Davao del Sur",        zone_code: "Zone 6A" },
+  // Zone 6B — Davao Region Provinces
+  { province: "Davao del Norte",      zone_code: "Zone 6B" },
+  { province: "Tagum",                zone_code: "Zone 6B" },
+  { province: "Tagum City",           zone_code: "Zone 6B" },
+  { province: "Davao Oriental",       zone_code: "Zone 6B" },
+  { province: "Mati",                 zone_code: "Zone 6B" },
+  { province: "Davao de Oro",         zone_code: "Zone 6B" },
+  { province: "Compostela Valley",    zone_code: "Zone 6B" },
+  { province: "Davao Occidental",     zone_code: "Zone 6B" },
+  // Zone 6C — CDO / Bukidnon
+  { province: "Cagayan de Oro",       zone_code: "Zone 6C" },
+  { province: "Misamis Oriental",     zone_code: "Zone 6C" },
+  { province: "Bukidnon",             zone_code: "Zone 6C" },
+  { province: "Malaybalay",           zone_code: "Zone 6C" },
+  { province: "Misamis Occidental",   zone_code: "Zone 6C" },
+  { province: "Ozamiz",               zone_code: "Zone 6C" },
+  // Zone 6D — GenSan / Sarangani / South Cotabato
+  { province: "General Santos",       zone_code: "Zone 6D" },
+  { province: "General Santos City",  zone_code: "Zone 6D" },
+  { province: "Sarangani",            zone_code: "Zone 6D" },
+  { province: "South Cotabato",       zone_code: "Zone 6D" },
+  { province: "Koronadal",            zone_code: "Zone 6D" },
+  // Zone 6E — Zamboanga
+  { province: "Zamboanga City",       zone_code: "Zone 6E" },
+  { province: "Zamboanga del Sur",    zone_code: "Zone 6E" },
+  { province: "Zamboanga del Norte",  zone_code: "Zone 6E" },
+  { province: "Dipolog",              zone_code: "Zone 6E" },
+  { province: "Zamboanga Sibugay",    zone_code: "Zone 6E" },
+  { province: "Ipil",                 zone_code: "Zone 6E" },
+  // Zone 6F — Lanao / Iligan
+  { province: "Lanao del Norte",      zone_code: "Zone 6F" },
+  { province: "Iligan",               zone_code: "Zone 6F" },
+  { province: "Iligan City",          zone_code: "Zone 6F" },
+  { province: "Lanao del Sur",        zone_code: "Zone 6F" },
+  { province: "Marawi",               zone_code: "Zone 6F" },
+  // Zone 6G — Cotabato / Maguindanao / BARMM
+  { province: "Cotabato City",        zone_code: "Zone 6G" },
+  { province: "North Cotabato",       zone_code: "Zone 6G" },
+  { province: "Sultan Kudarat",       zone_code: "Zone 6G" },
+  { province: "Maguindanao",          zone_code: "Zone 6G" },
+  { province: "Maguindanao del Norte",zone_code: "Zone 6G" },
+  { province: "Maguindanao del Sur",  zone_code: "Zone 6G" },
+  // Zone 6H — Caraga
+  { province: "Surigao del Norte",    zone_code: "Zone 6H" },
+  { province: "Surigao City",         zone_code: "Zone 6H" },
+  { province: "Surigao del Sur",      zone_code: "Zone 6H" },
+  { province: "Agusan del Norte",     zone_code: "Zone 6H" },
+  { province: "Butuan",               zone_code: "Zone 6H" },
+  { province: "Butuan City",          zone_code: "Zone 6H" },
+  { province: "Agusan del Sur",       zone_code: "Zone 6H" },
+  // Zone 6I — Camiguin / Dinagat
+  { province: "Camiguin",             zone_code: "Zone 6I" },
+  { province: "Dinagat Islands",      zone_code: "Zone 6I" },
+  // Zone 7A — Sulu / Tawi-Tawi / Basilan
+  { province: "Sulu",                 zone_code: "Zone 7A" },
+  { province: "Jolo",                 zone_code: "Zone 7A" },
+  { province: "Tawi-Tawi",            zone_code: "Zone 7A" },
+  { province: "Bongao",               zone_code: "Zone 7A" },
+  { province: "Basilan",              zone_code: "Zone 7A" },
+  { province: "Isabela City",         zone_code: "Zone 7A" },
+  // Zone 7B — Batanes (northernmost)
+  { province: "Batanes",              zone_code: "Zone 7B" },
+  { province: "Basco",                zone_code: "Zone 7B" },
+];
+
 // ── Root builder ───────────────────────────────────────────────────────────────
 
 export function buildDefaultRates(carrierId: string): BalikbayanRates {
   return {
-    carrier_id:        carrierId,
-    box_sizes:         DEFAULT_BOX_SIZES,
-    sea_cargo:         DEFAULT_SEA_CARGO,
-    air_cargo_zones:   DEFAULT_AIR_ZONES,
-    air_cargo_fixed:   DEFAULT_AIR_FIXED,
-    ph_delivery_zones: DEFAULT_PH_DELIVERY,
-    volumetric_groups: DEFAULT_VOLUMETRIC,
-    bundles:           DEFAULT_BUNDLES,
-    addons:            DEFAULT_ADDONS,
-    updated_at:        new Date().toISOString(),
+    carrier_id:           carrierId,
+    box_sizes:            DEFAULT_BOX_SIZES,
+    sea_cargo:            DEFAULT_SEA_CARGO,
+    air_cargo_zones:      DEFAULT_AIR_ZONES,
+    air_cargo_fixed:      DEFAULT_AIR_FIXED,
+    ph_delivery_zones:    DEFAULT_PH_DELIVERY,
+    ph_delivery_currency: "PHP",
+    province_zone_map:    DEFAULT_PROVINCE_ZONE_MAP,
+    volumetric_groups:    DEFAULT_VOLUMETRIC,
+    bundles:              DEFAULT_BUNDLES,
+    addons:               DEFAULT_ADDONS,
+    updated_at:           new Date().toISOString(),
   };
 }

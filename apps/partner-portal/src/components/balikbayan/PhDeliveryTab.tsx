@@ -2,11 +2,15 @@
 import { useState } from "react";
 import { Plus, Trash2, Download } from "lucide-react";
 import { GlassCard } from "@/components/ui/glass-card";
+import { CurrencySelect } from "@/components/balikbayan/CurrencySelect";
+import { fmtCurrency } from "@/lib/data/currencies";
 import type { PhDeliveryZone, BoxSize } from "@/lib/api/balikbayan-rates";
 
 interface Props {
   zones: PhDeliveryZone[];
   boxSizes: BoxSize[];
+  currency: string;              // ISO 4217 — applies to all zone prices
+  onCurrencyChange: (code: string) => void;
   editing: boolean;
   onChange: (zones: PhDeliveryZone[]) => void;
 }
@@ -32,10 +36,10 @@ function regionOf(code: string): string {
   return prefix ? REGION_PREFIXES[prefix] : "Other";
 }
 
-function exportCsv(zones: PhDeliveryZone[], boxSizes: BoxSize[]) {
-  const header = ["zone_code", "zone_name", "coverage", ...boxSizes.map((s) => s.id), "transit_days"].join(",");
+function exportCsv(zones: PhDeliveryZone[], boxSizes: BoxSize[], currency: string) {
+  const header = ["zone_code", "zone_name", "coverage", "currency", ...boxSizes.map((s) => s.id), "transit_days"].join(",");
   const rows   = zones.map((z) =>
-    [`"${z.zone_code}"`, `"${z.zone_name}"`, `"${z.coverage}"`, ...boxSizes.map((s) => z.prices[s.id] ?? 0), `"${z.transit_days}"`].join(",")
+    [`"${z.zone_code}"`, `"${z.zone_name}"`, `"${z.coverage}"`, currency, ...boxSizes.map((s) => z.prices[s.id] ?? 0), `"${z.transit_days}"`].join(",")
   );
   const blob = new Blob([[header, ...rows].join("\n")], { type: "text/csv;charset=utf-8" });
   const url  = URL.createObjectURL(blob);
@@ -43,7 +47,7 @@ function exportCsv(zones: PhDeliveryZone[], boxSizes: BoxSize[]) {
   document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
 }
 
-export function PhDeliveryTab({ zones, boxSizes, editing, onChange }: Props) {
+export function PhDeliveryTab({ zones, boxSizes, currency, onCurrencyChange, editing, onChange }: Props) {
   const [search, setSearch] = useState("");
 
   const colTemplate = `80px 160px 1fr ${boxSizes.map(() => "90px").join(" ")} 90px 36px`;
@@ -80,17 +84,28 @@ export function PhDeliveryTab({ zones, boxSizes, editing, onChange }: Props) {
         <div>
           <h3 className="font-heading text-sm font-semibold text-white">Philippine Local Delivery Zones</h3>
           <p className="text-2xs font-mono text-white/30 mt-0.5">
-            From port of Manila / Cebu → to recipient's province · always <span className="text-green-signal font-bold">₱ PHP</span> · added on top of sea/air freight
+            From port of Manila / Cebu → to recipient&apos;s province · priced in{" "}
+            <span className="text-green-signal font-bold">{currency}</span> · added on top of sea/air freight
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {editing && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-2xs font-mono text-white/40">Currency:</span>
+              <CurrencySelect
+                value={currency}
+                onChange={onCurrencyChange}
+                className="rounded-md border border-glass-border bg-glass-100 px-2 py-1.5 text-xs text-white outline-none focus:border-green-signal/40 w-20"
+              />
+            </div>
+          )}
           <input
             value={search} onChange={(e) => setSearch(e.target.value)}
             placeholder="Filter zone / province…"
             className="rounded-lg border border-glass-border bg-glass-100 px-3 py-1.5 text-xs text-white placeholder-white/30 outline-none focus:border-green-signal/40 w-44"
           />
           {!editing && (
-            <button onClick={() => exportCsv(zones, boxSizes)}
+            <button onClick={() => exportCsv(zones, boxSizes, currency)}
               className="flex items-center gap-1.5 rounded-lg border border-glass-border px-3 py-1.5 text-xs text-white/60 hover:text-white transition-colors">
               <Download size={12} /> CSV
             </button>
@@ -144,7 +159,7 @@ export function PhDeliveryTab({ zones, boxSizes, editing, onChange }: Props) {
                         className={inputCls + " text-center"} />
                     ) : (
                       <span key={s.id} className="text-xs font-bold font-mono text-green-signal text-center">
-                        ₱{(z.prices[s.id] ?? 0).toLocaleString()}
+                        {fmtCurrency(z.prices[s.id] ?? 0, currency)}
                       </span>
                     )
                   )}
@@ -175,8 +190,9 @@ export function PhDeliveryTab({ zones, boxSizes, editing, onChange }: Props) {
 
       <div className="px-5 py-2 border-t border-glass-border/40">
         <p className="text-2xs font-mono text-white/20">
-          ★ PH local delivery is always charged in Philippine Peso (₱). Transit days start from port arrival.
-          BARMM zones may require additional security clearance. Island deliveries subject to vessel schedule.
+          ★ PH local delivery is charged in <span className="text-white/40">{currency}</span>.
+          Transit days start from port arrival. BARMM zones may require additional clearance.
+          Island deliveries subject to vessel schedule.
         </p>
       </div>
     </GlassCard>
