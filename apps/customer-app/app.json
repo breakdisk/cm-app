@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "LogisticOS",
-    "slug": "logisticos-customer",
+    "slug": "cargomarketcustapp",
     "version": "0.1.0",
     "orientation": "portrait",
     "scheme": "logisticos",
@@ -19,7 +19,11 @@
       "adaptiveIcon": {
         "backgroundColor": "#050810"
       },
-      "package": "io.logisticos.customer"
+      "package": "io.logisticos.customer",
+      "permissions": [
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -30,12 +34,22 @@
       "expo-secure-store",
       [
         "expo-notifications",
-        { "sounds": [] }
+        {
+          "sounds": []
+        }
       ],
       [
         "expo-location",
-        { "locationWhenInUsePermission": "Allow LogisticOS to use your location for delivery tracking." }
+        {
+          "locationWhenInUsePermission": "Allow LogisticOS to use your location for delivery tracking."
+        }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "b6f52d17-dfea-45cf-88bb-c00907b0d90c"
+      }
+    },
+    "owner": "cargomarket"
   }
 }

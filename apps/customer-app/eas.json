@@ -1,0 +1,65 @@
+{
+  "cli": {
+    "version": ">= 12.0.0",
+    "appVersionSource": "local"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk",
+        "gradleCommand": ":app:assembleDebug"
+      },
+      "ios": {
+        "simulator": true
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "http://75.119.138.135:8000",
+        "EXPO_PUBLIC_IDENTITY_URL": "http://75.119.138.135:8001",
+        "EXPO_PUBLIC_COMPLIANCE_URL": "http://75.119.138.135:8017",
+        "EXPO_PUBLIC_ORDER_INTAKE_URL": "http://75.119.138.135:8004",
+        "EXPO_PUBLIC_DELIVERY_URL": "http://75.119.138.135:8007"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "http://75.119.138.135:8000",
+        "EXPO_PUBLIC_IDENTITY_URL": "http://75.119.138.135:8001",
+        "EXPO_PUBLIC_COMPLIANCE_URL": "http://75.119.138.135:8017",
+        "EXPO_PUBLIC_ORDER_INTAKE_URL": "http://75.119.138.135:8004",
+        "EXPO_PUBLIC_DELIVERY_URL": "http://75.119.138.135:8007",
+        "EXPO_PUBLIC_TENANT_SLUG": "cargomarket-ph"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "ios": {
+        "credentialsSource": "remote"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://api.cargomarket.net",
+        "EXPO_PUBLIC_IDENTITY_URL": "https://api.cargomarket.net",
+        "EXPO_PUBLIC_COMPLIANCE_URL": "https://api.cargomarket.net",
+        "EXPO_PUBLIC_ORDER_INTAKE_URL": "https://api.cargomarket.net",
+        "EXPO_PUBLIC_DELIVERY_URL": "https://api.cargomarket.net",
+        "EXPO_PUBLIC_TENANT_SLUG": "cargomarket-ph"
+      }
+    }
+  },
+  "submit": {
+    "production": {
+      "android": {
+        "serviceAccountKeyPath": "./service-account.json",
+        "track": "internal"
+      }
+    }
+  }
+}
