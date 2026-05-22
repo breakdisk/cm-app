@@ -30,6 +30,13 @@ pub struct CreateShipmentCommand {
     pub merchant_reference: Option<String>,  // Merchant's own order ID
     pub description: Option<String>,         // Contents description e.g. "Clothes, Electronics"
 
+    /// E-commerce platform that originated this shipment (set by connector, ignored for direct API calls).
+    #[serde(default)]
+    pub source_platform: Option<String>,
+    /// Platform-native order ID for deduplication (set by connector).
+    #[serde(default)]
+    pub external_order_id: Option<String>,
+
     /// Number of physical pieces in this shipment (1..=999). Defaults to 1.
     /// For Balikbayan: number of boxes. For standard: usually 1.
     pub piece_count: Option<u16>,
@@ -65,6 +72,41 @@ pub struct AddressInput {
     pub postal_code: String,
     #[validate(length(min = 2, max = 2))]
     pub country_code: String,   // "PH"
+}
+
+/// Command issued by the connectors service via the internal (Istio mTLS) endpoint.
+/// Carries all fields needed to create a shipment without a JWT — tenant identity
+/// is asserted by the connector service which verified the platform HMAC first.
+#[derive(Debug, Deserialize, Validate)]
+pub struct InternalCreateShipmentCommand {
+    pub tenant_id:         uuid::Uuid,
+    pub merchant_id:       uuid::Uuid,
+    /// Used to derive the 3-char AWB tenant code (same algorithm as the HTTP handler).
+    pub tenant_slug:       String,
+    pub source_platform:   String,    // "shopify" | "woocommerce"
+    pub external_order_id: Option<String>,
+
+    #[validate(length(min = 1, max = 200))]
+    pub customer_name:    String,
+    #[validate(length(min = 7, max = 20))]
+    pub customer_phone:   String,
+    pub customer_email:   Option<String>,
+
+    pub origin:           AddressInput,
+    pub destination:      AddressInput,
+
+    pub service_type:     String,
+    #[validate(range(min = 1, max = 70000))]
+    pub weight_grams:     u32,
+    pub length_cm:        Option<u32>,
+    pub width_cm:         Option<u32>,
+    pub height_cm:        Option<u32>,
+
+    pub declared_value_cents: Option<i64>,
+    pub cod_amount_cents:     Option<i64>,
+    pub merchant_reference:   Option<String>,
+    pub description:          Option<String>,
+    pub special_instructions: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

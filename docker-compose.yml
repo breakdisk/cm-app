@@ -163,6 +163,7 @@ services:
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
       SERVICES__COMPLIANCE_URL: http://compliance:8017
       SERVICES__WEBHOOKS_URL: http://webhooks:8018
+      SERVICES__CONNECTORS_URL: http://connectors:8021
       RUST_LOG: info
     depends_on:
       postgres:
@@ -1109,6 +1110,36 @@ services:
       test:
         - CMD-SHELL
         - curl -sf http://localhost:8018/health || exit 1
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  connectors:
+    image: ghcr.io/breakdisk/logisticos-service-connectors:latest
+    container_name: logisticos-connectors
+    restart: unless-stopped
+    ports:
+      - 8021:8021
+    environment:
+      APP__HOST: "0.0.0.0"
+      APP__PORT: "8021"
+      APP__ENV: development
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_connectors
+      DATABASE__MAX_CONNECTIONS: "5"
+      ORDER_INTAKE__INTERNAL_URL: http://order-intake:8004
+      AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
+      PUBLIC_URL: ${CONNECTORS_PUBLIC_URL:-http://localhost:8021}
+      RUST_LOG: info,sqlx=warn
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - logisticos
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl -sf http://localhost:8021/health || exit 1
       interval: 15s
       timeout: 5s
       retries: 5

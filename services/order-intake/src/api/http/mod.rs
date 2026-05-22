@@ -15,7 +15,7 @@ use logisticos_auth::rbac::permissions;
 use logisticos_errors::AppError;
 
 use crate::application::{
-    commands::{BulkCreateShipmentCommand, CancelShipmentCommand, CreateShipmentCommand, RescheduleShipmentCommand},
+    commands::{BulkCreateShipmentCommand, CancelShipmentCommand, CreateShipmentCommand, InternalCreateShipmentCommand, RescheduleShipmentCommand},
     queries::ShipmentQueryService,
     services::shipment_service::ShipmentService,
 };
@@ -212,10 +212,67 @@ pub fn router(state: AppState) -> Router {
         )
         // Internal service-to-service endpoints — no JWT auth required (Istio mTLS enforces caller identity).
         .nest("/v1/internal", Router::new()
+            .route("/shipments",             post(internal_create_shipment))
             .route("/shipments/:id/billing", get(get_shipment_billing))
             .route("/billing/shipments",     get(list_billing_shipments))
         )
         .with_state(state)
+}
+
+/// Internal endpoint called by the connectors service after verifying platform HMAC.
+/// No JWT required — Istio mTLS enforces that only internal services can reach this.
+async fn internal_create_shipment(
+    State(s): State<AppState>,
+    Json(cmd): Json<InternalCreateShipmentCommand>,
+) -> impl IntoResponse {
+    // Derive AWB tenant code from slug (same algorithm as the authenticated handler).
+    let tenant_code: String = cmd.tenant_slug
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() && *c != 'O' && *c != 'I')
+        .take(3)
+        .collect::<String>()
+        .to_uppercase();
+
+    let create_cmd = CreateShipmentCommand {
+        tenant_id:         cmd.tenant_id,
+        merchant_id:       cmd.merchant_id,
+        tenant_code,
+        customer_name:     cmd.customer_name,
+        customer_phone:    cmd.customer_phone,
+        customer_email:    cmd.customer_email,
+        origin:            cmd.origin,
+        destination:       cmd.destination,
+        service_type:      cmd.service_type,
+        weight_grams:      cmd.weight_grams,
+        length_cm:         cmd.length_cm,
+        width_cm:          cmd.width_cm,
+        height_cm:         cmd.height_cm,
+        declared_value_cents: cmd.declared_value_cents,
+        cod_amount_cents:  cmd.cod_amount_cents,
+        special_instructions: cmd.special_instructions,
+        merchant_reference: cmd.merchant_reference,
+        description:       cmd.description,
+        source_platform:   Some(cmd.source_platform),
+        external_order_id: cmd.external_order_id,
+        piece_count:       None,
+        booked_by_customer: false,
+        auto_dispatch:     Some(true),
+    };
+
+    match s.svc.create(create_cmd).await {
+        Ok(shipment) => Ok::<_, AppError>((
+            StatusCode::CREATED,
+            Json(serde_json::json!({
+                "id":  shipment.id.inner(),
+                "awb": shipment.awb.as_str(),
+                "status": "pending",
+            })),
+        )),
+        Err(e) => {
+            tracing::error!(error = ?e, "internal_create_shipment: service error");
+            Err(e)
+        }
+    }
 }
 
 async fn get_shipment_billing(

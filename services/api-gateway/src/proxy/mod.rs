@@ -90,6 +90,9 @@ impl ProxyClient {
         // Webhooks management (admin portal Settings → Webhooks tab)
         } else if path.starts_with("/v1/webhooks") {
             Some(&self.services.webhooks_url)
+        // E-commerce connectors (Shopify, WooCommerce, etc.)
+        } else if path.starts_with("/v1/connectors") {
+            Some(&self.services.connectors_url)
         } else {
             None
         }

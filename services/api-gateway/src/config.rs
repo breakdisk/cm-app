@@ -53,6 +53,7 @@ pub struct ServicesConfig {
     pub ai_layer_url:             String,
     pub compliance_url:           String,
     pub webhooks_url:             String,
+    pub connectors_url:           String,  // http://connectors:8021
 }
 
 #[derive(Debug, Deserialize, Clone)]

@@ -65,6 +65,9 @@ struct ShipmentRow {
     declared_value_cents: Option<i64>,
     cod_amount_cents:     Option<i64>,
     special_instructions: Option<String>,
+    merchant_reference:   Option<String>,
+    source_platform:      Option<String>,
+    external_order_id:    Option<String>,
 
     created_at:           chrono::DateTime<chrono::Utc>,
     updated_at:           chrono::DateTime<chrono::Utc>,
@@ -154,6 +157,9 @@ impl ShipmentRow {
             declared_value:       self.declared_value_cents.map(|v| Money::new(v, Currency::PHP)),
             cod_amount:           self.cod_amount_cents.map(|v| Money::new(v, Currency::PHP)),
             special_instructions: self.special_instructions,
+            merchant_reference:   self.merchant_reference,
+            source_platform:      self.source_platform,
+            external_order_id:    self.external_order_id,
             created_at:           self.created_at,
             updated_at:           self.updated_at,
         }
@@ -190,6 +196,7 @@ const SHIPMENT_COLS: &str = r#"
     dest_postal_code, dest_country_code, dest_lat, dest_lng,
     weight_grams, length_cm, width_cm, height_cm,
     declared_value_cents, cod_amount_cents, special_instructions,
+    merchant_reference, source_platform, external_order_id,
     created_at, updated_at
 "#;
 
@@ -234,6 +241,9 @@ fn row_to_shipment_row(r: &sqlx::postgres::PgRow) -> ShipmentRow {
         declared_value_cents: r.get("declared_value_cents"),
         cod_amount_cents:     r.get("cod_amount_cents"),
         special_instructions: r.get("special_instructions"),
+        merchant_reference:   r.get("merchant_reference"),
+        source_platform:      r.get("source_platform"),
+        external_order_id:    r.get("external_order_id"),
         created_at:           r.get("created_at"),
         updated_at:           r.get("updated_at"),
     }
@@ -329,13 +339,14 @@ impl ShipmentRepository for PgShipmentRepository {
                     dest_postal_code, dest_country_code, dest_lat, dest_lng,
                     weight_grams, length_cm, width_cm, height_cm,
                     declared_value_cents, cod_amount_cents, special_instructions,
+                    merchant_reference, source_platform, external_order_id,
                     created_at, updated_at
                 ) VALUES (
                     $1,$2,$3,$4,$5,$6,$7,$8,$9,
                     $10,$11,$12,$13,
                     $14,$15,$16,$17,$18,$19,$20,$21,$22,
                     $23,$24,$25,$26,$27,$28,$29,$30,$31,
-                    $32,$33,$34,$35,$36,$37,$38,$39,$40
+                    $32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43
                 )
                 ON CONFLICT (id) DO UPDATE SET
                     status               = EXCLUDED.status,
@@ -349,6 +360,9 @@ impl ShipmentRepository for PgShipmentRepository {
                     dest_lat             = EXCLUDED.dest_lat,
                     dest_lng             = EXCLUDED.dest_lng,
                     special_instructions = EXCLUDED.special_instructions,
+                    merchant_reference   = EXCLUDED.merchant_reference,
+                    source_platform      = EXCLUDED.source_platform,
+                    external_order_id    = EXCLUDED.external_order_id,
                     updated_at           = EXCLUDED.updated_at"#,
             )
             .bind(s.id.inner())
@@ -392,6 +406,9 @@ impl ShipmentRepository for PgShipmentRepository {
             .bind(s.declared_value.map(|m| m.amount))
             .bind(s.cod_amount.map(|m| m.amount))
             .bind(s.special_instructions.as_deref())
+            .bind(s.merchant_reference.as_deref())
+            .bind(s.source_platform.as_deref())
+            .bind(s.external_order_id.as_deref())
             .bind(s.created_at)
             .bind(s.updated_at)
             .execute(&self.pool)

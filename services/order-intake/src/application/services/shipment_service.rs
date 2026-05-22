@@ -219,6 +219,9 @@ impl ShipmentService {
             declared_value: cmd.declared_value_cents.map(|v| Money::new(v, Currency::PHP)),
             cod_amount: cmd.cod_amount_cents.map(|v| Money::new(v, Currency::PHP)),
             special_instructions: cmd.special_instructions,
+            merchant_reference: cmd.merchant_reference.clone(),
+            source_platform: cmd.source_platform.clone(),
+            external_order_id: cmd.external_order_id.clone(),
             created_at: now,
             updated_at: now,
         };

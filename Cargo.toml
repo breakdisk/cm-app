@@ -33,6 +33,7 @@ members = [
     "services/ai-layer",
     "services/api-gateway",
     "services/webhooks",
+    "services/connectors",
 ]
 
 [workspace.package]
@@ -84,6 +85,8 @@ argon2       = { version = "0.5" }
 rand         = { version = "0.8" }
 sha2         = { version = "0.10" }
 subtle       = { version = "2" }
+hmac         = { version = "0.12" }
+base64       = { version = "0.22" }
 
 # IDs & Time
 uuid         = { version = "1", features = ["v4", "serde"] }

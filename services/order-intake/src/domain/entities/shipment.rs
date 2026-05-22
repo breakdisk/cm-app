@@ -33,6 +33,17 @@ pub struct Shipment {
     pub declared_value: Option<Money>,
     pub cod_amount: Option<Money>,
     pub special_instructions: Option<String>,
+    /// Merchant's own order reference (e.g. their internal order number).
+    /// Written on creation; appears in GET responses and Kafka events.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merchant_reference: Option<String>,
+    /// The e-commerce platform that originated this shipment.
+    /// Values: "shopify" | "woocommerce" | null for direct API creation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_platform: Option<String>,
+    /// Platform-native order ID — used for deduplication and cross-reference.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_order_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -131,6 +142,9 @@ mod tests {
             declared_value:       None,
             cod_amount:           None,
             special_instructions: None,
+            merchant_reference:   None,
+            source_platform:      None,
+            external_order_id:    None,
             created_at:           chrono::Utc::now(),
             updated_at:           chrono::Utc::now(),
         };
@@ -162,6 +176,9 @@ mod tests {
             declared_value:       None,
             cod_amount:           None,
             special_instructions: None,
+            merchant_reference:   None,
+            source_platform:      None,
+            external_order_id:    None,
             created_at:           chrono::Utc::now(),
             updated_at:           chrono::Utc::now(),
         };

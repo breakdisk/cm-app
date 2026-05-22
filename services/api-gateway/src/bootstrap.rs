@@ -115,7 +115,10 @@ async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) -> Res
         || path == "/v1/auth/otp/send"
         || path == "/v1/auth/otp/verify"
         || path == "/v1/auth/forgot-password"
-        || path == "/v1/auth/reset-password";
+        || path == "/v1/auth/reset-password"
+        // Connector webhook endpoints — HMAC is the auth mechanism; no JWT expected.
+        || path.starts_with("/v1/connectors/shopify/")
+        || path.starts_with("/v1/connectors/woocommerce/");
 
     let (tenant_id, subscription_tier) = if is_public {
         (String::from("public"), String::from("starter"))
