@@ -190,7 +190,11 @@ export function HistoryScreen({ navigation }: { navigation: any }) {
   }
 
   function handleTrackPickup(item: ShipmentRecord) {
-    navigation.navigate("Collection", { awb: item.awb, type: item.type });
+    navigation.navigate("Collection", {
+      awb: item.awb,
+      shipmentId: item.id,
+      type: item.type,
+    });
   }
 
   const filtered = shipments.filter((s) => {

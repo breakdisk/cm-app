@@ -28,23 +28,51 @@ export function useShipments(options: UseShipmentsOptions = {}) {
       const response = await shipmentsService.listShipments({ skip, limit, status });
 
       // Map API response (order-intake shape) to Redux Shipment type
-      const shipments: Shipment[] = response.shipments.map((ship: any) => ({
-        awb: ship.awb ?? ship.tracking_number,
-        status: ship.status as any,
-        origin: typeof ship.origin === 'object'
-          ? `${ship.origin.line1}, ${ship.origin.city}`
-          : ship.origin,
-        destination: typeof ship.destination === 'object'
-          ? `${ship.destination.line1}, ${ship.destination.city}`
-          : ship.destination,
-        date: ship.created_at ?? ship.createdAt,
-        fee: ship.cod_amount_cents ? ship.cod_amount_cents / 100 : 0,
-        totalFee: ship.cod_amount_cents ? ship.cod_amount_cents / 100 : 0,
-        currency: 'PHP' as const,
-        type: (ship.destination?.country_code === 'PH' ? 'local' : 'international') as any,
-        recipientName: ship.customer_name,
-        recipientPhone: ship.customer_phone,
-      }));
+      const shipments: Shipment[] = response.shipments.map((ship: any) => {
+        // Determine shipment type: balikbayan is always international; otherwise
+        // check if either endpoint is outside PH.
+        const isIntl =
+          ship.service_type === 'balikbayan' ||
+          (ship.destination?.country_code && ship.destination.country_code !== 'PH') ||
+          (ship.origin?.country_code && ship.origin.country_code !== 'PH');
+
+        const originStr = typeof ship.origin === 'object'
+          ? `${ship.origin.line1 ?? ''}, ${ship.origin.city ?? ''}`.replace(/^,\s*/, '').trim()
+          : (ship.origin ?? '');
+
+        const destinationStr = typeof ship.destination === 'object'
+          ? `${ship.destination.line1 ?? ''}, ${ship.destination.city ?? ''}`.replace(/^,\s*/, '').trim()
+          : (ship.destination ?? '');
+
+        const codCents = ship.cod_amount_cents ?? 0;
+
+        return {
+          id:           ship.id,
+          awb:          ship.awb ?? ship.tracking_number,
+          status:       ship.status as any,
+          origin:       originStr,
+          destination:  destinationStr,
+          date:         ship.created_at ?? ship.createdAt,
+          bookedAt:     ship.created_at ?? ship.createdAt,
+          // Freight fee: order-intake list doesn't expose the rated freight amount
+          // yet (it's computed by the payments service). Use 0 until the field lands.
+          fee:          0,
+          totalFee:     0,
+          currency:     'PHP' as const,
+          type:         (isIntl ? 'international' : 'local') as any,
+          freightMode:  ship.service_type === 'balikbayan' ? 'sea' : undefined,
+          isCOD:        codCents > 0,
+          codAmount:    codCents > 0 ? String(codCents / 100) : undefined,
+          estimatedDelivery: ship.estimated_delivery,
+          description:  ship.description,
+          weight:       ship.weight_grams != null ? String(ship.weight_grams / 1000) : undefined,
+          recipientName:  ship.customer_name,
+          recipientPhone: ship.customer_phone,
+          destCountry:  (!isIntl || ship.destination?.country_code === 'PH')
+            ? undefined
+            : ship.destination?.country_code,
+        };
+      });
 
       dispatch(
         setShipments({

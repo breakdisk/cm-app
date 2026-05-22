@@ -113,7 +113,11 @@ export function HomeScreen({ navigation }: any) {
             <View key={shipment.awb} style={{ marginBottom: 12 }}>
               <RecentShipmentCard
                 shipment={shipment}
-                onPress={() => navigation.navigate('Track', { awb: shipment.awb })}
+                onPress={() => navigation.navigate('Collection', {
+                  awb: shipment.awb,
+                  shipmentId: shipment.id,
+                  type: shipment.type,
+                })}
               />
             </View>
           ))

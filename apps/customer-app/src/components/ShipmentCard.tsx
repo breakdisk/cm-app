@@ -29,9 +29,9 @@ export default function ShipmentCard({ shipment, onPress }: ShipmentCardProps) {
 
           {/* Date + Fee */}
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-            <Text style={{ color: COLORS.TEXT_TERTIARY, fontSize: 12 }}>{formatDate(new Date(shipment.date))}</Text>
+            <Text style={{ color: COLORS.TEXT_TERTIARY, fontSize: 12 }}>{formatDate(shipment.date)}</Text>
             <Text style={{ color: COLORS.CYAN, fontSize: 13, fontWeight: '600' }}>
-              {formatCurrency(shipment.fee, shipment.currency)}
+              {formatCurrency(shipment.fee ?? 0, shipment.currency ?? 'PHP')}
             </Text>
           </View>
         </View>

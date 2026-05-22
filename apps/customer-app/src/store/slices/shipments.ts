@@ -3,6 +3,8 @@ import { createSlice, PayloadAction } from '@reduxjs/toolkit';
 export type ShipmentStatusType = 'pending' | 'processing' | 'picked' | 'in_transit' | 'delivered' | 'failed' | 'cancelled' | 'confirmed' | 'picked_up' | 'out_for_delivery' | 'delivery_attempted' | 'returned';
 
 export interface Shipment {
+  /** Shipment UUID from order-intake (used to query order-intake directly for fresh tracking). */
+  id?: string;
   awb: string;
   status: ShipmentStatusType;
   origin: string;
