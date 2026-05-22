@@ -56,6 +56,7 @@ impl TenantService {
         self.user_repo.save(&owner).await.map_err(AppError::Internal)?;
 
         // Publish event — other services react to this (engagement sends welcome email, etc.)
+        // Fire-and-forget: a missing Kafka topic must not roll back tenant creation.
         let event = Event::new(
             "identity",
             "tenant.created",
@@ -69,8 +70,10 @@ impl TenantService {
                 subscription_tier: format!("{:?}", tenant.subscription_tier).to_lowercase(),
             },
         );
-        self.kafka.publish_event(topics::TENANT_CREATED, &event).await
-            .map_err(AppError::Internal)?;
+        if let Err(e) = self.kafka.publish_event(topics::TENANT_CREATED, &event).await {
+            tracing::warn!(tenant_id = %tenant.id, error = %e,
+                "Failed to publish TENANT_CREATED event — tenant saved, downstream consumers may miss this");
+        }
 
         tracing::info!(tenant_id = %tenant.id, slug = %tenant.slug, "Tenant created");
         Ok(tenant)
@@ -261,9 +264,33 @@ impl TenantService {
             ));
         }
 
-        // Check for duplicate email within tenant
-        if self.user_repo.find_by_email(tenant_id, &cmd.email).await.map_err(AppError::Internal)?.is_some() {
-            return Err(AppError::BusinessRule(format!("User with email '{}' already exists", cmd.email)));
+        // Check for duplicate email within tenant.
+        // Idempotent re-invite: if a user with the same email already exists in
+        // this tenant and has the same role (e.g. a prior request saved the row
+        // but crashed before returning), re-issue a fresh temp password instead
+        // of rejecting. This lets the admin modal safely retry without manual
+        // DB cleanup. Conflicting roles (different role on existing user) still
+        // raise an error.
+        if let Some(mut existing) = self.user_repo.find_by_email(tenant_id, &cmd.email).await.map_err(AppError::Internal)? {
+            let same_roles = cmd.roles.iter().all(|r| existing.roles.contains(r));
+            if !same_roles {
+                return Err(AppError::BusinessRule(format!(
+                    "User with email '{}' already exists with different roles", cmd.email
+                )));
+            }
+            // Re-issue a fresh temp password so the admin can complete onboarding.
+            let temp_password = generate_temp_password();
+            let password_hash = hash_password(&temp_password)
+                .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
+            existing.password_hash = password_hash;
+            // Refresh phone if provided (in case it was wrong on the first attempt).
+            if let Some(phone) = cmd.phone_number {
+                existing.phone_number = Some(normalise_phone(&phone));
+            }
+            existing.updated_at = chrono::Utc::now();
+            self.user_repo.save(&existing).await.map_err(AppError::Internal)?;
+            tracing::info!(user_id = %existing.id, "Re-issued temp password for existing user on idempotent invite");
+            return Ok((existing, temp_password));
         }
 
         // Invited users get a temporary password — they should change on first login.
@@ -295,6 +322,7 @@ impl TenantService {
         self.user_repo.save(&user).await.map_err(AppError::Internal)?;
 
         // Emit USER_CREATED so downstream services (e.g. dispatch) can populate caches.
+        // Fire-and-forget: a missing Kafka topic must not roll back user creation.
         let event = Event::new(
             "identity",
             "user.created",
@@ -306,9 +334,11 @@ impl TenantService {
                 roles:     user.roles.clone(),
             },
         );
-        self.kafka.publish_event(topics::USER_CREATED, &event).await
-            .map_err(AppError::Internal)?;
-        tracing::info!(user_id = %user.id, roles = ?user.roles, "User created, USER_CREATED event emitted");
+        if let Err(e) = self.kafka.publish_event(topics::USER_CREATED, &event).await {
+            tracing::warn!(user_id = %user.id, error = %e,
+                "Failed to publish USER_CREATED event — user saved, downstream consumers may miss this");
+        }
+        tracing::info!(user_id = %user.id, roles = ?user.roles, "User invited");
 
         Ok((user, temp_password))
     }
