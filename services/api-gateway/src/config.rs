@@ -51,9 +51,13 @@ pub struct ServicesConfig {
     pub marketing_url:            String,
     pub business_logic_url:       String,
     pub ai_layer_url:             String,
-    pub compliance_url:           String,
-    pub webhooks_url:             String,
-    pub connectors_url:           String,  // http://connectors:8021
+    /// Optional services — gateway returns 503 for these paths when unset rather than crashing at startup.
+    #[serde(default)]
+    pub compliance_url:           Option<String>,
+    #[serde(default)]
+    pub webhooks_url:             Option<String>,
+    #[serde(default)]
+    pub connectors_url:           Option<String>,  // http://connectors:8021
 }
 
 #[derive(Debug, Deserialize, Clone)]

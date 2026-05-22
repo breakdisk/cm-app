@@ -86,13 +86,13 @@ impl ProxyClient {
             Some(&self.services.business_logic_url)
         // Compliance (note: uses /api/v1/compliance/* prefix, not /v1/)
         } else if path.starts_with("/api/v1/compliance") {
-            Some(&self.services.compliance_url)
+            self.services.compliance_url.as_deref()
         // Webhooks management (admin portal Settings → Webhooks tab)
         } else if path.starts_with("/v1/webhooks") {
-            Some(&self.services.webhooks_url)
+            self.services.webhooks_url.as_deref()
         // E-commerce connectors (Shopify, WooCommerce, etc.)
         } else if path.starts_with("/v1/connectors") {
-            Some(&self.services.connectors_url)
+            self.services.connectors_url.as_deref()
         } else {
             None
         }
