@@ -86,10 +86,11 @@ export function createApiClient(baseURL: string): AxiosInstance {
         }
       }
 
-      // Transform error response
+      // Transform error response — server returns { error: { code, message } }
       const status = error.response?.status ?? 0;
-      const message = (error.response?.data as any)?.message ?? error.message;
-      throw new ApiError(status, message, error.response?.data);
+      const data = error.response?.data as any;
+      const message = data?.error?.message ?? data?.message ?? error.message;
+      throw new ApiError(status, message, data);
     }
   );
 

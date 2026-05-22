@@ -19,7 +19,7 @@ function getComplianceClient() {
     cachedComplianceClient = createApiClient(
       process.env.EXPO_PUBLIC_COMPLIANCE_URL ||
       process.env.EXPO_PUBLIC_API_URL ||
-      'http://localhost:8013'
+      'http://localhost:8017'
     );
   }
   return cachedComplianceClient;

@@ -133,6 +133,7 @@ interface ChatMsg { role: "user" | "ai"; text: string; }
 // ── Main screen ───────────────────────────────────────────────────────────────
 
 export function SupportScreen() {
+  const insets = useSafeAreaInsets();
   const name = useSelector((s: RootState) => s.auth.name);
 
   const [tab,     setTab]     = useState<"faq" | "chat">("faq");
@@ -167,7 +168,8 @@ export function SupportScreen() {
   return (
     <KeyboardAvoidingView
       style={{ flex: 1, backgroundColor: CANVAS }}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      keyboardVerticalOffset={Platform.OS === "ios" ? insets.top + 8 : 0}
     >
       {/* Hero */}
       <LinearGradient colors={["rgba(255,171,0,0.09)", "transparent"]} style={s.hero}>
@@ -257,8 +259,9 @@ export function SupportScreen() {
         <View style={{ flex: 1 }}>
           <ScrollView
             ref={scrollRef}
-            contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 16, gap: 10 }}
+            contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 16, paddingBottom: 8, gap: 10 }}
             onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
+            keyboardShouldPersistTaps="handled"
           >
             {msgs.map((m, i) => (
               <FadeInView key={i} style={[s.msgRow, m.role === "user" ? s.msgRowUser : s.msgRowAi]}>
@@ -303,8 +306,8 @@ export function SupportScreen() {
             ))}
           </ScrollView>
 
-          {/* Input bar */}
-          <View style={s.inputBar}>
+          {/* Input bar — extra bottom padding for Android gesture nav bar */}
+          <View style={[s.inputBar, { paddingBottom: Math.max(12, insets.bottom + 4) }]}>
             <TextInput
               value={input}
               onChangeText={setInput}

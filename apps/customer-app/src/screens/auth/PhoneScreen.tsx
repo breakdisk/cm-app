@@ -14,7 +14,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useDispatch } from "react-redux";
 import { authActions } from "../../store";
 import type { AppDispatch } from "../../store";
-import { verifyOTP, verifyPhone, getStoredProviderSlug } from "../../services/api/auth";
+import { verifyOTP, verifyPhone, getStoredProviderSlug, DEFAULT_PROVIDER_SLUG } from "../../services/api/auth";
 import { registerForPushNotifications } from "../../services/notifications";
 
 const CANVAS = "#050810";
@@ -70,7 +70,7 @@ export function PhoneScreen() {
   const [countryCode,  setCountryCode]  = useState(COUNTRY_CODES[0]); // default: +971
   const [showPicker,   setShowPicker]   = useState(false);
   const [autoDetected, setAutoDetected] = useState(false);
-  const [providerSlug, setProviderSlug] = useState("");
+  const [providerSlug, setProviderSlug] = useState(DEFAULT_PROVIDER_SLUG);
 
   // Auto-detect country from device timezone
   useEffect(() => {
@@ -87,15 +87,16 @@ export function PhoneScreen() {
   // Prefill the last-used provider slug (or the build-time default) so
   // returning customers don't retype it every sign-in.
   useEffect(() => {
-    getStoredProviderSlug().then((slug) => { if (slug) setProviderSlug(slug); });
+    getStoredProviderSlug().then((slug) => {
+      setProviderSlug(slug); // always apply — getStoredProviderSlug already filters draft- slugs
+    });
   }, []);
   const [phone,       setPhone]       = useState("");
   const [otp,         setOtp]         = useState(["", "", "", "", "", ""]);
   const [error,       setError]       = useState("");
   const [sending,     setSending]     = useState(false);
 
-  // Demo mode: fixed OTP code shown on screen so testers can complete the flow
-  const DEMO_OTP = "123456";
+  const [isDemoMode, setIsDemoMode] = useState(false);
 
   const otpRefs = useRef<(TextInput | null)[]>([]);
 
@@ -107,19 +108,25 @@ export function PhoneScreen() {
     const fullNum = `${countryCode.code}${phone}`;
     try {
       await verifyPhone(fullNum, providerSlug);
+      // Backend reachable — OTP sent to phone
+      setIsDemoMode(false);
+      setOtp(["", "", "", "", "", ""]);
     } catch (e: unknown) {
-      // A wrong provider slug returns 404 — surface it instead of silently
-      // dropping the user into demo mode. Generic network errors fall through
-      // to the demo OTP path below.
-      const status = (e as { response?: { status?: number } })?.response?.status;
+      // ApiError (from client.ts interceptor) exposes status directly; AxiosError via .response.status
+      const status  = (e as any)?.status ?? (e as any)?.response?.status;
+      const message = (e as { message?: string })?.message ?? "Unknown error";
       if (status === 404) {
         setError(`Unknown provider code "${providerSlug.trim()}". Check with your merchant.`);
         setSending(false);
         return;
       }
+      // Backend unreachable or errored — show real error, enter demo mode
+      setIsDemoMode(true);
+      setError(`Server error: ${message}. Using demo mode.`);
+      setOtp(["1","2","3","4","5","6"]);
     }
     setSending(false);
-    setOtp(DEMO_OTP.split(""));
+    setError("");
     setStage("otp");
   }
 
@@ -141,12 +148,15 @@ export function PhoneScreen() {
     const fullPhone = `${countryCode.code}${phone}`;
     try {
       await verifyOTP(fullPhone, code, providerSlug);
-      // Register for push notifications after successful login (non-blocking)
       registerForPushNotifications().catch((err) =>
         console.warn("Push registration failed:", err)
       );
+      // Real login succeeded
+      dispatch(authActions.setPhone(fullPhone));
     } catch (e: unknown) {
-      const status = (e as { response?: { status?: number } })?.response?.status;
+      // ApiError (from client.ts interceptor) exposes status directly; AxiosError via .response.status
+      const status  = (e as any)?.status ?? (e as any)?.response?.status;
+      const message = (e as { message?: string })?.message ?? "Unknown error";
       if (status === 404) {
         setError(`Unknown provider code "${providerSlug.trim()}". Check with your merchant.`);
         setSending(false);
@@ -157,11 +167,17 @@ export function PhoneScreen() {
         setSending(false);
         return;
       }
-      // Backend unreachable — proceed in demo mode
+      if (isDemoMode) {
+        // Already in demo mode — proceed without real auth
+        dispatch(authActions.setPhone(fullPhone));
+      } else {
+        setError(`Login failed: ${message}. Check your server URL in settings.`);
+        setSending(false);
+        return;
+      }
     } finally {
       setSending(false);
     }
-    dispatch(authActions.setPhone(fullPhone));
   }
 
   const fullPhone = `${countryCode.code} ${phone}`;
@@ -259,11 +275,13 @@ export function PhoneScreen() {
 
               {error ? <Text style={s.error}>{error}</Text> : null}
 
-              {/* Demo mode hint */}
-              <View style={s.demoBox}>
-                <Ionicons name="flask-outline" size={13} color={AMBER} />
-                <Text style={s.demoText}>Demo mode — OTP will be auto-filled. Any number works.</Text>
-              </View>
+              {/* Demo mode hint — only shown after a server error activates demo mode */}
+              {isDemoMode && (
+                <View style={s.demoBox}>
+                  <Ionicons name="flask-outline" size={13} color={AMBER} />
+                  <Text style={s.demoText}>Demo mode — server unreachable. OTP will be auto-filled.</Text>
+                </View>
+              )}
 
               <Pressable
                 onPress={handleSendOtp}

@@ -15,11 +15,13 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
-import * as FileSystem from "expo-file-system";
 import { useDispatch, useSelector } from "react-redux";
 import { authActions } from "../../store";
 import type { RootState, AppDispatch, IdType } from "../../store";
 import { complianceApi, type ContentType } from "../../services/api/compliance";
+import { getStoredToken, logout } from "../../services/api/auth";
+
+const RED = "#FF3B5C";
 
 const CANVAS  = "#050810";
 const CYAN    = "#00E5FF";
@@ -71,13 +73,27 @@ export function KYCScreen() {
 
   const [selectedId,  setSelectedId]  = useState<IdType | null>(null);
   const [imageUri,    setImageUri]    = useState<string | null>(null);
+  const [imageBase64, setImageBase64] = useState<string | null>(null);
   const [imageMime,   setImageMime]   = useState<ContentType>("image/jpeg");
   const [docNumber,   setDocNumber]   = useState<string>("");
   const [submitting,  setSubmitting]  = useState(false);
+  const [isDemo,      setIsDemo]      = useState(false);
+
+  // Check on mount whether the user has a real JWT. If not, they are in demo
+  // mode (OTP bypassed the backend) and cannot upload to the compliance service.
+  React.useEffect(() => {
+    getStoredToken().then((t) => setIsDemo(!t));
+  }, []);
+
+  function clearImage() {
+    setImageUri(null);
+    setImageBase64(null);
+  }
 
   async function pickImage() {
     if (Platform.OS === "web") {
       setImageUri("https://via.placeholder.com/400x240/0A0F1E/00E5FF?text=ID+Document");
+      setImageBase64("placeholder");
       return;
     }
     try {
@@ -91,13 +107,16 @@ export function KYCScreen() {
         quality: 0.85,
         allowsEditing: true,
         aspect: [4, 3],
+        base64: true,
       });
-      if (!result.canceled && result.assets.length > 0) {
+      if (!result.canceled && result.assets?.length > 0) {
         const asset = result.assets[0];
+        if (!asset) return;
         setImageUri(asset.uri);
+        setImageBase64(asset.base64 ?? null);
         setImageMime(inferMime(asset.mimeType ?? asset.uri));
       }
-    } catch (err) {
+    } catch {
       Alert.alert("Error", "Could not open photo library. Please try again.");
     }
   }
@@ -114,37 +133,58 @@ export function KYCScreen() {
         quality: 0.85,
         allowsEditing: true,
         aspect: [4, 3],
+        base64: true,
       });
-      if (!result.canceled && result.assets.length > 0) {
+      if (!result.canceled && result.assets?.length > 0) {
         const asset = result.assets[0];
+        if (!asset) return;
         setImageUri(asset.uri);
+        setImageBase64(asset.base64 ?? null);
         setImageMime(inferMime(asset.mimeType ?? asset.uri));
       }
-    } catch (err) {
+    } catch {
       Alert.alert("Error", "Could not open camera. Please try again.");
     }
   }
 
   async function handleSubmit() {
-    if (!selectedId || !imageUri || docNumber.trim().length === 0) return;
+    if (!selectedId || !imageUri || !imageBase64 || docNumber.trim().length === 0) return;
     setSubmitting(true);
     try {
-      // Read the selected image as base64. expo-file-system reads from the
-      // device-local URI that ImagePicker returns; no extra permission needed.
-      const fileBase64 = await FileSystem.readAsStringAsync(imageUri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
+      // Guard: no token means the user is in demo mode or their session expired.
+      const token = await getStoredToken();
+      if (!token) {
+        Alert.alert(
+          "Session expired",
+          "Your session has expired. Please log out and sign in again.",
+          [
+            { text: "Log out", style: "destructive", onPress: async () => { await logout(); dispatch(authActions.logout()); } },
+            { text: "Cancel", style: "cancel" },
+          ]
+        );
+        return;
+      }
 
       await complianceApi.uploadDocument({
-        document_type_code: selectedId,   // "passport" | "emirates_id"
+        document_type_code: selectedId,
         document_number:    docNumber.trim(),
-        file_base64:        fileBase64,
+        file_base64:        imageBase64,
         content_type:       imageMime,
       });
-
-      // Only mark KYC as submitted after the upload succeeds.
       dispatch(authActions.submitKyc({ idType: selectedId }));
     } catch (err: unknown) {
+      const status = (err as { status?: number })?.status;
+      if (status === 401) {
+        Alert.alert(
+          "Session expired",
+          "Your session has expired. Please log out and sign in again.",
+          [
+            { text: "Log out", style: "destructive", onPress: async () => { await logout(); dispatch(authActions.logout()); } },
+            { text: "Cancel", style: "cancel" },
+          ]
+        );
+        return;
+      }
       const msg = (err as { message?: string })?.message ?? "Please check your connection and try again.";
       Alert.alert("Upload failed", msg);
     } finally {
@@ -152,7 +192,7 @@ export function KYCScreen() {
     }
   }
 
-  const canSubmit = !!selectedId && !!imageUri && docNumber.trim().length > 0;
+  const canSubmit = !isDemo && !!selectedId && !!imageUri && !!imageBase64 && docNumber.trim().length > 0;
 
   return (
     <ScrollView style={{ flex: 1, backgroundColor: CANVAS }} contentContainerStyle={{ paddingBottom: 48 }}>
@@ -172,6 +212,25 @@ export function KYCScreen() {
         </FadeInView>
       </LinearGradient>
 
+      {/* Demo-mode warning — shown when user signed in without a real OTP */}
+      {isDemo && (
+        <FadeInView fromY={-8} style={s.demoBanner}>
+          <Ionicons name="warning-outline" size={16} color={RED} />
+          <View style={{ flex: 1 }}>
+            <Text style={s.demoBannerTitle}>Demo mode — upload disabled</Text>
+            <Text style={s.demoBannerBody}>
+              You signed in without connecting to the server. Log out and sign in again with your real phone number to upload documents.
+            </Text>
+          </View>
+          <Pressable
+            onPress={async () => { await logout(); dispatch(authActions.logout()); }}
+            style={s.demoBannerBtn}
+          >
+            <Text style={s.demoBannerBtnText}>Log out</Text>
+          </Pressable>
+        </FadeInView>
+      )}
+
       {/* ID type selector */}
       <FadeInView delay={80} fromY={16} style={s.section}>
         <Text style={s.sectionLabel}>Select ID Type</Text>
@@ -179,7 +238,7 @@ export function KYCScreen() {
           {ID_OPTIONS.map((opt) => (
             <Pressable
               key={opt.type}
-              onPress={() => { setSelectedId(opt.type); setImageUri(null); }}
+              onPress={() => { setSelectedId(opt.type); clearImage(); }}
               style={[
                 s.idOption,
                 selectedId === opt.type && { borderColor: opt.color + "60", backgroundColor: opt.color + "0D" },
@@ -257,12 +316,12 @@ export function KYCScreen() {
           {imageUri ? (
             <FadeInView duration={200} style={s.previewWrap}>
               <Image source={{ uri: imageUri }} style={s.previewImage} resizeMode="cover" />
-              <Pressable onPress={() => setImageUri(null)} style={s.removeBtn}>
+              <Pressable onPress={clearImage} style={s.removeBtn}>
                 <Ionicons name="close-circle" size={22} color="#FF3B5C" />
               </Pressable>
               <View style={s.previewCheck}>
                 <Ionicons name="checkmark-circle" size={18} color={GREEN} />
-                <Text style={s.previewCheckText}>Document uploaded</Text>
+                <Text style={s.previewCheckText}>Document ready</Text>
               </View>
             </FadeInView>
           ) : (
@@ -360,6 +419,12 @@ const s = StyleSheet.create({
 
   noteBox:         { flexDirection: "row", alignItems: "flex-start", gap: 10, backgroundColor: "rgba(255,171,0,0.07)", borderWidth: 1, borderColor: "rgba(255,171,0,0.2)", borderRadius: 12, padding: 12 },
   noteText:        { flex: 1, fontSize: 12, color: "rgba(255,171,0,0.7)", lineHeight: 18 },
+
+  demoBanner:      { flexDirection: "row", alignItems: "flex-start", gap: 10, marginHorizontal: 16, marginTop: 12, backgroundColor: "rgba(255,59,92,0.10)", borderWidth: 1, borderColor: "rgba(255,59,92,0.35)", borderRadius: 14, padding: 14 },
+  demoBannerTitle: { fontSize: 13, fontFamily: "SpaceGrotesk-SemiBold", color: RED, marginBottom: 3 },
+  demoBannerBody:  { fontSize: 12, color: "rgba(255,255,255,0.55)", lineHeight: 17 },
+  demoBannerBtn:   { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8, borderWidth: 1, borderColor: "rgba(255,59,92,0.5)", alignSelf: "flex-start", marginTop: 8 },
+  demoBannerBtnText: { fontSize: 12, fontFamily: "SpaceGrotesk-SemiBold", color: RED },
 
   footerBtns:      { flexDirection: "row", gap: 10, marginHorizontal: 16, marginTop: 24 },
   skipBtn:         { paddingHorizontal: 18, paddingVertical: 15, borderRadius: 14, borderWidth: 1, borderColor: BORDER, alignItems: "center", justifyContent: "center" },

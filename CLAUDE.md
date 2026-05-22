@@ -543,3 +543,193 @@ logisticos/
 - **Multi-language support** — UI must support i18n from day one (EN, PH priority)
 - **Mobile-first** — all customer and driver interfaces designed mobile-first
 - **Accessibility** — WCAG 2.1 AA minimum for all web portals
+
+---
+
+## Proof of Pickup (POP) & Real-Time Telemetry — Implementation Directive
+
+> **Alignment verdict:** The POP architecture is fully coherent with the existing three-track billing domain, `DriverLedger`, billing clearance gate, and `OutboundSyncWorker` patterns already in the codebase. The items below are the precise delta between the spec and current state.
+
+### What Is Already Built (Do Not Rebuild)
+
+| Spec Requirement | Existing Implementation |
+|---|---|
+| Three-track domain (A/B/C) | `services/payments/src/domain/strategies/` — `balikbayan.rs`, `standard_parcel.rs`, `cod.rs` |
+| Billing clearance blocking container assignment | `InvoiceRepository::get_billing_clearance` + `BillingClearance` struct in `services/payments/src/domain/repositories/mod.rs` |
+| Driver cash debit on pickup | `DriverLedger::record_cash_collected` + `DriverLedgerRepository` in `services/payments/src/domain/entities/driver_ledger/` |
+| `workflow_metadata` JSONB on invoices | `InvoiceRepository::save_with_domain` — implemented in payments |
+| Geofence hard block (200 m) at delivery | `POD_GEOFENCE_METERS = 200.0` in `services/pod/src/domain/value_objects/mod.rs` |
+| Offline-resilient photo sync | `OutboundSyncWorker` in `apps/driver-app-android/core/database/worker/OutboundSyncWorker.kt` |
+| Append-only audit entries | `DriverLedger.entries: Vec<LedgerEntry>` — immutable, never updated |
+| TIMESTAMPTZ everywhere | `captured_at: TIMESTAMPTZ` on `pod.proofs`; `TIMESTAMPTZ` on all ledger and invoice tables |
+
+---
+
+### Modifications Required to Existing Code
+
+#### 1. Track B — 5 % Weight Tolerance Band
+**File:** `services/payments/src/domain/strategies/standard_parcel.rs` — line ~166
+
+Current code triggers an overage invoice on ANY `actual > declared`. The spec requires a 5 % tolerance band before triggering `InvoiceState::HeldForPaymentOverage`.
+
+```rust
+// BEFORE
+let has_overage = actual_g > declared_g && declared_g > 0;
+
+// AFTER
+let has_overage = declared_g > 0
+    && (actual_g as f64 - declared_g as f64) / declared_g as f64 > 0.05;
+```
+
+#### 2. 50 m `OUT_OF_BOUNDS_HANDOVER` Geospatial Flag
+**File:** `services/pod/src/application/services/pod_service.rs` — inside the `submit` handler, after geofence passes.
+
+The existing 200 m block (hard gate at initiation) is **not replaced** — this is a separate soft annotation. When the distance between `(capture_lat, capture_lng)` and the registered delivery coordinates exceeds 50 m, write the flag into the invoice `workflow_metadata` via `InvoiceRepository::save_with_domain`:
+
+```rust
+// After successful POD submit — compute haversine distance against delivery coords
+// If distance_m > 50.0 and geofence_verified == true (GPS drift edge case):
+//   invoice.workflow_metadata["telemetry_exception"] = "OUT_OF_BOUNDS_HANDOVER"
+// Do NOT reject the request — write and continue.
+```
+
+#### 3. Pickup Payload — POP Metadata per Track
+**File:** `apps/driver-app-android/feature/pickup/data/PickupRepository.kt` — `confirmPickup()`
+
+Currently sends `CompleteTaskRequest()` (empty body). Must be extended to carry track-specific POP metadata:
+
+- **Track A (Balikbayan):** `verified_box_size: String` (enum: JUMBO | XL | LARGE | MEDIUM), `outer_packaging_integrity: Boolean`, `cash_collected_amount: Long` (cents)
+- **Track B (Standard Parcel / Hub Inbound):** `verified_weight_grams: Int`, `scale_node_id: String`
+- **Track C (COD Last-Mile):** `barcode_scan_hash: String`, `gps_lat: Double`, `gps_lng: Double`, `driver_device_id: String`
+
+All tracks must include `device_timestamp: String` (ISO 8601 captured via `System.currentTimeMillis()` converted to UTC at the physical barcode scan moment — not at network send time).
+
+---
+
+### New Implementations Required
+
+#### 4. `ProofOfPickup` Domain Entity
+Create `services/pod/src/domain/entities/pop.rs` (or a dedicated `services/pop/` service if scope justifies it).
+
+`ProofOfPickup` is the custody-open bookend symmetric to `ProofOfDelivery`. Minimum schema:
+
+```rust
+pub struct ProofOfPickup {
+    pub id:               Uuid,
+    pub tenant_id:        Uuid,
+    pub shipment_id:      Uuid,
+    pub task_id:          Uuid,
+    pub driver_id:        Uuid,
+    pub billing_track:    BillingTrack,   // A | B | C
+    pub status:           PopStatus,      // Draft | Completed | Disputed
+    pub device_timestamp: DateTime<Utc>,  // hardware clock at scan
+    pub server_timestamp: DateTime<Utc>,  // backend processing time
+    pub capture_lat:      f64,
+    pub capture_lng:      f64,
+    // Track-A-specific
+    pub verified_box_size:            Option<String>,
+    pub outer_packaging_integrity:    Option<bool>,
+    pub cash_collected_amount_cents:  Option<i64>,
+    // Track-B-specific
+    pub verified_weight_grams:        Option<i64>,
+    pub scale_node_id:                Option<String>,
+    // Track-C-specific
+    pub barcode_scan_hash:            Option<String>,
+    pub driver_device_id:             Option<String>,
+    pub created_at:                   DateTime<Utc>,
+}
+```
+
+Migration: `services/pod/migrations/0003_create_pop_table.sql`. Table name: `pod.proofs_of_pickup`.
+
+**Hard guard:** `pop_status != 'completed'` must block `sea_container_id` assignment at the carrier service level (see item 7 below).
+
+#### 5. `shipment_telemetry_logs` Table (TimescaleDB Hypertable)
+Every shipment state mutation — triggered by API request OR edge sync event — MUST append a record. Never overwrite.
+
+```sql
+-- Migration: services/order-intake/migrations/XXXX_create_telemetry_logs.sql
+CREATE TABLE IF NOT EXISTS shipments.telemetry_logs (
+    id               UUID        NOT NULL DEFAULT gen_random_uuid(),
+    shipment_id      UUID        NOT NULL,
+    tenant_id        UUID        NOT NULL,
+    event_type       TEXT        NOT NULL,  -- e.g. 'PICKUP_COMPLETE', 'HUB_INBOUND', 'POD_SUBMITTED'
+    device_timestamp TIMESTAMPTZ,           -- from Kotlin hardware layer; NULL for server-side events
+    server_timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    actor_id         UUID,                  -- driver_id, hub_agent_id, system
+    payload          JSONB       NOT NULL DEFAULT '{}',
+    PRIMARY KEY (id, server_timestamp)
+);
+SELECT create_hypertable('shipments.telemetry_logs', 'server_timestamp');
+CREATE INDEX ON shipments.telemetry_logs (shipment_id, server_timestamp DESC);
+```
+
+Rust repository: `TelemetryLogRepository` with a single `append(event: TelemetryEvent) -> AppResult<()>` method. All services inject and call it at every milestone transition.
+
+**Analytical rule:** SLA and transit-velocity queries MUST use `device_timestamp` as the primary time basis where non-null, falling back to `server_timestamp` only when device_timestamp is absent (server-generated events). Never use `server_timestamp` alone for SLA calculations.
+
+#### 6. POP → Driver Ledger Debit
+Wire the POP completion handler to call `DriverLedger::record_cash_collected` when `cash_collected_amount_cents > 0`.
+
+- **Track A:** On `MilestoneEvent::PickupComplete` (Balikbayan doorstep) — debit `cash_collected_amount_cents` to driver ledger as `LedgerEntryType::CodCollected`.
+- **Track C:** On `MilestoneEvent::PickupComplete` (first-mile merchant handover) — if COD shipment, draft invoice is created; ledger debit is deferred to `MilestoneEvent::CodDeliveryCompleted` (existing `CodStrategy` handles this correctly).
+- The `DriverLedger` repository and `find_or_create_for_shift` are already implemented. Wire the POP service to them identically to `CodStrategy` in `services/payments/src/domain/strategies/cod.rs:140–153`.
+
+#### 7. `sea_container_id` Hard Guard at Carrier Service
+Enforce the billing clearance check before any database mutation that assigns a `shipment_id` to a `sea_container_id` or customs manifest. Implementation pattern:
+
+```rust
+// In the carrier/container assignment handler:
+let clearance = invoice_repo
+    .get_billing_clearance(&tenant_id, shipment_id).await?;
+
+if let Some(c) = clearance {
+    if !c.is_cleared {
+        return Err(AppError::BusinessRule(format!(
+            "Shipment {} has {} unpaid invoice(s) — cannot assign to container until billing is cleared.",
+            shipment_id, c.unpaid_invoice_count
+        )));
+    }
+}
+// Also check POP status once the POP service is live:
+// let pop = pop_repo.find_completed_by_shipment(shipment_id).await?;
+// if pop.is_none() { return Err(AppError::BusinessRule("POP not completed".into())); }
+```
+
+#### 8. `OutboundSyncWorker` — Image Compression + GPS Bundle
+**File:** `apps/driver-app-android/core/database/worker/OutboundSyncWorker.kt`
+
+Before uploading a photo to R2:
+1. Read the `File` from disk.
+2. Decode as `Bitmap` and recompress: `Bitmap.compress(Bitmap.CompressFormat.JPEG, 75, outputStream)` — target ≤ 800 KB per image.
+3. Add GPS coordinates (`gps_lat`, `gps_lng`) and `device_timestamp` (ISO 8601, captured at camera shutter — stored in the `SyncQueueEntity.payloadJson`, NOT at worker-execution time) to the multipart metadata alongside the compressed bytes.
+4. The camera/capture screen must NOT allow the driver to proceed to the next screen until the compressed payload is successfully enqueued in `SyncQueueEntity` — not until it is uploaded (offline scenarios must still allow flow-through).
+
+---
+
+### Cross-Cutting Implementation Rules
+
+These rules apply to every engineer implementing any POP, telemetry, or pickup-related feature:
+
+1. **Dual timestamp contract:** Every API payload that originates from a physical device action (barcode scan, photo capture, signature) MUST carry both `device_timestamp` (ISO 8601, hardware clock at action moment) and allow the server to record `server_timestamp` (backend receipt time). Store both in `shipment_telemetry_logs`. SLA calculations use `device_timestamp`.
+
+2. **`shipment_telemetry_logs` is append-only:** No `UPDATE` or `DELETE` ever touches this table. Every state transition is a new row. This is enforced at the application layer; a `REVOKE UPDATE, DELETE ON shipments.telemetry_logs FROM app_role;` grant should be applied in the migration.
+
+3. **POP gates POD:** A `ProofOfPickup` with `status = Completed` is a prerequisite for downstream manifest eligibility. The billing clearance check (`get_billing_clearance`) must be extended to also validate POP status when the shipment is in the Balikbayan or Standard Parcel billing track.
+
+4. **`workflow_metadata` JSONB is the audit scratch-pad:** Any telemetry exception flag (`OUT_OF_BOUNDS_HANDOVER`, weight discrepancy, packaging integrity failure) is written into the invoice or POP record's `workflow_metadata` field. It is never a blocking error by itself — it is an ops visibility tag.
+
+5. **Kotlin `device_timestamp` discipline:** `System.currentTimeMillis()` must be called **at the instant of the physical event** (scan, shutter click, confirmation tap) and serialized immediately into the `SyncQueueEntity.payloadJson`. It must never be read later at worker-execution time. Use `Instant.ofEpochMilli(deviceTs).atOffset(ZoneOffset.UTC).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)` for ISO 8601 serialization.
+
+---
+
+### Glossary Additions
+
+| Term | Definition |
+|---|---|
+| **POP** | Proof of Pickup — cryptographic custody-open bookend. Opens the platform liability loop at first physical asset contact. Symmetric to POD. |
+| **Chain of Custody** | The unbroken sequence POP → telemetry milestones → POD. Every leg is bound by these two bookends. |
+| **`device_timestamp`** | Hardware clock reading taken on the Kotlin driver app at the physical moment of the scan/capture event. Primary time basis for SLA calculations. |
+| **`server_timestamp`** | Backend cluster time recorded when the event payload is processed. Used as fallback when `device_timestamp` is absent. |
+| **`OUT_OF_BOUNDS_HANDOVER`** | Telemetry exception flag written to `workflow_metadata` when delivery GPS is > 50 m from the registered address. Non-blocking — ops audit use only. |
+| **`shipment_telemetry_logs`** | Append-only TimescaleDB hypertable recording every shipment state transition as a sequential timeline block. |

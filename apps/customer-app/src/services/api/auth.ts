@@ -11,7 +11,10 @@ import * as SecureStore from 'expo-secure-store';
 import { getIdentityClient } from './client';
 
 const PROVIDER_SLUG_KEY = 'provider_slug';
-const DEFAULT_PROVIDER_SLUG = process.env.EXPO_PUBLIC_TENANT_SLUG ?? '';
+// Strip any 'draft-' slug baked in at build time — those are EAS/build-system
+// artefacts and must never be treated as a real tenant slug.
+const _rawSlug = process.env.EXPO_PUBLIC_TENANT_SLUG ?? '';
+export const DEFAULT_PROVIDER_SLUG = _rawSlug.startsWith('draft-') ? '' : _rawSlug;
 
 export interface AuthResponse {
   token: string;
@@ -93,7 +96,12 @@ export async function verifyOTP(phone: string, otp: string, providerSlug: string
 export async function getStoredProviderSlug(): Promise<string> {
   try {
     const stored = await SecureStore.getItemAsync(PROVIDER_SLUG_KEY);
-    if (stored) return stored;
+    // Discard transient draft slugs written by the Firebase auth bridge
+    if (stored && !stored.startsWith('draft-')) return stored;
+    // Clean up the stale draft slug so it never pre-fills the provider field
+    if (stored?.startsWith('draft-')) {
+      await SecureStore.deleteItemAsync(PROVIDER_SLUG_KEY).catch(() => {});
+    }
   } catch {/* fall through */}
   return DEFAULT_PROVIDER_SLUG;
 }

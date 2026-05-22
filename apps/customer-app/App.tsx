@@ -2,8 +2,15 @@
  * Customer App — Entry Point
  * LogisticOS customer mobile app for shipment tracking, booking, loyalty.
  */
+import { LogBox } from "react-native";
 import { useEffect } from "react";
 import Constants, { ExecutionEnvironment } from "expo-constants";
+
+LogBox.ignoreLogs([
+  "expo-notifications: Android Push notifications",
+  "expo-notifications: iOS Push notifications",
+  "`expo-notifications` functionality is not fully supported in Expo Go",
+]);
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { Provider } from "react-redux";

@@ -38,7 +38,7 @@ import type { AppDispatch, RootState } from "../../store";
 import { AwbQRCode } from "../../components/AwbQRCode";
 import Toast from "../../components/Toast";
 import * as shipmentsService from "../../services/api/shipments";
-import { getStoredCustomerId } from "../../services/api/auth";
+import { getStoredCustomerId, getStoredToken, logout } from "../../services/api/auth";
 import { savePendingShipment } from "../../db/sync";
 
 const CANVAS  = "#050810";
@@ -205,6 +205,12 @@ export function BookingScreen() {
 
   const [step, setStep] = useState(1);
   const [confirmedAwb, setConfirmedAwb] = useState<string | null>(null);
+  const [isDemo, setIsDemo]             = useState(false);
+
+  // Detect demo mode (no real JWT) on mount
+  React.useEffect(() => {
+    getStoredToken().then((t) => setIsDemo(!t));
+  }, []);
 
   // Toast & loading
   const [toastMessage, setToastMessage] = useState("");
@@ -345,8 +351,19 @@ export function BookingScreen() {
   async function handleBook() {
     setIsLoading(true);
     try {
+      const token = await getStoredToken();
+      if (!token) {
+        Alert.alert(
+          "Session expired",
+          "You're in demo mode. Log out and sign in with your phone number to book shipments.",
+          [
+            { text: "Log out", style: "destructive", onPress: async () => { await logout(); dispatch(authActions.logout()); } },
+            { text: "Cancel", style: "cancel" },
+          ]
+        );
+        return;
+      }
       const storedCustomerId = await getStoredCustomerId();
-      if (!storedCustomerId) { showToast("Not authenticated. Please log in again.", "error"); return; }
 
       const senderCountryLabel = ALL_COUNTRY_LIST.find(c => c.code === senderCountry)?.label ?? senderCountry;
       const receiverCountryLabel = ALL_COUNTRY_LIST.find(c => c.code === receiverCountry)?.label ?? receiverCountry;
@@ -499,6 +516,25 @@ export function BookingScreen() {
               <Text style={s.heroSub}>Step {step} of {totalSteps}</Text>
             </FadeInView>
           </LinearGradient>
+        )}
+
+        {/* Demo-mode banner — no real JWT, booking will be rejected */}
+        {isDemo && !confirmedAwb && (
+          <FadeInView fromY={-8} style={s.demoBanner}>
+            <Ionicons name="warning-outline" size={16} color="#FF3B5C" />
+            <View style={{ flex: 1 }}>
+              <Text style={s.demoBannerTitle}>Demo mode — bookings disabled</Text>
+              <Text style={s.demoBannerBody}>
+                Sign in with your real phone number and provider code to book shipments.
+              </Text>
+            </View>
+            <Pressable
+              onPress={async () => { await logout(); dispatch(authActions.logout()); }}
+              style={s.demoBannerBtn}
+            >
+              <Text style={s.demoBannerBtnText}>Log out</Text>
+            </Pressable>
+          </FadeInView>
         )}
 
         {/* Auto-detected type badge */}
@@ -1019,6 +1055,11 @@ export function BookingScreen() {
 }
 
 const s = StyleSheet.create({
+  demoBanner:        { flexDirection: "row", alignItems: "flex-start", gap: 10, marginHorizontal: 16, marginTop: 12, backgroundColor: "rgba(255,59,92,0.10)", borderWidth: 1, borderColor: "rgba(255,59,92,0.35)", borderRadius: 14, padding: 14 },
+  demoBannerTitle:   { fontSize: 13, fontFamily: "SpaceGrotesk-SemiBold", color: "#FF3B5C", marginBottom: 3 },
+  demoBannerBody:    { fontSize: 12, color: "rgba(255,255,255,0.55)", lineHeight: 17 },
+  demoBannerBtn:     { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8, borderWidth: 1, borderColor: "rgba(255,59,92,0.5)", alignSelf: "flex-start", marginTop: 8 },
+  demoBannerBtnText: { fontSize: 12, fontFamily: "SpaceGrotesk-SemiBold", color: "#FF3B5C" },
   hero:              { paddingHorizontal: 20, paddingTop: 52, paddingBottom: 12 },
   heroTitle:         { fontSize: 26, fontWeight: "700", color: "#FFF", fontFamily: "SpaceGrotesk-Bold" },
   heroSub:           { fontSize: 13, color: "rgba(255,255,255,0.4)", marginTop: 4 },
