@@ -204,7 +204,8 @@ export function BookingScreen() {
   const { isConnected } = useNetInfo();
 
   const [step, setStep] = useState(1);
-  const [confirmedAwb, setConfirmedAwb] = useState<string | null>(null);
+  const [confirmedAwb, setConfirmedAwb]             = useState<string | null>(null);
+  const [confirmedShipmentId, setConfirmedShipmentId] = useState<string | null>(null);
   const [isDemo, setIsDemo]             = useState(false);
 
   // Detect demo mode (no real JWT) on mount
@@ -441,6 +442,7 @@ export function BookingScreen() {
       }
 
       setConfirmedAwb(response.awb);
+      setConfirmedShipmentId(response.id);
       showToast(`Booked! +${earned} loyalty points earned 🎉`, "success");
     } catch (error: any) {
       const status = error?.status ?? error?.response?.status;
@@ -463,7 +465,7 @@ export function BookingScreen() {
   }
 
   function handleBookAnother() {
-    setConfirmedAwb(null); setStep(1);
+    setConfirmedAwb(null); setConfirmedShipmentId(null); setStep(1);
     setSenderName(""); setSenderPhone(""); setSenderAddress(""); setSenderCity(""); setSenderZip(""); setSenderCountry("PH"); setPickupCoords(null);
     setReceiverName(""); setReceiverPhone(""); setReceiverAddress(""); setReceiverCity(""); setReceiverZip(""); setReceiverCountry("PH");
     setWeight(""); setDescription(""); setIsCOD(false); setCodAmount(""); setIsFragile(false);
@@ -1028,7 +1030,11 @@ export function BookingScreen() {
 
               {/* Track Pickup — primary CTA after booking */}
               <Pressable
-                onPress={() => navigation.navigate("Collection", { awb: confirmedAwb, type: isIntl ? "international" : "local" })}
+                onPress={() => navigation.navigate("Collection", {
+                  awb: confirmedAwb,
+                  shipmentId: confirmedShipmentId ?? undefined,
+                  type: isIntl ? "international" : "local",
+                })}
                 style={[s.btn, { marginTop: 4 }]}
               >
                 <LinearGradient

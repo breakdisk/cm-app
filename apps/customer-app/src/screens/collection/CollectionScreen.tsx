@@ -20,6 +20,7 @@ import { useNetInfo } from "@react-native-community/netinfo";
 import { AwbQRCode } from "../../components/AwbQRCode";
 import { FadeInView } from "../../components/FadeInView";
 import { trackingApi, type PublicTrackingData } from "../../services/api/tracking";
+import { getShipment, type ShipmentResponse } from "../../services/api/shipments";
 import type { RootState } from "../../store";
 import { formatDate } from "../../utils/formatting";
 
@@ -68,10 +69,29 @@ interface CollectionScreenProps {
   route: {
     params: {
       awb: string;
+      /** Shipment UUID from order-intake — passed by BookingScreen so we can
+       *  query order-intake directly instead of delivery-experience (which only
+       *  knows about shipments once they enter the delivery workflow). */
+      shipmentId?: string;
       type?: "local" | "international";
     };
   };
   navigation: any;
+}
+
+/** Map an order-intake ShipmentResponse to the PublicTrackingData shape that
+ *  CollectionScreen already knows how to render. */
+function shipmentToTrackingData(s: ShipmentResponse): PublicTrackingData {
+  return {
+    tracking_number: s.awb ?? s.tracking_number,
+    status:          s.status,
+    estimated_delivery: s.estimated_delivery,
+    origin:      `${(s.origin as any)?.line1 ?? ""}, ${(s.origin as any)?.city ?? ""}`.trim().replace(/^,\s*/, ""),
+    origin_city: (s.origin as any)?.city ?? "",
+    destination:      `${(s.destination as any)?.line1 ?? ""}, ${(s.destination as any)?.city ?? ""}`.trim().replace(/^,\s*/, ""),
+    destination_city: (s.destination as any)?.city ?? "",
+    history: [],  // order-intake doesn't expose timeline events; shown as empty until delivery-experience takes over
+  };
 }
 
 // ── Pulse dot for "active" step ───────────────────────────────────────────────
@@ -95,7 +115,7 @@ function PulseDot({ color }: { color: string }) {
 export function CollectionScreen({ route, navigation }: CollectionScreenProps) {
   const insets = useSafeAreaInsets();
   const { isConnected } = useNetInfo();
-  const { awb, type = "local" } = route.params;
+  const { awb, shipmentId, type = "local" } = route.params;
   const accent = type === "international" ? PURPLE : CYAN;
 
   const [trackData, setTrackData]     = useState<PublicTrackingData | null>(null);
@@ -126,17 +146,47 @@ export function CollectionScreen({ route, navigation }: CollectionScreenProps) {
     if (!quiet) setLoading(true);
     setError(null);
     try {
+      // ── Primary source: order-intake (has data immediately after booking) ──
+      // Delivery-experience only receives a shipment once it enters the
+      // delivery workflow (driver assigned → Kafka event). For pickup tracking
+      // we query order-intake first when we have the shipment UUID.
+      if (shipmentId) {
+        try {
+          const s = await getShipment(shipmentId);
+          setTrackData(shipmentToTrackingData(s));
+          setPickupStatus(toPickupStatus(s.status ?? "confirmed"));
+          return; // success — no need to hit delivery-experience
+        } catch {
+          // If order-intake fails (404 after shipment deleted, or network error),
+          // fall through to the delivery-experience attempt below.
+        }
+      }
+
+      // ── Fallback: delivery-experience (for mature shipments / re-opens) ───
+      // Also used when shipmentId is not available (e.g. opened from history).
       const res = await trackingApi.getByTrackingNumber(awb);
       const data = (res.data as any)?.data ?? res.data;
       setTrackData(data);
       setPickupStatus(toPickupStatus(data.status ?? "confirmed"));
     } catch (err: any) {
-      if (!quiet) setError(err?.message ?? "Could not load tracking data.");
+      // If we have a shipmentId but both sources failed, show a soft "confirmed"
+      // placeholder rather than a 404 error — the shipment was just created and
+      // delivery-experience hasn't ingested it yet.
+      if (shipmentId && !quiet) {
+        setTrackData({
+          tracking_number: awb,
+          status: "confirmed",
+          history: [],
+        } as PublicTrackingData);
+        setPickupStatus("confirmed");
+      } else if (!quiet) {
+        setError(err?.message ?? "Could not load tracking data.");
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [awb]);
+  }, [awb, shipmentId]);
 
   // Initial load + 20s poll
   useEffect(() => {
