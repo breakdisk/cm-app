@@ -10,14 +10,25 @@ pub struct DocumentStorage {
 
 impl DocumentStorage {
     pub async fn new(cfg: &crate::config::StorageConfig) -> anyhow::Result<Self> {
-        let aws_cfg = aws_config::from_env()
+        // Always inject the region explicitly so the AWS SDK never falls back to
+        // IMDS. On a non-AWS VPS, IMDS times out (1 s per call) and then the SDK
+        // errors every S3 call with "A region must be set". Cloudflare R2 uses the
+        // pseudo-region "auto"; MinIO accepts any non-empty value.
+        let region_str = std::env::var("S3_REGION")
+            .or_else(|_| std::env::var("AWS_REGION"))
+            .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
+            .unwrap_or_else(|_| "auto".to_string());
+        let region = aws_sdk_s3::config::Region::new(region_str);
+
+        let sdk_cfg = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .region(region)
             .endpoint_url(&cfg.endpoint)
             .credentials_provider(aws_sdk_s3::config::Credentials::new(
                 &cfg.access_key, &cfg.secret_key, None, None, "static",
             ))
             .load()
             .await;
-        let client = aws_sdk_s3::Client::new(&aws_cfg);
+        let client = aws_sdk_s3::Client::new(&sdk_cfg);
         Ok(Self { client, bucket: cfg.bucket.clone() })
     }
 
