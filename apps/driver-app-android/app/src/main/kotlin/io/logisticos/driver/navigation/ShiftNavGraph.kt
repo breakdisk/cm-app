@@ -185,9 +185,12 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                     taskId = taskId,
                     onStartTask = { id, taskType, photo, sig, otp, isCod, codAmount ->
                         when (taskType) {
-                            TaskType.PICKUP -> shiftNavController.navigate(
-                                PICKUP_ROUTE.replace("{taskId}", id)
-                            )
+                            // PICKUP: driver collects from merchant (first-mile).
+                            // RETURN / HUB_DROP: driver returns undelivered parcel to hub —
+                            // same custody-open flow as pickup (scan AWB, optional photo, confirm).
+                            // These must NOT go to PodScreen which expects a customer signature.
+                            TaskType.PICKUP, TaskType.RETURN, TaskType.HUB_DROP ->
+                                shiftNavController.navigate(PICKUP_ROUTE.replace("{taskId}", id))
                             else -> shiftNavController.navigate(
                                 "pod/$id/$photo/$sig/$otp/$isCod/$codAmount"
                             )

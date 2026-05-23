@@ -55,6 +55,10 @@ class ShiftRepository @Inject constructor(
         // Always keep the shift row in sync with the server's task count, even
         // when the count is zero. Otherwise the home screen keeps reporting
         // yesterday's stop totals.
+        //
+        // completedStops / failedStops / totalCodCollected are computed after
+        // upsert (see below) so the values are always authoritative even when the
+        // driver completes tasks offline between syncs.
         shiftDao.insert(
             ShiftEntity(
                 id = syntheticShiftId,
@@ -117,5 +121,36 @@ class ShiftRepository @Inject constructor(
         // pruning before upsert is safe because insertAll is REPLACE-on-conflict.
         taskDao.pruneShiftTasks(syntheticShiftId, entities.map { it.id })
         taskDao.insertAll(entities)
+
+        // Recompute aggregate counters from the merged local state so they stay
+        // accurate even when tasks are completed offline between syncs.
+        val completedStops = entities.count { it.status == TaskStatus.COMPLETED }
+        val failedStops    = entities.count {
+            it.status == TaskStatus.FAILED || it.status == TaskStatus.RETURNED
+        }
+        val totalCod = entities
+            .filter { it.status == TaskStatus.COMPLETED && it.isCod }
+            .sumOf { it.codAmount }
+
+        if (completedStops != existingShift?.completedStops ||
+            failedStops    != existingShift.failedStops ||
+            totalCod       != existingShift.totalCodCollected
+        ) {
+            shiftDao.insert(
+                ShiftEntity(
+                    id = syntheticShiftId,
+                    driverId = "",
+                    tenantId = "",
+                    startedAt = existingShift?.startedAt,
+                    endedAt = null,
+                    isActive = tasks.isNotEmpty() || completedStops > 0,
+                    totalStops = tasks.size,
+                    completedStops = completedStops,
+                    failedStops = failedStops,
+                    totalCodCollected = totalCod,
+                    syncedAt = System.currentTimeMillis()
+                )
+            )
+        }
     }
 }

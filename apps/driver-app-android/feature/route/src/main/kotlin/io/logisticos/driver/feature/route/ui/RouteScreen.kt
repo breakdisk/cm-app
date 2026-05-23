@@ -1,6 +1,9 @@
 package io.logisticos.driver.feature.route.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.lazy.LazyColumn
@@ -12,6 +15,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -19,6 +23,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import io.logisticos.driver.core.database.entity.TaskEntity
 import io.logisticos.driver.core.database.entity.TaskStatus
 import io.logisticos.driver.feature.route.presentation.RouteViewModel
+import kotlin.math.roundToInt
 
 private val Canvas = Color(0xFF050810)
 private val Cyan = Color(0xFF00E5FF)
@@ -74,7 +79,11 @@ fun RouteScreen(
                 TaskStopCard(
                     task = task,
                     stopNumber = index + 1,
-                    onClick = { onNavigateToStop(task.id) }
+                    onClick = { onNavigateToStop(task.id) },
+                    onReorder = { steps ->
+                        val to = (index + steps).coerceIn(0, state.activeTasks.lastIndex)
+                        if (to != index) viewModel.reorder(index, to)
+                    }
                 )
             }
 
@@ -102,6 +111,14 @@ fun RouteScreen(
     }
 
     selectedCompletedTask?.let { task ->
+        val podPhotoUrl by viewModel.podPhotoUrl.collectAsState()
+        val uriHandler = LocalUriHandler.current
+
+        // Fetch photo URL as soon as the sheet opens for a confirmed completed task
+        LaunchedEffect(task.podId) {
+            if (task.podId != null) viewModel.loadPodPhoto(task.podId)
+        }
+
         ModalBottomSheet(
             onDismissRequest = { selectedCompletedTask = null },
             containerColor = Color(0xFF0A0E1A),
@@ -138,13 +155,46 @@ fun RouteScreen(
                 if (!task.failureReason.isNullOrBlank()) {
                     DetailRow("Reason", task.failureReason!!, valueColor = Amber)
                 }
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "Photo and signature, when captured, are stored on the server. " +
-                    "Open the admin portal to view full POD records.",
-                    color = Color.White.copy(alpha = 0.4f),
-                    fontSize = 11.sp,
-                )
+                Spacer(Modifier.height(4.dp))
+                // POD photo — only available once the TASK_COMPLETE sync has confirmed
+                // the server-side pod_id back to local DB. Tasks completed offline show
+                // the fallback message until the next sync.
+                if (task.podId != null) {
+                    when (podPhotoUrl) {
+                        null -> {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                CircularProgressIndicator(
+                                    color = Cyan,
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp
+                                )
+                                Text("Loading POD photo…", color = Color.White.copy(alpha = 0.4f), fontSize = 11.sp)
+                            }
+                        }
+                        "" -> Text(
+                            "POD captured — photo viewable in the admin portal.",
+                            color = Color.White.copy(alpha = 0.4f),
+                            fontSize = 11.sp,
+                        )
+                        else -> Button(
+                            onClick = { uriHandler.openUri(podPhotoUrl!!) },
+                            modifier = Modifier.fillMaxWidth().height(40.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Cyan.copy(alpha = 0.15f))
+                        ) {
+                            Text("View POD Photo", color = Cyan, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                } else {
+                    Text(
+                        "POD pending sync — photo will be available once uploaded.",
+                        color = Color.White.copy(alpha = 0.4f),
+                        fontSize = 11.sp,
+                    )
+                }
                 Spacer(Modifier.navigationBarsPadding().height(16.dp))
             }
         }
@@ -164,8 +214,16 @@ private fun DetailRow(label: String, value: String, valueColor: Color = Color.Wh
     }
 }
 
+// Approximate card height in dp used to compute reorder step from drag distance.
+private const val CARD_HEIGHT_DP = 80
+
 @Composable
-private fun TaskStopCard(task: TaskEntity, stopNumber: Int?, onClick: (() -> Unit)?) {
+private fun TaskStopCard(
+    task: TaskEntity,
+    stopNumber: Int?,
+    onClick: (() -> Unit)?,
+    onReorder: ((steps: Int) -> Unit)? = null,
+) {
     val statusColor = when (task.status) {
         TaskStatus.COMPLETED -> Green
         TaskStatus.ATTEMPTED, TaskStatus.FAILED -> Amber
@@ -267,10 +325,29 @@ private fun TaskStopCardBody(task: TaskEntity, stopNumber: Int?, statusColor: Co
                 }
             }
         }
-        if (stopNumber != null) {
+        if (stopNumber != null && onReorder != null) {
+            val density = androidx.compose.ui.platform.LocalDensity.current
+            var dragAccumulator by remember { mutableFloatStateOf(0f) }
             Icon(
                 Icons.Default.Menu,
-                contentDescription = "Drag",
+                contentDescription = "Drag to reorder",
+                tint = Color.White.copy(alpha = 0.3f),
+                modifier = Modifier.draggable(
+                    state = rememberDraggableState { delta -> dragAccumulator += delta },
+                    orientation = Orientation.Vertical,
+                    onDragStarted = { dragAccumulator = 0f },
+                    onDragStopped = {
+                        val cardHeightPx = with(density) { CARD_HEIGHT_DP.dp.toPx() }
+                        val steps = (dragAccumulator / cardHeightPx).roundToInt()
+                        if (steps != 0) onReorder(steps)
+                        dragAccumulator = 0f
+                    }
+                )
+            )
+        } else if (stopNumber != null) {
+            Icon(
+                Icons.Default.Menu,
+                contentDescription = "Drag to reorder",
                 tint = Color.White.copy(alpha = 0.3f)
             )
         }

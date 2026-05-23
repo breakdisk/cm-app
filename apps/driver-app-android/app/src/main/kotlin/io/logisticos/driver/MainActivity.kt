@@ -1,5 +1,6 @@
 package io.logisticos.driver
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -12,6 +13,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import dagger.hilt.android.AndroidEntryPoint
+import io.logisticos.driver.core.common.AssignmentPayload
+import io.logisticos.driver.core.common.PendingAssignmentBus
 import io.logisticos.driver.core.database.worker.OutboundSyncWorker
 import io.logisticos.driver.navigation.AppNavGraph
 import io.logisticos.driver.security.RootChecker
@@ -27,6 +30,8 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         val isRooted = rootChecker.check()
         OutboundSyncWorker.schedule(applicationContext)
+        // Re-post assignment from notification intent when app is cold-started from tray.
+        handleAssignmentIntent(intent)
         setContent {
             DriverAppTheme {
                 AppNavGraph()
@@ -54,5 +59,33 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    // Handle notification tap when app is re-opened or brought to foreground.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleAssignmentIntent(intent)
+    }
+
+    /**
+     * When the driver taps a `task_assigned` system notification, the PendingIntent
+     * carries all FCM data fields as extras. If PendingAssignmentBus is empty (process
+     * was killed), re-post from the intent so ShiftScaffold navigates to AssignmentScreen.
+     */
+    private fun handleAssignmentIntent(intent: Intent?) {
+        if (intent?.getStringExtra("notification_type") != "task_assigned") return
+        val assignmentId = intent.getStringExtra("assignment_id") ?: return
+        if (PendingAssignmentBus.pending.value != null) return  // already queued by onMessageReceived
+        PendingAssignmentBus.post(
+            AssignmentPayload(
+                assignmentId   = assignmentId,
+                shipmentId     = intent.getStringExtra("shipment_id")     ?: "",
+                customerName   = intent.getStringExtra("customer_name")   ?: "Unknown Customer",
+                address        = intent.getStringExtra("address")         ?: "",
+                taskType       = intent.getStringExtra("task_type")       ?: "delivery",
+                trackingNumber = intent.getStringExtra("tracking_number") ?: "",
+                codAmountCents = intent.getStringExtra("cod_amount_cents")?.toLongOrNull() ?: 0L,
+            )
+        )
     }
 }

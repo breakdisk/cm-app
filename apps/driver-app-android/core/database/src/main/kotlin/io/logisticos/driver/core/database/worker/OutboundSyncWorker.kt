@@ -321,6 +321,7 @@ class OutboundSyncWorker @AssistedInject constructor(
 
                 driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId))
                 taskDao.markSynced(taskId)
+                taskDao.setPodId(taskId, podId, System.currentTimeMillis())
                 podDao.markSynced(taskId)
             }
 

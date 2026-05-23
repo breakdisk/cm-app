@@ -10,6 +10,7 @@ import dagger.hilt.components.SingletonComponent
 import io.logisticos.driver.core.database.DriverDatabase
 import io.logisticos.driver.core.database.MIGRATION_3_4
 import io.logisticos.driver.core.database.MIGRATION_4_5
+import io.logisticos.driver.core.database.MIGRATION_5_6
 import io.logisticos.driver.core.database.dao.*
 import javax.inject.Singleton
 
@@ -20,7 +21,7 @@ object DatabaseModule {
     @Provides @Singleton
     fun provideDatabase(@ApplicationContext context: Context): DriverDatabase =
         Room.databaseBuilder(context, DriverDatabase::class.java, "driver_app.db")
-            .addMigrations(MIGRATION_3_4, MIGRATION_4_5)
+            .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
             .fallbackToDestructiveMigration()
             .build()
 

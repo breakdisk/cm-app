@@ -2,6 +2,7 @@ package io.logisticos.driver.feature.pickup.data
 
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
+import io.logisticos.driver.core.common.ImageCompressor
 import io.logisticos.driver.core.database.dao.SyncQueueDao
 import io.logisticos.driver.core.database.dao.TaskDao
 import io.logisticos.driver.core.database.entity.SyncAction
@@ -15,7 +16,10 @@ import io.logisticos.driver.core.network.service.InitiatePopRequest
 import io.logisticos.driver.core.network.service.PodApiService
 import io.logisticos.driver.core.network.service.SubmitPopRequest
 import io.logisticos.driver.feature.delivery.domain.TaskStateMachine
+import java.io.File
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
@@ -79,6 +83,11 @@ class PickupRepository @Inject constructor(
      * @param captureLng   Driver's longitude at moment of tap — use task lng as fallback.
      * @param pickupLat    Pickup address latitude (task.lat) for geofence calculation.
      * @param pickupLng    Pickup address longitude (task.lng) for geofence calculation.
+     * @param photoPath    Absolute path to the compressed parcel photo captured on the
+     *                     pickup screen. Null when the driver skipped the photo step.
+     *                     The file is compressed to ≤800 KB before POP submission.
+     *                     Upload to the backend is enqueued in the sync queue so it
+     *                     survives connectivity gaps.
      * @param deviceTimestamp ISO-8601 UTC string captured at the moment the driver taps
      *                     Confirm — used as the canonical chain-of-custody timestamp.
      */
@@ -90,11 +99,23 @@ class PickupRepository @Inject constructor(
         captureLng: Double,
         pickupLat: Double,
         pickupLng: Double,
+        photoPath: String?,
         deviceTimestamp: String,
     ) {
         val task = taskDao.getById(taskId) ?: return
         if (!TaskStateMachine.canTransition(task.status, TaskStatus.COMPLETED)) return
         taskDao.updateStatus(taskId, TaskStatus.COMPLETED)
+
+        // ── 0. Compress pickup photo if captured ────────────────────────────
+        // Compress before POP submission so the file is always ≤800 KB on disk.
+        // Non-fatal: a compress failure must not block the task from completing.
+        val compressedPhotoPath: String? = photoPath?.let { path ->
+            runCatching {
+                val file = File(path).takeIf { it.exists() } ?: return@let null
+                withContext(Dispatchers.IO) { ImageCompressor.compressToFile(file) }
+                path
+            }.getOrNull()
+        }
 
         // ── 1. Proof of Pickup ──────────────────────────────────────────────
         // Try inline first; fall back to sync queue on any network error.
@@ -140,6 +161,7 @@ class PickupRepository @Inject constructor(
                             "captureLng"      to captureLng.toString(),
                             "pickupLat"       to pickupLat.toString(),
                             "pickupLng"       to pickupLng.toString(),
+                            "photoPath"       to (compressedPhotoPath ?: ""),
                             "deviceTimestamp" to deviceTimestamp,
                         )
                     ),

@@ -38,4 +38,6 @@ data class TaskEntity(
     val notes: String? = null,
     val syncedAt: Long?,
     val isSynced: Boolean = true,
+    val podId: String? = null,
+    val completedAt: Long? = null,
 )

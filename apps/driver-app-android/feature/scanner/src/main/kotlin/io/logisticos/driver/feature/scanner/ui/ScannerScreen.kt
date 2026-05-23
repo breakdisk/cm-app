@@ -1,8 +1,15 @@
 package io.logisticos.driver.feature.scanner.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,16 +25,26 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
+import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.common.InputImage
 import androidx.hilt.navigation.compose.hiltViewModel
 import io.logisticos.driver.feature.scanner.domain.ScanValidationResult
 import io.logisticos.driver.feature.scanner.presentation.ScannerViewModel
@@ -46,8 +63,15 @@ fun ScannerScreen(
     viewModel: ScannerViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     LaunchedEffect(Unit) { viewModel.setExpectedAwbs(expectedAwbs) }
+
+    // Hardware scanners register a broadcast receiver; software devices bind the camera.
+    LaunchedEffect(viewModel.isHardwareScanner) {
+        if (viewModel.isHardwareScanner) viewModel.startHardwareScan()
+    }
 
     Column(
         modifier = Modifier
@@ -56,6 +80,102 @@ fun ScannerScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Software-device camera viewfinder — hidden on hardware scanners.
+        // ProcessCameraProvider binds an ImageAnalysis use case to the lifecycle;
+        // MLKit processes each frame and routes scan results through the ViewModel.
+        if (!viewModel.isHardwareScanner) {
+            var cameraPermissionGranted by remember {
+                mutableStateOf(
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+                        == PackageManager.PERMISSION_GRANTED
+                )
+            }
+            if (cameraPermissionGranted) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(180.dp)
+                ) {
+                    val barcodeScanner = remember { BarcodeScanning.getClient() }
+                    DisposableEffect(lifecycleOwner) {
+                        val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
+                        cameraProviderFuture.addListener({
+                            val provider = cameraProviderFuture.get()
+                            val imageAnalysis = ImageAnalysis.Builder()
+                                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                                .build()
+                            imageAnalysis.setAnalyzer(ContextCompat.getMainExecutor(context)) { proxy ->
+                                @Suppress("UnsafeOptInUsageError")
+                                val mediaImage = proxy.image
+                                if (mediaImage != null) {
+                                    val image = InputImage.fromMediaImage(
+                                        mediaImage, proxy.imageInfo.rotationDegrees
+                                    )
+                                    barcodeScanner.process(image)
+                                        .addOnSuccessListener { barcodes ->
+                                            barcodes.firstOrNull()?.rawValue?.let { value ->
+                                                viewModel.onScanResult(
+                                                    io.logisticos.driver.feature.scanner.domain.ScanResult(
+                                                        rawValue = value,
+                                                        format = barcodes.first().format.toString()
+                                                    )
+                                                )
+                                            }
+                                        }
+                                        .addOnCompleteListener { proxy.close() }
+                                } else {
+                                    proxy.close()
+                                }
+                            }
+                            provider.unbindAll()
+                            provider.bindToLifecycle(
+                                lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, imageAnalysis
+                            )
+                        }, ContextCompat.getMainExecutor(context))
+                        onDispose {
+                            runCatching { ProcessCameraProvider.getInstance(context).get().unbindAll() }
+                            barcodeScanner.close()
+                        }
+                    }
+                    AndroidView(
+                        factory = { ctx ->
+                            val previewView = PreviewView(ctx)
+                            val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
+                            cameraProviderFuture.addListener({
+                                val provider = cameraProviderFuture.get()
+                                val preview = androidx.camera.core.Preview.Builder().build().also {
+                                    it.setSurfaceProvider(previewView.surfaceProvider)
+                                }
+                                try {
+                                    provider.bindToLifecycle(
+                                        lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview
+                                    )
+                                } catch (_: Exception) {}
+                            }, ContextCompat.getMainExecutor(ctx))
+                            previewView
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 8.dp)
+                            .background(Color.Black.copy(alpha = 0.5f))
+                            .padding(horizontal = 12.dp, vertical = 4.dp)
+                    ) {
+                        Text("Point camera at barcode", color = Color.White, fontSize = 11.sp)
+                    }
+                }
+            } else {
+                // Camera permission not yet granted — request it.
+                androidx.activity.compose.rememberLauncherForActivityResult(
+                    androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+                ) { granted -> cameraPermissionGranted = granted }
+                    .also { launcher ->
+                        LaunchedEffect(Unit) { launcher.launch(Manifest.permission.CAMERA) }
+                    }
+            }
+        }
         Text(
             "${state.scannedAwbs.size} / ${state.expectedAwbs.size} scanned",
             color = Cyan,

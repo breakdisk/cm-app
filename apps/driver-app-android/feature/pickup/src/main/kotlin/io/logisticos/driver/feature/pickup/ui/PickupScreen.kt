@@ -44,6 +44,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
 import io.logisticos.driver.core.common.ImageCompressor
+import io.logisticos.driver.core.database.entity.TaskType
 import io.logisticos.driver.feature.pickup.presentation.PickupViewModel
 import java.io.File
 import java.io.FileOutputStream
@@ -138,10 +139,31 @@ fun PickupScreen(
                         modifier = Modifier.size(20.dp),
                     )
                 }
+                val taskType = state.task?.taskType
                 Column {
-                    Text("FIRST MILE", color = Purple, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-                    Text("Pickup Confirmation", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        when (taskType) {
+                            TaskType.RETURN   -> "HUB RETURN"
+                            TaskType.HUB_DROP -> "HUB DROP-OFF"
+                            else              -> "FIRST MILE"
+                        },
+                        color = Purple, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp
+                    )
+                    Text(
+                        when (taskType) {
+                            TaskType.RETURN   -> "Return Confirmation"
+                            TaskType.HUB_DROP -> "Hub Drop-Off Confirmation"
+                            else              -> "Pickup Confirmation"
+                        },
+                        color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold
+                    )
                 }
+            }
+            val taskType = state.task?.taskType
+            val badgeText = when (taskType) {
+                TaskType.RETURN   -> "RETURN"
+                TaskType.HUB_DROP -> "HUB DROP"
+                else              -> "PICKUP"
             }
             Box(
                 modifier = Modifier
@@ -149,7 +171,7 @@ fun PickupScreen(
                     .background(Purple.copy(alpha = 0.12f))
                     .padding(horizontal = 10.dp, vertical = 4.dp)
             ) {
-                Text("PICKUP", color = Purple, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                Text(badgeText, color = Purple, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
             }
         }
 

@@ -9,6 +9,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import io.logisticos.driver.core.database.dao.TaskDao
 import io.logisticos.driver.core.database.entity.RouteEntity
 import io.logisticos.driver.core.database.entity.TaskEntity
+import io.logisticos.driver.core.location.LocationRepository
 import io.logisticos.driver.core.network.service.DirectionsStep
 import io.logisticos.driver.feature.navigation.data.NavigationRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,6 +36,7 @@ data class NavigationUiState(
 class NavigationViewModel @AssistedInject constructor(
     private val navRepo: NavigationRepository,
     private val taskDao: TaskDao,
+    private val locationRepo: LocationRepository,
     @Assisted private val taskId: String
 ) : ViewModel() {
 
@@ -60,6 +62,27 @@ class NavigationViewModel @AssistedInject constructor(
         viewModelScope.launch {
             navRepo.observeRoute(taskId).collect { route ->
                 _uiState.update { it.copy(route = route) }
+            }
+        }
+        // Seed immediately with last known GPS so the map is centred on the driver
+        // from the first frame rather than showing (0, 0) while the flow warms up.
+        viewModelScope.launch {
+            val last = locationRepo.getLastKnownLocation()
+            if (last != null && _uiState.value.currentLat == 0.0) {
+                updateLocation(last.lat, last.lng, 0f)
+                if (_uiState.value.route == null && last.lat != 0.0) {
+                    fetchRoute(last.lat, last.lng)
+                }
+            }
+        }
+        // Stream live GPS from LocationForegroundService → drive arrival detection
+        // and instruction updates without any LaunchedEffect wiring in the screen.
+        viewModelScope.launch {
+            locationRepo.locationUpdates.collect { loc ->
+                updateLocation(loc.lat, loc.lng, _uiState.value.currentBearing)
+                if (_uiState.value.route == null && loc.lat != 0.0) {
+                    fetchRoute(loc.lat, loc.lng)
+                }
             }
         }
     }

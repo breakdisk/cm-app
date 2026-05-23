@@ -57,4 +57,7 @@ interface TaskDao {
 
     @Query("UPDATE tasks SET status = :status, isSynced = :isSynced WHERE id = :taskId")
     suspend fun updateStatusWithSync(taskId: String, status: TaskStatus, isSynced: Boolean)
+
+    @Query("UPDATE tasks SET podId = :podId, completedAt = :completedAt WHERE id = :taskId")
+    suspend fun setPodId(taskId: String, podId: String, completedAt: Long)
 }

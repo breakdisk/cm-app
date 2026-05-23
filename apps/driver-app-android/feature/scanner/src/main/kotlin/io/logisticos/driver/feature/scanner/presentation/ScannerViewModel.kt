@@ -28,8 +28,23 @@ class ScannerViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(ScannerUiState())
     val uiState: StateFlow<ScannerUiState> = _uiState.asStateFlow()
 
+    /** True when a dedicated hardware scanner (Zebra/Honeywell) is connected.
+     *  False on standard consumer devices — the screen will open the camera instead. */
+    val isHardwareScanner: Boolean = scannerManager.isHardwareScanner
+
     fun setExpectedAwbs(awbs: List<String>) {
         _uiState.update { it.copy(expectedAwbs = awbs) }
+    }
+
+    /**
+     * Start the hardware barcode scanner via broadcast receiver.
+     * Called only when [isHardwareScanner] is true.  On software devices the
+     * camera is wired directly in ScannerScreen via ProcessCameraProvider.
+     */
+    fun startHardwareScan() {
+        if (isHardwareScanner) {
+            scannerManager.startScan { onScanResult(it) }
+        }
     }
 
     fun onScanResult(result: ScanResult) {

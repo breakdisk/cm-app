@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.logisticos.driver.core.database.entity.TaskEntity
+import io.logisticos.driver.core.location.LocationRepository
 import io.logisticos.driver.feature.pickup.data.PickupRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -31,7 +32,8 @@ data class PickupUiState(
 
 @HiltViewModel
 class PickupViewModel @Inject constructor(
-    private val repo: PickupRepository
+    private val repo: PickupRepository,
+    private val locationRepo: LocationRepository,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(PickupUiState())
@@ -83,6 +85,12 @@ class PickupViewModel @Inject constructor(
 
         viewModelScope.launch {
             _uiState.update { it.copy(isConfirming = true) }
+            // Use real GPS when available; fall back to task coordinates when device
+            // has no fix (cold start, GPS blocked indoors). The backend geofence gate
+            // is the authoritative accuracy check — we just provide the best fix we have.
+            val loc = locationRepo.getLastKnownLocation()
+            val captureLat = loc?.lat?.takeIf { it != 0.0 } ?: task.lat
+            val captureLng = loc?.lng?.takeIf { it != 0.0 } ?: task.lng
             runCatching {
                 repo.confirmPickup(
                     taskId          = taskId,
@@ -90,10 +98,11 @@ class PickupViewModel @Inject constructor(
                     // Use scannedAwb when a real scan happened; fall back to task AWB
                     // for auto-confirmed UUID AWBs (repo will also do this, belt+braces).
                     scannedAwb      = state.scannedAwb.ifBlank { task.awb },
-                    captureLat      = task.lat,
-                    captureLng      = task.lng,
+                    captureLat      = captureLat,
+                    captureLng      = captureLng,
                     pickupLat       = task.lat,
                     pickupLng       = task.lng,
+                    photoPath       = state.photoPath,
                     deviceTimestamp = deviceTimestamp,
                 )
             }.onSuccess {

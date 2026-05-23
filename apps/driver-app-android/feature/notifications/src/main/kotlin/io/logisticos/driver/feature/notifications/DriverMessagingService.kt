@@ -56,14 +56,14 @@ class DriverMessagingService : FirebaseMessagingService() {
             "dispatch_message" -> TaskSyncBus.requestSync()
         }
 
-        showSystemNotification(title, body, type)
+        showSystemNotification(title, body, type, message.data)
     }
 
     override fun onNewToken(token: String) {
         notificationRepo.registerFcmToken(token)
     }
 
-    private fun showSystemNotification(title: String, body: String, type: String) {
+    private fun showSystemNotification(title: String, body: String, type: String, data: Map<String, String> = emptyMap()) {
         val channelId = "driver_notifications"
         val notificationManager = getSystemService(NotificationManager::class.java)
 
@@ -76,10 +76,13 @@ class DriverMessagingService : FirebaseMessagingService() {
         val intent = Intent().apply {
             setClassName(packageName, "$packageName.MainActivity")
             putExtra("notification_type", type)
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+            // Include all FCM data fields so MainActivity can re-post the assignment
+            // payload to PendingAssignmentBus when the app is launched cold from the tray.
+            data.forEach { (key, value) -> putExtra(key, value) }
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
         val pendingIntent = PendingIntent.getActivity(
-            this, 0, intent,
+            this, notificationIdCounter.get(), intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 

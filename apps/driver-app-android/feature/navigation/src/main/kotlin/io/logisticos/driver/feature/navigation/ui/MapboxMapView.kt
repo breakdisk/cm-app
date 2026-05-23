@@ -21,6 +21,8 @@ import com.mapbox.maps.extension.style.layers.properties.generated.LineJoin
 import com.mapbox.maps.extension.style.sources.addSource
 import com.mapbox.maps.extension.style.sources.generated.geoJsonSource
 import com.mapbox.maps.plugin.annotation.annotations
+import com.mapbox.maps.plugin.annotation.generated.PointAnnotation
+import com.mapbox.maps.plugin.annotation.generated.PointAnnotationManager
 import com.mapbox.maps.plugin.annotation.generated.PointAnnotationOptions
 import com.mapbox.maps.plugin.annotation.generated.createPointAnnotationManager
 
@@ -35,6 +37,10 @@ fun MapboxMapView(
     stopLng: Double
 ) {
     var mapViewRef by remember { mutableStateOf<MapView?>(null) }
+    // Driver marker state — created lazily on first valid GPS fix and updated on every
+    // subsequent update call. Stored in remembered state so factory → update can share refs.
+    val driverAnnotMgr = remember { mutableStateOf<PointAnnotationManager?>(null) }
+    val driverAnnot    = remember { mutableStateOf<PointAnnotation?>(null) }
 
     // MapView holds an EGL context and a native renderer — leaving it attached
     // across navigation transitions can block input dispatch to sibling Compose
@@ -60,11 +66,23 @@ fun MapboxMapView(
                             lineJoin(LineJoin.ROUND)
                         })
                     }
-                    val annotationManager = mapView.annotations.createPointAnnotationManager()
-                    annotationManager.create(
+                    // Stop (destination) marker
+                    val stopMgr = mapView.annotations.createPointAnnotationManager()
+                    stopMgr.create(
                         PointAnnotationOptions()
                             .withPoint(Point.fromLngLat(stopLng, stopLat))
                     )
+                    // Driver position marker — always create the manager here so that
+                    // update() can add/move the annotation as GPS fixes arrive.
+                    val drMgr = mapView.annotations.createPointAnnotationManager()
+                    driverAnnotMgr.value = drMgr
+                    if (driverLat != 0.0 || driverLng != 0.0) {
+                        driverAnnot.value = drMgr.create(
+                            PointAnnotationOptions()
+                                .withPoint(Point.fromLngLat(driverLng, driverLat))
+                                .withIconSize(1.2)
+                        )
+                    }
                 }
             }
         },
@@ -79,6 +97,22 @@ fun MapboxMapView(
                     .bearing(if (hasDriverFix) driverBearing.toDouble() else 0.0)
                     .build()
             )
+            // Update or create the driver annotation as GPS fixes stream in.
+            if (hasDriverFix) {
+                val mgr = driverAnnotMgr.value ?: return@AndroidView
+                val existing = driverAnnot.value
+                if (existing == null) {
+                    // First GPS fix after style load — create the marker now.
+                    driverAnnot.value = mgr.create(
+                        PointAnnotationOptions()
+                            .withPoint(Point.fromLngLat(driverLng, driverLat))
+                            .withIconSize(1.2)
+                    )
+                } else {
+                    existing.point = Point.fromLngLat(driverLng, driverLat)
+                    mgr.update(existing)
+                }
+            }
         }
     )
 }

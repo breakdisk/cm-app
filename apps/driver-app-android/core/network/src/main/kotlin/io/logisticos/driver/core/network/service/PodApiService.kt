@@ -146,6 +146,19 @@ data class SubmitPopRequest(
     @SerialName("device_timestamp")  val deviceTimestamp: String? = null,
 )
 
+@Serializable
+data class GetPodResponse(
+    val data: GetPodData
+)
+
+@Serializable
+data class GetPodData(
+    @SerialName("pod_id")     val podId: String,
+    val status: String,
+    @SerialName("photo_url")  val photoUrl: String? = null,
+    @SerialName("created_at") val createdAt: String? = null,
+)
+
 // ─── API interface ────────────────────────────────────────────────────────────
 
 interface PodApiService {
@@ -201,6 +214,10 @@ interface PodApiService {
         @Path("id") popId: String,
         @Body body: SubmitPopRequest
     )
+
+    /** GET /v1/pods/{id} — fetch POD details including photo URL */
+    @GET("v1/pods/{id}")
+    suspend fun get(@Path("id") podId: String): GetPodResponse
 
     /** POST /v1/otps/generate — send OTP SMS to recipient */
     @POST("v1/otps/generate")

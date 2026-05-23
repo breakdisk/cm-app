@@ -12,6 +12,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -25,6 +26,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -103,8 +105,10 @@ fun PodScreen(
                 }
                 Text("POD Submitted", color = Green, fontSize = 24.sp, fontWeight = FontWeight.Bold)
                 if (isCod && state.codCollected) {
+                    val actualAmount = state.partialCodAmountInput.toDoubleOrNull()
+                        ?.takeIf { it > 0 } ?: codAmount
                     Text(
-                        "COD ₱${"%,.2f".format(codAmount)} collected",
+                        "COD ₱${"%,.2f".format(actualAmount)} collected",
                         color = Amber,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.SemiBold
@@ -177,7 +181,9 @@ fun PodScreen(
             CodSection(
                 amount = codAmount,
                 collected = state.codCollected,
-                onToggle = viewModel::onCodToggled
+                onToggle = viewModel::onCodToggled,
+                partialAmountInput = state.partialCodAmountInput,
+                onPartialAmountChanged = viewModel::onPartialCodAmountChanged,
             )
             Spacer(Modifier.height(12.dp))
         }
@@ -346,8 +352,14 @@ private fun StepDot(label: String, done: Boolean) {
 }
 
 @Composable
-private fun CodSection(amount: Double, collected: Boolean, onToggle: (Boolean) -> Unit) {
-    Row(
+private fun CodSection(
+    amount: Double,
+    collected: Boolean,
+    onToggle: (Boolean) -> Unit,
+    partialAmountInput: String,
+    onPartialAmountChanged: (String) -> Unit,
+) {
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp)
@@ -359,23 +371,63 @@ private fun CodSection(amount: Double, collected: Boolean, onToggle: (Boolean) -
                 RoundedCornerShape(14.dp)
             )
             .padding(16.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Column {
-            Text("Cash on Delivery", color = Amber, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-            Text("₱${"%,.2f".format(amount)}", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        }
-        Switch(
-            checked = collected,
-            onCheckedChange = onToggle,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Canvas,
-                checkedTrackColor = Amber,
-                uncheckedThumbColor = Color.White.copy(alpha = 0.4f),
-                uncheckedTrackColor = Color.White.copy(alpha = 0.08f)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text("Cash on Delivery", color = Amber, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text("₱${"%,.2f".format(amount)}", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            }
+            Switch(
+                checked = collected,
+                onCheckedChange = onToggle,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Canvas,
+                    checkedTrackColor = Amber,
+                    uncheckedThumbColor = Color.White.copy(alpha = 0.4f),
+                    uncheckedTrackColor = Color.White.copy(alpha = 0.08f)
+                )
             )
-        )
+        }
+        // Partial amount input — shown when the toggle is ON so the driver can
+        // record a partial collection (customer only had partial cash).
+        // Blank = full amount collected; any positive value overrides the total.
+        if (collected) {
+            OutlinedTextField(
+                value = partialAmountInput,
+                onValueChange = onPartialAmountChanged,
+                label = { Text("Amount collected (₱)") },
+                placeholder = { Text("%,.2f".format(amount)) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                modifier = Modifier.fillMaxWidth(),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Amber,
+                    unfocusedBorderColor = Amber.copy(alpha = 0.4f),
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White,
+                    focusedLabelColor = Amber,
+                    unfocusedLabelColor = Amber.copy(alpha = 0.6f),
+                    cursorColor = Amber,
+                    focusedPlaceholderColor = Color.White.copy(alpha = 0.3f),
+                    unfocusedPlaceholderColor = Color.White.copy(alpha = 0.3f),
+                )
+            )
+            if (partialAmountInput.isNotEmpty()) {
+                val partial = partialAmountInput.toDoubleOrNull()
+                if (partial != null && partial < amount) {
+                    Text(
+                        "Partial collection — shortfall ₱${"%,.2f".format(amount - partial)}",
+                        color = Amber.copy(alpha = 0.75f),
+                        fontSize = 11.sp,
+                    )
+                }
+            }
+        }
     }
 }
 

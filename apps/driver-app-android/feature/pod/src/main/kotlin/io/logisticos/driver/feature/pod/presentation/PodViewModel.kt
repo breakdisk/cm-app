@@ -49,6 +49,9 @@ data class PodUiState(
      *  Displayed on-screen so the driver can see the code and auto-verification proceeds. */
     val dummyOtpCode: String? = null,
     val codCollected: Boolean = false,
+    /** Driver-entered partial collection amount as a display string (e.g. "450.50").
+     *  Empty means the full codAmount was collected. Validated on submit. */
+    val partialCodAmountInput: String = "",
     val isSubmitting: Boolean = false,
     val isSubmitted: Boolean = false,
     val podId: String? = null,
@@ -90,9 +93,7 @@ class PodViewModel @Inject constructor(
                 recipientName = recipientName,
                 requiresPhoto = requiresPhoto,
                 requiresSignature = requiresSignature,
-                // OTP temporarily disabled — re-enable once Twilio subscription is active.
-                // To re-enable: replace `false` with the `requiresOtp` parameter.
-                requiresOtp = false,
+                requiresOtp = requiresOtp,
                 isCod = isCod,
                 codAmount = codAmount
             )
@@ -121,7 +122,13 @@ class PodViewModel @Inject constructor(
 
     fun onPhotoCaptured(path: String)    { _uiState.update { it.copy(photoPath = path) } }
     fun onSignatureSaved(path: String)   { _uiState.update { it.copy(signaturePath = path) } }
-    fun onCodToggled(collected: Boolean) { _uiState.update { it.copy(codCollected = collected) } }
+    fun onCodToggled(collected: Boolean) { _uiState.update { it.copy(codCollected = collected, partialCodAmountInput = "") } }
+    fun onPartialCodAmountChanged(input: String) {
+        // Accept only valid decimal input — reject anything that can't parse as a number
+        if (input.isEmpty() || input.toDoubleOrNull() != null) {
+            _uiState.update { it.copy(partialCodAmountInput = input) }
+        }
+    }
 
     fun showFailureSheet()    { _uiState.update { it.copy(showFailureSheet = true) } }
     fun dismissFailureSheet() { _uiState.update { it.copy(showFailureSheet = false) } }
@@ -208,8 +215,11 @@ class PodViewModel @Inject constructor(
                     photoPath = state.photoPath,
                     signaturePath = state.signaturePath,
                     otpCode = state.otpToken,
-                    codCollectedCents = if (state.isCod && state.codCollected)
-                        (state.codAmount * 100).toLong() else null,
+                    codCollectedCents = if (state.isCod && state.codCollected) {
+                        val partial = state.partialCodAmountInput.toDoubleOrNull()
+                        if (partial != null && partial > 0.0) (partial * 100).toLong()
+                        else (state.codAmount * 100).toLong()
+                    } else null,
                     requiresPhoto = state.requiresPhoto,
                     requiresSignature = state.requiresSignature,
                 )

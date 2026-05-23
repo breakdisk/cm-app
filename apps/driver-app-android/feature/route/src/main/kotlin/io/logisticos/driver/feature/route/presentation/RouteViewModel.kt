@@ -9,6 +9,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import io.logisticos.driver.core.database.dao.ShiftDao
 import io.logisticos.driver.core.database.entity.TaskEntity
 import io.logisticos.driver.core.database.entity.TaskStatus
+import io.logisticos.driver.core.network.service.PodApiService
 import io.logisticos.driver.feature.route.data.RouteRepository
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.*
@@ -26,6 +27,7 @@ data class RouteUiState(
 class RouteViewModel @AssistedInject constructor(
     private val repo: RouteRepository,
     private val shiftDao: ShiftDao,
+    private val podApi: PodApiService,
     @Assisted private val shiftId: String
 ) : ViewModel() {
 
@@ -36,6 +38,19 @@ class RouteViewModel @AssistedInject constructor(
 
     private val _uiState = MutableStateFlow(RouteUiState(isLoading = true))
     val uiState: StateFlow<RouteUiState> = _uiState.asStateFlow()
+
+    // null = not yet fetched, "" = fetch failed or no photo, non-empty = photo URL
+    private val _podPhotoUrl = MutableStateFlow<String?>(null)
+    val podPhotoUrl: StateFlow<String?> = _podPhotoUrl.asStateFlow()
+
+    fun loadPodPhoto(podId: String) {
+        _podPhotoUrl.value = null
+        viewModelScope.launch {
+            runCatching { podApi.get(podId) }
+                .onSuccess { resp -> _podPhotoUrl.value = resp.data.photoUrl ?: "" }
+                .onFailure { _podPhotoUrl.value = "" }
+        }
+    }
 
     private val isReordering = AtomicBoolean(false)
     private var reorderedActive = mutableListOf<TaskEntity>()

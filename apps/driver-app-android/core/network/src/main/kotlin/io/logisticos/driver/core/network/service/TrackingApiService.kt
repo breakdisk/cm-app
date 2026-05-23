@@ -1,28 +1,4 @@
+// Removed — breadcrumb upload is handled by OutboundSyncWorker via DriverOpsApiService.bulkUpdateLocation().
+// This file is kept as an empty placeholder to avoid breaking any import that was missed during
+// the migration. Delete this file and its references once the next full build confirms no usages remain.
 package io.logisticos.driver.core.network.service
-
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
-import retrofit2.Response
-import retrofit2.http.Body
-import retrofit2.http.POST
-
-@Serializable
-data class BreadcrumbPoint(
-    val lat: Double,
-    val lng: Double,
-    val accuracy: Float,
-    @SerialName("speed_mps") val speedMps: Float,
-    val bearing: Float,
-    val timestamp: Long
-)
-
-@Serializable
-data class BreadcrumbBatchRequest(
-    @SerialName("shift_id") val shiftId: String,
-    val points: List<BreadcrumbPoint>
-)
-
-interface TrackingApiService {
-    @POST("v1/location/batch")
-    suspend fun uploadBreadcrumbs(@Body request: BreadcrumbBatchRequest): Response<Unit>
-}

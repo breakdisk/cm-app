@@ -33,6 +33,13 @@ val MIGRATION_4_5 = object : Migration(4, 5) {
     }
 }
 
+val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(database: SupportSQLiteDatabase) {
+        database.execSQL("ALTER TABLE tasks ADD COLUMN podId TEXT")
+        database.execSQL("ALTER TABLE tasks ADD COLUMN completedAt INTEGER")
+    }
+}
+
 @TypeConverters(Converters::class)
 @Database(
     entities = [
@@ -45,7 +52,7 @@ val MIGRATION_4_5 = object : Migration(4, 5) {
         SyncQueueEntity::class,
         NotificationEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = true
 )
 abstract class DriverDatabase : RoomDatabase() {
