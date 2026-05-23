@@ -72,6 +72,10 @@ pub trait DispatchQueueRepository: Send + Sync {
     /// so ops can reassign manually, and clear the dispatched_at timestamp.
     /// Returns `true` if the row was found and updated.
     async fn cancel_dispatch(&self, shipment_id: Uuid, tenant_id: Uuid) -> anyhow::Result<bool>;
+
+    /// Cross-tenant pending list for the periodic dispatch-sweep background task.
+    /// Returns all `status='pending'` rows across ALL tenants, oldest-first.
+    async fn list_all_pending(&self) -> anyhow::Result<Vec<DispatchQueueRow>>;
 }
 
 pub struct PgDispatchQueueRepository {
@@ -265,5 +269,25 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    async fn list_all_pending(&self) -> anyhow::Result<Vec<DispatchQueueRow>> {
+        let rows = sqlx::query_as::<_, DispatchQueueRow>(
+            "SELECT id, tenant_id, shipment_id, customer_id, customer_name, customer_phone,
+                    customer_email, tracking_number,
+                    dest_address_line1, dest_city, dest_province, dest_postal_code,
+                    dest_lat, dest_lng,
+                    origin_address_line1, origin_city, origin_province, origin_postal_code,
+                    origin_lat, origin_lng,
+                    cod_amount_cents, special_instructions, service_type, status,
+                    auto_dispatch_attempts, last_dispatch_error, last_attempt_at,
+                    queued_at, dispatched_at
+             FROM dispatch.dispatch_queue
+             WHERE status = 'pending'
+             ORDER BY queued_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
     }
 }

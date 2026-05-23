@@ -11,7 +11,10 @@ use crate::infrastructure::db::{
 };
 use crate::infrastructure::messaging::compliance_consumer::start_compliance_consumer;
 use crate::infrastructure::messaging::{start_driver_available_consumer, start_shipment_consumer, start_user_consumer};
+use crate::infrastructure::db::dispatch_queue_repo::PgDispatchQueueRepository;
+use crate::application::commands::QuickDispatchCommand;
 use crate::api::http::{router, AppState};
+use logisticos_types::TenantId;
 use logisticos_auth::jwt::JwtService;
 use logisticos_events::producer::KafkaProducer;
 
@@ -199,6 +202,57 @@ pub async fn run() -> anyhow::Result<()> {
                 ),
                 Err(e) => tracing::warn!(err = %e, "orphan-cleanup: query failed"),
                 _ => {}
+            }
+        }
+    });
+
+    // Periodic dispatch sweep — retries ALL pending shipments every 90 seconds.
+    //
+    // The `driver_available_consumer` only fires when a driver goes online.  If a
+    // booking arrives while a driver is *already* online, auto-dispatch runs once
+    // at booking time; if it fails (no coords, compliance hold, stale assignment)
+    // the shipment parks in `dispatch_queue` with no further retry.  This loop
+    // closes that gap by sweeping the queue continuously, ensuring every pending
+    // booking eventually reaches an available driver without operator intervention.
+    //
+    // `quick_dispatch` is safe to call repeatedly — it checks `status = 'pending'`
+    // before any mutation, so dispatched rows are skipped without side effects.
+    let pool_for_sweep        = pool.clone();
+    let dispatch_svc_sweep    = Arc::clone(&dispatch_service);
+    tokio::spawn(async move {
+        let sweep_repo = PgDispatchQueueRepository::new(pool_for_sweep);
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(90));
+        loop {
+            tick.tick().await;
+            let pending = match sweep_repo.list_all_pending().await {
+                Ok(rows) => rows,
+                Err(e) => {
+                    tracing::warn!(err = %e, "dispatch-sweep: list_all_pending failed");
+                    continue;
+                }
+            };
+            if pending.is_empty() { continue; }
+            tracing::info!(count = pending.len(), "dispatch-sweep: retrying pending queue items");
+            for row in pending {
+                let cmd = QuickDispatchCommand {
+                    shipment_id:         row.shipment_id,
+                    preferred_driver_id: None,
+                };
+                match dispatch_svc_sweep
+                    .quick_dispatch(TenantId::from_uuid(row.tenant_id), cmd)
+                    .await
+                {
+                    Ok(a) => tracing::info!(
+                        shipment_id  = %row.shipment_id,
+                        driver_id    = %a.driver_id,
+                        "dispatch-sweep: dispatched"
+                    ),
+                    Err(e) => tracing::debug!(
+                        shipment_id = %row.shipment_id,
+                        err         = %e,
+                        "dispatch-sweep: retry skipped (will retry next tick)"
+                    ),
+                }
             }
         }
     });

@@ -207,7 +207,7 @@ impl ShipmentService {
             customer_phone: cmd.customer_phone.clone(),
             customer_email: cmd.customer_email.clone(),
             booked_by_customer: cmd.booked_by_customer,
-            auto_dispatch: cmd.auto_dispatch.unwrap_or(false),
+            auto_dispatch: cmd.auto_dispatch.unwrap_or(true),
             awb: master_awb.clone(),
             piece_count,
             status: ShipmentStatus::Pending,
@@ -293,7 +293,7 @@ impl ShipmentService {
                 weight_grams:         billable_grams,
                 estimated_delivery:   String::new(), // TODO: derive from service_type SLA
                 booked_by_customer:   shipment.booked_by_customer,
-                auto_dispatch:        shipment.auto_dispatch,
+                auto_dispatch:        shipment.auto_dispatch,  // true = nearest-driver auto-assign on creation
             },
         );
         let payload = serde_json::to_string(&event).map_err(|e| AppError::Internal(e.into()))?;
