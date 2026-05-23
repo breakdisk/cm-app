@@ -15,7 +15,7 @@ import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
 import { OnboardDriverModal } from "@/components/drivers/OnboardDriverModal";
-import { Search, MapPin, Package, RefreshCw, Briefcase, UserPlus } from "lucide-react";
+import { Search, MapPin, Package, RefreshCw, Briefcase, UserPlus, Trash2 } from "lucide-react";
 import { usePermissions } from "@/hooks/usePermissions";
 
 // ── Types & mock data ─────────────────────────────────────────────────────────
@@ -100,9 +100,28 @@ export default function DriversPage() {
   const [loading, setLoading] = useState(false);
   const [onboardOpen, setOnboardOpen] = useState(false);
 
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
   const { driverMap, connected, refresh } = useDriverRoster();
   const { hasPermission } = usePermissions();
   const canCreateDriver = hasPermission("drivers:create");
+  const canManageDrivers = hasPermission("drivers:manage");
+
+  const handleDeleteDriver = async (driverId: string) => {
+    setDeletingId(driverId);
+    try {
+      const api = createDriversApi();
+      await api.deleteDriver(driverId);
+      setDrivers((prev) => prev.filter((d) => d.id !== driverId));
+    } catch (err: unknown) {
+      const e = err as { message?: string };
+      alert(e.message ?? "Failed to delete driver");
+    } finally {
+      setDeletingId(null);
+      setConfirmDeleteId(null);
+    }
+  };
 
   const fetchDrivers = useCallback(async () => {
     setLoading(true);
@@ -354,7 +373,7 @@ export default function DriversPage() {
 
               {/* Cross-portal deep link — partner-portal owns driver commission/SLA.
                   Plain <a> so the /partner basePath is preserved across the jump. */}
-              <div className="mt-2.5 flex items-center justify-end border-t border-glass-border/40 pt-2">
+              <div className="mt-2.5 flex items-center justify-between border-t border-glass-border/40 pt-2">
                 <a
                   href={`/partner/drivers?focus=${encodeURIComponent(driver.id)}`}
                   onClick={(e) => e.stopPropagation()}
@@ -363,6 +382,36 @@ export default function DriversPage() {
                   <Briefcase size={10} />
                   Manage in Partner Portal
                 </a>
+
+                {/* Delete — only shown for offline drivers with manage permission */}
+                {canManageDrivers && driver.status === "offline" && (
+                  confirmDeleteId === driver.id ? (
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-2xs text-white/40 font-mono">Confirm?</span>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDeleteDriver(driver.id); }}
+                        disabled={deletingId === driver.id}
+                        className="rounded px-2 py-0.5 text-2xs font-semibold text-red-400 border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 transition-all disabled:opacity-50"
+                      >
+                        {deletingId === driver.id ? "Deleting…" : "Yes, delete"}
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(null); }}
+                        className="rounded px-2 py-0.5 text-2xs text-white/40 border border-glass-border hover:text-white transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(driver.id); }}
+                      className="inline-flex items-center gap-1 rounded-lg border border-red-500/20 bg-red-500/5 px-2 py-1 text-2xs text-red-400/60 transition-all hover:border-red-500/40 hover:text-red-400 hover:bg-red-500/10"
+                    >
+                      <Trash2 size={10} />
+                      Remove
+                    </button>
+                  )
+                )}
               </div>
             </GlassCard>
           );

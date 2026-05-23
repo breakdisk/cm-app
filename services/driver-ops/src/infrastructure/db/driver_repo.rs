@@ -147,6 +147,14 @@ impl DriverRepository for PgDriverRepository {
         Ok(rows.into_iter().map(Driver::from).collect())
     }
 
+    async fn delete(&self, id: &DriverId) -> anyhow::Result<bool> {
+        let result = sqlx::query("DELETE FROM driver_ops.drivers WHERE id = $1")
+            .bind(id.inner())
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     async fn save(&self, d: &Driver) -> anyhow::Result<()> {
         let status = status_str(d.status);
         let driver_type = driver_type_str(d.driver_type);

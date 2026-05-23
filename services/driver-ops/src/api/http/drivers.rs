@@ -245,6 +245,27 @@ pub async fn set_driver_status(
     Ok(Json(serde_json::json!({ "data": DriverDto::from(&driver) })))
 }
 
+/// DELETE /v1/drivers/:id — hard-delete a driver profile.
+///
+/// Guards (enforced in DriverService::delete_driver):
+/// - Driver must be Offline (cannot delete an active courier mid-shift).
+/// - Driver must have no active route (prevents orphaning a live assignment).
+///
+/// The corresponding identity.users row is NOT removed — deactivate that
+/// separately in the identity service if the person should also lose login access.
+/// Task history rows are preserved (FK → SET NULL keeps the audit trail intact).
+pub async fn delete_driver(
+    AuthClaims(claims): AuthClaims,
+    Path(id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+) -> Result<axum::http::StatusCode, AppError> {
+    require_permission!(claims, logisticos_auth::rbac::permissions::FLEET_MANAGE);
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let driver_id = DriverId::from_uuid(id);
+    state.driver_service.delete_driver(&tenant_id, &driver_id).await?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
 /// GET /v1/drivers/:id/location
 ///
 /// Returns the most-recent known GPS coordinates for a driver.

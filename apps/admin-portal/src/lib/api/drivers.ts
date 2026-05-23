@@ -92,5 +92,8 @@ export function createDriversApi() {
       client
         .put<ApiResponse<Driver>>(`/v1/drivers/${driverId}/status`, { status })
         .then((r) => r.data),
+
+    deleteDriver: (driverId: string) =>
+      client.delete(`/v1/drivers/${driverId}`).then(() => undefined),
   };
 }

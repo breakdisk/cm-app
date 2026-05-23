@@ -36,6 +36,9 @@ pub trait DriverRepository: Send + Sync {
     async fn find_by_user_id(&self, user_id: Uuid) -> anyhow::Result<Option<Driver>>;
     async fn list_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<Driver>>;
     async fn save(&self, driver: &Driver) -> anyhow::Result<()>;
+    /// Hard-delete a driver row. The caller (DriverService) must verify there
+    /// are no active/pending tasks before calling this.
+    async fn delete(&self, id: &DriverId) -> anyhow::Result<bool>;
 }
 
 #[async_trait]

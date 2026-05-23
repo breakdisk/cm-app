@@ -4,7 +4,7 @@ pub mod location;
 pub mod health;
 pub mod ws;
 
-use axum::{Router, routing::{get, post, put}};
+use axum::{Router, routing::{delete, get, post, put}};
 use std::sync::Arc;
 use crate::application::services::{DriverService, TaskService, LocationService};
 use crate::infrastructure::external::FcmClient;
@@ -83,7 +83,7 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/drivers/summary",      get(drivers::get_summary))
         .route("/drivers/go-online",    post(drivers::go_online))
         .route("/drivers/go-offline",   post(drivers::go_offline))
-        .route("/drivers/:id",          get(drivers::get_driver).patch(drivers::update_driver))
+        .route("/drivers/:id",          get(drivers::get_driver).patch(drivers::update_driver).delete(drivers::delete_driver))
         // Admin override: force a driver's status (FLEET_MANAGE permission)
         .route("/drivers/:id/status",        put(drivers::set_driver_status))
         // Admin override: cancel all pending/in-progress tasks for a driver

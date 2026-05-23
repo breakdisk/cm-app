@@ -85,6 +85,45 @@ impl DriverService {
             .ok_or_else(|| AppError::NotFound { resource: "Driver", id: driver_id.inner().to_string() })
     }
 
+    /// Admin hard-delete — permanently removes the driver profile.
+    ///
+    /// Guards:
+    /// - Driver must belong to the calling tenant (tenant isolation).
+    /// - Driver must have no active route (prevents mid-trip orphan).
+    /// - Driver must be Offline or inactive (blocks deleting an en-route courier).
+    ///
+    /// This does NOT delete the corresponding identity.users row — that lives
+    /// in the identity service and must be deactivated there separately if needed.
+    /// Task history is preserved via cascade-SET NULL in the DB foreign key.
+    pub async fn delete_driver(
+        &self,
+        tenant_id: &TenantId,
+        driver_id: &DriverId,
+    ) -> AppResult<()> {
+        let driver = self.get(driver_id).await?;
+
+        if driver.tenant_id.inner() != tenant_id.inner() {
+            return Err(AppError::NotFound { resource: "Driver", id: driver_id.inner().to_string() });
+        }
+        if driver.active_route_id.is_some() {
+            return Err(AppError::BusinessRule(
+                "Cannot delete a driver with an active route — cancel their route first".into(),
+            ));
+        }
+        if !matches!(driver.status, DriverStatus::Offline) {
+            return Err(AppError::BusinessRule(
+                "Cannot delete an online driver — set them offline first".into(),
+            ));
+        }
+
+        let deleted = self.driver_repo.delete(driver_id).await.map_err(AppError::Internal)?;
+        if !deleted {
+            return Err(AppError::NotFound { resource: "Driver", id: driver_id.inner().to_string() });
+        }
+        tracing::info!(driver_id = %driver_id, tenant_id = %tenant_id, "Driver hard-deleted by admin");
+        Ok(())
+    }
+
     /// Called by Kafka consumer when dispatch assigns a route to a driver.
     pub async fn assign_route(&self, driver_id: &DriverId, route_id: Uuid) -> AppResult<()> {
         let mut driver = self.get(driver_id).await?;
