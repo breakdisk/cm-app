@@ -115,9 +115,11 @@ fun RouteScreen(
         val podPhotoUrl by viewModel.podPhotoUrl.collectAsState()
         val uriHandler = LocalUriHandler.current
 
-        // Fetch photo URL as soon as the sheet opens for a confirmed completed task
-        LaunchedEffect(task.podId) {
-            if (task.podId != null) viewModel.loadPodPhoto(task.podId)
+        // Fetch photo URL as soon as the sheet opens for a confirmed completed task.
+        // Copy to local val first — cross-module property can't be smart-cast directly.
+        val taskPodId = task.podId
+        LaunchedEffect(taskPodId) {
+            if (taskPodId != null) viewModel.loadPodPhoto(taskPodId)
         }
 
         ModalBottomSheet(
@@ -242,7 +244,7 @@ private fun TaskStopCard(
             colors = CardDefaults.cardColors(containerColor = Glass),
             border = androidx.compose.foundation.BorderStroke(1.dp, Border)
         ) {
-            TaskStopCardBody(task, stopNumber, statusColor)
+            TaskStopCardBody(task, stopNumber, statusColor, onReorder)
         }
     } else {
         Card(
@@ -250,13 +252,18 @@ private fun TaskStopCard(
             colors = CardDefaults.cardColors(containerColor = Glass.copy(alpha = 0.5f)),
             border = androidx.compose.foundation.BorderStroke(1.dp, Border)
         ) {
-            TaskStopCardBody(task, stopNumber, statusColor)
+            TaskStopCardBody(task, stopNumber, statusColor, onReorder)
         }
     }
 }
 
 @Composable
-private fun TaskStopCardBody(task: TaskEntity, stopNumber: Int?, statusColor: Color) {
+private fun TaskStopCardBody(
+    task: TaskEntity,
+    stopNumber: Int?,
+    statusColor: Color,
+    onReorder: ((steps: Int) -> Unit)? = null,
+) {
     Row(
         modifier = Modifier.padding(16.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
