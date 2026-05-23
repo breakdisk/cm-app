@@ -22,6 +22,7 @@ dependencies {
     implementation(project(":core:network"))
     implementation(project(":core:database"))
     implementation(project(":core:common"))
+    implementation(project(":core:location"))
     implementation(project(":feature:route"))
     implementation(libs.kotlinx.serialization.json)
     implementation(platform(libs.compose.bom))
