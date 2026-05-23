@@ -35,7 +35,7 @@ class AuthRepository @Inject constructor(
     suspend fun verifyOtp(phone: String? = null, otp: String, email: String? = null): Result<Unit> {
         if (devBypassEnabled && otp == "123456") {
             sessionManager.saveTokens(jwt = "dev-token", refreshToken = "dev-refresh")
-            sessionManager.saveTenantId("dev-tenant-id")
+            sessionManager.saveTenantId(tenantSlug)   // use real tenant, not hardcoded literal
             sessionManager.saveDriverId("dev-driver-id")
             return Result.success(Unit)
         }

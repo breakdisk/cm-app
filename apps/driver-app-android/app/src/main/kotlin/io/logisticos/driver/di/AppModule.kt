@@ -45,8 +45,14 @@ object AppModule {
     @Named("application_scope")
     fun provideApplicationScope(): CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    /** OTP bypass (123456) only active in devDebug — stagingDebug/prodDebug hit the real backend. */
+    /**
+     * OTP bypass (123456) only active when pointing at a local dev server.
+     * devDebug against the real backend must use real credentials — "dev-token" is
+     * rejected by the real backend and the fake JWT would keep the driver stuck offline.
+     */
     @Provides
     @Named("dev_bypass_enabled")
-    fun provideDevBypassEnabled(): Boolean = BuildConfig.DEBUG && BuildConfig.FLAVOR == "dev"
+    fun provideDevBypassEnabled(): Boolean =
+        BuildConfig.DEBUG && BuildConfig.FLAVOR == "dev" &&
+        (BuildConfig.BASE_URL.contains("localhost") || BuildConfig.BASE_URL.contains("10.0.2.2"))
 }
