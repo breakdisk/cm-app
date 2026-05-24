@@ -76,6 +76,15 @@
             android:value="${MAPS_API_KEY}" />
 
         <!--
+            ARCore — "optional" keeps the app installable on non-AR devices.
+            Drivers on unsupported hardware fall back to manual dimension entry.
+            Change to "required" only if AR measurement becomes mandatory.
+        -->
+        <meta-data
+            android:name="com.google.ar.core"
+            android:value="optional" />
+
+        <!--
             FileProvider — grants the system camera app temporary write-URI
             access to files inside context.filesDir. Required so TakePicture
             can save POD photos without world-readable external storage.

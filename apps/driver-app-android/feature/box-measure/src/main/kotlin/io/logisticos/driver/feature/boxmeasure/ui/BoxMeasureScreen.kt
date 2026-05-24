@@ -1,5 +1,9 @@
 package io.logisticos.driver.feature.boxmeasure.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
@@ -16,12 +20,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import io.logisticos.driver.feature.boxmeasure.data.*
 import io.logisticos.driver.feature.boxmeasure.presentation.*
@@ -71,10 +77,39 @@ fun BoxMeasureScreen(
     viewModel: BoxMeasureViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
 
+    // ── Camera permission ─────────────────────────────────────────────────────
+    // ARCore requires CAMERA at runtime. Request it before the GLSurfaceView
+    // initialises — Session.resume() throws CameraNotAvailableException (unchecked
+    // on the GL thread) if permission isn't granted, crashing the app.
+    var cameraGranted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+                == PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val cameraLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        cameraGranted = granted
+        if (!granted) {
+            viewModel.onArSessionError("Camera permission denied — use manual entry.")
+            viewModel.setManualMode(true)
+        }
+    }
     LaunchedEffect(Unit) {
+        if (!cameraGranted) cameraLauncher.launch(Manifest.permission.CAMERA)
         if (mode == BoxMeasureMode.VERIFY) {
             viewModel.initVerifyMode(declaredSizeId, declaredL, declaredW, declaredH)
+        }
+    }
+
+    // Auto-switch to manual mode when AR session errors (device not supported,
+    // camera unavailable, ARCore not installed, etc.).
+    LaunchedEffect(state.measureError) {
+        if (state.measureError != null && !state.manualMode) {
+            viewModel.setManualMode(true)
         }
     }
 
@@ -139,20 +174,44 @@ fun BoxMeasureScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
 
+            // ── AR error banner ───────────────────────────────────────────────
+            // Shown when the session failed (device not supported, camera denied,
+            // ARCore not installed). Manual mode is auto-enabled at this point.
+            if (state.measureError != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Amber.copy(alpha = 0.12f))
+                        .border(1.dp, Amber.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                        .padding(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Default.WarningAmber, contentDescription = null, tint = Amber, modifier = Modifier.size(18.dp))
+                    Text(state.measureError!!, color = Amber, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                }
+            }
+
             // ── AR camera view (full-width, 240dp tall) ────────────────────────
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(240.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .border(1.dp, Border, RoundedCornerShape(16.dp)),
-            ) {
-                ArCoreBoxMeasureView(
-                    modifier = Modifier.fillMaxSize(),
-                    viewModel = viewModel,
-                )
-                // Tap progress overlay
-                TapProgressOverlay(tapCount = state.tapCount)
+            // Only rendered when camera permission is granted and no session error.
+            // On unsupported devices or permission denial, the error banner above
+            // explains the situation and manual mode is enabled automatically.
+            if (cameraGranted && state.measureError == null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(240.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .border(1.dp, Border, RoundedCornerShape(16.dp)),
+                ) {
+                    ArCoreBoxMeasureView(
+                        modifier = Modifier.fillMaxSize(),
+                        viewModel = viewModel,
+                    )
+                    // Tap progress overlay
+                    TapProgressOverlay(tapCount = state.tapCount)
+                }
             }
 
             // ── Manual entry toggle ────────────────────────────────────────────

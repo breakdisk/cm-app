@@ -73,6 +73,7 @@ fun ArCoreBoxMeasureView(
                 ctx      = ctx,
                 tapQueue = tapQueue,
                 onSessionReady = { viewModel.onArSessionReady() },
+                onSessionError = { msg -> viewModel.onArSessionError(msg) },
                 onMeasurementPoint = { idx, x, y, z ->
                     viewModel.onMeasurementPoint(idx, x, y, z)
                 },
@@ -110,6 +111,7 @@ private class ArRenderer(
     private val ctx: Context,
     private val tapQueue: ConcurrentLinkedQueue<Pair<Float, Float>>,
     private val onSessionReady: () -> Unit,
+    private val onSessionError: (String) -> Unit,
     private val onMeasurementPoint: (index: Int, x: Float, y: Float, z: Float) -> Unit,
     private val onMeasurementComplete: (l: Double, w: Double, h: Double, confidence: Double) -> Unit,
 ) : GLSurfaceView.Renderer {
@@ -135,17 +137,37 @@ private class ArRenderer(
     override fun onSurfaceCreated(gl: GL10?, cfg: EGLConfig?) {
         GLES20.glClearColor(0.03f, 0.03f, 0.06f, 1f)
         try {
+            // Check availability before creating a Session. This surfaces a clear
+            // error on devices that don't support ARCore instead of a cryptic crash.
+            val availability = ArCoreApk.getInstance().checkAvailability(ctx)
+            if (!availability.isSupported) {
+                val reason = when {
+                    availability == ArCoreApk.Availability.UNSUPPORTED_DEVICE_NOT_CAPABLE ->
+                        "AR not supported on this device — use manual entry."
+                    else ->
+                        "ARCore not available ($availability) — use manual entry."
+                }
+                mainHandler.post { onSessionError(reason) }
+                return
+            }
+
             val sess = Session(ctx)
             sess.configure(Config(sess).apply {
                 planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                 depthMode = if (sess.isDepthModeSupported(Config.DepthMode.AUTOMATIC))
                     Config.DepthMode.AUTOMATIC else Config.DepthMode.DISABLED
             })
-            sess.resume()
+            sess.resume()   // throws CameraNotAvailableException if permission not granted
             session = sess
             mainHandler.post { onSessionReady() }
         } catch (e: UnavailableException) {
-            // Session creation failed — AR unavailable on this device.
+            // ARCore SDK/APK version mismatch, or device incompatible.
+            mainHandler.post { onSessionError("AR unavailable: ${e.javaClass.simpleName} — use manual entry.") }
+        } catch (e: Exception) {
+            // Catches CameraNotAvailableException (camera permission denied) and any
+            // other unexpected error. Without this broad catch the crash escapes the
+            // GL thread and takes down the whole app.
+            mainHandler.post { onSessionError("AR failed: ${e.message ?: e.javaClass.simpleName} — use manual entry.") }
         }
     }
 
