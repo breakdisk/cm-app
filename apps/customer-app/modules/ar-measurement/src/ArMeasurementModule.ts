@@ -10,10 +10,18 @@
  *   const { length, width, height } = await ArMeasurementModule.measureBox();
  *   // All values in centimetres, rounded to 1 decimal place.
  *   // Throws with code "USER_CANCELLED" if the user dismisses the AR view.
- *   // Throws with code "AR_UNAVAILABLE" if the device has no AR support.
+ *   // Throws with code "AR_UNAVAILABLE" if the device has no AR support or the
+ *   //   native module is not linked in the current build.
+ *
+ * ── Build compatibility ────────────────────────────────────────────────────────
+ * requireOptionalNativeModule returns null (never throws) when the native module
+ * is absent from the build — e.g. Expo Go, simulator builds, or any EAS build
+ * that pre-dates the ar-measurement native module being added.
+ * All public methods below guard on ArMeasurementNative != null and resolve
+ * gracefully so QuoteScreen degrades to manual size selection without crashing.
  */
 
-import { requireNativeModule } from "expo-modules-core";
+import { requireOptionalNativeModule } from "expo-modules-core";
 
 export interface BoxDimensions {
   /** Length in centimetres */
@@ -33,27 +41,37 @@ export interface ArError {
   message: string;
 }
 
-// Lazily loaded — module may not be linked on simulator builds.
-// requireNativeModule throws if the native side is absent, which is caught
-// in the hook layer and surfaces the "AR_UNAVAILABLE" fallback path.
-const ArMeasurementNative = requireNativeModule("ArMeasurement");
+// Returns null when the native module is not linked — never throws.
+// This keeps QuoteScreen importable on any build, including ones that pre-date
+// the ar-measurement native module. The screen degrades to manual entry in that case.
+const ArMeasurementNative = requireOptionalNativeModule("ArMeasurement");
 
 const ArMeasurementModule = {
   /**
    * Opens the full-screen AR measurement UI.
    * Guides the user through tapping 3 edges of a box.
    * Resolves with BoxDimensions on success.
-   * Rejects with ArError on failure or cancellation.
+   * Rejects with ArError on failure, cancellation, or when AR is not available.
    */
   measureBox(): Promise<BoxDimensions> {
+    if (!ArMeasurementNative) {
+      return Promise.reject({
+        code: "AR_UNAVAILABLE" as ArErrorCode,
+        message: "AR measurement is not available in this build. Please select a box size manually.",
+      });
+    }
     return ArMeasurementNative.measureBox();
   },
 
   /**
-   * Returns true if ARCore/ARKit is supported and initialised on this device.
-   * Call this before showing the "AR Measure" button.
+   * Returns true if ARCore/ARKit is supported AND the native module is linked in
+   * the current build. Call this before showing the "AR Measure" button.
    */
   isAvailable(): Promise<boolean> {
+    if (!ArMeasurementNative) {
+      // Native module not in this build — AR is definitively unavailable.
+      return Promise.resolve(false);
+    }
     return ArMeasurementNative.isAvailable();
   },
 };
