@@ -266,8 +266,8 @@ class OutboundSyncWorker @AssistedInject constructor(
 
             // Offline fallback for PickupRepository.confirmPickup() when the inline
             // POP API call failed (no connectivity at the moment of driver tap).
-            // Calls initiate + submit sequentially; task completion is handled
-            // separately by the TASK_STATUS_UPDATE entry that was also enqueued.
+            // Calls initiate + optional photo upload + submit sequentially.
+            // Task completion is handled by the separate TASK_STATUS_UPDATE entry.
             SyncAction.POP_SUBMIT -> {
                 val taskId     = payload["taskId"]?.jsonPrimitive?.contentOrNull
                     ?: run { syncQueueDao.remove(item.id); return }
@@ -279,6 +279,7 @@ class OutboundSyncWorker @AssistedInject constructor(
                 val pickupLat  = payload["pickupLat"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()  ?: captureLat
                 val pickupLng  = payload["pickupLng"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()  ?: captureLng
                 val deviceTs   = payload["deviceTimestamp"]?.jsonPrimitive?.contentOrNull
+                val photoPath  = payload["photoPath"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
 
                 val popResp = podApi.initiatePop(
                     InitiatePopRequest(
@@ -291,16 +292,60 @@ class OutboundSyncWorker @AssistedInject constructor(
                         deviceTimestamp = deviceTs,
                     )
                 )
+                val popId = popResp.data.popId
+
+                // Upload pickup photo to R2 if one was captured offline.
+                // Mirrors the POD_SUBMIT photo upload path; failure is non-fatal
+                // (photo evidence is optional for POP) so we log and continue.
+                var photoS3Key: String? = null
+                var photoSizeBytes: Long? = null
+                if (photoPath != null) {
+                    val photoFile = java.io.File(photoPath).takeIf { it.exists() }
+                    if (photoFile != null) {
+                        try {
+                            val contentType = "image/jpeg"
+                            withContext(Dispatchers.IO) { ImageCompressor.compressToFile(photoFile) }
+                            val uploadResp = podApi.getPopUploadUrl(
+                                popId,
+                                GetUploadUrlRequest(contentType)
+                            )
+                            val photoBytes = withContext(Dispatchers.IO) { photoFile.readBytes() }
+                            android.util.Log.d(
+                                "OutboundSyncWorker",
+                                "POP photo: ${photoBytes.size / 1024} KB → R2"
+                            )
+                            val reqBuilder = Request.Builder()
+                                .url(uploadResp.data.uploadUrl)
+                                .put(photoBytes.toRequestBody(contentType.toMediaType()))
+                            uploadResp.data.uploadHeaders.forEach { (k, v) -> reqBuilder.addHeader(k, v) }
+                            val putResponse = okHttpClient.newCall(reqBuilder.build()).execute()
+                            if (putResponse.isSuccessful) {
+                                putResponse.close()
+                                photoS3Key    = uploadResp.data.s3Key
+                                photoSizeBytes = photoFile.length()
+                                android.util.Log.d("OutboundSyncWorker", "POP photo uploaded: $photoS3Key")
+                            } else {
+                                val body = try { putResponse.body?.string() ?: "empty" } catch (e: Exception) { "unreadable" }
+                                android.util.Log.e("OutboundSyncWorker", "R2 POP photo PUT ${putResponse.code}: $body")
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.w("OutboundSyncWorker", "POP photo upload failed — non-fatal: ${e.message}")
+                        }
+                    }
+                }
+
                 podApi.submitPop(
-                    popResp.data.popId,
+                    popId,
                     SubmitPopRequest(
                         scannedBarcode  = scannedBarcode,
                         deviceTimestamp = deviceTs,
+                        photoS3Key      = photoS3Key,
+                        photoSizeBytes  = photoSizeBytes,
                     )
                 )
                 android.util.Log.d(
                     "OutboundSyncWorker",
-                    "POP submitted: pop_id=${popResp.data.popId} task=$taskId"
+                    "POP submitted: pop_id=$popId task=$taskId has_photo=${photoS3Key != null}"
                 )
             }
 
@@ -338,7 +383,7 @@ class OutboundSyncWorker @AssistedInject constructor(
                 driverOpsApi.goOffline()
             }
 
-            // SCAN_EVENT, COD_CONFIRM, and any future actions without a handler.
+            // Any future SyncAction variants without a handler yet.
             // Log and drop deliberately so they don't block the queue forever.
             else -> {
                 android.util.Log.w(

@@ -144,6 +144,11 @@ data class SubmitPopRequest(
      *  If the AWB was auto-confirmed (no real scan), pass the task AWB string. */
     @SerialName("scanned_barcode")   val scannedBarcode: String,
     @SerialName("device_timestamp")  val deviceTimestamp: String? = null,
+    /** S3 key of the parcel photo uploaded via presigned URL (optional).
+     *  Obtained from [PodApiService.getPopUploadUrl] and passed here so the
+     *  server can attach it to the POP record in a single submit call. */
+    @SerialName("photo_s3_key")      val photoS3Key: String? = null,
+    @SerialName("photo_size_bytes")  val photoSizeBytes: Long? = null,
 )
 
 @Serializable
@@ -207,6 +212,17 @@ interface PodApiService {
     /** POST /v1/pops — initiate a Proof of Pickup, returns pop_id + geofence result */
     @POST("v1/pops")
     suspend fun initiatePop(@Body body: InitiatePopRequest): InitiatePopResponse
+
+    /**
+     * POST /v1/pops/{id}/upload-url — request a pre-signed R2 PUT URL for a pickup photo.
+     * Upload photo bytes directly to the returned [GetUploadUrlData.uploadUrl], then pass
+     * [GetUploadUrlData.s3Key] in [SubmitPopRequest.photoS3Key] on submit.
+     */
+    @POST("v1/pops/{id}/upload-url")
+    suspend fun getPopUploadUrl(
+        @Path("id") popId: String,
+        @Body body: GetUploadUrlRequest
+    ): GetUploadUrlResponse
 
     /** PUT /v1/pops/{id}/submit — finalise POP; publishes pickup.captured Kafka event */
     @PUT("v1/pops/{id}/submit")

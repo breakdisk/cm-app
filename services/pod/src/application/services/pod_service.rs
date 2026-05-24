@@ -500,6 +500,56 @@ impl PodService {
         Ok(pop_id)
     }
 
+    /// Step P1b: Generate a pre-signed S3 upload URL for a pickup photo.
+    ///
+    /// Mirrors [`get_upload_url`] for POD photos, but scoped to a POP record and
+    /// using a `pop/` key prefix so photos are partitioned from delivery evidence.
+    /// The returned `s3_key` is passed in [`SubmitPickupCommand::photo_s3_key`] —
+    /// there is no separate "attach photo" step for POP (single-photo, no limit check).
+    pub async fn get_pop_upload_url(
+        &self,
+        pop_id: Uuid,
+        tenant_id: &TenantId,
+        content_type: &str,
+    ) -> AppResult<UploadUrlResponse> {
+        if !is_allowed_content_type(content_type) {
+            return Err(AppError::Validation(format!(
+                "Content type '{content_type}' not allowed. Use image/jpeg, image/png, or image/webp"
+            )));
+        }
+
+        let pop = self.pickup_repo.find_by_id(pop_id).await.map_err(AppError::Internal)?
+            .ok_or_else(|| AppError::NotFound { resource: "POP", id: pop_id.to_string() })?;
+
+        if pop.status == crate::domain::entities::PopStatus::Submitted {
+            return Err(AppError::BusinessRule("POP has already been submitted — cannot attach photo".into()));
+        }
+
+        let ext = if content_type.contains("png") { "png" }
+            else if content_type.contains("webp") { "webp" }
+            else { "jpg" };
+
+        let s3_key = format!(
+            "pop/{}/{}/{}/{}.{}",
+            tenant_id.inner(),
+            pop.shipment_id,
+            pop_id,
+            Uuid::new_v4(),
+            ext,
+        );
+
+        let presigned = self.storage
+            .presign_upload(&s3_key, content_type, 900)
+            .await
+            .map_err(AppError::Internal)?;
+
+        Ok(UploadUrlResponse {
+            upload_url: presigned.url,
+            s3_key,
+            upload_headers: presigned.headers,
+        })
+    }
+
     /// Generate and send OTP to recipient's phone for high-value deliveries.
     /// Should be called by driver before arriving at address.
     ///

@@ -73,7 +73,7 @@ class PickupViewModel @Inject constructor(
         _uiState.update { it.copy(photoPath = path) }
     }
 
-    fun confirmPickup(taskId: String, onDone: () -> Unit) {
+    fun confirmPickup(taskId: String) {
         val state = _uiState.value
         val task  = state.task ?: return
         if (!state.canConfirm) return
@@ -106,8 +106,11 @@ class PickupViewModel @Inject constructor(
                     deviceTimestamp = deviceTimestamp,
                 )
             }.onSuccess {
+                // Set isCompleted=true and let the UI drive navigation via the
+                // "Continue" button on the success overlay. Do NOT call onDone()
+                // here — doing so navigates away before Compose recomposes, so the
+                // "Pickup Confirmed" screen never renders (race condition).
                 _uiState.update { it.copy(isConfirming = false, isCompleted = true) }
-                onDone()
             }.onFailure { e ->
                 _uiState.update { it.copy(isConfirming = false, error = e.message) }
             }

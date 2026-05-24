@@ -33,6 +33,7 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/pods/:id",                      get(pod::get_pod))
         // POP lifecycle (Proof of Pickup — chain-of-custody open)
         .route("/pops",                          post(pod::initiate_pickup))
+        .route("/pops/:id/upload-url",           post(pod::get_pop_upload_url))
         .route("/pops/:id/submit",               put(pod::submit_pickup))
         .route("/pops/:id",                      get(pod::get_pop))
         // OTP management

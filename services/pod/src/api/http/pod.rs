@@ -195,6 +195,22 @@ pub async fn submit_pickup(
     })))
 }
 
+/// POST /v1/pops/:id/upload-url — driver requests a presigned R2 PUT URL for
+/// a parcel photo captured at pickup. The s3_key returned here is passed in
+/// `SubmitPickupCommand.photo_s3_key` — no separate attach step needed.
+pub async fn get_pop_upload_url(
+    AuthClaims(claims): AuthClaims,
+    Path(pop_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let content_type = body["content_type"].as_str()
+        .ok_or_else(|| AppError::Validation("content_type required".into()))?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let result = state.pod_service.get_pop_upload_url(pop_id, &tenant_id, content_type).await?;
+    Ok(Json(serde_json::json!({ "data": result })))
+}
+
 /// GET /v1/pops/:id — fetch a single POP record (ops / admin portal).
 pub async fn get_pop(
     AuthClaims(_claims): AuthClaims,

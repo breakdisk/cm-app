@@ -79,10 +79,6 @@ interface ComplianceApiService {
     @GET("api/v1/compliance/me/profile")
     suspend fun getMyProfile(): MyComplianceEnvelope
 
-    /** GET /api/v1/compliance/me/documents/{id} — single document detail. */
-    @GET("api/v1/compliance/me/documents/{id}")
-    suspend fun getDocument(@Path("id") docId: String): UploadDocumentResponse
-
     /**
      * POST /api/v1/compliance/me/documents/upload
      *

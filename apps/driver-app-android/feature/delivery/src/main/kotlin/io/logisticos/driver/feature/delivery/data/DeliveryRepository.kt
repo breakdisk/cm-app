@@ -294,9 +294,7 @@ class DeliveryRepository @Inject constructor(
      * Records that the driver collected COD locally so the home screen
      * running-total updates immediately. The actual COD value is sent to the
      * backend as `cod_collected_cents` on the completeTask call inside
-     * submitPod — no separate sync action is needed (and the previous
-     * COD_CONFIRM enqueue had no backend handler, so it was being silently
-     * dropped by OutboundSyncWorker).
+     * submitPod — no separate sync action is needed.
      */
     suspend fun confirmCod(shiftId: String, taskId: String, amount: Double) {
         shiftDao.addCodCollected(shiftId, amount)

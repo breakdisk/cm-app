@@ -67,7 +67,7 @@ class SyncQueueDaoTest {
     @Test
     fun `getPendingCount flow updates on insert`() = runTest {
         assertEquals(0, dao.getPendingCount().first())
-        dao.enqueue(SyncQueueEntity(action = SyncAction.COD_CONFIRM, payloadJson = "{}", createdAt = 1000L))
+        dao.enqueue(SyncQueueEntity(action = SyncAction.POP_SUBMIT, payloadJson = "{}", createdAt = 1000L))
         assertEquals(1, dao.getPendingCount().first())
     }
 }

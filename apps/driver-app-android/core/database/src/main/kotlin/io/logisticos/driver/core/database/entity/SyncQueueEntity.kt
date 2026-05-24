@@ -4,7 +4,7 @@ import androidx.room.Entity
 import androidx.room.PrimaryKey
 
 enum class SyncAction {
-    TASK_STATUS_UPDATE, POD_SUBMIT, POP_SUBMIT, TASK_COMPLETE, SCAN_EVENT, COD_CONFIRM, SHIFT_START, SHIFT_END
+    TASK_STATUS_UPDATE, POD_SUBMIT, POP_SUBMIT, TASK_COMPLETE, SHIFT_START, SHIFT_END
 }
 
 @Entity(tableName = "sync_queue")

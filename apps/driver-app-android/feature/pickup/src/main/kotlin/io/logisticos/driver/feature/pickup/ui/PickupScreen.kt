@@ -569,7 +569,7 @@ fun PickupScreen(
 
         // Confirm button
         Button(
-            onClick = { viewModel.confirmPickup(taskId, onCompleted) },
+            onClick = { viewModel.confirmPickup(taskId) },
             enabled = state.canConfirm && !state.isConfirming,
             modifier = Modifier
                 .fillMaxWidth()

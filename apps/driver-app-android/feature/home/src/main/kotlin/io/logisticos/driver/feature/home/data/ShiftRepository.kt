@@ -6,6 +6,7 @@ import io.logisticos.driver.core.database.entity.ShiftEntity
 import io.logisticos.driver.core.database.entity.TaskEntity
 import io.logisticos.driver.core.database.entity.TaskStatus
 import io.logisticos.driver.core.database.entity.TaskType
+import io.logisticos.driver.core.network.auth.SessionManager
 import io.logisticos.driver.core.network.service.DriverOpsApiService
 import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
@@ -13,7 +14,8 @@ import javax.inject.Inject
 class ShiftRepository @Inject constructor(
     private val api: DriverOpsApiService,
     private val shiftDao: ShiftDao,
-    private val taskDao: TaskDao
+    private val taskDao: TaskDao,
+    private val sessionManager: SessionManager,
 ) {
     fun observeActiveShift(): Flow<ShiftEntity?> = shiftDao.getActiveShift()
 
@@ -62,8 +64,8 @@ class ShiftRepository @Inject constructor(
         shiftDao.insert(
             ShiftEntity(
                 id = syntheticShiftId,
-                driverId = "",
-                tenantId = "",
+                driverId = sessionManager.getDriverId() ?: "",
+                tenantId = sessionManager.getTenantId() ?: "",
                 startedAt = existingShift?.startedAt,
                 endedAt = null,
                 isActive = tasks.isNotEmpty(),
@@ -139,8 +141,8 @@ class ShiftRepository @Inject constructor(
             shiftDao.insert(
                 ShiftEntity(
                     id = syntheticShiftId,
-                    driverId = "",
-                    tenantId = "",
+                    driverId = sessionManager.getDriverId() ?: "",
+                    tenantId = sessionManager.getTenantId() ?: "",
                     startedAt = existingShift?.startedAt,
                     endedAt = null,
                     isActive = tasks.isNotEmpty() || completedStops > 0,

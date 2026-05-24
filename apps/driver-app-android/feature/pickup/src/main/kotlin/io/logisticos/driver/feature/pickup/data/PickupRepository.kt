@@ -12,6 +12,7 @@ import io.logisticos.driver.core.database.entity.TaskStatus
 import io.logisticos.driver.core.database.worker.OutboundSyncWorker
 import io.logisticos.driver.core.network.service.CompleteTaskRequest
 import io.logisticos.driver.core.network.service.DriverOpsApiService
+import io.logisticos.driver.core.network.service.GetUploadUrlRequest
 import io.logisticos.driver.core.network.service.InitiatePopRequest
 import io.logisticos.driver.core.network.service.PodApiService
 import io.logisticos.driver.core.network.service.SubmitPopRequest
@@ -22,7 +23,12 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import javax.inject.Inject
+import javax.inject.Named
 
 class PickupRepository @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -30,6 +36,8 @@ class PickupRepository @Inject constructor(
     private val syncQueueDao: SyncQueueDao,
     private val driverOpsApi: DriverOpsApiService,
     private val podApi: PodApiService,
+    /** Dedicated client for R2 presigned PUT uploads — longer timeouts, no API interceptors. */
+    @Named("r2_upload") private val r2HttpClient: OkHttpClient,
 ) {
     fun observeTask(taskId: String): Flow<TaskEntity?> = taskDao.getByIdAsFlow(taskId)
 
@@ -134,18 +142,56 @@ class PickupRepository @Inject constructor(
                     deviceTimestamp = deviceTimestamp,
                 )
             )
+            val popId = popResp.data.popId
+
+            // ── Upload pickup photo to R2 if captured ───────────────────────
+            // Uses the same presigned-URL flow as delivery POD photos.
+            // Failure is non-fatal for the POP record (photo is optional) but
+            // we log it so ops can investigate missing pickup evidence.
+            var photoS3Key: String? = null
+            var photoSizeBytes: Long? = null
+            val photoFile = compressedPhotoPath?.let { File(it).takeIf { f -> f.exists() } }
+            if (photoFile != null) {
+                try {
+                    val contentType = "image/jpeg"
+                    val uploadResp = podApi.getPopUploadUrl(popId, GetUploadUrlRequest(contentType))
+                    withContext(Dispatchers.IO) {
+                        val photoBytes = photoFile.readBytes()
+                        val reqBuilder = Request.Builder()
+                            .url(uploadResp.data.uploadUrl)
+                            .put(photoBytes.toRequestBody(contentType.toMediaType()))
+                        uploadResp.data.uploadHeaders.forEach { (k, v) -> reqBuilder.addHeader(k, v) }
+                        val putResponse = r2HttpClient.newCall(reqBuilder.build()).execute()
+                        if (!putResponse.isSuccessful) {
+                            val body = try { putResponse.body?.string() ?: "empty" } catch (e: Exception) { "unreadable" }
+                            android.util.Log.e("PickupRepository", "R2 POP photo PUT ${putResponse.code}: $body")
+                        } else {
+                            putResponse.close()
+                            photoS3Key = uploadResp.data.s3Key
+                            photoSizeBytes = photoFile.length()
+                            android.util.Log.d("PickupRepository", "POP photo uploaded: ${uploadResp.data.s3Key}")
+                        }
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("PickupRepository", "POP photo upload failed — non-fatal: ${e.message}")
+                }
+            }
+
             podApi.submitPop(
-                popResp.data.popId,
+                popId,
                 SubmitPopRequest(
                     scannedBarcode  = effectiveBarcode,
                     deviceTimestamp = deviceTimestamp,
+                    photoS3Key      = photoS3Key,
+                    photoSizeBytes  = photoSizeBytes,
                 )
             )
             android.util.Log.d(
                 "PickupRepository",
-                "POP submitted inline: pop_id=${popResp.data.popId} " +
+                "POP submitted inline: pop_id=$popId " +
                 "geofence=${popResp.data.geofenceVerified} " +
-                "out_of_bounds=${popResp.data.outOfBoundsHandover}"
+                "out_of_bounds=${popResp.data.outOfBoundsHandover} " +
+                "has_photo=${photoS3Key != null}"
             )
         } catch (e: Exception) {
             android.util.Log.w("PickupRepository", "POP inline failed — queuing: ${e.message}")
