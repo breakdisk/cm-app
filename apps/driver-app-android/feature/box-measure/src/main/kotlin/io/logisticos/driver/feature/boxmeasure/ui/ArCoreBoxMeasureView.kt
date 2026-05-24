@@ -182,7 +182,7 @@ private class ArRenderer(
             val (p0, p1, p2, p3) = worldPts
             val l  = dist(p0, p1) * 100
             val w  = dist(p1, p2) * 100
-            val hh = abs(p3[1] - p2[1]) * 100
+            val hh = abs((p3[1] - p2[1]).toDouble()) * 100
             val confidence = when (frame.camera.trackingState) {
                 TrackingState.TRACKING -> 0.92
                 else -> 0.6

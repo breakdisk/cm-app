@@ -260,7 +260,7 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                     // (Track-A Balikbayan: verified_box_size, outer_packaging_integrity).
                     // BoxMeasureScreen calls onBack() immediately after this callback —
                     // do NOT also call popBackStack() here or the back stack pops twice.
-                    onDimensionsVerified = { l, w, h ->
+                    onDimensionsVerified = { l: Double, w: Double, h: Double ->
                         shiftNavController.previousBackStackEntry?.savedStateHandle?.run {
                             set("verified_box_l", l.toFloat())
                             set("verified_box_w", w.toFloat())

@@ -139,6 +139,7 @@ dependencies {
     implementation(project(":feature:notifications"))
     implementation(project(":feature:profile"))
     implementation(project(":feature:assignment"))
+    implementation(project(":feature:box-measure"))
 
     implementation(libs.material)
     implementation(libs.mapbox.maps)

@@ -26,6 +26,7 @@ import io.logisticos.driver.feature.home.presentation.HomeViewModel
 
 private val Canvas = Color(0xFF050810)
 private val Cyan = Color(0xFF00E5FF)
+private val Purple = Color(0xFFA855F7)
 private val Amber = Color(0xFFFFAB00)
 private val Green = Color(0xFF00FF88)
 private val Glass = Color(0x0AFFFFFF)

@@ -180,9 +180,12 @@ fun BoxMeasureScreen(
             }
 
             // ── Measurement result card ────────────────────────────────────────
-            if (state.measuredL != null) {
+            // Local val required: smart cast on a delegated property (StateFlow) is
+            // impossible — the backing getter can change between the null check and use.
+            val measuredL = state.measuredL
+            if (measuredL != null) {
                 MeasurementCard(
-                    measuredL    = state.measuredL,
+                    measuredL    = measuredL,
                     measuredW    = state.measuredW ?: 0.0,
                     measuredH    = state.measuredH ?: 0.0,
                     confidence   = state.arConfidence,
@@ -428,6 +431,7 @@ private fun VerifyConfirmSection(hasResult: Boolean, onConfirm: () -> Unit) {
     }
 }
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 private fun QuoteInputSection(state: BoxMeasureUiState, viewModel: BoxMeasureViewModel) {
 
