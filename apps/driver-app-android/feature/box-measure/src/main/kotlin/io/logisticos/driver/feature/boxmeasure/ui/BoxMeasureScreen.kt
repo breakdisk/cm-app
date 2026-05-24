@@ -1,6 +1,7 @@
 package io.logisticos.driver.feature.boxmeasure.ui
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -18,8 +19,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -58,11 +61,14 @@ private fun componentColor(c: QuoteLine.Component) = when (c) {
  *
  * Mode QUOTE:  standalone quote flow for walk-in customers.
  *              Displays full quote result with origin / province selection.
+ *              After the price is shown, a "Book This Shipment" button calls
+ *              [onBookShipment] with all relevant booking parameters.
  *
  * @param mode                 VERIFY or QUOTE
  * @param declaredSizeId       (VERIFY) size_id from the booking
  * @param declaredL/W/H        (VERIFY) declared L×W×H in cm
  * @param onDimensionsVerified (VERIFY) called with confirmed L, W, H
+ * @param onBookShipment       (QUOTE) called when driver taps "Book This Shipment"
  * @param onBack               navigation pop
  */
 @Composable
@@ -73,6 +79,9 @@ fun BoxMeasureScreen(
     declaredW: Double? = null,
     declaredH: Double? = null,
     onDimensionsVerified: ((Double, Double, Double) -> Unit)? = null,
+    onBookShipment: ((sizeId: String, freightMode: FreightMode, originKey: String,
+                      l: Double, w: Double, h: Double,
+                      estimatedTotal: Double, currency: String) -> Unit)? = null,
     onBack: () -> Unit = {},
     viewModel: BoxMeasureViewModel = hiltViewModel(),
 ) {
@@ -201,7 +210,7 @@ fun BoxMeasureScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(240.dp)
+                        .height(260.dp)
                         .clip(RoundedCornerShape(16.dp))
                         .border(1.dp, Border, RoundedCornerShape(16.dp)),
                 ) {
@@ -209,7 +218,11 @@ fun BoxMeasureScreen(
                         modifier = Modifier.fillMaxSize(),
                         viewModel = viewModel,
                     )
-                    // Tap progress overlay
+                    // Aiming crosshair — visible until measurement is complete
+                    if (state.tapCount < 4) {
+                        AimingCrosshair(modifier = Modifier.fillMaxSize())
+                    }
+                    // Step progress chip (top-left)
                     TapProgressOverlay(tapCount = state.tapCount)
                 }
             }
@@ -274,7 +287,11 @@ fun BoxMeasureScreen(
 
             // ── QUOTE mode: quote inputs + result ─────────────────────────────
             if (mode == BoxMeasureMode.QUOTE) {
-                QuoteInputSection(state = state, viewModel = viewModel)
+                QuoteInputSection(
+                    state          = state,
+                    viewModel      = viewModel,
+                    onBookShipment = onBookShipment,
+                )
             }
 
             Spacer(Modifier.height(32.dp))
@@ -283,6 +300,45 @@ fun BoxMeasureScreen(
 }
 
 // ── Sub-composables ────────────────────────────────────────────────────────────
+
+/**
+ * Crosshair drawn with Compose Canvas, centered in the AR viewport.
+ * Shows the driver exactly where their tap will land on the detected plane.
+ * Four short arms + a small center circle in white/translucent so it remains
+ * visible on both bright and dark surfaces.
+ */
+@Composable
+private fun AimingCrosshair(modifier: Modifier = Modifier) {
+    androidx.compose.foundation.Canvas(modifier = modifier) {
+        val cx     = size.width  / 2f
+        val cy     = size.height / 2f
+        val ring   = 18.dp.toPx()
+        val arm    = 30.dp.toPx()
+        val stroke = 2.dp.toPx()
+        val color  = Color.White.copy(alpha = 0.80f)
+        val shadow = Color.Black.copy(alpha = 0.35f)
+
+        // Shadow pass (offset 1px down-right) for legibility on white surfaces
+        fun sh(x1: Float, y1: Float, x2: Float, y2: Float) =
+            drawLine(shadow, Offset(x1 + 1, y1 + 1), Offset(x2 + 1, y2 + 1), stroke + 1)
+
+        drawCircle(shadow, ring + 1, Offset(cx + 1, cy + 1), style = Stroke(stroke + 1))
+        drawCircle(color,  ring,     Offset(cx, cy),          style = Stroke(stroke))
+
+        sh(cx - arm, cy, cx - ring, cy)
+        sh(cx + ring, cy, cx + arm, cy)
+        sh(cx, cy - arm, cx, cy - ring)
+        sh(cx, cy + ring, cx, cy + arm)
+
+        drawLine(color, Offset(cx - arm, cy),   Offset(cx - ring, cy),  stroke)
+        drawLine(color, Offset(cx + ring, cy),  Offset(cx + arm, cy),   stroke)
+        drawLine(color, Offset(cx, cy - arm),   Offset(cx, cy - ring),  stroke)
+        drawLine(color, Offset(cx, cy + ring),  Offset(cx, cy + arm),   stroke)
+
+        // Center dot
+        drawCircle(color, 3.dp.toPx(), Offset(cx, cy))
+    }
+}
 
 @Composable
 private fun TapProgressOverlay(tapCount: Int) {
@@ -492,7 +548,14 @@ private fun VerifyConfirmSection(hasResult: Boolean, onConfirm: () -> Unit) {
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-private fun QuoteInputSection(state: BoxMeasureUiState, viewModel: BoxMeasureViewModel) {
+private fun QuoteInputSection(
+    state: BoxMeasureUiState,
+    viewModel: BoxMeasureViewModel,
+    onBookShipment: ((sizeId: String, freightMode: FreightMode, originKey: String,
+                      l: Double, w: Double, h: Double,
+                      estimatedTotal: Double, currency: String) -> Unit)? = null,
+) {
+    val context = LocalContext.current
 
     // Freight mode toggle
     SectionLabel("Freight Mode")
@@ -665,6 +728,96 @@ private fun QuoteInputSection(state: BoxMeasureUiState, viewModel: BoxMeasureVie
             color = TextMuted.copy(alpha = 0.5f), fontSize = 9.sp,
             modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center,
         )
+
+        Spacer(Modifier.height(4.dp))
+
+        // ── Book This Shipment ─────────────────────────────────────────────
+        // Primary CTA: navigate to booking form pre-filled with quote data.
+        Button(
+            onClick = {
+                onBookShipment?.invoke(
+                    state.matchedSizeId,
+                    state.freightMode,
+                    state.originKey,
+                    state.measuredL ?: 0.0,
+                    state.measuredW ?: 0.0,
+                    state.measuredH ?: 0.0,
+                    result.totalOriginCurrency,
+                    result.originCurrency,
+                )
+            },
+            enabled = onBookShipment != null,
+            modifier = Modifier.fillMaxWidth().height(54.dp),
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
+            contentPadding = PaddingValues(0.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.horizontalGradient(listOf(Cyan, Purple)),
+                        RoundedCornerShape(14.dp),
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Default.LocalShipping, null, tint = Canvas)
+                    Text("Book This Shipment", color = Canvas, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Icon(Icons.Default.ArrowForward, null, tint = Canvas, modifier = Modifier.size(16.dp))
+                }
+            }
+        }
+
+        // ── Share Quote ───────────────────────────────────────────────────
+        // Secondary: Android share sheet — driver can send the summary to the
+        // customer via WhatsApp/SMS/email without building an extra screen.
+        OutlinedButton(
+            onClick = {
+                val size = BOX_SIZES.find { it.id == state.matchedSizeId }
+                val shareText = buildString {
+                    appendLine("📦 *LogisticOS Box Quote*")
+                    appendLine()
+                    appendLine("Box: ${size?.name ?: state.matchedSizeId}")
+                    if (state.measuredL != null) {
+                        appendLine("Dimensions: ${state.measuredL} × ${state.measuredW} × ${state.measuredH} cm")
+                        appendLine("CBM: ${result.cbm} m³")
+                    }
+                    appendLine("Freight: ${state.freightMode.name.lowercase().replaceFirstChar { it.uppercase() }}")
+                    appendLine("Origin: ${state.originKey}")
+                    if (state.province.isNotBlank()) appendLine("Destination: ${state.province}")
+                    if (result.transitDays.isNotEmpty()) appendLine("Transit: ${result.transitDays}")
+                    appendLine()
+                    appendLine("*Estimated Total: ${formatAmount(result.totalOriginCurrency, result.originCurrency)}*")
+                    appendLine()
+                    appendLine("Rates are indicative. Book via LogisticOS customer app.")
+                }
+                context.startActivity(
+                    Intent.createChooser(
+                        Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, shareText)
+                        },
+                        "Share Quote"
+                    )
+                )
+            },
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.dp, Cyan.copy(alpha = 0.4f)),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = Cyan),
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Default.Share, null, tint = Cyan, modifier = Modifier.size(16.dp))
+                Text("Share Quote", fontWeight = FontWeight.Medium, fontSize = 14.sp)
+            }
+        }
     }
 }
 

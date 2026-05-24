@@ -19,6 +19,7 @@ import androidx.navigation.NavType
 import androidx.navigation.navArgument
 import io.logisticos.driver.feature.assignment.ui.AssignmentScreen
 import io.logisticos.driver.feature.boxmeasure.presentation.BoxMeasureMode
+import io.logisticos.driver.feature.boxmeasure.ui.BookShipmentScreen
 import io.logisticos.driver.feature.boxmeasure.ui.BoxMeasureScreen
 import io.logisticos.driver.feature.delivery.ui.ArrivalScreen
 import io.logisticos.driver.feature.home.ui.HomeScreen
@@ -52,6 +53,10 @@ private const val POD_ROUTE =
 // Box measure: mode=verify|quote; declared dims are optional query params
 private const val BOX_MEASURE_ROUTE =
     "box_measure/{mode}?sizeId={sizeId}&declL={declL}&declW={declW}&declH={declH}"
+// Book-shipment: all params are passed as URL-encoded query strings so the
+// BookShipmentScreen can display a pre-filled form without ViewModel coupling.
+private const val BOOK_SHIPMENT_ROUTE =
+    "book_shipment?sizeId={sizeId}&mode={mode}&origin={origin}&l={l}&w={w}&h={h}&total={total}&currency={currency}"
 
 /**
  * Top-level shift scaffold: owns the BottomNavBar and an inner NavHost.
@@ -267,7 +272,54 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                             set("verified_box_h", h.toFloat())
                         }
                     },
+                    // QUOTE mode only: driver taps "Book This Shipment" after getting a price.
+                    // Navigate to BookShipmentScreen with all quote data as route params so the
+                    // form is pre-filled and the driver just adds customer details to complete.
+                    onBookShipment = { bSizeId, bMode, bOrigin, bL, bW, bH, bTotal, bCurrency ->
+                        val route = "book_shipment" +
+                            "?sizeId=${bSizeId}" +
+                            "&mode=${bMode.name}" +
+                            "&origin=${java.net.URLEncoder.encode(bOrigin, "UTF-8")}" +
+                            "&l=$bL&w=$bW&h=$bH" +
+                            "&total=$bTotal" +
+                            "&currency=${bCurrency}"
+                        shiftNavController.navigate(route)
+                    },
                     onBack             = { shiftNavController.popBackStack() },
+                )
+            }
+
+            // ── Book shipment (from QUOTE mode quote result) ──────────────────
+            composable(
+                route = BOOK_SHIPMENT_ROUTE,
+                arguments = listOf(
+                    navArgument("sizeId")   { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("mode")     { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("origin")   { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("l")        { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("w")        { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("h")        { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("total")    { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("currency") { type = NavType.StringType; nullable = true; defaultValue = null },
+                )
+            ) { backStack ->
+                val args = backStack.arguments
+                BookShipmentScreen(
+                    prefillSizeId    = args?.getString("sizeId") ?: "",
+                    prefillFreight   = args?.getString("mode") ?: "SEA",
+                    prefillOrigin    = args?.getString("origin")?.let {
+                        java.net.URLDecoder.decode(it, "UTF-8") } ?: "",
+                    prefillL         = args?.getString("l")?.toDoubleOrNull() ?: 0.0,
+                    prefillW         = args?.getString("w")?.toDoubleOrNull() ?: 0.0,
+                    prefillH         = args?.getString("h")?.toDoubleOrNull() ?: 0.0,
+                    prefillTotal     = args?.getString("total")?.toDoubleOrNull() ?: 0.0,
+                    prefillCurrency  = args?.getString("currency") ?: "USD",
+                    onBooked         = {
+                        shiftNavController.navigate(HOME_ROUTE) {
+                            popUpTo(HOME_ROUTE) { inclusive = true }
+                        }
+                    },
+                    onBack           = { shiftNavController.popBackStack() },
                 )
             }
 
