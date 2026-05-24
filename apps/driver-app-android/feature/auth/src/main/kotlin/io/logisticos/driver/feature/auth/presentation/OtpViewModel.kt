@@ -14,7 +14,9 @@ data class OtpUiState(
     val otp: String = "",
     val isLoading: Boolean = false,
     val error: String? = null,
-    val isSuccess: Boolean = false
+    val isSuccess: Boolean = false,
+    /** Runtime tenant slug — forwarded from PhoneScreen via nav arg. */
+    val tenantSlug: String = "",
 )
 
 @HiltViewModel
@@ -29,25 +31,32 @@ class OtpViewModel @Inject constructor(
         if (value.length <= 6) _uiState.update { it.copy(otp = value, error = null) }
     }
 
+    /** Must be called once from OtpScreen's LaunchedEffect before any OTP action. */
+    fun setTenantSlug(slug: String) {
+        _uiState.update { it.copy(tenantSlug = slug) }
+    }
+
     fun resendOtp(identifier: String) {
+        val slug = _uiState.value.tenantSlug
         viewModelScope.launch {
             _uiState.update { it.copy(error = null) }
             val result = if (identifier.contains("@"))
-                repo.sendOtp(email = identifier)
+                repo.sendOtp(email = identifier, tenantSlug = slug)
             else
-                repo.sendOtp(phone = identifier)
+                repo.sendOtp(phone = identifier, tenantSlug = slug)
             result.onFailure { e -> _uiState.update { it.copy(error = e.message ?: "Failed to resend OTP") } }
         }
     }
 
     fun verifyOtp(identifier: String, otp: String) {
+        val slug = _uiState.value.tenantSlug
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }
             try {
                 val result = if (identifier.contains("@"))
-                    repo.verifyOtp(email = identifier, otp = otp)
+                    repo.verifyOtp(email = identifier, otp = otp, tenantSlug = slug)
                 else
-                    repo.verifyOtp(phone = identifier, otp = otp)
+                    repo.verifyOtp(phone = identifier, otp = otp, tenantSlug = slug)
                 result
                     .onSuccess { _uiState.update { it.copy(isLoading = false, isSuccess = true) } }
                     .onFailure { e -> _uiState.update { it.copy(isLoading = false, error = e.message ?: "Invalid OTP") } }

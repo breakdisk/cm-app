@@ -77,9 +77,10 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         logisticos_auth::middleware::require_auth,
     );
     Router::new()
-        .route("/users/me",        get(users::get_me).put(users::update_me))
-        .route("/users",           get(users::list_users).post(users::invite_user))
-        .route("/users/:id",       get(users::get_user))
+        .route("/users/me",                  get(users::get_me).put(users::update_me))
+        .route("/users",                     get(users::list_users).post(users::invite_user))
+        .route("/users/:id",                 get(users::get_user))
+        .route("/users/:id/invite-link",     post(users::generate_invite_link))
         .route("/pickup-addresses",              get(addresses::list).post(addresses::create))
         .route("/pickup-addresses/:id",          delete(addresses::delete))
         .route("/pickup-addresses/:id/default",  patch(addresses::set_default))

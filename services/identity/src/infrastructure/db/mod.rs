@@ -10,6 +10,7 @@ pub use tenant_repo::PgTenantRepository;
 pub use user_repo::PgUserRepository;
 pub use user_repo::PgPasswordResetTokenRepository;
 pub use user_repo::PgEmailVerificationTokenRepository;
+pub use user_repo::PgDriverInviteTokenRepository;
 pub use api_key_repo::PgApiKeyRepository;
 pub use push_token_repo::PgPushTokenRepository;
 pub use auth_identity_repo::PgAuthIdentityRepository;

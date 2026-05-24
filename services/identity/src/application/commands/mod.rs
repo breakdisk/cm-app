@@ -236,6 +236,25 @@ pub struct UpgradeTierCommand {
     pub tier: String,
 }
 
+// ─── Driver invite link generation ───────────────────────────────────────────
+
+/// Generates a signed deep-link invite URL for a pre-registered driver.
+/// The driver taps the link, the app pre-fills their phone + tenant, and
+/// they complete normal OTP login — landing in the correct tenant automatically.
+#[derive(Debug, Deserialize)]
+pub struct GenerateDriverInviteLinkCommand {
+    /// UUID of the pre-registered driver user (must have role "driver" and a phone_number).
+    pub user_id: uuid::Uuid,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GenerateDriverInviteLinkResult {
+    /// Fully qualified deep-link URL the admin copies and shares with the driver.
+    pub invite_url: String,
+    /// ISO 8601 UTC expiry — 72 hours from generation time.
+    pub expires_at: String,
+}
+
 /// Partial self-update — authenticated user edits their own profile.
 /// All fields are optional; absent fields are left unchanged.
 #[derive(Debug, Deserialize, Validate)]

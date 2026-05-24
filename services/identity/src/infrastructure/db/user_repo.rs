@@ -265,3 +265,51 @@ impl PgEmailVerificationTokenRepository {
         Ok(row.map(|r| (r.get::<uuid::Uuid, _>("user_id"), r.get::<uuid::Uuid, _>("tenant_id"))))
     }
 }
+
+// ── Driver invite token repository ───────────────────────────────────────────
+
+pub struct PgDriverInviteTokenRepository {
+    pool: PgPool,
+}
+
+impl PgDriverInviteTokenRepository {
+    pub fn new(pool: PgPool) -> Self { Self { pool } }
+
+    /// Insert a new invite token row. `token_hash` is the SHA-256 hex of the raw HMAC sig.
+    /// TTL is fixed at 72 hours. Conflict on `token_hash` is silently ignored (idempotent
+    /// re-generation within the same signing window).
+    pub async fn create(
+        &self,
+        id: uuid::Uuid,
+        tenant_id: uuid::Uuid,
+        user_id: uuid::Uuid,
+        token_hash: &str,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"INSERT INTO identity.driver_invite_tokens (id, tenant_id, user_id, token_hash, expires_at)
+               VALUES ($1, $2, $3, $4, $5)
+               ON CONFLICT (token_hash) DO NOTHING"#,
+        )
+        .bind(id).bind(tenant_id).bind(user_id).bind(token_hash).bind(expires_at)
+        .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Mark an invite token as used (called when the driver opens the deep link and lands
+    /// on the OTP screen). Atomically checks expiry so expired tokens cannot be consumed.
+    pub async fn claim(&self, token_hash: &str) -> anyhow::Result<Option<uuid::Uuid>> {
+        let row = sqlx::query(
+            r#"UPDATE identity.driver_invite_tokens
+               SET used_at = NOW()
+               WHERE token_hash = $1
+                 AND used_at IS NULL
+                 AND expires_at > NOW()
+               RETURNING user_id"#,
+        )
+        .bind(token_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.get::<uuid::Uuid, _>("user_id")))
+    }
+}

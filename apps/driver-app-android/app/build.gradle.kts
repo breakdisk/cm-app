@@ -88,12 +88,16 @@ android {
             val stagingUrl = localProps.getProperty("API_BASE_URL")
                 ?: "https://os-api.cargomarket.net/"
             buildConfigField("String", "BASE_URL", "\"$stagingUrl\"")
-            buildConfigField("String", "TENANT_ID", "\"atlas-cargo-ae\"")
+            // TENANT_ID is intentionally empty — resolved at runtime from invite
+            // deep link or company code. Do NOT hardcode a tenant slug here.
+            buildConfigField("String", "TENANT_ID", "\"\"")
         }
         create("prod") {
             dimension = "env"
             buildConfigField("String", "BASE_URL", "\"https://os-api.cargomarket.net/\"")
-            buildConfigField("String", "TENANT_ID", "\"atlas-cargo-ae\"")
+            // TENANT_ID is intentionally empty — resolved at runtime from invite
+            // deep link or company code. Do NOT hardcode a tenant slug here.
+            buildConfigField("String", "TENANT_ID", "\"\"")
         }
     }
 

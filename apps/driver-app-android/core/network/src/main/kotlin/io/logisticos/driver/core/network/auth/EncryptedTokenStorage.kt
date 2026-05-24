@@ -47,12 +47,38 @@ class EncryptedTokenStorage @Inject constructor(
     override fun getTenantId(): String? = prefs.getString(KEY_TENANT, null)
     override fun saveDriverId(driverId: String) = prefs.edit().putString(KEY_DRIVER, driverId).apply()
     override fun getDriverId(): String? = prefs.getString(KEY_DRIVER, null)
+    override fun saveTenantSlug(slug: String) = prefs.edit().putString(KEY_TENANT_SLUG, slug).apply()
+    override fun getTenantSlug(): String? = prefs.getString(KEY_TENANT_SLUG, null)
+    override fun savePendingInvite(slug: String, phone: String, sig: String) {
+        prefs.edit()
+            .putString(KEY_INVITE_SLUG, slug)
+            .putString(KEY_INVITE_PHONE, phone)
+            .putString(KEY_INVITE_SIG, sig)
+            .apply()
+    }
+    override fun getPendingInvite(): Triple<String, String, String>? {
+        val slug  = prefs.getString(KEY_INVITE_SLUG,  null) ?: return null
+        val phone = prefs.getString(KEY_INVITE_PHONE, null) ?: return null
+        val sig   = prefs.getString(KEY_INVITE_SIG,   null) ?: return null
+        return Triple(slug, phone, sig)
+    }
+    override fun clearPendingInvite() {
+        prefs.edit()
+            .remove(KEY_INVITE_SLUG)
+            .remove(KEY_INVITE_PHONE)
+            .remove(KEY_INVITE_SIG)
+            .apply()
+    }
     override fun clearAll() = prefs.edit().clear().apply()
 
     companion object {
-        private const val KEY_JWT = "jwt"
-        private const val KEY_REFRESH = "refresh_token"
-        private const val KEY_TENANT = "tenant_id"
-        private const val KEY_DRIVER = "driver_id"
+        private const val KEY_JWT          = "jwt"
+        private const val KEY_REFRESH      = "refresh_token"
+        private const val KEY_TENANT       = "tenant_id"
+        private const val KEY_DRIVER       = "driver_id"
+        private const val KEY_TENANT_SLUG  = "tenant_slug"
+        private const val KEY_INVITE_SLUG  = "invite_slug"
+        private const val KEY_INVITE_PHONE = "invite_phone"
+        private const val KEY_INVITE_SIG   = "invite_sig"
     }
 }

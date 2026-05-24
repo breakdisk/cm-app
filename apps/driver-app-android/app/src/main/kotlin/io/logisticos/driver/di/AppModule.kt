@@ -37,11 +37,6 @@ object AppModule {
 
     @Provides
     @Singleton
-    @Named("tenant_slug")
-    fun provideTenantSlug(): String = BuildConfig.TENANT_ID
-
-    @Provides
-    @Singleton
     @Named("application_scope")
     fun provideApplicationScope(): CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 

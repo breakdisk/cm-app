@@ -1,6 +1,7 @@
 package io.logisticos.driver
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -16,6 +17,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import io.logisticos.driver.core.common.AssignmentPayload
 import io.logisticos.driver.core.common.PendingAssignmentBus
 import io.logisticos.driver.core.database.worker.OutboundSyncWorker
+import io.logisticos.driver.core.network.auth.SessionManager
 import io.logisticos.driver.navigation.AppNavGraph
 import io.logisticos.driver.security.RootChecker
 import io.logisticos.driver.ui.theme.DriverAppTheme
@@ -24,12 +26,15 @@ import javax.inject.Inject
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     @Inject lateinit var rootChecker: RootChecker
+    @Inject lateinit var sessionManager: SessionManager
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val isRooted = rootChecker.check()
         OutboundSyncWorker.schedule(applicationContext)
+        // Handle invite deep link when app cold-starts from the invite URL.
+        handleInviteDeepLink(intent)
         // Re-post assignment from notification intent when app is cold-started from tray.
         handleAssignmentIntent(intent)
         setContent {
@@ -61,10 +66,28 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // Handle notification tap when app is re-opened or brought to foreground.
+    // Handle notification tap or deep link when app is re-opened or brought to foreground.
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        handleInviteDeepLink(intent)
         handleAssignmentIntent(intent)
+    }
+
+    /**
+     * Handles invite deep links of the form:
+     *   https://driver.cargomarket.net/join?t=<slug>&p=<phone>&sig=<hmac>
+     *
+     * Extracts the three params and stores them in SessionManager so the
+     * PhoneScreen can pre-populate phone + tenant and skip company-code entry.
+     */
+    private fun handleInviteDeepLink(intent: Intent?) {
+        val uri: Uri = intent?.data ?: return
+        if (uri.host != "driver.cargomarket.net" || uri.path != "/join") return
+        val slug  = uri.getQueryParameter("t") ?: return
+        val phone = uri.getQueryParameter("p") ?: return
+        val sig   = uri.getQueryParameter("sig") ?: return
+        sessionManager.savePendingInvite(slug, phone, sig)
+        android.util.Log.d("MainActivity", "Invite deep link received: tenant=$slug phone=$phone")
     }
 
     /**

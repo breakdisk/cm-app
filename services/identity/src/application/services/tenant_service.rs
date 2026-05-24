@@ -3,17 +3,19 @@ use logisticos_auth::password::hash_password;
 use logisticos_errors::{AppError, AppResult};
 use logisticos_events::{producer::KafkaProducer, topics, payloads::{TenantCreated, UserCreated}, envelope::Event};
 use crate::{
-    application::commands::{CreateTenantCommand, FinalizeTenantCommand, InviteUserCommand},
+    application::commands::{CreateTenantCommand, FinalizeTenantCommand, GenerateDriverInviteLinkResult, InviteUserCommand},
     domain::{
         entities::{Tenant, User},
         repositories::{TenantRepository, UserRepository},
     },
+    infrastructure::db::PgDriverInviteTokenRepository,
 };
 
 pub struct TenantService {
     tenant_repo: Arc<dyn TenantRepository>,
     user_repo: Arc<dyn UserRepository>,
     kafka: Arc<KafkaProducer>,
+    driver_invite_token_repo: Arc<PgDriverInviteTokenRepository>,
 }
 
 impl TenantService {
@@ -21,8 +23,9 @@ impl TenantService {
         tenant_repo: Arc<dyn TenantRepository>,
         user_repo: Arc<dyn UserRepository>,
         kafka: Arc<KafkaProducer>,
+        driver_invite_token_repo: Arc<PgDriverInviteTokenRepository>,
     ) -> Self {
-        Self { tenant_repo, user_repo, kafka }
+        Self { tenant_repo, user_repo, kafka, driver_invite_token_repo }
     }
 
     pub async fn create_tenant(&self, cmd: CreateTenantCommand) -> AppResult<Tenant> {
@@ -341,6 +344,101 @@ impl TenantService {
         tracing::info!(user_id = %user.id, roles = ?user.roles, "User invited");
 
         Ok((user, temp_password))
+    }
+
+    /// Generates a signed driver invite link.
+    ///
+    /// The link embeds the tenant slug, the driver's phone number, and an
+    /// HMAC-SHA256 signature so the backend can verify the payload without
+    /// a DB lookup on every deep-link open. The token row provides a
+    /// single-use guard and an audit trail.
+    ///
+    /// Environment variable required: `DRIVER_INVITE_HMAC_SECRET`.
+    ///
+    /// URL format:
+    ///   `https://driver.cargomarket.net/join?t=<slug>&p=<phone>&sig=<hmac>`
+    pub async fn generate_invite_link(
+        &self,
+        requesting_tenant_id: &logisticos_types::TenantId,
+        user_id: uuid::Uuid,
+    ) -> AppResult<GenerateDriverInviteLinkResult> {
+        use base64::Engine;
+        use hmac::{Hmac, Mac};
+        use sha2::{Digest, Sha256};
+
+        // ── 1. Load and validate the user ────────────────────────────────────
+        let uid = logisticos_types::UserId::from_uuid(user_id);
+        let user = self.user_repo.find_by_id(&uid).await
+            .map_err(AppError::Internal)?
+            .ok_or(AppError::NotFound { resource: "User", id: user_id.to_string() })?;
+
+        // Tenant isolation: the requested user must belong to the caller's tenant.
+        if user.tenant_id.inner() != requesting_tenant_id.inner() {
+            return Err(AppError::Forbidden { resource: "user".into() });
+        }
+
+        if !user.roles.iter().any(|r| r == "driver") {
+            return Err(AppError::BusinessRule(
+                "invite links can only be generated for users with the 'driver' role".into(),
+            ));
+        }
+
+        let phone = user.phone_number.as_deref().ok_or_else(|| {
+            AppError::BusinessRule(
+                "driver has no phone_number — re-invite with a valid phone before generating a link".into(),
+            )
+        })?;
+
+        // ── 2. Load tenant for slug ───────────────────────────────────────────
+        let tenant = self.tenant_repo.find_by_id(requesting_tenant_id).await
+            .map_err(AppError::Internal)?
+            .ok_or(AppError::NotFound { resource: "Tenant", id: requesting_tenant_id.inner().to_string() })?;
+        let slug = &tenant.slug;
+
+        // ── 3. Compute HMAC-SHA256 sig ────────────────────────────────────────
+        // Message: "<slug>:<phone>"  (same pattern as verify_partner_signature)
+        let secret = std::env::var("DRIVER_INVITE_HMAC_SECRET")
+            .map_err(|_| AppError::Internal(anyhow::anyhow!("DRIVER_INVITE_HMAC_SECRET not set")))?;
+
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(secret.as_bytes())
+            .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
+        mac.update(slug.as_bytes());
+        mac.update(b":");
+        mac.update(phone.as_bytes());
+        let sig_bytes = mac.finalize().into_bytes();
+        let sig = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig_bytes);
+
+        // ── 4. Persist token row (audit trail + single-use guard) ─────────────
+        let token_hash = {
+            let mut hasher = Sha256::new();
+            hasher.update(sig.as_bytes());
+            format!("{:x}", hasher.finalize())
+        };
+        let expires_at = chrono::Utc::now() + chrono::Duration::hours(72);
+        self.driver_invite_token_repo
+            .create(uuid::Uuid::new_v4(), requesting_tenant_id.inner(), user_id, &token_hash, expires_at)
+            .await
+            .map_err(AppError::Internal)?;
+
+        // ── 5. Build URL ──────────────────────────────────────────────────────
+        // E.164 phones contain only '+' and ASCII digits. Percent-encode the
+        // leading '+' so the query param survives naive URL parsers.
+        let phone_encoded = phone.replace('+', "%2B");
+        let invite_url = format!(
+            "https://driver.cargomarket.net/join?t={slug}&p={phone_encoded}&sig={sig}"
+        );
+
+        tracing::info!(
+            user_id  = %user_id,
+            slug     = %slug,
+            expires  = %expires_at,
+            "Driver invite link generated"
+        );
+
+        Ok(GenerateDriverInviteLinkResult {
+            invite_url,
+            expires_at: expires_at.to_rfc3339(),
+        })
     }
 }
 

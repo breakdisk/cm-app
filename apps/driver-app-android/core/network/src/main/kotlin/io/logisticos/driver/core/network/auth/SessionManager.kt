@@ -28,6 +28,22 @@ class SessionManager @Inject constructor(
     fun getDriverId(): String? = tokenStorage.getDriverId()
     fun saveDriverId(driverId: String) = tokenStorage.saveDriverId(driverId)
 
+    /** Runtime tenant slug — resolved from invite link or company code, persisted after login. */
+    fun getTenantSlug(): String? = tokenStorage.getTenantSlug()
+    fun saveTenantSlug(slug: String) = tokenStorage.saveTenantSlug(slug)
+
+    /**
+     * Stores the invite payload after the driver taps the deep link.
+     * MainActivity calls this; PhoneScreen reads it once and calls clearPendingInvite().
+     */
+    fun savePendingInvite(slug: String, phone: String, sig: String) =
+        tokenStorage.savePendingInvite(slug, phone, sig)
+
+    /** Returns Triple(slug, phone, sig) or null if no deep link was tapped. */
+    fun getPendingInvite(): Triple<String, String, String>? = tokenStorage.getPendingInvite()
+
+    fun clearPendingInvite() = tokenStorage.clearPendingInvite()
+
     fun clearSession() {
         tokenStorage.clearAll()
         cachedJwt = null

@@ -20,21 +20,29 @@ private val Canvas = Color(0xFF050810)
 private val Cyan = Color(0xFF00E5FF)
 private val BorderWhite = Color(0x14FFFFFF)
 private val SurfaceWhite = Color(0x0AFFFFFF)
+private val Amber = Color(0xFFFFAB00)
 
+/**
+ * @param onOtpSent  Called with the identifier (phone/email) AND the resolved
+ *                   tenantSlug so the OTP screen can forward slug to OtpViewModel.
+ */
 @Composable
 fun PhoneScreen(
-    onOtpSent: (identifier: String) -> Unit,
+    onOtpSent: (identifier: String, tenantSlug: String) -> Unit,
     viewModel: PhoneViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
 
-    // LaunchedEffect key is `true` only while otpSent is true.  We consume the
-    // flag immediately after triggering navigation so that pressing Back from
-    // the OTP screen and returning here does not re-fire the navigation.
+    // Read pending invite from SessionManager once on first composition.
+    LaunchedEffect(Unit) {
+        viewModel.loadPendingInvite()
+    }
+
+    // Navigate to OTP screen after sendOtp() succeeds.
     LaunchedEffect(state.otpSent) {
         if (state.otpSent) {
             viewModel.onOtpSentConsumed()
-            onOtpSent(state.identifier)
+            onOtpSent(state.identifier, state.tenantSlug)
         }
     }
 
@@ -95,14 +103,75 @@ fun PhoneScreen(
             } else {
                 OutlinedTextField(
                     value = state.phone,
-                    onValueChange = viewModel::onPhoneChanged,
+                    onValueChange = if (state.phoneLocked) {{}} else viewModel::onPhoneChanged,
                     label = { Text("Phone Number") },
                     placeholder = { Text("+63 912 345 6789") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                     singleLine = true,
+                    readOnly = state.phoneLocked,
                     modifier = Modifier.fillMaxWidth(),
-                    colors = outlinedFieldColors()
+                    colors = outlinedFieldColors(),
+                    trailingIcon = if (state.phoneLocked) {
+                        { Text("✓", color = Cyan, fontSize = 16.sp) }
+                    } else null
                 )
+                if (state.phoneLocked) {
+                    Text(
+                        text = "Phone pre-filled from your invite link",
+                        color = Cyan.copy(alpha = 0.7f),
+                        fontSize = 12.sp
+                    )
+                }
+            }
+
+            // ── Company code section ──────────────────────────────────────────
+            // Shown when no invite link was tapped (tenant not yet resolved).
+            // Company code = tenant slug in v1 (no extra lookup needed).
+            if (state.tenantSlug.isBlank()) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = state.companyCode,
+                        onValueChange = viewModel::onCompanyCodeChanged,
+                        label = { Text("Company Code") },
+                        placeholder = { Text("e.g. cargomarket-ph") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = outlinedFieldColors(),
+                        supportingText = if (state.companyCodeError != null) {
+                            { Text(state.companyCodeError!!, color = Color(0xFFFF3B5C)) }
+                        } else null
+                    )
+                    Button(
+                        onClick = viewModel::applyCompanyCode,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Amber.copy(alpha = 0.15f),
+                            contentColor = Amber
+                        ),
+                        elevation = ButtonDefaults.buttonElevation(0.dp)
+                    ) {
+                        Text("Confirm Company Code", fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            } else if (!state.phoneLocked) {
+                // Slug resolved from company code — show confirmation chip.
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = Cyan.copy(alpha = 0.12f)
+                    ) {
+                        Text(
+                            text = "Company: ${state.tenantSlug}",
+                            color = Cyan,
+                            fontSize = 13.sp,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                }
             }
 
             if (state.error != null) {
@@ -112,7 +181,7 @@ fun PhoneScreen(
             val inputFilled = if (state.isEmailMode) state.email.isNotBlank() else state.phone.isNotBlank()
             Button(
                 onClick = viewModel::sendOtp,
-                enabled = !state.isLoading && inputFilled,
+                enabled = !state.isLoading && inputFilled && state.canSend,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp),

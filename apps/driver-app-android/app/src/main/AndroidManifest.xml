@@ -36,6 +36,23 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!--
+                Driver invite deep link — handles URLs of the form:
+                  https://driver.cargomarket.net/join?t=<slug>&p=<phone>&sig=<hmac>
+                android:autoVerify="true" enables App Links (verified HTTPS), so
+                Android opens the app directly without the disambiguation dialog.
+                Requires a /.well-known/assetlinks.json entry on driver.cargomarket.net.
+            -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="driver.cargomarket.net"
+                    android:pathPrefix="/join" />
+            </intent-filter>
         </activity>
 
         <!-- FCM -->

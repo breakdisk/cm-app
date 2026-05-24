@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, UserPlus, Truck, CheckCircle2, ChevronRight, Loader2, Eye, EyeOff } from "lucide-react";
+import { X, UserPlus, Truck, CheckCircle2, ChevronRight, Loader2, Eye, EyeOff, Link2, Copy, Check } from "lucide-react";
 import { GlassCard } from "@/components/ui/glass-card";
 import { createIdentityApi } from "@/lib/api/identity";
 import { createDriversApi } from "@/lib/api/drivers";
@@ -69,14 +69,43 @@ export function OnboardDriverModal({ open, onClose, onSuccess }: Props) {
   // Result after both steps complete
   const [result, setResult] = useState<OnboardResult | null>(null);
 
+  // Invite link state
+  const [inviteLinkCopied, setInviteLinkCopied] = useState(false);
+  const [inviteLinkLoading, setInviteLinkLoading] = useState(false);
+  const [inviteLinkError, setInviteLinkError] = useState<string | null>(null);
+
   function reset() {
     setStep(1);
     setLoading(false);
     setError(null);
     setResult(null);
     setShowPassword(false);
+    setInviteLinkCopied(false);
+    setInviteLinkLoading(false);
+    setInviteLinkError(null);
     setS1({ first_name: "", last_name: "", email: "", phone: "" });
     setS2({ driver_type: "full_time", vehicle_type: "Motorcycle", zone: "", per_delivery_rate: "0", cod_commission_bps: "0" });
+  }
+
+  async function handleCopyInviteLink() {
+    if (!result?.user_id) return;
+    setInviteLinkLoading(true);
+    setInviteLinkError(null);
+    try {
+      const api = createIdentityApi();
+      const { invite_url, expires_at } = await api.generateDriverInviteLink(result.user_id);
+      await navigator.clipboard.writeText(invite_url);
+      setInviteLinkCopied(true);
+      // Show the "Copied!" state for 3 seconds then reset.
+      setTimeout(() => setInviteLinkCopied(false), 3000);
+      // Log expiry for ops visibility
+      console.info(`[OnboardDriverModal] Invite link generated (expires ${expires_at}):`, invite_url);
+    } catch (err: unknown) {
+      const e = err as { message?: string };
+      setInviteLinkError(e.message ?? "Failed to generate invite link");
+    } finally {
+      setInviteLinkLoading(false);
+    }
   }
 
   function handleClose() {
@@ -281,10 +310,27 @@ export function OnboardDriverModal({ open, onClose, onSuccess }: Props) {
               {/* ── Step 2: Driver Profile ── */}
               {step === 2 && (
                 <form onSubmit={handleStep2Submit} className="space-y-4">
-                  <div className="flex items-center gap-2 mb-1">
-                    <Truck size={14} className="text-purple-plasma" />
-                    <span className="text-xs font-semibold text-purple-plasma uppercase tracking-wider">Driver Profile</span>
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2">
+                      <Truck size={14} className="text-purple-plasma" />
+                      <span className="text-xs font-semibold text-purple-plasma uppercase tracking-wider">Driver Profile</span>
+                    </div>
+                    {/* Invite link — available as soon as the user row exists */}
+                    <button
+                      type="button"
+                      onClick={handleCopyInviteLink}
+                      disabled={inviteLinkLoading}
+                      className="flex items-center gap-1.5 rounded-md border border-cyan-neon/20 bg-cyan-neon/5 px-2 py-1 text-xs text-cyan-neon hover:bg-cyan-neon/10 transition-all disabled:opacity-50"
+                      title="Copy invite link to share with the driver"
+                    >
+                      {inviteLinkLoading ? <Loader2 size={11} className="animate-spin" /> :
+                       inviteLinkCopied ? <Check size={11} /> : <Copy size={11} />}
+                      {inviteLinkCopied ? "Copied!" : "Copy Invite Link"}
+                    </button>
                   </div>
+                  {inviteLinkError && (
+                    <p className="text-2xs text-red-400 font-mono">{inviteLinkError}</p>
+                  )}
 
                   <div className="grid grid-cols-2 gap-3">
                     <div>
@@ -412,6 +458,25 @@ export function OnboardDriverModal({ open, onClose, onSuccess }: Props) {
                   <p className="text-2xs text-white/30 text-center font-mono">
                     Share credentials securely. Driver must change password on first login.
                   </p>
+
+                  {/* Invite link — primary share action in v1 */}
+                  <div className="space-y-1.5">
+                    <button
+                      onClick={handleCopyInviteLink}
+                      disabled={inviteLinkLoading}
+                      className="w-full flex items-center justify-center gap-2 rounded-lg bg-cyan-neon/10 border border-cyan-neon/30 px-4 py-2.5 text-sm font-semibold text-cyan-neon hover:bg-cyan-neon/20 transition-all disabled:opacity-50"
+                    >
+                      {inviteLinkLoading ? <Loader2 size={14} className="animate-spin" /> :
+                       inviteLinkCopied ? <Check size={14} /> : <Link2 size={14} />}
+                      {inviteLinkCopied ? "Link Copied to Clipboard!" : "Copy Driver Invite Link"}
+                    </button>
+                    {inviteLinkError && (
+                      <p className="text-2xs text-red-400 font-mono text-center">{inviteLinkError}</p>
+                    )}
+                    <p className="text-2xs text-white/25 text-center font-mono">
+                      Link expires in 72 h — driver taps it to auto-join the correct tenant
+                    </p>
+                  </div>
 
                   <button
                     onClick={handleClose}

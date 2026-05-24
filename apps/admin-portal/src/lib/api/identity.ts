@@ -84,6 +84,12 @@ export function createIdentityApi() {
         .get<ApiResponse<TenantUser>>(`/v1/users/${userId}`)
         .then((r) => r.data),
 
+    /** POST /v1/users/:id/invite-link — generate a signed deep-link invite URL for a driver. */
+    generateDriverInviteLink: (userId: string) =>
+      client
+        .post<ApiResponse<{ invite_url: string; expires_at: string }>>(`/v1/users/${userId}/invite-link`)
+        .then((r) => r.data.data),
+
     // ── Tenant ─────────────────────────────────────────────────────────────────
 
     /** GET /v1/tenants/me — returns the caller's own tenant. */

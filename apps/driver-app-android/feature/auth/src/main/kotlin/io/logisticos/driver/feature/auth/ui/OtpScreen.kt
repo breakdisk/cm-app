@@ -24,12 +24,19 @@ private val BorderWhite = Color(0x14FFFFFF)
 @Composable
 fun OtpScreen(
     identifier: String,
+    tenantSlug: String,
     onAuthenticated: () -> Unit,
     viewModel: OtpViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
     var resendSeconds by remember { mutableIntStateOf(60) }
     var resendTrigger by remember { mutableIntStateOf(0) }
+
+    // Forward tenantSlug into the ViewModel once. Uses tenantSlug as the key
+    // so a slug change (unlikely but safe) re-initialises the effect.
+    LaunchedEffect(tenantSlug) {
+        viewModel.setTenantSlug(tenantSlug)
+    }
 
     LaunchedEffect(resendTrigger) {
         resendSeconds = 60

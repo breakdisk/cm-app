@@ -64,3 +64,23 @@ pub async fn get_user(
         .ok_or(AppError::NotFound { resource: "User", id: id.to_string() })?;
     Ok(Json(serde_json::json!({ "data": user })))
 }
+
+/// POST /v1/users/:id/invite-link
+///
+/// Generates a signed deep-link invite URL for a pre-registered driver.
+/// The admin copies this URL and shares it with the driver (WhatsApp, SMS, etc.).
+/// The driver taps the link; the app pre-fills their phone and tenant and
+/// sends them through normal OTP login, landing in the correct tenant.
+///
+/// Requires: USERS_INVITE permission.
+/// Returns:  `{ "data": { "invite_url": "https://...", "expires_at": "..." } }`
+pub async fn generate_invite_link(
+    AuthClaims(claims): AuthClaims,
+    Path(id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_permission!(claims, logisticos_auth::rbac::permissions::USERS_INVITE);
+    let tenant_id = logisticos_types::TenantId::from_uuid(claims.tenant_id);
+    let result = state.tenant_service.generate_invite_link(&tenant_id, id).await?;
+    Ok(Json(serde_json::json!({ "data": result })))
+}
