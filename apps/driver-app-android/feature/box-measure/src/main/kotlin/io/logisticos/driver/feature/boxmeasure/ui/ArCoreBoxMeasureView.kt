@@ -2,6 +2,7 @@ package io.logisticos.driver.feature.boxmeasure.ui
 
 import android.content.Context
 import android.graphics.PixelFormat
+import android.opengl.GLES11Ext
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
 import android.os.Handler
@@ -13,6 +14,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.google.ar.core.*
 import com.google.ar.core.exceptions.*
 import io.logisticos.driver.feature.boxmeasure.presentation.BoxMeasureViewModel
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.nio.FloatBuffer
 import java.util.concurrent.ConcurrentLinkedQueue
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
@@ -45,6 +49,13 @@ import kotlin.math.sqrt
  * to execute on the GL thread only after the current [onDrawFrame] finishes.
  *
  * ViewModel callbacks are posted back to the main thread via [Handler].
+ *
+ * ── Camera background rendering ─────────────────────────────────────────────────
+ * ARCore does NOT automatically composite the camera feed into the GL surface.
+ * [ArRenderer] creates an External OES texture, registers it with the session via
+ * [Session.setCameraTextureName], then draws a full-screen quad each frame using
+ * that texture. [Frame.transformCoordinates2d] handles orientation and crop so the
+ * image is always upright regardless of device rotation.
  */
 @Composable
 fun ArCoreBoxMeasureView(
@@ -106,6 +117,10 @@ fun ArCoreBoxMeasureView(
  *
  * All ARCore calls ([Session.update], [Frame.hitTest]) happen on the GL thread.
  * ViewModel callbacks are marshalled back to the main thread via [mainHandler].
+ *
+ * Camera background is rendered each frame via a full-screen External OES quad.
+ * The quad texture coordinates are recomputed via [Frame.transformCoordinates2d]
+ * whenever the display geometry changes (first frame, screen rotation).
  */
 private class ArRenderer(
     private val ctx: Context,
@@ -134,15 +149,79 @@ private class ArRenderer(
     // p2 (width end), p3 (height top). Owned by the GL thread.
     private val worldPts = mutableListOf<FloatArray>()
 
+    // ── Camera background GL state ─────────────────────────────────────────────
+
+    /** External OES texture receiving the ARCore camera stream. */
+    private var cameraTextureId = -1
+
+    /** Compiled GLSL program for drawing the camera background quad. */
+    private var bgProgram = 0
+    private var bgPositionAttr = 0
+    private var bgTexCoordAttr = 0
+    private var bgTextureUniform = 0
+
+    /**
+     * Full-screen quad vertex positions in OpenGL NDC:
+     *   (-1,-1)  (1,-1)
+     *   (-1, 1)  (1, 1)
+     * Arranged for GL_TRIANGLE_STRIP: BL, BR, TL, TR.
+     */
+    private val quadPosBuf: FloatBuffer = ByteBuffer
+        .allocateDirect(4 * 2 * 4)
+        .order(ByteOrder.nativeOrder())
+        .asFloatBuffer()
+        .also { buf ->
+            buf.put(floatArrayOf(-1f, -1f,   1f, -1f,   -1f, 1f,   1f, 1f))
+            buf.rewind()
+        }
+
+    /**
+     * Texture coordinates for the camera quad.
+     * Populated/updated by [Frame.transformCoordinates2d] on each frame where
+     * display geometry changed (first frame + screen rotations).
+     */
+    private val quadTexBuf: FloatBuffer = ByteBuffer
+        .allocateDirect(4 * 2 * 4)
+        .order(ByteOrder.nativeOrder())
+        .asFloatBuffer()
+
+    /** True until [Frame.transformCoordinates2d] has been called at least once. */
+    private var texCoordsReady = false
+
+    // ── GLSurfaceView.Renderer ─────────────────────────────────────────────────
+
     override fun onSurfaceCreated(gl: GL10?, cfg: EGLConfig?) {
-        GLES20.glClearColor(0.03f, 0.03f, 0.06f, 1f)
+        GLES20.glClearColor(0f, 0f, 0f, 1f)
+
+        // ── Create External OES camera texture ─────────────────────────────────
+        // Must be created on the GL thread. setCameraTextureName() registers this
+        // texture with the session so ARCore writes camera frames into it.
+        val texIds = IntArray(1)
+        GLES20.glGenTextures(1, texIds, 0)
+        cameraTextureId = texIds[0]
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, cameraTextureId)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+            GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
+
+        // ── Compile background shader ──────────────────────────────────────────
+        bgProgram = compileProgram(BG_VERT_SRC, BG_FRAG_SRC)
+        bgPositionAttr   = GLES20.glGetAttribLocation(bgProgram,  "a_Position")
+        bgTexCoordAttr   = GLES20.glGetAttribLocation(bgProgram,  "a_TexCoord")
+        bgTextureUniform = GLES20.glGetUniformLocation(bgProgram, "sTexture")
+
+        // ── ARCore session ─────────────────────────────────────────────────────
         try {
-            // Check availability before creating a Session. This surfaces a clear
-            // error on devices that don't support ARCore instead of a cryptic crash.
             val availability = ArCoreApk.getInstance().checkAvailability(ctx)
             if (!availability.isSupported) {
-                val reason = when {
-                    availability == ArCoreApk.Availability.UNSUPPORTED_DEVICE_NOT_CAPABLE ->
+                val reason = when (availability) {
+                    ArCoreApk.Availability.UNSUPPORTED_DEVICE_NOT_CAPABLE ->
                         "AR not supported on this device — use manual entry."
                     else ->
                         "ARCore not available ($availability) — use manual entry."
@@ -152,6 +231,10 @@ private class ArRenderer(
             }
 
             val sess = Session(ctx)
+
+            // setCameraTextureName MUST be called before resume().
+            sess.setCameraTextureName(cameraTextureId)
+
             sess.configure(Config(sess).apply {
                 planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                 depthMode = if (sess.isDepthModeSupported(Config.DepthMode.AUTOMATIC))
@@ -161,7 +244,6 @@ private class ArRenderer(
             session = sess
             mainHandler.post { onSessionReady() }
         } catch (e: UnavailableException) {
-            // ARCore SDK/APK version mismatch, or device incompatible.
             mainHandler.post { onSessionError("AR unavailable: ${e.javaClass.simpleName} — use manual entry.") }
         } catch (e: Exception) {
             // Catches CameraNotAvailableException (camera permission denied) and any
@@ -174,6 +256,8 @@ private class ArRenderer(
     override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) {
         GLES20.glViewport(0, 0, w, h)
         session?.setDisplayGeometry(0, w, h)
+        // Force UV recompute on next frame after a surface resize.
+        texCoordsReady = false
     }
 
     override fun onDrawFrame(gl: GL10?) {
@@ -182,6 +266,11 @@ private class ArRenderer(
         // update() is the sole caller for this session — always on the GL thread.
         val frame = runCatching { sess.update() }.getOrNull() ?: return
 
+        // ── Draw camera background ─────────────────────────────────────────────
+        // Must happen BEFORE any 3D content so it forms the background layer.
+        drawCameraBackground(frame)
+
+        // ── Tap → hit-test ─────────────────────────────────────────────────────
         // Drain one pending tap per frame. Hit-testing runs against the frame
         // returned by the update() above, so there is never a concurrent update race.
         val tap = tapQueue.poll() ?: return
@@ -214,6 +303,60 @@ private class ArRenderer(
         }
     }
 
+    // ── Camera background rendering ────────────────────────────────────────────
+
+    /**
+     * Draws the live camera feed as a full-screen background quad.
+     *
+     * [Frame.transformCoordinates2d] converts NDC vertex positions → texture UVs
+     * accounting for camera orientation, device rotation, and aspect ratio crop.
+     * It is called only when display geometry changes to avoid unnecessary work.
+     */
+    private fun drawCameraBackground(frame: Frame) {
+        // Recompute texture UVs whenever display geometry changes (first frame,
+        // orientation change, surface resize).
+        if (frame.hasDisplayGeometryChanged() || !texCoordsReady) {
+            quadPosBuf.rewind()
+            quadTexBuf.rewind()
+            frame.transformCoordinates2d(
+                Coordinates2d.OPENGL_NORMALIZED_DEVICE_COORDINATES, quadPosBuf,
+                Coordinates2d.TEXTURE_NORMALIZED,                   quadTexBuf,
+            )
+            quadPosBuf.rewind()
+            quadTexBuf.rewind()
+            texCoordsReady = true
+        }
+
+        // Render without depth writes so the background sits behind everything.
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST)
+        GLES20.glDepthMask(false)
+
+        GLES20.glUseProgram(bgProgram)
+
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, cameraTextureId)
+        GLES20.glUniform1i(bgTextureUniform, 0)
+
+        quadPosBuf.rewind()
+        GLES20.glVertexAttribPointer(bgPositionAttr, 2, GLES20.GL_FLOAT, false, 0, quadPosBuf)
+        GLES20.glEnableVertexAttribArray(bgPositionAttr)
+
+        quadTexBuf.rewind()
+        GLES20.glVertexAttribPointer(bgTexCoordAttr, 2, GLES20.GL_FLOAT, false, 0, quadTexBuf)
+        GLES20.glEnableVertexAttribArray(bgTexCoordAttr)
+
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+
+        GLES20.glDisableVertexAttribArray(bgPositionAttr)
+        GLES20.glDisableVertexAttribArray(bgTexCoordAttr)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
+
+        GLES20.glDepthMask(true)
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST)
+    }
+
+    // ── Lifecycle ──────────────────────────────────────────────────────────────
+
     /** Dispatches [Session.close] to the GL thread via [GLSurfaceView.queueEvent]. */
     fun closeOnGlThread() {
         glView.queueEvent {
@@ -223,7 +366,57 @@ private class ArRenderer(
     }
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
+// ── Background shaders ─────────────────────────────────────────────────────────
+
+/**
+ * Passes NDC vertex positions through unchanged and forwards texture coordinates.
+ */
+private const val BG_VERT_SRC = """
+    attribute vec4 a_Position;
+    attribute vec2 a_TexCoord;
+    varying vec2 v_TexCoord;
+    void main() {
+        gl_Position = a_Position;
+        v_TexCoord  = a_TexCoord;
+    }
+"""
+
+/**
+ * Samples the external OES camera texture.
+ * The #extension directive is required to use [GLES11Ext.GL_TEXTURE_EXTERNAL_OES].
+ */
+private const val BG_FRAG_SRC = """
+    #extension GL_OES_EGL_image_external : require
+    precision mediump float;
+    varying vec2 v_TexCoord;
+    uniform samplerExternalOES sTexture;
+    void main() {
+        gl_FragColor = texture2D(sTexture, v_TexCoord);
+    }
+"""
+
+// ── GL helpers ─────────────────────────────────────────────────────────────────
+
+private fun compileShader(type: Int, src: String): Int {
+    val id = GLES20.glCreateShader(type)
+    GLES20.glShaderSource(id, src)
+    GLES20.glCompileShader(id)
+    return id
+}
+
+private fun compileProgram(vertSrc: String, fragSrc: String): Int {
+    val vert = compileShader(GLES20.GL_VERTEX_SHADER,   vertSrc)
+    val frag = compileShader(GLES20.GL_FRAGMENT_SHADER, fragSrc)
+    val prog = GLES20.glCreateProgram()
+    GLES20.glAttachShader(prog, vert)
+    GLES20.glAttachShader(prog, frag)
+    GLES20.glLinkProgram(prog)
+    GLES20.glDeleteShader(vert)   // detached from prog, safe to delete
+    GLES20.glDeleteShader(frag)
+    return prog
+}
+
+// ── Geometry helpers ───────────────────────────────────────────────────────────
 
 private fun dist(a: FloatArray, b: FloatArray): Double {
     val dx = (a[0] - b[0]).toDouble()
