@@ -15,7 +15,11 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navigation
 import io.logisticos.driver.core.common.PendingAssignmentBus
 import io.logisticos.driver.core.database.entity.TaskType
+import androidx.navigation.NavType
+import androidx.navigation.navArgument
 import io.logisticos.driver.feature.assignment.ui.AssignmentScreen
+import io.logisticos.driver.feature.boxmeasure.presentation.BoxMeasureMode
+import io.logisticos.driver.feature.boxmeasure.ui.BoxMeasureScreen
 import io.logisticos.driver.feature.delivery.ui.ArrivalScreen
 import io.logisticos.driver.feature.home.ui.HomeScreen
 import io.logisticos.driver.feature.navigation.ui.NavigationScreen
@@ -45,6 +49,9 @@ private const val ASSIGNMENT_ROUTE       = "assignment"
 // isCod and codAmount forwarded as string args to avoid ViewModel duplication
 private const val POD_ROUTE =
     "pod/{taskId}/{requiresPhoto}/{requiresSignature}/{requiresOtp}/{isCod}/{codAmount}"
+// Box measure: mode=verify|quote; declared dims are optional query params
+private const val BOX_MEASURE_ROUTE =
+    "box_measure/{mode}?sizeId={sizeId}&declL={declL}&declW={declW}&declH={declH}"
 
 /**
  * Top-level shift scaffold: owns the BottomNavBar and an inner NavHost.
@@ -91,6 +98,7 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                 HomeScreen(
                     onNavigateToRoute = { shiftNavController.navigate(ROUTE_ROUTE) },
                     onNavigateToCompliance = { shiftNavController.navigate(COMPLIANCE_ROUTE) },
+                    onNavigateToBoxMeasure = { shiftNavController.navigate("box_measure/quote") },
                 )
             }
 
@@ -210,6 +218,56 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                         }
                     },
                     onBack = { shiftNavController.popBackStack() },
+                    onNavigateToBoxMeasure = { sizeId, declL, declW, declH ->
+                        val query = listOfNotNull(
+                            sizeId?.let { "sizeId=$it" },
+                            declL?.let { "declL=$it" },
+                            declW?.let { "declW=$it" },
+                            declH?.let { "declH=$it" },
+                        ).joinToString("&")
+                        val route = if (query.isEmpty()) "box_measure/verify" else "box_measure/verify?$query"
+                        shiftNavController.navigate(route)
+                    },
+                )
+            }
+
+            // ── Box measurement / quote ────────────────────────────────────
+            composable(
+                route = BOX_MEASURE_ROUTE,
+                arguments = listOf(
+                    navArgument("mode") { type = NavType.StringType },
+                    navArgument("sizeId") { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("declL")  { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("declW")  { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("declH")  { type = NavType.StringType; nullable = true; defaultValue = null },
+                )
+            ) { backStack ->
+                val args    = backStack.arguments
+                val modeStr = args?.getString("mode") ?: "quote"
+                val mode    = if (modeStr == "verify") BoxMeasureMode.VERIFY else BoxMeasureMode.QUOTE
+                val sizeId  = args?.getString("sizeId")
+                val declL   = args?.getString("declL")?.toDoubleOrNull()
+                val declW   = args?.getString("declW")?.toDoubleOrNull()
+                val declH   = args?.getString("declH")?.toDoubleOrNull()
+                BoxMeasureScreen(
+                    mode               = mode,
+                    declaredSizeId     = sizeId,
+                    declaredL          = declL,
+                    declaredW          = declW,
+                    declaredH          = declH,
+                    // Store verified dims in the PickupScreen's back-stack entry so
+                    // PickupViewModel.confirmPickup() can include them in the POP payload
+                    // (Track-A Balikbayan: verified_box_size, outer_packaging_integrity).
+                    // BoxMeasureScreen calls onBack() immediately after this callback —
+                    // do NOT also call popBackStack() here or the back stack pops twice.
+                    onDimensionsVerified = { l, w, h ->
+                        shiftNavController.previousBackStackEntry?.savedStateHandle?.run {
+                            set("verified_box_l", l.toFloat())
+                            set("verified_box_w", w.toFloat())
+                            set("verified_box_h", h.toFloat())
+                        }
+                    },
+                    onBack             = { shiftNavController.popBackStack() },
                 )
             }
 

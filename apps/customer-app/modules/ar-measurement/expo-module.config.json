@@ -1,0 +1,10 @@
+{
+  "name": "ArMeasurement",
+  "platforms": ["ios", "android"],
+  "ios": {
+    "modules": ["ArMeasurementModule"]
+  },
+  "android": {
+    "modules": ["io.logisticos.customer.armeasurement.ArMeasurementModule"]
+  }
+}

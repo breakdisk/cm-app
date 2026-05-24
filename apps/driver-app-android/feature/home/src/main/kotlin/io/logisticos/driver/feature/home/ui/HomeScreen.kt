@@ -35,6 +35,7 @@ private val Border = Color(0x14FFFFFF)
 fun HomeScreen(
     onNavigateToRoute: () -> Unit,
     onNavigateToCompliance: () -> Unit,
+    onNavigateToBoxMeasure: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -409,6 +410,21 @@ fun HomeScreen(
             colors = ButtonDefaults.buttonColors(containerColor = Cyan)
         ) {
             Text("View Route", color = Canvas, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+        }
+
+        // ── Quick-access: Balikbayan box quote ───────────────────────────────
+        // Drivers frequently quote walk-in customers on the spot; this shortcut
+        // jumps directly into the AR-measure + quote flow without needing a task.
+        OutlinedButton(
+            onClick = onNavigateToBoxMeasure,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp),
+            shape = RoundedCornerShape(12.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, Purple.copy(alpha = 0.5f)),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = Purple)
+        ) {
+            Text("📦  Measure & Quote Box", fontWeight = FontWeight.Medium, fontSize = 15.sp)
         }
     }
 

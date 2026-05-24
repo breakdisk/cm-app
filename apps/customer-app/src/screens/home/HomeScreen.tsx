@@ -49,16 +49,19 @@ export function HomeScreen({ navigation }: any) {
         <Text style={{ color: COLORS.TEXT_PRIMARY, fontSize: 14, fontWeight: '600', marginBottom: 12 }}>Quick Actions</Text>
         <View style={{ display: 'flex', flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
           <View style={{ width: '48%' }}>
-            <QuickActionButton icon="add-box"       label="Book New" onPress={() => navigation.navigate('Book')}    />
+            <QuickActionButton icon="add-box"       label="Book New"  onPress={() => navigation.navigate('Book')}    />
           </View>
           <View style={{ width: '48%' }}>
-            <QuickActionButton icon="location-on"   label="Track"    onPress={() => navigation.navigate('Track')}   />
+            <QuickActionButton icon="calculate"     label="Get Quote" onPress={() => navigation.navigate('Quote')}   />
           </View>
           <View style={{ width: '48%' }}>
-            <QuickActionButton icon="history"       label="History"  onPress={() => navigation.navigate('History')} />
+            <QuickActionButton icon="location-on"   label="Track"     onPress={() => navigation.navigate('Track')}   />
           </View>
           <View style={{ width: '48%' }}>
-            <QuickActionButton icon="support-agent" label="Support"  onPress={() => navigation.navigate('Support')} />
+            <QuickActionButton icon="history"       label="History"   onPress={() => navigation.navigate('History')} />
+          </View>
+          <View style={{ width: '48%' }}>
+            <QuickActionButton icon="support-agent" label="Support"   onPress={() => navigation.navigate('Support')} />
           </View>
         </View>
       </Animated.View>
@@ -69,14 +72,14 @@ export function HomeScreen({ navigation }: any) {
           <Text style={{ color: COLORS.TEXT_PRIMARY, fontSize: 14, fontWeight: '600' }}>Recent Shipments</Text>
           {shipments.length > recentShipments.length && (
             <Pressable onPress={() => navigation.navigate('History')}>
-              <Text style={{ color: COLORS.CYAN_NEON ?? '#00E5FF', fontSize: 12 }}>See all →</Text>
+              <Text style={{ color: COLORS.CYAN, fontSize: 12 }}>See all →</Text>
             </Pressable>
           )}
         </View>
 
         {loading && shipments.length === 0 ? (
           <View style={{ paddingVertical: 24, alignItems: 'center' }}>
-            <ActivityIndicator color={COLORS.CYAN_NEON ?? '#00E5FF'} />
+            <ActivityIndicator color={COLORS.CYAN} />
           </View>
         ) : recentShipments.length === 0 ? (
           <View
@@ -105,7 +108,7 @@ export function HomeScreen({ navigation }: any) {
                 opacity: pressed ? 0.7 : 1,
               })}
             >
-              <Text style={{ color: COLORS.CYAN_NEON ?? '#00E5FF', fontSize: 13, fontWeight: '600' }}>Book Now</Text>
+              <Text style={{ color: COLORS.CYAN, fontSize: 13, fontWeight: '600' }}>Book Now</Text>
             </Pressable>
           </View>
         ) : (

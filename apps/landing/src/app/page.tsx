@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import Navbar from "@/components/Navbar";
 import Hero from "@/components/Hero";
 import LogoTicker from "@/components/LogoTicker";
@@ -13,12 +13,15 @@ import Pricing from "@/components/Pricing";
 import Testimonials from "@/components/Testimonials";
 import CTA from "@/components/CTA";
 import Footer from "@/components/Footer";
+import QuoteTool from "@/components/QuoteTool";
 
 export default function LandingPage() {
+  const [quoteOpen, setQuoteOpen] = useState(false);
+
   return (
     <main className="min-h-screen bg-[#050810] text-slate-100 overflow-x-hidden">
       <Navbar />
-      <Hero />
+      <Hero onGetQuote={() => setQuoteOpen(true)} />
       <LogoTicker />
       <PlatformTiers />
       <Features />
@@ -29,6 +32,9 @@ export default function LandingPage() {
       <Testimonials />
       <CTA />
       <Footer />
+
+      {/* Global quote modal — rendered outside section flow so it overlays everything */}
+      <QuoteTool isOpen={quoteOpen} onClose={() => setQuoteOpen(false)} />
     </main>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { ArrowRight, Play, TrendingUp, Truck, Brain, Globe } from "lucide-react";
+import { ArrowRight, Play, TrendingUp, Truck, Brain, Globe, Calculator } from "lucide-react";
 
 const stats = [
   { value: "2.4M+", label: "Shipments Delivered", color: "text-cyan-neon" },
@@ -49,7 +49,11 @@ const floatingCards = [
   },
 ];
 
-export default function Hero() {
+interface HeroProps {
+  onGetQuote: () => void;
+}
+
+export default function Hero({ onGetQuote }: HeroProps) {
   const gridRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -120,6 +124,13 @@ export default function Hero() {
             Start For Free
             <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
           </a>
+          <button
+            onClick={onGetQuote}
+            className="group inline-flex items-center gap-2.5 px-7 py-3.5 rounded-xl text-base font-medium glass-panel border border-cyan-neon/25 text-cyan-neon hover:bg-cyan-neon/6 hover:border-cyan-neon/50 hover:shadow-glow-cyan transition-all duration-300"
+          >
+            <Calculator className="w-4 h-4" />
+            Get a Quote
+          </button>
           <a
             href="#how-it-works"
             className="inline-flex items-center gap-2.5 px-7 py-3.5 rounded-xl text-base font-medium glass-panel border border-white/10 text-slate-300 hover:text-white hover:border-cyan-neon/30 transition-all duration-300"

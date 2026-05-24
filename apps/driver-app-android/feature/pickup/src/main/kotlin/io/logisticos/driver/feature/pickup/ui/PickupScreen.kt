@@ -66,6 +66,9 @@ fun PickupScreen(
     taskId: String,
     onCompleted: () -> Unit,
     onBack: () -> Unit = {},
+    /** Called when the driver taps "Verify Box Dimensions". Passes optional declared
+     *  sizeId/L/W/H — null when the task entity doesn't carry declared dimensions. */
+    onNavigateToBoxMeasure: ((sizeId: String?, declL: Double?, declW: Double?, declH: Double?) -> Unit)? = null,
     viewModel: PickupViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -565,7 +568,28 @@ fun PickupScreen(
             }
         }
 
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(16.dp))
+
+        // ── Box dimension verification (Balikbayan / Track-A pickups) ─────────
+        // Shown only for standard PICKUP tasks (not RETURN / HUB_DROP) and only
+        // when the nav callback is wired. Opens BoxMeasureScreen in VERIFY mode
+        // so the driver can AR-measure and compare against declared dimensions.
+        if (task.taskType == TaskType.PICKUP && onNavigateToBoxMeasure != null) {
+            OutlinedButton(
+                onClick = { onNavigateToBoxMeasure(null, null, null, null) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .height(48.dp),
+                shape = RoundedCornerShape(12.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Purple.copy(alpha = 0.5f)),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Purple)
+            ) {
+                Text("📦  Verify Box Dimensions", fontWeight = FontWeight.Medium, fontSize = 14.sp)
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
 
         // Confirm button
         Button(
