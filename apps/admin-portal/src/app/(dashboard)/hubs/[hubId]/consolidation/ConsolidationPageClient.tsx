@@ -190,7 +190,14 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
         ]);
         if (cancelled) return;
         setSpecs(specsData);
-        if (specsData.length > 0) setSelectedSpecId(specsData[0].id);
+        if (specsData.length > 0) {
+          setSelectedSpecId(specsData[0].id);
+        } else {
+          // First-time setup: no specs exist yet — open the modal automatically
+          // so the operator is guided to create one rather than seeing a silent
+          // empty state.
+          setSpecsModalOpen(true);
+        }
         if (plans.length > 0) {
           setCurrentPlan(plans[0]);
           setPlacements(plans[0].placements as Placement[]);

@@ -54,8 +54,11 @@ impl ProxyClient {
         // Fleet Management
         } else if path.starts_with("/v1/fleet") || path.starts_with("/v1/vehicles") {
             Some(&self.services.fleet_url)
-        // Hub Operations
-        } else if path.starts_with("/v1/hubs") {
+        // Hub Operations (hubs, consolidation plans/specs, container management)
+        } else if path.starts_with("/v1/hubs")
+            || path.starts_with("/v1/consolidation")
+            || path.starts_with("/v1/containers")
+        {
             Some(&self.services.hub_ops_url)
         // Carrier Management
         } else if path.starts_with("/v1/carriers") {
