@@ -112,6 +112,9 @@ pub fn pack(bin: &Bin, items: &[BoxItem]) -> PackResult {
         eps.dedup_by(|a, b| a == b);
 
         let mut placed = false;
+        // Collect new extreme points outside the loop to satisfy the borrow checker:
+        // we cannot push to `eps` while `&eps` is borrowed by the for-loop iterator.
+        let mut pending_eps: Vec<ExtremePoint> = Vec::new();
 
         'ep_loop: for ep in &eps {
             for &(l, w, h, rotated) in &orientations {
@@ -129,21 +132,11 @@ pub fn pack(bin: &Bin, items: &[BoxItem]) -> PackResult {
                 total_weight_g  += item.weight_g as u64;
                 volume_used_cm3 += l as u64 * w as u64 * h as u64;
 
-                // Generate three new extreme points from the placed box faces.
-                let new_eps = [
-                    ExtremePoint { x: ep.x + l, y: ep.y,     z: ep.z     },
-                    ExtremePoint { x: ep.x,     y: ep.y + w,  z: ep.z     },
-                    ExtremePoint { x: ep.x,     y: ep.y,      z: ep.z + h },
-                ];
-                for new_ep in new_eps {
-                    if new_ep.x <= bin.length_cm
-                        && new_ep.y <= bin.width_cm
-                        && new_ep.z <= bin.height_cm
-                        && !eps.contains(&new_ep)
-                    {
-                        eps.push(new_ep);
-                    }
-                }
+                // Stage the three new EPs derived from this box's faces.
+                // Bounds + duplicate checks are deferred to after the loop.
+                pending_eps.push(ExtremePoint { x: ep.x + l, y: ep.y,     z: ep.z     });
+                pending_eps.push(ExtremePoint { x: ep.x,     y: ep.y + w,  z: ep.z     });
+                pending_eps.push(ExtremePoint { x: ep.x,     y: ep.y,      z: ep.z + h });
 
                 placements.push(Placement {
                     awb:       item.awb.clone(),
@@ -159,6 +152,17 @@ pub fn pack(bin: &Bin, items: &[BoxItem]) -> PackResult {
                 });
                 placed = true;
                 break 'ep_loop;
+            }
+        }
+
+        // Push staged EPs now that the immutable borrow on `eps` is released.
+        for new_ep in pending_eps {
+            if new_ep.x <= bin.length_cm
+                && new_ep.y <= bin.width_cm
+                && new_ep.z <= bin.height_cm
+                && !eps.contains(&new_ep)
+            {
+                eps.push(new_ep);
             }
         }
 
