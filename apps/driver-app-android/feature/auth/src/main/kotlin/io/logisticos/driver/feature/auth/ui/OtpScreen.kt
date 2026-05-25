@@ -14,6 +14,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import io.logisticos.driver.BuildConfig
 import io.logisticos.driver.feature.auth.presentation.OtpViewModel
 import kotlinx.coroutines.delay
 
@@ -118,6 +119,20 @@ fun OtpScreen(
                     text = if (resendSeconds > 0) "Resend in ${resendSeconds}s" else "Resend OTP",
                     color = if (resendSeconds == 0) Cyan else Color.White.copy(alpha = 0.4f)
                 )
+            }
+
+            // ── Dev shortcut — stripped from release builds ───────────────────
+            // Fills 123456 in one tap while waiting for Twilio approval.
+            // BuildConfig.DEBUG is false in release APKs so this block is
+            // dead-code-eliminated by ProGuard/R8 and never ships to production.
+            if (BuildConfig.DEBUG) {
+                TextButton(onClick = { viewModel.onOtpChanged("123456") }) {
+                    Text(
+                        text = "⚡ Dev: fill 123456",
+                        color = Cyan.copy(alpha = 0.45f),
+                        fontSize = 12.sp
+                    )
+                }
             }
         }
     }
