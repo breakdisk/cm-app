@@ -290,6 +290,16 @@ impl DispatchQueueRepository for MockDispatchQueueRepo {
         }
         Ok(false)
     }
+
+    async fn list_all_pending(&self) -> anyhow::Result<Vec<DispatchQueueRow>> {
+        let guard = self.store.lock().unwrap();
+        let rows = guard
+            .values()
+            .filter(|r| r.status == "pending")
+            .cloned()
+            .collect();
+        Ok(rows)
+    }
 }
 
 #[derive(Default, Clone)]

@@ -438,6 +438,9 @@ fn make_shipment(
         declared_value:       None,
         cod_amount:           None,
         special_instructions: None,
+        external_order_id:    None,
+        merchant_reference:   None,
+        source_platform:      None,
         created_at:           now,
         updated_at:           now,
     }
