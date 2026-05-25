@@ -349,7 +349,12 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
   async function handleCreateSpec(body: CreateSpecBody) {
     const spec = await consolidationApi.createSpec(body);
     setSpecs(prev => [...prev, spec]);
-    if (!selectedSpecId) setSelectedSpecId(spec.id);
+    if (!selectedSpecId) {
+      // First spec ever — select it and dismiss the modal so the canvas
+      // becomes visible immediately instead of being hidden behind it.
+      setSelectedSpecId(spec.id);
+      setSpecsModalOpen(false);
+    }
   }
 
   async function handleUpdateSpec(id: string, body: UpdateSpecBody) {
@@ -644,6 +649,7 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
             onClose={() => setSpecsModalOpen(false)}
             onCreate={handleCreateSpec}
             onUpdate={handleUpdateSpec}
+            initiallyAdding={specs.length === 0}
           />
         )}
       </AnimatePresence>

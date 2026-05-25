@@ -159,17 +159,20 @@ function SpecRow({
 // ── Main modal ────────────────────────────────────────────────────────────────
 
 export interface TruckSpecModalProps {
-  specs:         TruckSpec[];
-  onClose:       () => void;
-  onCreate:      (body: CreateSpecBody)          => Promise<void>;
-  onUpdate:      (id: string, body: UpdateSpecBody) => Promise<void>;
+  specs:           TruckSpec[];
+  onClose:         () => void;
+  onCreate:        (body: CreateSpecBody)             => Promise<void>;
+  onUpdate:        (id: string, body: UpdateSpecBody) => Promise<void>;
+  /** When true the modal opens directly on the Add Spec form (used for
+   *  first-time setup when no specs exist yet). */
+  initiallyAdding?: boolean;
 }
 
 export default function TruckSpecModal({
-  specs, onClose, onCreate, onUpdate,
+  specs, onClose, onCreate, onUpdate, initiallyAdding = false,
 }: TruckSpecModalProps) {
   const [editing,  setEditing]  = useState<TruckSpec | null>(null);
-  const [adding,   setAdding]   = useState(false);
+  const [adding,   setAdding]   = useState(initiallyAdding);
   const [form,     setForm]     = useState<FormState>(BLANK_FORM);
   const [saving,   setSaving]   = useState(false);
   const [error,    setError]    = useState<string | null>(null);

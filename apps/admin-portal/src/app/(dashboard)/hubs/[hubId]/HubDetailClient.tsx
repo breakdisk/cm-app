@@ -304,7 +304,7 @@ export default function HubDetailClient({ hubId, token, initialTab }: Props) {
   return (
     // Outer container mirrors the dashboard header height (h-16 = 4rem).
     // We use flex-col so the tab bar is fixed-height and the content grows.
-    <div className="flex h-[calc(100vh-4rem)] flex-col">
+    <div className="flex h-[calc(100vh-6rem)] md:h-[calc(100vh-7rem)] flex-col">
 
       {/* ── Page header ──────────────────────────────────────────────── */}
       <div className="flex-shrink-0 pb-4">
