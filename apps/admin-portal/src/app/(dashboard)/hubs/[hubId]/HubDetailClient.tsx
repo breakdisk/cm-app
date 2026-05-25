@@ -221,6 +221,7 @@ export default function HubDetailClient({ hubId, token, initialTab }: Props) {
   const [hub,             setHub]             = useState<Hub | null>(null);
   const [manifest,        setManifest]        = useState<HubManifest | null>(null);
   const [loading,         setLoading]         = useState(true);
+  const [loadError,       setLoadError]       = useState<string | null>(null);
   const [manifestLoading, setManifestLoading] = useState(false);
 
   const hubsApi = useMemo(() => createHubsApi(), []);
@@ -230,17 +231,24 @@ export default function HubDetailClient({ hubId, token, initialTab }: Props) {
     let cancelled = false;
     async function load() {
       setLoading(true);
+      setLoadError(null);
       try {
         const [hubData] = await Promise.all([
           hubsApi.get(hubId),
           hubsApi.manifest(hubId)
             .then((m) => { if (!cancelled) setManifest(m); })
-            .catch(() => {/* manifest endpoint may return 404 if hub is empty */}),
+            .catch(() => {/* manifest may be 404 if hub has no active parcels */}),
         ]);
         if (!cancelled) setHub(hubData);
-      } catch {
-        // Hub not found — go back to list
-        if (!cancelled) router.replace('/hubs');
+      } catch (err: unknown) {
+        if (cancelled) return;
+        // Distinguish genuine 404 (hub deleted / wrong ID) from transient errors.
+        const status = (err as { response?: { status?: number } })?.response?.status;
+        if (status === 404) {
+          router.replace('/hubs');
+        } else {
+          setLoadError('Failed to load hub data. Please try again.');
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -262,6 +270,23 @@ export default function HubDetailClient({ hubId, token, initialTab }: Props) {
         <div className="flex flex-col items-center gap-3">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan-500 border-t-transparent" />
           <span className="text-sm text-white/40 font-mono">Loading hub…</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex h-[calc(100vh-8rem)] items-center justify-center">
+        <div className="flex flex-col items-center gap-4 text-center">
+          <AlertTriangle size={32} className="text-red-signal" />
+          <p className="text-sm text-white/60 font-mono">{loadError}</p>
+          <button
+            onClick={() => window.location.reload()}
+            className="flex items-center gap-2 rounded-lg border border-cyan-neon/30 bg-cyan-neon/5 px-4 py-2 text-xs font-mono text-cyan-neon hover:bg-cyan-neon/10 transition-all"
+          >
+            <RefreshCw size={12} /> Retry
+          </button>
         </div>
       </div>
     );

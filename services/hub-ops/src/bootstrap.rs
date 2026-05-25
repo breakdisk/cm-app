@@ -619,6 +619,14 @@ async fn list_hubs(State(s): State<AppState>, claims: AuthClaims) -> impl IntoRe
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"hubs": hubs}))))
 }
 
+async fn get_hub_by_id(State(s): State<AppState>, claims: AuthClaims, Path(id): Path<Uuid>) -> impl IntoResponse {
+    use logisticos_types::TenantId;
+    claims.require_permission(permissions::FLEET_READ)?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let hub = s.svc.get_hub(&tenant_id, id).await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(hub)))
+}
+
 async fn induct(State(s): State<AppState>, claims: AuthClaims, Json(cmd): Json<InductParcelCommand>) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
     let induction = s.svc.induct_parcel(cmd).await?;
@@ -826,6 +834,7 @@ pub async fn run() -> anyhow::Result<()> {
     let protected = Router::new()
         // Hub management
         .route("/v1/hubs",              get(list_hubs).post(create_hub))
+        .route("/v1/hubs/:id",          get(get_hub_by_id))
         .route("/v1/hubs/:id/manifest", get(manifest))
         .route("/v1/hubs/induct",       post(induct))
         .route("/v1/hubs/sort",         post(sort))

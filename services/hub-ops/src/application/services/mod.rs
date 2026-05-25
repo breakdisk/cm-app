@@ -83,6 +83,16 @@ impl HubService {
         self.hub_repo.list(tenant_id).await.map_err(AppError::internal)
     }
 
+    pub async fn get_hub(&self, tenant_id: &TenantId, hub_id: Uuid) -> AppResult<Hub> {
+        let id = HubId::from_uuid(hub_id);
+        self.hub_repo
+            .find_by_id(&id)
+            .await
+            .map_err(AppError::internal)?
+            .filter(|h| h.tenant_id == *tenant_id)
+            .ok_or_else(|| AppError::NotFound { resource: "Hub", id: hub_id.to_string() })
+    }
+
     pub async fn induct_parcel(&self, cmd: InductParcelCommand) -> AppResult<ParcelInduction> {
         let hub_id = HubId::from_uuid(cmd.hub_id);
         let mut hub = self.hub_repo
