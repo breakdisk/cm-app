@@ -28,9 +28,23 @@ export interface HubCapacity {
   is_over_capacity: boolean;
 }
 
+export interface ParcelInduction {
+  id:              string;
+  hub_id:          string;
+  shipment_id:     string;
+  tracking_number: string;
+  status:          'inducted' | 'sorted' | 'dispatched' | 'returned';
+  zone:            string | null;
+  bay:             string | null;
+  inducted_by:     string | null;
+  inducted_at:     string;
+  sorted_at:       string | null;
+  dispatched_at:   string | null;
+}
+
 export interface HubManifest {
   hub_id: string;
-  parcels: unknown[];     // Parcel shape TBD; hub-ops returns raw entities
+  parcels: ParcelInduction[];
   count: number;
 }
 

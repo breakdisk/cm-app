@@ -1,8 +1,8 @@
 'use client';
 
-import { useRef, useMemo } from 'react';
+import { useRef, useEffect, useCallback } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, GizmoHelper, GizmoViewport, Line } from '@react-three/drei';
+import { OrbitControls, GizmoHelper, GizmoViewport } from '@react-three/drei';
 import * as THREE from 'three';
 import type { Placement, TruckSpec } from '@/lib/api/consolidation';
 
@@ -123,11 +123,29 @@ function FloorGrid({ spec }: { spec: TruckSpec }) {
 
 // ── Main canvas ───────────────────────────────────────────────────────────────
 
+// ── Nudge axis/direction map ──────────────────────────────────────────────────
+// Arrow keys move the selected box ±10 cm in X (length) or Y (width) axes.
+// Shift+Arrow moves in Z (height). Step is 10 cm.
+
+const NUDGE_STEP = 10; // cm
+
+type NudgeAxis = 'x' | 'y' | 'z';
+
+const KEY_MAP: Record<string, { axis: NudgeAxis; sign: number }> = {
+  ArrowRight:       { axis: 'x', sign:  1 },
+  ArrowLeft:        { axis: 'x', sign: -1 },
+  ArrowUp:          { axis: 'y', sign:  1 },
+  ArrowDown:        { axis: 'y', sign: -1 },
+  'Shift+ArrowUp':  { axis: 'z', sign:  1 },
+  'Shift+ArrowDown':{ axis: 'z', sign: -1 },
+};
+
 export interface PackingCanvasProps {
   spec:        TruckSpec;
   placements:  Placement[];
   selectedAwb: string | null;
   onSelect:    (awb: string | null) => void;
+  onNudge:     (awb: string, axis: NudgeAxis, delta: number) => void;
 }
 
 export default function PackingCanvas({
@@ -135,18 +153,44 @@ export default function PackingCanvas({
   placements,
   selectedAwb,
   onSelect,
+  onNudge,
 }: PackingCanvasProps) {
   const l = toM(spec.interior_length_cm);
   const h = toM(spec.interior_height_cm);
   const w = toM(spec.interior_width_cm);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  // Keyboard nudge — only fires when a box is selected.
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if (!selectedAwb) return;
+    const key = e.shiftKey ? `Shift+${e.key}` : e.key;
+    const mapping = KEY_MAP[key];
+    if (!mapping) return;
+    e.preventDefault();
+    onNudge(selectedAwb, mapping.axis, mapping.sign * NUDGE_STEP);
+  }, [selectedAwb, onNudge]);
+
+  useEffect(() => {
+    const el = wrapperRef.current;
+    if (!el) return;
+    el.addEventListener('keydown', handleKeyDown);
+    return () => el.removeEventListener('keydown', handleKeyDown);
+  }, [handleKeyDown]);
 
   // Camera starts at a 45° isometric-ish angle above and to the side.
   const camPos: [number, number, number] = [l * 1.4, h * 1.8, w * 2.0];
 
   return (
+    <div
+      ref={wrapperRef}
+      tabIndex={0}
+      className="h-full w-full outline-none"
+      style={{ background: '#050810' }}
+      onFocus={() => {}}
+    >
     <Canvas
       camera={{ position: camPos, fov: 50, near: 0.01, far: 500 }}
-      style={{ background: '#050810' }}
+      style={{ background: '#050810', width: '100%', height: '100%' }}
       shadows
       onClick={() => onSelect(null)}
     >
@@ -185,5 +229,6 @@ export default function PackingCanvas({
         />
       </GizmoHelper>
     </Canvas>
+    </div>
   );
 }
