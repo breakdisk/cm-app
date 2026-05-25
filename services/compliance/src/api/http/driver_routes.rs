@@ -189,10 +189,16 @@ pub async fn upload_document(
         .decode(req.file_base64.as_bytes())
         .map_err(|e| AppError::Validation(format!("Invalid base64 payload: {e}")))?;
 
+    // `{:#}` renders the full anyhow cause chain (e.g. "S3 upload failed:
+    // NoSuchBucket: ...") instead of just the top-level context string, so
+    // storage misconfiguration is diagnosable from the client error and logs.
     let file_url = state.storage
         .upload(claims.tenant_id, bytes, &req.content_type)
         .await
-        .map_err(|e| AppError::Validation(e.to_string()))?;
+        .map_err(|e| {
+            tracing::error!(error = ?e, "compliance document S3 upload failed");
+            AppError::Validation(format!("{e:#}"))
+        })?;
 
     let parse_date = |s: Option<String>| -> Result<Option<chrono::NaiveDate>, AppError> {
         match s {

@@ -49,6 +49,17 @@ pub struct StorageConfig {
     pub bucket:     String,
     pub access_key: String,
     pub secret_key: String,
+    /// S3 region. MinIO/R2 accept any value; defaults to "auto" when unset so
+    /// the AWS SDK never falls back to the IMDS probe (which times out on a
+    /// non-AWS VPS and then errors "A region must be set").
+    #[serde(default)]
+    pub region: Option<String>,
+    /// Path-style addressing (`endpoint/bucket/key`) vs virtual-hosted
+    /// (`bucket.endpoint/key`). MinIO REQUIRES path-style. Cloudflare R2 works
+    /// with either for direct API calls. Defaults to true (MinIO is the current
+    /// backend); set STORAGE__FORCE_PATH_STYLE=false when moving to R2.
+    #[serde(default)]
+    pub force_path_style: Option<bool>,
 }
 
 impl Config {

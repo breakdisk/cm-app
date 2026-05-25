@@ -14,22 +14,65 @@ impl DocumentStorage {
         // IMDS. On a non-AWS VPS, IMDS times out (1 s per call) and then the SDK
         // errors every S3 call with "A region must be set". Cloudflare R2 uses the
         // pseudo-region "auto"; MinIO accepts any non-empty value.
-        let region_str = std::env::var("S3_REGION")
-            .or_else(|_| std::env::var("AWS_REGION"))
-            .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
-            .unwrap_or_else(|_| "auto".to_string());
+        let region_str = cfg.region.clone()
+            .or_else(|| std::env::var("S3_REGION").ok())
+            .or_else(|| std::env::var("AWS_REGION").ok())
+            .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok())
+            .unwrap_or_else(|| "auto".to_string());
         let region = aws_sdk_s3::config::Region::new(region_str);
 
         let sdk_cfg = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .region(region)
+            .load()
+            .await;
+
+        // force_path_style is MANDATORY for MinIO: without it the SDK builds
+        // virtual-hosted URLs (`bucket.minio:9000`) which fail DNS resolution
+        // inside the Docker network. R2 works with either for direct API calls.
+        let force_path_style = cfg.force_path_style.unwrap_or(true);
+
+        let s3_cfg = aws_sdk_s3::config::Builder::from(&sdk_cfg)
             .endpoint_url(&cfg.endpoint)
+            .force_path_style(force_path_style)
             .credentials_provider(aws_sdk_s3::config::Credentials::new(
                 &cfg.access_key, &cfg.secret_key, None, None, "static",
             ))
-            .load()
-            .await;
-        let client = aws_sdk_s3::Client::new(&sdk_cfg);
-        Ok(Self { client, bucket: cfg.bucket.clone() })
+            .build();
+
+        let client = aws_sdk_s3::Client::from_conf(s3_cfg);
+        let storage = Self { client, bucket: cfg.bucket.clone() };
+
+        // MinIO does not auto-create buckets on first put_object — it returns
+        // NoSuchBucket. There is no init container provisioning it, so we
+        // self-heal here. Idempotent: existing bucket → no-op.
+        storage.ensure_bucket().await;
+
+        Ok(storage)
+    }
+
+    /// Ensure the configured bucket exists. Best-effort and non-fatal: on real
+    /// AWS/R2 the bucket is pre-provisioned and the key may lack CreateBucket
+    /// permission, so a failure is logged (uploads will then surface the real
+    /// error) rather than blocking service startup.
+    async fn ensure_bucket(&self) {
+        if self.client.head_bucket().bucket(&self.bucket).send().await.is_ok() {
+            return; // already exists and we can reach it
+        }
+        match self.client.create_bucket().bucket(&self.bucket).send().await {
+            Ok(_) => tracing::info!(bucket = %self.bucket, "created compliance storage bucket"),
+            Err(e) => {
+                let detail = format!("{:?}", e);
+                if detail.contains("BucketAlreadyOwnedByYou") || detail.contains("BucketAlreadyExists") {
+                    tracing::debug!(bucket = %self.bucket, "storage bucket already exists");
+                } else {
+                    tracing::warn!(
+                        bucket = %self.bucket,
+                        error = %detail,
+                        "could not ensure storage bucket exists; uploads may fail until it is created manually",
+                    );
+                }
+            }
+        }
     }
 
     /// Upload raw bytes; returns an `s3://bucket/key` URI stored in `driver_documents.file_url`.
