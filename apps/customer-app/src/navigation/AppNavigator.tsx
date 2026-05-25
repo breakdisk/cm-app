@@ -115,6 +115,8 @@ function AuthenticatedNavigator() {
       <Stack.Screen name="InvoiceDetail" component={InvoiceDetailScreen}  />
       <Stack.Screen name="Wallet"        component={WalletScreen}         />
       <Stack.Screen name="Quote"         component={QuoteScreen}          />
+      {/* KYC re-entry: accessible from ProfileScreen for 'none' and 'rejected' statuses */}
+      <Stack.Screen name="KYC"           component={KYCScreen}            />
     </Stack.Navigator>
   );
 }

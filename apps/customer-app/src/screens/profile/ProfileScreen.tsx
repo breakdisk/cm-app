@@ -2,7 +2,7 @@
  * Customer App — Profile Screen
  * Wired to Redux: auth, shipments, tracking history, notification prefs.
  */
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FadeInView } from '../../components/FadeInView';
 import {
@@ -17,6 +17,7 @@ import { authActions, prefsActions } from "../../store";
 import type { KycStatus } from "../../store";
 import { unregisterPushToken } from "../../services/notifications";
 import { logout as logoutApi } from "../../services/api/auth";
+import { complianceApi, backendStatusToKyc } from "../../services/api/compliance";
 import { getTier, getNextTier, ptsToNextTier, tierProgress, ptsToPhp, REDEMPTION_MIN } from "../../utils/loyalty";
 
 const CANVAS  = "#050810";
@@ -212,6 +213,27 @@ export function ProfileScreen() {
   ).length;
   const kycCfg = KYC_CONFIG[kycStatus];
 
+  // Lazily sync KYC status from the backend whenever the profile screen mounts.
+  // This is the only place in the app that calls getProfile() — it covers:
+  //   • Session restore (cold start after admin approved while app was closed)
+  //   • Post-submission polling without a background job
+  //   • Re-entry after rejection so the user sees updated status immediately
+  useEffect(() => {
+    if (isGuest) return;
+    let cancelled = false;
+    complianceApi.getProfile().then(({ profile }) => {
+      if (cancelled) return;
+      const synced = backendStatusToKyc(profile.overall_status);
+      if (synced === 'verified') dispatch(authActions.approveKyc());
+      else if (synced === 'rejected') dispatch(authActions.rejectKyc());
+      // 'pending' and 'none' need no dispatch — local state already reflects them
+      // (or will stay as-is if the backend hasn't reviewed yet)
+    }).catch(() => {
+      // Network unavailable — silently keep the current local kycStatus
+    });
+    return () => { cancelled = true; };
+  }, [isGuest]);
+
   function handleSignOut() {
     Alert.alert("Sign Out", "Are you sure?", [
       { text: "Cancel", style: "cancel" },
@@ -235,12 +257,11 @@ export function ProfileScreen() {
     ]);
   }
 
-  // Demo: simulate KYC approval
-  function handleDemoKycApprove() {
-    Alert.alert("Demo", "Simulate KYC approval?", [
-      { text: "Cancel", style: "cancel" },
-      { text: "Approve", onPress: () => dispatch(authActions.approveKyc()) },
-    ]);
+  /** Navigate to KYC screen for statuses where action is possible. */
+  function handleKycPress() {
+    if (kycStatus === 'none' || kycStatus === 'rejected') {
+      navigation.navigate('KYC' as never);
+    }
   }
 
   return (
@@ -372,8 +393,11 @@ export function ProfileScreen() {
       {!isGuest && (
         <FadeInView delay={160} fromY={16} style={s.section}>
           <Pressable
-            onPress={kycStatus === "pending" ? handleDemoKycApprove : undefined}
-            style={[s.menuRow, { borderColor: kycCfg.color + "30" }]}
+            onPress={handleKycPress}
+            style={({ pressed }) => [
+              s.menuRow,
+              { borderColor: kycCfg.color + "30", opacity: pressed ? 0.7 : 1 },
+            ]}
           >
             <View style={[s.menuIcon, { backgroundColor: kycCfg.color + "18" }]}>
               <Ionicons name={kycCfg.icon as any} size={16} color={kycCfg.color} />
@@ -382,12 +406,15 @@ export function ProfileScreen() {
               <Text style={s.menuLabel}>Identity Verification</Text>
               <Text style={[s.menuSub, { color: kycCfg.color }]}>{kycCfg.label}</Text>
             </View>
-            {kycStatus === "pending" && (
-              <View style={s.demoPill}>
-                <Text style={s.demoPillText}>Tap to approve (demo)</Text>
-              </View>
+            {kycStatus === "verified" && (
+              <Ionicons name="checkmark-circle" size={18} color={GREEN} />
             )}
-            {kycStatus === "verified" && <Ionicons name="checkmark-circle" size={18} color={GREEN} />}
+            {kycStatus === "pending" && (
+              <Ionicons name="time-outline" size={16} color={AMBER} />
+            )}
+            {(kycStatus === "none" || kycStatus === "rejected") && (
+              <Ionicons name="chevron-forward" size={14} color="rgba(255,255,255,0.3)" />
+            )}
           </Pressable>
         </FadeInView>
       )}
@@ -526,9 +553,6 @@ const s = StyleSheet.create({
   infoRow:        { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   infoLabel:      { fontSize: 10, color: "rgba(255,255,255,0.35)", fontFamily: "JetBrainsMono-Regular", textTransform: "uppercase", letterSpacing: 0.8 },
   infoValue:      { fontSize: 12, color: "#FFF", fontFamily: "JetBrainsMono-Regular" },
-
-  demoPill:       { backgroundColor: "rgba(255,171,0,0.12)", borderWidth: 1, borderColor: "rgba(255,171,0,0.3)", borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3 },
-  demoPillText:   { fontSize: 9, color: AMBER, fontFamily: "JetBrainsMono-Regular" },
 
   toggleRow:      { flexDirection: "row", alignItems: "center", backgroundColor: GLASS, borderWidth: 1, borderColor: BORDER, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 8 },
   toggleLabel:    { fontSize: 13, color: "#FFF", fontFamily: "SpaceGrotesk-SemiBold" },

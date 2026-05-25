@@ -50,19 +50,25 @@ const authSlice = createSlice({
       if (action.payload.customerId) state.customerId = action.payload.customerId;
       state.onboardingStep = 'kyc';
     },
-    submitKYC: (state, action?: PayloadAction<{ idType: IdType }>) => {
+    submitKyc: (state, _action?: PayloadAction<{ idType: IdType }>) => {
       state.kycStatus = 'pending';
       state.onboardingStep = 'complete';
       state.isGuest = false;
+      state.verificationTier = 'none';
     },
-    submitKyc: (state, action?: PayloadAction<{ idType: IdType }>) => {
-      state.kycStatus = 'pending';
+    /** User skipped KYC during onboarding — enters the app unverified. */
+    skipKyc: (state) => {
       state.onboardingStep = 'complete';
       state.isGuest = false;
+      // kycStatus stays 'none' — distinct from 'pending' (which means submitted)
     },
     approveKyc: (state) => {
       state.kycStatus = 'verified';
       state.verificationTier = 'verified';
+    },
+    rejectKyc: (state) => {
+      state.kycStatus = 'rejected';
+      state.verificationTier = 'none';
     },
     addLoyaltyPoints: (state, action: PayloadAction<number>) => {
       state.loyaltyPoints += action.payload;
@@ -82,9 +88,10 @@ export const {
   setCredentials,
   setPhone,
   setProfile,
-  submitKYC,
   submitKyc,
+  skipKyc,
   approveKyc,
+  rejectKyc,
   addLoyaltyPoints,
   addLoyaltyPts,
   logout

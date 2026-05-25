@@ -10,10 +10,18 @@ pub async fn get_my_profile(
     AuthClaims(claims): AuthClaims,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let profile = state.compliance.profiles
+    // Try driver profile first (driver-app callers), fall back to customer
+    // profile (customer-app KYC callers). Mirrors the fallback in upload_document.
+    let profile = match state.compliance.profiles
         .find_by_entity(claims.tenant_id, "driver", claims.user_id)
         .await?
-        .ok_or(AppError::NotFound { resource: "ComplianceProfile", id: claims.user_id.to_string() })?;
+    {
+        Some(p) => p,
+        None => state.compliance.profiles
+            .find_by_entity(claims.tenant_id, "customer", claims.user_id)
+            .await?
+            .ok_or(AppError::NotFound { resource: "ComplianceProfile", id: claims.user_id.to_string() })?,
+    };
 
     let required = state.compliance.doc_types
         .list_required_for("driver", &profile.jurisdiction)

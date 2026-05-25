@@ -57,8 +57,31 @@ export interface ComplianceProfile {
   entity_type: string;
   entity_id: string;
   jurisdiction: string;
-  status: string;
+  /** Rust serde field: overall_status (snake_case).
+   *  Values: pending_submission | under_review | compliant |
+   *          expiring_soon | expired | rejected | suspended */
+  overall_status: string;
   created_at: string;
+}
+
+/** Map backend overall_status → app KycStatus. */
+export function backendStatusToKyc(
+  status: string,
+): 'none' | 'pending' | 'verified' | 'rejected' {
+  switch (status) {
+    case 'compliant':
+    case 'expiring_soon':
+      return 'verified';
+    case 'under_review':
+      return 'pending';
+    case 'rejected':
+    case 'expired':
+    case 'suspended':
+      return 'rejected';
+    default:
+      // pending_submission or unknown → not yet verified
+      return 'none';
+  }
 }
 
 export const complianceApi = {

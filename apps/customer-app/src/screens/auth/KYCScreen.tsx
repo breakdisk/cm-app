@@ -359,7 +359,7 @@ export function KYCScreen() {
       {/* Skip / Submit */}
       <View style={s.footerBtns}>
         <Pressable
-          onPress={() => dispatch(authActions.submitKyc({ idType: selectedId ?? "passport" }))}
+          onPress={() => dispatch(authActions.skipKyc())}
           style={s.skipBtn}
         >
           <Text style={s.skipText}>Skip for now</Text>

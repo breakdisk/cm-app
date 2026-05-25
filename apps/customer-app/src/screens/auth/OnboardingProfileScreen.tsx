@@ -12,6 +12,7 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useDispatch, useSelector } from "react-redux";
+import * as SecureStore from "expo-secure-store";
 import { authActions } from "../../store";
 import type { RootState, AppDispatch } from "../../store";
 
@@ -32,8 +33,11 @@ export function OnboardingProfileScreen() {
   function handleNext() {
     if (!name.trim()) { setError("Please enter your full name"); return; }
     setError("");
+    const trimmedName = name.trim();
+    // Persist name so session restore in App.tsx can display it on cold start
+    SecureStore.setItemAsync("customer_name", trimmedName).catch(() => {});
     dispatch(authActions.setProfile({
-      name:       name.trim(),
+      name:       trimmedName,
       email:      email.trim() || undefined,
       customerId: "CUST-" + Math.random().toString(36).slice(2, 10).toUpperCase(),
     }));

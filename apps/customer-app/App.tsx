@@ -18,6 +18,9 @@ import { useNetInfo } from "@react-native-community/netinfo";
 import * as TaskManager from "expo-task-manager";
 import * as BackgroundFetch from "expo-background-fetch";
 import { store } from "./src/store";
+import { setCredentials } from "./src/store/slices/auth";
+import { getStoredToken, getStoredCustomerId } from "./src/services/api/auth";
+import * as SecureStore from "expo-secure-store";
 import { AppNavigator } from "./src/navigation/AppNavigator";
 import { initializeDatabase } from "./src/db/sqlite";
 import { syncShipments } from "./src/db/sync";
@@ -46,7 +49,36 @@ function AppContent() {
   const { isConnected } = useNetInfo();
 
   useEffect(() => {
-    // Initialize database on app startup
+    // ── Session restore ────────────────────────────────────────────────────
+    // On every cold start, read the persisted JWT from SecureStore. If a
+    // token exists the user was previously signed in — restore the minimum
+    // Redux state needed for the navigator to skip the onboarding stack.
+    // kycStatus is intentionally left at the default 'none'; ProfileScreen
+    // syncs the live value from the backend lazily on mount.
+    const restoreSession = async () => {
+      try {
+        const token      = await getStoredToken();
+        const customerId = await getStoredCustomerId();
+        const phone      = await SecureStore.getItemAsync("customer_phone");
+        const name       = await SecureStore.getItemAsync("customer_name").catch(() => null);
+        if (token && customerId) {
+          store.dispatch(setCredentials({
+            token,
+            customerId,
+            phone:           phone ?? null,
+            name:            name  ?? null,
+            onboardingStep:  "complete",
+            isGuest:         false,
+          }));
+        }
+      } catch {
+        // SecureStore unavailable — stay on onboarding screen
+      }
+    };
+
+    restoreSession();
+
+    // ── Database init ──────────────────────────────────────────────────────
     const initDb = async () => {
       try {
         await initializeDatabase();
