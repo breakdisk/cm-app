@@ -37,7 +37,7 @@ interface Props {
   onSuccess: () => void;
 }
 
-const VEHICLE_TYPES = ["Motorcycle", "Van", "Truck", "Bicycle", "Car"];
+const VEHICLE_TYPES = ["Motorcycle", "Scooter", "Van", "Truck", "Bicycle", "Car"];
 const ZONES = ["Makati", "BGC", "Quezon City", "Pasig", "Mandaluyong", "Caloocan", "Parañaque", "Las Piñas", "Valenzuela", "Other"];
 
 const inputCls =

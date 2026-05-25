@@ -47,6 +47,21 @@
       linear-gradient(90deg, rgba(0, 229, 255, 0.025) 1px, transparent 1px);
     background-size: 48px 48px;
   }
+  /* Native select dropdowns — force dark popup on all platforms */
+  select {
+    color-scheme: dark;
+  }
+  select option {
+    background-color: #0d1020;
+    color: #ffffff;
+  }
+  select option:hover,
+  select option:focus,
+  select option:checked {
+    background-color: #1a2040;
+    color: #ffffff;
+  }
+
   /* Scrollbar */
   ::-webkit-scrollbar       { width: 4px; height: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
