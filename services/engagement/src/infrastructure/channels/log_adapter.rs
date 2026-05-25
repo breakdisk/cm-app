@@ -25,7 +25,7 @@ impl LogChannelAdapter {
 
 #[async_trait]
 impl ChannelAdapter for LogChannelAdapter {
-    async fn send(&self, recipient: &str, body: &str, subject: Option<&str>) -> Result<String, String> {
+    async fn send(&self, recipient: &str, body: &str, subject: Option<&str>, _data: Option<&serde_json::Value>) -> Result<String, String> {
         tracing::info!(
             channel = self.channel,
             recipient = recipient,

@@ -16,7 +16,7 @@ impl TwilioSmsAdapter {
 
 #[async_trait]
 impl ChannelAdapter for TwilioSmsAdapter {
-    async fn send(&self, recipient: &str, body: &str, _subject: Option<&str>) -> Result<String, String> {
+    async fn send(&self, recipient: &str, body: &str, _subject: Option<&str>, _data: Option<&serde_json::Value>) -> Result<String, String> {
         let url = format!(
             "https://api.twilio.com/2010-04-01/Accounts/{}/Messages.json",
             self.account_sid

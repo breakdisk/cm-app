@@ -110,6 +110,8 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
   const [name,       setName]       = useState("");
   const [channel,    setChannel]    = useState<Channel>("whatsapp");
   const [trigger,    setTrigger]    = useState(TRIGGER_OPTIONS[0]);
+  const [subject,    setSubject]    = useState("");
+  const [deepLink,   setDeepLink]   = useState("");
   const [message,    setMessage]    = useState("");
   const [recipients, setRecipients] = useState("");
   const [saving,         setSaving]         = useState(false);
@@ -119,6 +121,7 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
   const [scheduleFor,     setScheduleFor]     = useState("");
 
   const charMax = channel === "sms" ? 160 : 1000;
+  const needsSubject = channel === "email" || channel === "push";
 
   const recipientPlaceholder =
     channel === "email" ? "juan@example.com\nmaria@example.com"
@@ -141,8 +144,11 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
         channel,
         template: {
           template_id: `inline_${Date.now()}`,
-          subject: channel === "email" ? name.trim() : null,
-          variables: { body: message.trim() },
+          subject: needsSubject ? subject.trim() : null,
+          variables: {
+            body: message.trim(),
+            ...(channel === "push" && deepLink.trim() ? { deep_link: deepLink.trim() } : {}),
+          },
         },
         targeting: {
           customer_ids: [],
@@ -246,6 +252,39 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
               </div>
             </div>
 
+            {/* Subject (email) / Title (push) */}
+            {needsSubject && (
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-white/50">
+                  {channel === "email" ? "Subject Line" : "Push Title"}
+                  <span className="ml-1 text-red-signal/70">*</span>
+                </label>
+                <input
+                  value={subject}
+                  onChange={(e) => setSubject(e.target.value)}
+                  placeholder={channel === "email" ? "e.g. Your shipment has arrived!" : "e.g. Package delivered!"}
+                  className="w-full rounded-xl border border-glass-border bg-glass-100 px-3.5 py-2.5 text-sm text-white placeholder-white/20 outline-none focus:border-purple-plasma/50 transition-colors"
+                />
+                {channel === "email" && (
+                  <p className="mt-1 text-2xs text-white/25">Shown as the email subject in the recipient&apos;s inbox.</p>
+                )}
+              </div>
+            )}
+
+            {/* Deep link (push only, optional) */}
+            {channel === "push" && (
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-white/50">Deep Link <span className="text-white/30">(optional)</span></label>
+                <input
+                  value={deepLink}
+                  onChange={(e) => setDeepLink(e.target.value)}
+                  placeholder="/tracking"
+                  className="w-full rounded-xl border border-glass-border bg-glass-100 px-3.5 py-2.5 text-sm text-white placeholder-white/20 outline-none focus:border-amber-signal/50 transition-colors font-mono"
+                />
+                <p className="mt-1 text-2xs text-white/25">App screen to open on tap, e.g. /tracking or /shipments.</p>
+              </div>
+            )}
+
             {/* Message */}
             <div>
               <div className="mb-1.5 flex items-center justify-between">
@@ -261,7 +300,10 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
                 placeholder={`Hi {{name}}, your order {{awb}} has been delivered! 🎉\n\nBook your next shipment and get 10% off.`}
                 className="w-full resize-none rounded-xl border border-glass-border bg-glass-100 px-3.5 py-2.5 text-sm text-white placeholder-white/15 outline-none focus:border-purple-plasma/50 transition-colors font-mono"
               />
-              <p className="mt-1 text-2xs text-white/25">Variables: {'{{name}}'}, {'{{awb}}'}, {'{{eta}}'}, {'{{cod_amount}}'}</p>
+              <p className="mt-1 text-2xs text-white/25">
+                Variables: {'{{name}}'}, {'{{awb}}'}, {'{{eta}}'}, {'{{cod_amount}}'}
+                {channel === "email" && <span className="ml-2 text-purple-plasma/60">· Supports HTML</span>}
+              </p>
             </div>
 
             {/* Recipients */}
@@ -341,7 +383,7 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
               </button>
               <button
                 onClick={handleCreate}
-                disabled={!name.trim() || !message.trim() || message.length > charMax || saving || (scheduleEnabled && !scheduleFor)}
+                disabled={!name.trim() || !message.trim() || message.length > charMax || saving || (scheduleEnabled && !scheduleFor) || (needsSubject && !subject.trim())}
                 className="flex items-center gap-2 rounded-lg px-5 py-2 text-sm font-semibold text-white transition-all disabled:opacity-40"
                 style={{ background: "linear-gradient(135deg, #A855F7, #00E5FF)" }}
               >
@@ -529,7 +571,7 @@ function CampaignsContent() {
           <div className="flex items-center justify-between mb-5">
             <div>
               <h2 className="font-heading text-sm font-semibold text-white">Message Volume — This Week</h2>
-              <p className="text-2xs font-mono text-white/30">WhatsApp · SMS · Email</p>
+              <p className="text-2xs font-mono text-white/30">WhatsApp · SMS · Email · Push</p>
             </div>
             <BarChart2 size={15} className="text-purple-plasma" />
           </div>

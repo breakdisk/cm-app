@@ -17,8 +17,12 @@ export type CampaignStatus =
 /** Per-channel message payload. template_id refers to the engagement-service template registry. */
 export interface MessageTemplate {
   template_id: string;
-  subject?: string | null; // email only
-  variables: Record<string, unknown>;
+  subject?: string | null;   // email subject line / push notification title
+  variables: {
+    body?: string;
+    deep_link?: string;      // push only — app screen to open on tap
+    [key: string]: unknown;
+  };
 }
 
 /** A single campaign recipient with embedded contact details. */

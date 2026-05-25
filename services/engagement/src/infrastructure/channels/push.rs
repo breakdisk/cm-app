@@ -61,7 +61,7 @@ impl ExpoPushAdapter {
 
 #[async_trait]
 impl ChannelAdapter for ExpoPushAdapter {
-    async fn send(&self, recipient: &str, body: &str, subject: Option<&str>) -> Result<String, String> {
+    async fn send(&self, recipient: &str, body: &str, subject: Option<&str>, data: Option<&serde_json::Value>) -> Result<String, String> {
         let user_id = Uuid::parse_str(recipient)
             .map_err(|e| format!("invalid user_id '{recipient}': {e}"))?;
 
@@ -71,13 +71,23 @@ impl ChannelAdapter for ExpoPushAdapter {
         }
 
         let title = subject.unwrap_or("LogisticOS");
-        let messages: Vec<_> = tokens.iter().map(|t| json!({
-            "to": t,
-            "title": title,
-            "body": body,
-            "sound": "default",
-            "priority": "high",
-        })).collect();
+        let messages: Vec<_> = tokens.iter().map(|t| {
+            let mut msg = json!({
+                "to":       t,
+                "title":    title,
+                "body":     body,
+                "sound":    "default",
+                "priority": "high",
+            });
+            // Attach deep_link (and any other keys) into the Expo `data` field
+            // so the customer app can navigate directly to the right screen.
+            if let Some(d) = data {
+                if d.as_object().is_some_and(|o| !o.is_empty()) {
+                    msg["data"] = d.clone();
+                }
+            }
+            msg
+        }).collect();
 
         let response = self.client
             .post(EXPO_PUSH_URL)

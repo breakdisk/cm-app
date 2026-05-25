@@ -20,6 +20,10 @@ pub struct Notification {
     pub sent_at: Option<DateTime<Utc>>,
     pub delivered_at: Option<DateTime<Utc>>,
     pub retry_count: u32,
+    /// Channel-specific metadata (e.g. `{"deep_link": "/tracking"}` for push).
+    /// Not persisted to the notifications table; used only during dispatch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

@@ -163,7 +163,9 @@ export default function CampaignDetailPage() {
   const deliveryRate = campaign && campaign.total_sent > 0
     ? (campaign.total_delivered / campaign.total_sent) * 100
     : 0;
-  const body = campaign?.template?.variables?.body as string | undefined;
+  const body    = campaign?.template?.variables?.body as string | undefined;
+  const subject = campaign?.template?.subject;
+  const deepLink = campaign?.template?.variables?.deep_link as string | undefined;
   const trigger = campaign?.description?.trim() || "Manual / Scheduled";
 
   // ── Render ───────────────────────────────────────────────────────────────────
@@ -308,6 +310,36 @@ export default function CampaignDetailPage() {
                     <p className="text-sm font-medium text-white">{trigger}</p>
                   </div>
                 </div>
+
+                {/* Subject (email) / Push Title */}
+                {subject && (campaign.channel === "email" || campaign.channel === "push") && (
+                  <div className="flex items-start gap-3">
+                    <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-glass-border bg-glass-100">
+                      {campaign.channel === "email"
+                        ? <Mail size={13} className="text-purple-plasma" />
+                        : <Zap  size={13} className="text-amber-signal" />}
+                    </div>
+                    <div>
+                      <p className="text-2xs font-mono text-white/30 uppercase tracking-wider mb-0.5">
+                        {campaign.channel === "email" ? "Subject Line" : "Push Title"}
+                      </p>
+                      <p className="text-sm font-medium text-white">{subject}</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Deep Link (push only) */}
+                {deepLink && campaign.channel === "push" && (
+                  <div className="flex items-start gap-3">
+                    <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-glass-border bg-glass-100">
+                      <Zap size={13} className="text-amber-signal/60" />
+                    </div>
+                    <div>
+                      <p className="text-2xs font-mono text-white/30 uppercase tracking-wider mb-0.5">Deep Link</p>
+                      <p className="text-sm font-mono text-white/70">{deepLink}</p>
+                    </div>
+                  </div>
+                )}
 
                 {/* Recipients */}
                 <div className="flex items-start gap-3">

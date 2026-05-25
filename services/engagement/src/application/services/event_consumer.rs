@@ -669,6 +669,16 @@ pub async fn handle_campaign_triggered(
             }
         };
 
+        // For push campaigns, forward any deep_link (or other metadata) from the
+        // campaign's template variables so the push adapter can attach it to the
+        // Expo notification's `data` field and the customer app can deep-navigate.
+        if channel_str == "push" {
+            let campaign_vars = &data["variables"];
+            if campaign_vars.as_object().is_some_and(|o| !o.is_empty()) {
+                notification.extra_data = Some(campaign_vars.clone());
+            }
+        }
+
         match notification_service.dispatch(&mut notification).await {
             Ok(_) => {
                 db.update_campaign_send_status(

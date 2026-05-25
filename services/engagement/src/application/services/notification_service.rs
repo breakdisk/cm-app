@@ -41,7 +41,7 @@ impl NotificationService {
             NotificationChannel::Push     => self.push.as_ref(),
         };
 
-        match adapter.send(&notification.recipient, &notification.rendered_body, notification.subject.as_deref()).await {
+        match adapter.send(&notification.recipient, &notification.rendered_body, notification.subject.as_deref(), notification.extra_data.as_ref()).await {
             Ok(provider_id) => {
                 notification.mark_sent(provider_id);
                 tracing::info!(
@@ -112,6 +112,7 @@ impl NotificationService {
             sent_at: None,
             delivered_at: None,
             retry_count: 0,
+            extra_data: None,
         })
     }
 }

@@ -21,7 +21,7 @@ impl SesEmailAdapter {
 
 #[async_trait]
 impl ChannelAdapter for SesEmailAdapter {
-    async fn send(&self, recipient: &str, body: &str, subject: Option<&str>) -> Result<String, String> {
+    async fn send(&self, recipient: &str, body: &str, subject: Option<&str>, _data: Option<&serde_json::Value>) -> Result<String, String> {
         let from = format!("{} <{}>", self.from_name, self.from_email);
         let subject_content = Content::builder()
             .data(subject.unwrap_or("LogisticOS Notification"))

@@ -8,5 +8,15 @@ use async_trait::async_trait;
 
 #[async_trait]
 pub trait ChannelAdapter: Send + Sync {
-    async fn send(&self, recipient: &str, body: &str, subject: Option<&str>) -> Result<String, String>;
+    /// Dispatch a single notification.
+    ///
+    /// - `data`: optional channel-specific metadata (e.g. `{"deep_link": "/tracking"}`
+    ///   for push). Adapters that don't use it should accept and ignore the parameter.
+    async fn send(
+        &self,
+        recipient: &str,
+        body:      &str,
+        subject:   Option<&str>,
+        data:      Option<&serde_json::Value>,
+    ) -> Result<String, String>;
 }

@@ -80,6 +80,7 @@ impl NotificationRow {
             sent_at:             self.sent_at,
             delivered_at:        self.delivered_at,
             retry_count:         self.retry_count as u32,
+            extra_data:          None,
         }
     }
 }
