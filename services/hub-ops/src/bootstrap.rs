@@ -699,7 +699,7 @@ async fn throughput_today(State(s): State<AppState>, claims: AuthClaims) -> impl
     .bind(tenant_id.inner())
     .fetch_all(&s.pool)
     .await
-    .map_err(AppError::internal)?;
+    .map_err(|e| AppError::internal(e.into()))?;
 
     let buckets: Vec<serde_json::Value> = rows
         .into_iter()

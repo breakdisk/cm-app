@@ -153,7 +153,7 @@ async fn hub_manifest(
         return Err(AppError::NotFound { resource: "hub", id: hub_id.to_string() });
     }
 
-    let parcels = state.hub_svc.hub_manifest(hub_id).await?;
+    let parcels = state.hub_svc.hub_manifest(hub_id, &tenant_id).await?;
 
     Ok::<_, AppError>((
         StatusCode::OK,
@@ -212,7 +212,7 @@ async fn get_induction(
     let hubs = state.hub_svc.list_hubs(&tenant_id).await?;
 
     for hub in &hubs {
-        let parcels = state.hub_svc.hub_manifest(hub.id.inner()).await?;
+        let parcels = state.hub_svc.hub_manifest(hub.id.inner(), &tenant_id).await?;
         if let Some(induction) = parcels.into_iter().find(|p| p.id.inner() == id) {
             return Ok::<_, AppError>((StatusCode::OK, Json(induction)));
         }
