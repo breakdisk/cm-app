@@ -2,9 +2,9 @@ use std::{net::SocketAddr, sync::Arc};
 use anyhow::Context;
 use sqlx::postgres::PgPoolOptions;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State, ws::{Message, WebSocket, WebSocketUpgrade}},
     http::StatusCode,
-    response::{IntoResponse, Json},
+    response::{IntoResponse, Json, Response},
     routing::{get, post},
     Router,
 };
@@ -20,7 +20,14 @@ use crate::{
     application::services::{
         CreateHubCommand, HubRepository, HubService, InductParcelCommand,
         InductionRepository, SortParcelCommand,
+        ConsolidationService,
+        consolidation_service::{
+            ComputePlanCommand, CreateSpecCommand, ConsolidationPlanRepository,
+            TruckSpecRepository, UpdatePlacementsBody, UpdateSpecCommand,
+        },
     },
+    domain::entities::consolidation::{ConsolidationPlan, TruckSpec},
+    infrastructure::hub_ws::HubBroadcaster,
     config::Config,
 };
 
@@ -246,6 +253,200 @@ impl PgContainerRepository {
 }
 
 // ---------------------------------------------------------------------------
+// Truck spec repository
+// ---------------------------------------------------------------------------
+
+struct PgTruckSpecRepository { pool: sqlx::PgPool }
+
+#[derive(sqlx::FromRow)]
+struct TruckSpecRow {
+    id: Uuid, tenant_id: Uuid, name: String,
+    transport_mode: String, size_class: String,
+    interior_length_cm: i32, interior_width_cm: i32, interior_height_cm: i32,
+    max_payload_kg: f64,
+    is_active: bool,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+fn row_to_spec(r: TruckSpecRow) -> TruckSpec {
+    TruckSpec {
+        id: r.id, tenant_id: r.tenant_id, name: r.name,
+        transport_mode: r.transport_mode, size_class: r.size_class,
+        interior_length_cm: r.interior_length_cm,
+        interior_width_cm:  r.interior_width_cm,
+        interior_height_cm: r.interior_height_cm,
+        max_payload_kg: r.max_payload_kg,
+        is_active: r.is_active,
+        created_at: r.created_at, updated_at: r.updated_at,
+    }
+}
+
+#[async_trait::async_trait]
+impl TruckSpecRepository for PgTruckSpecRepository {
+    async fn list(&self, tenant_id: Uuid) -> anyhow::Result<Vec<TruckSpec>> {
+        let rows = sqlx::query_as::<_, TruckSpecRow>(
+            r#"SELECT id, tenant_id, name, transport_mode, size_class,
+                      interior_length_cm, interior_width_cm, interior_height_cm,
+                      max_payload_kg::float8, is_active, created_at, updated_at
+               FROM hub_ops.truck_specs
+               WHERE tenant_id = $1
+               ORDER BY name"#
+        ).bind(tenant_id).fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(row_to_spec).collect())
+    }
+
+    async fn find(&self, id: Uuid, tenant_id: Uuid) -> anyhow::Result<Option<TruckSpec>> {
+        let row = sqlx::query_as::<_, TruckSpecRow>(
+            r#"SELECT id, tenant_id, name, transport_mode, size_class,
+                      interior_length_cm, interior_width_cm, interior_height_cm,
+                      max_payload_kg::float8, is_active, created_at, updated_at
+               FROM hub_ops.truck_specs
+               WHERE id = $1 AND tenant_id = $2"#
+        ).bind(id).bind(tenant_id).fetch_optional(&self.pool).await?;
+        Ok(row.map(row_to_spec))
+    }
+
+    async fn create(&self, spec: &TruckSpec) -> anyhow::Result<TruckSpec> {
+        sqlx::query(
+            r#"INSERT INTO hub_ops.truck_specs (
+                id, tenant_id, name, transport_mode, size_class,
+                interior_length_cm, interior_width_cm, interior_height_cm,
+                max_payload_kg, is_active, created_at, updated_at
+               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)"#
+        )
+        .bind(spec.id).bind(spec.tenant_id).bind(&spec.name)
+        .bind(&spec.transport_mode).bind(&spec.size_class)
+        .bind(spec.interior_length_cm).bind(spec.interior_width_cm).bind(spec.interior_height_cm)
+        .bind(spec.max_payload_kg).bind(spec.is_active)
+        .bind(spec.created_at).bind(spec.updated_at)
+        .execute(&self.pool).await?;
+        Ok(spec.clone())
+    }
+
+    async fn update(&self, spec: &TruckSpec) -> anyhow::Result<TruckSpec> {
+        sqlx::query(
+            r#"UPDATE hub_ops.truck_specs SET
+                name = $1, interior_length_cm = $2, interior_width_cm = $3,
+                interior_height_cm = $4, max_payload_kg = $5, is_active = $6, updated_at = $7
+               WHERE id = $8 AND tenant_id = $9"#
+        )
+        .bind(&spec.name).bind(spec.interior_length_cm).bind(spec.interior_width_cm)
+        .bind(spec.interior_height_cm).bind(spec.max_payload_kg)
+        .bind(spec.is_active).bind(spec.updated_at)
+        .bind(spec.id).bind(spec.tenant_id)
+        .execute(&self.pool).await?;
+        Ok(spec.clone())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Consolidation plan repository
+// ---------------------------------------------------------------------------
+
+struct PgConsolidationPlanRepository { pool: sqlx::PgPool }
+
+#[derive(sqlx::FromRow)]
+struct PlanRow {
+    id: Uuid, tenant_id: Uuid, hub_id: Uuid, truck_spec_id: Uuid,
+    container_id: Option<Uuid>,
+    items: serde_json::Value, placements: serde_json::Value, unplaced: serde_json::Value,
+    total_weight_kg: f64,
+    volume_used_cm3: i64, volume_total_cm3: i64,
+    piece_count: i32,
+    computed_at: chrono::DateTime<chrono::Utc>,
+    created_at:  chrono::DateTime<chrono::Utc>,
+    updated_at:  chrono::DateTime<chrono::Utc>,
+}
+
+fn row_to_plan(r: PlanRow) -> ConsolidationPlan {
+    ConsolidationPlan {
+        id: r.id, tenant_id: r.tenant_id, hub_id: r.hub_id,
+        truck_spec_id: r.truck_spec_id, container_id: r.container_id,
+        items: r.items, placements: r.placements, unplaced: r.unplaced,
+        total_weight_kg: r.total_weight_kg,
+        volume_used_cm3:  r.volume_used_cm3,
+        volume_total_cm3: r.volume_total_cm3,
+        piece_count: r.piece_count, computed_at: r.computed_at,
+        created_at: r.created_at, updated_at: r.updated_at,
+    }
+}
+
+#[async_trait::async_trait]
+impl ConsolidationPlanRepository for PgConsolidationPlanRepository {
+    async fn list(&self, hub_id: Uuid, tenant_id: Uuid) -> anyhow::Result<Vec<ConsolidationPlan>> {
+        let rows = sqlx::query_as::<_, PlanRow>(
+            r#"SELECT id, tenant_id, hub_id, truck_spec_id, container_id,
+                      items, placements, unplaced,
+                      total_weight_kg::float8, volume_used_cm3, volume_total_cm3,
+                      piece_count, computed_at, created_at, updated_at
+               FROM hub_ops.consolidation_plans
+               WHERE hub_id = $1 AND tenant_id = $2
+               ORDER BY created_at DESC
+               LIMIT 20"#
+        ).bind(hub_id).bind(tenant_id).fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(row_to_plan).collect())
+    }
+
+    async fn find(&self, id: Uuid, tenant_id: Uuid) -> anyhow::Result<Option<ConsolidationPlan>> {
+        let row = sqlx::query_as::<_, PlanRow>(
+            r#"SELECT id, tenant_id, hub_id, truck_spec_id, container_id,
+                      items, placements, unplaced,
+                      total_weight_kg::float8, volume_used_cm3, volume_total_cm3,
+                      piece_count, computed_at, created_at, updated_at
+               FROM hub_ops.consolidation_plans
+               WHERE id = $1 AND tenant_id = $2"#
+        ).bind(id).bind(tenant_id).fetch_optional(&self.pool).await?;
+        Ok(row.map(row_to_plan))
+    }
+
+    async fn upsert(&self, plan: &ConsolidationPlan) -> anyhow::Result<ConsolidationPlan> {
+        sqlx::query(
+            r#"INSERT INTO hub_ops.consolidation_plans (
+                id, tenant_id, hub_id, truck_spec_id, container_id,
+                items, placements, unplaced,
+                total_weight_kg, volume_used_cm3, volume_total_cm3,
+                piece_count, computed_at, created_at, updated_at
+               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+               ON CONFLICT (id) DO UPDATE SET
+                placements       = EXCLUDED.placements,
+                unplaced         = EXCLUDED.unplaced,
+                total_weight_kg  = EXCLUDED.total_weight_kg,
+                volume_used_cm3  = EXCLUDED.volume_used_cm3,
+                volume_total_cm3 = EXCLUDED.volume_total_cm3,
+                piece_count      = EXCLUDED.piece_count,
+                computed_at      = EXCLUDED.computed_at,
+                updated_at       = EXCLUDED.updated_at"#
+        )
+        .bind(plan.id).bind(plan.tenant_id).bind(plan.hub_id).bind(plan.truck_spec_id)
+        .bind(plan.container_id)
+        .bind(&plan.items).bind(&plan.placements).bind(&plan.unplaced)
+        .bind(plan.total_weight_kg).bind(plan.volume_used_cm3).bind(plan.volume_total_cm3)
+        .bind(plan.piece_count).bind(plan.computed_at).bind(plan.created_at).bind(plan.updated_at)
+        .execute(&self.pool).await?;
+        Ok(plan.clone())
+    }
+
+    async fn update_placements(
+        &self,
+        id: Uuid,
+        tenant_id: Uuid,
+        placements: serde_json::Value,
+    ) -> anyhow::Result<ConsolidationPlan> {
+        let now = chrono::Utc::now();
+        sqlx::query(
+            "UPDATE hub_ops.consolidation_plans
+                SET placements = $1, updated_at = $2
+              WHERE id = $3 AND tenant_id = $4"
+        )
+        .bind(&placements).bind(now).bind(id).bind(tenant_id)
+        .execute(&self.pool).await?;
+        self.find(id, tenant_id).await?
+            .ok_or_else(|| anyhow::anyhow!("plan not found after placements update"))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Billing clearance HTTP client
 // ---------------------------------------------------------------------------
 
@@ -310,9 +511,11 @@ async fn check_billing_clearance(
 
 #[derive(Clone)]
 struct AppState {
-    svc:          Arc<HubService>,
-    containers:   Arc<PgContainerRepository>,
-    payments_url: String,
+    svc:               Arc<HubService>,
+    containers:        Arc<PgContainerRepository>,
+    consolidation_svc: Arc<ConsolidationService>,
+    hub_broadcaster:   HubBroadcaster,
+    payments_url:      String,
 }
 
 // ---------------------------------------------------------------------------
@@ -442,6 +645,136 @@ async fn manifest(State(s): State<AppState>, claims: AuthClaims, Path(hub_id): P
 }
 
 // ---------------------------------------------------------------------------
+// Consolidation handlers
+// ---------------------------------------------------------------------------
+
+async fn list_truck_specs(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::FLEET_READ)?;
+    let specs = s.consolidation_svc.list_specs(claims.tenant_id).await
+        .map_err(AppError::internal)?;
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "specs": specs }))))
+}
+
+async fn create_truck_spec(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Json(cmd): Json<CreateSpecCommand>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::FLEET_MANAGE)?;
+    let spec = s.consolidation_svc.create_spec(claims.tenant_id, cmd).await
+        .map_err(AppError::internal)?;
+    Ok::<_, AppError>((StatusCode::CREATED, Json(spec)))
+}
+
+async fn update_truck_spec(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+    Json(cmd): Json<UpdateSpecCommand>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::FLEET_MANAGE)?;
+    let spec = s.consolidation_svc.update_spec(id, claims.tenant_id, cmd).await
+        .map_err(|e| AppError::BusinessRule(e.to_string()))?;
+    Ok::<_, AppError>((StatusCode::OK, Json(spec)))
+}
+
+async fn compute_plan(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Json(cmd): Json<ComputePlanCommand>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    let plan = s.consolidation_svc.compute_plan(claims.tenant_id, cmd).await
+        .map_err(|e| AppError::BusinessRule(e.to_string()))?;
+    Ok::<_, AppError>((StatusCode::CREATED, Json(plan)))
+}
+
+async fn get_plan(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_READ)?;
+    let plan = s.consolidation_svc.get_plan(id, claims.tenant_id).await
+        .map_err(AppError::internal)?
+        .ok_or_else(|| AppError::NotFound { resource: "plan", id: id.to_string() })?;
+    Ok::<_, AppError>((StatusCode::OK, Json(plan)))
+}
+
+async fn list_hub_plans(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(hub_id): Path<Uuid>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_READ)?;
+    let plans = s.consolidation_svc.list_plans(hub_id, claims.tenant_id).await
+        .map_err(AppError::internal)?;
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "plans": plans }))))
+}
+
+async fn update_placements_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdatePlacementsBody>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    let plan = s.consolidation_svc.update_placements(id, claims.tenant_id, body).await
+        .map_err(|e| AppError::BusinessRule(e.to_string()))?;
+    Ok::<_, AppError>((StatusCode::OK, Json(plan)))
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket handler — hub event bus
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct WsQuery {
+    token: String,
+}
+
+async fn ws_hub_events(
+    State(s): State<AppState>,
+    Path(hub_id): Path<Uuid>,
+    Query(q): Query<WsQuery>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    // Manual JWT validation — WS upgrade cannot carry an Authorization header.
+    let jwt_secret = std::env::var("AUTH__JWT_SECRET").unwrap_or_default();
+    let jwt = JwtService::new(&jwt_secret, 3600, 86400);
+    if jwt.validate_access_token(&q.token).is_err() {
+        return (StatusCode::UNAUTHORIZED, "invalid or expired token").into_response();
+    }
+    let broadcaster = s.hub_broadcaster.clone();
+    ws.on_upgrade(move |socket| drive_ws(socket, hub_id, broadcaster))
+}
+
+async fn drive_ws(mut socket: WebSocket, hub_id: Uuid, broadcaster: HubBroadcaster) {
+    let mut rx = broadcaster.subscribe(hub_id).await;
+    loop {
+        tokio::select! {
+            event = rx.recv() => {
+                match event {
+                    Ok(text) => {
+                        if socket.send(Message::Text(text)).await.is_err() { break; }
+                    }
+                    Err(_) => break,
+                }
+            }
+            frame = socket.recv() => {
+                match frame {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Bootstrap
 // ---------------------------------------------------------------------------
 
@@ -471,9 +804,19 @@ pub async fn run() -> anyhow::Result<()> {
     let hub_repo       = Arc::new(PgHubRepository { pool: pool.clone() });
     let induction_repo = Arc::new(PgInductionRepository { pool: pool.clone() });
     let container_repo = Arc::new(PgContainerRepository { pool: pool.clone() });
+    let spec_repo      = Arc::new(PgTruckSpecRepository { pool: pool.clone() });
+    let plan_repo      = Arc::new(PgConsolidationPlanRepository { pool: pool.clone() });
+    let hub_broadcaster = HubBroadcaster::new();
     let svc = Arc::new(HubService::new(hub_repo, induction_repo));
+    let consolidation_svc = Arc::new(ConsolidationService::new(
+        spec_repo, plan_repo, hub_broadcaster.clone(),
+    ));
     let payments_url = cfg.payments.url.clone();
-    let state = AppState { svc, containers: container_repo, payments_url };
+    let state = AppState {
+        svc, containers: container_repo,
+        consolidation_svc, hub_broadcaster,
+        payments_url,
+    };
 
     let jwt_secret = std::env::var("AUTH__JWT_SECRET")
         .context("AUTH__JWT_SECRET env var not set")?;
@@ -481,6 +824,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     // Protected business routes — JWT required on all /v1/* endpoints.
     let protected = Router::new()
+        // Hub management
         .route("/v1/hubs",              get(list_hubs).post(create_hub))
         .route("/v1/hubs/:id/manifest", get(manifest))
         .route("/v1/hubs/induct",       post(induct))
@@ -488,7 +832,20 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/v1/hubs/dispatch/:id", post(dispatch))
         // Container departure — billing clearance guard before CONTAINER_DEPARTED event.
         .route("/v1/containers/:id/depart", axum::routing::put(depart_container))
+        // Consolidation — truck specs
+        .route("/v1/consolidation/specs",     get(list_truck_specs).post(create_truck_spec))
+        .route("/v1/consolidation/specs/:id", axum::routing::put(update_truck_spec))
+        // Consolidation — plans
+        .route("/v1/consolidation/plans",                       post(compute_plan))
+        .route("/v1/consolidation/plans/:id",                   get(get_plan))
+        .route("/v1/consolidation/plans/:id/placements",        axum::routing::put(update_placements_handler))
+        .route("/v1/hubs/:hub_id/consolidation/plans",          get(list_hub_plans))
         .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth));
+
+    // WebSocket — JWT validated manually inside the handler from ?token= query param.
+    let ws_router = Router::new()
+        .route("/v1/hubs/:id/ws", get(ws_hub_events))
+        .with_state(state.clone());
 
     // Observability endpoints — no auth required (scraped by infra, not user-facing).
     let observability = Router::new()
@@ -497,6 +854,7 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/metrics", get(|| async { "" }));
 
     let app = protected
+        .merge(ws_router)
         .merge(observability)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state);

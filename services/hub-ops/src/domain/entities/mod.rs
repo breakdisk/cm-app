@@ -1,5 +1,6 @@
 pub mod pallet;
 pub mod container;
+pub mod consolidation;
 
 /// Hub Operations — sorting hub / cross-dock facility management.
 ///

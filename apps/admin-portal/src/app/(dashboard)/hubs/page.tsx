@@ -11,13 +11,14 @@
  *        with real endpoints when those ship.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
-import { Building2, Package, Truck, AlertTriangle, FileText, RefreshCw, X, MapPin, Layers, ExternalLink } from "lucide-react";
+import { Building2, Package, Truck, AlertTriangle, FileText, RefreshCw, X, MapPin, Layers, ExternalLink, Boxes } from "lucide-react";
 import { createHubsApi, hubIdOf, hubUtilization, hubStatusTier, type Hub, type HubStatusTier, type HubThroughputBucket } from "@/lib/api/hubs";
 
 const STATUS_CONFIG: Record<HubStatusTier, { label: string; variant: "green" | "amber" | "red"; color: string }> = {
@@ -40,6 +41,7 @@ function HubDetailDrawer({ hub, onClose }: { hub: Hub; onClose: () => void }) {
   const tier = hubStatusTier(hub);
   const { label, variant, color } = STATUS_CONFIG[tier];
   const capacityPct = Math.round(hubUtilization(hub));
+  const router = useRouter();
 
   return (
     <motion.div
@@ -184,6 +186,13 @@ function HubDetailDrawer({ hub, onClose }: { hub: Hub; onClose: () => void }) {
                 <span className="flex items-center gap-2"><Truck size={11} /> Hub Analytics</span>
                 <ExternalLink size={10} />
               </a>
+              <button
+                onClick={() => { onClose(); router.push(`/hubs/${id}/consolidation`); }}
+                className="flex items-center justify-between w-full px-3 py-2 rounded-lg border border-cyan-neon/30 bg-cyan-neon/5 text-xs font-mono text-cyan-neon hover:border-cyan-neon/60 hover:bg-cyan-neon/10 transition-colors"
+              >
+                <span className="flex items-center gap-2"><Boxes size={11} /> Plan Load (3D)</span>
+                <ExternalLink size={10} />
+              </button>
             </div>
           </GlassCard>
         </div>

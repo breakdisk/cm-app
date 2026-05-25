@@ -5,6 +5,7 @@ use logisticos_types::{
     ContainerStatus, TransportMode,
 };
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 /// A transport unit that carries pallets and/or loose pieces between hubs.
 ///
@@ -32,6 +33,8 @@ pub struct Container {
     pub loose_pieces:     Vec<ChildAwb>,
     /// All master AWBs in this container — denormalized for bulk status updates.
     pub master_awbs:      Vec<Awb>,
+    /// Linked consolidation plan for this container (set when plan is confirmed).
+    pub truck_spec_id:    Option<Uuid>,
     pub status:           ContainerStatus,
     pub departed_at:      Option<DateTime<Utc>>,
     pub estimated_arrival: Option<DateTime<Utc>>,
@@ -58,6 +61,7 @@ impl Container {
             pallets: Vec::new(),
             loose_pieces: Vec::new(),
             master_awbs: Vec::new(),
+            truck_spec_id: None,
             status: ContainerStatus::Planning,
             departed_at: None,
             estimated_arrival: None,

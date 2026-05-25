@@ -1,5 +1,7 @@
 pub mod pallet_service;
 pub use pallet_service::PalletService;
+pub mod consolidation_service;
+pub use consolidation_service::ConsolidationService;
 
 use std::sync::Arc;
 use serde::Deserialize;
