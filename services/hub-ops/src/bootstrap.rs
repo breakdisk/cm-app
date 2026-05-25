@@ -290,7 +290,7 @@ impl TruckSpecRepository for PgTruckSpecRepository {
                       interior_length_cm, interior_width_cm, interior_height_cm,
                       max_payload_kg::float8, is_active, created_at, updated_at
                FROM hub_ops.truck_specs
-               WHERE tenant_id = $1
+               WHERE tenant_id = $1 AND is_active = true
                ORDER BY name"#
         ).bind(tenant_id).fetch_all(&self.pool).await?;
         Ok(rows.into_iter().map(row_to_spec).collect())
@@ -649,10 +649,16 @@ async fn dispatch(State(s): State<AppState>, claims: AuthClaims, Path(id): Path<
 }
 
 async fn manifest(State(s): State<AppState>, claims: AuthClaims, Path(hub_id): Path<Uuid>) -> impl IntoResponse {
+    use logisticos_types::TenantId;
     claims.require_permission(permissions::SHIPMENT_READ)?;
-    let parcels = s.svc.hub_manifest(hub_id).await?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let parcels = s.svc.hub_manifest(hub_id, &tenant_id).await?;
     let count = parcels.len();
-    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"parcels": parcels, "count": count}))))
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+        "hub_id":  hub_id,
+        "parcels": parcels,
+        "count":   count,
+    }))))
 }
 
 // ---------------------------------------------------------------------------

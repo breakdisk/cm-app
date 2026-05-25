@@ -153,10 +153,18 @@ impl HubService {
         Ok(induction)
     }
 
-    pub async fn hub_manifest(&self, hub_id: Uuid) -> AppResult<Vec<ParcelInduction>> {
-        self.induction_repo
+    pub async fn hub_manifest(
+        &self,
+        hub_id:    Uuid,
+        tenant_id: &TenantId,
+    ) -> AppResult<Vec<ParcelInduction>> {
+        let all = self.induction_repo
             .list_active(&HubId::from_uuid(hub_id))
             .await
-            .map_err(AppError::internal)
+            .map_err(AppError::internal)?;
+        // Filter by tenant to prevent cross-tenant data leakage.
+        // list_active queries by hub_id only; the tenant guard is applied here
+        // until the InductionRepository trait grows a tenant-scoped variant.
+        Ok(all.into_iter().filter(|p| p.tenant_id == *tenant_id).collect())
     }
 }

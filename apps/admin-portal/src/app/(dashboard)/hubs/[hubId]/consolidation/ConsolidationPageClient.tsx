@@ -7,7 +7,7 @@ import {
   Boxes, Truck, Weight, Package, AlertTriangle,
   Wifi, WifiOff, RefreshCw, ChevronRight, Settings2,
   Download, ArrowRight, ArrowLeft, ArrowUp, ArrowDown,
-  MoveVertical, Info,
+  Info,
 } from 'lucide-react';
 import { createApiClient } from '@/lib/api/client';
 import { createConsolidationApi } from '@/lib/api/consolidation';
@@ -166,6 +166,8 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
   const [currentPlan,    setCurrentPlan]    = useState<ConsolidationPlan | null>(null);
   const [placements,     setPlacements]     = useState<Placement[]>([]);
   const [loading,        setLoading]        = useState(true);
+  const [initError,      setInitError]      = useState<string | null>(null);
+  const [retryKey,       setRetryKey]       = useState(0);
   const [optimizing,     setOptimizing]     = useState(false);
   const [loadingManifest, setLoadingManifest] = useState(false);
   const [manifestCount,  setManifestCount]  = useState<number | null>(null);
@@ -175,14 +177,18 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
   const [scanFeed,       setScanFeed]       = useState<string[]>([]);
 
   // Initialise — load specs and latest plan together.
+  // `retryKey` increments on manual retry to re-trigger this effect.
   useEffect(() => {
+    let cancelled = false;
     async function init() {
       setLoading(true);
+      setInitError(null);
       try {
         const [specsData, plans] = await Promise.all([
           consolidationApi.listSpecs(),
           consolidationApi.listPlans(hubId),
         ]);
+        if (cancelled) return;
         setSpecs(specsData);
         if (specsData.length > 0) setSelectedSpecId(specsData[0].id);
         if (plans.length > 0) {
@@ -190,13 +196,17 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
           setPlacements(plans[0].placements as Placement[]);
         }
       } catch (e) {
+        if (cancelled) return;
         console.error('consolidation init error', e);
+        const msg = (e as { message?: string })?.message;
+        setInitError(msg ?? 'Failed to load plan data — check your connection and retry.');
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     }
     init();
-  }, [hubId, consolidationApi]);
+    return () => { cancelled = true; };
+  }, [hubId, consolidationApi, retryKey]);
 
   // WebSocket — live plan_computed and box_scanned events.
   useHubEvents({
@@ -349,6 +359,23 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
         <div className="flex flex-col items-center gap-3">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan-500 border-t-transparent" />
           <span className="text-sm text-white/40">Loading consolidation plan…</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (initError) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <div className="flex flex-col items-center gap-4 text-center max-w-xs">
+          <AlertTriangle size={32} className="text-amber-400" />
+          <p className="text-sm font-mono text-white/60">{initError}</p>
+          <button
+            onClick={() => setRetryKey(k => k + 1)}
+            className="flex items-center gap-2 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-4 py-2 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/20 transition-all"
+          >
+            <RefreshCw size={12} /> Retry
+          </button>
         </div>
       </div>
     );
