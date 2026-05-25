@@ -146,9 +146,16 @@ function NudgeBtn({
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-interface Props { hubId: string; token: string }
+interface Props {
+  hubId:       string;
+  token:       string;
+  /** Override root height class. Defaults to h-[calc(100vh-4rem)] for the
+   *  standalone full-page route. Pass a smaller value when embedding inside
+   *  a tabbed layout (e.g. "h-[calc(100vh-10rem)]"). */
+  heightClass?: string;
+}
 
-export default function ConsolidationPageClient({ hubId, token }: Props) {
+export default function ConsolidationPageClient({ hubId, token, heightClass }: Props) {
   // API clients
   const consolidationApi = useMemo(() => createConsolidationApi(createApiClient()), []);
   const hubsApi          = useMemo(() => createHubsApi(), []);
@@ -349,7 +356,7 @@ export default function ConsolidationPageClient({ hubId, token }: Props) {
 
   return (
     <>
-      <div className="flex h-[calc(100vh-4rem)] gap-4 p-4 overflow-hidden">
+      <div className={cn('flex gap-4 p-4 overflow-hidden', heightClass ?? 'h-[calc(100vh-4rem)]')}>
 
         {/* ── Left panel ─────────────────────────────────────────────── */}
         <div className="flex w-64 shrink-0 flex-col gap-3 overflow-y-auto">

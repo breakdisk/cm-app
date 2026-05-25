@@ -170,6 +170,13 @@ function HubDetailDrawer({ hub, onClose }: { hub: Hub; onClose: () => void }) {
           <GlassCard size="sm">
             <p className="text-2xs font-mono text-white/40 uppercase tracking-widest mb-3">Quick Links</p>
             <div className="space-y-2">
+              <button
+                onClick={() => { onClose(); router.push(`/hubs/${id}`); }}
+                className="flex items-center justify-between w-full px-3 py-2 rounded-lg border border-glass-border bg-glass-100 text-xs font-mono text-white/60 hover:border-purple-plasma/40 hover:text-purple-plasma transition-colors"
+              >
+                <span className="flex items-center gap-2"><Building2 size={11} /> Hub Detail</span>
+                <ExternalLink size={10} />
+              </button>
               <a
                 href={`/partner/manifests?hub=${encodeURIComponent(id)}`}
                 target="_blank"
@@ -187,7 +194,7 @@ function HubDetailDrawer({ hub, onClose }: { hub: Hub; onClose: () => void }) {
                 <ExternalLink size={10} />
               </a>
               <button
-                onClick={() => { onClose(); router.push(`/hubs/${id}/consolidation`); }}
+                onClick={() => { onClose(); router.push(`/hubs/${id}?tab=plan-load`); }}
                 className="flex items-center justify-between w-full px-3 py-2 rounded-lg border border-cyan-neon/30 bg-cyan-neon/5 text-xs font-mono text-cyan-neon hover:border-cyan-neon/60 hover:bg-cyan-neon/10 transition-colors"
               >
                 <span className="flex items-center gap-2"><Boxes size={11} /> Plan Load (3D)</span>
