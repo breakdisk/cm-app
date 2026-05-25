@@ -11,7 +11,6 @@ use crate::infrastructure::db::{
 };
 use crate::infrastructure::messaging::compliance_consumer::start_compliance_consumer;
 use crate::infrastructure::messaging::{start_driver_available_consumer, start_shipment_consumer, start_user_consumer};
-use crate::infrastructure::db::dispatch_queue_repo::PgDispatchQueueRepository;
 use crate::application::commands::QuickDispatchCommand;
 use crate::api::http::{router, AppState};
 use logisticos_types::TenantId;
