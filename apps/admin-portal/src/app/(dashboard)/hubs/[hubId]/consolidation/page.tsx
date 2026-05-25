@@ -1,5 +1,6 @@
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
+import { COOKIE_LOS_ACCESS } from '@/lib/auth/los-cookies';
 import ConsolidationPageClient from './ConsolidationPageClient';
 
 interface Props {
@@ -16,7 +17,7 @@ interface Props {
 export default async function ConsolidationPage({ params }: Props) {
   const { hubId } = params;
   const cookieStore = cookies();
-  const token = cookieStore.get('access_token')?.value ?? null;
+  const token = cookieStore.get(COOKIE_LOS_ACCESS)?.value ?? null;
 
   if (!token) {
     redirect('/login');

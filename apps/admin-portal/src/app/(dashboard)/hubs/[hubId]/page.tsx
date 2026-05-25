@@ -1,5 +1,6 @@
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
+import { COOKIE_LOS_ACCESS } from '@/lib/auth/los-cookies';
 import HubDetailClient from './HubDetailClient';
 
 interface Props {
@@ -19,7 +20,7 @@ interface Props {
 export default async function HubDetailPage({ params, searchParams }: Props) {
   const { hubId } = params;
   const cookieStore = cookies();
-  const token = cookieStore.get('access_token')?.value ?? null;
+  const token = cookieStore.get(COOKIE_LOS_ACCESS)?.value ?? null;
 
   if (!token) {
     redirect('/login');

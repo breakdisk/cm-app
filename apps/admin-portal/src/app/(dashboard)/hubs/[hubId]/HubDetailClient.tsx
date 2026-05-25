@@ -244,12 +244,14 @@ export default function HubDetailClient({ hubId, token, initialTab }: Props) {
         if (!cancelled) setHub(hubData);
       } catch (err: unknown) {
         if (cancelled) return;
-        // Distinguish genuine 404 (hub deleted / wrong ID) from transient errors.
-        const status = (err as { response?: { status?: number } })?.response?.status;
+        // The api client interceptor rejects with a flat { message, code, status }
+        // shape — NOT Axios's default nested { response: { status } } shape.
+        const status = (err as { status?: number })?.status;
         if (status === 404) {
           router.replace('/hubs');
         } else {
-          setLoadError('Failed to load hub data. Please try again.');
+          const msg = (err as { message?: string })?.message;
+          setLoadError(msg ?? 'Failed to load hub data. Please try again.');
         }
       } finally {
         if (!cancelled) setLoading(false);
