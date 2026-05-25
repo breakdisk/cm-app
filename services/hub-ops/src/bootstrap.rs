@@ -516,6 +516,9 @@ struct AppState {
     consolidation_svc: Arc<ConsolidationService>,
     hub_broadcaster:   HubBroadcaster,
     payments_url:      String,
+    /// Raw pool kept for ad-hoc analytical queries (e.g. throughput buckets)
+    /// that don't fit neatly behind a domain repository trait.
+    pool:              sqlx::PgPool,
 }
 
 // ---------------------------------------------------------------------------
@@ -650,6 +653,62 @@ async fn manifest(State(s): State<AppState>, claims: AuthClaims, Path(hub_id): P
     let parcels = s.svc.hub_manifest(hub_id).await?;
     let count = parcels.len();
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"parcels": parcels, "count": count}))))
+}
+
+// ---------------------------------------------------------------------------
+// Throughput analytics handler
+// ---------------------------------------------------------------------------
+
+#[derive(sqlx::FromRow)]
+struct ThroughputRow {
+    h:        i32,
+    inducted: i64,
+    sorted:   i64,
+}
+
+/// `GET /v1/hubs/throughput/today`
+///
+/// Returns per-hour induction + sort counts for the current UTC calendar day,
+/// scoped to the caller's tenant. Buckets are only emitted for hours that have
+/// at least one event — the frontend fills in the rest with zeros.
+async fn throughput_today(State(s): State<AppState>, claims: AuthClaims) -> impl IntoResponse {
+    use logisticos_types::TenantId;
+    claims.require_permission(permissions::FLEET_READ)?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+
+    let rows = sqlx::query_as::<_, ThroughputRow>(
+        r#"
+        SELECT
+            EXTRACT(HOUR FROM inducted_at)::int AS h,
+            COUNT(*)          AS inducted,
+            COUNT(sorted_at)  AS sorted
+        FROM hub_ops.parcel_inductions
+        WHERE tenant_id  = $1
+          AND inducted_at >= DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC')
+          AND inducted_at <  DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC') + INTERVAL '1 day'
+        GROUP BY 1
+        ORDER BY 1
+        "#,
+    )
+    .bind(tenant_id.inner())
+    .fetch_all(&s.pool)
+    .await
+    .map_err(AppError::internal)?;
+
+    let buckets: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|r| {
+            let label = match r.h {
+                0       => "12AM".to_owned(),
+                1..=11  => format!("{}AM", r.h),
+                12      => "12PM".to_owned(),
+                _       => format!("{}PM", r.h - 12),
+            };
+            serde_json::json!({ "hour": label, "inducted": r.inducted, "sorted": r.sorted })
+        })
+        .collect();
+
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "buckets": buckets }))))
 }
 
 // ---------------------------------------------------------------------------
@@ -824,6 +883,7 @@ pub async fn run() -> anyhow::Result<()> {
         svc, containers: container_repo,
         consolidation_svc, hub_broadcaster,
         payments_url,
+        pool: pool.clone(),
     };
 
     let jwt_secret = std::env::var("AUTH__JWT_SECRET")
@@ -833,12 +893,13 @@ pub async fn run() -> anyhow::Result<()> {
     // Protected business routes — JWT required on all /v1/* endpoints.
     let protected = Router::new()
         // Hub management
-        .route("/v1/hubs",              get(list_hubs).post(create_hub))
-        .route("/v1/hubs/:id",          get(get_hub_by_id))
-        .route("/v1/hubs/:id/manifest", get(manifest))
-        .route("/v1/hubs/induct",       post(induct))
-        .route("/v1/hubs/sort",         post(sort))
-        .route("/v1/hubs/dispatch/:id", post(dispatch))
+        .route("/v1/hubs",                    get(list_hubs).post(create_hub))
+        .route("/v1/hubs/throughput/today",   get(throughput_today))
+        .route("/v1/hubs/:id",                get(get_hub_by_id))
+        .route("/v1/hubs/:id/manifest",       get(manifest))
+        .route("/v1/hubs/induct",             post(induct))
+        .route("/v1/hubs/sort",               post(sort))
+        .route("/v1/hubs/dispatch/:id",       post(dispatch))
         // Container departure — billing clearance guard before CONTAINER_DEPARTED event.
         .route("/v1/containers/:id/depart", axum::routing::put(depart_container))
         // Consolidation — truck specs

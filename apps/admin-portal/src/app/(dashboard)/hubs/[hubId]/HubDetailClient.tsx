@@ -233,11 +233,13 @@ export default function HubDetailClient({ hubId, token, initialTab }: Props) {
       setLoading(true);
       setLoadError(null);
       try {
+        if (!cancelled) setManifestLoading(true);
         const [hubData] = await Promise.all([
           hubsApi.get(hubId),
           hubsApi.manifest(hubId)
             .then((m) => { if (!cancelled) setManifest(m); })
-            .catch(() => {/* manifest may be 404 if hub has no active parcels */}),
+            .catch(() => {/* manifest may be 404 if hub has no active parcels */})
+            .finally(() => { if (!cancelled) setManifestLoading(false); }),
         ]);
         if (!cancelled) setHub(hubData);
       } catch (err: unknown) {
