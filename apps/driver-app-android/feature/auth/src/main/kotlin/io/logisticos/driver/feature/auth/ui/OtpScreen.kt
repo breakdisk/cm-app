@@ -16,7 +16,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
-import io.logisticos.driver.BuildConfig
+import io.logisticos.driver.feature.auth.BuildConfig
 import io.logisticos.driver.feature.auth.presentation.OtpViewModel
 import kotlinx.coroutines.delay
 
