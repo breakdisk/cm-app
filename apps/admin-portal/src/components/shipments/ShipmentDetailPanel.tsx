@@ -346,15 +346,18 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
       setPop(null);
       setPopError(null);
       try {
+        // Call via the Next.js server-side proxy (/api/pops) which reaches the
+        // pod service directly at http://pod:8011 on the internal Docker network,
+        // bypassing the API gateway entirely. Falls back to the gateway for
+        // local-dev environments where the 'pod' hostname is not resolvable.
         const res = await authFetch(
-          `${API_BASE}/v1/pops?shipment_id=${shipment.id}`
+          `/api/pops?shipment_id=${shipment.id}`
         );
-        // The pod service returns 200+{data:[]} when no POP exists — it never
-        // returns 404 from list_pops. A 404 here means the API gateway has no
-        // route registered for /v1/pops (stale deployment). Expose it as an
-        // error so ops can diagnose the routing gap immediately.
         if (res.status === 404) {
-          if (!cancelled) setPopError("POP route not found — redeploy the API gateway (services/api-gateway)");
+          // Should not happen via the proxy (pod service returns 200+{data:[]}
+          // when no POP exists). A 404 here means the proxy itself is missing
+          // (admin-portal not rebuilt) or both fallback paths failed.
+          if (!cancelled) setPopError("POP proxy route not found — rebuild and redeploy the admin portal");
           return;
         }
         if (!res.ok) {
