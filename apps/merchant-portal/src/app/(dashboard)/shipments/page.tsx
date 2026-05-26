@@ -13,7 +13,7 @@ import { NeonBadge, BadgeVariant } from "@/components/ui/neon-badge";
 import {
   Search, Download, Plus, Upload, X, Globe, Home,
   Ship, PlaneTakeoff, ArrowUpDown, ChevronLeft, ChevronRight, Check,
-  FileText, CheckCircle2, AlertCircle, ExternalLink, Copy, Share2, QrCode,
+  FileText, CheckCircle2, AlertCircle, ExternalLink, Copy, Share2, QrCode, Package,
 } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 import { authFetch } from "@/lib/auth/auth-fetch";
@@ -455,18 +455,46 @@ function BulkUploadModal({ onClose, onDone }: { onClose: () => void; onDone?: ()
 // ── Delivery receipt modal ────────────────────────────────────────────────────
 
 function DeliveryReceiptModal({ shipment, onClose }: { shipment: Shipment; onClose: () => void }) {
-  const [deliveredAt, setDeliveredAt] = useState<string | null>(null);
-  const [loading,     setLoading]     = useState(true);
-  const [copied,      setCopied]      = useState(false);
+  const [deliveredAt,   setDeliveredAt]   = useState<string | null>(null);
+  const [podPhotos,     setPodPhotos]     = useState<string[]>([]);
+  const [podSignature,  setPodSignature]  = useState<string | null>(null);
+  const [podRecipient,  setPodRecipient]  = useState<string | null>(null);
+  const [pickupAt,      setPickupAt]      = useState<string | null>(null);
+  const [popPhotoUrl,   setPopPhotoUrl]   = useState<string | null>(null);
+  const [loading,       setLoading]       = useState(true);
+  const [copied,        setCopied]        = useState(false);
 
   useEffect(() => {
-    authFetch(`${DELIVERY_EXPERIENCE_URL}/v1/tracking/${shipment.id}`)
+    const trackingFetch = authFetch(`${DELIVERY_EXPERIENCE_URL}/v1/tracking/${shipment.id}`)
       .then(r => r.ok ? r.json() : null)
       .then(json => {
-        if (json?.delivered_at) setDeliveredAt(json.delivered_at as string);
+        // Response shape: { data: LiveTrackingData } from the delivery-experience service.
+        const data = json?.data ?? json;
+        const pod  = data?.pod;
+        if (pod?.delivered_at)   setDeliveredAt(pod.delivered_at as string);
+        if (pod?.photo_urls?.length)  setPodPhotos(pod.photo_urls as string[]);
+        if (pod?.signature_url)  setPodSignature(pod.signature_url as string);
+        if (pod?.recipient_name) setPodRecipient(pod.recipient_name as string);
+        // Find the picked_up event to show a pickup timestamp.
+        const pickupEvent = (data?.events ?? []).find(
+          (e: { status: string; occurred_at: string }) => e.status === "picked_up"
+        );
+        if (pickupEvent?.occurred_at) setPickupAt(pickupEvent.occurred_at as string);
       })
-      .catch(() => {})
-      .finally(() => setLoading(false));
+      .catch(() => {});
+
+    // Fetch POP pickup photo from the POD service (same API gateway).
+    const popFetch = authFetch(`${ORDER_INTAKE_URL}/v1/pod/pops?shipment_id=${shipment.id}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(json => {
+        const pop = json?.data;
+        if (pop && typeof pop === "object" && !Array.isArray(pop) && (pop as Record<string, unknown>).photo_url) {
+          setPopPhotoUrl((pop as Record<string, unknown>).photo_url as string);
+        }
+      })
+      .catch(() => {});
+
+    Promise.all([trackingFetch, popFetch]).finally(() => setLoading(false));
   }, [shipment.id]);
 
   function copyAwb() {
@@ -507,7 +535,7 @@ function DeliveryReceiptModal({ shipment, onClose }: { shipment: Shipment; onClo
         </div>
 
         {/* Body */}
-        <div className="flex flex-col gap-4 px-6 py-6">
+        <div className="flex flex-col gap-4 px-6 py-6 max-h-[80vh] overflow-y-auto overscroll-contain">
           {/* AWB block */}
           <div className="flex flex-col items-center gap-3 rounded-2xl border border-green-signal/20 bg-glass-100 p-5">
             <div className="flex h-16 w-16 items-center justify-center rounded-xl border border-white/10 bg-white/5">
@@ -526,9 +554,10 @@ function DeliveryReceiptModal({ shipment, onClose }: { shipment: Shipment; onClo
           {/* Details */}
           <div className="rounded-xl border border-glass-border bg-glass-100 divide-y divide-glass-border">
             {[
-              { label: "Recipient",    value: shipment.recipient_name },
+              { label: "Recipient",    value: podRecipient ?? shipment.recipient_name },
               { label: "Destination",  value: shipment.destination    },
               { label: "Status",       value: "Delivered",   highlight: "text-green-signal" },
+              ...(pickupAt ? [{ label: "Picked Up",   value: new Date(pickupAt).toLocaleString("en-PH", { dateStyle: "medium", timeStyle: "short" }), highlight: "text-cyan-neon" }] : []),
               { label: "Delivered At", value: loading ? "Loading…" : deliveryDate },
               ...(shipment.cod_amount ? [{ label: "COD Collected", value: `₱${shipment.cod_amount.toLocaleString()}`, highlight: "text-amber-signal" }] : []),
             ].map(({ label, value, highlight }) => (
@@ -538,6 +567,60 @@ function DeliveryReceiptModal({ shipment, onClose }: { shipment: Shipment; onClo
               </div>
             ))}
           </div>
+
+          {/* Pickup Evidence */}
+          {(popPhotoUrl || pickupAt) && (
+            <div>
+              <p className="text-2xs font-mono text-white/30 uppercase tracking-wider mb-2">Pickup Evidence</p>
+              <div className="rounded-xl border border-glass-border bg-glass-100 overflow-hidden flex items-center gap-3 p-3">
+                {popPhotoUrl ? (
+                  <a href={popPhotoUrl} target="_blank" rel="noreferrer"
+                     className="flex-shrink-0 overflow-hidden rounded-lg border border-white/10 hover:opacity-80 transition-opacity">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={popPhotoUrl} alt="Pickup photo" className="h-20 w-20 object-cover" />
+                  </a>
+                ) : (
+                  <div className="flex h-20 w-20 flex-shrink-0 items-center justify-center rounded-lg border border-white/10"
+                       style={{ background: "rgba(0,229,255,0.06)" }}>
+                    <Package size={22} className="text-cyan-neon/40" />
+                  </div>
+                )}
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-white">Parcel Collected</p>
+                  {pickupAt && (
+                    <p className="text-xs font-mono text-white/50 mt-0.5">
+                      {new Date(pickupAt).toLocaleString("en-PH", { dateStyle: "medium", timeStyle: "short" })}
+                    </p>
+                  )}
+                  <p className="text-2xs font-mono text-white/25 mt-1">POP · barcode verified</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Delivery Evidence */}
+          {(podPhotos.length > 0 || podSignature) && (
+            <div>
+              <p className="text-2xs font-mono text-white/30 uppercase tracking-wider mb-2">Delivery Evidence</p>
+              <div className="grid grid-cols-2 gap-2">
+                {podPhotos.slice(0, 2).map((url, i) => (
+                  <a key={i} href={url} target="_blank" rel="noreferrer"
+                     className="overflow-hidden rounded-xl border border-white/10 hover:opacity-80 transition-opacity">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={url} alt={`Delivery photo ${i + 1}`} className="w-full h-28 object-cover" />
+                  </a>
+                ))}
+                {podSignature && (
+                  <a href={podSignature} target="_blank" rel="noreferrer"
+                     className="col-span-2 overflow-hidden rounded-xl border border-white/10 bg-white/5 flex items-center justify-center hover:opacity-80 transition-opacity"
+                     style={{ height: 80 }}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={podSignature} alt="Recipient signature" className="max-h-full max-w-full object-contain" />
+                  </a>
+                )}
+              </div>
+            </div>
+          )}
 
           <p className="text-2xs font-mono text-center text-white/25">
             POD captured by driver · verified via LogisticOS
