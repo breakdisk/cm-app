@@ -29,7 +29,7 @@ import {
 
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
-import { authFetch } from "@/lib/auth/auth-fetch";
+import { authFetch, basePathPrefix } from "@/lib/auth/auth-fetch";
 import {
   cancelShipment,
   rescheduleShipment,
@@ -346,18 +346,21 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
       setPop(null);
       setPopError(null);
       try {
-        // Call via the Next.js server-side proxy (/api/pops) which reaches the
-        // pod service directly at http://pod:8011 on the internal Docker network,
-        // bypassing the API gateway entirely. Falls back to the gateway for
-        // local-dev environments where the 'pod' hostname is not resolvable.
+        // /api/pops is a Next.js server-side proxy route that calls the pod
+        // service directly on the internal Docker network, bypassing the API
+        // gateway. Must be prefixed with basePathPrefix() (e.g. "/admin")
+        // because bare paths like "/api/pops" resolve to the document root —
+        // not the portal's basePath mount — and return 404. This mirrors the
+        // same basePath-awareness used by authFetch for /api/token.
         const res = await authFetch(
-          `/api/pops?shipment_id=${shipment.id}`
+          `${basePathPrefix()}/api/pops?shipment_id=${shipment.id}`
         );
         if (res.status === 404) {
-          // Should not happen via the proxy (pod service returns 200+{data:[]}
-          // when no POP exists). A 404 here means the proxy itself is missing
-          // (admin-portal not rebuilt) or both fallback paths failed.
-          if (!cancelled) setPopError("POP proxy route not found — rebuild and redeploy the admin portal");
+          // Should not happen: the proxy returns 502 if both upstream paths
+          // fail, and the pod service always returns 200+{data:[]} for an
+          // unknown shipment. 404 here means the portal image is outdated
+          // and doesn't include /api/pops — redeploy the admin portal.
+          if (!cancelled) setPopError("POP proxy route missing — redeploy the admin portal (image is outdated)");
           return;
         }
         if (!res.ok) {

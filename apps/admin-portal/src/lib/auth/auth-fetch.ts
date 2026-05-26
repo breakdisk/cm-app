@@ -21,7 +21,17 @@ const CLIENT_HEADER_VALUE = "web";
 let cachedTokenPromise: Promise<string | null> | null = null;
 let refreshInFlight: Promise<string | null> | null = null;
 
-function basePathPrefix(): string {
+/**
+ * Returns the Next.js basePath prefix for the current portal
+ * (e.g. "/admin", "/merchant", "/customer", "/partner").
+ *
+ * Exported so component code can prefix internal Next.js API route
+ * paths (e.g. `${basePathPrefix()}/api/pops?...`) — required because
+ * bare relative paths like `/api/pops` resolve to the document root,
+ * bypassing the basePath mount point and returning 404.
+ * Only meaningful on the client; returns "" during SSR.
+ */
+export function basePathPrefix(): string {
   // basePath is set in next.config — prefer the runtime-exposed value so
   // helpers work across all four portals without per-app edits.
   if (typeof window === "undefined") return "";
