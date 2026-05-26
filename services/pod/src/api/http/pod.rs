@@ -7,7 +7,13 @@ use logisticos_types::{DriverId, TenantId};
 use crate::{
     api::http::AppState,
     application::commands::*,
+    domain::entities::PopStatus,
 };
+
+#[derive(serde::Deserialize)]
+pub struct PopStatusQuery {
+    pub shipment_ids: Vec<Uuid>,
+}
 
 #[derive(serde::Deserialize)]
 pub struct PodQuery {
@@ -245,4 +251,36 @@ pub async fn list_pops(
         }
         None => Ok(Json(serde_json::json!({ "data": [] }))),
     }
+}
+
+/// `GET /v1/internal/pop-status?shipment_ids=<uuid>&shipment_ids=<uuid>...`
+///
+/// Internal service-to-service endpoint (no JWT — protected by Istio mTLS).
+/// Called by hub-ops before loading a pallet or loose piece into a container.
+///
+/// Returns per-shipment POP completion status. A POP is "completed" when its
+/// status is `Submitted`.
+pub async fn pop_status_internal(
+    Query(q): Query<PopStatusQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut statuses = Vec::with_capacity(q.shipment_ids.len());
+    let mut all_completed = true;
+
+    for shipment_id in &q.shipment_ids {
+        let pop = state.pod_service.get_pop_by_shipment(*shipment_id).await?;
+        let has_completed_pop = pop.map_or(false, |p| p.status == PopStatus::Submitted);
+        if !has_completed_pop {
+            all_completed = false;
+        }
+        statuses.push(serde_json::json!({
+            "shipment_id":       shipment_id,
+            "has_completed_pop": has_completed_pop,
+        }));
+    }
+
+    Ok(Json(serde_json::json!({
+        "statuses":      statuses,
+        "all_completed": all_completed,
+    })))
 }

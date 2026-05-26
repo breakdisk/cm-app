@@ -250,6 +250,134 @@ impl PgContainerRepository {
         }
         Ok(())
     }
+
+    async fn create(
+        &self,
+        id:                 Uuid,
+        tenant_id:          Uuid,
+        transport_mode:     &str,
+        origin_hub_id:      Uuid,
+        destination_hub_id: Uuid,
+        carrier_ref:        Option<&str>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"INSERT INTO hub_ops.containers
+               (id, tenant_id, transport_mode, carrier_ref, origin_hub_id, destination_hub_id,
+                status, master_awbs, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, $6, 'planning', '{}', NOW(), NOW())"#
+        )
+        .bind(id).bind(tenant_id).bind(transport_mode).bind(carrier_ref)
+        .bind(origin_hub_id).bind(destination_hub_id)
+        .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    async fn resolve_awbs_to_shipment_ids(&self, master_awbs: &[String]) -> anyhow::Result<Vec<Uuid>> {
+        if master_awbs.is_empty() { return Ok(vec![]); }
+        let rows: Vec<(Uuid,)> = sqlx::query_as(
+            "SELECT DISTINCT shipment_id FROM hub_ops.parcel_inductions WHERE tracking_number = ANY($1)"
+        ).bind(master_awbs).fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    async fn add_pallet(
+        &self,
+        container_id: Uuid,
+        pallet_id:    Uuid,
+        tenant_id:    Uuid,
+        master_awbs:  &[String],
+    ) -> anyhow::Result<()> {
+        let status: Option<(String,)> = sqlx::query_as(
+            "SELECT status FROM hub_ops.containers WHERE id = $1"
+        ).bind(container_id).fetch_optional(&self.pool).await?;
+
+        match status {
+            None => anyhow::bail!("Container {} not found", container_id),
+            Some((s,)) if matches!(s.as_str(), "in_transit" | "delivered" | "customs" | "released") => {
+                anyhow::bail!("Container {} is '{}' and cannot be modified", container_id, s);
+            }
+            _ => {}
+        }
+
+        let already_loaded: Option<(bool,)> = sqlx::query_as(
+            "SELECT true FROM hub_ops.container_pallets WHERE container_id = $1 AND pallet_id = $2"
+        ).bind(container_id).bind(pallet_id).fetch_optional(&self.pool).await?;
+        if already_loaded.is_some() {
+            anyhow::bail!("Pallet {} is already loaded in container {}", pallet_id, container_id);
+        }
+
+        sqlx::query(
+            "INSERT INTO hub_ops.container_pallets (container_id, pallet_id, tenant_id) VALUES ($1, $2, $3)"
+        ).bind(container_id).bind(pallet_id).bind(tenant_id).execute(&self.pool).await?;
+
+        if !master_awbs.is_empty() {
+            sqlx::query(
+                r#"UPDATE hub_ops.containers
+                   SET master_awbs = ARRAY(SELECT DISTINCT unnest(array_cat(master_awbs, $1::text[]))),
+                       updated_at  = NOW()
+                   WHERE id = $2"#
+            ).bind(master_awbs).bind(container_id).execute(&self.pool).await?;
+        }
+        Ok(())
+    }
+
+    async fn add_loose_piece(
+        &self,
+        container_id: Uuid,
+        tenant_id:    Uuid,
+        piece_awb:    &str,
+        master_awb:   &str,
+    ) -> anyhow::Result<()> {
+        let status: Option<(String,)> = sqlx::query_as(
+            "SELECT status FROM hub_ops.containers WHERE id = $1"
+        ).bind(container_id).fetch_optional(&self.pool).await?;
+
+        match status {
+            None => anyhow::bail!("Container {} not found", container_id),
+            Some((s,)) if matches!(s.as_str(), "in_transit" | "delivered" | "customs" | "released") => {
+                anyhow::bail!("Container {} is '{}' and cannot be modified", container_id, s);
+            }
+            _ => {}
+        }
+
+        sqlx::query(
+            "INSERT INTO hub_ops.container_loose_pieces (container_id, tenant_id, piece_awb) VALUES ($1, $2, $3)"
+        ).bind(container_id).bind(tenant_id).bind(piece_awb).execute(&self.pool).await?;
+
+        sqlx::query(
+            r#"UPDATE hub_ops.containers
+               SET master_awbs = CASE WHEN NOT ($1 = ANY(master_awbs))
+                                      THEN array_append(master_awbs, $1)
+                                      ELSE master_awbs END,
+                   updated_at  = NOW()
+               WHERE id = $2"#
+        ).bind(master_awb).bind(container_id).execute(&self.pool).await?;
+
+        Ok(())
+    }
+
+    async fn finalise(&self, container_id: Uuid) -> anyhow::Result<()> {
+        let has_pallet: Option<(bool,)> = sqlx::query_as(
+            "SELECT true FROM hub_ops.container_pallets WHERE container_id = $1 LIMIT 1"
+        ).bind(container_id).fetch_optional(&self.pool).await?;
+
+        let has_piece: Option<(bool,)> = sqlx::query_as(
+            "SELECT true FROM hub_ops.container_loose_pieces WHERE container_id = $1 LIMIT 1"
+        ).bind(container_id).fetch_optional(&self.pool).await?;
+
+        if has_pallet.is_none() && has_piece.is_none() {
+            anyhow::bail!("Container {} is empty — load at least one pallet or piece before finalising", container_id);
+        }
+
+        let affected = sqlx::query(
+            "UPDATE hub_ops.containers SET status = 'manifested', updated_at = NOW() WHERE id = $1 AND status = 'planning'"
+        ).bind(container_id).execute(&self.pool).await?.rows_affected();
+
+        if affected == 0 {
+            anyhow::bail!("Container {} cannot be finalised: not found or not in 'planning' status", container_id);
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -506,6 +634,55 @@ async fn check_billing_clearance(
 }
 
 // ---------------------------------------------------------------------------
+// POP status HTTP client
+// ---------------------------------------------------------------------------
+
+/// Calls pod service `GET /v1/internal/pop-status?shipment_ids=...`
+/// Returns (all_completed, shipment_ids_missing_pop).
+async fn check_pop_status(
+    pod_url:      &str,
+    shipment_ids: &[Uuid],
+) -> anyhow::Result<(bool, Vec<Uuid>)> {
+    if pod_url.is_empty() || shipment_ids.is_empty() {
+        return Ok((true, vec![]));
+    }
+
+    let client = reqwest::Client::new();
+    let qs: String = shipment_ids.iter()
+        .map(|id| format!("shipment_ids={id}"))
+        .collect::<Vec<_>>()
+        .join("&");
+
+    let url = format!("{pod_url}/v1/internal/pop-status?{qs}");
+
+    let resp = client.get(&url).send().await
+        .map_err(|e| anyhow::anyhow!("Failed to call pod pop-status: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        anyhow::bail!("Pod service pop-status returned HTTP {status}");
+    }
+
+    let body: serde_json::Value = resp.json().await
+        .map_err(|e| anyhow::anyhow!("Failed to parse pop-status response: {e}"))?;
+
+    let all_completed = body["all_completed"].as_bool().unwrap_or(true);
+    let mut missing_pop = vec![];
+
+    if let Some(statuses) = body["statuses"].as_array() {
+        for s in statuses {
+            if !s["has_completed_pop"].as_bool().unwrap_or(true) {
+                if let Some(sid) = s["shipment_id"].as_str().and_then(|s| s.parse().ok()) {
+                    missing_pop.push(sid);
+                }
+            }
+        }
+    }
+
+    Ok((all_completed, missing_pop))
+}
+
+// ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------
 
@@ -516,6 +693,7 @@ struct AppState {
     consolidation_svc: Arc<ConsolidationService>,
     hub_broadcaster:   HubBroadcaster,
     payments_url:      String,
+    pod_url:           String,
     /// Raw pool kept for ad-hoc analytical queries (e.g. throughput buckets)
     /// that don't fit neatly behind a domain repository trait.
     pool:              sqlx::PgPool,
@@ -610,6 +788,248 @@ async fn depart_container(
             "container_id": container_id,
             "status":       "in_transit",
             "departed_at":  chrono::Utc::now(),
+        })),
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// Container management handlers (create / load / finalise)
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct CreateContainerRequest {
+    /// "road" | "sea" | "air"
+    transport_mode:     String,
+    origin_hub_id:      Uuid,
+    destination_hub_id: Uuid,
+    carrier_ref:        Option<String>,
+}
+
+/// `POST /v1/containers` — create a new container in Planning state.
+async fn create_container_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Json(req): Json<CreateContainerRequest>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+
+    if !["road", "sea", "air"].contains(&req.transport_mode.as_str()) {
+        return Err(AppError::Validation(
+            "transport_mode must be 'road', 'sea', or 'air'".into(),
+        ));
+    }
+
+    let id = Uuid::new_v4();
+    s.containers.create(
+        id, claims.tenant_id, &req.transport_mode,
+        req.origin_hub_id, req.destination_hub_id,
+        req.carrier_ref.as_deref(),
+    ).await.map_err(AppError::internal)?;
+
+    tracing::info!(container_id = %id, transport = %req.transport_mode, "Container created");
+
+    Ok::<_, AppError>((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "container_id":       id,
+            "status":             "planning",
+            "transport_mode":     req.transport_mode,
+            "origin_hub_id":      req.origin_hub_id,
+            "destination_hub_id": req.destination_hub_id,
+            "carrier_ref":        req.carrier_ref,
+        })),
+    ))
+}
+
+#[derive(serde::Deserialize)]
+struct LoadPalletRequest {
+    pallet_id:   Uuid,
+    /// Master AWBs carried by this pallet — used to resolve shipment IDs for guards.
+    master_awbs: Vec<String>,
+}
+
+/// `POST /v1/containers/:id/load-pallet`
+///
+/// Billing clearance gate: blocks if any pallet AWB has an outstanding invoice.
+/// POP status gate: blocks if any shipment on the pallet is missing a completed POP.
+async fn load_pallet_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(container_id): Path<Uuid>,
+    Json(req): Json<LoadPalletRequest>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+
+    let shipment_ids = s.containers
+        .resolve_awbs_to_shipment_ids(&req.master_awbs)
+        .await
+        .map_err(AppError::internal)?;
+
+    if !s.payments_url.is_empty() && !shipment_ids.is_empty() {
+        let (all_cleared, blocked_shipments, unpaid_invoice_ids) =
+            check_billing_clearance(&s.payments_url, &shipment_ids).await
+                .map_err(AppError::internal)?;
+
+        if !all_cleared {
+            tracing::warn!(
+                container_id  = %container_id,
+                pallet_id     = %req.pallet_id,
+                blocked_count = %blocked_shipments.len(),
+                "Pallet load blocked — unpaid invoices outstanding"
+            );
+            return Ok::<_, AppError>((
+                StatusCode::PAYMENT_REQUIRED,
+                Json(serde_json::json!({
+                    "error":                "BILLING_CLEARANCE_REQUIRED",
+                    "message":              "Pallet cannot be loaded: some shipments have outstanding invoices.",
+                    "blocked_shipment_ids": blocked_shipments,
+                    "unpaid_invoice_ids":   unpaid_invoice_ids,
+                })),
+            ));
+        }
+    }
+
+    if !s.pod_url.is_empty() && !shipment_ids.is_empty() {
+        let (all_completed, missing_pop) =
+            check_pop_status(&s.pod_url, &shipment_ids).await
+                .map_err(AppError::internal)?;
+
+        if !all_completed {
+            tracing::warn!(
+                container_id = %container_id,
+                pallet_id    = %req.pallet_id,
+                missing_count = %missing_pop.len(),
+                "Pallet load blocked — POP not completed for some shipments"
+            );
+            return Ok::<_, AppError>((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({
+                    "error":                    "POP_REQUIRED",
+                    "message":                  "Pallet cannot be loaded: some shipments do not have a completed Proof of Pickup.",
+                    "shipment_ids_missing_pop": missing_pop,
+                })),
+            ));
+        }
+    }
+
+    s.containers
+        .add_pallet(container_id, req.pallet_id, claims.tenant_id, &req.master_awbs)
+        .await
+        .map_err(|e| AppError::BusinessRule(e.to_string()))?;
+
+    tracing::info!(
+        container_id = %container_id,
+        pallet_id    = %req.pallet_id,
+        awb_count    = req.master_awbs.len(),
+        "Pallet loaded into container"
+    );
+
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "container_id": container_id,
+            "pallet_id":    req.pallet_id,
+            "awbs_loaded":  req.master_awbs,
+        })),
+    ))
+}
+
+#[derive(serde::Deserialize)]
+struct LoadLoosePieceRequest {
+    piece_awb:  String,
+    master_awb: String,
+}
+
+/// `POST /v1/containers/:id/load-loose-piece`
+///
+/// Same billing clearance and POP guards as load-pallet, applied per-piece.
+async fn load_loose_piece_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(container_id): Path<Uuid>,
+    Json(req): Json<LoadLoosePieceRequest>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+
+    let shipment_ids = s.containers
+        .resolve_awbs_to_shipment_ids(&[req.master_awb.clone()])
+        .await
+        .map_err(AppError::internal)?;
+
+    if !s.payments_url.is_empty() && !shipment_ids.is_empty() {
+        let (all_cleared, blocked_shipments, unpaid_invoice_ids) =
+            check_billing_clearance(&s.payments_url, &shipment_ids).await
+                .map_err(AppError::internal)?;
+
+        if !all_cleared {
+            return Ok::<_, AppError>((
+                StatusCode::PAYMENT_REQUIRED,
+                Json(serde_json::json!({
+                    "error":                "BILLING_CLEARANCE_REQUIRED",
+                    "message":              "Piece cannot be loaded: shipment has outstanding invoices.",
+                    "blocked_shipment_ids": blocked_shipments,
+                    "unpaid_invoice_ids":   unpaid_invoice_ids,
+                })),
+            ));
+        }
+    }
+
+    if !s.pod_url.is_empty() && !shipment_ids.is_empty() {
+        let (all_completed, missing_pop) =
+            check_pop_status(&s.pod_url, &shipment_ids).await
+                .map_err(AppError::internal)?;
+
+        if !all_completed {
+            return Ok::<_, AppError>((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({
+                    "error":                    "POP_REQUIRED",
+                    "message":                  "Piece cannot be loaded: shipment does not have a completed Proof of Pickup.",
+                    "shipment_ids_missing_pop": missing_pop,
+                })),
+            ));
+        }
+    }
+
+    s.containers
+        .add_loose_piece(container_id, claims.tenant_id, &req.piece_awb, &req.master_awb)
+        .await
+        .map_err(|e| AppError::BusinessRule(e.to_string()))?;
+
+    tracing::info!(
+        container_id = %container_id,
+        piece_awb    = %req.piece_awb,
+        "Loose piece loaded into container"
+    );
+
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "container_id": container_id,
+            "piece_awb":    req.piece_awb,
+            "master_awb":   req.master_awb,
+        })),
+    ))
+}
+
+/// `POST /v1/containers/:id/finalise` — seal the manifest; no more loading after this.
+async fn finalise_manifest_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(container_id): Path<Uuid>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+
+    s.containers.finalise(container_id).await
+        .map_err(|e| AppError::BusinessRule(e.to_string()))?;
+
+    tracing::info!(container_id = %container_id, "Container manifest finalised");
+
+    Ok::<_, AppError>((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "container_id": container_id,
+            "status":       "manifested",
         })),
     ))
 }
@@ -885,10 +1305,11 @@ pub async fn run() -> anyhow::Result<()> {
         spec_repo, plan_repo, hub_broadcaster.clone(),
     ));
     let payments_url = cfg.payments.url.clone();
+    let pod_url      = cfg.pod.url.clone();
     let state = AppState {
         svc, containers: container_repo,
         consolidation_svc, hub_broadcaster,
-        payments_url,
+        payments_url, pod_url,
         pool: pool.clone(),
     };
 
@@ -906,8 +1327,12 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/v1/hubs/induct",             post(induct))
         .route("/v1/hubs/sort",               post(sort))
         .route("/v1/hubs/dispatch/:id",       post(dispatch))
-        // Container departure — billing clearance guard before CONTAINER_DEPARTED event.
-        .route("/v1/containers/:id/depart", axum::routing::put(depart_container))
+        // Container CRUD — create, load, finalise, depart (billing clearance + POP guard)
+        .route("/v1/containers",                      post(create_container_handler))
+        .route("/v1/containers/:id/load-pallet",      post(load_pallet_handler))
+        .route("/v1/containers/:id/load-loose-piece", post(load_loose_piece_handler))
+        .route("/v1/containers/:id/finalise",         post(finalise_manifest_handler))
+        .route("/v1/containers/:id/depart",           axum::routing::put(depart_container))
         // Consolidation — truck specs
         .route("/v1/consolidation/specs",     get(list_truck_specs).post(create_truck_spec))
         .route("/v1/consolidation/specs/:id", axum::routing::put(update_truck_spec))
