@@ -93,7 +93,36 @@ const TRIGGER_OPTIONS = [
   "Manual / Scheduled",
 ];
 
-/** Parse a recipients textarea into CampaignRecipient objects. */
+/** E.164 validation: must start with + followed by 8–15 digits. */
+function isValidE164(phone: string): boolean {
+  return /^\+[1-9]\d{7,14}$/.test(phone.trim());
+}
+
+/**
+ * SMS segment calculator.
+ * Any character outside the GSM-7 basic set (including emoji and most accented
+ * letters) forces UCS-2 encoding, which halves the per-segment capacity.
+ *   GSM-7  single: 160 chars   multi-part: 153 chars/segment
+ *   Unicode single:  70 chars   multi-part:  67 chars/segment
+ */
+function getSmsSegments(text: string): {
+  chars: number;
+  segments: number;
+  encoding: "GSM-7" | "Unicode";
+} {
+  const isUnicode = /[^\x00-\x7F£¥ÀÅÆÇÉØÜàäåæèéìñòöùü]/.test(text);
+  const singleMax = isUnicode ? 70  : 160;
+  const multiMax  = isUnicode ? 67  : 153;
+  const chars     = text.length;
+  const segments  = chars === 0 ? 0 : chars <= singleMax ? 1 : Math.ceil(chars / multiMax);
+  return { chars, segments, encoding: isUnicode ? "Unicode" : "GSM-7" };
+}
+
+/**
+ * Parse a recipients textarea into CampaignRecipient objects.
+ * WhatsApp / SMS support a "Name|+phone" pipe format for per-recipient names
+ * so {{customer_name}} substitutes correctly in the message body.
+ */
 function parseRecipients(raw: string, channel: Channel): CampaignRecipient[] {
   return raw
     .split(/[\n,]+/)
@@ -102,7 +131,14 @@ function parseRecipients(raw: string, channel: Channel): CampaignRecipient[] {
     .map((contact) => {
       if (channel === "email") return { email: contact };
       if (channel === "push")  return { customer_id: contact };
-      return { phone: contact }; // whatsapp / sms
+      // WhatsApp / SMS: support "Name|+63phone" or plain "+63phone"
+      const pipeIdx = contact.indexOf("|");
+      if (pipeIdx !== -1) {
+        const name  = contact.slice(0, pipeIdx).trim() || undefined;
+        const phone = contact.slice(pipeIdx + 1).trim();
+        return { phone, name };
+      }
+      return { phone: contact };
     });
 }
 
@@ -120,20 +156,33 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleFor,     setScheduleFor]     = useState("");
 
-  const charMax = channel === "sms" ? 160 : 1000;
-  const needsSubject = channel === "email" || channel === "push";
+  // SMS multi-part messages are valid — 1000 chars is ~6 segments, practical limit.
+  // The segment counter below the textarea handles billing transparency.
+  const charMax = 1000;
+  const needsSubject   = channel === "email" || channel === "push";
+  const isPhoneChannel = channel === "whatsapp" || channel === "sms";
+
+  // Derived — recomputed on every keystroke, cheap.
+  const parsedList    = parseRecipients(recipients, channel);
+  const invalidPhones = isPhoneChannel
+    ? parsedList.filter((r) => r.phone && !isValidE164(r.phone))
+    : [];
+  const hasInvalidPhones = invalidPhones.length > 0;
+  const smsInfo = channel === "sms" ? getSmsSegments(message) : null;
 
   const recipientPlaceholder =
-    channel === "email" ? "juan@example.com\nmaria@example.com"
-    : channel === "push"  ? "customer-uuid-1\ncustomer-uuid-2"
-    : "+63912345678\n+63917654321";
+    channel === "email"
+      ? "juan@example.com\nmaria@example.com"
+      : channel === "push"
+      ? "customer-uuid-1\ncustomer-uuid-2"
+      : "Juan Dela Cruz|+63912345678\nMaria Santos|+63917654321";
 
   async function handleCreate() {
     if (!name.trim() || !message.trim()) return;
     setSaving(true);
     setError(null);
     try {
-      const parsedRecipients = parseRecipients(recipients, channel);
+      const parsedRecipients = parsedList;
       // Marketing service's CreateCampaignCommand shape: name, description,
       // channel, template{template_id, subject?, variables}, targeting.
       // The `trigger` drop-down is a UX label and is stored as description
@@ -235,6 +284,18 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
               </div>
             </div>
 
+            {/* WhatsApp sandbox notice */}
+            {channel === "whatsapp" && (
+              <div className="flex items-start gap-2.5 rounded-xl border border-green-signal/20 bg-green-signal/5 px-3.5 py-2.5">
+                <MessageSquare size={13} className="mt-0.5 shrink-0 text-green-signal/70" />
+                <p className="text-2xs text-white/40 leading-relaxed">
+                  <span className="text-green-signal/80 font-medium">Twilio Sandbox:</span>{" "}
+                  Recipients must opt-in by texting <span className="font-mono text-white/60">join &lt;keyword&gt;</span> to your sandbox number before they can receive messages.
+                  Freeform messages only — Meta HSM templates are not yet supported.
+                </p>
+              </div>
+            )}
+
             {/* Trigger */}
             <div>
               <label className="mb-1.5 block text-xs font-medium text-white/50">Trigger</label>
@@ -289,20 +350,39 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
             <div>
               <div className="mb-1.5 flex items-center justify-between">
                 <label className="text-xs font-medium text-white/50">Message</label>
-                <span className={`text-2xs font-mono ${message.length > charMax ? "text-red-signal" : "text-white/25"}`}>
-                  {message.length}/{charMax}
-                </span>
+                {/* SMS: show segment count; others: simple char counter */}
+                {smsInfo ? (
+                  <span className={`text-2xs font-mono ${message.length > charMax ? "text-red-signal" : "text-white/25"}`}>
+                    {smsInfo.chars} chars · {smsInfo.segments} segment{smsInfo.segments !== 1 ? "s" : ""}
+                    {smsInfo.encoding === "Unicode" && <span className="ml-1 text-amber-signal/70">(Unicode)</span>}
+                  </span>
+                ) : (
+                  <span className={`text-2xs font-mono ${message.length > charMax ? "text-red-signal" : "text-white/25"}`}>
+                    {message.length}/{charMax}
+                  </span>
+                )}
               </div>
               <textarea
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
                 rows={4}
-                placeholder={`Hi {{name}}, your order {{awb}} has been delivered! 🎉\n\nBook your next shipment and get 10% off.`}
+                placeholder={
+                  isPhoneChannel
+                    ? "Hi {{customer_name}}, your package is on its way!\n\nReply STOP to opt out."
+                    : "Hi {{customer_name}}, your order has been delivered! 🎉\n\nBook your next shipment and get 10% off."
+                }
                 className="w-full resize-none rounded-xl border border-glass-border bg-glass-100 px-3.5 py-2.5 text-sm text-white placeholder-white/15 outline-none focus:border-purple-plasma/50 transition-colors font-mono"
               />
               <p className="mt-1 text-2xs text-white/25">
-                Variables: {'{{name}}'}, {'{{awb}}'}, {'{{eta}}'}, {'{{cod_amount}}'}
+                {isPhoneChannel ? (
+                  <>{'{{customer_name}}'} · {'{{name}}'} · {'{{phone}}'}</>
+                ) : (
+                  <>{'{{customer_name}}'} · {'{{name}}'}</>
+                )}
                 {channel === "email" && <span className="ml-2 text-purple-plasma/60">· Supports HTML</span>}
+                {channel === "sms" && smsInfo && smsInfo.segments > 1 && (
+                  <span className="ml-2 text-amber-signal/60">· {smsInfo.segments} segments = {smsInfo.segments}× billing</span>
+                )}
               </p>
             </div>
 
@@ -311,8 +391,9 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
               <div className="mb-1.5 flex items-center justify-between">
                 <label className="text-xs font-medium text-white/50">Recipients</label>
                 {recipients.trim() && (
-                  <span className="text-2xs font-mono text-white/30">
-                    {parseRecipients(recipients, channel).length} recipient{parseRecipients(recipients, channel).length !== 1 ? "s" : ""}
+                  <span className={`text-2xs font-mono ${hasInvalidPhones ? "text-red-signal" : "text-white/30"}`}>
+                    {parsedList.length} recipient{parsedList.length !== 1 ? "s" : ""}
+                    {hasInvalidPhones && ` · ${invalidPhones.length} invalid`}
                   </span>
                 )}
               </div>
@@ -321,13 +402,30 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
                 onChange={(e) => setRecipients(e.target.value)}
                 rows={3}
                 placeholder={recipientPlaceholder}
-                className="w-full resize-none rounded-xl border border-glass-border bg-glass-100 px-3.5 py-2.5 text-sm text-white placeholder-white/15 outline-none focus:border-cyan-neon/50 transition-colors font-mono"
+                className={`w-full resize-none rounded-xl border bg-glass-100 px-3.5 py-2.5 text-sm text-white placeholder-white/15 outline-none transition-colors font-mono ${
+                  hasInvalidPhones
+                    ? "border-red-signal/40 focus:border-red-signal/70"
+                    : "border-glass-border focus:border-cyan-neon/50"
+                }`}
               />
+              {/* Per-channel help text */}
               <p className="mt-1 text-2xs text-white/25">
-                {channel === "email" ? "One email per line (or comma-separated)"
-                : channel === "push"  ? "One customer UUID per line"
-                : "One phone number per line in E.164 format (+63...)"}
+                {channel === "email"
+                  ? "One email address per line (or comma-separated)."
+                  : channel === "push"
+                  ? "One customer UUID per line."
+                  : <>
+                      <span className="text-white/40">Name|+63phone</span> or just <span className="text-white/40">+63phone</span> per line —
+                      name powers <span className="font-mono">{"{{"}<span>customer_name</span>{"}}"}</span> in the message body.
+                    </>}
               </p>
+              {/* Inline E.164 error */}
+              {hasInvalidPhones && (
+                <p className="mt-1.5 rounded-lg border border-red-signal/25 bg-red-signal/8 px-2.5 py-1.5 text-2xs text-red-signal font-mono">
+                  {invalidPhones.length} number{invalidPhones.length !== 1 ? "s" : ""} not in E.164 format —
+                  must start with + and country code (e.g. +63912345678).
+                </p>
+              )}
             </div>
 
             {/* Schedule for later */}
@@ -383,7 +481,7 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
               </button>
               <button
                 onClick={handleCreate}
-                disabled={!name.trim() || !message.trim() || message.length > charMax || saving || (scheduleEnabled && !scheduleFor) || (needsSubject && !subject.trim())}
+                disabled={!name.trim() || !message.trim() || message.length > charMax || saving || (scheduleEnabled && !scheduleFor) || (needsSubject && !subject.trim()) || hasInvalidPhones}
                 className="flex items-center gap-2 rounded-lg px-5 py-2 text-sm font-semibold text-white transition-all disabled:opacity-40"
                 style={{ background: "linear-gradient(135deg, #A855F7, #00E5FF)" }}
               >

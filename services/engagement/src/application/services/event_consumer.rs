@@ -635,9 +635,27 @@ pub async fn handle_campaign_triggered(
             }
         };
 
-        // Build template variables — substitute the recipient's name.
+        // Build template variables.
+        // - {{customer_name}} and {{name}} are always available (fallback "Customer").
+        //   Both keys map to the same value so merchants can use either placeholder.
+        // - {{phone}} is injected for whatsapp/sms channels when the recipient has a
+        //   non-empty phone string, letting templates include the customer's number.
+        // The var_names list must match exactly the keys present in vars_map so that
+        // render() — which errors on any declared-but-missing variable — stays safe.
         let customer_name = r["name"].as_str().unwrap_or("Customer");
-        let vars = serde_json::json!({ "customer_name": customer_name });
+        let mut vars_map = serde_json::json!({
+            "customer_name": customer_name,
+            "name":          customer_name,
+        });
+        let mut var_names = vec!["customer_name".to_owned(), "name".to_owned()];
+
+        if (channel_str == "whatsapp" || channel_str == "sms") {
+            if let Some(phone_str) = r["phone"].as_str().filter(|s| !s.is_empty()) {
+                vars_map["phone"] = serde_json::Value::String(phone_str.to_owned());
+                var_names.push("phone".to_owned());
+            }
+        }
+        let vars = vars_map;
 
         let template = NotificationTemplate {
             id:          uuid::Uuid::new_v4(),
@@ -647,7 +665,7 @@ pub async fn handle_campaign_triggered(
             language:    "en".into(),
             subject:     subject.clone(),
             body:        body.clone(),
-            variables:   vec!["customer_name".to_owned()],
+            variables:   var_names,
             is_active:   true,
         };
 

@@ -20,6 +20,9 @@ impl Default for CampaignId {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Channel {
+    /// Serialises as "whatsapp". The alias "whats_app" handles any records
+    /// written before this fix (serde snake_case was splitting on the capital A).
+    #[serde(rename = "whatsapp", alias = "whats_app")]
     WhatsApp,
     Sms,
     Email,
