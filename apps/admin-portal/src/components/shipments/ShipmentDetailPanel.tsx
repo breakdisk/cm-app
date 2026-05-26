@@ -349,8 +349,12 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
         const res = await authFetch(
           `${API_BASE}/v1/pops?shipment_id=${shipment.id}`
         );
+        // The pod service returns 200+{data:[]} when no POP exists — it never
+        // returns 404 from list_pops. A 404 here means the API gateway has no
+        // route registered for /v1/pops (stale deployment). Expose it as an
+        // error so ops can diagnose the routing gap immediately.
         if (res.status === 404) {
-          if (!cancelled) setPop(null);
+          if (!cancelled) setPopError("POP route not found — redeploy the API gateway (services/api-gateway)");
           return;
         }
         if (!res.ok) {
@@ -360,6 +364,8 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
         if (!cancelled) {
           const payload = json?.data;
           if (Array.isArray(payload) && payload.length === 0) {
+            // No POP submitted yet — valid state (e.g. pickup pending, or legacy
+            // shipments created before POP feature shipped).
             setPop(null);
           } else if (payload && typeof payload === "object" && "pop_id" in payload) {
             setPop(payload as PopData);
