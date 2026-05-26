@@ -1,6 +1,7 @@
 package io.logisticos.driver.navigation
 
 import android.app.Activity
+import android.content.Intent
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.*
@@ -142,10 +143,17 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                         shiftNavController.navigate(COMPLIANCE_ROUTE)
                     },
                     onLogout = {
-                        // vm.logout() clears the JWT/session; recreate() tears down all
-                        // ViewModels and WorkManager workers so no stale state remains.
+                        // Clear session then restart the Activity with CLEAR_TASK so the
+                        // NavController's saved back-stack Bundle is discarded. recreate()
+                        // preserves the Bundle (treated as a rotation) and the NavHost would
+                        // restore to shift_scaffold instead of AUTH_GRAPH, leaving all API
+                        // calls unauthenticated and causing infinite spinners.
                         vm.logout()
-                        (context as? Activity)?.recreate()
+                        val intent = Intent(context, io.logisticos.driver.MainActivity::class.java).apply {
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+                        }
+                        context.startActivity(intent)
+                        (context as? Activity)?.finish()
                     },
                     viewModel = vm
                 )
