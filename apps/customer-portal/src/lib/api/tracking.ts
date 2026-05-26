@@ -46,9 +46,14 @@ export interface TrackingData {
   destination_city: string;
   merchant_name?: string;
   events: TrackingEvent[];
+  /** POP evidence — present once the driver has completed pickup */
+  pop?: {
+    photo_url?: string;
+  };
   pod?: {
     delivered_at: string;
     photo_urls?: string[];
+    recipient_name?: string;
   };
 }
 

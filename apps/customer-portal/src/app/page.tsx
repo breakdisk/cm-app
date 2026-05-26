@@ -26,6 +26,15 @@ interface TrackingResult {
   driver_name?:    string;
   driver_lat?:     number;
   driver_lng?:     number;
+  pop?: {
+    picked_up_at: string;
+    photo_url?:   string;
+  };
+  pod?: {
+    delivered_at: string;
+    photo_urls:   string[];
+    recipient_name?: string;
+  };
 }
 
 // ── API ───────────────────────────────────────────────────────────────────────
@@ -41,6 +50,10 @@ async function fetchTracking(tn: string): Promise<TrackingResult | null> {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
     const d = json.data;
+    // Find the picked_up event to surface as POP evidence on the tracking page.
+    const events: Array<{ status: string; description: string; location?: string; occurred_at: string }> = d.events ?? [];
+    const pickupEvent = events.find((e) => e.status === "picked_up");
+
     return {
       tracking_number:   d.tracking_number,
       status:            d.status,
@@ -50,12 +63,21 @@ async function fetchTracking(tn: string): Promise<TrackingResult | null> {
       driver_name:       d.driver?.name,
       driver_lat:        d.driver?.lat,
       driver_lng:        d.driver?.lng,
-      timeline:          (d.events ?? []).map((e: { status: string; description: string; location?: string; occurred_at: string }) => ({
+      timeline:          events.map((e) => ({
         status:      e.status,
         description: e.description,
         location:    e.location,
         occurred_at: e.occurred_at,
       })),
+      pop: pickupEvent ? {
+        picked_up_at: pickupEvent.occurred_at,
+        photo_url:    d.pop?.photo_url as string | undefined,
+      } : undefined,
+      pod: d.pod ? {
+        delivered_at:   d.pod.delivered_at,
+        photo_urls:     Array.isArray(d.pod.photo_urls) ? d.pod.photo_urls : [],
+        recipient_name: d.pod.recipient_name as string | undefined,
+      } : undefined,
     };
   } catch {
     return null;
@@ -182,6 +204,74 @@ function TrackingCard({ result }: { result: TrackingResult }) {
           <TimelineStep key={i} event={event} isLast={i === result.timeline.length - 1} />
         ))}
       </div>
+
+      {/* Pickup Evidence — shown once parcel has been collected */}
+      {result.pop && (
+        <div className="px-6 pb-2">
+          <p className="text-xs font-mono uppercase tracking-widest text-white/30 mb-3">Pickup Confirmation</p>
+          <div
+            className="rounded-xl border p-4 flex items-start gap-4"
+            style={{ background: "rgba(0,229,255,0.05)", borderColor: "rgba(0,229,255,0.15)" }}
+          >
+            {result.pop.photo_url ? (
+              <a href={result.pop.photo_url} target="_blank" rel="noreferrer"
+                 className="flex-shrink-0 overflow-hidden rounded-lg border border-white/10 hover:opacity-80 transition-opacity">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={result.pop.photo_url} alt="Pickup photo" className="h-20 w-20 object-cover" />
+              </a>
+            ) : (
+              <div className="flex h-20 w-20 flex-shrink-0 items-center justify-center rounded-lg border border-white/10"
+                   style={{ background: "rgba(0,229,255,0.08)" }}>
+                <Package size={24} style={{ color: "#00E5FF" }} />
+              </div>
+            )}
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-white">Parcel Collected</p>
+              <p className="text-xs text-white/40 mt-0.5">
+                {new Date(result.pop.picked_up_at).toLocaleString("en-PH", {
+                  dateStyle: "medium", timeStyle: "short",
+                })}
+              </p>
+              <p className="text-2xs font-mono text-white/25 mt-1">
+                Custody opened — in transit to hub
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delivery Evidence — shown when delivered with POD photos */}
+      {result.status === "delivered" && result.pod && (
+        <div className="px-6 pb-2">
+          <p className="text-xs font-mono uppercase tracking-widest text-white/30 mb-3">Delivery Evidence</p>
+          {result.pod.photo_urls.length > 0 ? (
+            <div className="grid grid-cols-2 gap-2">
+              {result.pod.photo_urls.slice(0, 4).map((url, i) => (
+                <a key={i} href={url} target="_blank" rel="noreferrer"
+                   className="overflow-hidden rounded-xl border border-white/10 hover:opacity-80 transition-opacity">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={url} alt={`Delivery photo ${i + 1}`} className="w-full h-32 object-cover" />
+                </a>
+              ))}
+            </div>
+          ) : (
+            <div className="flex h-24 items-center justify-center rounded-xl border border-white/08"
+                 style={{ background: "rgba(0,255,136,0.04)" }}>
+              <CheckCircle2 size={20} style={{ color: "#00FF88", opacity: 0.4 }} />
+            </div>
+          )}
+          {result.pod.recipient_name && (
+            <p className="text-2xs font-mono text-white/30 mt-2 text-center">
+              Received by {result.pod.recipient_name}
+            </p>
+          )}
+          {!result.pod.recipient_name && (
+            <p className="text-2xs font-mono text-white/25 mt-2 text-center">
+              Photos captured by driver at delivery · verified by LogisticOS
+            </p>
+          )}
+        </div>
+      )}
 
       {/* CTA row */}
       <div className="px-6 pb-6 flex gap-3">
