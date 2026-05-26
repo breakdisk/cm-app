@@ -2,7 +2,6 @@ package io.logisticos.driver.feature.pickup.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -40,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
@@ -47,7 +47,6 @@ import io.logisticos.driver.core.common.ImageCompressor
 import io.logisticos.driver.core.database.entity.TaskType
 import io.logisticos.driver.feature.pickup.presentation.PickupViewModel
 import java.io.File
-import java.io.FileOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -465,21 +464,25 @@ fun PickupScreen(
 
         Spacer(Modifier.height(16.dp))
 
-        // Photo section — system camera launcher returns a thumbnail Bitmap.
+        // Photo section — TakePicture writes a full-resolution JPEG via FileProvider URI,
+        // matching PodScreen.kt's pattern. TakePicturePreview was retired because it
+        // returns a low-res thumbnail and returns null on many modern Android devices
+        // (Samsung One UI, Pixel 6+), causing POP records to be submitted without a photo.
         //
-        // CAMERA runtime permission is required before launching ACTION_IMAGE_CAPTURE
+        // CAMERA runtime permission is required before launching the system camera
         // because the manifest declares <uses-permission android:name=".CAMERA"/>.
-        // Without the grant, Samsung's One UI camera throws SecurityException mid-launch
-        // and crashes the activity (observed on stagingDebug build #34, Galaxy device).
         val photoScope = rememberCoroutineScope()
+        val photoFile = remember(taskId) { File(context.filesDir, "pickup_${taskId}.jpg") }
+        val photoUri = remember(taskId) {
+            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", photoFile)
+        }
         val cameraLauncher = rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.TakePicturePreview(),
-        ) { bitmap: Bitmap? ->
-            if (bitmap != null) {
-                val file = File(context.filesDir, "pickup_${taskId}.jpg")
+            contract = ActivityResultContracts.TakePicture()
+        ) { success ->
+            if (success) {
                 photoScope.launch(Dispatchers.IO) {
-                    ImageCompressor.compressBitmapToFile(bitmap, file)
-                    withContext(Dispatchers.Main) { viewModel.onPhotoCaptured(file.absolutePath) }
+                    ImageCompressor.compressToFile(photoFile)
+                    withContext(Dispatchers.Main) { viewModel.onPhotoCaptured(photoFile.absolutePath) }
                 }
             }
         }
@@ -490,10 +493,10 @@ fun PickupScreen(
             ActivityResultContracts.RequestPermission()
         ) { granted ->
             cameraPermissionGranted = granted
-            if (granted) cameraLauncher.launch(null)
+            if (granted) cameraLauncher.launch(photoUri)
         }
         val launchPhotoCapture: () -> Unit = {
-            if (cameraPermissionGranted) cameraLauncher.launch(null)
+            if (cameraPermissionGranted) cameraLauncher.launch(photoUri)
             else photoCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
         }
 
