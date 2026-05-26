@@ -63,8 +63,8 @@ impl ProxyClient {
         // Carrier Management
         } else if path.starts_with("/v1/carriers") {
             Some(&self.services.carrier_url)
-        // Proof of Delivery (includes /otps for recipient OTP verification)
-        } else if path.starts_with("/v1/pod") || path.starts_with("/v1/otps") {
+        // Proof of Delivery + Proof of Pickup (includes /otps for recipient OTP verification)
+        } else if path.starts_with("/v1/pod") || path.starts_with("/v1/pops") || path.starts_with("/v1/otps") {
             Some(&self.services.pod_url)
         // Payments & Invoices (includes /wallet for customer app)
         } else if path.starts_with("/v1/payments") || path.starts_with("/v1/invoices") || path.starts_with("/v1/wallet") || path.starts_with("/v1/cod") {
