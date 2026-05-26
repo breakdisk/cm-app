@@ -773,6 +773,10 @@ services:
         condition: service_healthy
     networks:
       - logisticos
+      # dokploy-network lets the admin-portal Next.js container reach pod
+      # directly at http://logisticos-pod:8011, bypassing the API gateway.
+      # This is the resolution path for the /api/pops server-side proxy route.
+      - dokploy-network
     healthcheck:
       test:
         - CMD-SHELL

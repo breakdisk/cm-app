@@ -10,23 +10,28 @@ import { COOKIE_LOS_ACCESS } from "@/lib/auth/los-cookies";
  * go through the API gateway. If the gateway is running a stale Docker image
  * that pre-dates the /v1/pops routing fix, every POP request returns 404.
  *
- * This Next.js API route runs *server-side*, inside the same Docker network as
- * the backend services. It reaches the pod service at `http://pod:8011`
- * directly — no gateway required. The JWT is read from the httpOnly access
- * cookie (same source as /api/token) and forwarded as `Authorization: Bearer`.
+ * This Next.js API route runs *server-side* and reaches the pod service
+ * directly on the shared `dokploy-network` Docker network — no gateway
+ * required. The JWT is read from the httpOnly access cookie (same source as
+ * /api/token) and forwarded as `Authorization: Bearer`.
+ *
+ * Network topology
+ * ────────────────
+ * The pod service is on both the internal `logisticos` compose network AND the
+ * shared `dokploy-network` (see docker-compose.yml). Within `dokploy-network`,
+ * Docker resolves containers by their `container_name`, not their compose
+ * service name — so the correct hostname is `logisticos-pod`, not `pod`.
  *
  * Fallback chain
  * ──────────────
- * 1. Pod service directly  → POD_INTERNAL_URL  (default: http://pod:8011)
+ * 1. Pod service directly  → POD_INTERNAL_URL  (default: http://logisticos-pod:8011)
+ *    Works whenever the pod container is running on dokploy-network.
  * 2. API gateway           → INTERNAL_GATEWAY_URL or NEXT_PUBLIC_API_URL
- *    (handles local-dev without Docker where 'pod' hostname is not resolvable)
- *
- * Once the API gateway is redeployed with the /v1/pops routing, the gateway
- * fallback also works — but the direct path is always preferred for latency.
+ *    Works for local-dev without Docker, or after gateway image is updated.
  */
 
 const POD_INTERNAL_URL =
-  process.env.POD_INTERNAL_URL ?? "http://pod:8011";
+  process.env.POD_INTERNAL_URL ?? "http://logisticos-pod:8011";
 
 const GATEWAY_URL =
   process.env.INTERNAL_GATEWAY_URL ??
