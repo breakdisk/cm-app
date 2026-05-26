@@ -32,6 +32,15 @@ class TokenAuthenticator @Inject constructor(
 
         return runBlocking {
             refreshMutex.withLock {
+                // Re-check after acquiring the mutex: a concurrent logout may have cleared
+                // the session while we were waiting for the lock. Proceeding with a null
+                // refresh token would trigger another network call that would itself receive
+                // a 401, re-enter authenticate(), and deadlock the OkHttp dispatcher.
+                if (sessionManager.getRefreshToken() == null) {
+                    sessionManager.clearSession()
+                    return@runBlocking null
+                }
+
                 // Check if another coroutine already refreshed the token while we waited
                 val currentJwt = sessionManager.getJwt()
                 val requestJwt = response.request.header("Authorization")

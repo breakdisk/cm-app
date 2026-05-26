@@ -8,7 +8,9 @@ import io.logisticos.driver.feature.auth.data.AuthRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import javax.inject.Inject
 
 data class PhoneUiState(
@@ -118,9 +120,13 @@ class PhoneViewModel @Inject constructor(
             viewModelScope.launch {
                 _uiState.update { it.copy(isLoading = true, error = null) }
                 try {
-                    repo.sendOtp(email = email, tenantSlug = slug)
-                        .onSuccess { _uiState.update { it.copy(isLoading = false, otpSent = true) } }
-                        .onFailure { e -> _uiState.update { it.copy(isLoading = false, error = e.message ?: "Something went wrong") } }
+                    withTimeout(25_000L) {
+                        repo.sendOtp(email = email, tenantSlug = slug)
+                            .onSuccess { _uiState.update { it.copy(isLoading = false, otpSent = true) } }
+                            .onFailure { e -> _uiState.update { it.copy(isLoading = false, error = e.message ?: "Something went wrong") } }
+                    }
+                } catch (e: TimeoutCancellationException) {
+                    _uiState.update { it.copy(isLoading = false, error = "Request timed out. Please try again.") }
                 } finally {
                     _uiState.update { if (it.isLoading) it.copy(isLoading = false) else it }
                 }
@@ -134,9 +140,13 @@ class PhoneViewModel @Inject constructor(
             viewModelScope.launch {
                 _uiState.update { it.copy(isLoading = true, error = null) }
                 try {
-                    repo.sendOtp(phone = phone, tenantSlug = slug)
-                        .onSuccess { _uiState.update { it.copy(isLoading = false, otpSent = true) } }
-                        .onFailure { e -> _uiState.update { it.copy(isLoading = false, error = e.message ?: "Something went wrong") } }
+                    withTimeout(25_000L) {
+                        repo.sendOtp(phone = phone, tenantSlug = slug)
+                            .onSuccess { _uiState.update { it.copy(isLoading = false, otpSent = true) } }
+                            .onFailure { e -> _uiState.update { it.copy(isLoading = false, error = e.message ?: "Something went wrong") } }
+                    }
+                } catch (e: TimeoutCancellationException) {
+                    _uiState.update { it.copy(isLoading = false, error = "Request timed out. Please try again.") }
                 } finally {
                     _uiState.update { if (it.isLoading) it.copy(isLoading = false) else it }
                 }

@@ -4,6 +4,7 @@ import io.logisticos.driver.core.network.auth.SessionManager
 import io.logisticos.driver.core.network.service.IdentityApiService
 import io.logisticos.driver.core.network.service.OtpSendRequest
 import io.logisticos.driver.core.network.service.OtpVerifyRequest
+import okhttp3.OkHttpClient
 import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Singleton
@@ -12,6 +13,10 @@ import javax.inject.Singleton
 class AuthRepository @Inject constructor(
     private val apiService: IdentityApiService,
     private val sessionManager: SessionManager,
+    /** Shared OkHttpClient — used on logout to cancel all in-flight requests so
+     *  that pending TokenAuthenticator.runBlocking calls don't deadlock the
+     *  OkHttp dispatcher and prevent the next sendOtp call from being dispatched. */
+    private val okHttpClient: OkHttpClient,
     /** True only in debug builds — gates the 123456 OTP shortcut for local development. */
     @Named("dev_bypass_enabled") private val devBypassEnabled: Boolean,
 ) {
@@ -81,5 +86,26 @@ class AuthRepository @Inject constructor(
 
     fun isLoggedIn(): Boolean = sessionManager.isLoggedIn()
     fun isOfflineModeActive(): Boolean = sessionManager.isOfflineModeActive()
-    fun logout() = sessionManager.clearSession()
+
+    /**
+     * Logs the driver out.
+     *
+     * Cancels ALL in-flight OkHttp calls BEFORE clearing the session.
+     * This is critical to prevent a post-logout spinner deadlock:
+     *
+     *   1. Background calls (location updates, sync) that received a 401 enter
+     *      TokenAuthenticator.authenticate() → runBlocking { refreshMutex.withLock { ... } }.
+     *   2. Inside runBlocking, they enqueue a refreshToken() HTTP call through the
+     *      SAME OkHttp dispatcher.
+     *   3. If maxRequestsPerHost (default 5) slots are all occupied by step-1 threads,
+     *      the refresh calls queue forever — and so does the next sendOtp request.
+     *
+     * Calling dispatcher.cancelAll() causes the in-progress socket reads to throw
+     * IOException immediately, unwinding the runBlocking blocks and freeing the slots
+     * before the new Activity's sendOtp call is enqueued.
+     */
+    fun logout() {
+        okHttpClient.dispatcher.cancelAll()
+        sessionManager.clearSession()
+    }
 }

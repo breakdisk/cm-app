@@ -34,6 +34,7 @@ import io.logisticos.driver.feature.profile.ui.ComplianceScreen
 import io.logisticos.driver.feature.profile.ui.ProfileScreen
 import io.logisticos.driver.feature.route.presentation.RouteViewModel
 import io.logisticos.driver.feature.route.ui.RouteScreen
+import io.logisticos.driver.core.location.LocationForegroundService
 import io.logisticos.driver.feature.scanner.ui.ScannerScreen
 
 // ── Route constants ───────────────────────────────────────────────────────────
@@ -143,12 +144,20 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                         shiftNavController.navigate(COMPLIANCE_ROUTE)
                     },
                     onLogout = {
-                        // Clear session then restart the Activity with CLEAR_TASK so the
-                        // NavController's saved back-stack Bundle is discarded. recreate()
-                        // preserves the Bundle (treated as a rotation) and the NavHost would
-                        // restore to shift_scaffold instead of AUTH_GRAPH, leaving all API
-                        // calls unauthenticated and causing infinite spinners.
+                        // 1. Cancel all in-flight OkHttp calls + clear session tokens.
+                        //    This unblocks any TokenAuthenticator.runBlocking threads that
+                        //    are waiting on a refresh call, freeing the OkHttp dispatcher
+                        //    slots before the login screen's sendOtp call is enqueued.
                         vm.logout()
+                        // 2. Stop the location foreground service so it doesn't continue
+                        //    publishing GPS fixes (or restart via START_STICKY) while the
+                        //    driver is logged out.
+                        context.stopService(Intent(context, LocationForegroundService::class.java))
+                        // 3. Restart the Activity with CLEAR_TASK so the NavController's
+                        //    saved back-stack Bundle is discarded. recreate() preserves the
+                        //    Bundle (treated as a rotation) and the NavHost would restore to
+                        //    shift_scaffold instead of AUTH_GRAPH, leaving all API calls
+                        //    unauthenticated and causing infinite spinners.
                         val intent = Intent(context, io.logisticos.driver.MainActivity::class.java).apply {
                             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
                         }
