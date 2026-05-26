@@ -29,7 +29,7 @@ import {
 
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
-import { authFetch, basePathPrefix } from "@/lib/auth/auth-fetch";
+import { authFetch } from "@/lib/auth/auth-fetch";
 import {
   cancelShipment,
   rescheduleShipment,
@@ -346,32 +346,17 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
       setPop(null);
       setPopError(null);
       try {
-        // /api/pops is a Next.js server-side proxy route that calls the pod
-        // service directly on the internal Docker network, bypassing the API
-        // gateway. Must be prefixed with basePathPrefix() (e.g. "/admin")
-        // because bare paths like "/api/pops" resolve to the document root —
-        // not the portal's basePath mount — and return 404. This mirrors the
-        // same basePath-awareness used by authFetch for /api/token.
+        // /v1/pod/pops is a gateway-compat alias on the pod service.
+        // Old gateway images route /v1/pod* → pod service (same rule that
+        // makes /v1/pods work for POD). The alias delivers POP data without
+        // needing the gateway to be redeployed with /v1/pops routing.
+        // Pattern mirrors POD exactly: client-side authFetch to the API base URL.
         const res = await authFetch(
-          `${basePathPrefix()}/api/pops?shipment_id=${shipment.id}`
+          `${API_BASE}/v1/pod/pops?shipment_id=${shipment.id}`
         );
         if (res.status === 404) {
-          // Real 404 from Next.js itself — the /api/pops route file is missing
-          // from the deployed admin portal image. Rebuild and redeploy.
-          if (!cancelled) setPopError("POP proxy route missing — redeploy the admin portal (outdated image)");
-          return;
-        }
-        if (res.status === 503) {
-          // Proxy exists but all upstream gateways returned 404 for /v1/pops,
-          // meaning the API gateway image is stale (pre-dates the routing fix).
-          // Fix: docker compose pull api-gateway && docker compose up -d --no-deps api-gateway
-          if (!cancelled) setPopError("API gateway routing outdated for /v1/pops — redeploy the api-gateway service");
-          return;
-        }
-        if (res.status === 502) {
-          // All three upstream paths (pod direct, internal gw, public gw) threw
-          // network errors — nothing is reachable from the server container.
-          if (!cancelled) setPopError("POP service unreachable — check that the pod and api-gateway containers are running");
+          // Route not found on pod service — pod image is outdated.
+          if (!cancelled) setPopError("POP endpoint not found — redeploy the pod service (image is outdated)");
           return;
         }
         if (!res.ok) {

@@ -80,14 +80,22 @@ export async function GET(request: NextRequest) {
   let res =
     await tryFetch(`${POD_INTERNAL_URL}/v1/pops?${query}`, headers);
 
-  // ── Level 2: internal API gateway via dokploy-network ────────────────────
+  // ── Level 2: internal gateway /v1/pops (updated image required) ─────────
   if (!res) {
     res = await tryFetch(`${INTERNAL_GATEWAY_URL}/v1/pops?${query}`, headers);
   }
 
-  // ── Level 3: public gateway URL (local dev fallback) ─────────────────────
+  // ── Level 3: internal gateway /v1/pod/pops alias (old-image compat) ──────
+  // Old gateway images route /v1/pod* → pod service, so /v1/pod/pops works
+  // even before the gateway is redeployed with explicit /v1/pops routing.
+  if (!res || res.status === 404) {
+    const aliasRes = await tryFetch(`${INTERNAL_GATEWAY_URL}/v1/pod/pops?${query}`, headers);
+    if (aliasRes && aliasRes.status !== 404) res = aliasRes;
+  }
+
+  // ── Level 4: public gateway URL (local dev fallback) ─────────────────────
   if (!res) {
-    res = await tryFetch(`${PUBLIC_GATEWAY_URL}/v1/pops?${query}`, headers);
+    res = await tryFetch(`${PUBLIC_GATEWAY_URL}/v1/pod/pops?${query}`, headers);
   }
 
   // All three paths threw network errors — nothing is reachable.
