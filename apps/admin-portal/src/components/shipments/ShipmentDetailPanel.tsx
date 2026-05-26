@@ -356,11 +356,22 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
           `${basePathPrefix()}/api/pops?shipment_id=${shipment.id}`
         );
         if (res.status === 404) {
-          // Should not happen: the proxy returns 502 if both upstream paths
-          // fail, and the pod service always returns 200+{data:[]} for an
-          // unknown shipment. 404 here means the portal image is outdated
-          // and doesn't include /api/pops — redeploy the admin portal.
-          if (!cancelled) setPopError("POP proxy route missing — redeploy the admin portal (image is outdated)");
+          // Real 404 from Next.js itself — the /api/pops route file is missing
+          // from the deployed admin portal image. Rebuild and redeploy.
+          if (!cancelled) setPopError("POP proxy route missing — redeploy the admin portal (outdated image)");
+          return;
+        }
+        if (res.status === 503) {
+          // Proxy exists but all upstream gateways returned 404 for /v1/pops,
+          // meaning the API gateway image is stale (pre-dates the routing fix).
+          // Fix: docker compose pull api-gateway && docker compose up -d --no-deps api-gateway
+          if (!cancelled) setPopError("API gateway routing outdated for /v1/pops — redeploy the api-gateway service");
+          return;
+        }
+        if (res.status === 502) {
+          // All three upstream paths (pod direct, internal gw, public gw) threw
+          // network errors — nothing is reachable from the server container.
+          if (!cancelled) setPopError("POP service unreachable — check that the pod and api-gateway containers are running");
           return;
         }
         if (!res.ok) {

@@ -10,33 +10,52 @@ import { COOKIE_LOS_ACCESS } from "@/lib/auth/los-cookies";
  * go through the API gateway. If the gateway is running a stale Docker image
  * that pre-dates the /v1/pops routing fix, every POP request returns 404.
  *
- * This Next.js API route runs *server-side* and reaches the pod service
- * directly on the shared `dokploy-network` Docker network — no gateway
- * required. The JWT is read from the httpOnly access cookie (same source as
- * /api/token) and forwarded as `Authorization: Bearer`.
+ * This Next.js API route runs *server-side* inside the Docker network and
+ * can reach backend services directly without going through the public URL.
+ * The JWT is forwarded from the httpOnly access cookie.
  *
- * Network topology
- * ────────────────
- * The pod service is on both the internal `logisticos` compose network AND the
- * shared `dokploy-network` (see docker-compose.yml). Within `dokploy-network`,
- * Docker resolves containers by their `container_name`, not their compose
- * service name — so the correct hostname is `logisticos-pod`, not `pod`.
+ * Three-level fallback chain
+ * ──────────────────────────
+ * 1. Pod service direct    → POD_INTERNAL_URL (default: http://logisticos-pod:8011)
+ *    Best path. Requires pod container on dokploy-network (see docker-compose.yml).
  *
- * Fallback chain
- * ──────────────
- * 1. Pod service directly  → POD_INTERNAL_URL  (default: http://logisticos-pod:8011)
- *    Works whenever the pod container is running on dokploy-network.
- * 2. API gateway           → INTERNAL_GATEWAY_URL or NEXT_PUBLIC_API_URL
- *    Works for local-dev without Docker, or after gateway image is updated.
+ * 2. Internal API gateway  → INTERNAL_GATEWAY_URL (default: http://logisticos-api-gateway:8000)
+ *    Works once the gateway image is updated with /v1/pops routing.
+ *    api-gateway is already on dokploy-network — no docker-compose change needed.
+ *
+ * 3. Public API gateway    → NEXT_PUBLIC_API_URL (fallback for local dev)
+ *    Used when neither Docker hostname resolves (e.g. local dev without Compose).
+ *
+ * Error shape contract
+ * ────────────────────
+ * • 200  — POP data (or empty {data:[]})
+ * • 400  — missing shipment_id query param
+ * • 502  — all three upstream paths threw network errors (unreachable)
+ * • 503  — an upstream returned 404, meaning the gateway has no route for
+ *          /v1/pops (stale image). Distinct from HTTP 404 which Next.js itself
+ *          emits when THIS route file doesn't exist in the deployed build.
  */
 
+/** Pod service directly on the shared Docker network. */
 const POD_INTERNAL_URL =
   process.env.POD_INTERNAL_URL ?? "http://logisticos-pod:8011";
 
-const GATEWAY_URL =
-  process.env.INTERNAL_GATEWAY_URL ??
-  process.env.NEXT_PUBLIC_API_URL ??
-  "http://localhost:8000";
+/** API gateway on the shared Docker network (api-gateway is on dokploy-network). */
+const INTERNAL_GATEWAY_URL =
+  process.env.INTERNAL_GATEWAY_URL ?? "http://logisticos-api-gateway:8000";
+
+/** Public gateway URL — last resort for local dev or when Docker hostnames fail. */
+const PUBLIC_GATEWAY_URL =
+  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+/** Try a single upstream fetch; return null on network error (don't throw). */
+async function tryFetch(url: string, headers: HeadersInit): Promise<Response | null> {
+  try {
+    return await fetch(url, { headers, cache: "no-store" });
+  } catch {
+    return null;
+  }
+}
 
 export async function GET(request: NextRequest) {
   const shipmentId = request.nextUrl.searchParams.get("shipment_id");
@@ -47,41 +66,47 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  // Read the JWT from the httpOnly cookie — the browser cannot read it
-  // directly, but the Next.js server can forward it to the pod service.
+  // Forward the JWT from the httpOnly cookie — the browser can't read it,
+  // but the Next.js server can forward it to the backend.
   const token = request.cookies.get(COOKIE_LOS_ACCESS)?.value;
-  const authHeader = token ? `Bearer ${token}` : "";
-
-  const requestHeaders: HeadersInit = {
+  const headers: HeadersInit = {
     "Content-Type": "application/json",
-    ...(authHeader ? { Authorization: authHeader } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 
-  // ── 1. Try pod service directly (bypasses stale API gateway) ──────────────
-  let res: Response | null = null;
-  try {
-    res = await fetch(
-      `${POD_INTERNAL_URL}/v1/pops?shipment_id=${shipmentId}`,
-      { headers: requestHeaders, cache: "no-store" }
-    );
-  } catch {
-    // Pod service not directly reachable — fall through to gateway.
-    // Expected in local dev environments that don't use Docker Compose.
+  const query = `shipment_id=${shipmentId}`;
+
+  // ── Level 1: pod service directly (fastest, no gateway hop) ──────────────
+  let res =
+    await tryFetch(`${POD_INTERNAL_URL}/v1/pops?${query}`, headers);
+
+  // ── Level 2: internal API gateway via dokploy-network ────────────────────
+  if (!res) {
+    res = await tryFetch(`${INTERNAL_GATEWAY_URL}/v1/pops?${query}`, headers);
   }
 
-  // ── 2. Fall back to API gateway (local dev, or direct path failed) ────────
+  // ── Level 3: public gateway URL (local dev fallback) ─────────────────────
   if (!res) {
-    try {
-      res = await fetch(
-        `${GATEWAY_URL}/v1/pops?shipment_id=${shipmentId}`,
-        { headers: requestHeaders, cache: "no-store" }
-      );
-    } catch {
-      return NextResponse.json(
-        { error: "POP service unreachable via both direct and gateway paths" },
-        { status: 502 }
-      );
-    }
+    res = await tryFetch(`${PUBLIC_GATEWAY_URL}/v1/pops?${query}`, headers);
+  }
+
+  // All three paths threw network errors — nothing is reachable.
+  if (!res) {
+    return NextResponse.json(
+      { error: "POP service unreachable — all upstream paths failed (pod direct, internal gateway, public gateway)" },
+      { status: 502 }
+    );
+  }
+
+  // A 404 from any upstream means the gateway has no route for /v1/pops
+  // (stale image pre-dating the routing fix). Return 503 so the client can
+  // distinguish "proxy route missing" (real 404 from Next.js) from
+  // "gateway routing outdated" (503 from this proxy).
+  if (res.status === 404) {
+    return NextResponse.json(
+      { error: "API gateway has no route for /v1/pops — redeploy with: docker compose pull api-gateway && docker compose up -d --no-deps api-gateway" },
+      { status: 503 }
+    );
   }
 
   let body: unknown;
