@@ -14,6 +14,11 @@ pub struct PodQuery {
     pub shipment_id: Option<Uuid>,
 }
 
+#[derive(serde::Deserialize)]
+pub struct PopQuery {
+    pub shipment_id: Option<Uuid>,
+}
+
 pub async fn initiate(
     AuthClaims(claims): AuthClaims,
     State(state): State<Arc<AppState>>,
@@ -212,29 +217,32 @@ pub async fn get_pop_upload_url(
 }
 
 /// GET /v1/pops/:id — fetch a single POP record (ops / admin portal).
+/// Returns a presigned `photo_url` (1-hour TTL) instead of the raw S3 key.
 pub async fn get_pop(
     AuthClaims(_claims): AuthClaims,
     Path(pop_id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let pop = state.pod_service.get_pop_by_id(pop_id).await?;
-    Ok(Json(serde_json::json!({ "data": {
-        "pop_id":                pop.id,
-        "shipment_id":           pop.shipment_id,
-        "task_id":               pop.task_id,
-        "driver_id":             pop.driver_id,
-        "status":                if pop.status == crate::domain::entities::PopStatus::Submitted { "submitted" } else { "draft" },
-        "capture_lat":           pop.capture_lat,
-        "capture_lng":           pop.capture_lng,
-        "geofence_verified":     pop.geofence_verified,
-        "out_of_bounds_handover": pop.out_of_bounds_handover,
-        "barcode_scanned":       pop.barcode_scanned,
-        "scanned_barcode":       pop.scanned_barcode,
-        "actual_weight_g":       pop.actual_weight_g,
-        "declared_weight_g":     pop.declared_weight_g,
-        "weight_overage_ratio":  pop.weight_overage_ratio(),
-        "photo_s3_key":          pop.photo_s3_key,
-        "device_timestamp":      pop.device_timestamp,
-        "captured_at":           pop.captured_at,
-    } })))
+    let view = state.pod_service.pop_to_view(&pop).await;
+    Ok(Json(serde_json::json!({ "data": view })))
+}
+
+/// GET /v1/pops?shipment_id=<uuid> — fetch POP for the admin portal panel.
+/// Returns the most recent submitted POP for the shipment with a presigned photo URL.
+pub async fn list_pops(
+    AuthClaims(_claims): AuthClaims,
+    Query(q): Query<PopQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let shipment_id = q.shipment_id
+        .ok_or_else(|| AppError::Validation("shipment_id query parameter is required".into()))?;
+
+    match state.pod_service.get_pop_by_shipment(shipment_id).await? {
+        Some(pop) => {
+            let view = state.pod_service.pop_to_view(&pop).await;
+            Ok(Json(serde_json::json!({ "data": view })))
+        }
+        None => Ok(Json(serde_json::json!({ "data": [] }))),
+    }
 }

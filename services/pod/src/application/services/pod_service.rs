@@ -615,9 +615,52 @@ impl PodService {
             .ok_or_else(|| AppError::NotFound { resource: "POP", id: pop_id.to_string() })
     }
 
+    /// Retrieve the most recent POP for a shipment (for admin portal panel).
+    pub async fn get_pop_by_shipment(&self, shipment_id: Uuid) -> AppResult<Option<ProofOfPickup>> {
+        self.pickup_repo.find_by_shipment(shipment_id).await.map_err(AppError::Internal)
+    }
+
     /// Retrieve the most recent POD for a shipment (for admin portal panel).
     pub async fn get_by_shipment(&self, shipment_id: Uuid) -> AppResult<Option<ProofOfDelivery>> {
         self.pod_repo.find_by_shipment(shipment_id).await.map_err(AppError::Internal)
+    }
+
+    /// Map a POP entity to the JSON shape expected by the admin portal.
+    /// Generates a presigned download URL for the pickup photo (1-hour TTL).
+    pub async fn pop_to_view(&self, pop: &ProofOfPickup) -> serde_json::Value {
+        let photo_url: Option<String> = if let Some(ref key) = pop.photo_s3_key {
+            self.storage.presign_download(key, 3600).await
+                .map_err(|e| tracing::warn!(error = %e, s3_key = %key, "Failed to presign POP photo"))
+                .ok()
+        } else {
+            None
+        };
+
+        let status_str = if pop.status == crate::domain::entities::PopStatus::Submitted {
+            "submitted"
+        } else {
+            "draft"
+        };
+
+        serde_json::json!({
+            "pop_id":                 pop.id,
+            "shipment_id":            pop.shipment_id,
+            "task_id":                pop.task_id,
+            "driver_id":              pop.driver_id,
+            "status":                 status_str,
+            "capture_lat":            pop.capture_lat,
+            "capture_lng":            pop.capture_lng,
+            "geofence_verified":      pop.geofence_verified,
+            "out_of_bounds_handover": pop.out_of_bounds_handover,
+            "barcode_scanned":        pop.barcode_scanned,
+            "scanned_barcode":        pop.scanned_barcode,
+            "actual_weight_g":        pop.actual_weight_g,
+            "declared_weight_g":      pop.declared_weight_g,
+            "weight_overage_ratio":   pop.weight_overage_ratio(),
+            "photo_url":              photo_url,
+            "device_timestamp":       pop.device_timestamp,
+            "captured_at":            pop.captured_at,
+        })
     }
 
     /// Map a POD entity to the JSON shape expected by the admin portal.

@@ -94,6 +94,23 @@ interface PodData {
   captured_at?: string | null;
 }
 
+interface PopData {
+  pop_id: string;
+  shipment_id: string;
+  status: string;
+  geofence_verified: boolean;
+  out_of_bounds_handover: boolean;
+  barcode_scanned: boolean;
+  scanned_barcode?: string | null;
+  actual_weight_g?: number | null;
+  declared_weight_g?: number | null;
+  weight_overage_ratio?: number | null;
+  photo_url?: string | null;
+  capture_lat?: number | null;
+  capture_lng?: number | null;
+  captured_at?: string | null;
+}
+
 // ── Valid status list for override dropdown ────────────────────────────────────
 
 const ALL_STATUSES = [
@@ -188,6 +205,9 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
   const [pod,        setPod]        = useState<PodData | null>(null);
   const [podLoading, setPodLoading] = useState(false);
   const [podError,   setPodError]   = useState<string | null>(null);
+  const [pop,        setPop]        = useState<PopData | null>(null);
+  const [popLoading, setPopLoading] = useState(false);
+  const [popError,   setPopError]   = useState<string | null>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
 
   const { hasPermission } = usePermissions();
@@ -307,6 +327,56 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
     }
 
     fetchPod();
+    return () => { cancelled = true; };
+  }, [shipment?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fetch POP whenever the selected shipment changes
+  useEffect(() => {
+    if (!shipment) {
+      setPop(null);
+      setPopError(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function fetchPop() {
+      if (!shipment) return;
+      setPopLoading(true);
+      setPop(null);
+      setPopError(null);
+      try {
+        const res = await authFetch(
+          `${API_BASE}/v1/pops?shipment_id=${shipment.id}`
+        );
+        if (res.status === 404) {
+          if (!cancelled) setPop(null);
+          return;
+        }
+        if (!res.ok) {
+          throw new Error(`${res.status} ${res.statusText}`);
+        }
+        const json = await res.json();
+        if (!cancelled) {
+          const payload = json?.data;
+          if (Array.isArray(payload) && payload.length === 0) {
+            setPop(null);
+          } else if (payload && typeof payload === "object" && "pop_id" in payload) {
+            setPop(payload as PopData);
+          } else {
+            setPop(null);
+          }
+        }
+      } catch (e: unknown) {
+        if (!cancelled) {
+          setPopError(e instanceof Error ? e.message : "Failed to load POP");
+        }
+      } finally {
+        if (!cancelled) setPopLoading(false);
+      }
+    }
+
+    fetchPop();
     return () => { cancelled = true; };
   }, [shipment?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -456,6 +526,21 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
                     mono
                   />
                 </GlassCard>
+              </section>
+
+              {/* ── POP Evidence ── */}
+              <section>
+                <SectionHeading>Proof of Pickup</SectionHeading>
+                <div className="mt-2">
+                  {popLoading && <PodSkeleton />}
+                  {!popLoading && popError && (
+                    <GlassCard size="sm">
+                      <p className="text-xs font-mono text-red-400">{popError}</p>
+                    </GlassCard>
+                  )}
+                  {!popLoading && !popError && !pop && <NoPopPlaceholder />}
+                  {!popLoading && !popError && pop && <PopCard pop={pop} />}
+                </div>
               </section>
 
               {/* ── POD Evidence ── */}
@@ -753,6 +838,112 @@ function NoPodPlaceholder() {
         </div>
         <p className="text-xs text-white/30">No proof of delivery recorded yet</p>
         <p className="text-2xs font-mono text-white/20">POD is captured by the driver upon delivery</p>
+      </div>
+    </GlassCard>
+  );
+}
+
+function NoPopPlaceholder() {
+  return (
+    <GlassCard size="sm">
+      <div className="flex flex-col items-center gap-2 py-6 text-center">
+        <div className="flex h-10 w-10 items-center justify-center rounded-full border border-glass-border bg-glass-100">
+          <Package size={18} className="text-white/20" />
+        </div>
+        <p className="text-xs text-white/30">No proof of pickup recorded yet</p>
+        <p className="text-2xs font-mono text-white/20">POP is captured by the driver at collection</p>
+      </div>
+    </GlassCard>
+  );
+}
+
+function PopCard({ pop }: { pop: PopData }) {
+  return (
+    <GlassCard size="sm" className="space-y-4">
+      {/* Status row */}
+      <div className="flex items-center justify-between">
+        <NeonBadge variant={pop.status === "submitted" ? "cyan" : "amber"} dot>
+          {pop.status === "submitted" ? "Collected" : "Draft"}
+        </NeonBadge>
+        {pop.geofence_verified ? (
+          <span className="inline-flex items-center gap-1 text-2xs font-mono text-green-signal">
+            <CheckCircle2 size={12} />
+            Geofence verified
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1 text-2xs font-mono text-amber-signal">
+            <AlertTriangle size={12} />
+            Geofence unverified
+          </span>
+        )}
+      </div>
+
+      {/* Pickup photo */}
+      <div>
+        <p className="mb-1.5 text-2xs font-mono uppercase tracking-widest text-white/30">
+          Pickup Photo
+        </p>
+        {pop.photo_url ? (
+          <div className="overflow-hidden rounded-lg border border-glass-border">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={pop.photo_url}
+              alt="Proof of pickup photo"
+              className="w-full object-cover"
+              style={{ maxHeight: 260 }}
+            />
+          </div>
+        ) : (
+          <div className="flex h-28 items-center justify-center rounded-lg border border-glass-border bg-glass-100">
+            <Camera size={24} className="text-white/20" />
+          </div>
+        )}
+      </div>
+
+      {/* Meta grid */}
+      <div className="grid grid-cols-2 gap-x-4 gap-y-2.5">
+        {pop.scanned_barcode && (
+          <MetaCell label="Barcode" value={pop.scanned_barcode} mono />
+        )}
+        {pop.captured_at && (
+          <MetaCell label="Captured at" value={formatDate(pop.captured_at)} mono />
+        )}
+        {pop.actual_weight_g != null && (
+          <MetaCell
+            label="Actual weight"
+            value={pop.actual_weight_g >= 1000
+              ? `${(pop.actual_weight_g / 1000).toFixed(2)} kg`
+              : `${pop.actual_weight_g} g`}
+            mono
+          />
+        )}
+        {pop.declared_weight_g != null && (
+          <MetaCell
+            label="Declared weight"
+            value={pop.declared_weight_g >= 1000
+              ? `${(pop.declared_weight_g / 1000).toFixed(2)} kg`
+              : `${pop.declared_weight_g} g`}
+            mono
+          />
+        )}
+        {pop.weight_overage_ratio != null && Math.abs(pop.weight_overage_ratio) > 0.001 && (
+          <MetaCell
+            label="Overage"
+            value={`${(pop.weight_overage_ratio * 100).toFixed(1)}%`}
+            mono
+            highlight={pop.weight_overage_ratio > 0.05 ? "amber" : undefined}
+          />
+        )}
+        {pop.out_of_bounds_handover && (
+          <MetaCell label="Flag" value="Out of bounds handover" highlight="amber" />
+        )}
+        {pop.capture_lat != null && pop.capture_lng != null && (
+          <MetaCell
+            label="GPS"
+            value={`${pop.capture_lat.toFixed(5)}, ${pop.capture_lng.toFixed(5)}`}
+            mono
+          />
+        )}
       </div>
     </GlassCard>
   );
