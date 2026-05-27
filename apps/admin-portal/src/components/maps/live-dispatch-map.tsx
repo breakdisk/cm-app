@@ -86,11 +86,13 @@ function MapboxMap({
   const { Marker, Source, Layer } = libs;
 
   return (
-    <div className={cn("relative rounded-2xl overflow-hidden border border-glass-border", className)}>
+    <div className={cn("relative rounded-2xl overflow-hidden border border-glass-border", className)}
+      style={{ filter: "brightness(1.35) contrast(1.05)" }}
+    >
       <Map
         ref={mapRef}
         mapboxAccessToken={MAPBOX_TOKEN}
-        mapStyle="mapbox://styles/mapbox/dark-v11"
+        mapStyle="mapbox://styles/mapbox/navigation-night-v1"
         style={{ width: "100%", height: "100%" }}
         initialViewState={{ longitude: 121.774, latitude: 12.879, zoom: 6 }}
         attributionControl={false}
