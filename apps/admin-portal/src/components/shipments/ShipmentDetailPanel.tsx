@@ -29,7 +29,7 @@ import {
 
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
-import { authFetch } from "@/lib/auth/auth-fetch";
+import { authFetch, basePathPrefix } from "@/lib/auth/auth-fetch";
 import {
   cancelShipment,
   rescheduleShipment,
@@ -346,17 +346,27 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
       setPop(null);
       setPopError(null);
       try {
-        // /v1/pod/pops is a gateway-compat alias on the pod service.
-        // Old gateway images route /v1/pod* → pod service (same rule that
-        // makes /v1/pods work for POD). The alias delivers POP data without
-        // needing the gateway to be redeployed with /v1/pops routing.
-        // Pattern mirrors POD exactly: client-side authFetch to the API base URL.
+        // POP is fetched through the same-origin Next.js BFF proxy
+        // (src/app/api/pops/route.ts) rather than the public API gateway.
+        // The proxy runs inside the Docker network and reaches the pod
+        // container directly (http://logisticos-pod:8011), so POP data no
+        // longer depends on the api-gateway image carrying /v1/pops routing.
+        // It pins to the exact pod container the operator redeploys, which
+        // the public gateway URL does not guarantee. basePathPrefix() is
+        // required so the request resolves under the portal mount (/admin).
         const res = await authFetch(
-          `${API_BASE}/v1/pod/pops?shipment_id=${shipment.id}`
+          `${basePathPrefix()}/api/pops?shipment_id=${shipment.id}`
         );
-        if (res.status === 404) {
-          // Route not found on pod service — pod image is outdated.
+        if (res.status === 503) {
+          // The proxy reached an upstream that has no /v1/pops route — the
+          // pod (or gateway) image still pre-dates the POP routing fix.
           if (!cancelled) setPopError("POP endpoint not found — redeploy the pod service (image is outdated)");
+          return;
+        }
+        if (res.status === 404) {
+          // 404 here is Next.js itself — the BFF route is missing from the
+          // deployed admin-portal build (portal image outdated).
+          if (!cancelled) setPopError("POP proxy route missing — redeploy the admin portal");
           return;
         }
         if (!res.ok) {
