@@ -751,7 +751,8 @@ services:
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
       S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
-      S3_BUCKET: ${S3_BUCKET:-logisticos-pod}
+      S3_BUCKET: ${S3_BUCKET:-logisticos-pod-photos}
+      POP_S3_BUCKET: ${POP_S3_BUCKET:-logisticos-pop-photos}
       S3_REGION: ${AWS_DEFAULT_REGION:-auto}
       # R2-specific 32-char credentials (S3__ prefix = Rust config crate double-underscore separator).
       # These take precedence over the generic AWS_* vars and satisfy the bootstrap

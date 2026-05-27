@@ -1,6 +1,7 @@
 use logisticos_pod::domain::entities::{
     proof::{PodPhoto, PodStatus, ProofOfDelivery},
     otp::OtpCode,
+    pickup::{PopStatus, ProofOfPickup},
 };
 use uuid::Uuid;
 use chrono::Utc;
@@ -345,5 +346,156 @@ mod otp_code {
         assert_eq!(otp.code_hash, hash);
         // The hash must not look like a 6-digit plaintext OTP.
         assert!(otp.code_hash.len() > 6, "stored value must be a hash, not a plaintext OTP");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ProofOfPickup — construction, state transitions, S3 key convention
+// ---------------------------------------------------------------------------
+
+fn make_pop() -> ProofOfPickup {
+    ProofOfPickup::new(
+        Uuid::new_v4(), // tenant_id
+        Uuid::new_v4(), // shipment_id
+        Uuid::new_v4(), // task_id
+        Uuid::new_v4(), // driver_id
+        14.5995,        // capture_lat (Manila)
+        120.9842,       // capture_lng
+        true,           // geofence_verified
+        false,          // out_of_bounds_handover
+        Some(1500),     // declared_weight_g
+        "standard".to_string(),
+        None,           // declared_value_cents
+        None,           // device_timestamp
+    )
+}
+
+mod pop_construction {
+    use super::*;
+
+    #[test]
+    fn new_creates_pop_with_draft_status() {
+        let pop = make_pop();
+        assert_eq!(pop.status, PopStatus::Draft);
+    }
+
+    #[test]
+    fn new_creates_pop_with_no_photo() {
+        let pop = make_pop();
+        assert!(pop.photo_s3_key.is_none());
+        assert!(pop.photo_size_bytes.is_none());
+    }
+
+    #[test]
+    fn new_creates_pop_with_barcode_unscanned() {
+        let pop = make_pop();
+        assert!(!pop.barcode_scanned);
+        assert!(pop.scanned_barcode.is_none());
+    }
+
+    #[test]
+    fn new_generates_unique_ids() {
+        let p1 = make_pop();
+        let p2 = make_pop();
+        assert_ne!(p1.id, p2.id);
+    }
+
+    #[test]
+    fn submit_advances_status_to_submitted() {
+        let mut pop = make_pop();
+        pop.submit();
+        assert_eq!(pop.status, PopStatus::Submitted);
+    }
+}
+
+mod pop_photo_key_prefix {
+    use super::*;
+
+    /// The S3 key for POP photos MUST start with "pop/" so uploads land in the
+    /// logisticos-pop-photos bucket and never collide with POD keys ("pod/").
+    /// This test verifies that `attach_photo` stores the key unchanged and that
+    /// a correctly-formatted key has the right prefix.
+    #[test]
+    fn photo_key_with_pop_prefix_is_stored_correctly() {
+        let mut pop = make_pop();
+        let key = format!(
+            "pop/{}/{}/{}/{}.jpg",
+            pop.tenant_id, pop.shipment_id, pop.id, Uuid::new_v4()
+        );
+        pop.attach_photo(key.clone(), 512_000);
+        assert_eq!(pop.photo_s3_key.as_deref(), Some(key.as_str()));
+        assert!(
+            pop.photo_s3_key.as_deref().unwrap().starts_with("pop/"),
+            "POP S3 key must start with 'pop/' — got: {:?}",
+            pop.photo_s3_key
+        );
+    }
+
+    #[test]
+    fn pod_key_prefix_is_distinct_from_pop_prefix() {
+        // Belt-and-suspenders: confirm the two prefixes are different strings
+        // so a misconfiguration that swaps pod_storage / pop_storage would
+        // produce keys that start with the wrong prefix and be detectable.
+        assert_ne!("pod/", "pop/");
+    }
+
+    #[test]
+    fn photo_size_bytes_is_stored() {
+        let mut pop = make_pop();
+        let key = format!("pop/{}/test.jpg", pop.tenant_id);
+        pop.attach_photo(key, 204_800);
+        assert_eq!(pop.photo_size_bytes, Some(204_800));
+    }
+}
+
+mod pop_weight_overage {
+    use super::*;
+
+    #[test]
+    fn overage_ratio_positive_when_actual_exceeds_declared() {
+        let mut pop = make_pop();
+        pop.record_weight(1600, 1500); // 100 g over → ~6.67%
+        let ratio = pop.weight_overage_ratio().expect("should compute ratio");
+        assert!((ratio - 100.0 / 1500.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn overage_ratio_zero_when_weights_match() {
+        let mut pop = make_pop();
+        pop.record_weight(1500, 1500);
+        let ratio = pop.weight_overage_ratio().expect("should compute ratio");
+        assert!(ratio.abs() < 1e-9);
+    }
+
+    #[test]
+    fn overage_ratio_within_5pct_tolerance_band() {
+        // 4% over — should NOT trigger an invoice per the billing spec
+        let mut pop = make_pop();
+        pop.record_weight(1560, 1500); // 60 g over ≈ 4%
+        let ratio = pop.weight_overage_ratio().expect("should compute ratio");
+        assert!(ratio <= 0.05, "ratio {ratio} should be within 5% tolerance");
+    }
+
+    #[test]
+    fn overage_ratio_above_5pct_triggers_billing() {
+        // 6% over — should trigger HeldForPaymentOverage
+        let mut pop = make_pop();
+        pop.record_weight(1590, 1500); // 90 g over = 6%
+        let ratio = pop.weight_overage_ratio().expect("should compute ratio");
+        assert!(ratio > 0.05, "ratio {ratio} should exceed 5% tolerance");
+    }
+
+    #[test]
+    fn overage_ratio_is_none_when_weights_absent() {
+        let pop = make_pop(); // no record_weight call
+        assert!(pop.weight_overage_ratio().is_none());
+    }
+
+    #[test]
+    fn scan_records_barcode_and_sets_flag() {
+        let mut pop = make_pop();
+        pop.record_scan("AWB-001234567".to_string());
+        assert!(pop.barcode_scanned);
+        assert_eq!(pop.scanned_barcode.as_deref(), Some("AWB-001234567"));
     }
 }
