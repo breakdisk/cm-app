@@ -31,16 +31,20 @@ import {
   fetchMarketplaceStats,
   createBooking,
   subscribeToMarketplaceUpdates,
+  detectCargoRequirements,
   SIZE_CLASS_LABEL,
   SIZE_CLASS_CAPACITY_HINT,
+  VEHICLE_FEATURE_LABEL,
   formatCentsPhp,
   type MerchantListing,
   type MerchantBooking,
   type MerchantMarketplaceStats,
   type SizeClass,
+  type VehicleFeature,
   type ListingStatus,
   type BookingStatus,
   type PartnerType,
+  type CargoSuggestion,
 } from "@/lib/api/marketplace";
 import { findReceiptByBookingId, type BusReceipt } from "@/lib/api/marketplace-bus";
 import { ReceiptModal, type ReceiptModalBooking } from "@/components/marketplace/ReceiptModal";
@@ -68,13 +72,18 @@ const PARTNER_TYPE: Record<PartnerType, { label: string; variant: BadgeVariant }
 };
 
 const SIZE_FILTERS: Array<{ label: string; value: SizeClass | "all" }> = [
-  { label: "All",        value: "all"        },
-  { label: "Motorcycle", value: "motorcycle" },
-  { label: "Sedan",      value: "sedan"      },
-  { label: "Van",        value: "van"        },
-  { label: "L300",       value: "l300"       },
-  { label: "6-Wheeler",  value: "6wheeler"   },
-  { label: "10-Wheeler", value: "10wheeler"  },
+  { label: "All",          value: "all"               },
+  { label: "Scooter/Bike", value: "scooter_bicycle"   },
+  { label: "Motorcycle",   value: "motorcycle"        },
+  { label: "Sedan",        value: "sedan"             },
+  { label: "Van",          value: "van"               },
+  { label: "1 Ton",        value: "1ton"              },
+  { label: "3 Ton",        value: "3ton"              },
+  { label: "7 Ton",        value: "7ton"              },
+  { label: "10 Ton",       value: "10ton"             },
+  { label: "Trailer",      value: "trailer"           },
+  { label: "Refrigerated", value: "refrigerated_truck"},
+  { label: "Recovery",     value: "recovery_truck"    },
 ];
 
 type Tab = "browse" | "bookings";
@@ -194,7 +203,16 @@ function MarketplacePageInner() {
     });
   }, [listings, sizeFilter, search]);
 
-  async function handleBook(input: { pickup_label: string; dropoff_label: string; cargo_weight_kg: number; pickup_at: string }) {
+  async function handleBook(input: {
+    pickup_label:      string;
+    dropoff_label:     string;
+    cargo_weight_kg:   number;
+    pickup_at:         string;
+    cargo_description: string | null;
+    features:          VehicleFeature[];
+    cargo_dims_m?:     { length: number; width: number; height: number } | null;
+    cargo_vehicle_kg?: number | null;
+  }) {
     if (!bookingFor) return;
     await createBooking({ listing_id: bookingFor.id, ...input });
     setBookingFor(null);
@@ -349,6 +367,19 @@ function MarketplacePageInner() {
                               <span className="text-2xs font-mono text-white/30">
                                 {l.max_weight_kg.toLocaleString()} kg · {l.max_volume_m3 ?? "—"} m³
                               </span>
+                              {l.features.length > 0 && (
+                                <div className="flex flex-wrap gap-1 mt-0.5">
+                                  {l.features.map((f) => (
+                                    <span key={f} className={`inline-block rounded-full px-1.5 py-0.5 text-2xs font-mono ${
+                                      f === "freezer" ? "bg-cyan-surface text-cyan-neon border border-cyan-neon/30" :
+                                      f === "chiller" ? "bg-purple-surface text-purple-plasma border border-purple-plasma/30" :
+                                      "bg-amber-surface text-amber-signal border border-amber-signal/30"
+                                    }`}>
+                                      {VEHICLE_FEATURE_LABEL[f]}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
                             </div>
                           </td>
                           <td className="py-3 pr-4 text-xs text-white/70">{l.service_area_label}</td>
@@ -545,6 +576,22 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
 
 // ── Booking drawer ────────────────────────────────────────────────────────────
 
+function FeatureMismatchBanner({ listing, suggestion }: { listing: MerchantListing; suggestion: CargoSuggestion }) {
+  const matches = listing.size_class === suggestion.size_class;
+  const featuresMet = suggestion.features.every((f) => listing.features.includes(f));
+  if (matches && featuresMet) return null;
+  return (
+    <div className="rounded-md border border-amber-signal/40 bg-amber-surface/40 px-3 py-2 text-2xs font-mono text-amber-signal flex items-start gap-2">
+      <span className="flex-shrink-0 mt-0.5">⚠</span>
+      <span>
+        AI recommends a <strong>{SIZE_CLASS_LABEL[suggestion.size_class]}</strong>
+        {suggestion.features.length > 0 && ` with ${suggestion.features.map((f) => VEHICLE_FEATURE_LABEL[f]).join(" + ")}`}.
+        {" "}This listing may not be optimal for your cargo — consider browsing matching vehicles.
+      </span>
+    </div>
+  );
+}
+
 function BookingDrawer({
   listing,
   onCancel,
@@ -552,30 +599,73 @@ function BookingDrawer({
 }: {
   listing: MerchantListing;
   onCancel: () => void;
-  onSubmit: (input: { pickup_label: string; dropoff_label: string; cargo_weight_kg: number; pickup_at: string }) => Promise<void>;
+  onSubmit: (input: {
+    pickup_label:      string;
+    dropoff_label:     string;
+    cargo_weight_kg:   number;
+    pickup_at:         string;
+    cargo_description: string | null;
+    features:          VehicleFeature[];
+    cargo_dims_m?:     { length: number; width: number; height: number } | null;
+    cargo_vehicle_kg?: number | null;
+  }) => Promise<void>;
 }) {
-  const [pickup,  setPickup]  = useState("");
-  const [dropoff, setDropoff] = useState("");
-  const [weight,  setWeight]  = useState<number | "">("");
-  const [when,    setWhen]    = useState("");
-  const [busy,    setBusy]    = useState(false);
+  const [pickup,       setPickup]       = useState("");
+  const [dropoff,      setDropoff]      = useState("");
+  const [weight,       setWeight]       = useState<number | "">("");
+  const [when,         setWhen]         = useState("");
+  const [cargoDesc,    setCargoDesc]    = useState("");
+  const [busy,         setBusy]         = useState(false);
+  // Dims for heavy / vehicle cargo
+  const [dimL,  setDimL]  = useState<number | "">("");
+  const [dimW,  setDimW]  = useState<number | "">("");
+  const [dimH,  setDimH]  = useState<number | "">("");
+  const [vehKg, setVehKg] = useState<number | "">("");
 
-  const canSubmit = pickup.trim() && dropoff.trim() && typeof weight === "number" && weight > 0 && weight <= listing.max_weight_kg && when;
+  const suggestion: CargoSuggestion | null = detectCargoRequirements(cargoDesc);
+
+  const needsDims = suggestion?.needs_dims ?? false;
+  const isVehicle = suggestion?.is_vehicle ?? false;
+  const dimsOk = !needsDims || (
+    typeof dimL === "number" && dimL > 0 &&
+    typeof dimW === "number" && dimW > 0 &&
+    typeof dimH === "number" && dimH > 0 &&
+    typeof vehKg === "number" && vehKg > 0
+  );
+
+  const effectiveWeight = isVehicle && typeof vehKg === "number" ? vehKg : weight;
+  const maxWeight = listing.max_weight_kg;
+
+  const canSubmit =
+    pickup.trim() &&
+    dropoff.trim() &&
+    typeof effectiveWeight === "number" && effectiveWeight > 0 && effectiveWeight <= maxWeight &&
+    when &&
+    dimsOk;
 
   async function submit() {
     if (!canSubmit) return;
     setBusy(true);
     try {
+      const dims = needsDims && typeof dimL === "number" && typeof dimW === "number" && typeof dimH === "number"
+        ? { length: dimL, width: dimW, height: dimH }
+        : null;
       await onSubmit({
-        pickup_label:    pickup.trim(),
-        dropoff_label:   dropoff.trim(),
-        cargo_weight_kg: weight as number,
-        pickup_at:       new Date(when).toISOString(),
+        pickup_label:      pickup.trim(),
+        dropoff_label:     dropoff.trim(),
+        cargo_weight_kg:   effectiveWeight as number,
+        pickup_at:         new Date(when).toISOString(),
+        cargo_description: cargoDesc.trim() || null,
+        features:          suggestion?.features ?? [],
+        cargo_dims_m:      dims,
+        cargo_vehicle_kg:  isVehicle && typeof vehKg === "number" ? vehKg : null,
       });
     } finally {
       setBusy(false);
     }
   }
+
+  const inputCls = "rounded-md border border-glass-border bg-canvas px-3 py-2 text-sm text-white placeholder-white/30 focus:border-purple-plasma/50 focus:outline-none w-full";
 
   return (
     <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center bg-black/70 backdrop-blur-sm">
@@ -583,7 +673,7 @@ function BookingDrawer({
         initial={{ y: 40, opacity: 0 }}
         animate={{ y: 0,  opacity: 1 }}
         transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-        className="w-full md:w-[520px] rounded-t-2xl md:rounded-2xl border border-glass-border bg-canvas-100 p-6 max-h-[90vh] overflow-y-auto"
+        className="w-full md:w-[560px] rounded-t-2xl md:rounded-2xl border border-glass-border bg-canvas-100 p-6 max-h-[92vh] overflow-y-auto"
       >
         <div className="flex items-start justify-between mb-4">
           <div>
@@ -595,8 +685,20 @@ function BookingDrawer({
           <button onClick={onCancel} className="text-white/40 hover:text-white"><X size={16} /></button>
         </div>
 
+        {/* Vehicle capacity info */}
         <div className="rounded-lg border border-glass-border bg-glass-100 p-3 mb-4 text-xs text-white/60 font-mono">
           <p>{SIZE_CLASS_CAPACITY_HINT[listing.size_class]}</p>
+          {listing.features.length > 0 && (
+            <p className="mt-1 flex flex-wrap gap-1">
+              {listing.features.map((f) => (
+                <span key={f} className={`rounded-full px-1.5 py-0.5 text-2xs ${
+                  f === "freezer" ? "bg-cyan-surface text-cyan-neon" :
+                  f === "chiller" ? "bg-purple-surface text-purple-plasma" :
+                  "bg-amber-surface text-amber-signal"
+                }`}>{VEHICLE_FEATURE_LABEL[f]}</span>
+              ))}
+            </p>
+          )}
           <p className="mt-1">
             {formatCentsPhp(listing.base_price_cents)} base
             <span className="text-white/30"> + </span>
@@ -607,13 +709,112 @@ function BookingDrawer({
         </div>
 
         <div className="flex flex-col gap-3">
+          {/* AI Cargo Description */}
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-white/50 flex items-center gap-1">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-purple-plasma animate-pulse" />
+              Cargo description <span className="text-white/30">(AI auto-assigns vehicle features)</span>
+            </span>
+            <textarea
+              rows={2}
+              value={cargoDesc}
+              onChange={(e) => setCargoDesc(e.target.value)}
+              placeholder="e.g., frozen beef cuts, heavy machinery, vehicle for towing…"
+              className="rounded-md border border-glass-border bg-canvas px-3 py-2 text-sm text-white placeholder-white/30 focus:border-purple-plasma/50 focus:outline-none resize-none"
+            />
+          </label>
+
+          {/* AI Suggestion Panel */}
+          {suggestion && (
+            <div className={`rounded-lg border px-3 py-2.5 text-xs flex flex-col gap-1.5 ${
+              listing.size_class === suggestion.size_class
+                ? "border-green-signal/40 bg-green-surface/30"
+                : "border-purple-plasma/40 bg-purple-surface/30"
+            }`}>
+              <div className="flex items-start gap-2">
+                <span className="text-lg leading-none">{suggestion.is_vehicle ? "🚗" : suggestion.features.includes("freezer") ? "❄️" : suggestion.features.includes("chiller") ? "🌡️" : "🏗️"}</span>
+                <div>
+                  <p className={`font-semibold text-xs ${listing.size_class === suggestion.size_class ? "text-green-signal" : "text-purple-plasma"}`}>
+                    AI Recommendation — {SIZE_CLASS_LABEL[suggestion.size_class]}
+                    {suggestion.features.length > 0 && ` + ${suggestion.features.map((f) => VEHICLE_FEATURE_LABEL[f]).join(", ")}`}
+                  </p>
+                  <p className="text-white/60 mt-0.5">{suggestion.reason}</p>
+                </div>
+              </div>
+              {suggestion.features.length > 0 && (
+                <div className="flex gap-1.5 mt-0.5">
+                  {suggestion.features.map((f) => (
+                    <span key={f} className={`rounded-full px-2 py-0.5 text-2xs font-mono border ${
+                      f === "freezer" ? "bg-cyan-surface text-cyan-neon border-cyan-neon/30" :
+                      f === "chiller" ? "bg-purple-surface text-purple-plasma border-purple-plasma/30" :
+                      "bg-amber-surface text-amber-signal border-amber-signal/30"
+                    }`}>{VEHICLE_FEATURE_LABEL[f]}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Mismatch warning */}
+          {suggestion && <FeatureMismatchBanner listing={listing} suggestion={suggestion} />}
+
+          {/* Dimension fields for heavy cargo / trailer */}
+          {needsDims && !isVehicle && (
+            <div>
+              <p className="text-xs text-white/50 mb-1.5">Cargo dimensions (metres) + weight</p>
+              <div className="grid grid-cols-4 gap-2">
+                <label className="flex flex-col gap-0.5">
+                  <span className="text-2xs text-white/40">Length</span>
+                  <input type="number" step="0.01" min={0} value={dimL} onChange={(e) => setDimL(e.target.value === "" ? "" : Number(e.target.value))} placeholder="m" className={inputCls} />
+                </label>
+                <label className="flex flex-col gap-0.5">
+                  <span className="text-2xs text-white/40">Width</span>
+                  <input type="number" step="0.01" min={0} value={dimW} onChange={(e) => setDimW(e.target.value === "" ? "" : Number(e.target.value))} placeholder="m" className={inputCls} />
+                </label>
+                <label className="flex flex-col gap-0.5">
+                  <span className="text-2xs text-white/40">Height</span>
+                  <input type="number" step="0.01" min={0} value={dimH} onChange={(e) => setDimH(e.target.value === "" ? "" : Number(e.target.value))} placeholder="m" className={inputCls} />
+                </label>
+                <label className="flex flex-col gap-0.5">
+                  <span className="text-2xs text-white/40">Weight (kg)</span>
+                  <input type="number" min={0} value={weight} onChange={(e) => setWeight(e.target.value === "" ? "" : Number(e.target.value))} placeholder="kg" className={inputCls} />
+                </label>
+              </div>
+            </div>
+          )}
+
+          {/* Vehicle dimensions for recovery truck */}
+          {isVehicle && (
+            <div>
+              <p className="text-xs text-white/50 mb-1.5">Cargo vehicle dimensions (metres) + weight</p>
+              <div className="grid grid-cols-4 gap-2">
+                <label className="flex flex-col gap-0.5">
+                  <span className="text-2xs text-white/40">Length</span>
+                  <input type="number" step="0.01" min={0} value={dimL} onChange={(e) => setDimL(e.target.value === "" ? "" : Number(e.target.value))} placeholder="m" className={inputCls} />
+                </label>
+                <label className="flex flex-col gap-0.5">
+                  <span className="text-2xs text-white/40">Width</span>
+                  <input type="number" step="0.01" min={0} value={dimW} onChange={(e) => setDimW(e.target.value === "" ? "" : Number(e.target.value))} placeholder="m" className={inputCls} />
+                </label>
+                <label className="flex flex-col gap-0.5">
+                  <span className="text-2xs text-white/40">Height</span>
+                  <input type="number" step="0.01" min={0} value={dimH} onChange={(e) => setDimH(e.target.value === "" ? "" : Number(e.target.value))} placeholder="m" className={inputCls} />
+                </label>
+                <label className="flex flex-col gap-0.5">
+                  <span className="text-2xs text-white/40">Veh. weight (kg)</span>
+                  <input type="number" min={0} value={vehKg} onChange={(e) => setVehKg(e.target.value === "" ? "" : Number(e.target.value))} placeholder="kg" className={inputCls} />
+                </label>
+              </div>
+            </div>
+          )}
+
           <label className="flex flex-col gap-1">
             <span className="text-xs text-white/50">Pickup address</span>
             <input
               value={pickup}
               onChange={(e) => setPickup(e.target.value)}
               placeholder="e.g., Pasig Warehouse, Ortigas Ave"
-              className="rounded-md border border-glass-border bg-canvas px-3 py-2 text-sm text-white placeholder-white/30 focus:border-purple-plasma/50 focus:outline-none"
+              className={inputCls}
             />
           </label>
           <label className="flex flex-col gap-1">
@@ -622,29 +823,31 @@ function BookingDrawer({
               value={dropoff}
               onChange={(e) => setDropoff(e.target.value)}
               placeholder="e.g., Batangas Industrial Park"
-              className="rounded-md border border-glass-border bg-canvas px-3 py-2 text-sm text-white placeholder-white/30 focus:border-purple-plasma/50 focus:outline-none"
+              className={inputCls}
             />
           </label>
           <div className="grid grid-cols-2 gap-3">
-            <label className="flex flex-col gap-1">
-              <span className="text-xs text-white/50">Cargo weight (kg)</span>
-              <input
-                type="number"
-                min={1}
-                max={listing.max_weight_kg}
-                value={weight}
-                onChange={(e) => setWeight(e.target.value === "" ? "" : Number(e.target.value))}
-                placeholder={`max ${listing.max_weight_kg}`}
-                className="rounded-md border border-glass-border bg-canvas px-3 py-2 text-sm text-white placeholder-white/30 focus:border-purple-plasma/50 focus:outline-none"
-              />
-            </label>
-            <label className="flex flex-col gap-1">
+            {!isVehicle && (
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-white/50">Cargo weight (kg)</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={maxWeight}
+                  value={weight}
+                  onChange={(e) => setWeight(e.target.value === "" ? "" : Number(e.target.value))}
+                  placeholder={`max ${maxWeight}`}
+                  className={inputCls}
+                />
+              </label>
+            )}
+            <label className={`flex flex-col gap-1 ${!isVehicle ? "" : "col-span-2"}`}>
               <span className="text-xs text-white/50">Pickup time</span>
               <input
                 type="datetime-local"
                 value={when}
                 onChange={(e) => setWhen(e.target.value)}
-                className="rounded-md border border-glass-border bg-canvas px-3 py-2 text-sm text-white focus:border-purple-plasma/50 focus:outline-none"
+                className={inputCls}
               />
             </label>
           </div>
