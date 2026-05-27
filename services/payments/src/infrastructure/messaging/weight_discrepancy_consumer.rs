@@ -104,6 +104,22 @@ impl WeightDiscrepancyConsumer {
             return Ok(());
         }
 
+        // Apply 5 % tolerance band — only surcharge when overage exceeds 5 % of declared weight.
+        // A minor discrepancy from hub scales (calibration drift, packaging rounding) should not
+        // trigger a merchant invoice. The 5 % band matches Track B billing spec.
+        if d.declared_grams > 0 {
+            let overage_ratio = (d.delta_grams as f64) / (d.declared_grams as f64);
+            if overage_ratio <= 0.05 {
+                tracing::debug!(
+                    awb            = %d.master_awb,
+                    delta_grams    = d.delta_grams,
+                    declared_grams = d.declared_grams,
+                    "Weight overage within 5 % tolerance band — skipping surcharge"
+                );
+                return Ok(());
+            }
+        }
+
         let tenant_id   = TenantId::from_uuid(d.tenant_id);
         let merchant_id = MerchantId::from_uuid(d.merchant_id);
 

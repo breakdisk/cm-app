@@ -15,7 +15,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/health", get(health::health))
         .route("/ready",  get(health::ready))
         .nest("/v1", protected_router(state.clone()))
+        .nest("/v1", internal_router())
         .with_state(state)
+}
+
+/// Internal service-to-service routes — no JWT, protected by Istio mTLS in production.
+fn internal_router() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/internal/pop-status", get(pod::pop_status_internal))
 }
 
 fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
