@@ -226,7 +226,12 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: services/${{ matrix.service }}
+          # Each service Dockerfile is a Cargo-workspace build: it COPYs the
+          # root Cargo.toml/Cargo.lock, libs/, and services/ trees. The build
+          # context must therefore be the repo root, not the service subdir —
+          # otherwise the first `COPY Cargo.toml` fails and the image never
+          # rebuilds, leaving a stale pre-POP pod image in production.
+          context: .
           file: services/${{ matrix.service }}/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
