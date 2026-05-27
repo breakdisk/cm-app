@@ -58,7 +58,8 @@ pub async fn run() -> anyhow::Result<()> {
     // from AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY — but those are typically
     // 20-char AWS keys that R2 rejects with "Credential access key has length 20,
     // should be 32".
-    let s3_bucket           = std::env::var("S3_BUCKET").unwrap_or_else(|_| "logisticos-pod".to_string());
+    let s3_bucket           = std::env::var("S3_BUCKET").unwrap_or_else(|_| "logisticos-pod-photos".to_string());
+    let pop_s3_bucket       = std::env::var("POP_S3_BUCKET").unwrap_or_else(|_| "logisticos-pop-photos".to_string());
     let s3_endpoint         = std::env::var("S3_ENDPOINT_URL").ok();
     let s3_region           = std::env::var("S3_REGION").or_else(|_| std::env::var("AWS_REGION")).ok();
     let s3_force_path_style = std::env::var("S3_FORCE_PATH_STYLE")
@@ -114,9 +115,13 @@ pub async fn run() -> anyhow::Result<()> {
             None
         }
     };
-    let storage = Arc::new(
-        S3StorageAdapter::new(s3_endpoint, s3_bucket, s3_region, s3_force_path_style, s3_credentials).await
-            .context("Failed to init S3 storage")?
+    let pod_storage = Arc::new(
+        S3StorageAdapter::new(s3_endpoint.clone(), s3_bucket, s3_region.clone(), s3_force_path_style, s3_credentials.clone()).await
+            .context("Failed to init POD S3 storage (logisticos-pod-photos)")?
+    );
+    let pop_storage = Arc::new(
+        S3StorageAdapter::new(s3_endpoint, pop_s3_bucket, s3_region, s3_force_path_style, s3_credentials).await
+            .context("Failed to init POP S3 storage (logisticos-pop-photos)")?
     );
 
     // Twilio SMS for OTP delivery.
@@ -150,12 +155,13 @@ pub async fn run() -> anyhow::Result<()> {
     let telemetry     = Arc::new(PgTelemetryRepository::new(pool.clone()));
 
     let pod_service = Arc::new(PodService::new(
-        Arc::clone(&pod_repo)    as _,
-        Arc::clone(&otp_repo)    as _,
-        Arc::clone(&pickup_repo) as _,
-        Arc::clone(&telemetry)   as _,
-        Arc::clone(&storage)     as _,
-        Arc::clone(&sms)         as _,
+        Arc::clone(&pod_repo)     as _,
+        Arc::clone(&otp_repo)     as _,
+        Arc::clone(&pickup_repo)  as _,
+        Arc::clone(&telemetry)    as _,
+        Arc::clone(&pod_storage)  as _,
+        Arc::clone(&pop_storage)  as _,
+        Arc::clone(&sms)          as _,
         Arc::clone(&kafka),
     ));
 

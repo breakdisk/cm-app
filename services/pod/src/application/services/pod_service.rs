@@ -29,7 +29,11 @@ pub struct PodService {
     otp_repo:     Arc<dyn OtpRepository>,
     pickup_repo:  Arc<dyn PickupRepository>,
     telemetry:    Arc<dyn TelemetryRepository>,
-    storage:      Arc<dyn StorageAdapter>,
+    /// Bucket for Proof-of-Delivery photos (`logisticos-pod-photos`).
+    pod_storage:  Arc<dyn StorageAdapter>,
+    /// Separate bucket for Proof-of-Pickup photos (`logisticos-pop-photos`).
+    /// Keeps pickup evidence partitioned from delivery evidence in R2.
+    pop_storage:  Arc<dyn StorageAdapter>,
     sms:          Arc<dyn SmsAdapter>,
     kafka:        Arc<KafkaProducer>,
 }
@@ -40,11 +44,12 @@ impl PodService {
         otp_repo:    Arc<dyn OtpRepository>,
         pickup_repo: Arc<dyn PickupRepository>,
         telemetry:   Arc<dyn TelemetryRepository>,
-        storage:     Arc<dyn StorageAdapter>,
+        pod_storage: Arc<dyn StorageAdapter>,
+        pop_storage: Arc<dyn StorageAdapter>,
         sms:         Arc<dyn SmsAdapter>,
         kafka:       Arc<KafkaProducer>,
     ) -> Self {
-        Self { pod_repo, otp_repo, pickup_repo, telemetry, storage, sms, kafka }
+        Self { pod_repo, otp_repo, pickup_repo, telemetry, pod_storage, pop_storage, sms, kafka }
     }
 
     /// Step 1: Driver initiates POD capture at delivery location.
@@ -175,7 +180,7 @@ impl PodService {
             if content_type.contains("png") { "png" } else if content_type.contains("webp") { "webp" } else { "jpg" }
         );
 
-        let presigned = self.storage
+        let presigned = self.pod_storage
             .presign_upload(&s3_key, content_type, 900)
             .await
             .map_err(AppError::Internal)?;
@@ -538,7 +543,7 @@ impl PodService {
             ext,
         );
 
-        let presigned = self.storage
+        let presigned = self.pop_storage
             .presign_upload(&s3_key, content_type, 900)
             .await
             .map_err(AppError::Internal)?;
@@ -629,7 +634,7 @@ impl PodService {
     /// Generates a presigned download URL for the pickup photo (1-hour TTL).
     pub async fn pop_to_view(&self, pop: &ProofOfPickup) -> serde_json::Value {
         let photo_url: Option<String> = if let Some(ref key) = pop.photo_s3_key {
-            self.storage.presign_download(key, 3600).await
+            self.pop_storage.presign_download(key, 3600).await
                 .map_err(|e| tracing::warn!(error = %e, s3_key = %key, "Failed to presign POP photo"))
                 .ok()
         } else {
@@ -668,7 +673,7 @@ impl PodService {
     /// and converts signature base64 to a data URI the browser can render.
     pub async fn pod_to_view(&self, pod: &ProofOfDelivery) -> serde_json::Value {
         let photo_url: Option<String> = if let Some(photo) = pod.photos.first() {
-            self.storage.presign_download(&photo.s3_key, 3600).await
+            self.pod_storage.presign_download(&photo.s3_key, 3600).await
                 .map_err(|e| tracing::warn!(error = %e, s3_key = %photo.s3_key, "Failed to presign POD photo"))
                 .ok()
         } else {
