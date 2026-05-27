@@ -54,10 +54,12 @@ import {
   formatCentsPhp,
   SIZE_CLASS_CAPACITY_HINT,
   SIZE_CLASS_LABEL,
+  VEHICLE_FEATURE_LABEL,
   type BookingStatus,
   type ListingStatus,
   type MarketplaceBooking,
   type SizeClass,
+  type VehicleFeature,
   type VehicleListing,
 } from "@/lib/api/marketplace";
 import { findReceiptByBookingId, type BusReceipt } from "@/lib/api/marketplace-bus";
@@ -180,6 +182,7 @@ type DrawerMode =
 interface DrawerFormState {
   vehicle_plate: string;
   size_class: SizeClass;
+  features: VehicleFeature[];
   max_weight_kg: number;
   max_volume_m3: number | null;
   base_price_cents: number;
@@ -192,12 +195,15 @@ interface DrawerFormState {
   carrier_response_window_mins: number;
 }
 
+const ALL_FEATURES: VehicleFeature[] = ["tail_lift", "chiller", "freezer"];
+
 function defaultForm(): DrawerFormState {
   const now = new Date();
   const end = new Date(now.getTime() + 6 * 3_600_000);
   return {
     vehicle_plate: "",
     size_class: "van",
+    features: [],
     max_weight_kg: 800,
     max_volume_m3: 5,
     base_price_cents: 90_000,
@@ -215,6 +221,7 @@ function fromListing(l: VehicleListing): DrawerFormState {
   return {
     vehicle_plate: l.vehicle_plate,
     size_class:    l.size_class,
+    features:      l.features ?? [],
     max_weight_kg: l.max_weight_kg,
     max_volume_m3: l.max_volume_m3,
     base_price_cents: l.base_price_cents,
@@ -268,6 +275,7 @@ function ListingDrawer({
         await createListing({
           vehicle_plate:    form.vehicle_plate,
           size_class:       form.size_class,
+          features:         form.features,
           max_weight_kg:    form.max_weight_kg,
           max_volume_m3:    form.max_volume_m3,
           base_price_cents: form.base_price_cents,
@@ -359,6 +367,47 @@ function ListingDrawer({
                   <p className="mt-1 text-2xs text-white/40">
                     Guide: {SIZE_CLASS_CAPACITY_HINT[form.size_class]}
                   </p>
+                </Field>
+
+                <Field label="Vehicle features">
+                  <div className="flex flex-col gap-2">
+                    {ALL_FEATURES.map((feature) => {
+                      const checked = form.features.includes(feature);
+                      return (
+                        <label key={feature} className="flex items-center gap-2.5 cursor-pointer group">
+                          <div
+                            onClick={() =>
+                              setForm((f) => ({
+                                ...f,
+                                features: checked
+                                  ? f.features.filter((x) => x !== feature)
+                                  : [...f.features, feature],
+                              }))
+                            }
+                            className={`flex h-4 w-4 flex-shrink-0 items-center justify-center rounded border transition-all ${
+                              checked
+                                ? "border-green-signal bg-green-signal/20 text-green-signal"
+                                : "border-glass-border bg-canvas-100 group-hover:border-glass-border-bright"
+                            }`}
+                          >
+                            {checked && (
+                              <svg className="h-2.5 w-2.5" viewBox="0 0 10 10" fill="none">
+                                <path d="M1.5 5l2.5 2.5 4.5-4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                              </svg>
+                            )}
+                          </div>
+                          <div>
+                            <span className={`text-sm ${checked ? "text-white" : "text-white/60"}`}>
+                              {VEHICLE_FEATURE_LABEL[feature]}
+                            </span>
+                            {feature === "tail_lift" && <p className="text-2xs text-white/30">Hydraulic rear gate for loading/unloading at ground level</p>}
+                            {feature === "chiller"   && <p className="text-2xs text-white/30">Temperature-controlled: 0–8 °C — dairy, fresh produce, pharma</p>}
+                            {feature === "freezer"   && <p className="text-2xs text-white/30">Sub-zero freezer: −18 °C — meat, seafood, frozen goods</p>}
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
                 </Field>
 
                 <div className="grid grid-cols-2 gap-4">

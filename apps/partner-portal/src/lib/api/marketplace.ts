@@ -25,13 +25,19 @@ const CARRIER_SVC_URL = process.env.NEXT_PUBLIC_CARRIER_URL ?? "http://localhost
 export type ListingStatus = "active" | "paused" | "booked" | "expired";
 
 export type SizeClass =
+  | "scooter_bicycle"
   | "motorcycle"
   | "sedan"
   | "van"
-  | "l300"
-  | "6wheeler"
-  | "10wheeler"
-  | "trailer";
+  | "1ton"
+  | "3ton"
+  | "7ton"
+  | "10ton"
+  | "trailer"
+  | "refrigerated_truck"
+  | "recovery_truck";
+
+export type VehicleFeature = "tail_lift" | "chiller" | "freezer";
 
 export interface VehicleListing {
   id:                       string;
@@ -39,6 +45,7 @@ export interface VehicleListing {
   carrier_id:               string;
   vehicle_plate:             string;
   size_class:               SizeClass;
+  features:                 VehicleFeature[];
   max_weight_kg:            number;
   max_volume_m3:            number | null;
   base_price_cents:         number;
@@ -258,23 +265,37 @@ export async function fetchReceiptForBooking(bookingId: string): Promise<BusRece
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 export const SIZE_CLASS_LABEL: Record<SizeClass, string> = {
-  motorcycle:  "Motorcycle",
-  sedan:       "Sedan",
-  van:         "Van",
-  l300:        "L300 / Pickup",
-  "6wheeler":  "6-Wheeler",
-  "10wheeler": "10-Wheeler",
-  trailer:     "Trailer",
+  scooter_bicycle:    "Scooter / Bicycle",
+  motorcycle:         "Motorcycle",
+  sedan:              "Sedan",
+  van:                "Van",
+  "1ton":             "1 Ton",
+  "3ton":             "3 Ton",
+  "7ton":             "7 Ton",
+  "10ton":            "10 Ton",
+  trailer:            "Trailer",
+  refrigerated_truck: "Refrigerated Truck",
+  recovery_truck:     "Recovery Truck",
 };
 
 export const SIZE_CLASS_CAPACITY_HINT: Record<SizeClass, string> = {
-  motorcycle:  "Up to 30 kg · 0.25 m³",
-  sedan:       "Up to 200 kg · 1.2 m³",
-  van:         "Up to 800 kg · 5 m³",
-  l300:        "Up to 1,500 kg · 8.5 m³",
-  "6wheeler":  "Up to 6,000 kg · 22 m³",
-  "10wheeler": "Up to 12,000 kg · 40 m³",
-  trailer:     "Up to 25,000 kg · 80 m³",
+  scooter_bicycle:    "Up to 20 kg · 0.1 m³",
+  motorcycle:         "Up to 30 kg · 0.25 m³",
+  sedan:              "Up to 200 kg · 1.2 m³",
+  van:                "Up to 800 kg · 5 m³",
+  "1ton":             "Up to 1,000 kg · 6 m³",
+  "3ton":             "Up to 3,000 kg · 14 m³",
+  "7ton":             "Up to 7,000 kg · 28 m³",
+  "10ton":            "Up to 10,000 kg · 40 m³",
+  trailer:            "Up to 25,000 kg · 80 m³ · Flatbed available",
+  refrigerated_truck: "Up to 5,000 kg · 22 m³ · Chiller / Freezer",
+  recovery_truck:     "Vehicle towing · capacity by cargo vehicle quote",
+};
+
+export const VEHICLE_FEATURE_LABEL: Record<VehicleFeature, string> = {
+  tail_lift: "Tail-lift",
+  chiller:   "Chiller (0–8 °C)",
+  freezer:   "Freezer (−18 °C)",
 };
 
 export function formatCentsPhp(cents: number): string {

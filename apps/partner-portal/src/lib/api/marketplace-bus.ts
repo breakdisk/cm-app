@@ -22,34 +22,20 @@ export type BusBookingStatus =
   | "cancelled"
   | "disputed";
 
-export interface BusReceipt {
-  id:                   string;
-  booking_id:           string;
-  receipt_no:           string;
-  awb:                  string;
-  partner_display_name: string;
-  issued_by_name:       string;
-  merchant_display:     string;
-  consumer_display:     string;
-  pickup_label:         string;
-  dropoff_label:        string;
-  pickup_at:            string;
-  cargo_weight_kg:      number;
-  size_class:           BusSizeClass;
-  quoted_price_cents:   number;
-  issued_at:            string;
-  signed_by?:           string;
-  notes?:               string;
-}
-
 export type BusSizeClass =
+  | "scooter_bicycle"
   | "motorcycle"
   | "sedan"
   | "van"
-  | "l300"
-  | "6wheeler"
-  | "10wheeler"
-  | "trailer";
+  | "1ton"
+  | "3ton"
+  | "7ton"
+  | "10ton"
+  | "trailer"
+  | "refrigerated_truck"
+  | "recovery_truck";
+
+export type BusVehicleFeature = "tail_lift" | "chiller" | "freezer";
 
 export type BusMerchantType = "business" | "consumer";
 
@@ -65,6 +51,8 @@ export interface BusBooking {
   merchant_display:     string;             // visible name on merchant/admin views
   consumer_display:     string;             // masked preview visible on partner side pre-accept
   size_class:           BusSizeClass;
+  features:             BusVehicleFeature[];
+  cargo_description:    string | null;
   cargo_weight_kg:      number;
   pickup_label:         string;
   dropoff_label:        string;
@@ -124,9 +112,11 @@ function safeParse(raw: string | null): BusBooking[] {
     // Back-fill pickup fields on older rows written before the schema gained
     // them — keeps the demo functional after an in-place upgrade.
     return (parsed as Partial<BusBooking>[]).map((b) => ({
-      picked_up_at:  null,
-      picked_up_by:  null,
-      pickup_notes:  null,
+      picked_up_at:     null,
+      picked_up_by:     null,
+      pickup_notes:     null,
+      features:         [],
+      cargo_description: null,
       ...b,
     })) as BusBooking[];
   } catch {

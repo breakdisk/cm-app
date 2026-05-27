@@ -48,6 +48,7 @@ import {
   fetchMarketplaceStats,
   formatCentsPhp,
   SIZE_CLASS_LABEL,
+  VEHICLE_FEATURE_LABEL,
   subscribeToMarketplaceUpdates,
   type AdminListing,
   type AdminBooking,
@@ -55,6 +56,7 @@ import {
   type ListingStatus,
   type MarketplaceStats,
   type PartnerType,
+  type VehicleFeature,
 } from "@/lib/api/marketplace";
 import { findReceiptByBookingId, type BusReceipt } from "@/lib/api/marketplace-bus";
 import { ReceiptModal, type ReceiptModalBooking } from "@/components/marketplace/ReceiptModal";
@@ -818,6 +820,17 @@ function ListingsTable({
                         <p className="mt-0.5 text-2xs text-white/50">
                           {SIZE_CLASS_LABEL[l.size_class]}
                         </p>
+                        {l.features && l.features.length > 0 && (
+                          <div className="flex flex-wrap gap-0.5 mt-0.5">
+                            {(l.features as VehicleFeature[]).map((f) => (
+                              <span key={f} className={`rounded-full px-1 py-0.5 text-2xs font-mono ${
+                                f === "freezer" ? "bg-cyan-surface/60 text-cyan-neon/80" :
+                                f === "chiller" ? "bg-purple-surface/60 text-purple-plasma/80" :
+                                "bg-amber-surface/60 text-amber-signal/80"
+                              }`}>{VEHICLE_FEATURE_LABEL[f]}</span>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </td>
