@@ -70,7 +70,10 @@ jobs:
       - name: Build and push ${{ matrix.service }} image
         uses: docker/build-push-action@v5
         with:
-          context: services/${{ matrix.service }}
+          # Workspace build: the Dockerfile COPYs root Cargo.toml/Cargo.lock,
+          # libs/, and services/ — so the context must be the repo root.
+          context: .
+          file: services/${{ matrix.service }}/Dockerfile
           push: true
           tags: |
             ghcr.io/${{ env.IMAGE_ORG }}/logisticos-${{ matrix.service }}:${{ github.sha }}
