@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.logisticos.driver.core.network.auth.SessionManager
 import io.logisticos.driver.core.network.service.IdentityApiService
+import okhttp3.OkHttpClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -26,7 +27,8 @@ data class ProfileUiState(
 @HiltViewModel
 class ProfileViewModel @Inject constructor(
     val sessionManager: SessionManager,
-    private val identityApi: IdentityApiService
+    private val identityApi: IdentityApiService,
+    private val okHttpClient: OkHttpClient,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(
@@ -66,8 +68,14 @@ class ProfileViewModel @Inject constructor(
         }
     }
 
-    /** Clears JWT/session data before the caller triggers Activity.recreate(). */
+    /**
+     * Cancels all in-flight OkHttp calls THEN clears the session.
+     * Order matters: cancelAll() unblocks any TokenAuthenticator.runBlocking
+     * threads that occupy dispatcher slots waiting for a token refresh — without
+     * this, sendOtp on the login screen queues forever behind them.
+     */
     fun logout() {
+        okHttpClient.dispatcher.cancelAll()
         sessionManager.clearSession()
     }
 }
