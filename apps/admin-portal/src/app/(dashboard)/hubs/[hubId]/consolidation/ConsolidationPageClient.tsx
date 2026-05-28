@@ -20,7 +20,14 @@ import { useHubEvents } from '@/hooks/useHubEvents';
 import { cn } from '@/lib/utils';
 
 // R3F Canvas — SSR-disabled (WebGL needs browser).
-const PackingCanvas = dynamic(() => import('./PackingCanvas'), { ssr: false });
+const PackingCanvas = dynamic(() => import('./PackingCanvas'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-full items-center justify-center">
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan-500 border-t-transparent" />
+    </div>
+  ),
+});
 const TruckSpecModal = dynamic(() => import('./TruckSpecModal'), { ssr: false });
 
 // ── Client-side collision / bounds helpers ────────────────────────────────────
@@ -149,9 +156,11 @@ function NudgeBtn({
 interface Props {
   hubId:       string;
   token:       string;
-  /** Override root height class. Defaults to h-[calc(100vh-4rem)] for the
-   *  standalone full-page route. Pass a smaller value when embedding inside
-   *  a tabbed layout (e.g. "h-[calc(100vh-10rem)]"). */
+  /** Override root height class.
+   *  - Standalone full-page route: omit (defaults to h-[calc(100vh-6rem)] md:h-[calc(100vh-7rem)]
+   *    which accounts for the dashboard header + p-4/p-6 padding).
+   *  - Embedded in a tabbed layout: pass "h-full" so the component fills the
+   *    parent container whose height is already fixed by the tab layout. */
   heightClass?: string;
 }
 
@@ -365,9 +374,13 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
   // ── Selected box info ────────────────────────────────────────────────────────
   const selectedPlacement = placements.find(p => p.awb === selectedAwb) ?? null;
 
+  // Height sentinel used by loading / error states — identical logic to the
+  // main content wrapper so the full viewport area is always claimed.
+  const rootH = heightClass ?? 'h-[calc(100vh-6rem)] md:h-[calc(100vh-7rem)]';
+
   if (loading) {
     return (
-      <div className="flex h-full items-center justify-center">
+      <div className={cn('flex items-center justify-center', rootH)}>
         <div className="flex flex-col items-center gap-3">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan-500 border-t-transparent" />
           <span className="text-sm text-white/40">Loading consolidation plan…</span>
@@ -378,7 +391,7 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
 
   if (initError) {
     return (
-      <div className="flex h-full items-center justify-center">
+      <div className={cn('flex items-center justify-center', rootH)}>
         <div className="flex flex-col items-center gap-4 text-center max-w-xs">
           <AlertTriangle size={32} className="text-amber-400" />
           <p className="text-sm font-mono text-white/60">{initError}</p>
@@ -395,7 +408,7 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
 
   return (
     <>
-      <div className={cn('flex gap-4 p-4 overflow-hidden', heightClass ?? 'h-[calc(100vh-4rem)]')}>
+      <div className={cn('flex gap-4 p-4 overflow-hidden', rootH)}>
 
         {/* ── Left panel ─────────────────────────────────────────────── */}
         <div className="flex w-64 shrink-0 flex-col gap-3 overflow-y-auto">

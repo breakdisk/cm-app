@@ -24,9 +24,7 @@ export default async function ConsolidationPage({ params }: Props) {
   }
 
   return (
-    <div className="h-full w-full overflow-hidden">
-      <ConsolidationPageClient hubId={hubId} token={token} />
-    </div>
+    <ConsolidationPageClient hubId={hubId} token={token} />
   );
 }
 
