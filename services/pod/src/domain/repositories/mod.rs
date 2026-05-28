@@ -21,10 +21,13 @@ pub trait OtpRepository: Send + Sync {
 #[async_trait]
 pub trait PickupRepository: Send + Sync {
     async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<ProofOfPickup>>;
-    /// Returns the active (non-submitted) POP for a shipment, if any.
+    /// Returns the most recent POP (any status) for a shipment.
     async fn find_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfPickup>>;
-    /// Upsert — idempotent; uses `ON CONFLICT (shipment_id) WHERE status = 'submitted'`
-    /// to ensure only one submitted POP per shipment.
+    /// Returns the completed (submitted) POP for a shipment, or None if pickup has
+    /// not yet been captured. Used by the carrier/container assignment guard to block
+    /// sea-container loading until the chain of custody is open.
+    async fn find_completed_by_shipment(&self, shipment_id: Uuid) -> anyhow::Result<Option<ProofOfPickup>>;
+    /// Upsert — idempotent; uses `ON CONFLICT (id) DO UPDATE` for draft → submitted transitions.
     async fn save(&self, pop: &ProofOfPickup) -> anyhow::Result<()>;
 }
 

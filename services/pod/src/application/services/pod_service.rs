@@ -625,6 +625,13 @@ impl PodService {
         self.pickup_repo.find_by_shipment(shipment_id).await.map_err(AppError::Internal)
     }
 
+    /// Retrieve the *completed* (submitted) POP for a shipment.
+    /// Returns `None` when pickup has not yet been captured or is still in draft.
+    /// Used by `pop_status_internal` and the carrier container-load guard.
+    pub async fn get_completed_pop_by_shipment(&self, shipment_id: Uuid) -> AppResult<Option<ProofOfPickup>> {
+        self.pickup_repo.find_completed_by_shipment(shipment_id).await.map_err(AppError::Internal)
+    }
+
     /// Retrieve the most recent POD for a shipment (for admin portal panel).
     pub async fn get_by_shipment(&self, shipment_id: Uuid) -> AppResult<Option<ProofOfDelivery>> {
         self.pod_repo.find_by_shipment(shipment_id).await.map_err(AppError::Internal)

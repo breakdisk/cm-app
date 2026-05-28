@@ -77,28 +77,37 @@ export async function GET(request: NextRequest) {
   const query = `shipment_id=${shipmentId}`;
 
   // ── Level 1: pod service directly (fastest, no gateway hop) ──────────────
-  let res =
-    await tryFetch(`${POD_INTERNAL_URL}/v1/pops?${query}`, headers);
+  // Try regardless of 404 vs network error — a 404 here means the pod image
+  // pre-dates the POP routing fix; fall through to gateway paths in that case.
+  let res = await tryFetch(`${POD_INTERNAL_URL}/v1/pops?${query}`, headers);
 
   // ── Level 2: internal gateway /v1/pops (updated image required) ─────────
-  if (!res) {
-    res = await tryFetch(`${INTERNAL_GATEWAY_URL}/v1/pops?${query}`, headers);
+  // Try when Level 1 fails for any reason — network error OR 404 (stale image).
+  // The gateway may have a fresh pod upstream even if the direct pod hostname
+  // still resolves to the old container (e.g. during a rolling restart).
+  if (!res || res.status === 404) {
+    const gwRes = await tryFetch(`${INTERNAL_GATEWAY_URL}/v1/pops?${query}`, headers);
+    if (gwRes && gwRes.status !== 404) res = gwRes;
   }
 
-  // ── Level 3: internal gateway /v1/pod/pops alias (old-image compat) ──────
+  // ── Level 3: internal gateway /v1/pod/pops alias (old-gateway compat) ────
   // Old gateway images route /v1/pod* → pod service, so /v1/pod/pops works
   // even before the gateway is redeployed with explicit /v1/pops routing.
+  // The pod service always registers this alias since commit c2d5de5.
   if (!res || res.status === 404) {
     const aliasRes = await tryFetch(`${INTERNAL_GATEWAY_URL}/v1/pod/pops?${query}`, headers);
     if (aliasRes && aliasRes.status !== 404) res = aliasRes;
   }
 
-  // ── Level 4: public gateway URL (local dev fallback) ─────────────────────
-  if (!res) {
-    res = await tryFetch(`${PUBLIC_GATEWAY_URL}/v1/pod/pops?${query}`, headers);
+  // ── Level 4: public gateway URL (local dev / direct-URL fallback) ─────────
+  // Last resort: try the public-facing gateway alias. Covers local dev without
+  // Docker Compose and Dokploy deployments where only the public URL is routed.
+  if (!res || res.status === 404) {
+    const pubRes = await tryFetch(`${PUBLIC_GATEWAY_URL}/v1/pod/pops?${query}`, headers);
+    if (pubRes && pubRes.status !== 404) res = pubRes;
   }
 
-  // All three paths threw network errors — nothing is reachable.
+  // All paths returned network errors — nothing is reachable.
   if (!res) {
     return NextResponse.json(
       { error: "POP service unreachable — all upstream paths failed (pod direct, internal gateway, public gateway)" },
@@ -106,13 +115,12 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  // A 404 from any upstream means the gateway has no route for /v1/pops
-  // (stale image pre-dating the routing fix). Return 503 so the client can
-  // distinguish "proxy route missing" (real 404 from Next.js) from
-  // "gateway routing outdated" (503 from this proxy).
+  // Every reachable upstream returned 404 — the pod image pre-dates the POP
+  // routing fix. Return 503 so the client can distinguish this from a real 404
+  // (which Next.js emits when THIS route file doesn't exist in the build).
   if (res.status === 404) {
     return NextResponse.json(
-      { error: "API gateway has no route for /v1/pops — redeploy with: docker compose pull api-gateway && docker compose up -d --no-deps api-gateway" },
+      { error: "Pod service has no route for /v1/pops — redeploy with: docker compose pull pod && docker compose up -d --no-deps pod" },
       { status: 503 }
     );
   }
