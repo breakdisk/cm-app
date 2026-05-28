@@ -209,7 +209,8 @@ function HubDetailDrawer({ hub, onClose }: { hub: Hub; onClose: () => void }) {
 }
 
 export default function HubOpsPage() {
-  const api = useMemo(() => createHubsApi(), []);
+  const api    = useMemo(() => createHubsApi(), []);
+  const router = useRouter();
 
   const [hubs, setHubs]               = useState<Hub[]>([]);
   const [loading, setLoading]         = useState(true);
@@ -370,15 +371,25 @@ export default function HubOpsPage() {
                       <AlertTriangle size={10} /> Near capacity
                     </div>
                   )}
-                  {/* Cross-portal: manifests (daily pickup/delivery lists) live in partner-portal */}
-                  <a
-                    href={`/partner/manifests?hub=${encodeURIComponent(id)}`}
-                    title="Open hub manifests in Partner Portal"
-                    onClick={(e) => e.stopPropagation()}
-                    className="ml-auto inline-flex items-center gap-1 rounded-md border border-glass-border bg-glass-100 px-1.5 py-0.5 text-2xs font-mono text-white/50 hover:border-cyan-neon/40 hover:text-cyan-neon transition-colors"
-                  >
-                    <FileText size={9} /> Manifests
-                  </a>
+                  <div className="ml-auto flex items-center gap-1.5">
+                    {/* 3D Load Planner — one-click from the hub card */}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); router.push(`/hubs/${id}?tab=plan-load`); }}
+                      title="Open 3D Load Planner"
+                      className="inline-flex items-center gap-1 rounded-md border border-cyan-neon/30 bg-cyan-neon/5 px-1.5 py-0.5 text-2xs font-mono text-cyan-neon/70 hover:border-cyan-neon/60 hover:text-cyan-neon transition-colors"
+                    >
+                      <Boxes size={9} /> 3D Plan
+                    </button>
+                    {/* Cross-portal: manifests (daily pickup/delivery lists) live in partner-portal */}
+                    <a
+                      href={`/partner/manifests?hub=${encodeURIComponent(id)}`}
+                      title="Open hub manifests in Partner Portal"
+                      onClick={(e) => e.stopPropagation()}
+                      className="inline-flex items-center gap-1 rounded-md border border-glass-border bg-glass-100 px-1.5 py-0.5 text-2xs font-mono text-white/50 hover:border-cyan-neon/40 hover:text-cyan-neon transition-colors"
+                    >
+                      <FileText size={9} /> Manifests
+                    </a>
+                  </div>
                 </div>
               </GlassCard>
             );

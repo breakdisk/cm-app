@@ -164,17 +164,22 @@ function OverviewTab({ hub, manifest, manifestLoading, onGoToPlanLoad }: {
               {manifest ? manifest.count : '—'}
               <span className="text-sm text-white/30 ml-1">parcels</span>
             </p>
-            {manifest && manifest.count > 0 && (
-              <button
-                onClick={onGoToPlanLoad}
-                className="mt-4 flex w-full items-center justify-between rounded-xl border border-cyan-neon/30 bg-cyan-neon/5 px-4 py-3 text-sm font-semibold text-cyan-neon hover:border-cyan-neon/60 hover:bg-cyan-neon/10 transition-all"
-              >
-                <span className="flex items-center gap-2">
-                  <Boxes size={14} /> Plan Load (3D)
-                </span>
+            <button
+              onClick={onGoToPlanLoad}
+              className="mt-4 flex w-full items-center justify-between rounded-xl border border-cyan-neon/30 bg-cyan-neon/5 px-4 py-3 text-sm font-semibold text-cyan-neon hover:border-cyan-neon/60 hover:bg-cyan-neon/10 transition-all"
+            >
+              <span className="flex items-center gap-2">
+                <Boxes size={14} /> Plan Load (3D)
+              </span>
+              <div className="flex items-center gap-2">
+                {manifest && manifest.count > 0 && (
+                  <span className="font-mono text-xs text-cyan-neon/60">
+                    {manifest.count} parcels
+                  </span>
+                )}
                 <ArrowRight size={14} />
-              </button>
-            )}
+              </div>
+            </button>
           </GlassCard>
         </motion.div>
       </div>
