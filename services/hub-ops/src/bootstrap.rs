@@ -639,6 +639,12 @@ async fn check_billing_clearance(
 
 /// Calls pod service `GET /v1/internal/pop-status?shipment_ids=...`
 /// Returns (all_completed, shipment_ids_missing_pop).
+///
+/// If the pod service returns 404 the `/v1/internal/pop-status` route does not
+/// exist on that image (pre-POP deployment). In that case we emit a warning and
+/// return `(true, [])` — allowing the load to proceed rather than blocking all
+/// container operations with a 500. A proper POP gate is enforced once the pod
+/// image is redeployed with the POP endpoints.
 async fn check_pop_status(
     pod_url:      &str,
     shipment_ids: &[Uuid],
@@ -658,8 +664,21 @@ async fn check_pop_status(
     let resp = client.get(&url).send().await
         .map_err(|e| anyhow::anyhow!("Failed to call pod pop-status: {e}"))?;
 
-    if !resp.status().is_success() {
-        let status = resp.status();
+    let status = resp.status();
+
+    // 404 means the pod image pre-dates the POP routing fix.
+    // Degrade gracefully: allow the load but emit a prominent warning.
+    if status == reqwest::StatusCode::NOT_FOUND {
+        tracing::warn!(
+            pod_url = %pod_url,
+            "Pod service returned 404 on /v1/internal/pop-status — \
+             image is outdated and does not have POP endpoints. \
+             POP gate bypassed. Redeploy the pod service to enforce POP checks."
+        );
+        return Ok((true, vec![]));
+    }
+
+    if !status.is_success() {
         anyhow::bail!("Pod service pop-status returned HTTP {status}");
     }
 

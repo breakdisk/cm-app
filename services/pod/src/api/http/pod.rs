@@ -7,7 +7,6 @@ use logisticos_types::{DriverId, TenantId};
 use crate::{
     api::http::AppState,
     application::commands::*,
-    domain::entities::PopStatus,
 };
 
 #[derive(serde::Deserialize)]
@@ -268,8 +267,8 @@ pub async fn pop_status_internal(
     let mut all_completed = true;
 
     for shipment_id in &q.shipment_ids {
-        let pop = state.pod_service.get_pop_by_shipment(*shipment_id).await?;
-        let has_completed_pop = pop.map_or(false, |p| p.status == PopStatus::Submitted);
+        let pop = state.pod_service.get_completed_pop_by_shipment(*shipment_id).await?;
+        let has_completed_pop = pop.is_some();
         if !has_completed_pop {
             all_completed = false;
         }
