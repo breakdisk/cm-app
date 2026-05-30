@@ -1,4 +1,5 @@
 use anyhow::{bail, Context};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const MAX_FILE_BYTES: usize = 10 * 1024 * 1024; // 10 MB
 const PRESIGN_TTL_SECS: u64 = 900;              // 15 minutes
@@ -6,6 +7,9 @@ const PRESIGN_TTL_SECS: u64 = 900;              // 15 minutes
 pub struct DocumentStorage {
     client: aws_sdk_s3::Client,
     bucket: String,
+    /// Set once the bucket has been confirmed to exist (HEAD ok or created).
+    /// Lets the happy-path upload skip the defensive clone-and-retry below.
+    bucket_ready: AtomicBool,
 }
 
 impl DocumentStorage {
@@ -40,12 +44,20 @@ impl DocumentStorage {
             .build();
 
         let client = aws_sdk_s3::Client::from_conf(s3_cfg);
-        let storage = Self { client, bucket: cfg.bucket.clone() };
+        let storage = Self {
+            client,
+            bucket: cfg.bucket.clone(),
+            bucket_ready: AtomicBool::new(false),
+        };
 
         // MinIO does not auto-create buckets on first put_object — it returns
         // NoSuchBucket. There is no init container provisioning it, so we
-        // self-heal here. Idempotent: existing bucket → no-op.
-        storage.ensure_bucket().await;
+        // self-heal here. Idempotent: existing bucket → no-op. If this fails
+        // (e.g. MinIO not ready yet at startup — compliance only depends on it
+        // with `service_started`), `upload()` retries the provisioning lazily
+        // so a slow-starting backend never wedges KYC uploads permanently.
+        let ready = storage.ensure_bucket().await;
+        storage.bucket_ready.store(ready, Ordering::Relaxed);
 
         Ok(storage)
     }
@@ -53,23 +65,29 @@ impl DocumentStorage {
     /// Ensure the configured bucket exists. Best-effort and non-fatal: on real
     /// AWS/R2 the bucket is pre-provisioned and the key may lack CreateBucket
     /// permission, so a failure is logged (uploads will then surface the real
-    /// error) rather than blocking service startup.
-    async fn ensure_bucket(&self) {
+    /// error) rather than blocking service startup. Returns `true` when the
+    /// bucket is confirmed reachable/created.
+    async fn ensure_bucket(&self) -> bool {
         if self.client.head_bucket().bucket(&self.bucket).send().await.is_ok() {
-            return; // already exists and we can reach it
+            return true; // already exists and we can reach it
         }
         match self.client.create_bucket().bucket(&self.bucket).send().await {
-            Ok(_) => tracing::info!(bucket = %self.bucket, "created compliance storage bucket"),
+            Ok(_) => {
+                tracing::info!(bucket = %self.bucket, "created compliance storage bucket");
+                true
+            }
             Err(e) => {
                 let detail = format!("{:?}", e);
                 if detail.contains("BucketAlreadyOwnedByYou") || detail.contains("BucketAlreadyExists") {
                     tracing::debug!(bucket = %self.bucket, "storage bucket already exists");
+                    true
                 } else {
                     tracing::warn!(
                         bucket = %self.bucket,
                         error = %detail,
-                        "could not ensure storage bucket exists; uploads may fail until it is created manually",
+                        "could not ensure storage bucket exists; will retry lazily on next upload",
                     );
+                    false
                 }
             }
         }
@@ -89,15 +107,61 @@ impl DocumentStorage {
             bail!("Invalid content type: must be image/jpeg, image/png, or application/pdf");
         }
         let key = format!("compliance/{}/{}", tenant_id, uuid::Uuid::new_v4());
+
+        // Fast path: the bucket was confirmed at startup, so move the bytes
+        // straight into the request without keeping a copy for a retry.
+        if self.bucket_ready.load(Ordering::Relaxed) {
+            self.put_object(&key, file_bytes, content_type)
+                .await
+                .context("S3 upload failed")?;
+            return Ok(format!("s3://{}/{}", self.bucket, key));
+        }
+
+        // Unconfirmed bucket (startup provisioning failed — e.g. MinIO was not
+        // ready yet). Keep a copy so we can create the bucket and retry once on
+        // the NoSuchBucket error instead of surfacing a permanent failure.
+        match self.put_object(&key, file_bytes.clone(), content_type).await {
+            Ok(()) => {
+                self.bucket_ready.store(true, Ordering::Relaxed);
+            }
+            Err(e) => {
+                let detail = format!("{e:?}");
+                let missing_bucket = detail.contains("NoSuchBucket") || detail.contains("NotFound");
+                if !missing_bucket {
+                    return Err(anyhow::Error::new(e).context("S3 upload failed"));
+                }
+                tracing::warn!(
+                    bucket = %self.bucket,
+                    "storage bucket missing on upload; provisioning and retrying once",
+                );
+                if self.ensure_bucket().await {
+                    self.bucket_ready.store(true, Ordering::Relaxed);
+                }
+                self.put_object(&key, file_bytes, content_type)
+                    .await
+                    .context("S3 upload failed")?;
+            }
+        }
+        Ok(format!("s3://{}/{}", self.bucket, key))
+    }
+
+    /// Single `put_object` call. Split out so `upload()` can issue it twice
+    /// (initial attempt + post-provisioning retry) without duplicating the
+    /// request builder.
+    async fn put_object(
+        &self,
+        key: &str,
+        file_bytes: Vec<u8>,
+        content_type: &str,
+    ) -> Result<(), aws_sdk_s3::error::SdkError<aws_sdk_s3::operation::put_object::PutObjectError>> {
         self.client.put_object()
             .bucket(&self.bucket)
-            .key(&key)
+            .key(key)
             .body(aws_sdk_s3::primitives::ByteStream::from(file_bytes))
             .content_type(content_type)
             .send()
             .await
-            .context("S3 upload failed")?;
-        Ok(format!("s3://{}/{}", self.bucket, key))
+            .map(|_| ())
     }
 
     /// Generate a 15-minute presigned GET URL for a stored document.
