@@ -19,6 +19,26 @@ import javax.inject.Inject
  */
 enum class BoxMeasureMode { VERIFY, QUOTE }
 
+/**
+ * Integrity classification for a captured measurement — the anti-fraud surface.
+ *
+ * Freight is priced on CBM, so an under-stated box directly under-bills the
+ * shipment. Every measurement is scored before it is allowed to feed a quote or
+ * a POP confirmation:
+ *
+ *   VERIFIED — high-confidence AR scan, or a manual edit within tolerance of one.
+ *   REVIEW   — usable but unverified: low AR confidence, or manual-only entry.
+ *   FLAGGED  — manual entry materially smaller than the trusted AR scan. Booking
+ *              and POP confirmation are blocked; the hub re-measures before billing.
+ */
+enum class MeasurementIntegrity { PENDING, VERIFIED, REVIEW, FLAGGED }
+
+/** Below this ARCore tracking confidence a scan is downgraded to REVIEW. */
+private const val AR_CONFIDENCE_FLOOR = 0.80
+
+/** A manual edit shrinking AR-scanned volume by more than this share is FLAGGED. */
+private const val MANUAL_UNDERCUT_TOLERANCE = 0.10
+
 data class BoxMeasureUiState(
     // ── AR measurement ──────────────────────────────────────────────────────────
     val arSessionReady: Boolean = false,
@@ -28,6 +48,16 @@ data class BoxMeasureUiState(
     val measuredH: Double? = null,
     val arConfidence: Double = 0.0,
     val measureError: String? = null,
+
+    // ── Measurement integrity / anti-fraud ──────────────────────────────────────
+    val integrity: MeasurementIntegrity = MeasurementIntegrity.PENDING,
+    val integrityReason: String? = null,
+    val manualOverrideUsed: Boolean = false,
+    // Trusted AR-scan snapshot, retained even after a manual override, so the
+    // deviation between the scan and the edited values stays auditable.
+    val arScanL: Double? = null,
+    val arScanW: Double? = null,
+    val arScanH: Double? = null,
 
     // ── Manual override inputs ──────────────────────────────────────────────────
     val manualMode: Boolean = false,
@@ -109,14 +139,25 @@ class BoxMeasureViewModel @Inject constructor() : ViewModel() {
 
     fun onMeasurementComplete(l: Double, w: Double, h: Double, confidence: Double) {
         val matched = matchToStandardSize(l, w, h)
+        val integrity = if (confidence >= AR_CONFIDENCE_FLOOR)
+            MeasurementIntegrity.VERIFIED else MeasurementIntegrity.REVIEW
+        val reason = if (confidence < AR_CONFIDENCE_FLOOR)
+            "Low AR tracking confidence (${(confidence * 100).toInt()}%) — re-scan in brighter light against a flatter surface, or enter manually."
+        else null
         _uiState.update { it.copy(
-            measuredL      = l,
-            measuredW      = w,
-            measuredH      = h,
-            arConfidence   = confidence,
-            matchedSizeId  = matched?.id ?: it.matchedSizeId,
-            tapCount       = 4,
-            measureError   = null,
+            measuredL          = l,
+            measuredW          = w,
+            measuredH          = h,
+            arScanL            = l,
+            arScanW            = w,
+            arScanH            = h,
+            arConfidence       = confidence,
+            matchedSizeId      = matched?.id ?: it.matchedSizeId,
+            tapCount           = 4,
+            measureError       = null,
+            manualOverrideUsed = false,
+            integrity          = integrity,
+            integrityReason    = reason,
         )}
     }
 
@@ -132,13 +173,49 @@ class BoxMeasureViewModel @Inject constructor() : ViewModel() {
         val w = _uiState.value.manualW.toDoubleOrNull() ?: return
         val h = _uiState.value.manualH.toDoubleOrNull() ?: return
         val matched = matchToStandardSize(l, w, h)
+        val (integrity, reason) = assessManualOverride(_uiState.value, l, w, h)
         _uiState.update { it.copy(
-            measuredL     = l,
-            measuredW     = w,
-            measuredH     = h,
-            matchedSizeId = matched?.id ?: it.matchedSizeId,
-            manualMode    = false,
+            measuredL          = l,
+            measuredW          = w,
+            measuredH          = h,
+            matchedSizeId      = matched?.id ?: it.matchedSizeId,
+            manualMode         = false,
+            manualOverrideUsed = true,
+            integrity          = integrity,
+            integrityReason    = reason,
         )}
+    }
+
+    /**
+     * Scores a manual entry against the trusted AR scan (if any).
+     *
+     * Manual entry is the primary fraud vector: a driver/agent can type a smaller
+     * box than the one in hand to lower the CBM and the quoted freight. When an AR
+     * scan exists we compare volumes — shrinking it past [MANUAL_UNDERCUT_TOLERANCE]
+     * is FLAGGED (blocks booking/POP). With no AR baseline the entry is allowed but
+     * only ever REVIEW — it is auditable but never silently trusted.
+     */
+    private fun assessManualOverride(
+        s: BoxMeasureUiState, l: Double, w: Double, h: Double,
+    ): Pair<MeasurementIntegrity, String?> {
+        val scanL = s.arScanL; val scanW = s.arScanW; val scanH = s.arScanH
+        if (scanL == null || scanW == null || scanH == null) {
+            return MeasurementIntegrity.REVIEW to
+                "Entered manually without an AR scan — unverified, and subject to re-measurement at the hub."
+        }
+        val scanVol   = scanL * scanW * scanH
+        val manualVol = l * w * h
+        if (scanVol <= 0.0) return MeasurementIntegrity.REVIEW to null
+        val undercut = (scanVol - manualVol) / scanVol
+        return if (undercut > MANUAL_UNDERCUT_TOLERANCE) {
+            val pct = (undercut * 100).toInt()
+            MeasurementIntegrity.FLAGGED to
+                "Manual entry is $pct% smaller than the AR scan " +
+                "(${"%.0f".format(scanL)}×${"%.0f".format(scanW)}×${"%.0f".format(scanH)} cm). " +
+                "Flagged for review — the hub will re-measure before billing."
+        } else {
+            MeasurementIntegrity.VERIFIED to null
+        }
     }
 
     // ── Quote inputs ──────────────────────────────────────────────────────────────
