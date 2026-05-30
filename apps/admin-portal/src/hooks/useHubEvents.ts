@@ -2,16 +2,31 @@
 
 import { useEffect, useRef, useCallback } from 'react';
 
-export type HubEventType = 'plan_computed' | 'placements_updated' | 'box_scanned';
+export type HubEventType =
+  | 'plan_computed'
+  | 'placements_updated'
+  | 'box_scanned'
+  | 'parcel_inducted'
+  | 'parcel_sorted'
+  | 'parcel_dispatched'
+  | 'hub_capacity_changed';
 
 export interface HubEvent {
-  type:           HubEventType;
-  plan_id?:       string;
-  hub_id?:        string;
-  volume_pct?:    number;
-  weight_kg?:     number;
-  piece_count?:   number;
-  unplaced_count?: number;
+  type:             HubEventType;
+  plan_id?:         string;
+  hub_id?:          string;
+  shipment_id?:     string;
+  tracking_number?: string;
+  volume_pct?:      number;
+  weight_kg?:       number;
+  piece_count?:     number;
+  unplaced_count?:  number;
+  current_load?:    number;
+  capacity?:        number;
+  zone?:            string;
+  bay?:             string;
+  actor_id?:        string;
+  timestamp?:       string;
 }
 
 interface UseHubEventsOptions {

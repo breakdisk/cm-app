@@ -59,6 +59,15 @@ export interface ListHubsResponse {
   count: number;
 }
 
+export interface CreateHubBody {
+  name:          string;
+  address:       string;
+  lat:           number;
+  lng:           number;
+  capacity:      number;
+  serving_zones: string[];
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 export function hubIdOf(h: Hub): string {
@@ -112,6 +121,11 @@ export function createHubsApi() {
     async throughputToday(): Promise<HubThroughputBucket[]> {
       const { data } = await http.get<{ buckets: HubThroughputBucket[] }>("/v1/hubs/throughput/today");
       return data.buckets ?? [];
+    },
+
+    async create(body: CreateHubBody): Promise<Hub> {
+      const { data } = await http.post<Hub>("/v1/hubs", body);
+      return data;
     },
   };
 }

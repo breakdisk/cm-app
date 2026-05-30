@@ -9,6 +9,7 @@ import {
   Download, ArrowRight, ArrowLeft, ArrowUp, ArrowDown,
   Info,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { createApiClient } from '@/lib/api/client';
 import { createConsolidationApi } from '@/lib/api/consolidation';
 import type {
@@ -271,7 +272,16 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
           const plan = await consolidationApi.getPlan(event.plan_id);
           setCurrentPlan(plan);
           setPlacements(plan.placements as Placement[]);
-        } catch {}
+          toast.success('Load plan updated.', { duration: 3000 });
+        } catch {
+          toast.error('Failed to fetch updated plan.');
+        }
+      }
+      if (event.type === 'parcel_inducted' && event.tracking_number) {
+        toast.info(`Inducted: ${event.tracking_number}${event.zone ? ` → ${event.zone}` : ''}`, { duration: 4000 });
+      }
+      if (event.type === 'parcel_dispatched' && event.tracking_number) {
+        toast.success(`Dispatched: ${event.tracking_number}`, { duration: 4000 });
       }
       if (event.type === 'box_scanned' && event.plan_id) {
         setScanFeed(prev => [event.plan_id!, ...prev].slice(0, 20));
@@ -349,7 +359,8 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
         setOptimizing(false);
       }
     } catch (e) {
-      console.error('manifest load error', e);
+      const msg = (e as { message?: string })?.message ?? 'Failed to load manifest.';
+      toast.error(msg);
     } finally {
       setLoadingManifest(false);
     }
@@ -381,7 +392,8 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
       setCurrentPlan(plan);
       setPlacements(plan.placements as Placement[]);
     } catch (e) {
-      console.error('compute_plan error', e);
+      const msg = (e as { message?: string })?.message ?? 'Optimisation failed.';
+      toast.error(msg);
     } finally {
       setOptimizing(false);
     }
@@ -436,8 +448,14 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
   }
 
   async function handleUpdateSpec(id: string, body: UpdateSpecBody) {
-    const updated = await consolidationApi.updateSpec(id, body);
-    setSpecs(prev => prev.map(s => s.id === id ? updated : s));
+    try {
+      const updated = await consolidationApi.updateSpec(id, body);
+      setSpecs(prev => prev.map(s => s.id === id ? updated : s));
+      toast.success('Vehicle spec updated.');
+    } catch (e) {
+      toast.error((e as { message?: string })?.message ?? 'Failed to update spec.');
+      throw e;
+    }
   }
 
   // ── Selected box info ────────────────────────────────────────────────────────
