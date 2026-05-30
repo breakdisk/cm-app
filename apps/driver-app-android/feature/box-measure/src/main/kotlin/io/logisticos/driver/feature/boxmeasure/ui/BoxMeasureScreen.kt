@@ -593,6 +593,23 @@ private fun MeasurementCard(
                 Text("$cbm m³", color = Purple, fontSize = 12.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
             }
 
+            // Volumetric (dimensional) weight — what a bulky-but-light box is charged
+            // at on air freight (billed on the greater of actual vs. volumetric).
+            val volWeight = computeVolumetricWeight(measuredL, measuredW, measuredH)
+            Row(
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column {
+                    Text("Volumetric weight", color = TextMuted, fontSize = 12.sp)
+                    Text("L×W×H ÷ ${VOLUMETRIC_DIVISOR.toInt()}", color = TextMuted.copy(alpha = 0.6f),
+                        fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                }
+                Text("${"%.1f".format(volWeight)} kg", color = Amber, fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+            }
+
             // ── Anti-fraud integrity row ──────────────────────────────────────────
             integrityVisual(integrity)?.let { (color, icon, label) ->
                 Divider(color = Border, thickness = 1.dp)

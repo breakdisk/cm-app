@@ -8,9 +8,10 @@ import android.opengl.GLSurfaceView
 import android.opengl.Matrix
 import android.os.Handler
 import android.os.Looper
-import android.view.MotionEvent
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.viewinterop.AndroidView
 import com.google.ar.core.*
 import com.google.ar.core.exceptions.*
@@ -64,7 +65,20 @@ fun ArCoreBoxMeasureView(
     }
 
     AndroidView(
-        modifier = modifier,
+        // Taps are detected at the Compose layer rather than via the GLSurfaceView's
+        // own OnTouchListener. Interop touch dispatch to the embedded view is
+        // unreliable when the view is re-hosted — e.g. when the viewport is moved
+        // into the full-screen layer — which left tap-to-measure dead in full screen.
+        // A Compose tap detector on the node works identically in every layout.
+        // `offset` is in this node's local pixels, matching the GL display geometry
+        // passed to `frame.hitTest`.
+        modifier = modifier.pointerInput(Unit) {
+            detectTapGestures { offset ->
+                if (viewModel.uiState.value.tapCount < 4) {
+                    tapQueue.offer(Pair(offset.x, offset.y))
+                }
+            }
+        },
         factory = { ctx ->
             ArRenderer(
                 ctx                  = ctx,
@@ -75,15 +89,6 @@ fun ArCoreBoxMeasureView(
                 onMeasurementComplete = { l, w, h, conf -> viewModel.onMeasurementComplete(l, w, h, conf) },
             ).also { rendererRef.value = it }.glView
         },
-        update = { glView ->
-            glView.setOnTouchListener { _, event ->
-                if (event.action == MotionEvent.ACTION_UP &&
-                    viewModel.uiState.value.tapCount < 4) {
-                    tapQueue.offer(Pair(event.x, event.y))
-                }
-                true
-            }
-        }
     )
 }
 
