@@ -1069,6 +1069,14 @@ services:
       STORAGE__BUCKET: compliance
       STORAGE__ACCESS_KEY: minioadmin
       STORAGE__SECRET_KEY: minioadmin
+      # MinIO's default server region. The AWS SDK omits the LocationConstraint
+      # for us-east-1, so CreateBucket succeeds; with the "auto" fallback MinIO
+      # rejects the constraint and the bucket is never provisioned → uploads
+      # fail with "S3 upload failed: NoSuchBucket".
+      STORAGE__REGION: us-east-1
+      # MinIO requires path-style addressing (endpoint/bucket/key); the
+      # virtual-hosted form (bucket.minio:9000) fails DNS inside the network.
+      STORAGE__FORCE_PATH_STYLE: "true"
       AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       RUST_LOG: info,sqlx=warn
     depends_on:
