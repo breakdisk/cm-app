@@ -346,39 +346,45 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
       setPop(null);
       setPopError(null);
       try {
-        // POP is fetched through the same-origin Next.js BFF proxy
-        // (src/app/api/pops/route.ts) rather than the public API gateway.
-        // The proxy runs inside the Docker network and reaches the pod
-        // container directly (http://logisticos-pod:8011), so POP data no
-        // longer depends on the api-gateway image carrying /v1/pops routing.
-        // It pins to the exact pod container the operator redeploys, which
-        // the public gateway URL does not guarantee. basePathPrefix() is
-        // required so the request resolves under the portal mount (/admin).
-        const res = await authFetch(
-          `${basePathPrefix()}/api/pops?shipment_id=${shipment.id}`
-        );
-        if (res.status === 503) {
-          // The proxy reached an upstream that has no /v1/pops route — the
-          // pod (or gateway) image still pre-dates the POP routing fix.
-          if (!cancelled) setPopError("POP endpoint not found — redeploy the pod service (image is outdated)");
-          return;
-        }
+        // POP is fetched exactly like POD (see fetchPod above): straight through
+        // the public API gateway at /v1/pops. The gateway already routes
+        // /v1/pod* and /v1/pops → the pod service (services/api-gateway
+        // src/proxy/mod.rs), and POD proves this path is reliable. Going direct
+        // avoids the brittle BFF-proxy dependency on internal Docker hostnames.
+        //
+        // The same-origin BFF proxy (src/app/api/pops/route.ts) is kept only as
+        // a fallback for deployments where the browser cannot reach the public
+        // gateway path for /v1/pops (e.g. a stale gateway image without the
+        // explicit /v1/pops route — the proxy resolves it via the /v1/pod/pops
+        // alias from inside the Docker network).
+        let res = await authFetch(`${API_BASE}/v1/pops?shipment_id=${shipment.id}`);
+
+        // Stale gateway/pod image: fall back to the in-network BFF proxy, which
+        // can still reach the pod container via the /v1/pod/pops alias.
         if (res.status === 404) {
-          // 404 here is Next.js itself — the BFF route is missing from the
-          // deployed admin-portal build (portal image outdated).
-          if (!cancelled) setPopError("POP proxy route missing — redeploy the admin portal");
-          return;
+          const proxyRes = await authFetch(
+            `${basePathPrefix()}/api/pops?shipment_id=${shipment.id}`
+          );
+          // 503 from the proxy means every upstream is genuinely missing the
+          // POP route (pod image truly outdated) — treat as "no POP yet" empty
+          // state rather than a hard error, mirroring POD's 404 handling.
+          if (proxyRes.status === 404 || proxyRes.status === 503) {
+            if (!cancelled) setPop(null);
+            return;
+          }
+          res = proxyRes;
         }
+
         if (!res.ok) {
           throw new Error(`${res.status} ${res.statusText}`);
         }
         const json = await res.json();
         if (!cancelled) {
           const payload = json?.data;
-          if (Array.isArray(payload) && payload.length === 0) {
-            // No POP submitted yet — valid state (e.g. pickup pending, or legacy
-            // shipments created before POP feature shipped).
-            setPop(null);
+          if (Array.isArray(payload)) {
+            // Empty array → no POP submitted yet (pickup pending, or legacy
+            // shipments created before POP shipped). Non-empty → take first.
+            setPop(payload.length > 0 ? (payload[0] as PopData) : null);
           } else if (payload && typeof payload === "object" && "pop_id" in payload) {
             setPop(payload as PopData);
           } else {
