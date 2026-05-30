@@ -13,11 +13,12 @@
 import { useCallback, useEffect, useMemo, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
-import { Search, RefreshCw, Package, User } from "lucide-react";
+import { Search, RefreshCw, Package, User, CheckCircle2 } from "lucide-react";
 
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
+import { basePathPrefix } from "@/lib/auth/auth-fetch";
 import { variants } from "@/lib/design-system/tokens";
 import { authFetch } from "@/lib/auth/auth-fetch";
 import { ShipmentDetailPanel, ApiShipment } from "@/components/shipments/ShipmentDetailPanel";
@@ -85,12 +86,31 @@ function ShipmentsPageInner() {
   const [search,          setSearch]          = useState("");
   const [statusFilter,    setStatusFilter]    = useState<StatusFilter>("all");
   const [selectedShipment, setSelectedShipment] = useState<ApiShipment | null>(null);
+  // POP completion status keyed by shipment_id. null = unknown (pod unreachable).
+  const [popStatuses, setPopStatuses] = useState<Map<string, boolean | null>>(new Map());
 
   // Pre-populate search from ?q=<awb> deep-links (e.g. from Alerts page)
   useEffect(() => {
     const q = searchParams.get("q");
     if (q) setSearch(q);
   }, [searchParams]);
+
+  const fetchPopStatuses = useCallback(async (ids: string[]) => {
+    if (ids.length === 0) return;
+    try {
+      const qs = ids.map((id) => `shipment_ids=${encodeURIComponent(id)}`).join("&");
+      const res = await fetch(`${basePathPrefix()}/api/pop-status?${qs}`, { cache: "no-store" });
+      if (!res.ok) return;
+      const json = await res.json();
+      const map = new Map<string, boolean | null>();
+      for (const s of (json.statuses ?? []) as { shipment_id: string; has_completed_pop: boolean | null }[]) {
+        map.set(s.shipment_id, s.has_completed_pop);
+      }
+      setPopStatuses(map);
+    } catch {
+      // fail silently — POP column renders as "—" when unreachable
+    }
+  }, []);
 
   const fetchShipments = useCallback(async () => {
     setLoading(true);
@@ -101,13 +121,17 @@ function ShipmentsPageInner() {
         throw new Error(`${res.status} ${res.statusText}`);
       }
       const json = await res.json();
-      setShipments(json.shipments ?? []);
+      const list: ApiShipment[] = json.shipments ?? [];
+      setShipments(list);
+      // Batch-check POP completion for every loaded shipment after the list lands.
+      // Fire-and-forget — POP column fills in asynchronously without blocking the table.
+      fetchPopStatuses(list.map((s) => s.id));
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load shipments");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [fetchPopStatuses]);
 
   useEffect(() => { fetchShipments(); }, [fetchShipments]);
 
@@ -142,6 +166,15 @@ function ShipmentsPageInner() {
     ];
   }, [shipments]);
 
+  const popKpi = useMemo(() => {
+    let done = 0;
+    let known = 0;
+    for (const [, v] of popStatuses) {
+      if (v !== null) { known++; if (v) done++; }
+    }
+    return { done, known };
+  }, [popStatuses]);
+
   return (
     <>
     <motion.div
@@ -174,12 +207,27 @@ function ShipmentsPageInner() {
       )}
 
       {/* KPI row */}
-      <motion.div variants={variants.fadeInUp} className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <motion.div variants={variants.fadeInUp} className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         {kpi.map((m) => (
           <GlassCard key={m.label} size="sm" glow={m.color} accent>
             <LiveMetric label={m.label} value={m.value} trend={m.trend} color={m.color} format={m.format} />
           </GlassCard>
         ))}
+        {/* POP completion KPI — batch-loaded asynchronously after shipments land */}
+        <GlassCard size="sm" glow="green" accent>
+          <div className="flex flex-col gap-1">
+            <p className="text-2xs font-mono uppercase tracking-widest text-white/30">Pickups Captured</p>
+            {popKpi.known === 0 ? (
+              <p className="text-lg font-bold font-mono text-white/20">—</p>
+            ) : (
+              <div className="flex items-baseline gap-1.5">
+                <p className="text-lg font-bold font-mono text-green-signal">{popKpi.done}</p>
+                <p className="text-xs font-mono text-white/30">/ {popKpi.known}</p>
+              </div>
+            )}
+            <p className="text-2xs font-mono text-white/20">Proof of Pickup submitted</p>
+          </div>
+        </GlassCard>
       </motion.div>
 
       {/* Filters */}
@@ -234,6 +282,7 @@ function ShipmentsPageInner() {
                     <th className="py-2 pr-4 font-normal">Route</th>
                     <th className="py-2 pr-4 font-normal">Service</th>
                     <th className="py-2 pr-4 font-normal">Status</th>
+                    <th className="py-2 pr-4 font-normal">POP</th>
                     <th className="py-2 pr-4 font-normal">COD</th>
                     <th className="py-2 pr-4 font-normal">Source</th>
                     <th className="py-2 pr-0 font-normal text-right">Created</th>
@@ -278,6 +327,24 @@ function ShipmentsPageInner() {
                         </td>
                         <td className="py-2.5 pr-4">
                           <NeonBadge variant={variant}>{prettyStatus(s.status)}</NeonBadge>
+                        </td>
+                        <td className="py-2.5 pr-4">
+                          {(() => {
+                            const popDone = popStatuses.get(s.id);
+                            if (popDone === true) {
+                              return (
+                                <span className="inline-flex items-center gap-1 text-2xs font-mono text-green-signal">
+                                  <CheckCircle2 size={10} />
+                                  Done
+                                </span>
+                              );
+                            }
+                            if (popDone === false) {
+                              return <span className="text-2xs font-mono text-white/30">Pending</span>;
+                            }
+                            // null = unknown (pod service unreachable) or not yet loaded
+                            return <span className="text-2xs font-mono text-white/15">—</span>;
+                          })()}
                         </td>
                         <td className="py-2.5 pr-4">
                           {cod ? (
