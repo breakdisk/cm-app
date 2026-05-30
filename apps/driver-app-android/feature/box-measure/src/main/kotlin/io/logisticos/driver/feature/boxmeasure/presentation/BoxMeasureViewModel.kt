@@ -87,6 +87,9 @@ data class BoxMeasureUiState(
 
     // ── Confirmation (VERIFY mode only) ─────────────────────────────────────────
     val dimensionConfirmed: Boolean = false,
+
+    // Bumped by resetMeasurement() to signal the AR renderer to drop its tap points.
+    val resetToken: Int = 0,
 )
 
 @HiltViewModel
@@ -115,6 +118,27 @@ class BoxMeasureViewModel @Inject constructor() : ViewModel() {
     // ── AR session events ─────────────────────────────────────────────────────────
 
     fun onArSessionReady() = _uiState.update { it.copy(arSessionReady = true) }
+
+    /**
+     * Clears the current measurement so the driver can re-scan. Drops the captured
+     * dimensions, the integrity score, and the trusted AR-scan snapshot, and bumps
+     * [BoxMeasureUiState.resetToken] — the AR view observes the token and clears the
+     * renderer's world-space tap points so the next tap starts a fresh box.
+     */
+    fun resetMeasurement() = _uiState.update { it.copy(
+        tapCount           = 0,
+        measuredL          = null,
+        measuredW          = null,
+        measuredH          = null,
+        arScanL            = null,
+        arScanW            = null,
+        arScanH            = null,
+        arConfidence       = 0.0,
+        integrity          = MeasurementIntegrity.PENDING,
+        integrityReason    = null,
+        manualOverrideUsed = false,
+        resetToken         = it.resetToken + 1,
+    )}
 
     fun onArSessionError(msg: String) = _uiState.update { it.copy(measureError = msg, arSessionReady = false) }
 

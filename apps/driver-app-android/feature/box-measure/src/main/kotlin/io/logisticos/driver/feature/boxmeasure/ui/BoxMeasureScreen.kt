@@ -138,6 +138,18 @@ fun BoxMeasureScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Canvas)) {
+    if (cameraGranted && state.measureError == null && arExpanded) {
+        // Full-screen AR replaces the form entirely while expanded. The scroll form
+        // — and its dropdown popups — are not composed, so nothing floats over the
+        // camera and per-tap recomposition stays cheap (fixes the dropdown leak and
+        // the measuring lag).
+        ArViewport(
+            viewModel    = viewModel,
+            state        = state,
+            expanded     = true,
+            onToggleFull = { arExpanded = false },
+        )
+    } else {
     Column(
         modifier = Modifier.fillMaxSize()
     ) {
@@ -212,27 +224,22 @@ fun BoxMeasureScreen(
             // On unsupported devices or permission denial, the error banner above
             // explains the situation and manual mode is enabled automatically.
             //
-            // When `arExpanded` is set, the live viewport is hoisted into the
-            // full-screen layer below and a slim placeholder takes its inline slot
-            // (a single ARCore session is ever mounted at a time).
+            // The full-screen variant is handled above (it replaces the whole form),
+            // so this inline slot only ever renders the compact viewport.
             if (cameraGranted && state.measureError == null) {
-                if (arExpanded) {
-                    ExpandedPlaceholder(onCollapse = { arExpanded = false })
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(260.dp)
-                            .clip(RoundedCornerShape(16.dp))
-                            .border(1.dp, Border, RoundedCornerShape(16.dp)),
-                    ) {
-                        ArViewport(
-                            viewModel    = viewModel,
-                            state        = state,
-                            expanded     = false,
-                            onToggleFull = { arExpanded = true },
-                        )
-                    }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(260.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .border(1.dp, Border, RoundedCornerShape(16.dp)),
+                ) {
+                    ArViewport(
+                        viewModel    = viewModel,
+                        state        = state,
+                        expanded     = false,
+                        onToggleFull = { arExpanded = true },
+                    )
                 }
             }
 
@@ -310,20 +317,7 @@ fun BoxMeasureScreen(
             Spacer(Modifier.height(32.dp))
         }
     }
-
-        // ── Full-screen AR layer ──────────────────────────────────────────────────
-        // Drawn last so it overlays the form. Hosts the single live ARCore viewport
-        // while expanded; tapping "exit full screen" returns to the inline layout.
-        if (cameraGranted && state.measureError == null && arExpanded) {
-            Box(modifier = Modifier.fillMaxSize().background(Canvas)) {
-                ArViewport(
-                    viewModel    = viewModel,
-                    state        = state,
-                    expanded     = true,
-                    onToggleFull = { arExpanded = false },
-                )
-            }
-        }
+    }
     }
 }
 
@@ -443,28 +437,28 @@ private fun ArViewport(
                     .padding(start = 12.dp, bottom = if (expanded) 32.dp else 12.dp),
             )
         }
-    }
-}
 
-/** Slim inline strip shown while the live viewport is hoisted to full screen. */
-@Composable
-private fun ExpandedPlaceholder(onCollapse: () -> Unit) {
-    Surface(
-        onClick = onCollapse,
-        shape = RoundedCornerShape(16.dp),
-        color = Glass,
-        border = BorderStroke(1.dp, Cyan.copy(alpha = 0.3f)),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 18.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Icon(Icons.Default.Fullscreen, null, tint = Cyan, modifier = Modifier.size(18.dp))
-            Text("Measuring in full screen", color = TextPrimary, fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-            Text("Exit", color = Cyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        // Re-measure (bottom-end) — drops captured points and restarts the scan.
+        // Visible as soon as the first anchor is placed (and after completion).
+        if (state.tapCount > 0) {
+            Surface(
+                onClick = { viewModel.resetMeasurement() },
+                shape = RoundedCornerShape(10.dp),
+                color = Color(0xCC050810),
+                border = BorderStroke(1.dp, Amber.copy(alpha = 0.4f)),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 12.dp, bottom = if (expanded) 32.dp else 12.dp),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Icon(Icons.Default.Refresh, contentDescription = "Re-measure", tint = Amber, modifier = Modifier.size(14.dp))
+                    Text("Re-measure", color = Amber, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+            }
         }
     }
 }

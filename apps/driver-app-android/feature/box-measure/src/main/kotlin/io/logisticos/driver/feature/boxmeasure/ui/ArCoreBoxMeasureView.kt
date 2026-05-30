@@ -59,9 +59,19 @@ fun ArCoreBoxMeasureView(
 ) {
     val tapQueue   = remember { ConcurrentLinkedQueue<Pair<Float, Float>>() }
     val rendererRef = remember { mutableStateOf<ArRenderer?>(null) }
+    val resetToken = viewModel.uiState.collectAsState().value.resetToken
 
     DisposableEffect(Unit) {
         onDispose { rendererRef.value?.closeOnGlThread() }
+    }
+
+    // Re-measure: when the ViewModel bumps the reset token, drop the renderer's
+    // captured tap points and any queued taps so the next tap begins a fresh box.
+    LaunchedEffect(resetToken) {
+        if (resetToken > 0) {
+            tapQueue.clear()
+            rendererRef.value?.clearPoints()
+        }
     }
 
     AndroidView(
@@ -340,6 +350,11 @@ private class ArRenderer(
 
     fun closeOnGlThread() {
         glView.queueEvent { session?.close(); session = null }
+    }
+
+    /** Drops captured world-space tap points on the GL thread (re-measure). */
+    fun clearPoints() {
+        glView.queueEvent { worldPts.clear() }
     }
 }
 
