@@ -5,7 +5,7 @@ use tokio::sync::{broadcast, watch};
 use crate::config::Config;
 use crate::application::services::{DriverService, TaskService, LocationService};
 use crate::infrastructure::db::{PgDriverRepository, PgTaskRepository, PgLocationRepository};
-use crate::infrastructure::messaging::start_task_consumer;
+use crate::infrastructure::messaging::{start_task_consumer, start_pickup_consumer};
 use crate::infrastructure::external::FcmClient;
 use crate::api::http::{router, AppState, RosterEvent};
 use logisticos_auth::jwt::JwtService;
@@ -79,6 +79,24 @@ pub async fn run() -> anyhow::Result<()> {
             shutdown_rx_tasks,
         ).await {
             tracing::error!("Task consumer crashed: {e}");
+        }
+    });
+
+    // Spawn PICKUP_CAPTURED consumer — transitions the pickup task to in_progress
+    // when the driver submits a Proof of Pickup (custody opened). Closes the gap
+    // where pod published pickup.captured but no driver-ops handler consumed it.
+    let pool_for_pickup    = pool.clone();
+    let brokers_for_pickup = cfg.kafka.brokers.clone();
+    let group_for_pickup   = cfg.kafka.group_id.clone();
+    let shutdown_rx_pickup = shutdown_rx.clone();
+    tokio::spawn(async move {
+        if let Err(e) = start_pickup_consumer(
+            &brokers_for_pickup,
+            &group_for_pickup,
+            pool_for_pickup,
+            shutdown_rx_pickup,
+        ).await {
+            tracing::error!("Pickup consumer crashed: {e}");
         }
     });
 
