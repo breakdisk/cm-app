@@ -17,7 +17,7 @@ import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
-import { FileText, Search, Building2, RefreshCw, Calendar, CheckCircle2, Clock, X } from "lucide-react";
+import { FileText, Search, Building2, RefreshCw, Calendar, CheckCircle2, Clock, X, Download, ExternalLink } from "lucide-react";
 import { carriersApi, type ManifestEntry } from "@/lib/api/carriers";
 import { useCarrier } from "@/contexts/carrier-context";
 
@@ -40,6 +40,35 @@ function deriveStatus(e: ManifestEntry): DerivedStatus {
   if (e.in_progress > 0 || e.pending > 0)              return "in_progress";
   if (e.failed > 0 && e.completed + e.failed === e.total) return "failed";
   return "in_progress";
+}
+
+/**
+ * Trigger a client-side CSV download of the manifest rows currently in view.
+ * No server round-trip — the data is already loaded; we export exactly what
+ * the operator sees (post-filter). Mirrors the SLA dashboard's exportTrendCsv.
+ */
+function exportManifestCsv(rows: ManifestEntry[], date: string) {
+  if (rows.length === 0) return;
+  const header = "driver_id,driver_name,task_type,total,completed,in_progress,pending,failed,completion_pct,status";
+  const lines = rows.map((e) => {
+    const pct = e.total === 0 ? 0 : Math.round((e.completed / e.total) * 100);
+    // Quote the name in case it contains a comma.
+    const name     = `"${e.driver_name.replace(/"/g, '""')}"`;
+    return [
+      e.driver_id, name, e.task_type, e.total, e.completed,
+      e.in_progress, e.pending, e.failed, pct, deriveStatus(e),
+    ].join(",");
+  });
+  const csv  = [header, ...lines].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href     = url;
+  a.download = `manifest-${date}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 function ManifestsPageInner() {
@@ -104,7 +133,7 @@ function ManifestsPageInner() {
       className="flex flex-col gap-5 p-6"
     >
       {/* Header */}
-      <motion.div variants={variants.fadeInUp} className="flex items-center justify-between">
+      <motion.div variants={variants.fadeInUp} className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="font-heading text-2xl font-bold text-white flex items-center gap-2">
             <FileText size={20} className="text-cyan-neon" />
@@ -114,7 +143,7 @@ function ManifestsPageInner() {
             {loading ? "loading…" : `${filtered.length} row${filtered.length === 1 ? "" : "s"}`} · {date}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-2 rounded-lg border border-glass-border bg-glass-100 px-3 py-2">
             <Calendar size={13} className="text-white/40" />
             <input
@@ -124,6 +153,14 @@ function ManifestsPageInner() {
               className="bg-transparent text-xs text-white outline-none font-mono"
             />
           </div>
+          <button
+            onClick={() => exportManifestCsv(filtered, date)}
+            disabled={filtered.length === 0}
+            className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            title="Download the manifest rows in view as CSV"
+          >
+            <Download size={12} /> Export CSV
+          </button>
           <button
             onClick={load}
             className="flex items-center gap-1.5 rounded-lg border border-glass-border px-3 py-2 text-xs text-white/60 hover:text-white transition-colors"
@@ -233,11 +270,20 @@ function ManifestsPageInner() {
                   key={`${e.driver_id}-${e.task_type}`}
                   className="grid grid-cols-[2fr_90px_80px_80px_80px_80px_100px_100px] gap-3 items-center px-5 py-3.5 border-b border-glass-border/50 hover:bg-glass-100 transition-colors"
                 >
-                  <div>
-                    <p className="text-xs font-medium text-white">{e.driver_name}</p>
-                    <p className="text-2xs font-mono text-white/30 mt-0.5 truncate" title={e.driver_id}>
-                      {e.driver_id.slice(0, 8)}…
-                    </p>
+                  <div className="flex items-start gap-2">
+                    <div className="min-w-0">
+                      <p className="text-xs font-medium text-white truncate">{e.driver_name}</p>
+                      <p className="text-2xs font-mono text-white/30 mt-0.5 truncate" title={e.driver_id}>
+                        {e.driver_id.slice(0, 8)}…
+                      </p>
+                    </div>
+                    <a
+                      href={`/drivers?focus=${encodeURIComponent(e.driver_id)}`}
+                      title="View this driver in the roster"
+                      className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-glass-border text-white/40 hover:text-cyan-neon hover:border-cyan-neon/30 transition-colors"
+                    >
+                      <ExternalLink size={10} />
+                    </a>
                   </div>
                   <NeonBadge variant={e.task_type === "pickup" ? "cyan" : "purple"}>
                     {e.task_type}
