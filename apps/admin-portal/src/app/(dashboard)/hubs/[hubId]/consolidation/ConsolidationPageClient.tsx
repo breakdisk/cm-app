@@ -65,6 +65,36 @@ function kgStr(grams: number): string {
   return (grams / 1000).toFixed(1);
 }
 
+// ── Built-in vehicle presets ───────────────────────────────────────────────────
+// Truck specs are tenant-scoped and intentionally NOT seeded by migration
+// (see hub-ops/migrations/0004_consolidation.sql — they need a real tenant_id).
+// Without this fallback, a fresh tenant has zero specs, so `selectedSpec` is
+// null and the 3D canvas never mounts — the operator just sees an empty
+// placeholder. These presets let the 3D viewer always render an empty-truck
+// layout immediately. Ids are prefixed `preset:` so we can detect them and
+// persist the chosen one to the backend on first optimise (so plans can FK to
+// a real spec row). Dimensions mirror TruckSpecModal's PH freight presets.
+const PRESET_PREFIX = 'preset:';
+
+const DEFAULT_SPECS: TruckSpec[] = ([
+  { name: 'L300 Van',   transport_mode: 'road', size_class: 'L300',      interior_length_cm: 280,  interior_width_cm: 170, interior_height_cm: 140, max_payload_kg: 1500  },
+  { name: '6-Wheeler',  transport_mode: 'road', size_class: '6Wheeler',  interior_length_cm: 520,  interior_width_cm: 220, interior_height_cm: 200, max_payload_kg: 5000  },
+  { name: '10-Wheeler', transport_mode: 'road', size_class: '10Wheeler', interior_length_cm: 780,  interior_width_cm: 240, interior_height_cm: 230, max_payload_kg: 10000 },
+  { name: 'FCL 20-ft',  transport_mode: 'sea',  size_class: 'FCL20',     interior_length_cm: 589,  interior_width_cm: 235, interior_height_cm: 239, max_payload_kg: 21700 },
+  { name: 'FCL 40-ft',  transport_mode: 'sea',  size_class: 'FCL40',     interior_length_cm: 1203, interior_width_cm: 235, interior_height_cm: 239, max_payload_kg: 26480 },
+] as const).map((p) => ({
+  ...p,
+  id:         `${PRESET_PREFIX}${p.size_class}`,
+  tenant_id:  '',
+  is_active:  true,
+  created_at: new Date(0).toISOString(),
+  updated_at: new Date(0).toISOString(),
+}));
+
+function isPreset(spec: TruckSpec | null): boolean {
+  return !!spec && spec.id.startsWith(PRESET_PREFIX);
+}
+
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 function StatCard({
@@ -175,7 +205,8 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
   const [currentPlan,    setCurrentPlan]    = useState<ConsolidationPlan | null>(null);
   const [placements,     setPlacements]     = useState<Placement[]>([]);
   const [loading,        setLoading]        = useState(true);
-  const [initError,      setInitError]      = useState<string | null>(null);
+  const [offline,        setOffline]        = useState(false);   // planning service unreachable
+  const [usingPresets,   setUsingPresets]   = useState(false);   // showing built-in fallback specs
   const [retryKey,       setRetryKey]       = useState(0);
   const [optimizing,     setOptimizing]     = useState(false);
   const [loadingManifest, setLoadingManifest] = useState(false);
@@ -191,34 +222,38 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
     let cancelled = false;
     async function init() {
       setLoading(true);
-      setInitError(null);
-      try {
-        const [specsData, plans] = await Promise.all([
-          consolidationApi.listSpecs(),
-          consolidationApi.listPlans(hubId),
-        ]);
-        if (cancelled) return;
+      // Settle independently so a backend outage on either call still lets the
+      // 3D viewer render with whatever we have (and presets as a last resort).
+      const [specsRes, plansRes] = await Promise.allSettled([
+        consolidationApi.listSpecs(),
+        consolidationApi.listPlans(hubId),
+      ]);
+      if (cancelled) return;
+
+      const specsOk   = specsRes.status === 'fulfilled';
+      const specsData = specsOk ? specsRes.value : [];
+      const plans     = plansRes.status === 'fulfilled' ? plansRes.value : [];
+
+      if (!specsOk) console.error('consolidation listSpecs error', specsRes.reason);
+
+      // Always end up with at least one spec selected so the canvas mounts.
+      // Real tenant specs win; otherwise fall back to built-in presets.
+      if (specsData.length > 0) {
         setSpecs(specsData);
-        if (specsData.length > 0) {
-          setSelectedSpecId(specsData[0].id);
-        } else {
-          // First-time setup: no specs exist yet — open the modal automatically
-          // so the operator is guided to create one rather than seeing a silent
-          // empty state.
-          setSpecsModalOpen(true);
-        }
-        if (plans.length > 0) {
-          setCurrentPlan(plans[0]);
-          setPlacements(plans[0].placements as Placement[]);
-        }
-      } catch (e) {
-        if (cancelled) return;
-        console.error('consolidation init error', e);
-        const msg = (e as { message?: string })?.message;
-        setInitError(msg ?? 'Failed to load plan data — check your connection and retry.');
-      } finally {
-        if (!cancelled) setLoading(false);
+        setSelectedSpecId(specsData[0].id);
+        setUsingPresets(false);
+      } else {
+        setSpecs(DEFAULT_SPECS);
+        setSelectedSpecId(DEFAULT_SPECS[0].id);
+        setUsingPresets(true);
       }
+      setOffline(!specsOk);
+
+      if (plans.length > 0) {
+        setCurrentPlan(plans[0]);
+        setPlacements(plans[0].placements as Placement[]);
+      }
+      setLoading(false);
     }
     init();
     return () => { cancelled = true; };
@@ -255,6 +290,30 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
     : 0;
   const { label: loadLbl, color: loadColor } = loadLabel(volumePct);
 
+  // Resolve the spec id to send to the optimiser. A built-in preset has no DB
+  // row, so persist it on first use and swap it into the list before computing
+  // (the plan's truck_spec_id FK requires a real spec). Returns null if no spec
+  // is selected. Throws are handled by the caller's try/catch.
+  async function resolveSpecId(): Promise<string | null> {
+    const spec = specs.find(s => s.id === selectedSpecId) ?? null;
+    if (!spec) return null;
+    if (!isPreset(spec)) return spec.id;
+
+    const created = await consolidationApi.createSpec({
+      name:               spec.name,
+      transport_mode:     spec.transport_mode,
+      size_class:         spec.size_class,
+      interior_length_cm: spec.interior_length_cm,
+      interior_width_cm:  spec.interior_width_cm,
+      interior_height_cm: spec.interior_height_cm,
+      max_payload_kg:     spec.max_payload_kg,
+    });
+    setSpecs(prev => prev.map(s => (s.id === spec.id ? created : s)));
+    setSelectedSpecId(created.id);
+    setUsingPresets(false);
+    return created.id;
+  }
+
   // ── Load from Hub Manifest ──────────────────────────────────────────────────
   async function handleLoadManifest() {
     setLoadingManifest(true);
@@ -275,12 +334,13 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
       if (items.length === 0) return;
 
       // Immediately run the optimiser with the manifest items.
-      if (!selectedSpecId) return;
+      const specId = await resolveSpecId();
+      if (!specId) return;
       setOptimizing(true);
       try {
         const plan = await consolidationApi.computePlan({
           hub_id:        hubId,
-          truck_spec_id: selectedSpecId,
+          truck_spec_id: specId,
           items,
         });
         setCurrentPlan(plan);
@@ -311,9 +371,11 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
         return;
       }
 
+      const specId = await resolveSpecId();
+      if (!specId) return;
       const plan = await consolidationApi.computePlan({
         hub_id:        hubId,
-        truck_spec_id: selectedSpecId,
+        truck_spec_id: specId,
         items,
       });
       setCurrentPlan(plan);
@@ -357,12 +419,19 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
   // ── Spec management ──────────────────────────────────────────────────────────
   async function handleCreateSpec(body: CreateSpecBody) {
     const spec = await consolidationApi.createSpec(body);
-    setSpecs(prev => [...prev, spec]);
-    if (!selectedSpecId) {
-      // First spec ever — select it and dismiss the modal so the canvas
-      // becomes visible immediately instead of being hidden behind it.
+    if (usingPresets) {
+      // First real spec ever — drop the built-in presets, select it, and
+      // dismiss the modal so the canvas reflects the saved vehicle.
+      setSpecs([spec]);
       setSelectedSpecId(spec.id);
+      setUsingPresets(false);
       setSpecsModalOpen(false);
+    } else {
+      setSpecs(prev => [...prev, spec]);
+      if (!selectedSpecId) {
+        setSelectedSpecId(spec.id);
+        setSpecsModalOpen(false);
+      }
     }
   }
 
@@ -384,23 +453,6 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
         <div className="flex flex-col items-center gap-3">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan-500 border-t-transparent" />
           <span className="text-sm text-white/40">Loading consolidation plan…</span>
-        </div>
-      </div>
-    );
-  }
-
-  if (initError) {
-    return (
-      <div className={cn('flex items-center justify-center', rootH)}>
-        <div className="flex flex-col items-center gap-4 text-center max-w-xs">
-          <AlertTriangle size={32} className="text-amber-400" />
-          <p className="text-sm font-mono text-white/60">{initError}</p>
-          <button
-            onClick={() => setRetryKey(k => k + 1)}
-            className="flex items-center gap-2 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-4 py-2 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/20 transition-all"
-          >
-            <RefreshCw size={12} /> Retry
-          </button>
         </div>
       </div>
     );
@@ -428,6 +480,35 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
               Manage Specs
             </button>
           </div>
+
+          {/* Planning-service offline — non-blocking; presets keep the viewer alive */}
+          {offline && (
+            <div className="flex items-center justify-between gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+              <span className="flex items-center gap-1.5">
+                <AlertTriangle size={12} /> Planning service offline — showing presets
+              </span>
+              <button
+                onClick={() => setRetryKey(k => k + 1)}
+                title="Retry"
+                className="text-amber-200 hover:text-white transition-colors"
+              >
+                <RefreshCw size={12} />
+              </button>
+            </div>
+          )}
+
+          {/* Fresh tenant with no saved specs yet — guide ops to persist one */}
+          {!offline && usingPresets && (
+            <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-3 py-2 text-[11px] leading-relaxed text-cyan-300/80">
+              <span className="flex items-center gap-1.5 font-semibold text-cyan-300">
+                <Info size={11} /> Default vehicle presets
+              </span>
+              <span className="mt-0.5 block text-cyan-300/60">
+                Pick a vehicle to preview the 3D layout. Save your own dimensions via{' '}
+                <span className="font-semibold text-cyan-300">Manage Specs</span>.
+              </span>
+            </div>
+          )}
 
           {/* Load status badge */}
           {currentPlan && (
