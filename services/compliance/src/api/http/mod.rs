@@ -1,9 +1,16 @@
 use std::sync::Arc;
-use axum::{Router, routing::{get, post}};
+use axum::{Router, extract::DefaultBodyLimit, routing::{get, post}};
 use tower_http::trace::TraceLayer;
 use logisticos_auth::jwt::JwtService;
 use crate::application::services::ComplianceService;
 use crate::infrastructure::storage::DocumentStorage;
+
+/// Max request body for KYC document uploads. The storage layer caps files at
+/// 10 MB; base64-in-JSON inflates that by ~33% (~13.3 MB) plus metadata, so the
+/// route needs a limit well above Axum's 2 MB default (which otherwise rejects
+/// every real photo with 413 before the handler runs). 16 MB matches the API
+/// gateway's proxy body cap.
+const MAX_UPLOAD_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 pub struct AppState {
     pub compliance: Arc<ComplianceService>,
@@ -39,7 +46,10 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/api/v1/compliance/me/documents",
             post(driver_routes::submit_document))
         .route("/api/v1/compliance/me/documents/upload",
-            post(driver_routes::upload_document))
+            post(driver_routes::upload_document)
+                // Scoped to this route only — the default 2 MB limit stays in
+                // force everywhere else to keep the DoS surface small.
+                .layer(DefaultBodyLimit::max(MAX_UPLOAD_BODY_BYTES)))
         .route("/api/v1/compliance/me/documents/:doc_id",
             get(driver_routes::get_document))
         .route("/api/v1/compliance/me/documents/:doc_id/url",
