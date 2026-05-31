@@ -49,6 +49,12 @@ private val Border  = Color(0x14FFFFFF)
 private val TextPrimary = Color(0xFFE2E8F0)
 private val TextMuted   = Color(0xFF64748B)
 
+// ── Axis colours — industrial instrument palette ───────────────────────────────
+// These exactly mirror the GL float-array constants in ArCoreBoxMeasureView:
+//   Length → #2196F3 blue    Width → #F44336 red    Height → #00FF88 green (= Green)
+private val AxisBlue = Color(0xFF2196F3)   // Length axis
+private val AxisRed  = Color(0xFFF44336)   // Width  axis
+
 private fun componentColor(c: QuoteLine.Component) = when (c) {
     QuoteLine.Component.SEA         -> Cyan
     QuoteLine.Component.AIR         -> Purple
@@ -347,9 +353,11 @@ private fun LiveMeasureReticle(
     modifier: Modifier = Modifier,
 ) {
     // Axis label + accent colour keyed by how many anchors have been placed.
+    // Colours mirror AxisBlue / AxisRed / Green for full visual consistency with
+    // the GL edge colours and the DimChip tokens.
     val (axisLabel, accentColor) = when (tapCount) {
-        1    -> "LENGTH" to Cyan
-        2    -> "WIDTH"  to Color(0xFFFF2D78)   // matches the DimAxis.WIDTH chip
+        1    -> "LENGTH" to AxisBlue
+        2    -> "WIDTH"  to AxisRed
         3    -> "HEIGHT" to Green
         else -> null     to TextMuted            // 0 = no anchor placed yet
     }
@@ -432,7 +440,13 @@ private fun ArViewport(
             viewModel = viewModel,
         )
 
-        // Top scrim — keeps the cyan guide + controls legible over a bright camera feed.
+        // ── Spatial-mapping floor grid (Compose layer) ──────────────────────
+        // Shown as soon as the AR session is active and scanning the environment.
+        // The GL renderer draws the true 3D grid once taps are placed; this layer
+        // gives instant visual feedback that spatial mapping is in progress.
+        SpatialGridOverlay(modifier = Modifier.fillMaxSize())
+
+        // Top scrim — keeps the guide + controls legible over a bright camera feed.
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -449,6 +463,17 @@ private fun ArViewport(
                 distanceCm = state.liveDistanceCm,
                 tapCount   = state.tapCount,
                 modifier   = Modifier.align(Alignment.Center),
+            )
+        }
+
+        // ── Y-axis guide indicator ──────────────────────────────────────────
+        // Sidebar ruler visible only when the driver is measuring height (tap 3
+        // placed, awaiting tap 4).  Mirrors the GL dashed green guide line.
+        if (state.tapCount == 3) {
+            YGuideIndicator(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 10.dp),
             )
         }
 
@@ -518,40 +543,191 @@ private fun ArViewport(
         }
 
         // AR dimension chips — float over each measured edge midpoint (positions are
-        // projected to screen pixels by the renderer), value shown in inches.
+        // projected to screen pixels by the renderer), value shown in cm.
         state.dimLabels.forEach { label ->
             DimChip(label = label, modifier = Modifier.align(Alignment.TopStart))
         }
     }
 }
 
-/** Floating colored dimension chip positioned at a projected edge midpoint. */
+/**
+ * Industrial floating dimension chip — anchored to the projected GL edge midpoint.
+ *
+ * Layout: [● axis-colour node] [XX.X] [cm]
+ *   • Solid colour node dot ties the chip visually to its GL edge.
+ *   • Numeric value in large white monospace — readable at arm's length.
+ *   • "cm" unit in axis colour at reduced size — keeps the number dominant.
+ *   • Dark semi-transparent background + coloured 1-dp border for legibility
+ *     over any camera background.
+ */
 @Composable
 private fun DimChip(label: DimLabel, modifier: Modifier = Modifier) {
-    val color = when (label.axis) {
-        DimAxis.LENGTH -> Cyan
-        DimAxis.WIDTH  -> Color(0xFFFF2D78)
-        DimAxis.HEIGHT -> Green
+    val (axisColor, axisTag) = when (label.axis) {
+        DimAxis.LENGTH -> AxisBlue to "L"
+        DimAxis.WIDTH  -> AxisRed  to "W"
+        DimAxis.HEIGHT -> Green    to "H"
     }
-    val inches = label.cm * 0.393701
     Box(
         modifier = modifier.offset {
-            // Centre the chip on the projected point (approx half-size offset).
             IntOffset(
-                (label.xPx - 30.dp.toPx()).roundToInt(),
-                (label.yPx - 14.dp.toPx()).roundToInt(),
+                (label.xPx - 40.dp.toPx()).roundToInt(),
+                (label.yPx - 17.dp.toPx()).roundToInt(),
             )
         },
     ) {
-        Text(
-            "%.1fin".format(inches),
-            color = Color.White,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Bold,
-            fontFamily = FontFamily.Monospace,
+        Row(
             modifier = Modifier
-                .background(color, RoundedCornerShape(6.dp))
-                .padding(horizontal = 8.dp, vertical = 3.dp),
+                .background(Color(0xEE070B18), RoundedCornerShape(6.dp))
+                .border(1.dp, axisColor.copy(alpha = 0.85f), RoundedCornerShape(6.dp))
+                .padding(horizontal = 8.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            // Solid colour vertex node — mirrors the GL dot at the anchor point
+            Box(
+                modifier = Modifier
+                    .size(7.dp)
+                    .background(axisColor, RoundedCornerShape(3.5.dp)),
+            )
+            // Measurement value — dominant, white, monospace
+            Text(
+                "%.1f".format(label.cm),
+                color         = Color.White,
+                fontSize      = 15.sp,
+                fontWeight    = FontWeight.ExtraBold,
+                fontFamily    = FontFamily.Monospace,
+                letterSpacing = (-0.5).sp,
+            )
+            // Unit label — axis colour, small caps feel
+            Text(
+                "cm",
+                color         = axisColor.copy(alpha = 0.90f),
+                fontSize      = 9.sp,
+                fontWeight    = FontWeight.Bold,
+                fontFamily    = FontFamily.Monospace,
+                letterSpacing = 0.5.sp,
+            )
+        }
+    }
+}
+
+/**
+ * Compose-layer spatial-mapping floor grid.
+ *
+ * Draws a perspective-foreshortened dot matrix simulating the ARCore floor-plane
+ * detection overlay.  The vanishing point is at the approximate AR horizon
+ * (~52 % of viewport height); row spacing and dot radius both grow quadratically
+ * toward the bottom to mimic physical depth.
+ *
+ * This is intentionally a *simulation* of the GL spatial mesh — it gives the
+ * camera feed an instant "active scanning" look without reading ARCore plane data
+ * from the Compose thread.
+ */
+@Composable
+private fun SpatialGridOverlay(modifier: Modifier = Modifier) {
+    val gridColor = AxisBlue
+    androidx.compose.foundation.Canvas(modifier = modifier) {
+        val w       = size.width
+        val h       = size.height
+        val vpY     = h * 0.52f          // vanishing-point Y (approximate horizon)
+        val dotBase = 1.8.dp.toPx()
+        val rows    = 10
+        val cols    = 14
+
+        for (row in 1..rows) {
+            val t      = row.toFloat() / rows              // 0 = horizon → 1 = near edge
+            val y      = vpY + (h - vpY) * t * t          // quadratic foreshortening
+            val spread = t * w * 0.46f                    // wider columns closer to camera
+            val alpha  = (0.05f + t * 0.18f).coerceAtMost(0.28f)
+            val radius = dotBase * (0.35f + t * 0.85f)
+
+            for (col in -(cols / 2)..(cols / 2)) {
+                val x = (w / 2f) + (col.toFloat() / (cols / 2f)) * spread
+                if (x < 0f || x > w || y > h) continue
+                drawCircle(
+                    color  = gridColor.copy(alpha = alpha),
+                    radius = radius,
+                    center = androidx.compose.ui.geometry.Offset(x, y),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Y-axis guide sidebar — rendered in Compose over the GL viewport when the driver
+ * is about to place the 4th tap (height measurement, tapCount == 3).
+ *
+ * Shows a precision vertical ruler with major/minor tick marks, an upward arrow,
+ * and "Y" axis label — all in the height axis green to match the GL guide line
+ * drawn by [drawYGuide] in the renderer.
+ */
+@Composable
+private fun YGuideIndicator(modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .background(Color(0xCC060B1A), RoundedCornerShape(8.dp))
+            .border(1.dp, Green.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
+            .padding(horizontal = 8.dp, vertical = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        // Upward arrow — "aim for the box top"
+        Icon(
+            imageVector      = Icons.Default.ArrowUpward,
+            contentDescription = "Measure height",
+            tint             = Green,
+            modifier         = Modifier.size(14.dp),
+        )
+
+        // Precision ruler drawn in Canvas
+        androidx.compose.foundation.Canvas(
+            modifier = Modifier.width(16.dp).height(80.dp),
+        ) {
+            val cx         = size.width / 2f
+            val h          = size.height
+            val stroke     = 1.5.dp.toPx()
+            val majorHalf  = 6.dp.toPx()
+            val minorHalf  = 3.5.dp.toPx()
+            val majorCount = 4
+
+            // Vertical spine
+            drawLine(
+                color       = Green.copy(alpha = 0.65f),
+                start       = androidx.compose.ui.geometry.Offset(cx, 0f),
+                end         = androidx.compose.ui.geometry.Offset(cx, h),
+                strokeWidth = stroke,
+            )
+            // Major + minor tick marks
+            for (i in 0..majorCount) {
+                val y = h * (1f - i.toFloat() / majorCount)
+                drawLine(
+                    color       = Green.copy(alpha = if (i == majorCount) 1f else 0.55f),
+                    start       = androidx.compose.ui.geometry.Offset(cx - majorHalf, y),
+                    end         = androidx.compose.ui.geometry.Offset(cx + majorHalf, y),
+                    strokeWidth = stroke,
+                )
+                // Minor tick between consecutive majors
+                if (i < majorCount) {
+                    val my = h * (1f - (i + 0.5f) / majorCount)
+                    drawLine(
+                        color       = Green.copy(alpha = 0.28f),
+                        start       = androidx.compose.ui.geometry.Offset(cx - minorHalf, my),
+                        end         = androidx.compose.ui.geometry.Offset(cx + minorHalf, my),
+                        strokeWidth = stroke * 0.7f,
+                    )
+                }
+            }
+        }
+
+        // Axis label
+        Text(
+            "Y",
+            color         = Green,
+            fontSize      = 9.sp,
+            fontWeight    = FontWeight.Bold,
+            fontFamily    = FontFamily.Monospace,
+            letterSpacing = 1.sp,
         )
     }
 }

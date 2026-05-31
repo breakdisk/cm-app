@@ -178,9 +178,31 @@ private class ArRenderer(
     private var markerColorUniform  = 0
     private var markerPositionAttr  = 0
 
+    // ── Face (semi-transparent surface) shader ─────────────────────────────
+    // Separate from markerProgram — no gl_PointCoord discard so GL_TRIANGLE_FAN
+    // fragments are never culled by the circular-dot clip in the marker shader.
+    private var faceProgram         = 0
+    private var faceMvpUniform      = 0
+    private var faceColorUniform    = 0
+    private var facePositionAttr    = 0
+
+    // ── Grid (spatial-mapping dots) shader ─────────────────────────────────
+    // Fixed 3-px point size — the adaptive size from markerProgram would make
+    // distant grid dots unreadably large or nearby ones bloated.
+    private var gridProgram         = 0
+    private var gridMvpUniform      = 0
+    private var gridColorUniform    = 0
+    private var gridPositionAttr    = 0
+
     // Reusable scratch buffer: avoids allocating per-draw on the GL thread.
     // Max usage: 6 floats (2 points × 3 components) for a line segment.
     private val scratchBuf: FloatBuffer = nativeFloatBuffer(6)
+
+    // Face quad buffer: 4 vertices × 3 components for GL_TRIANGLE_FAN face draws.
+    private val faceBuf: FloatBuffer = nativeFloatBuffer(12)
+
+    // Floor grid buffer: 21 × 21 = 441 dots × 3 components each.
+    private val gridBuf: FloatBuffer = nativeFloatBuffer(1323)
 
     private val projMatrix = FloatArray(16)
     private val viewMatrix = FloatArray(16)
@@ -213,6 +235,18 @@ private class ArRenderer(
         markerMvpUniform   = GLES20.glGetUniformLocation(markerProgram, "u_MVP")
         markerColorUniform = GLES20.glGetUniformLocation(markerProgram, "u_Color")
         markerPositionAttr = GLES20.glGetAttribLocation(markerProgram,  "a_Position")
+
+        // Face shader — identical vertex transform but no gl_PointCoord discard in frag.
+        faceProgram      = compileProgram(MARKER_VERT_SRC, FACE_FRAG_SRC)
+        faceMvpUniform   = GLES20.glGetUniformLocation(faceProgram, "u_MVP")
+        faceColorUniform = GLES20.glGetUniformLocation(faceProgram, "u_Color")
+        facePositionAttr = GLES20.glGetAttribLocation(faceProgram,  "a_Position")
+
+        // Grid shader — fixed 3-px points for the spatial-mapping dot matrix.
+        gridProgram      = compileProgram(GRID_VERT_SRC, MARKER_FRAG_SRC)
+        gridMvpUniform   = GLES20.glGetUniformLocation(gridProgram, "u_MVP")
+        gridColorUniform = GLES20.glGetUniformLocation(gridProgram, "u_Color")
+        gridPositionAttr = GLES20.glGetAttribLocation(gridProgram,  "a_Position")
 
         // ARCore session
         try {
@@ -375,6 +409,9 @@ private class ArRenderer(
         GLES20.glUseProgram(markerProgram)
         GLES20.glUniformMatrix4fv(markerMvpUniform, 1, false, mvpMatrix, 0)
 
+        // ── Spatial floor grid (drawn first — behind all markers and edges) ───
+        drawFloorGrid()
+
         // ── Dots ──────────────────────────────────────────────────────────────
         worldPts.forEachIndexed { idx, pt ->
             GLES20.glUniform4fv(markerColorUniform, 1, DOT_COLORS[idx.coerceAtMost(3)], 0)
@@ -394,9 +431,13 @@ private class ArRenderer(
             for (i in 0 until worldPts.size - 1) {
                 drawSolidEdge(worldPts[i], worldPts[i + 1], LINE_COLORS[i.coerceAtMost(2)])
             }
+            // Y guide: vertical green reference line + tick-ruler when the driver
+            // is about to place tap 4 (height measurement).
+            if (worldPts.size == 3) drawYGuide()
         } else {
-            // Full AR dimensioning cuboid: 3 measured edges solid + colored, the
-            // remaining 9 edges dashed white (the reference "box silhouette" look).
+            // Full AR dimensioning cuboid: semi-transparent faces first (depth no-write),
+            // then opaque colored wireframe on top.
+            drawBoxFaces(corners)
             drawBoxWireframe(corners)
             postDimLabels(corners)
         }
@@ -449,9 +490,9 @@ private class ArRenderer(
         GLES20.glDrawArrays(GLES20.GL_LINES, 0, 2)
     }
 
-    /** Dashed edge: draws alternate sub-segments along a→b. */
-    private fun drawDashedEdge(a: FloatArray, b: FloatArray) {
-        GLES20.glUniform4fv(markerColorUniform, 1, COL_DASH, 0)
+    /** Dashed edge: draws alternate sub-segments along a→b in [color] (default: dashed white). */
+    private fun drawDashedEdge(a: FloatArray, b: FloatArray, color: FloatArray = COL_DASH) {
+        GLES20.glUniform4fv(markerColorUniform, 1, color, 0)
         val dashes = 11
         var i = 0
         while (i < dashes) {
@@ -465,6 +506,117 @@ private class ArRenderer(
             GLES20.glEnableVertexAttribArray(markerPositionAttr)
             GLES20.glDrawArrays(GLES20.GL_LINES, 0, 2)
             i += 2
+        }
+    }
+
+    // ── Spatial floor grid ────────────────────────────────────────────────────
+
+    /**
+     * Renders a 21×21 dot-matrix spatial-mapping grid on the floor plane.
+     * The floor Y is taken from the first placed anchor, spacing is 7 cm.
+     * Uses [gridProgram] (fixed 3-px point size) so the dots stay small and
+     * non-intrusive regardless of camera distance.
+     */
+    private fun drawFloorGrid() {
+        if (worldPts.isEmpty()) return
+        val origin  = worldPts[0]
+        val groundY = origin[1]
+        val half    = 10
+        val spacing = 0.07f   // 7 cm between grid dots
+        var count   = 0
+        gridBuf.rewind()
+        for (i in -half..half) {
+            for (j in -half..half) {
+                gridBuf.put(origin[0] + i * spacing)
+                gridBuf.put(groundY)
+                gridBuf.put(origin[2] + j * spacing)
+                count++
+            }
+        }
+        gridBuf.rewind()
+        GLES20.glUseProgram(gridProgram)
+        GLES20.glUniformMatrix4fv(gridMvpUniform, 1, false, mvpMatrix, 0)
+        GLES20.glUniform4fv(gridColorUniform, 1, COL_GRID, 0)
+        GLES20.glVertexAttribPointer(gridPositionAttr, 3, GLES20.GL_FLOAT, false, 0, gridBuf)
+        GLES20.glEnableVertexAttribArray(gridPositionAttr)
+        GLES20.glDrawArrays(GLES20.GL_POINTS, 0, count)
+        GLES20.glDisableVertexAttribArray(gridPositionAttr)
+        // Restore marker program so subsequent draws (dots, edges) work correctly.
+        GLES20.glUseProgram(markerProgram)
+        GLES20.glUniformMatrix4fv(markerMvpUniform, 1, false, mvpMatrix, 0)
+    }
+
+    // ── Volumetric box faces ──────────────────────────────────────────────────
+
+    /**
+     * Renders 6 semi-transparent face quads over the completed bounding box using
+     * alpha blending.  Face colour is keyed to the adjacent measured axis:
+     *   Blue faces  — length axis (front + back, parallel to the blue edge)
+     *   Red  faces  — width  axis (left  + right, parallel to the red edge)
+     *   Neutral     — top / bottom
+     *
+     * Must be called BEFORE [drawBoxWireframe] so the opaque wireframe renders
+     * on top of the transparent tint.  Uses [faceProgram] (no gl_PointCoord discard)
+     * so GL_TRIANGLE_FAN fragments are never culled.
+     */
+    private fun drawBoxFaces(c: Array<FloatArray>) {
+        val r0 = c[0]; val r1 = c[1]; val r2 = c[2]; val r3 = c[3]
+        val t0 = c[4]; val t1 = c[5]; val t2 = c[6]; val t3 = c[7]
+        GLES20.glUseProgram(faceProgram)
+        GLES20.glUniformMatrix4fv(faceMvpUniform, 1, false, mvpMatrix, 0)
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glDepthMask(false)                       // don't write to depth for transparent geometry
+        // Top / bottom — neutral
+        drawQuadFace(r0, r1, r2, r3, COL_FACE_TOP)
+        drawQuadFace(t0, t1, t2, t3, COL_FACE_TOP)
+        // Length-axis faces (r0↔r1 = blue edge; front + back) — blue tint
+        drawQuadFace(r0, r1, t1, t0, COL_FACE_LEN)
+        drawQuadFace(r2, r3, t3, t2, COL_FACE_LEN)
+        // Width-axis faces (r1↔r2 = red edge; left + right) — red tint
+        drawQuadFace(r1, r2, t2, t1, COL_FACE_WID)
+        drawQuadFace(r3, r0, t0, t3, COL_FACE_WID)
+        GLES20.glDisableVertexAttribArray(facePositionAttr)
+        GLES20.glDepthMask(true)
+        GLES20.glDisable(GLES20.GL_BLEND)
+        // Restore marker program for the wireframe draw that follows.
+        GLES20.glUseProgram(markerProgram)
+        GLES20.glUniformMatrix4fv(markerMvpUniform, 1, false, mvpMatrix, 0)
+    }
+
+    private fun drawQuadFace(a: FloatArray, b: FloatArray, c: FloatArray, d: FloatArray, col: FloatArray) {
+        GLES20.glUniform4fv(faceColorUniform, 1, col, 0)
+        faceBuf.rewind()
+        faceBuf.put(a[0]); faceBuf.put(a[1]); faceBuf.put(a[2])
+        faceBuf.put(b[0]); faceBuf.put(b[1]); faceBuf.put(b[2])
+        faceBuf.put(c[0]); faceBuf.put(c[1]); faceBuf.put(c[2])
+        faceBuf.put(d[0]); faceBuf.put(d[1]); faceBuf.put(d[2])
+        faceBuf.rewind()
+        GLES20.glVertexAttribPointer(facePositionAttr, 3, GLES20.GL_FLOAT, false, 0, faceBuf)
+        GLES20.glEnableVertexAttribArray(facePositionAttr)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, 4)
+    }
+
+    // ── Y-axis measurement guide ──────────────────────────────────────────────
+
+    /**
+     * Y guide: shown when [worldPts].size == 3 (driver is about to tap box top).
+     * Renders a dashed green vertical line rising 1.5 m from the width-end anchor
+     * (worldPts[2]) plus horizontal tick marks every 12 cm — a precision ruler the
+     * driver can use to align the camera crosshair to the exact box-top height.
+     */
+    private fun drawYGuide() {
+        val p        = worldPts[2]
+        val guideTop = floatArrayOf(p[0], p[1] + 1.5f, p[2])
+        // Dashed vertical guide line in green
+        drawDashedEdge(p, guideTop, COL_HEIGHT)
+        // Horizontal tick marks at 12 cm intervals (8 ticks = 0 → 96 cm)
+        val hw = 0.030f   // 3 cm half-width each side of the guide axis
+        for (step in 1..8) {
+            val ty = p[1] + step * 0.12f
+            val ta = floatArrayOf(p[0] - hw, ty, p[2])
+            val tb = floatArrayOf(p[0] + hw, ty, p[2])
+            drawSolidEdge(ta, tb, COL_Y_TICK)
         }
     }
 
@@ -558,6 +710,7 @@ private const val MARKER_VERT_SRC = """
 /**
  * Marker fragment shader.
  * Discards corners of the GL_POINTS square to produce a circular dot.
+ * (Used for point sprites only — not for triangles or lines.)
  */
 private const val MARKER_FRAG_SRC = """
     precision mediump float;
@@ -569,14 +722,51 @@ private const val MARKER_FRAG_SRC = """
     }
 """
 
-// ── Measurement dimension color palette ───────────────────────────────────────
-// Axis colours match the Compose dimension chips: length = cyan, width = magenta,
-// height = green. Non-measured cuboid edges render dashed white.
+/**
+ * Face fragment shader — same colour output but NO gl_PointCoord discard.
+ * Used for GL_TRIANGLE_FAN face quads where gl_PointCoord is undefined; the
+ * discard in MARKER_FRAG_SRC would cull triangle fragments on most GPUs.
+ */
+private const val FACE_FRAG_SRC = """
+    precision mediump float;
+    uniform vec4 u_Color;
+    void main() { gl_FragColor = u_Color; }
+"""
 
-private val COL_LENGTH = floatArrayOf(0.000f, 0.898f, 1.000f, 1f)   // cyan
-private val COL_WIDTH  = floatArrayOf(1.000f, 0.176f, 0.471f, 1f)   // magenta / pink
-private val COL_HEIGHT = floatArrayOf(0.000f, 1.000f, 0.533f, 1f)   // green
-private val COL_DASH   = floatArrayOf(1.000f, 1.000f, 1.000f, 0.9f) // white dashed silhouette
+/**
+ * Grid vertex shader — fixed 3-px point size for the spatial-mapping dot matrix.
+ * The adaptive `clamp(70/w, ...)` in MARKER_VERT_SRC makes distant grid dots huge;
+ * a tiny fixed size keeps the grid subtle and non-intrusive.
+ */
+private const val GRID_VERT_SRC = """
+    uniform mat4  u_MVP;
+    attribute vec3 a_Position;
+    void main() {
+        gl_Position  = u_MVP * vec4(a_Position, 1.0);
+        gl_PointSize = 3.0;
+    }
+"""
+
+// ── Measurement dimension color palette ───────────────────────────────────────
+// Industrial axis palette (matches Compose DimChip tokens exactly):
+//   Length → #2196F3 blue    Width → #F44336 red    Height → #00FF88 green
+// Non-measured cuboid edges render as dashed white.
+
+private val COL_LENGTH = floatArrayOf(0.129f, 0.588f, 0.953f, 1f)   // #2196F3 blue
+private val COL_WIDTH  = floatArrayOf(0.957f, 0.263f, 0.212f, 1f)   // #F44336 red
+private val COL_HEIGHT = floatArrayOf(0.000f, 1.000f, 0.533f, 1f)   // #00FF88 green
+private val COL_DASH   = floatArrayOf(1.000f, 1.000f, 1.000f, 0.75f) // dashed white silhouette
+
+// Semi-transparent face tints — alpha ~0.09 for volumetric depth cue
+private val COL_FACE_LEN = floatArrayOf(0.129f, 0.588f, 0.953f, 0.09f)  // blue face tint
+private val COL_FACE_WID = floatArrayOf(0.957f, 0.263f, 0.212f, 0.09f)  // red  face tint
+private val COL_FACE_TOP = floatArrayOf(0.800f, 0.900f, 1.000f, 0.05f)  // neutral top/bottom tint
+
+// Spatial-mapping floor grid: faint blue dots
+private val COL_GRID   = floatArrayOf(0.129f, 0.588f, 0.953f, 0.22f)
+
+// Y guide tick marks: semi-transparent green
+private val COL_Y_TICK = floatArrayOf(0.000f, 1.000f, 0.533f, 0.42f)
 
 /** Dot fill colors indexed by tap point (0–3): length start/end, width end, height top. */
 private val DOT_COLORS = arrayOf(COL_LENGTH, COL_LENGTH, COL_WIDTH, COL_HEIGHT)
