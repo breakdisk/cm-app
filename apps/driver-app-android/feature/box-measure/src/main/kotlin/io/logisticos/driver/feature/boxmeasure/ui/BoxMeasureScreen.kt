@@ -80,7 +80,7 @@ fun BoxMeasureScreen(
     declaredL: Double? = null,
     declaredW: Double? = null,
     declaredH: Double? = null,
-    onDimensionsVerified: ((Double, Double, Double) -> Unit)? = null,
+    onDimensionsVerified: ((PopDimensioning) -> Unit)? = null,
     onBookShipment: ((sizeId: String, freightMode: FreightMode, originKey: String,
                       l: Double, w: Double, h: Double,
                       estimatedTotal: Double, currency: String) -> Unit)? = null,
@@ -132,8 +132,7 @@ fun BoxMeasureScreen(
     // Handle VERIFY confirm callback
     LaunchedEffect(state.dimensionConfirmed) {
         if (state.dimensionConfirmed) {
-            val (l, w, h) = viewModel.activeDimensions()
-            onDimensionsVerified?.invoke(l, w, h)
+            onDimensionsVerified?.invoke(viewModel.popDimensioning())
             onBack()
         }
     }
@@ -302,6 +301,8 @@ fun BoxMeasureScreen(
                 VerifyConfirmSection(
                     hasResult   = state.measuredL != null,
                     integrity   = state.integrity,
+                    qty         = state.qty,
+                    onQtyChange = viewModel::setQty,
                     onConfirm   = viewModel::confirmDimensions,
                 )
             }
@@ -800,7 +801,29 @@ private fun ManualDimensionEntry(
 }
 
 @Composable
-private fun VerifyConfirmSection(hasResult: Boolean, integrity: MeasurementIntegrity, onConfirm: () -> Unit) {
+private fun VerifyConfirmSection(
+    hasResult: Boolean,
+    integrity: MeasurementIntegrity,
+    qty: Int,
+    onQtyChange: (Int) -> Unit,
+    onConfirm: () -> Unit,
+) {
+    // Box count — captured into the POP for the size/quantity audit.
+    SectionLabel("Quantity of boxes")
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        QtyButton("−") { onQtyChange((qty - 1).coerceAtLeast(1)) }
+        Text("$qty", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace, modifier = Modifier.widthIn(min = 32.dp), textAlign = TextAlign.Center)
+        QtyButton("+") { onQtyChange((qty + 1).coerceAtMost(99)) }
+        Spacer(Modifier.weight(1f))
+        Text("identical box(es) in this pickup", color = TextMuted, fontSize = 11.sp)
+    }
+    Spacer(Modifier.height(4.dp))
+
     if (!hasResult) {
         Text(
             "Place the anchor and resize to measure with AR, or enter dimensions manually to confirm.",
@@ -838,6 +861,21 @@ private fun VerifyConfirmSection(hasResult: Boolean, integrity: MeasurementInteg
                 Icon(Icons.Default.Check, null, tint = if (blocked) TextMuted else Canvas)
                 Text("Confirm Dimensions", color = if (blocked) TextMuted else Canvas, fontWeight = FontWeight.Bold, fontSize = 15.sp)
             }
+        }
+    }
+}
+
+@Composable
+private fun QtyButton(glyph: String, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(10.dp),
+        color = Glass,
+        border = BorderStroke(1.dp, Cyan.copy(alpha = 0.4f)),
+        modifier = Modifier.size(40.dp),
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(glyph, color = Cyan, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         }
     }
 }

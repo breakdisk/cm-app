@@ -48,6 +48,22 @@ data class DimLabel(
     val cm: Double,
 )
 
+/**
+ * AR-measured dimensioning snapshot handed to the Proof-of-Pickup flow. Serves the
+ * POP triple purpose: anti-fraud (integrity + dimensions), size audit (cbm /
+ * volumetric weight), and box count (quantity). [integrity] is a
+ * [MeasurementIntegrity] name.
+ */
+data class PopDimensioning(
+    val lengthCm: Double,
+    val widthCm: Double,
+    val heightCm: Double,
+    val cbm: Double,
+    val volumetricWeightKg: Double,
+    val quantity: Int,
+    val integrity: String,
+)
+
 /** Below this ARCore tracking confidence a scan is downgraded to REVIEW. */
 private const val AR_CONFIDENCE_FLOOR = 0.80
 
@@ -329,4 +345,19 @@ class BoxMeasureViewModel @Inject constructor() : ViewModel() {
     }
 
     fun activeDimensions(): Triple<Double, Double, Double> = resolveActiveDimensions(_uiState.value)
+
+    /** Full dimensioning snapshot for the POP flow (anti-fraud / audit / quantity). */
+    fun popDimensioning(): PopDimensioning {
+        val s = _uiState.value
+        val (l, w, h) = resolveActiveDimensions(s)
+        return PopDimensioning(
+            lengthCm           = l,
+            widthCm            = w,
+            heightCm           = h,
+            cbm                = computeCbm(l, w, h),
+            volumetricWeightKg = computeVolumetricWeight(l, w, h),
+            quantity           = s.qty,
+            integrity          = s.integrity.name,
+        )
+    }
 }

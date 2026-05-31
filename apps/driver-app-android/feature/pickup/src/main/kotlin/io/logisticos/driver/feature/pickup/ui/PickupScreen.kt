@@ -12,6 +12,7 @@ import androidx.camera.view.PreviewView
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -68,6 +69,9 @@ fun PickupScreen(
     /** Called when the driver taps "Verify Box Dimensions". Passes optional declared
      *  sizeId/L/W/H — null when the task entity doesn't carry declared dimensions. */
     onNavigateToBoxMeasure: ((sizeId: String?, declL: Double?, declW: Double?, declH: Double?) -> Unit)? = null,
+    /** AR-measured dimensioning returned from BoxMeasureScreen (VERIFY) — rendered as
+     *  the POP audit panel and folded into the chain-of-custody on confirm. */
+    auditDims: BoxAuditDims? = null,
     viewModel: PickupViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -592,6 +596,12 @@ fun PickupScreen(
             }
         }
 
+        // ── AR dimensioning — POP audit panel ────────────────────────────────
+        if (auditDims != null) {
+            Spacer(Modifier.height(12.dp))
+            BoxAuditPanel(dims = auditDims, modifier = Modifier.padding(horizontal = 20.dp))
+        }
+
         Spacer(Modifier.height(12.dp))
 
         // Confirm button
@@ -633,5 +643,94 @@ fun PickupScreen(
         }
 
         Spacer(Modifier.navigationBarsPadding().height(16.dp))
+    }
+}
+
+// ── AR dimensioning → POP audit ─────────────────────────────────────────────────
+
+/**
+ * AR-measured dimensioning carried back from BoxMeasureScreen (VERIFY) into the POP
+ * flow. Encoded as a "l|w|h|cbm|vol|qty|integrity" string in the pickup back-stack's
+ * SavedStateHandle so it survives the round-trip without a cross-feature dependency.
+ */
+data class BoxAuditDims(
+    val lengthCm: Double,
+    val widthCm: Double,
+    val heightCm: Double,
+    val cbm: Double,
+    val volumetricWeightKg: Double,
+    val quantity: Int,
+    val integrity: String,
+) {
+    companion object {
+        fun fromEncoded(raw: String?): BoxAuditDims? {
+            val p = raw?.split("|") ?: return null
+            if (p.size < 7) return null
+            return runCatching {
+                BoxAuditDims(
+                    lengthCm = p[0].toDouble(), widthCm = p[1].toDouble(), heightCm = p[2].toDouble(),
+                    cbm = p[3].toDouble(), volumetricWeightKg = p[4].toDouble(),
+                    quantity = p[5].toInt(), integrity = p[6],
+                )
+            }.getOrNull()
+        }
+    }
+}
+
+/**
+ * POP audit panel — surfaces the AR dimensioning for the pickup's three POP duties:
+ * anti-fraud (integrity), size audit (dimensions / CBM / volumetric weight) and box
+ * count (quantity). Dimensions shown in cm and inches.
+ */
+@Composable
+private fun BoxAuditPanel(dims: BoxAuditDims, modifier: Modifier = Modifier) {
+    val muted = Color(0xFF64748B)
+    val inFactor = 0.393701
+    val (accent, label) = when (dims.integrity) {
+        "VERIFIED" -> Green to "Integrity verified"
+        "FLAGGED"  -> Red to "Flagged — re-measure"
+        "REVIEW"   -> Amber to "Needs review"
+        else       -> muted to "Unverified"
+    }
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = Glass,
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.35f)),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("📐", fontSize = 14.sp)
+                Text("AR Dimensioning · POP audit", color = Cyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Spacer(Modifier.weight(1f))
+                Text(label, color = accent, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+            }
+
+            // L × W × H in cm and inches.
+            listOf(
+                "Length" to dims.lengthCm, "Width" to dims.widthCm, "Height" to dims.heightCm,
+            ).forEach { (name, cm) ->
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(name, color = muted, fontSize = 12.sp)
+                    Text(
+                        "${"%.1f".format(cm)} cm · ${"%.1f".format(cm * inFactor)} in",
+                        color = Color.White, fontSize = 12.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
+
+            Divider(color = Border, thickness = 1.dp)
+            AuditRow("Volume (CBM)", "${"%.4f".format(dims.cbm)} m³", Purple, muted)
+            AuditRow("Volumetric weight", "${"%.1f".format(dims.volumetricWeightKg)} kg", Amber, muted)
+            AuditRow("Quantity", "× ${dims.quantity}", Cyan, muted)
+        }
+    }
+}
+
+@Composable
+private fun AuditRow(label: String, value: String, valueColor: Color, labelColor: Color) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, color = labelColor, fontSize = 12.sp)
+        Text(value, color = valueColor, fontSize = 12.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
     }
 }

@@ -27,6 +27,7 @@ import io.logisticos.driver.feature.home.ui.HomeScreen
 import io.logisticos.driver.feature.navigation.ui.NavigationScreen
 import io.logisticos.driver.feature.notifications.presentation.NotificationsViewModel
 import io.logisticos.driver.feature.notifications.ui.NotificationsScreen
+import io.logisticos.driver.feature.pickup.ui.BoxAuditDims
 import io.logisticos.driver.feature.pickup.ui.PickupScreen
 import io.logisticos.driver.feature.pod.ui.PodScreen
 import io.logisticos.driver.feature.profile.presentation.ProfileViewModel
@@ -232,8 +233,14 @@ fun ShiftScaffold(rootNavController: NavHostController) {
 
             composable(PICKUP_ROUTE) { backStack ->
                 val taskId = backStack.arguments?.getString("taskId") ?: ""
+                // AR dimensioning returned from BoxMeasureScreen (VERIFY) is stashed in
+                // this entry's SavedStateHandle; read it reactively for the POP audit panel.
+                val dimsRaw = backStack.savedStateHandle
+                    .getStateFlow<String?>("verified_dimensioning", null)
+                    .collectAsState()
                 PickupScreen(
                     taskId = taskId,
+                    auditDims = BoxAuditDims.fromEncoded(dimsRaw.value),
                     onCompleted = {
                         shiftNavController.navigate(HOME_ROUTE) {
                             popUpTo(HOME_ROUTE) { inclusive = true }
@@ -282,12 +289,15 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                     // (Track-A Balikbayan: verified_box_size, outer_packaging_integrity).
                     // BoxMeasureScreen calls onBack() immediately after this callback —
                     // do NOT also call popBackStack() here or the back stack pops twice.
-                    onDimensionsVerified = { l: Double, w: Double, h: Double ->
-                        shiftNavController.previousBackStackEntry?.savedStateHandle?.run {
-                            set("verified_box_l", l.toFloat())
-                            set("verified_box_w", w.toFloat())
-                            set("verified_box_h", h.toFloat())
-                        }
+                    onDimensionsVerified = { dim ->
+                        // Encode the full AR dimensioning into the pickup back-stack so
+                        // PickupScreen can render the POP audit panel (size / volumetric
+                        // weight / quantity / integrity) on return.
+                        shiftNavController.previousBackStackEntry?.savedStateHandle?.set(
+                            "verified_dimensioning",
+                            "${dim.lengthCm}|${dim.widthCm}|${dim.heightCm}|${dim.cbm}|" +
+                                "${dim.volumetricWeightKg}|${dim.quantity}|${dim.integrity}",
+                        )
                     },
                     // QUOTE mode only: driver taps "Book This Shipment" after getting a price.
                     // Navigate to BookShipmentScreen with all quote data as route params so the
