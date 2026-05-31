@@ -23,7 +23,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -324,43 +323,59 @@ fun BoxMeasureScreen(
 // ── Sub-composables ────────────────────────────────────────────────────────────
 
 /**
- * Crosshair drawn with Compose Canvas, centered in the AR viewport.
- * Shows the driver exactly where their tap will land on the detected plane.
- * Four short arms + a small center circle in white/translucent so it remains
- * visible on both bright and dark surfaces.
+ * Centre coordinate reticle — a tiny aim tick plus a live world X/Y/Z readout of the
+ * plane point under the centre of the viewport (replaces the old bullseye). Values are
+ * AR world-space metres, fed by the renderer's throttled centre hit-test; when no plane
+ * is detected at the centre the axes show "—".
  */
 @Composable
-private fun AimingCrosshair(modifier: Modifier = Modifier) {
-    androidx.compose.foundation.Canvas(modifier = modifier) {
-        val cx     = size.width  / 2f
-        val cy     = size.height / 2f
-        val ring   = 18.dp.toPx()
-        val arm    = 30.dp.toPx()
-        val stroke = 2.dp.toPx()
-        val color  = Color.White.copy(alpha = 0.80f)
-        val shadow = Color.Black.copy(alpha = 0.35f)
+private fun CoordinateReticle(x: Float?, y: Float?, z: Float?, modifier: Modifier = Modifier) {
+    val hasHit = x != null && y != null && z != null
+    val accent = if (hasHit) Cyan else TextMuted
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        // Minimal aim tick at the exact centre.
+        androidx.compose.foundation.Canvas(modifier = Modifier.size(18.dp)) {
+            val c = size.width / 2f
+            val arm = 7.dp.toPx()
+            val stroke = 1.5.dp.toPx()
+            // Shadow pass then accent, offset 1px for legibility on bright surfaces.
+            listOf(Color.Black.copy(alpha = 0.4f) to 1f, accent to 0f).forEach { (col, off) ->
+                drawLine(col, Offset(c - arm + off, c + off), Offset(c + arm + off, c + off), stroke)
+                drawLine(col, Offset(c + off, c - arm + off), Offset(c + off, c + arm + off), stroke)
+            }
+        }
 
-        // Shadow pass (offset 1px down-right) for legibility on white surfaces
-        fun sh(x1: Float, y1: Float, x2: Float, y2: Float) =
-            drawLine(shadow, Offset(x1 + 1, y1 + 1), Offset(x2 + 1, y2 + 1), stroke + 1)
-
-        drawCircle(shadow, ring + 1, Offset(cx + 1, cy + 1), style = Stroke(stroke + 1))
-        drawCircle(color,  ring,     Offset(cx, cy),          style = Stroke(stroke))
-
-        sh(cx - arm, cy, cx - ring, cy)
-        sh(cx + ring, cy, cx + arm, cy)
-        sh(cx, cy - arm, cx, cy - ring)
-        sh(cx, cy + ring, cx, cy + arm)
-
-        drawLine(color, Offset(cx - arm, cy),   Offset(cx - ring, cy),  stroke)
-        drawLine(color, Offset(cx + ring, cy),  Offset(cx + arm, cy),   stroke)
-        drawLine(color, Offset(cx, cy - arm),   Offset(cx, cy - ring),  stroke)
-        drawLine(color, Offset(cx, cy + ring),  Offset(cx, cy + arm),   stroke)
-
-        // Center dot
-        drawCircle(color, 3.dp.toPx(), Offset(cx, cy))
+        // X / Y / Z readout chip.
+        Column(
+            modifier = Modifier
+                .background(Color(0xCC050810), RoundedCornerShape(10.dp))
+                .border(1.dp, accent.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            listOf("X" to x, "Y" to y, "Z" to z).forEach { (axis, v) ->
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(axis, color = accent, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                    Text(
+                        if (v != null) "%+.2f m".format(v) else "—",
+                        color = if (hasHit) Color.White else TextMuted,
+                        fontSize = 12.sp, fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.width(64.dp),
+                        textAlign = TextAlign.End,
+                    )
+                }
+            }
+        }
     }
 }
+
 
 /**
  * Live AR viewport: camera background + aiming crosshair + 3-stage guide + the
@@ -391,9 +406,13 @@ private fun ArViewport(
                 .align(Alignment.TopCenter),
         )
 
-        // Aiming crosshair — visible until measurement is complete.
+        // Centre coordinate reticle — live world X/Y/Z under the aim point, shown
+        // until measurement is complete (replaces the old bullseye).
         if (state.tapCount < 4) {
-            AimingCrosshair(modifier = Modifier.fillMaxSize())
+            CoordinateReticle(
+                x = state.reticleX, y = state.reticleY, z = state.reticleZ,
+                modifier = Modifier.align(Alignment.Center),
+            )
         }
 
         // 3-stage guide (top-start).

@@ -9,6 +9,8 @@ import android.opengl.Matrix
 import android.os.Handler
 import android.os.Looper
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
@@ -74,32 +76,41 @@ fun ArCoreBoxMeasureView(
         }
     }
 
-    AndroidView(
-        // Taps are detected at the Compose layer rather than via the GLSurfaceView's
-        // own OnTouchListener. Interop touch dispatch to the embedded view is
-        // unreliable when the view is re-hosted — e.g. when the viewport is moved
-        // into the full-screen layer — which left tap-to-measure dead in full screen.
-        // A Compose tap detector on the node works identically in every layout.
-        // `offset` is in this node's local pixels, matching the GL display geometry
-        // passed to `frame.hitTest`.
-        modifier = modifier.pointerInput(Unit) {
-            detectTapGestures { offset ->
-                if (viewModel.uiState.value.tapCount < 4) {
-                    tapQueue.offer(Pair(offset.x, offset.y))
+    Box(modifier = modifier) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                ArRenderer(
+                    ctx                  = ctx,
+                    tapQueue             = tapQueue,
+                    onSessionReady       = { viewModel.onArSessionReady() },
+                    onSessionError       = { msg -> viewModel.onArSessionError(msg) },
+                    onMeasurementPoint   = { idx, x, y, z -> viewModel.onMeasurementPoint(idx, x, y, z) },
+                    onMeasurementComplete = { l, w, h, conf -> viewModel.onMeasurementComplete(l, w, h, conf) },
+                    onReticleCoords      = { x, y, z -> viewModel.onReticleCoords(x, y, z) },
+                ).also { rendererRef.value = it }.glView
+            },
+        )
+
+        // Transparent tap-capture layer ON TOP of the GLSurfaceView. A dedicated
+        // Compose node reliably receives gestures in every layout — unlike
+        // `pointerInput` placed on the AndroidView itself, where interop touch
+        // dispatch to the embedded GLSurfaceView is unreliable and left tap-to-place
+        // dead. `detectTapGestures` ignores vertical drags, so the parent scroll
+        // still works when the viewport is inline. `offset` is in local pixels,
+        // matching the GL display geometry passed to `frame.hitTest`.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures { offset ->
+                        if (viewModel.uiState.value.tapCount < 4) {
+                            tapQueue.offer(Pair(offset.x, offset.y))
+                        }
+                    }
                 }
-            }
-        },
-        factory = { ctx ->
-            ArRenderer(
-                ctx                  = ctx,
-                tapQueue             = tapQueue,
-                onSessionReady       = { viewModel.onArSessionReady() },
-                onSessionError       = { msg -> viewModel.onArSessionError(msg) },
-                onMeasurementPoint   = { idx, x, y, z -> viewModel.onMeasurementPoint(idx, x, y, z) },
-                onMeasurementComplete = { l, w, h, conf -> viewModel.onMeasurementComplete(l, w, h, conf) },
-            ).also { rendererRef.value = it }.glView
-        },
-    )
+        )
+    }
 }
 
 // ── Renderer ───────────────────────────────────────────────────────────────────
@@ -111,6 +122,7 @@ private class ArRenderer(
     private val onSessionError: (String) -> Unit,
     private val onMeasurementPoint: (index: Int, x: Float, y: Float, z: Float) -> Unit,
     private val onMeasurementComplete: (l: Double, w: Double, h: Double, confidence: Double) -> Unit,
+    private val onReticleCoords: (x: Float?, y: Float?, z: Float?) -> Unit,
 ) : GLSurfaceView.Renderer {
 
     val glView: GLSurfaceView = GLSurfaceView(ctx).also { surface ->
@@ -126,6 +138,12 @@ private class ArRenderer(
 
     // World-space tap points: p0..p3 owned exclusively by the GL thread.
     private val worldPts = mutableListOf<FloatArray>()
+
+    // Viewport size (set in onSurfaceChanged) + reticle throttle. Used to hit-test
+    // the screen centre each frame and report live X/Y/Z under the reticle.
+    private var viewW = 0
+    private var viewH = 0
+    private var lastReticleMs = 0L
 
     // ── Camera background ──────────────────────────────────────────────────────
 
@@ -217,6 +235,8 @@ private class ArRenderer(
     override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) {
         GLES20.glViewport(0, 0, w, h)
         session?.setDisplayGeometry(0, w, h)
+        viewW = w
+        viewH = h
         texCoordsReady = false
     }
 
@@ -229,6 +249,28 @@ private class ArRenderer(
 
         if (frame.camera.trackingState == TrackingState.TRACKING) {
             drawMarkersAndLines(frame)
+        }
+
+        // Live reticle: hit-test the screen centre and report world X/Y/Z (throttled
+        // to ~6 Hz to keep recomposition cheap). Drives the on-screen coordinate
+        // readout that replaces the static bullseye. Must run before the tap-poll
+        // early-return below, which fires every frame there is no pending tap.
+        val nowMs = System.currentTimeMillis()
+        if (nowMs - lastReticleMs >= 150 && worldPts.size < 4) {
+            lastReticleMs = nowMs
+            if (frame.camera.trackingState == TrackingState.TRACKING && viewW > 0) {
+                val cHits = frame.hitTest(viewW / 2f, viewH / 2f)
+                val cHit = cHits.firstOrNull { h ->
+                    h.trackable is Plane && (h.trackable as Plane).isPoseInPolygon(h.hitPose)
+                } ?: cHits.firstOrNull()
+                if (cHit != null) {
+                    val cp = cHit.hitPose
+                    val rx = cp.tx(); val ry = cp.ty(); val rz = cp.tz()
+                    mainHandler.post { onReticleCoords(rx, ry, rz) }
+                } else {
+                    mainHandler.post { onReticleCoords(null, null, null) }
+                }
+            }
         }
 
         // Hit-test for the next pending tap

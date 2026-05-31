@@ -49,6 +49,11 @@ data class BoxMeasureUiState(
     val arConfidence: Double = 0.0,
     val measureError: String? = null,
 
+    // Live world-space coordinates under the centre reticle (null when no plane hit).
+    val reticleX: Float? = null,
+    val reticleY: Float? = null,
+    val reticleZ: Float? = null,
+
     // ── Measurement integrity / anti-fraud ──────────────────────────────────────
     val integrity: MeasurementIntegrity = MeasurementIntegrity.PENDING,
     val integrityReason: String? = null,
@@ -119,6 +124,10 @@ class BoxMeasureViewModel @Inject constructor() : ViewModel() {
 
     fun onArSessionReady() = _uiState.update { it.copy(arSessionReady = true) }
 
+    /** Live coordinates under the centre reticle, throttled by the renderer. */
+    fun onReticleCoords(x: Float?, y: Float?, z: Float?) =
+        _uiState.update { it.copy(reticleX = x, reticleY = y, reticleZ = z) }
+
     /**
      * Clears the current measurement so the driver can re-scan. Drops the captured
      * dimensions, the integrity score, and the trusted AR-scan snapshot, and bumps
@@ -137,6 +146,9 @@ class BoxMeasureViewModel @Inject constructor() : ViewModel() {
         integrity          = MeasurementIntegrity.PENDING,
         integrityReason    = null,
         manualOverrideUsed = false,
+        reticleX           = null,
+        reticleY           = null,
+        reticleZ           = null,
         resetToken         = it.resetToken + 1,
     )}
 
