@@ -34,6 +34,13 @@ struct PopRow {
     scanned_barcode:        Option<String>,
     service_code:           String,
     declared_value_cents:   Option<i64>,
+    verified_length_cm:     Option<f64>,
+    verified_width_cm:      Option<f64>,
+    verified_height_cm:     Option<f64>,
+    verified_cbm:           Option<f64>,
+    volumetric_weight_kg:   Option<f64>,
+    box_quantity:           Option<i32>,
+    dimension_integrity:    Option<String>,
     device_timestamp:       Option<chrono::DateTime<chrono::Utc>>,
     captured_at:            chrono::DateTime<chrono::Utc>,
     created_at:             chrono::DateTime<chrono::Utc>,
@@ -60,6 +67,13 @@ impl From<PopRow> for ProofOfPickup {
             scanned_barcode:        r.scanned_barcode,
             service_code:           r.service_code,
             declared_value_cents:   r.declared_value_cents,
+            verified_length_cm:     r.verified_length_cm,
+            verified_width_cm:      r.verified_width_cm,
+            verified_height_cm:     r.verified_height_cm,
+            verified_cbm:           r.verified_cbm,
+            volumetric_weight_kg:   r.volumetric_weight_kg,
+            box_quantity:           r.box_quantity,
+            dimension_integrity:    r.dimension_integrity,
             device_timestamp:       r.device_timestamp,
             captured_at:            r.captured_at,
             created_at:             r.created_at,
@@ -75,6 +89,8 @@ const SELECT_COLS: &str = r#"
     barcode_scanned, scanned_barcode,
     COALESCE(service_code, 'standard') AS service_code,
     declared_value_cents,
+    verified_length_cm, verified_width_cm, verified_height_cm,
+    verified_cbm, volumetric_weight_kg, box_quantity, dimension_integrity,
     device_timestamp, captured_at, created_at
 "#;
 
@@ -125,8 +141,11 @@ impl PickupRepository for PgPickupRepository {
                     actual_weight_g, declared_weight_g,
                     barcode_scanned, scanned_barcode,
                     service_code, declared_value_cents,
+                    verified_length_cm, verified_width_cm, verified_height_cm,
+                    verified_cbm, volumetric_weight_kg, box_quantity, dimension_integrity,
                     device_timestamp, captured_at, created_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
+                       $19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
                ON CONFLICT (id) DO UPDATE SET
                    status                 = EXCLUDED.status,
                    photo_s3_key           = EXCLUDED.photo_s3_key,
@@ -138,6 +157,13 @@ impl PickupRepository for PgPickupRepository {
                    out_of_bounds_handover = EXCLUDED.out_of_bounds_handover,
                    service_code           = EXCLUDED.service_code,
                    declared_value_cents   = EXCLUDED.declared_value_cents,
+                   verified_length_cm     = EXCLUDED.verified_length_cm,
+                   verified_width_cm      = EXCLUDED.verified_width_cm,
+                   verified_height_cm     = EXCLUDED.verified_height_cm,
+                   verified_cbm           = EXCLUDED.verified_cbm,
+                   volumetric_weight_kg   = EXCLUDED.volumetric_weight_kg,
+                   box_quantity           = EXCLUDED.box_quantity,
+                   dimension_integrity    = EXCLUDED.dimension_integrity,
                    device_timestamp       = EXCLUDED.device_timestamp"#
         )
         .bind(pop.id)
@@ -158,6 +184,13 @@ impl PickupRepository for PgPickupRepository {
         .bind(&pop.scanned_barcode)
         .bind(&pop.service_code)
         .bind(pop.declared_value_cents)
+        .bind(pop.verified_length_cm)
+        .bind(pop.verified_width_cm)
+        .bind(pop.verified_height_cm)
+        .bind(pop.verified_cbm)
+        .bind(pop.volumetric_weight_kg)
+        .bind(pop.box_quantity)
+        .bind(&pop.dimension_integrity)
         .bind(pop.device_timestamp)
         .bind(pop.captured_at)
         .bind(pop.created_at)

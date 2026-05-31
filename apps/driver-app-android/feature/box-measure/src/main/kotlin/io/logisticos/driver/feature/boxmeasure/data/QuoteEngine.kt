@@ -77,6 +77,19 @@ fun computeCbm(l: Double, w: Double, h: Double): Double {
     return ((l * w * h) / 1_000_000.0 * 10000).roundToInt() / 10000.0
 }
 
+/** IATA volumetric divisor (cm³ per kg) used for air dimensional weight. */
+const val VOLUMETRIC_DIVISOR = 5000.0
+
+/**
+ * Volumetric (dimensional) weight in kg: L×W×H(cm) ÷ [VOLUMETRIC_DIVISOR].
+ * Air freight is billed on the greater of actual vs. volumetric weight, so this is
+ * what a light-but-bulky box is effectively charged at. Rounded to 0.1 kg.
+ */
+fun computeVolumetricWeight(l: Double, w: Double, h: Double, divisor: Double = VOLUMETRIC_DIVISOR): Double {
+    if (l <= 0 || w <= 0 || h <= 0) return 0.0
+    return ((l * w * h) / divisor * 10).roundToInt() / 10.0
+}
+
 fun matchToStandardSize(l: Double, w: Double, h: Double): BoxSize? {
     val measured = computeCbm(l, w, h)
     if (measured == 0.0) return null

@@ -435,6 +435,20 @@ impl PodService {
             pop.attach_photo(key.clone(), cmd.photo_size_bytes.unwrap_or(0));
         }
 
+        // AR dimensioning (driver app VERIFY mode) — persisted for the POP
+        // size/quantity/anti-fraud audit. All fields optional.
+        if cmd.verified_length_cm.is_some() || cmd.box_quantity.is_some() {
+            pop.record_dimensions(
+                cmd.verified_length_cm,
+                cmd.verified_width_cm,
+                cmd.verified_height_cm,
+                cmd.verified_cbm,
+                cmd.volumetric_weight_kg,
+                cmd.box_quantity,
+                cmd.dimension_integrity.clone(),
+            );
+        }
+
         // Override device_timestamp if provided at submit time (more accurate).
         if cmd.device_timestamp.is_some() {
             pop.device_timestamp = cmd.device_timestamp;
@@ -455,6 +469,18 @@ impl PodService {
         }
         if let Some(ratio) = pop.weight_overage_ratio() {
             tele_meta["weight_overage_ratio"] = serde_json::json!(ratio);
+        }
+        // AR dimensioning audit trail (anti-fraud / size / quantity).
+        if pop.verified_length_cm.is_some() || pop.box_quantity.is_some() {
+            tele_meta["ar_dimensions"] = serde_json::json!({
+                "length_cm":            pop.verified_length_cm,
+                "width_cm":             pop.verified_width_cm,
+                "height_cm":            pop.verified_height_cm,
+                "cbm":                  pop.verified_cbm,
+                "volumetric_weight_kg": pop.volumetric_weight_kg,
+                "box_quantity":         pop.box_quantity,
+                "integrity":            pop.dimension_integrity,
+            });
         }
         if let Err(e) = self.telemetry.append(TelemetryEntry {
             tenant_id:        tenant_id.inner(),
@@ -669,6 +695,13 @@ impl PodService {
             "actual_weight_g":        pop.actual_weight_g,
             "declared_weight_g":      pop.declared_weight_g,
             "weight_overage_ratio":   pop.weight_overage_ratio(),
+            "verified_length_cm":     pop.verified_length_cm,
+            "verified_width_cm":      pop.verified_width_cm,
+            "verified_height_cm":     pop.verified_height_cm,
+            "verified_cbm":           pop.verified_cbm,
+            "volumetric_weight_kg":   pop.volumetric_weight_kg,
+            "box_quantity":           pop.box_quantity,
+            "dimension_integrity":    pop.dimension_integrity,
             "photo_url":              photo_url,
             "device_timestamp":       pop.device_timestamp,
             "captured_at":            pop.captured_at,

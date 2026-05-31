@@ -17,6 +17,35 @@ import java.time.Instant
 import java.time.format.DateTimeFormatter
 import javax.inject.Inject
 
+/**
+ * AR-measured dimensioning carried back from BoxMeasureScreen (VERIFY) into the POP
+ * flow. Encoded as a "l|w|h|cbm|vol|qty|integrity" string in the pickup back-stack's
+ * SavedStateHandle so it survives the round-trip without a cross-feature dependency.
+ */
+data class BoxAuditDims(
+    val lengthCm: Double,
+    val widthCm: Double,
+    val heightCm: Double,
+    val cbm: Double,
+    val volumetricWeightKg: Double,
+    val quantity: Int,
+    val integrity: String,
+) {
+    companion object {
+        fun fromEncoded(raw: String?): BoxAuditDims? {
+            val p = raw?.split("|") ?: return null
+            if (p.size < 7) return null
+            return runCatching {
+                BoxAuditDims(
+                    lengthCm = p[0].toDouble(), widthCm = p[1].toDouble(), heightCm = p[2].toDouble(),
+                    cbm = p[3].toDouble(), volumetricWeightKg = p[4].toDouble(),
+                    quantity = p[5].toInt(), integrity = p[6],
+                )
+            }.getOrNull()
+        }
+    }
+}
+
 data class PickupUiState(
     val task: TaskEntity? = null,
     val awbScanned: Boolean = false,
@@ -73,7 +102,7 @@ class PickupViewModel @Inject constructor(
         _uiState.update { it.copy(photoPath = path) }
     }
 
-    fun confirmPickup(taskId: String) {
+    fun confirmPickup(taskId: String, auditDims: BoxAuditDims? = null) {
         val state = _uiState.value
         val task  = state.task ?: return
         if (!state.canConfirm) return
@@ -104,6 +133,13 @@ class PickupViewModel @Inject constructor(
                     pickupLng       = task.lng,
                     photoPath       = state.photoPath,
                     deviceTimestamp = deviceTimestamp,
+                    verifiedLengthCm   = auditDims?.lengthCm,
+                    verifiedWidthCm    = auditDims?.widthCm,
+                    verifiedHeightCm   = auditDims?.heightCm,
+                    verifiedCbm        = auditDims?.cbm,
+                    volumetricWeightKg = auditDims?.volumetricWeightKg,
+                    boxQuantity        = auditDims?.quantity,
+                    dimensionIntegrity = auditDims?.integrity,
                 )
             }.onSuccess {
                 // Set isCompleted=true and let the UI drive navigation via the

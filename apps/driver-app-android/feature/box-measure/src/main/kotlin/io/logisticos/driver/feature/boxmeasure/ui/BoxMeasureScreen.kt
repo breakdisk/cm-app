@@ -16,20 +16,22 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import io.logisticos.driver.feature.boxmeasure.data.*
@@ -78,7 +80,7 @@ fun BoxMeasureScreen(
     declaredL: Double? = null,
     declaredW: Double? = null,
     declaredH: Double? = null,
-    onDimensionsVerified: ((Double, Double, Double) -> Unit)? = null,
+    onDimensionsVerified: ((PopDimensioning) -> Unit)? = null,
     onBookShipment: ((sizeId: String, freightMode: FreightMode, originKey: String,
                       l: Double, w: Double, h: Double,
                       estimatedTotal: Double, currency: String) -> Unit)? = null,
@@ -87,6 +89,11 @@ fun BoxMeasureScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
+
+    // One-click "full display": expands the AR viewport to an immersive full-screen
+    // layer over the form. Drivers measure in the larger viewport (a bigger target
+    // area = steadier tracking) then collapse back to the quote inputs.
+    var arExpanded by rememberSaveable { mutableStateOf(false) }
 
     // ── Camera permission ─────────────────────────────────────────────────────
     // ARCore requires CAMERA at runtime. Request it before the GLSurfaceView
@@ -125,16 +132,26 @@ fun BoxMeasureScreen(
     // Handle VERIFY confirm callback
     LaunchedEffect(state.dimensionConfirmed) {
         if (state.dimensionConfirmed) {
-            val (l, w, h) = viewModel.activeDimensions()
-            onDimensionsVerified?.invoke(l, w, h)
+            onDimensionsVerified?.invoke(viewModel.popDimensioning())
             onBack()
         }
     }
 
+    Box(modifier = Modifier.fillMaxSize().background(Canvas)) {
+    if (cameraGranted && state.measureError == null && arExpanded) {
+        // Full-screen AR replaces the form entirely while expanded. The scroll form
+        // — and its dropdown popups — are not composed, so nothing floats over the
+        // camera and per-tap recomposition stays cheap (fixes the dropdown leak and
+        // the measuring lag).
+        ArViewport(
+            viewModel    = viewModel,
+            state        = state,
+            expanded     = true,
+            onToggleFull = { arExpanded = false },
+        )
+    } else {
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Canvas)
+        modifier = Modifier.fillMaxSize()
     ) {
         // ── Top bar ─────────────────────────────────────────────────────────────
         Row(
@@ -202,10 +219,13 @@ fun BoxMeasureScreen(
                 }
             }
 
-            // ── AR camera view (full-width, 240dp tall) ────────────────────────
+            // ── AR camera view (full-width, 260dp tall) ────────────────────────
             // Only rendered when camera permission is granted and no session error.
             // On unsupported devices or permission denial, the error banner above
             // explains the situation and manual mode is enabled automatically.
+            //
+            // The full-screen variant is handled above (it replaces the whole form),
+            // so this inline slot only ever renders the compact viewport.
             if (cameraGranted && state.measureError == null) {
                 Box(
                     modifier = Modifier
@@ -214,16 +234,12 @@ fun BoxMeasureScreen(
                         .clip(RoundedCornerShape(16.dp))
                         .border(1.dp, Border, RoundedCornerShape(16.dp)),
                 ) {
-                    ArCoreBoxMeasureView(
-                        modifier = Modifier.fillMaxSize(),
-                        viewModel = viewModel,
+                    ArViewport(
+                        viewModel    = viewModel,
+                        state        = state,
+                        expanded     = false,
+                        onToggleFull = { arExpanded = true },
                     )
-                    // Aiming crosshair — visible until measurement is complete
-                    if (state.tapCount < 4) {
-                        AimingCrosshair(modifier = Modifier.fillMaxSize())
-                    }
-                    // Step progress chip (top-left)
-                    TapProgressOverlay(tapCount = state.tapCount)
                 }
             }
 
@@ -261,6 +277,9 @@ fun BoxMeasureScreen(
                     measuredW    = state.measuredW ?: 0.0,
                     measuredH    = state.measuredH ?: 0.0,
                     confidence   = state.arConfidence,
+                    integrity    = state.integrity,
+                    integrityReason = state.integrityReason,
+                    overrideUsed = state.manualOverrideUsed,
                     declaredL    = if (mode == BoxMeasureMode.VERIFY) state.declaredL else null,
                     declaredW    = if (mode == BoxMeasureMode.VERIFY) state.declaredW else null,
                     declaredH    = if (mode == BoxMeasureMode.VERIFY) state.declaredH else null,
@@ -281,6 +300,9 @@ fun BoxMeasureScreen(
             if (mode == BoxMeasureMode.VERIFY) {
                 VerifyConfirmSection(
                     hasResult   = state.measuredL != null,
+                    integrity   = state.integrity,
+                    qty         = state.qty,
+                    onQtyChange = viewModel::setQty,
                     onConfirm   = viewModel::confirmDimensions,
                 )
             }
@@ -297,72 +319,59 @@ fun BoxMeasureScreen(
             Spacer(Modifier.height(32.dp))
         }
     }
+    }
+    }
 }
 
 // ── Sub-composables ────────────────────────────────────────────────────────────
 
 /**
- * Crosshair drawn with Compose Canvas, centered in the AR viewport.
- * Shows the driver exactly where their tap will land on the detected plane.
- * Four short arms + a small center circle in white/translucent so it remains
- * visible on both bright and dark surfaces.
+ * Centre coordinate reticle — a tiny aim tick plus a live world X/Y/Z readout of the
+ * plane point under the centre of the viewport (replaces the old bullseye). Values are
+ * AR world-space metres, fed by the renderer's throttled centre hit-test; when no plane
+ * is detected at the centre the axes show "—".
  */
 @Composable
-private fun AimingCrosshair(modifier: Modifier = Modifier) {
-    androidx.compose.foundation.Canvas(modifier = modifier) {
-        val cx     = size.width  / 2f
-        val cy     = size.height / 2f
-        val ring   = 18.dp.toPx()
-        val arm    = 30.dp.toPx()
-        val stroke = 2.dp.toPx()
-        val color  = Color.White.copy(alpha = 0.80f)
-        val shadow = Color.Black.copy(alpha = 0.35f)
-
-        // Shadow pass (offset 1px down-right) for legibility on white surfaces
-        fun sh(x1: Float, y1: Float, x2: Float, y2: Float) =
-            drawLine(shadow, Offset(x1 + 1, y1 + 1), Offset(x2 + 1, y2 + 1), stroke + 1)
-
-        drawCircle(shadow, ring + 1, Offset(cx + 1, cy + 1), style = Stroke(stroke + 1))
-        drawCircle(color,  ring,     Offset(cx, cy),          style = Stroke(stroke))
-
-        sh(cx - arm, cy, cx - ring, cy)
-        sh(cx + ring, cy, cx + arm, cy)
-        sh(cx, cy - arm, cx, cy - ring)
-        sh(cx, cy + ring, cx, cy + arm)
-
-        drawLine(color, Offset(cx - arm, cy),   Offset(cx - ring, cy),  stroke)
-        drawLine(color, Offset(cx + ring, cy),  Offset(cx + arm, cy),   stroke)
-        drawLine(color, Offset(cx, cy - arm),   Offset(cx, cy - ring),  stroke)
-        drawLine(color, Offset(cx, cy + ring),  Offset(cx, cy + arm),   stroke)
-
-        // Center dot
-        drawCircle(color, 3.dp.toPx(), Offset(cx, cy))
-    }
-}
-
-@Composable
-private fun TapProgressOverlay(tapCount: Int) {
-    val steps = listOf("Tap length start", "Tap length end", "Tap width", "Tap height")
+private fun CoordinateReticle(x: Float?, y: Float?, z: Float?, modifier: Modifier = Modifier) {
+    val hasHit = x != null && y != null && z != null
+    val accent = if (hasHit) Cyan else TextMuted
     Column(
-        modifier = Modifier
-            .padding(12.dp)
-            .background(Color(0xBB050810), RoundedCornerShape(10.dp))
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text(
-            text = if (tapCount < 4) "Step ${tapCount + 1} / 4 — ${steps[tapCount]}"
-                   else "Measurement complete ✓",
-            color = Cyan, fontSize = 12.sp, fontWeight = FontWeight.Bold,
-            fontFamily = FontFamily.Monospace,
-        )
-        if (tapCount < 4) {
-            Row(modifier = Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                repeat(4) { i ->
-                    Box(
-                        modifier = Modifier
-                            .size(width = if (i < tapCount) 24.dp else if (i == tapCount) 32.dp else 12.dp, height = 4.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(if (i <= tapCount) Cyan else Border),
+        // Minimal aim tick at the exact centre.
+        androidx.compose.foundation.Canvas(modifier = Modifier.size(18.dp)) {
+            val c = size.width / 2f
+            val arm = 7.dp.toPx()
+            val stroke = 1.5.dp.toPx()
+            // Shadow pass then accent, offset 1px for legibility on bright surfaces.
+            listOf(Color.Black.copy(alpha = 0.4f) to 1f, accent to 0f).forEach { (col, off) ->
+                drawLine(col, Offset(c - arm + off, c + off), Offset(c + arm + off, c + off), stroke)
+                drawLine(col, Offset(c + off, c - arm + off), Offset(c + off, c + arm + off), stroke)
+            }
+        }
+
+        // X / Y / Z readout chip.
+        Column(
+            modifier = Modifier
+                .background(Color(0xCC050810), RoundedCornerShape(10.dp))
+                .border(1.dp, accent.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            listOf("X" to x, "Y" to y, "Z" to z).forEach { (axis, v) ->
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(axis, color = accent, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                    Text(
+                        if (v != null) "%+.2f m".format(v) else "—",
+                        color = if (hasHit) Color.White else TextMuted,
+                        fontSize = 12.sp, fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.width(64.dp),
+                        textAlign = TextAlign.End,
                     )
                 }
             }
@@ -370,18 +379,244 @@ private fun TapProgressOverlay(tapCount: Int) {
     }
 }
 
+
+/**
+ * Live AR viewport: camera background + aiming crosshair + 3-stage guide + the
+ * full-display toggle and (once captured) the integrity badge.
+ *
+ * Used in exactly one place at a time — inline (260dp) or in the full-screen
+ * layer — so only a single ARCore session is mounted.
+ */
+@Composable
+private fun ArViewport(
+    viewModel: BoxMeasureViewModel,
+    state: BoxMeasureUiState,
+    expanded: Boolean,
+    onToggleFull: () -> Unit,
+) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        ArCoreBoxMeasureView(
+            modifier = Modifier.fillMaxSize(),
+            viewModel = viewModel,
+        )
+
+        // Top scrim — keeps the cyan guide + controls legible over a bright camera feed.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(if (expanded) 168.dp else 96.dp)
+                .background(Brush.verticalGradient(listOf(Color(0xCC050810), Color.Transparent)))
+                .align(Alignment.TopCenter),
+        )
+
+        // Centre coordinate reticle — live world X/Y/Z under the aim point, shown
+        // until measurement is complete (replaces the old bullseye).
+        if (state.tapCount < 4) {
+            CoordinateReticle(
+                x = state.reticleX, y = state.reticleY, z = state.reticleZ,
+                modifier = Modifier.align(Alignment.Center),
+            )
+        }
+
+        // 3-stage guide (top-start).
+        MeasureGuideOverlay(
+            tapCount = state.tapCount,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(top = if (expanded) 48.dp else 12.dp, start = 12.dp, end = 12.dp),
+        )
+
+        // Full-display toggle (top-end).
+        Surface(
+            onClick = onToggleFull,
+            shape = RoundedCornerShape(10.dp),
+            color = Color(0xCC050810),
+            border = BorderStroke(1.dp, Cyan.copy(alpha = 0.3f)),
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = if (expanded) 48.dp else 12.dp, end = 12.dp),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Icon(
+                    if (expanded) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                    contentDescription = if (expanded) "Exit full screen" else "Full display",
+                    tint = Cyan, modifier = Modifier.size(16.dp),
+                )
+                Text(if (expanded) "Exit" else "Full", color = Cyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+
+        // Integrity badge (bottom-start) — appears once a measurement is captured.
+        if (state.integrity != MeasurementIntegrity.PENDING) {
+            IntegrityBadge(
+                integrity = state.integrity,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 12.dp, bottom = if (expanded) 32.dp else 12.dp),
+            )
+        }
+
+        // Re-measure (bottom-end) — drops captured points and restarts the scan.
+        // Visible as soon as the first anchor is placed (and after completion).
+        if (state.tapCount > 0) {
+            Surface(
+                onClick = { viewModel.resetMeasurement() },
+                shape = RoundedCornerShape(10.dp),
+                color = Color(0xCC050810),
+                border = BorderStroke(1.dp, Amber.copy(alpha = 0.4f)),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 12.dp, bottom = if (expanded) 32.dp else 12.dp),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Icon(Icons.Default.Refresh, contentDescription = "Re-measure", tint = Amber, modifier = Modifier.size(14.dp))
+                    Text("Re-measure", color = Amber, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+
+        // AR dimension chips — float over each measured edge midpoint (positions are
+        // projected to screen pixels by the renderer), value shown in inches.
+        state.dimLabels.forEach { label ->
+            DimChip(label = label, modifier = Modifier.align(Alignment.TopStart))
+        }
+    }
+}
+
+/** Floating colored dimension chip positioned at a projected edge midpoint. */
+@Composable
+private fun DimChip(label: DimLabel, modifier: Modifier = Modifier) {
+    val color = when (label.axis) {
+        DimAxis.LENGTH -> Cyan
+        DimAxis.WIDTH  -> Color(0xFFFF2D78)
+        DimAxis.HEIGHT -> Green
+    }
+    val inches = label.cm * 0.393701
+    Box(
+        modifier = modifier.offset {
+            // Centre the chip on the projected point (approx half-size offset).
+            IntOffset(
+                (label.xPx - 30.dp.toPx()).roundToInt(),
+                (label.yPx - 14.dp.toPx()).roundToInt(),
+            )
+        },
+    ) {
+        Text(
+            "%.1fin".format(inches),
+            color = Color.White,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace,
+            modifier = Modifier
+                .background(color, RoundedCornerShape(6.dp))
+                .padding(horizontal = 8.dp, vertical = 3.dp),
+        )
+    }
+}
+
+/**
+ * 3-stage AR guidance: place anchor → drag to resize → view dimensions.
+ *
+ * The underlying ARCore capture is still a 4-point pick; the three stages are the
+ * user-facing model. Stage 2 ("Drag to resize") carries a per-edge sub-hint as the
+ * driver works through length / width / height.
+ */
+@Composable
+private fun MeasureGuideOverlay(tapCount: Int, modifier: Modifier = Modifier) {
+    val stages = listOf("Tap to place anchor", "Drag to resize", "View dimensions")
+    val stage = when {
+        tapCount <= 0 -> 0
+        tapCount < 4  -> 1
+        else          -> 2
+    }
+    val resizeHint = when (tapCount) {
+        1 -> "Length"; 2 -> "Width"; 3 -> "Height"; else -> null
+    }
+    Column(
+        modifier = modifier
+            .background(Color(0xCC050810), RoundedCornerShape(12.dp))
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                "Step ${stage + 1} / 3",
+                color = Cyan, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace,
+            )
+            Text(
+                stages[stage] + (resizeHint?.let { " · $it" } ?: ""),
+                color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            repeat(3) { i ->
+                Box(
+                    modifier = Modifier
+                        .size(width = if (i == stage) 36.dp else 18.dp, height = 4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(if (i <= stage) Cyan else Border),
+                )
+            }
+        }
+    }
+}
+
+/** Compact anti-fraud chip reflecting the measurement integrity score. */
+@Composable
+private fun IntegrityBadge(integrity: MeasurementIntegrity, modifier: Modifier = Modifier) {
+    val (color, icon, label) = integrityVisual(integrity) ?: return
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = Color(0xCC050810),
+        border = BorderStroke(1.dp, color.copy(alpha = 0.4f)),
+        modifier = modifier,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Icon(icon, null, tint = color, modifier = Modifier.size(12.dp))
+            Text(label, color = color, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+/** Maps an integrity score to (accent color, icon, label). Null for PENDING. */
+private fun integrityVisual(integrity: MeasurementIntegrity): Triple<Color, androidx.compose.ui.graphics.vector.ImageVector, String>? =
+    when (integrity) {
+        MeasurementIntegrity.VERIFIED -> Triple(Green, Icons.Default.VerifiedUser, "Integrity verified")
+        MeasurementIntegrity.REVIEW   -> Triple(Amber, Icons.Default.Shield, "Needs review")
+        MeasurementIntegrity.FLAGGED  -> Triple(Red,   Icons.Default.ReportProblem, "Flagged")
+        MeasurementIntegrity.PENDING  -> null
+    }
+
 @Composable
 private fun MeasurementCard(
     measuredL: Double, measuredW: Double, measuredH: Double, confidence: Double,
+    integrity: MeasurementIntegrity, integrityReason: String?, overrideUsed: Boolean,
     declaredL: Double?, declaredW: Double?, declaredH: Double?,
 ) {
-    val hasDeclared = declaredL != null
     val cbm = computeCbm(measuredL, measuredW, measuredH)
+    val accent = when (integrity) {
+        MeasurementIntegrity.VERIFIED -> Green
+        MeasurementIntegrity.REVIEW   -> Amber
+        MeasurementIntegrity.FLAGGED  -> Red
+        MeasurementIntegrity.PENDING  -> Cyan
+    }
 
     Surface(
         color = Glass,
         shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.dp, Cyan.copy(alpha = 0.25f)),
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.35f)),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -409,6 +644,56 @@ private fun MeasurementCard(
             Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                 Text("Volume (CBM)", color = TextMuted, fontSize = 12.sp)
                 Text("$cbm m³", color = Purple, fontSize = 12.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+            }
+
+            // Volumetric (dimensional) weight — what a bulky-but-light box is charged
+            // at on air freight (billed on the greater of actual vs. volumetric).
+            val volWeight = computeVolumetricWeight(measuredL, measuredW, measuredH)
+            Row(
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column {
+                    Text("Volumetric weight", color = TextMuted, fontSize = 12.sp)
+                    Text("L×W×H ÷ ${VOLUMETRIC_DIVISOR.toInt()}", color = TextMuted.copy(alpha = 0.6f),
+                        fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                }
+                Text("${"%.1f".format(volWeight)} kg", color = Amber, fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+            }
+
+            // ── Anti-fraud integrity row ──────────────────────────────────────────
+            integrityVisual(integrity)?.let { (color, icon, label) ->
+                Divider(color = Border, thickness = 1.dp)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(color.copy(alpha = 0.10f))
+                        .padding(10.dp),
+                    verticalAlignment = Alignment.Top,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(icon, null, tint = color, modifier = Modifier.size(16.dp))
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(label, color = color, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Text(
+                                if (overrideUsed) "· manual entry" else "· AR scan",
+                                color = TextMuted, fontSize = 10.sp, fontFamily = FontFamily.Monospace,
+                            )
+                        }
+                        Text(
+                            integrityReason ?: when (integrity) {
+                                MeasurementIntegrity.VERIFIED ->
+                                    "Tamper-evident: captured on-device with AR depth tracking."
+                                else -> "Recorded for audit."
+                            },
+                            color = TextMuted, fontSize = 11.sp, lineHeight = 15.sp,
+                        )
+                    }
+                }
             }
         }
     }
@@ -516,33 +801,100 @@ private fun ManualDimensionEntry(
 }
 
 @Composable
-private fun VerifyConfirmSection(hasResult: Boolean, onConfirm: () -> Unit) {
+private fun VerifyConfirmSection(
+    hasResult: Boolean,
+    integrity: MeasurementIntegrity,
+    qty: Int,
+    onQtyChange: (Int) -> Unit,
+    onConfirm: () -> Unit,
+) {
+    // Box count — captured into the POP for the size/quantity audit.
+    SectionLabel("Quantity of boxes")
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        QtyButton("−") { onQtyChange((qty - 1).coerceAtLeast(1)) }
+        Text("$qty", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace, modifier = Modifier.widthIn(min = 32.dp), textAlign = TextAlign.Center)
+        QtyButton("+") { onQtyChange((qty + 1).coerceAtMost(99)) }
+        Spacer(Modifier.weight(1f))
+        Text("identical box(es) in this pickup", color = TextMuted, fontSize = 11.sp)
+    }
+    Spacer(Modifier.height(4.dp))
+
     if (!hasResult) {
         Text(
-            "Complete the 4-tap AR measurement or enter dimensions manually to confirm.",
+            "Place the anchor and resize to measure with AR, or enter dimensions manually to confirm.",
             color = TextMuted, fontSize = 12.sp, textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
         )
-    } else {
-        Button(
-            onClick = onConfirm,
-            modifier = Modifier.fillMaxWidth().height(52.dp),
-            shape = RoundedCornerShape(14.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
-            contentPadding = PaddingValues(0.dp),
+        return
+    }
+
+    // Anti-fraud gate: a flagged measurement cannot be confirmed onto the POP.
+    val blocked = integrity == MeasurementIntegrity.FLAGGED
+    if (blocked) {
+        FraudBlockNote("Measurement flagged — confirmation is blocked. Re-scan with AR, or the hub will re-measure before billing.")
+    }
+
+    Button(
+        onClick = onConfirm,
+        enabled = !blocked,
+        modifier = Modifier.fillMaxWidth().height(52.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, disabledContainerColor = Color.Transparent),
+        contentPadding = PaddingValues(0.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    if (blocked) Brush.horizontalGradient(listOf(Border, Border))
+                    else Brush.horizontalGradient(listOf(Cyan, Purple)),
+                    RoundedCornerShape(14.dp),
+                ),
+            contentAlignment = Alignment.Center,
         ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Brush.horizontalGradient(listOf(Cyan, Purple)), RoundedCornerShape(14.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Check, null, tint = Canvas)
-                    Text("Confirm Dimensions", color = Canvas, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Check, null, tint = if (blocked) TextMuted else Canvas)
+                Text("Confirm Dimensions", color = if (blocked) TextMuted else Canvas, fontWeight = FontWeight.Bold, fontSize = 15.sp)
             }
         }
+    }
+}
+
+@Composable
+private fun QtyButton(glyph: String, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(10.dp),
+        color = Glass,
+        border = BorderStroke(1.dp, Cyan.copy(alpha = 0.4f)),
+        modifier = Modifier.size(40.dp),
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(glyph, color = Cyan, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+/** Prominent red note shown when a measurement is fraud-flagged. */
+@Composable
+private fun FraudBlockNote(message: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Red.copy(alpha = 0.12f))
+            .border(1.dp, Red.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+            .padding(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Default.ReportProblem, null, tint = Red, modifier = Modifier.size(18.dp))
+        Text(message, color = Red, fontSize = 12.sp, lineHeight = 16.sp, modifier = Modifier.weight(1f))
     }
 }
 
@@ -733,6 +1085,12 @@ private fun QuoteInputSection(
 
         // ── Book This Shipment ─────────────────────────────────────────────
         // Primary CTA: navigate to booking form pre-filled with quote data.
+        // Anti-fraud gate: a flagged measurement cannot be booked — the CBM that
+        // priced this quote is suspect, so the hub re-measures before billing.
+        val bookBlocked = state.integrity == MeasurementIntegrity.FLAGGED
+        if (bookBlocked) {
+            FraudBlockNote("Measurement flagged — booking is blocked until the box is re-scanned with AR or re-measured at the hub.")
+        }
         Button(
             onClick = {
                 onBookShipment?.invoke(
@@ -746,17 +1104,18 @@ private fun QuoteInputSection(
                     result.originCurrency,
                 )
             },
-            enabled = onBookShipment != null,
+            enabled = onBookShipment != null && !bookBlocked,
             modifier = Modifier.fillMaxWidth().height(54.dp),
             shape = RoundedCornerShape(14.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
+            colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent, disabledContainerColor = Color.Transparent),
             contentPadding = PaddingValues(0.dp),
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(
-                        Brush.horizontalGradient(listOf(Cyan, Purple)),
+                        if (bookBlocked) Brush.horizontalGradient(listOf(Border, Border))
+                        else Brush.horizontalGradient(listOf(Cyan, Purple)),
                         RoundedCornerShape(14.dp),
                     ),
                 contentAlignment = Alignment.Center,
@@ -765,9 +1124,9 @@ private fun QuoteInputSection(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(Icons.Default.LocalShipping, null, tint = Canvas)
-                    Text("Book This Shipment", color = Canvas, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                    Icon(Icons.Default.ArrowForward, null, tint = Canvas, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.LocalShipping, null, tint = if (bookBlocked) TextMuted else Canvas)
+                    Text("Book This Shipment", color = if (bookBlocked) TextMuted else Canvas, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Icon(Icons.Default.ArrowForward, null, tint = if (bookBlocked) TextMuted else Canvas, modifier = Modifier.size(16.dp))
                 }
             }
         }

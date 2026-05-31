@@ -280,6 +280,15 @@ class OutboundSyncWorker @AssistedInject constructor(
                 val pickupLng  = payload["pickupLng"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()  ?: captureLng
                 val deviceTs   = payload["deviceTimestamp"]?.jsonPrimitive?.contentOrNull
                 val photoPath  = payload["photoPath"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                // AR dimensioning carried through the offline replay (blank → null).
+                fun dimD(k: String) = payload[k]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.toDoubleOrNull()
+                val verifiedLengthCm   = dimD("verifiedLengthCm")
+                val verifiedWidthCm    = dimD("verifiedWidthCm")
+                val verifiedHeightCm   = dimD("verifiedHeightCm")
+                val verifiedCbm        = dimD("verifiedCbm")
+                val volumetricWeightKg = dimD("volumetricWeightKg")
+                val boxQuantity        = payload["boxQuantity"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.toIntOrNull()
+                val dimensionIntegrity = payload["dimensionIntegrity"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
 
                 val popResp = podApi.initiatePop(
                     InitiatePopRequest(
@@ -337,10 +346,17 @@ class OutboundSyncWorker @AssistedInject constructor(
                 podApi.submitPop(
                     popId,
                     SubmitPopRequest(
-                        scannedBarcode  = scannedBarcode,
-                        deviceTimestamp = deviceTs,
-                        photoS3Key      = photoS3Key,
-                        photoSizeBytes  = photoSizeBytes,
+                        scannedBarcode     = scannedBarcode,
+                        deviceTimestamp    = deviceTs,
+                        photoS3Key         = photoS3Key,
+                        photoSizeBytes     = photoSizeBytes,
+                        verifiedLengthCm   = verifiedLengthCm,
+                        verifiedWidthCm    = verifiedWidthCm,
+                        verifiedHeightCm   = verifiedHeightCm,
+                        verifiedCbm        = verifiedCbm,
+                        volumetricWeightKg = volumetricWeightKg,
+                        boxQuantity        = boxQuantity,
+                        dimensionIntegrity = dimensionIntegrity,
                     )
                 )
                 android.util.Log.d(

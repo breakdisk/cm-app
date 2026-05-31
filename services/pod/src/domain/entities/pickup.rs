@@ -54,6 +54,18 @@ pub struct ProofOfPickup {
     /// Declared value in cents — populated for Track A (Balikbayan) shipments.
     pub declared_value_cents: Option<i64>,
 
+    // AR dimensioning captured at pickup (driver app VERIFY mode). All optional —
+    // NULL for manual / non-AR pickups. Serves the POP size/quantity/fraud audit.
+    pub verified_length_cm:   Option<f64>,
+    pub verified_width_cm:    Option<f64>,
+    pub verified_height_cm:   Option<f64>,
+    pub verified_cbm:         Option<f64>,
+    pub volumetric_weight_kg: Option<f64>,
+    /// Number of identical boxes in this pickup.
+    pub box_quantity:         Option<i32>,
+    /// Anti-fraud score of the AR measurement: VERIFIED | REVIEW | FLAGGED | PENDING.
+    pub dimension_integrity:  Option<String>,
+
     /// Hardware clock timestamp from the driver's device at the moment of scan/capture.
     /// Always use this for chain-of-custody audit and SLA calculations.
     /// Pair with `captured_at` (server receipt time) to detect clock drift > 5 minutes.
@@ -109,10 +121,38 @@ impl ProofOfPickup {
             scanned_barcode: None,
             service_code,
             declared_value_cents,
+            verified_length_cm:   None,
+            verified_width_cm:    None,
+            verified_height_cm:   None,
+            verified_cbm:         None,
+            volumetric_weight_kg: None,
+            box_quantity:         None,
+            dimension_integrity:  None,
             device_timestamp,
             captured_at: now,
             created_at: now,
         }
+    }
+
+    /// Records AR-measured box dimensioning captured at pickup (VERIFY mode).
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_dimensions(
+        &mut self,
+        length_cm:   Option<f64>,
+        width_cm:    Option<f64>,
+        height_cm:   Option<f64>,
+        cbm:         Option<f64>,
+        vol_kg:      Option<f64>,
+        quantity:    Option<i32>,
+        integrity:   Option<String>,
+    ) {
+        self.verified_length_cm   = length_cm;
+        self.verified_width_cm    = width_cm;
+        self.verified_height_cm   = height_cm;
+        self.verified_cbm         = cbm;
+        self.volumetric_weight_kg = vol_kg;
+        self.box_quantity         = quantity;
+        self.dimension_integrity  = integrity;
     }
 
     pub fn attach_photo(&mut self, s3_key: String, size_bytes: u64) {

@@ -109,6 +109,15 @@ class PickupRepository @Inject constructor(
         pickupLng: Double,
         photoPath: String?,
         deviceTimestamp: String,
+        // AR dimensioning (VERIFY mode) — persisted on the POP for size / quantity /
+        // anti-fraud audit. Null for manual / non-AR pickups.
+        verifiedLengthCm: Double? = null,
+        verifiedWidthCm: Double? = null,
+        verifiedHeightCm: Double? = null,
+        verifiedCbm: Double? = null,
+        volumetricWeightKg: Double? = null,
+        boxQuantity: Int? = null,
+        dimensionIntegrity: String? = null,
     ) {
         val task = taskDao.getById(taskId) ?: return
         if (!TaskStateMachine.canTransition(task.status, TaskStatus.COMPLETED)) return
@@ -180,10 +189,17 @@ class PickupRepository @Inject constructor(
             podApi.submitPop(
                 popId,
                 SubmitPopRequest(
-                    scannedBarcode  = effectiveBarcode,
-                    deviceTimestamp = deviceTimestamp,
-                    photoS3Key      = photoS3Key,
-                    photoSizeBytes  = photoSizeBytes,
+                    scannedBarcode     = effectiveBarcode,
+                    deviceTimestamp    = deviceTimestamp,
+                    photoS3Key         = photoS3Key,
+                    photoSizeBytes     = photoSizeBytes,
+                    verifiedLengthCm   = verifiedLengthCm,
+                    verifiedWidthCm    = verifiedWidthCm,
+                    verifiedHeightCm   = verifiedHeightCm,
+                    verifiedCbm        = verifiedCbm,
+                    volumetricWeightKg = volumetricWeightKg,
+                    boxQuantity        = boxQuantity,
+                    dimensionIntegrity = dimensionIntegrity,
                 )
             )
             android.util.Log.d(
@@ -209,6 +225,14 @@ class PickupRepository @Inject constructor(
                             "pickupLng"       to pickupLng.toString(),
                             "photoPath"       to (compressedPhotoPath ?: ""),
                             "deviceTimestamp" to deviceTimestamp,
+                            // AR dimensioning carried through the offline replay path.
+                            "verifiedLengthCm"   to (verifiedLengthCm?.toString() ?: ""),
+                            "verifiedWidthCm"    to (verifiedWidthCm?.toString() ?: ""),
+                            "verifiedHeightCm"   to (verifiedHeightCm?.toString() ?: ""),
+                            "verifiedCbm"        to (verifiedCbm?.toString() ?: ""),
+                            "volumetricWeightKg" to (volumetricWeightKg?.toString() ?: ""),
+                            "boxQuantity"        to (boxQuantity?.toString() ?: ""),
+                            "dimensionIntegrity" to (dimensionIntegrity ?: ""),
                         )
                     ),
                     createdAt = System.currentTimeMillis(),
