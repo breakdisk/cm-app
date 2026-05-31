@@ -601,23 +601,57 @@ private class ArRenderer(
 
     /**
      * Y guide: shown when [worldPts].size == 3 (driver is about to tap box top).
-     * Renders a dashed green vertical line rising 1.5 m from the width-end anchor
-     * (worldPts[2]) plus horizontal tick marks every 12 cm — a precision ruler the
-     * driver can use to align the camera crosshair to the exact box-top height.
+     *
+     * Renders:
+     *   • A bright green dashed vertical line rising 1.5 m from worldPts[2].
+     *   • 10 major horizontal tick marks at 9 cm intervals (spans 0 → 90 cm).
+     *   • A sub-tick midpoint at each 4.5 cm interval between majors.
+     *   • A solid GL_POINTS dot on every major tick for instant spatial recognition.
+     *
+     * Tick half-width is 6 cm each side (12 cm total) — wide enough to be clearly
+     * visible in real-world footage even at 50–80 cm camera distance.
      */
     private fun drawYGuide() {
         val p        = worldPts[2]
         val guideTop = floatArrayOf(p[0], p[1] + 1.5f, p[2])
-        // Dashed vertical guide line in green
+
+        // ① Bright dashed green spine rising 1.5 m
+        GLES20.glLineWidth(8f)
         drawDashedEdge(p, guideTop, COL_HEIGHT)
-        // Horizontal tick marks at 12 cm intervals (8 ticks = 0 → 96 cm)
-        val hw = 0.030f   // 3 cm half-width each side of the guide axis
-        for (step in 1..8) {
-            val ty = p[1] + step * 0.12f
+
+        // ② Major tick marks every 9 cm — 10 ticks spanning 0 → 90 cm
+        GLES20.glLineWidth(6f)
+        val hw    = 0.060f   // 6 cm half-width → 12 cm total tick length
+        val step  = 0.09f    // 9 cm between majors
+        for (i in 1..10) {
+            val ty = p[1] + i * step
             val ta = floatArrayOf(p[0] - hw, ty, p[2])
             val tb = floatArrayOf(p[0] + hw, ty, p[2])
             drawSolidEdge(ta, tb, COL_Y_TICK)
+
+            // Solid dot on the guide axis at each major tick for extra legibility
+            GLES20.glUniform4fv(markerColorUniform, 1, COL_Y_TICK, 0)
+            scratchBuf.rewind()
+            scratchBuf.put(p[0]); scratchBuf.put(ty); scratchBuf.put(p[2])
+            scratchBuf.rewind()
+            GLES20.glVertexAttribPointer(markerPositionAttr, 3, GLES20.GL_FLOAT, false, 0, scratchBuf)
+            GLES20.glEnableVertexAttribArray(markerPositionAttr)
+            GLES20.glDrawArrays(GLES20.GL_POINTS, 0, 1)
         }
+
+        // ③ Minor sub-ticks at every 4.5 cm between majors (half-width 3 cm)
+        GLES20.glLineWidth(3f)
+        val hwMinor = 0.030f
+        for (i in 1..20) {
+            val ty = p[1] + i * (step / 2f)
+            if (i % 2 == 0) continue    // skip even: already drawn as major
+            val ta = floatArrayOf(p[0] - hwMinor, ty, p[2])
+            val tb = floatArrayOf(p[0] + hwMinor, ty, p[2])
+            drawSolidEdge(ta, tb, COL_Y_MINOR)
+        }
+
+        // Restore standard line width for subsequent draw calls
+        GLES20.glLineWidth(6f)
     }
 
     /**
@@ -765,8 +799,10 @@ private val COL_FACE_TOP = floatArrayOf(0.800f, 0.900f, 1.000f, 0.05f)  // neutr
 // Spatial-mapping floor grid: faint blue dots
 private val COL_GRID   = floatArrayOf(0.129f, 0.588f, 0.953f, 0.22f)
 
-// Y guide tick marks: semi-transparent green
-private val COL_Y_TICK = floatArrayOf(0.000f, 1.000f, 0.533f, 0.42f)
+// Y guide major tick marks: bright green, clearly visible in world footage
+private val COL_Y_TICK  = floatArrayOf(0.000f, 1.000f, 0.533f, 0.85f)
+// Y guide minor sub-ticks: same hue, lower alpha so majors stay dominant
+private val COL_Y_MINOR = floatArrayOf(0.000f, 1.000f, 0.533f, 0.38f)
 
 /** Dot fill colors indexed by tap point (0–3): length start/end, width end, height top. */
 private val DOT_COLORS = arrayOf(COL_LENGTH, COL_LENGTH, COL_WIDTH, COL_HEIGHT)

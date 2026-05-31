@@ -379,25 +379,19 @@ private fun LiveMeasureReticle(
             }
         }
 
-        // Live readout chip.
-        Column(
-            modifier = Modifier
-                .background(Color(0xCC050810), RoundedCornerShape(10.dp))
-                .border(1.dp, accentColor.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
-                .padding(horizontal = 14.dp, vertical = 9.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(3.dp),
-        ) {
-            if (axisLabel == null) {
-                // No anchor placed — primary instruction.
-                Text(
-                    "Tap to place anchor",
-                    color      = accentColor,
-                    fontSize   = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            } else {
-                // Axis label (small caps above the measurement value).
+        // Live readout chip — only rendered once an anchor is placed (tapCount > 0).
+        // When tapCount == 0 the crosshair above is the only centre-screen element;
+        // MeasureGuideOverlay at top-start already handles "Tap to place anchor".
+        if (axisLabel != null) {
+            Column(
+                modifier = Modifier
+                    .background(Color(0xCC050810), RoundedCornerShape(10.dp))
+                    .border(1.dp, accentColor.copy(alpha = 0.65f), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 14.dp, vertical = 9.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                // Axis label — small-caps monospace above the live value.
                 Text(
                     axisLabel,
                     color         = accentColor,
@@ -406,7 +400,7 @@ private fun LiveMeasureReticle(
                     fontFamily    = FontFamily.Monospace,
                     letterSpacing = 1.sp,
                 )
-                // Live cm value — large and bold so it is readable at arm's length.
+                // Live distance in cm — large enough to read at arm's length.
                 Text(
                     if (distanceCm != null) "${"%.1f".format(distanceCm)} cm" else "— cm",
                     color      = if (distanceCm != null) Color.White else TextMuted,
@@ -655,79 +649,130 @@ private fun SpatialGridOverlay(modifier: Modifier = Modifier) {
 }
 
 /**
- * Y-axis guide sidebar — rendered in Compose over the GL viewport when the driver
- * is about to place the 4th tap (height measurement, tapCount == 3).
+ * Y-axis guide sidebar — dominant, high-contrast panel anchored to the right edge
+ * of the AR viewport when tapCount == 3 (driver is measuring height).
  *
- * Shows a precision vertical ruler with major/minor tick marks, an upward arrow,
- * and "Y" axis label — all in the height axis green to match the GL guide line
- * drawn by [drawYGuide] in the renderer.
+ * Visual anatomy (top → bottom):
+ *   ① "HEIGHT" axis label (green, monospace)
+ *   ② ▲ arrow — "aim camera UP"
+ *   ③ Precision ruler: bright spine + 5 major ticks + 5 minor ticks with cm labels
+ *   ④ Target baseline dot at the bottom — marks the anchor point
+ *   ⑤ "Y AXIS" footer label
+ *
+ * Width is deliberately wider (36 dp panel) so it is readable over any camera feed.
+ * Border is 1.5 dp solid green at 85 % alpha — unmissable against dark and bright scenes.
  */
 @Composable
 private fun YGuideIndicator(modifier: Modifier = Modifier) {
     Column(
         modifier = modifier
-            .background(Color(0xCC060B1A), RoundedCornerShape(8.dp))
-            .border(1.dp, Green.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
-            .padding(horizontal = 8.dp, vertical = 10.dp),
+            .width(44.dp)
+            .background(Color(0xEE030712), RoundedCornerShape(10.dp))
+            .border(1.5.dp, Green.copy(alpha = 0.85f), RoundedCornerShape(10.dp))
+            .padding(horizontal = 6.dp, vertical = 10.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(5.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        // Upward arrow — "aim for the box top"
-        Icon(
-            imageVector      = Icons.Default.ArrowUpward,
-            contentDescription = "Measure height",
-            tint             = Green,
-            modifier         = Modifier.size(14.dp),
+        // ① Axis label
+        Text(
+            "HEIGHT",
+            color         = Green,
+            fontSize      = 7.sp,
+            fontWeight    = FontWeight.ExtraBold,
+            fontFamily    = FontFamily.Monospace,
+            letterSpacing = 0.5.sp,
         )
 
-        // Precision ruler drawn in Canvas
+        // ② Aim-up arrow — large, bright
+        Icon(
+            imageVector        = Icons.Default.ArrowUpward,
+            contentDescription = "Aim camera up to the top of the box",
+            tint               = Green,
+            modifier           = Modifier.size(22.dp),
+        )
+
+        // ③ Precision ruler
         androidx.compose.foundation.Canvas(
-            modifier = Modifier.width(16.dp).height(80.dp),
+            modifier = Modifier
+                .width(32.dp)
+                .height(140.dp),
         ) {
             val cx         = size.width / 2f
-            val h          = size.height
-            val stroke     = 1.5.dp.toPx()
-            val majorHalf  = 6.dp.toPx()
-            val minorHalf  = 3.5.dp.toPx()
-            val majorCount = 4
+            val rulerH     = size.height
+            val spine      = 2.dp.toPx()
+            val majorHalf  = 10.dp.toPx()   // 20 dp total tick width — wide and readable
+            val minorHalf  = 5.5.dp.toPx()
+            val majorCount = 5
+            val labelOff   = majorHalf + 3.dp.toPx()
 
-            // Vertical spine
+            // Bright vertical spine
             drawLine(
-                color       = Green.copy(alpha = 0.65f),
-                start       = androidx.compose.ui.geometry.Offset(cx, 0f),
-                end         = androidx.compose.ui.geometry.Offset(cx, h),
-                strokeWidth = stroke,
+                color       = Green.copy(alpha = 0.90f),
+                start       = Offset(cx, 0f),
+                end         = Offset(cx, rulerH),
+                strokeWidth = spine,
             )
-            // Major + minor tick marks
+
             for (i in 0..majorCount) {
-                val y = h * (1f - i.toFloat() / majorCount)
+                val y      = rulerH * (1f - i.toFloat() / majorCount)
+                val isBase = (i == 0)
+                val isTip  = (i == majorCount)
+
+                // Major tick
                 drawLine(
-                    color       = Green.copy(alpha = if (i == majorCount) 1f else 0.55f),
-                    start       = androidx.compose.ui.geometry.Offset(cx - majorHalf, y),
-                    end         = androidx.compose.ui.geometry.Offset(cx + majorHalf, y),
-                    strokeWidth = stroke,
+                    color       = Green.copy(alpha = if (isTip) 1f else 0.80f),
+                    start       = Offset(cx - majorHalf, y),
+                    end         = Offset(cx + majorHalf, y),
+                    strokeWidth = if (isTip || isBase) spine * 1.5f else spine,
                 )
+
+                // Glowing dot on base and tip ticks
+                if (isBase || isTip) {
+                    drawCircle(
+                        color  = Green.copy(alpha = if (isTip) 1f else 0.55f),
+                        radius = 3.5.dp.toPx(),
+                        center = Offset(cx, y),
+                    )
+                }
+
                 // Minor tick between consecutive majors
                 if (i < majorCount) {
-                    val my = h * (1f - (i + 0.5f) / majorCount)
+                    val my = rulerH * (1f - (i + 0.5f) / majorCount)
                     drawLine(
-                        color       = Green.copy(alpha = 0.28f),
-                        start       = androidx.compose.ui.geometry.Offset(cx - minorHalf, my),
-                        end         = androidx.compose.ui.geometry.Offset(cx + minorHalf, my),
-                        strokeWidth = stroke * 0.7f,
+                        color       = Green.copy(alpha = 0.42f),
+                        start       = Offset(cx - minorHalf, my),
+                        end         = Offset(cx + minorHalf, my),
+                        strokeWidth = spine * 0.6f,
                     )
                 }
             }
         }
 
-        // Axis label
+        // ④ "TAP TOP" instruction — compact, green, monospace
+        Text(
+            "TAP",
+            color         = Green.copy(alpha = 0.75f),
+            fontSize      = 7.sp,
+            fontWeight    = FontWeight.Bold,
+            fontFamily    = FontFamily.Monospace,
+            letterSpacing = 0.5.sp,
+        )
+        Text(
+            "TOP",
+            color         = Green,
+            fontSize      = 7.sp,
+            fontWeight    = FontWeight.ExtraBold,
+            fontFamily    = FontFamily.Monospace,
+            letterSpacing = 0.5.sp,
+        )
+
+        // ⑤ Y axis footer
         Text(
             "Y",
             color         = Green,
-            fontSize      = 9.sp,
-            fontWeight    = FontWeight.Bold,
+            fontSize      = 10.sp,
+            fontWeight    = FontWeight.ExtraBold,
             fontFamily    = FontFamily.Monospace,
-            letterSpacing = 1.sp,
         )
     }
 }
