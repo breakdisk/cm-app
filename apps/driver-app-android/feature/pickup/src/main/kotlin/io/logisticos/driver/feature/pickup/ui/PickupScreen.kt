@@ -46,6 +46,7 @@ import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
 import io.logisticos.driver.core.common.ImageCompressor
 import io.logisticos.driver.core.database.entity.TaskType
+import io.logisticos.driver.feature.pickup.presentation.BoxAuditDims
 import io.logisticos.driver.feature.pickup.presentation.PickupViewModel
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -606,7 +607,7 @@ fun PickupScreen(
 
         // Confirm button
         Button(
-            onClick = { viewModel.confirmPickup(taskId) },
+            onClick = { viewModel.confirmPickup(taskId, auditDims) },
             enabled = state.canConfirm && !state.isConfirming,
             modifier = Modifier
                 .fillMaxWidth()
@@ -647,35 +648,6 @@ fun PickupScreen(
 }
 
 // ── AR dimensioning → POP audit ─────────────────────────────────────────────────
-
-/**
- * AR-measured dimensioning carried back from BoxMeasureScreen (VERIFY) into the POP
- * flow. Encoded as a "l|w|h|cbm|vol|qty|integrity" string in the pickup back-stack's
- * SavedStateHandle so it survives the round-trip without a cross-feature dependency.
- */
-data class BoxAuditDims(
-    val lengthCm: Double,
-    val widthCm: Double,
-    val heightCm: Double,
-    val cbm: Double,
-    val volumetricWeightKg: Double,
-    val quantity: Int,
-    val integrity: String,
-) {
-    companion object {
-        fun fromEncoded(raw: String?): BoxAuditDims? {
-            val p = raw?.split("|") ?: return null
-            if (p.size < 7) return null
-            return runCatching {
-                BoxAuditDims(
-                    lengthCm = p[0].toDouble(), widthCm = p[1].toDouble(), heightCm = p[2].toDouble(),
-                    cbm = p[3].toDouble(), volumetricWeightKg = p[4].toDouble(),
-                    quantity = p[5].toInt(), integrity = p[6],
-                )
-            }.getOrNull()
-        }
-    }
-}
 
 /**
  * POP audit panel — surfaces the AR dimensioning for the pickup's three POP duties:

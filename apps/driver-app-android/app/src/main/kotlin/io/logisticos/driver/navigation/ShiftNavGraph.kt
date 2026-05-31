@@ -27,7 +27,7 @@ import io.logisticos.driver.feature.home.ui.HomeScreen
 import io.logisticos.driver.feature.navigation.ui.NavigationScreen
 import io.logisticos.driver.feature.notifications.presentation.NotificationsViewModel
 import io.logisticos.driver.feature.notifications.ui.NotificationsScreen
-import io.logisticos.driver.feature.pickup.ui.BoxAuditDims
+import io.logisticos.driver.feature.pickup.presentation.BoxAuditDims
 import io.logisticos.driver.feature.pickup.ui.PickupScreen
 import io.logisticos.driver.feature.pod.ui.PodScreen
 import io.logisticos.driver.feature.profile.presentation.ProfileViewModel
