@@ -18,6 +18,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.google.ar.core.*
 import com.google.ar.core.exceptions.*
 import io.logisticos.driver.feature.boxmeasure.presentation.BoxMeasureViewModel
+import io.logisticos.driver.feature.boxmeasure.presentation.DimAxis
+import io.logisticos.driver.feature.boxmeasure.presentation.DimLabel
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -88,6 +90,7 @@ fun ArCoreBoxMeasureView(
                     onMeasurementPoint   = { idx, x, y, z -> viewModel.onMeasurementPoint(idx, x, y, z) },
                     onMeasurementComplete = { l, w, h, conf -> viewModel.onMeasurementComplete(l, w, h, conf) },
                     onReticleCoords      = { x, y, z -> viewModel.onReticleCoords(x, y, z) },
+                    onDimLabels          = { labels -> viewModel.onDimLabels(labels) },
                 ).also { rendererRef.value = it }.glView
             },
         )
@@ -123,6 +126,7 @@ private class ArRenderer(
     private val onMeasurementPoint: (index: Int, x: Float, y: Float, z: Float) -> Unit,
     private val onMeasurementComplete: (l: Double, w: Double, h: Double, confidence: Double) -> Unit,
     private val onReticleCoords: (x: Float?, y: Float?, z: Float?) -> Unit,
+    private val onDimLabels: (labels: List<DimLabel>) -> Unit,
 ) : GLSurfaceView.Renderer {
 
     val glView: GLSurfaceView = GLSurfaceView(ctx).also { surface ->
@@ -144,6 +148,12 @@ private class ArRenderer(
     private var viewW = 0
     private var viewH = 0
     private var lastReticleMs = 0L
+
+    // Dimension-label projection: scratch vectors + throttle for posting the 2D
+    // screen positions of the cuboid edge midpoints to Compose (the floating chips).
+    private val worldTmp = FloatArray(4)
+    private val clipTmp  = FloatArray(4)
+    private var lastLabelMs = 0L
 
     // ── Camera background ──────────────────────────────────────────────────────
 
@@ -369,23 +379,122 @@ private class ArRenderer(
             GLES20.glDrawArrays(GLES20.GL_POINTS, 0, 1)
         }
 
-        // ── Lines between consecutive dots ────────────────────────────────────
-        if (worldPts.size >= 2) {
-            GLES20.glLineWidth(6f)
+        // ── Edges ─────────────────────────────────────────────────────────────
+        GLES20.glLineWidth(6f)
+        val corners = cuboidCorners()
+        if (corners == null) {
+            // Progressive feedback: colored polyline between consecutive taps.
             for (i in 0 until worldPts.size - 1) {
-                val p0 = worldPts[i]; val p1 = worldPts[i + 1]
-                GLES20.glUniform4fv(markerColorUniform, 1, LINE_COLORS[i.coerceAtMost(2)], 0)
-                scratchBuf.rewind()
-                scratchBuf.put(p0[0]); scratchBuf.put(p0[1]); scratchBuf.put(p0[2])
-                scratchBuf.put(p1[0]); scratchBuf.put(p1[1]); scratchBuf.put(p1[2])
-                scratchBuf.rewind()
-                GLES20.glVertexAttribPointer(markerPositionAttr, 3, GLES20.GL_FLOAT, false, 0, scratchBuf)
-                GLES20.glEnableVertexAttribArray(markerPositionAttr)
-                GLES20.glDrawArrays(GLES20.GL_LINES, 0, 2)
+                drawSolidEdge(worldPts[i], worldPts[i + 1], LINE_COLORS[i.coerceAtMost(2)])
             }
+        } else {
+            // Full AR dimensioning cuboid: 3 measured edges solid + colored, the
+            // remaining 9 edges dashed white (the reference "box silhouette" look).
+            drawBoxWireframe(corners)
+            postDimLabels(corners)
         }
 
         GLES20.glDisableVertexAttribArray(markerPositionAttr)
+    }
+
+    /**
+     * Builds the 8 cuboid corners from the 4 measured taps, or null until 4 exist.
+     * worldPts = [p0 length-start, p1 length-end, p2 width-end, p3 height-top].
+     * Base rectangle is anchored at p1: length = p1→p0, width = p1→p2; the box is
+     * extruded vertically by the measured height |p3.y − p2.y|.
+     * Returns [r0, r1, r2, r3, r0t, r1t, r2t, r3t] (base CCW, then the top face).
+     */
+    private fun cuboidCorners(): Array<FloatArray>? {
+        if (worldPts.size < 4) return null
+        val p0 = worldPts[0]; val p1 = worldPts[1]; val p2 = worldPts[2]; val p3 = worldPts[3]
+        val lx = p0[0] - p1[0]; val ly = p0[1] - p1[1]; val lz = p0[2] - p1[2]   // length vec p1→p0
+        val wx = p2[0] - p1[0]; val wy = p2[1] - p1[1]; val wz = p2[2] - p1[2]   // width  vec p1→p2
+        val h  = abs(p3[1] - p2[1])                                              // height (vertical)
+        val r0 = floatArrayOf(p1[0],           p1[1],           p1[2])
+        val r1 = floatArrayOf(p1[0] + lx,      p1[1] + ly,      p1[2] + lz)      // = p0
+        val r2 = floatArrayOf(p1[0] + lx + wx, p1[1] + ly + wy, p1[2] + lz + wz)
+        val r3 = floatArrayOf(p1[0] + wx,      p1[1] + wy,      p1[2] + wz)      // = p2
+        fun up(p: FloatArray) = floatArrayOf(p[0], p[1] + h, p[2])
+        return arrayOf(r0, r1, r2, r3, up(r0), up(r1), up(r2), up(r3))
+    }
+
+    private fun drawBoxWireframe(c: Array<FloatArray>) {
+        val r0 = c[0]; val r1 = c[1]; val r2 = c[2]; val r3 = c[3]
+        val t0 = c[4]; val t1 = c[5]; val t2 = c[6]; val t3 = c[7]
+        // Measured edges — solid + colored.
+        drawSolidEdge(r0, r1, COL_LENGTH)   // length
+        drawSolidEdge(r3, r0, COL_WIDTH)    // width
+        drawSolidEdge(r3, t3, COL_HEIGHT)   // height (vertical at the width-end corner)
+        // Remaining 9 edges — dashed white silhouette.
+        drawDashedEdge(r1, r2); drawDashedEdge(r2, r3)
+        drawDashedEdge(t0, t1); drawDashedEdge(t1, t2); drawDashedEdge(t2, t3); drawDashedEdge(t3, t0)
+        drawDashedEdge(r0, t0); drawDashedEdge(r1, t1); drawDashedEdge(r2, t2)
+    }
+
+    private fun drawSolidEdge(a: FloatArray, b: FloatArray, color: FloatArray) {
+        GLES20.glUniform4fv(markerColorUniform, 1, color, 0)
+        scratchBuf.rewind()
+        scratchBuf.put(a[0]); scratchBuf.put(a[1]); scratchBuf.put(a[2])
+        scratchBuf.put(b[0]); scratchBuf.put(b[1]); scratchBuf.put(b[2])
+        scratchBuf.rewind()
+        GLES20.glVertexAttribPointer(markerPositionAttr, 3, GLES20.GL_FLOAT, false, 0, scratchBuf)
+        GLES20.glEnableVertexAttribArray(markerPositionAttr)
+        GLES20.glDrawArrays(GLES20.GL_LINES, 0, 2)
+    }
+
+    /** Dashed edge: draws alternate sub-segments along a→b. */
+    private fun drawDashedEdge(a: FloatArray, b: FloatArray) {
+        GLES20.glUniform4fv(markerColorUniform, 1, COL_DASH, 0)
+        val dashes = 11
+        var i = 0
+        while (i < dashes) {
+            val s = i.toFloat() / dashes
+            val e = (i + 1).toFloat() / dashes
+            scratchBuf.rewind()
+            scratchBuf.put(a[0] + (b[0] - a[0]) * s); scratchBuf.put(a[1] + (b[1] - a[1]) * s); scratchBuf.put(a[2] + (b[2] - a[2]) * s)
+            scratchBuf.put(a[0] + (b[0] - a[0]) * e); scratchBuf.put(a[1] + (b[1] - a[1]) * e); scratchBuf.put(a[2] + (b[2] - a[2]) * e)
+            scratchBuf.rewind()
+            GLES20.glVertexAttribPointer(markerPositionAttr, 3, GLES20.GL_FLOAT, false, 0, scratchBuf)
+            GLES20.glEnableVertexAttribArray(markerPositionAttr)
+            GLES20.glDrawArrays(GLES20.GL_LINES, 0, 2)
+            i += 2
+        }
+    }
+
+    /**
+     * Projects the 3 measured edge midpoints to screen pixels and posts them (with
+     * their cm value) to Compose for the floating dimension chips. Throttled to keep
+     * recomposition cheap; midpoints behind the camera are dropped.
+     */
+    private fun postDimLabels(c: Array<FloatArray>) {
+        val now = System.currentTimeMillis()
+        if (now - lastLabelMs < 60) return
+        lastLabelMs = now
+        val p0 = worldPts[0]; val p1 = worldPts[1]; val p2 = worldPts[2]; val p3 = worldPts[3]
+        val lenCm = dist(p0, p1) * 100
+        val widCm = dist(p1, p2) * 100
+        val hgtCm = abs((p3[1] - p2[1]).toDouble()) * 100
+        val labels = listOfNotNull(
+            projectMidLabel(c[0], c[1], DimAxis.LENGTH, lenCm),  // length mid(r0, r1)
+            projectMidLabel(c[3], c[0], DimAxis.WIDTH,  widCm),  // width  mid(r3, r0)
+            projectMidLabel(c[3], c[7], DimAxis.HEIGHT, hgtCm),  // height mid(r3, t3)
+        )
+        mainHandler.post { onDimLabels(labels) }
+    }
+
+    private fun projectMidLabel(a: FloatArray, b: FloatArray, axis: DimAxis, cm: Double): DimLabel? {
+        worldTmp[0] = (a[0] + b[0]) * 0.5f
+        worldTmp[1] = (a[1] + b[1]) * 0.5f
+        worldTmp[2] = (a[2] + b[2]) * 0.5f
+        worldTmp[3] = 1f
+        Matrix.multiplyMV(clipTmp, 0, mvpMatrix, 0, worldTmp, 0)
+        val w = clipTmp[3]
+        if (w <= 0.0001f || viewW == 0) return null   // behind camera / not laid out
+        val ndcX = clipTmp[0] / w
+        val ndcY = clipTmp[1] / w
+        val sx = (ndcX * 0.5f + 0.5f) * viewW
+        val sy = (1f - (ndcY * 0.5f + 0.5f)) * viewH
+        return DimLabel(axis, sx, sy, cm)
     }
 
     // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -396,7 +505,10 @@ private class ArRenderer(
 
     /** Drops captured world-space tap points on the GL thread (re-measure). */
     fun clearPoints() {
-        glView.queueEvent { worldPts.clear() }
+        glView.queueEvent {
+            worldPts.clear()
+            mainHandler.post { onDimLabels(emptyList()) }
+        }
     }
 }
 
@@ -451,21 +563,19 @@ private const val MARKER_FRAG_SRC = """
 """
 
 // ── Measurement dimension color palette ───────────────────────────────────────
+// Axis colours match the Compose dimension chips: length = cyan, width = magenta,
+// height = green. Non-measured cuboid edges render dashed white.
 
-/** Dot fill colors indexed by tap point (0–3). */
-private val DOT_COLORS = arrayOf(
-    floatArrayOf(0.000f, 0.898f, 1.000f, 1f),   // [0] Cyan   — length start
-    floatArrayOf(0.000f, 0.898f, 1.000f, 1f),   // [1] Cyan   — length end
-    floatArrayOf(0.000f, 1.000f, 0.533f, 1f),   // [2] Green  — width end
-    floatArrayOf(0.659f, 0.333f, 0.969f, 1f),   // [3] Purple — height top
-)
+private val COL_LENGTH = floatArrayOf(0.000f, 0.898f, 1.000f, 1f)   // cyan
+private val COL_WIDTH  = floatArrayOf(1.000f, 0.176f, 0.471f, 1f)   // magenta / pink
+private val COL_HEIGHT = floatArrayOf(0.000f, 1.000f, 0.533f, 1f)   // green
+private val COL_DASH   = floatArrayOf(1.000f, 1.000f, 1.000f, 0.9f) // white dashed silhouette
 
-/** Line colors indexed by segment (0 = length, 1 = width, 2 = height). */
-private val LINE_COLORS = arrayOf(
-    floatArrayOf(0.000f, 0.898f, 1.000f, 0.85f), // [0] Cyan
-    floatArrayOf(0.000f, 1.000f, 0.533f, 0.85f), // [1] Green
-    floatArrayOf(0.659f, 0.333f, 0.969f, 0.85f), // [2] Purple
-)
+/** Dot fill colors indexed by tap point (0–3): length start/end, width end, height top. */
+private val DOT_COLORS = arrayOf(COL_LENGTH, COL_LENGTH, COL_WIDTH, COL_HEIGHT)
+
+/** Progressive polyline colors indexed by segment (0 = length, 1 = width, 2 = height). */
+private val LINE_COLORS = arrayOf(COL_LENGTH, COL_WIDTH, COL_HEIGHT)
 
 // ── GL helpers ─────────────────────────────────────────────────────────────────
 

@@ -33,6 +33,21 @@ enum class BoxMeasureMode { VERIFY, QUOTE }
  */
 enum class MeasurementIntegrity { PENDING, VERIFIED, REVIEW, FLAGGED }
 
+/** The three measured cuboid axes — drives the AR dimension chip colours. */
+enum class DimAxis { LENGTH, WIDTH, HEIGHT }
+
+/**
+ * A projected AR dimension label: the screen-pixel position of a cuboid edge
+ * midpoint (computed by the renderer each frame) plus its measured length in cm.
+ * Rendered as a floating chip over the camera, value shown in inches.
+ */
+data class DimLabel(
+    val axis: DimAxis,
+    val xPx: Float,
+    val yPx: Float,
+    val cm: Double,
+)
+
 /** Below this ARCore tracking confidence a scan is downgraded to REVIEW. */
 private const val AR_CONFIDENCE_FLOOR = 0.80
 
@@ -53,6 +68,9 @@ data class BoxMeasureUiState(
     val reticleX: Float? = null,
     val reticleY: Float? = null,
     val reticleZ: Float? = null,
+
+    // Projected AR dimension chips (length / width / height edge midpoints).
+    val dimLabels: List<DimLabel> = emptyList(),
 
     // ── Measurement integrity / anti-fraud ──────────────────────────────────────
     val integrity: MeasurementIntegrity = MeasurementIntegrity.PENDING,
@@ -128,6 +146,10 @@ class BoxMeasureViewModel @Inject constructor() : ViewModel() {
     fun onReticleCoords(x: Float?, y: Float?, z: Float?) =
         _uiState.update { it.copy(reticleX = x, reticleY = y, reticleZ = z) }
 
+    /** Projected AR dimension chip positions, throttled by the renderer. */
+    fun onDimLabels(labels: List<DimLabel>) =
+        _uiState.update { it.copy(dimLabels = labels) }
+
     /**
      * Clears the current measurement so the driver can re-scan. Drops the captured
      * dimensions, the integrity score, and the trusted AR-scan snapshot, and bumps
@@ -149,6 +171,7 @@ class BoxMeasureViewModel @Inject constructor() : ViewModel() {
         reticleX           = null,
         reticleY           = null,
         reticleZ           = null,
+        dimLabels          = emptyList(),
         resetToken         = it.resetToken + 1,
     )}
 

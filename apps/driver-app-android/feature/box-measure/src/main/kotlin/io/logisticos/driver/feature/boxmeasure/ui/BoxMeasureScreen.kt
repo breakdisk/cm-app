@@ -28,8 +28,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import io.logisticos.driver.feature.boxmeasure.data.*
@@ -479,6 +481,43 @@ private fun ArViewport(
                 }
             }
         }
+
+        // AR dimension chips — float over each measured edge midpoint (positions are
+        // projected to screen pixels by the renderer), value shown in inches.
+        state.dimLabels.forEach { label ->
+            DimChip(label = label, modifier = Modifier.align(Alignment.TopStart))
+        }
+    }
+}
+
+/** Floating colored dimension chip positioned at a projected edge midpoint. */
+@Composable
+private fun DimChip(label: DimLabel, modifier: Modifier = Modifier) {
+    val color = when (label.axis) {
+        DimAxis.LENGTH -> Cyan
+        DimAxis.WIDTH  -> Color(0xFFFF2D78)
+        DimAxis.HEIGHT -> Green
+    }
+    val inches = label.cm * 0.393701
+    Box(
+        modifier = modifier.offset {
+            // Centre the chip on the projected point (approx half-size offset).
+            IntOffset(
+                (label.xPx - 30.dp.toPx()).roundToInt(),
+                (label.yPx - 14.dp.toPx()).roundToInt(),
+            )
+        },
+    ) {
+        Text(
+            "%.1fin".format(inches),
+            color = Color.White,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace,
+            modifier = Modifier
+                .background(color, RoundedCornerShape(6.dp))
+                .padding(horizontal = 8.dp, vertical = 3.dp),
+        )
     }
 }
 
