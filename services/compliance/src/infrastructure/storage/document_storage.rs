@@ -103,8 +103,8 @@ impl DocumentStorage {
         if file_bytes.len() > MAX_FILE_BYTES {
             bail!("File exceeds 10 MB limit");
         }
-        if !matches!(content_type, "image/jpeg" | "image/png" | "application/pdf") {
-            bail!("Invalid content type: must be image/jpeg, image/png, or application/pdf");
+        if !matches!(content_type, "image/jpeg" | "image/png" | "image/webp" | "application/pdf") {
+            bail!("Invalid content type: must be image/jpeg, image/png, image/webp, or application/pdf");
         }
         let key = format!("compliance/{}/{}", tenant_id, uuid::Uuid::new_v4());
 
