@@ -96,15 +96,11 @@ fun BoxMeasureScreen(
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
 
-    // One-click "full display": expands the AR viewport to an immersive full-screen
-    // layer over the form. Drivers measure in the larger viewport (a bigger target
-    // area = steadier tracking) then collapse back to the quote inputs.
-    var arExpanded by rememberSaveable { mutableStateOf(false) }
+    // Controls the bottom details / form sheet.
+    // Auto-opens when a measurement result lands so the driver sees results immediately.
+    var showSheet by rememberSaveable { mutableStateOf(false) }
 
     // ── Camera permission ─────────────────────────────────────────────────────
-    // ARCore requires CAMERA at runtime. Request it before the GLSurfaceView
-    // initialises — Session.resume() throws CameraNotAvailableException (unchecked
-    // on the GL thread) if permission isn't granted, crashing the app.
     var cameraGranted by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
@@ -126,43 +122,120 @@ fun BoxMeasureScreen(
             viewModel.initVerifyMode(declaredSizeId, declaredL, declaredW, declaredH)
         }
     }
-
-    // Auto-switch to manual mode when AR session errors (device not supported,
-    // camera unavailable, ARCore not installed, etc.).
     LaunchedEffect(state.measureError) {
-        if (state.measureError != null && !state.manualMode) {
-            viewModel.setManualMode(true)
-        }
+        if (state.measureError != null && !state.manualMode) viewModel.setManualMode(true)
     }
-
-    // Handle VERIFY confirm callback
     LaunchedEffect(state.dimensionConfirmed) {
         if (state.dimensionConfirmed) {
             onDimensionsVerified?.invoke(viewModel.popDimensioning())
             onBack()
         }
     }
+    // Auto-open details sheet when a measurement result is ready.
+    LaunchedEffect(state.measuredL) {
+        if (state.measuredL != null) showSheet = true
+    }
 
     Box(modifier = Modifier.fillMaxSize().background(Canvas)) {
-    if (cameraGranted && state.measureError == null && arExpanded) {
-        // Full-screen AR replaces the form entirely while expanded. The scroll form
-        // — and its dropdown popups — are not composed, so nothing floats over the
-        // camera and per-tap recomposition stays cheap (fixes the dropdown leak and
-        // the measuring lag).
-        ArViewport(
-            viewModel    = viewModel,
-            state        = state,
-            expanded     = true,
-            onToggleFull = { arExpanded = false },
-        )
-    } else {
-    Column(
-        modifier = Modifier.fillMaxSize()
-    ) {
-        // ── Top bar ─────────────────────────────────────────────────────────────
+
+        // ══════════════════════════════════════════════════════════════════════
+        // LAYER 1 — Full-screen AR camera + spatial grid.
+        //
+        // CRITICAL: placed here at the root Box, NEVER inside a showSheet or any
+        // toggle conditional.  This keeps the GLSurfaceView alive for the entire
+        // screen lifetime so the ARCore session never restarts.  The old design
+        // put ArCoreBoxMeasureView inside the arExpanded if/else — every toggle
+        // recreated the GL surface, killed the session, and left taps dead for
+        // ~1-2 s while a new session initialised.  That is exactly why measurement
+        // only worked in the "small" compact viewport.
+        // ══════════════════════════════════════════════════════════════════════
+        if (cameraGranted && state.measureError == null) {
+            ArCoreBoxMeasureView(modifier = Modifier.fillMaxSize(), viewModel = viewModel)
+            SpatialGridOverlay(modifier = Modifier.fillMaxSize())
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        // LAYER 2 — AR measurement overlays (always on top of the camera).
+        // ══════════════════════════════════════════════════════════════════════
+        if (cameraGranted && state.measureError == null) {
+            // Top gradient scrim — keeps top-bar and guide legible over bright scenes.
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(130.dp)
+                    .background(Brush.verticalGradient(listOf(Color(0xDD050810), Color.Transparent)))
+                    .align(Alignment.TopCenter),
+            )
+            // Step guide (top-start, below the top bar).
+            MeasureGuideOverlay(
+                tapCount = state.tapCount,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(top = 70.dp, start = 12.dp, end = 12.dp),
+            )
+            // Live measurement reticle (centre).
+            if (state.tapCount < 4) {
+                LiveMeasureReticle(
+                    distanceCm = state.liveDistanceCm,
+                    tapCount   = state.tapCount,
+                    modifier   = Modifier.align(Alignment.Center),
+                )
+            }
+            // ── Y guide — right edge, full viewport height ──────────────────
+            // fillMaxHeight() gives it the full screen so the ruler is unmissable.
+            // A bottom padding clears the sheet handle area.
+            if (state.tapCount == 3) {
+                YGuideIndicator(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .fillMaxHeight()
+                        .padding(bottom = if (showSheet) 320.dp else 80.dp),
+                )
+            }
+            // Integrity badge (bottom-start, floats above bottom sheet).
+            val badgePad = if (showSheet) 340.dp else 76.dp
+            if (state.integrity != MeasurementIntegrity.PENDING) {
+                IntegrityBadge(
+                    integrity = state.integrity,
+                    modifier  = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = 12.dp, bottom = badgePad),
+                )
+            }
+            // Re-measure button (bottom-end).
+            if (state.tapCount > 0) {
+                Surface(
+                    onClick = { viewModel.resetMeasurement() },
+                    shape   = RoundedCornerShape(10.dp),
+                    color   = Color(0xCC050810),
+                    border  = BorderStroke(1.dp, Amber.copy(alpha = 0.4f)),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 12.dp, bottom = badgePad),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Re-measure", tint = Amber, modifier = Modifier.size(14.dp))
+                        Text("Re-measure", color = Amber, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+            // Floating dimension chips projected from GL edge midpoints.
+            state.dimLabels.forEach { label ->
+                DimChip(label = label, modifier = Modifier.align(Alignment.TopStart))
+            }
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        // LAYER 3 — Top app bar (always visible as an overlay).
+        // ══════════════════════════════════════════════════════════════════════
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .align(Alignment.TopCenter)
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -175,8 +248,7 @@ fun BoxMeasureScreen(
                     color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp,
                 )
                 Text(
-                    text = if (mode == BoxMeasureMode.VERIFY) "Compare declared vs. measured"
-                           else "Instant price estimate",
+                    text = if (mode == BoxMeasureMode.VERIFY) "Compare declared vs. measured" else "Instant price estimate",
                     color = TextMuted, fontSize = 11.sp,
                 )
             }
@@ -198,134 +270,148 @@ fun BoxMeasureScreen(
             }
         }
 
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-
-            // ── AR error banner ───────────────────────────────────────────────
-            // Shown when the session failed (device not supported, camera denied,
-            // ARCore not installed). Manual mode is auto-enabled at this point.
-            if (state.measureError != null) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Amber.copy(alpha = 0.12f))
-                        .border(1.dp, Amber.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
-                        .padding(12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(Icons.Default.WarningAmber, contentDescription = null, tint = Amber, modifier = Modifier.size(18.dp))
-                    Text(state.measureError!!, color = Amber, fontSize = 12.sp, modifier = Modifier.weight(1f))
-                }
-            }
-
-            // ── AR camera view (full-width, 260dp tall) ────────────────────────
-            // Only rendered when camera permission is granted and no session error.
-            // On unsupported devices or permission denial, the error banner above
-            // explains the situation and manual mode is enabled automatically.
-            //
-            // The full-screen variant is handled above (it replaces the whole form),
-            // so this inline slot only ever renders the compact viewport.
-            if (cameraGranted && state.measureError == null) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(260.dp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .border(1.dp, Border, RoundedCornerShape(16.dp)),
-                ) {
-                    ArViewport(
-                        viewModel    = viewModel,
-                        state        = state,
-                        expanded     = false,
-                        onToggleFull = { arExpanded = true },
-                    )
-                }
-            }
-
-            // ── Manual entry toggle ────────────────────────────────────────────
+        // ══════════════════════════════════════════════════════════════════════
+        // LAYER 4 — AR error banner (floating overlay, shown when camera fails).
+        // ══════════════════════════════════════════════════════════════════════
+        if (state.measureError != null) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopCenter)
+                    .padding(horizontal = 16.dp)
+                    .padding(top = 76.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Amber.copy(alpha = 0.12f))
+                    .border(1.dp, Amber.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Enter manually", color = TextMuted, fontSize = 12.sp)
-                Switch(
-                    checked = state.manualMode,
-                    onCheckedChange = viewModel::setManualMode,
-                    colors = SwitchDefaults.colors(checkedThumbColor = Cyan, checkedTrackColor = Cyan.copy(alpha = 0.3f)),
-                )
+                Icon(Icons.Default.WarningAmber, contentDescription = null, tint = Amber, modifier = Modifier.size(18.dp))
+                Text(state.measureError!!, color = Amber, fontSize = 12.sp, modifier = Modifier.weight(1f))
             }
-
-            if (state.manualMode) {
-                ManualDimensionEntry(
-                    l = state.manualL, w = state.manualW, h = state.manualH,
-                    onLChange = viewModel::setManualL,
-                    onWChange = viewModel::setManualW,
-                    onHChange = viewModel::setManualH,
-                    onApply   = viewModel::applyManualDimensions,
-                )
-            }
-
-            // ── Measurement result card ────────────────────────────────────────
-            // Local val required: smart cast on a delegated property (StateFlow) is
-            // impossible — the backing getter can change between the null check and use.
-            val measuredL = state.measuredL
-            if (measuredL != null) {
-                MeasurementCard(
-                    measuredL    = measuredL,
-                    measuredW    = state.measuredW ?: 0.0,
-                    measuredH    = state.measuredH ?: 0.0,
-                    confidence   = state.arConfidence,
-                    integrity    = state.integrity,
-                    integrityReason = state.integrityReason,
-                    overrideUsed = state.manualOverrideUsed,
-                    declaredL    = if (mode == BoxMeasureMode.VERIFY) state.declaredL else null,
-                    declaredW    = if (mode == BoxMeasureMode.VERIFY) state.declaredW else null,
-                    declaredH    = if (mode == BoxMeasureMode.VERIFY) state.declaredH else null,
-                )
-            }
-
-            // ── Standard box size selector ─────────────────────────────────────
-            SectionLabel("Standard Box Size")
-            BoxSizeSelector(
-                sizes      = BOX_SIZES,
-                selectedId = state.matchedSizeId,
-                onSelect   = viewModel::setMatchedSizeId,
-            )
-
-            Spacer(Modifier.height(4.dp))
-
-            // ── VERIFY mode: Confirm button ────────────────────────────────────
-            if (mode == BoxMeasureMode.VERIFY) {
-                VerifyConfirmSection(
-                    hasResult   = state.measuredL != null,
-                    integrity   = state.integrity,
-                    qty         = state.qty,
-                    onQtyChange = viewModel::setQty,
-                    onConfirm   = viewModel::confirmDimensions,
-                )
-            }
-
-            // ── QUOTE mode: quote inputs + result ─────────────────────────────
-            if (mode == BoxMeasureMode.QUOTE) {
-                QuoteInputSection(
-                    state          = state,
-                    viewModel      = viewModel,
-                    onBookShipment = onBookShipment,
-                )
-            }
-
-            Spacer(Modifier.height(32.dp))
         }
-    }
-    }
+
+        // ══════════════════════════════════════════════════════════════════════
+        // LAYER 5 — "View results" pill (when measurement is ready, sheet hidden).
+        // ══════════════════════════════════════════════════════════════════════
+        if (!showSheet && state.measuredL != null) {
+            Button(
+                onClick = { showSheet = true },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 20.dp)
+                    .height(50.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
+                contentPadding = PaddingValues(0.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Brush.horizontalGradient(listOf(Cyan, Purple)), RoundedCornerShape(14.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.ExpandLess, null, tint = Canvas, modifier = Modifier.size(18.dp))
+                        Text("View Results", color = Canvas, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    }
+                }
+            }
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        // LAYER 6 — Bottom details / form sheet (slides up from the bottom edge).
+        // ══════════════════════════════════════════════════════════════════════
+        AnimatedVisibility(
+            visible  = showSheet,
+            enter    = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+            exit     = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xF5050810), RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp)
+                    .padding(top = 8.dp, bottom = 32.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                // Drag handle
+                Box(
+                    modifier = Modifier
+                        .width(40.dp)
+                        .height(4.dp)
+                        .background(Color(0x33FFFFFF), RoundedCornerShape(2.dp))
+                        .align(Alignment.CenterHorizontally)
+                        .clickable { showSheet = false },
+                )
+
+                // Manual entry toggle
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Enter manually", color = TextMuted, fontSize = 12.sp)
+                    Switch(
+                        checked = state.manualMode,
+                        onCheckedChange = viewModel::setManualMode,
+                        colors = SwitchDefaults.colors(checkedThumbColor = Cyan, checkedTrackColor = Cyan.copy(alpha = 0.3f)),
+                    )
+                }
+                if (state.manualMode) {
+                    ManualDimensionEntry(
+                        l = state.manualL, w = state.manualW, h = state.manualH,
+                        onLChange = viewModel::setManualL,
+                        onWChange = viewModel::setManualW,
+                        onHChange = viewModel::setManualH,
+                        onApply   = viewModel::applyManualDimensions,
+                    )
+                }
+
+                // Measurement result card
+                val measuredL = state.measuredL
+                if (measuredL != null) {
+                    MeasurementCard(
+                        measuredL    = measuredL,
+                        measuredW    = state.measuredW ?: 0.0,
+                        measuredH    = state.measuredH ?: 0.0,
+                        confidence   = state.arConfidence,
+                        integrity    = state.integrity,
+                        integrityReason = state.integrityReason,
+                        overrideUsed = state.manualOverrideUsed,
+                        declaredL    = if (mode == BoxMeasureMode.VERIFY) state.declaredL else null,
+                        declaredW    = if (mode == BoxMeasureMode.VERIFY) state.declaredW else null,
+                        declaredH    = if (mode == BoxMeasureMode.VERIFY) state.declaredH else null,
+                    )
+                }
+
+                // Standard box size selector
+                SectionLabel("Standard Box Size")
+                BoxSizeSelector(sizes = BOX_SIZES, selectedId = state.matchedSizeId, onSelect = viewModel::setMatchedSizeId)
+                Spacer(Modifier.height(4.dp))
+
+                // VERIFY mode actions
+                if (mode == BoxMeasureMode.VERIFY) {
+                    VerifyConfirmSection(
+                        hasResult   = state.measuredL != null,
+                        integrity   = state.integrity,
+                        qty         = state.qty,
+                        onQtyChange = viewModel::setQty,
+                        onConfirm   = viewModel::confirmDimensions,
+                    )
+                }
+
+                // QUOTE mode inputs + result
+                if (mode == BoxMeasureMode.QUOTE) {
+                    QuoteInputSection(state = state, viewModel = viewModel, onBookShipment = onBookShipment)
+                }
+            }
+        }
     }
 }
 
@@ -414,135 +500,10 @@ private fun LiveMeasureReticle(
 }
 
 
-/**
- * Live AR viewport: camera background + aiming crosshair + 3-stage guide + the
- * full-display toggle and (once captured) the integrity badge.
- *
- * Used in exactly one place at a time — inline (260dp) or in the full-screen
- * layer — so only a single ARCore session is mounted.
- */
-@Composable
-private fun ArViewport(
-    viewModel: BoxMeasureViewModel,
-    state: BoxMeasureUiState,
-    expanded: Boolean,
-    onToggleFull: () -> Unit,
-) {
-    Box(modifier = Modifier.fillMaxSize()) {
-        ArCoreBoxMeasureView(
-            modifier = Modifier.fillMaxSize(),
-            viewModel = viewModel,
-        )
-
-        // ── Spatial-mapping floor grid (Compose layer) ──────────────────────
-        // Shown as soon as the AR session is active and scanning the environment.
-        // The GL renderer draws the true 3D grid once taps are placed; this layer
-        // gives instant visual feedback that spatial mapping is in progress.
-        SpatialGridOverlay(modifier = Modifier.fillMaxSize())
-
-        // Top scrim — keeps the guide + controls legible over a bright camera feed.
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(if (expanded) 168.dp else 96.dp)
-                .background(Brush.verticalGradient(listOf(Color(0xCC050810), Color.Transparent)))
-                .align(Alignment.TopCenter),
-        )
-
-        // Centre measurement reticle — shown until all 4 anchors are placed.
-        // Displays a live per-axis distance in cm from the last placed anchor to
-        // the current aim point so the driver sees the measurement grow in real time.
-        if (state.tapCount < 4) {
-            LiveMeasureReticle(
-                distanceCm = state.liveDistanceCm,
-                tapCount   = state.tapCount,
-                modifier   = Modifier.align(Alignment.Center),
-            )
-        }
-
-        // ── Y-axis guide indicator ──────────────────────────────────────────
-        // Sidebar ruler visible only when the driver is measuring height (tap 3
-        // placed, awaiting tap 4).  Mirrors the GL dashed green guide line.
-        if (state.tapCount == 3) {
-            YGuideIndicator(
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .padding(end = 10.dp),
-            )
-        }
-
-        // 3-stage guide (top-start).
-        MeasureGuideOverlay(
-            tapCount = state.tapCount,
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(top = if (expanded) 48.dp else 12.dp, start = 12.dp, end = 12.dp),
-        )
-
-        // Full-display toggle (top-end).
-        Surface(
-            onClick = onToggleFull,
-            shape = RoundedCornerShape(10.dp),
-            color = Color(0xCC050810),
-            border = BorderStroke(1.dp, Cyan.copy(alpha = 0.3f)),
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = if (expanded) 48.dp else 12.dp, end = 12.dp),
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Icon(
-                    if (expanded) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                    contentDescription = if (expanded) "Exit full screen" else "Full display",
-                    tint = Cyan, modifier = Modifier.size(16.dp),
-                )
-                Text(if (expanded) "Exit" else "Full", color = Cyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            }
-        }
-
-        // Integrity badge (bottom-start) — appears once a measurement is captured.
-        if (state.integrity != MeasurementIntegrity.PENDING) {
-            IntegrityBadge(
-                integrity = state.integrity,
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = 12.dp, bottom = if (expanded) 32.dp else 12.dp),
-            )
-        }
-
-        // Re-measure (bottom-end) — drops captured points and restarts the scan.
-        // Visible as soon as the first anchor is placed (and after completion).
-        if (state.tapCount > 0) {
-            Surface(
-                onClick = { viewModel.resetMeasurement() },
-                shape = RoundedCornerShape(10.dp),
-                color = Color(0xCC050810),
-                border = BorderStroke(1.dp, Amber.copy(alpha = 0.4f)),
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(end = 12.dp, bottom = if (expanded) 32.dp else 12.dp),
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Icon(Icons.Default.Refresh, contentDescription = "Re-measure", tint = Amber, modifier = Modifier.size(14.dp))
-                    Text("Re-measure", color = Amber, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                }
-            }
-        }
-
-        // AR dimension chips — float over each measured edge midpoint (positions are
-        // projected to screen pixels by the renderer), value shown in cm.
-        state.dimLabels.forEach { label ->
-            DimChip(label = label, modifier = Modifier.align(Alignment.TopStart))
-        }
-    }
-}
+// ArViewport removed — ArCoreBoxMeasureView and SpatialGridOverlay now live at the
+// root Box level in BoxMeasureScreen so the GLSurfaceView is never recreated on a
+// layout toggle.  All overlays (guide, reticle, Y guide, badges, chips) are inlined
+// directly in BoxMeasureScreen LAYER 2.
 
 /**
  * Industrial floating dimension chip — anchored to the projected GL edge midpoint.
@@ -649,131 +610,114 @@ private fun SpatialGridOverlay(modifier: Modifier = Modifier) {
 }
 
 /**
- * Y-axis guide sidebar — dominant, high-contrast panel anchored to the right edge
- * of the AR viewport when tapCount == 3 (driver is measuring height).
+ * Full-height Y-axis measurement guide — right-edge strip spanning the entire
+ * AR viewport when tapCount == 3 (driver about to tap the box top).
  *
- * Visual anatomy (top → bottom):
- *   ① "HEIGHT" axis label (green, monospace)
- *   ② ▲ arrow — "aim camera UP"
- *   ③ Precision ruler: bright spine + 5 major ticks + 5 minor ticks with cm labels
- *   ④ Target baseline dot at the bottom — marks the anchor point
- *   ⑤ "Y AXIS" footer label
+ * fillMaxHeight() is applied at the call site so the ruler fills every pixel of
+ * available screen height — impossible to miss, even in bright outdoor footage.
  *
- * Width is deliberately wider (36 dp panel) so it is readable over any camera feed.
- * Border is 1.5 dp solid green at 85 % alpha — unmissable against dark and bright scenes.
+ * Layout (top → bottom inside the strip):
+ *   ① "HEIGHT" label     — axis identifier
+ *   ② ↑ Arrow            — "aim camera up"
+ *   ③ Full-height ruler  — 10 major ticks + 10 minor ticks, spine, glow dots
+ *   ④ "TAP TOP" label    — action instruction
+ *   ⑤ "Y"                — axis letter footer
  */
 @Composable
 private fun YGuideIndicator(modifier: Modifier = Modifier) {
-    Column(
+    Box(
         modifier = modifier
-            .width(44.dp)
-            .background(Color(0xEE030712), RoundedCornerShape(10.dp))
-            .border(1.5.dp, Green.copy(alpha = 0.85f), RoundedCornerShape(10.dp))
-            .padding(horizontal = 6.dp, vertical = 10.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        // ① Axis label
-        Text(
-            "HEIGHT",
-            color         = Green,
-            fontSize      = 7.sp,
-            fontWeight    = FontWeight.ExtraBold,
-            fontFamily    = FontFamily.Monospace,
-            letterSpacing = 0.5.sp,
-        )
-
-        // ② Aim-up arrow — large, bright
-        Icon(
-            imageVector        = Icons.Default.ArrowUpward,
-            contentDescription = "Aim camera up to the top of the box",
-            tint               = Green,
-            modifier           = Modifier.size(22.dp),
-        )
-
-        // ③ Precision ruler
-        androidx.compose.foundation.Canvas(
-            modifier = Modifier
-                .width(32.dp)
-                .height(140.dp),
-        ) {
-            val cx         = size.width / 2f
-            val rulerH     = size.height
-            val spine      = 2.dp.toPx()
-            val majorHalf  = 10.dp.toPx()   // 20 dp total tick width — wide and readable
-            val minorHalf  = 5.5.dp.toPx()
-            val majorCount = 5
-            val labelOff   = majorHalf + 3.dp.toPx()
-
-            // Bright vertical spine
-            drawLine(
-                color       = Green.copy(alpha = 0.90f),
-                start       = Offset(cx, 0f),
-                end         = Offset(cx, rulerH),
-                strokeWidth = spine,
+            .width(52.dp)
+            .background(
+                Color(0xCC020A12),
+                RoundedCornerShape(topStart = 14.dp, bottomStart = 14.dp),
             )
+            .border(
+                1.5.dp,
+                Green.copy(alpha = 0.88f),
+                RoundedCornerShape(topStart = 14.dp, bottomStart = 14.dp),
+            ),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(vertical = 14.dp, horizontal = 5.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            // ① Axis label
+            Text(
+                "HEIGHT",
+                color         = Green,
+                fontSize      = 7.sp,
+                fontWeight    = FontWeight.ExtraBold,
+                fontFamily    = FontFamily.Monospace,
+                letterSpacing = 0.5.sp,
+            )
+            Spacer(Modifier.height(5.dp))
+            // ② Upward arrow — "aim camera up to the box top"
+            Icon(
+                imageVector        = Icons.Default.ArrowUpward,
+                contentDescription = "Aim camera up to the box top",
+                tint               = Green,
+                modifier           = Modifier.size(24.dp),
+            )
+            Spacer(Modifier.height(5.dp))
+            // ③ Precision ruler — takes all remaining height
+            androidx.compose.foundation.Canvas(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+            ) {
+                val cx       = size.width / 2f
+                val h        = size.height
+                val spW      = 2.dp.toPx()
+                val majHalf  = 13.dp.toPx()   // 26 dp wide tick — clearly visible
+                val minHalf  =  7.dp.toPx()
+                val majorN   = 10
 
-            for (i in 0..majorCount) {
-                val y      = rulerH * (1f - i.toFloat() / majorCount)
-                val isBase = (i == 0)
-                val isTip  = (i == majorCount)
+                // Bright vertical spine
+                drawLine(Green.copy(alpha = 0.92f), Offset(cx, 0f), Offset(cx, h), spW)
 
-                // Major tick
-                drawLine(
-                    color       = Green.copy(alpha = if (isTip) 1f else 0.80f),
-                    start       = Offset(cx - majorHalf, y),
-                    end         = Offset(cx + majorHalf, y),
-                    strokeWidth = if (isTip || isBase) spine * 1.5f else spine,
-                )
+                for (i in 0..majorN) {
+                    val y     = h * (1f - i.toFloat() / majorN)
+                    val isTip = (i == majorN)
+                    val isBas = (i == 0)
 
-                // Glowing dot on base and tip ticks
-                if (isBase || isTip) {
-                    drawCircle(
-                        color  = Green.copy(alpha = if (isTip) 1f else 0.55f),
-                        radius = 3.5.dp.toPx(),
-                        center = Offset(cx, y),
-                    )
-                }
-
-                // Minor tick between consecutive majors
-                if (i < majorCount) {
-                    val my = rulerH * (1f - (i + 0.5f) / majorCount)
+                    // Major tick
                     drawLine(
-                        color       = Green.copy(alpha = 0.42f),
-                        start       = Offset(cx - minorHalf, my),
-                        end         = Offset(cx + minorHalf, my),
-                        strokeWidth = spine * 0.6f,
+                        color       = Green.copy(alpha = if (isTip) 1f else 0.88f),
+                        start       = Offset(cx - majHalf, y),
+                        end         = Offset(cx + majHalf, y),
+                        strokeWidth = if (isTip || isBas) spW * 2.2f else spW * 1.4f,
                     )
+                    // Glow dot on tip (top target) and base (anchor)
+                    if (isTip || isBas) {
+                        drawCircle(
+                            color  = Green.copy(alpha = if (isTip) 1f else 0.65f),
+                            radius = if (isTip) 5.dp.toPx() else 4.dp.toPx(),
+                            center = Offset(cx, y),
+                        )
+                    }
+                    // Minor tick between each pair of majors
+                    if (i < majorN) {
+                        val my = h * (1f - (i + 0.5f) / majorN)
+                        drawLine(
+                            color       = Green.copy(alpha = 0.40f),
+                            start       = Offset(cx - minHalf, my),
+                            end         = Offset(cx + minHalf, my),
+                            strokeWidth = spW * 0.7f,
+                        )
+                    }
                 }
             }
+            Spacer(Modifier.height(5.dp))
+            // ④ Instruction
+            Text("TAP",  color = Green.copy(alpha = 0.75f), fontSize = 7.sp, fontWeight = FontWeight.Bold,      fontFamily = FontFamily.Monospace)
+            Text("TOP",  color = Green,                     fontSize = 8.sp, fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace)
+            Spacer(Modifier.height(4.dp))
+            // ⑤ Axis footer
+            Text("Y",    color = Green,                     fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace)
         }
-
-        // ④ "TAP TOP" instruction — compact, green, monospace
-        Text(
-            "TAP",
-            color         = Green.copy(alpha = 0.75f),
-            fontSize      = 7.sp,
-            fontWeight    = FontWeight.Bold,
-            fontFamily    = FontFamily.Monospace,
-            letterSpacing = 0.5.sp,
-        )
-        Text(
-            "TOP",
-            color         = Green,
-            fontSize      = 7.sp,
-            fontWeight    = FontWeight.ExtraBold,
-            fontFamily    = FontFamily.Monospace,
-            letterSpacing = 0.5.sp,
-        )
-
-        // ⑤ Y axis footer
-        Text(
-            "Y",
-            color         = Green,
-            fontSize      = 10.sp,
-            fontWeight    = FontWeight.ExtraBold,
-            fontFamily    = FontFamily.Monospace,
-        )
     }
 }
 
