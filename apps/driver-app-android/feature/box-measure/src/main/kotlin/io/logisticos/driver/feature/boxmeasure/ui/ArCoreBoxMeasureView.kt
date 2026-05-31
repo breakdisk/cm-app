@@ -89,7 +89,7 @@ fun ArCoreBoxMeasureView(
                     onSessionError       = { msg -> viewModel.onArSessionError(msg) },
                     onMeasurementPoint   = { idx, x, y, z -> viewModel.onMeasurementPoint(idx, x, y, z) },
                     onMeasurementComplete = { l, w, h, conf -> viewModel.onMeasurementComplete(l, w, h, conf) },
-                    onReticleCoords      = { x, y, z -> viewModel.onReticleCoords(x, y, z) },
+                    onLiveDistance       = { cm -> viewModel.onLiveDistance(cm) },
                     onDimLabels          = { labels -> viewModel.onDimLabels(labels) },
                 ).also { rendererRef.value = it }.glView
             },
@@ -125,7 +125,9 @@ private class ArRenderer(
     private val onSessionError: (String) -> Unit,
     private val onMeasurementPoint: (index: Int, x: Float, y: Float, z: Float) -> Unit,
     private val onMeasurementComplete: (l: Double, w: Double, h: Double, confidence: Double) -> Unit,
-    private val onReticleCoords: (x: Float?, y: Float?, z: Float?) -> Unit,
+    /** Euclidean distance in cm from the last placed anchor to the current aim point.
+     *  Null when no anchor is placed yet or when the centre hit-test misses a plane. */
+    private val onLiveDistance: (cm: Double?) -> Unit,
     private val onDimLabels: (labels: List<DimLabel>) -> Unit,
 ) : GLSurfaceView.Renderer {
 
@@ -273,13 +275,18 @@ private class ArRenderer(
                 val cHit = cHits.firstOrNull { h ->
                     h.trackable is Plane && (h.trackable as Plane).isPoseInPolygon(h.hitPose)
                 } ?: cHits.firstOrNull()
-                if (cHit != null) {
-                    val cp = cHit.hitPose
-                    val rx = cp.tx(); val ry = cp.ty(); val rz = cp.tz()
-                    mainHandler.post { onReticleCoords(rx, ry, rz) }
-                } else {
-                    mainHandler.post { onReticleCoords(null, null, null) }
-                }
+                // Compute Euclidean distance from the last placed anchor to the aim point
+                // and convert to cm.  If no anchor is placed yet (worldPts empty) post null
+                // so the reticle shows the "Tap to place anchor" hint instead of a value.
+                val liveCm: Double? = if (cHit != null && worldPts.isNotEmpty()) {
+                    val cp   = cHit.hitPose
+                    val last = worldPts.last()
+                    val dx   = (cp.tx() - last[0]).toDouble()
+                    val dy   = (cp.ty() - last[1]).toDouble()
+                    val dz   = (cp.tz() - last[2]).toDouble()
+                    sqrt(dx * dx + dy * dy + dz * dz) * 100.0
+                } else null
+                mainHandler.post { onLiveDistance(liveCm) }
             }
         }
 

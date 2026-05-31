@@ -326,54 +326,86 @@ fun BoxMeasureScreen(
 // ── Sub-composables ────────────────────────────────────────────────────────────
 
 /**
- * Centre coordinate reticle — a tiny aim tick plus a live world X/Y/Z readout of the
- * plane point under the centre of the viewport (replaces the old bullseye). Values are
- * AR world-space metres, fed by the renderer's throttled centre hit-test; when no plane
- * is detected at the centre the axes show "—".
+ * Live measurement reticle — replaces the raw X/Y/Z world-coordinate display.
+ *
+ * Shows a crosshair `+` and a coloured chip whose value is the **Euclidean distance
+ * in cm** from the last placed anchor to the current camera aim point, updating at
+ * ~6 Hz.  Colour and axis label encode which edge the driver is measuring:
+ *
+ *   No anchor yet  — muted  — "Tap to place anchor"
+ *   Tap 1 placed   — cyan   — LENGTH  · XX.X cm
+ *   Tap 2 placed   — pink   — WIDTH   · XX.X cm
+ *   Tap 3 placed   — green  — HEIGHT  · XX.X cm
+ *
+ * This gives the driver real-time feedback that the AR plane is tracking (the number
+ * changes as they move) and tells them exactly what they're measuring before they tap.
  */
 @Composable
-private fun CoordinateReticle(x: Float?, y: Float?, z: Float?, modifier: Modifier = Modifier) {
-    val hasHit = x != null && y != null && z != null
-    val accent = if (hasHit) Cyan else TextMuted
+private fun LiveMeasureReticle(
+    distanceCm: Double?,
+    tapCount: Int,
+    modifier: Modifier = Modifier,
+) {
+    // Axis label + accent colour keyed by how many anchors have been placed.
+    val (axisLabel, accentColor) = when (tapCount) {
+        1    -> "LENGTH" to Cyan
+        2    -> "WIDTH"  to Color(0xFFFF2D78)   // matches the DimAxis.WIDTH chip
+        3    -> "HEIGHT" to Green
+        else -> null     to TextMuted            // 0 = no anchor placed yet
+    }
+
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        // Minimal aim tick at the exact centre.
-        androidx.compose.foundation.Canvas(modifier = Modifier.size(18.dp)) {
-            val c = size.width / 2f
-            val arm = 7.dp.toPx()
+        // Crosshair — coloured by current axis for instant visual association.
+        androidx.compose.foundation.Canvas(modifier = Modifier.size(20.dp)) {
+            val c      = size.width / 2f
+            val arm    = 8.dp.toPx()
             val stroke = 1.5.dp.toPx()
-            // Shadow pass then accent, offset 1px for legibility on bright surfaces.
-            listOf(Color.Black.copy(alpha = 0.4f) to 1f, accent to 0f).forEach { (col, off) ->
+            // Shadow pass (offset 1 px) then accent — keeps it legible over bright floors.
+            listOf(Color.Black.copy(alpha = 0.4f) to 1f, accentColor to 0f).forEach { (col, off) ->
                 drawLine(col, Offset(c - arm + off, c + off), Offset(c + arm + off, c + off), stroke)
                 drawLine(col, Offset(c + off, c - arm + off), Offset(c + off, c + arm + off), stroke)
             }
         }
 
-        // X / Y / Z readout chip.
+        // Live readout chip.
         Column(
             modifier = Modifier
                 .background(Color(0xCC050810), RoundedCornerShape(10.dp))
-                .border(1.dp, accent.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .border(1.dp, accentColor.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
+                .padding(horizontal = 14.dp, vertical = 9.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(3.dp),
         ) {
-            listOf("X" to x, "Y" to y, "Z" to z).forEach { (axis, v) ->
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(axis, color = accent, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                    Text(
-                        if (v != null) "%+.2f m".format(v) else "—",
-                        color = if (hasHit) Color.White else TextMuted,
-                        fontSize = 12.sp, fontFamily = FontFamily.Monospace,
-                        modifier = Modifier.width(64.dp),
-                        textAlign = TextAlign.End,
-                    )
-                }
+            if (axisLabel == null) {
+                // No anchor placed — primary instruction.
+                Text(
+                    "Tap to place anchor",
+                    color      = accentColor,
+                    fontSize   = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            } else {
+                // Axis label (small caps above the measurement value).
+                Text(
+                    axisLabel,
+                    color         = accentColor,
+                    fontSize      = 9.sp,
+                    fontWeight    = FontWeight.Bold,
+                    fontFamily    = FontFamily.Monospace,
+                    letterSpacing = 1.sp,
+                )
+                // Live cm value — large and bold so it is readable at arm's length.
+                Text(
+                    if (distanceCm != null) "${"%.1f".format(distanceCm)} cm" else "— cm",
+                    color      = if (distanceCm != null) Color.White else TextMuted,
+                    fontSize   = 20.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontFamily = FontFamily.Monospace,
+                )
             }
         }
     }
@@ -409,12 +441,14 @@ private fun ArViewport(
                 .align(Alignment.TopCenter),
         )
 
-        // Centre coordinate reticle — live world X/Y/Z under the aim point, shown
-        // until measurement is complete (replaces the old bullseye).
+        // Centre measurement reticle — shown until all 4 anchors are placed.
+        // Displays a live per-axis distance in cm from the last placed anchor to
+        // the current aim point so the driver sees the measurement grow in real time.
         if (state.tapCount < 4) {
-            CoordinateReticle(
-                x = state.reticleX, y = state.reticleY, z = state.reticleZ,
-                modifier = Modifier.align(Alignment.Center),
+            LiveMeasureReticle(
+                distanceCm = state.liveDistanceCm,
+                tapCount   = state.tapCount,
+                modifier   = Modifier.align(Alignment.Center),
             )
         }
 

@@ -80,10 +80,11 @@ data class BoxMeasureUiState(
     val arConfidence: Double = 0.0,
     val measureError: String? = null,
 
-    // Live world-space coordinates under the centre reticle (null when no plane hit).
-    val reticleX: Float? = null,
-    val reticleY: Float? = null,
-    val reticleZ: Float? = null,
+    // Live edge-distance under the centre reticle: distance in **cm** from the last
+    // placed anchor to the current camera aim point.  Null when no anchor is placed yet
+    // or when the reticle misses a plane.  Drives the LiveMeasureReticle chip colour
+    // and value (cyan = LENGTH, pink = WIDTH, green = HEIGHT).
+    val liveDistanceCm: Double? = null,
 
     // Projected AR dimension chips (length / width / height edge midpoints).
     val dimLabels: List<DimLabel> = emptyList(),
@@ -158,9 +159,13 @@ class BoxMeasureViewModel @Inject constructor() : ViewModel() {
 
     fun onArSessionReady() = _uiState.update { it.copy(arSessionReady = true) }
 
-    /** Live coordinates under the centre reticle, throttled by the renderer. */
-    fun onReticleCoords(x: Float?, y: Float?, z: Float?) =
-        _uiState.update { it.copy(reticleX = x, reticleY = y, reticleZ = z) }
+    /**
+     * Live edge distance (cm) from the last placed anchor to the reticle aim point,
+     * posted by the renderer ~6 Hz.  Null when no anchor is placed or when the centre
+     * hit-test misses a tracked plane.
+     */
+    fun onLiveDistance(cm: Double?) =
+        _uiState.update { it.copy(liveDistanceCm = cm) }
 
     /** Projected AR dimension chip positions, throttled by the renderer. */
     fun onDimLabels(labels: List<DimLabel>) =
@@ -184,9 +189,7 @@ class BoxMeasureViewModel @Inject constructor() : ViewModel() {
         integrity          = MeasurementIntegrity.PENDING,
         integrityReason    = null,
         manualOverrideUsed = false,
-        reticleX           = null,
-        reticleY           = null,
-        reticleZ           = null,
+        liveDistanceCm     = null,
         dimLabels          = emptyList(),
         resetToken         = it.resetToken + 1,
     )}
