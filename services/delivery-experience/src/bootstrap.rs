@@ -1,5 +1,6 @@
 use std::{net::SocketAddr, sync::Arc};
 
+use anyhow::Context as _;
 use rdkafka::{consumer::StreamConsumer, ClientConfig};
 use sqlx::postgres::PgPoolOptions;
 
