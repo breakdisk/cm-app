@@ -48,6 +48,7 @@ export interface VehicleListing {
   features:                 VehicleFeature[];
   max_weight_kg:            number;
   max_volume_m3:            number | null;
+  currency:                 string;   // ISO-4217 code, e.g. "PHP"
   base_price_cents:         number;
   per_km_cents:             number;
   per_kg_cents:             number | null;
@@ -151,7 +152,7 @@ export async function createListing(
 
 export async function updateListing(
   id: string,
-  patch: Partial<Pick<VehicleListing, "status" | "base_price_cents" | "per_km_cents" | "per_kg_cents" | "idle_until" | "service_area_label" | "max_weight_kg" | "max_volume_m3" | "carrier_response_window_mins">>,
+  patch: Partial<Pick<VehicleListing, "status" | "currency" | "base_price_cents" | "per_km_cents" | "per_kg_cents" | "idle_until" | "service_area_label" | "max_weight_kg" | "max_volume_m3" | "carrier_response_window_mins">>,
 ): Promise<VehicleListing | null> {
   return apiPut<VehicleListing>(`/v1/marketplace/listings/${id}`, patch);
 }
