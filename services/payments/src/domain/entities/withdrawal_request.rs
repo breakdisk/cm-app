@@ -23,12 +23,21 @@ pub struct WithdrawalRequest {
     pub reviewed_by:     Option<Uuid>,
     pub review_note:     Option<String>,
     pub reviewed_at:     Option<DateTime<Utc>>,
+    /// Carrier contact email supplied at request time by the partner portal.
+    /// NULL when absent; engagement skips email channel but push still fires.
+    pub carrier_email:   Option<String>,
     pub created_at:      DateTime<Utc>,
     pub updated_at:      DateTime<Utc>,
 }
 
 impl WithdrawalRequest {
-    pub fn new(tenant_id: Uuid, wallet_id: Uuid, amount_centavos: i64, requested_by: Uuid) -> Self {
+    pub fn new(
+        tenant_id:     Uuid,
+        wallet_id:     Uuid,
+        amount_centavos: i64,
+        requested_by:  Uuid,
+        carrier_email: Option<String>,
+    ) -> Self {
         debug_assert!(amount_centavos > 0, "amount_centavos must be positive");
         let now = Utc::now();
         Self {
@@ -42,6 +51,7 @@ impl WithdrawalRequest {
             reviewed_by: None,
             review_note: None,
             reviewed_at: None,
+            carrier_email,
             created_at: now,
             updated_at: now,
         }

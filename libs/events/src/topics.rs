@@ -31,8 +31,6 @@ pub const CONTAINER_DEPARTED:        &str = "logisticos.fleet.container.departed
 pub const CONTAINER_ARRIVED:         &str = "logisticos.fleet.container.arrived";
 
 // Invoice / Billing
-pub const INVOICE_FINALIZED:         &str = "logisticos.payments.invoice.finalized";
-pub const COD_REMITTANCE_READY:      &str = "logisticos.payments.cod.remittance_ready";
 pub const WEIGHT_ADJUSTMENT_INVOICED: &str = "logisticos.payments.invoice.weight_adjustment";
 
 // Dispatch
@@ -93,8 +91,8 @@ mod tests {
             PICKUP_COMPLETED, DELIVERY_ATTEMPTED, DELIVERY_COMPLETED, DELIVERY_FAILED,
             LOCATION_UPDATED, DRIVER_LOCATION_UPDATED,
             POD_CAPTURED, PICKUP_CAPTURED,
-            INVOICE_GENERATED, INVOICE_FINALIZED, PAYMENT_RECEIVED,
-            COD_COLLECTED, COD_REMITTANCE_READY, WEIGHT_ADJUSTMENT_INVOICED,
+            INVOICE_GENERATED, PAYMENT_RECEIVED,
+            COD_COLLECTED, WEIGHT_ADJUSTMENT_INVOICED,
             WALLET_WITHDRAWAL_DISBURSED, WALLET_WITHDRAWAL_REJECTED,
             NOTIFICATION_QUEUED, CAMPAIGN_TRIGGERED, CAMPAIGN_COMPLETED, CUSTOMER_SEGMENT_UPDATED,
             TASK_ASSIGNED,

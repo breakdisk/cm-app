@@ -89,14 +89,22 @@ pub struct WithdrawalDisbursed {
     pub wallet_id:       Uuid,
     pub amount_centavos: i64,
     pub disbursed_by:    Uuid,
+    /// Carrier contact email — sourced from the withdrawal request at creation time.
+    /// Empty when the partner portal did not supply it; engagement skips email but
+    /// push notification still fires via tenant_id FCM token lookup.
+    #[serde(default)]
+    pub carrier_email:   String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WithdrawalRejected {
-    pub withdrawal_id: Uuid,
-    pub tenant_id:     Uuid,
-    pub wallet_id:     Uuid,
+    pub withdrawal_id:   Uuid,
+    pub tenant_id:       Uuid,
+    pub wallet_id:       Uuid,
     pub amount_centavos: i64,
-    pub rejected_by:   Uuid,
-    pub review_note:   Option<String>,
+    pub rejected_by:     Uuid,
+    pub review_note:     Option<String>,
+    /// Carrier contact email — same semantics as `WithdrawalDisbursed.carrier_email`.
+    #[serde(default)]
+    pub carrier_email:   String,
 }

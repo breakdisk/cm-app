@@ -6,7 +6,11 @@ use logisticos_auth::middleware::AuthClaims;
 use logisticos_auth::require_permission;
 use logisticos_errors::AppError;
 use logisticos_types::TenantId;
-use crate::{api::http::AppState, application::commands::{ReconcileCodCommand, RequestWithdrawalCommand}};
+use crate::{
+    api::http::AppState,
+    application::commands::{ReconcileCodCommand, RequestWithdrawalCommand, WalletTransactionDto, WithdrawalRequestDto},
+    domain::entities::TransactionType,
+};
 
 pub async fn get_wallet(
     AuthClaims(claims): AuthClaims,
@@ -30,7 +34,27 @@ pub async fn list_transactions(
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let limit = q.limit.unwrap_or(50).min(200);
     let txns = state.wallet_service.list_transactions(&tenant_id, limit).await?;
-    Ok(Json(serde_json::json!({ "data": txns })))
+    let dtos: Vec<WalletTransactionDto> = txns.into_iter().map(|tx| WalletTransactionDto {
+        id:           tx.id,
+        kind:         tx_direction(&tx.transaction_type),
+        amount_php:   tx.amount.amount as f64 / 100.0,
+        description:  tx.description,
+        reference_id: tx.reference_id,
+        created_at:   tx.created_at.to_rfc3339(),
+    }).collect();
+    Ok(Json(serde_json::json!({ "data": dtos })))
+}
+
+fn tx_direction(t: &TransactionType) -> &'static str {
+    match t {
+        TransactionType::CodCredit
+        | TransactionType::RefundCredit
+        | TransactionType::AdjustmentCredit => "credit",
+        TransactionType::InvoiceDebit
+        | TransactionType::PlatformFeeDebit
+        | TransactionType::Withdrawal
+        | TransactionType::AdjustmentDebit  => "debit",
+    }
 }
 
 pub async fn reconcile_cod(
@@ -53,17 +77,30 @@ pub async fn request_withdrawal(
 ) -> Result<Json<serde_json::Value>, AppError> {
     require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_MANAGE);
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
-    // NOTE: cmd.bank_account_id is not persisted — WithdrawalRequest entity does not yet
-    // carry a bank_account_id field. Track in: future WithdrawalRequest schema iteration.
-    let req = state.withdrawal_service
-        .request(&tenant_id, cmd.amount_cents, claims.user_id).await?;
+    state.withdrawal_service
+        .request(&tenant_id, cmd.amount_cents, claims.user_id, cmd.carrier_email).await?;
+    // Return the updated wallet summary so the portal can refresh the balance in one round-trip.
     let summary = state.wallet_service.summary(&tenant_id).await?;
-    Ok(Json(serde_json::json!({
-        "withdrawal_request_id": req.id,
-        "status":                "pending",
-        "reserved_centavos":     summary.reserved_centavos,
-        "available_centavos":    summary.available_centavos,
-    })))
+    Ok(Json(serde_json::json!({ "data": summary })))
+}
+
+pub async fn list_withdrawal_requests(
+    AuthClaims(claims): AuthClaims,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_VIEW);
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let requests = state.withdrawal_service.list_for_tenant(&tenant_id).await?;
+    let dtos: Vec<WithdrawalRequestDto> = requests.into_iter().map(|r| WithdrawalRequestDto {
+        id:          r.id,
+        amount_php:  r.amount_centavos as f64 / 100.0,
+        currency:    r.currency,
+        status:      r.status,
+        review_note: r.review_note,
+        created_at:  r.created_at.to_rfc3339(),
+        updated_at:  r.updated_at.to_rfc3339(),
+    }).collect();
+    Ok(Json(serde_json::json!({ "data": dtos })))
 }
 
 /// Protected (JWT): GET /v1/cod/balance/:merchant_id

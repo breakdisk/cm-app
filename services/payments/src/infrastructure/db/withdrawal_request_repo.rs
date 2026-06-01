@@ -19,6 +19,7 @@ struct RequestRow {
     reviewed_by:     Option<Uuid>,
     review_note:     Option<String>,
     reviewed_at:     Option<chrono::DateTime<chrono::Utc>>,
+    carrier_email:   Option<String>,
     created_at:      chrono::DateTime<chrono::Utc>,
     updated_at:      chrono::DateTime<chrono::Utc>,
 }
@@ -40,7 +41,8 @@ fn try_from_row(r: RequestRow) -> anyhow::Result<WithdrawalRequest> {
         status: parse_status(&r.status)?,
         requested_by: r.requested_by,
         reviewed_by: r.reviewed_by, review_note: r.review_note,
-        reviewed_at: r.reviewed_at, created_at: r.created_at, updated_at: r.updated_at,
+        reviewed_at: r.reviewed_at, carrier_email: r.carrier_email,
+        created_at: r.created_at, updated_at: r.updated_at,
     })
 }
 
@@ -55,13 +57,13 @@ fn status_str(s: WithdrawalStatus) -> &'static str {
 
 
 const SELECT: &str = "SELECT id, tenant_id, wallet_id, amount_centavos, currency, status,
-    requested_by, reviewed_by, review_note, reviewed_at, created_at, updated_at
+    requested_by, reviewed_by, review_note, reviewed_at, carrier_email, created_at, updated_at
     FROM payments.withdrawal_requests";
 
 impl PgWithdrawalRequestRepository {
-    pub async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<WithdrawalRequest>> {
-        let row = sqlx::query_as::<_, RequestRow>(&format!("{SELECT} WHERE id = $1"))
-            .bind(id).fetch_optional(&self.pool).await?;
+    pub async fn find_by_id(&self, id: Uuid, tenant_id: Uuid) -> anyhow::Result<Option<WithdrawalRequest>> {
+        let row = sqlx::query_as::<_, RequestRow>(&format!("{SELECT} WHERE id = $1 AND tenant_id = $2"))
+            .bind(id).bind(tenant_id).fetch_optional(&self.pool).await?;
         row.map(try_from_row).transpose()
     }
 
@@ -72,17 +74,25 @@ impl PgWithdrawalRequestRepository {
         rows.into_iter().map(try_from_row).collect()
     }
 
+    pub async fn list_all_for_tenant(&self, tenant_id: Uuid) -> anyhow::Result<Vec<WithdrawalRequest>> {
+        let rows = sqlx::query_as::<_, RequestRow>(
+            &format!("{SELECT} WHERE tenant_id = $1 ORDER BY created_at DESC")
+        ).bind(tenant_id).fetch_all(&self.pool).await?;
+        rows.into_iter().map(try_from_row).collect()
+    }
+
     pub async fn insert(&self, r: &WithdrawalRequest) -> anyhow::Result<()> {
         sqlx::query(
             "INSERT INTO payments.withdrawal_requests
              (id, tenant_id, wallet_id, amount_centavos, currency, status,
-              requested_by, reviewed_by, review_note, reviewed_at, created_at, updated_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)"
+              requested_by, reviewed_by, review_note, reviewed_at, carrier_email, created_at, updated_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)"
         )
         .bind(r.id).bind(r.tenant_id).bind(r.wallet_id).bind(r.amount_centavos)
         .bind(&r.currency).bind(status_str(r.status)).bind(r.requested_by)
         .bind(r.reviewed_by).bind(r.review_note.as_deref())
-        .bind(r.reviewed_at).bind(r.created_at).bind(r.updated_at)
+        .bind(r.reviewed_at).bind(r.carrier_email.as_deref())
+        .bind(r.created_at).bind(r.updated_at)
         .execute(&self.pool).await?;
         Ok(())
     }

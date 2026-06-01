@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use sqlx::postgres::PgPoolOptions;
 use anyhow::Context;
+use chrono::Datelike as _;
 use crate::config::Config;
 use crate::application::services::{
     BillingAggregationService, CodRemittanceService, CodService, InvoiceService, WalletService,
@@ -136,6 +137,87 @@ pub async fn run() -> anyhow::Result<()> {
         pdf_renderer,
     });
     let app = router(state);
+
+    // Monthly merchant billing cron — runs on the 1st of each month and issues
+    // shipment-charges invoices for every (tenant, merchant) pair configured in
+    // BILLING_MERCHANT_CONFIG (JSON array of billing merchant descriptors).
+    // If the env var is absent or empty, the cron skips with a warning.
+    //
+    // Each entry must have: tenant_id, merchant_id, tenant_code, merchant_email (optional).
+    // Example: '[{"tenant_id":"...","merchant_id":"...","tenant_code":"PH1","merchant_email":"ops@example.com"}]'
+    //
+    // Billing is idempotent: re-running for the same (tenant, merchant, period) is a no-op.
+    let billing_svc_for_cron = Arc::clone(&billing_service);
+    tokio::spawn(async move {
+        // Check every 6 hours so we don't miss the 1st of the month by more than a few hours.
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(6 * 3_600));
+        let mut last_run_month: Option<(i32, u32)> = None;
+        loop {
+            tick.tick().await;
+            let now = chrono::Utc::now();
+            let (year, month, day) = (now.year(), now.month(), now.day());
+            // Run on the 1st of each month, once per calendar month.
+            if day != 1 { continue; }
+            if last_run_month == Some((year, month)) { continue; }
+
+            let merchants_json = std::env::var("BILLING_MERCHANT_CONFIG").unwrap_or_default();
+            if merchants_json.trim().is_empty() {
+                tracing::warn!("Monthly billing cron: BILLING_MERCHANT_CONFIG not set — skipping");
+                last_run_month = Some((year, month));
+                continue;
+            }
+
+            let merchants: Vec<serde_json::Value> = match serde_json::from_str(&merchants_json) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!(err = %e, "Monthly billing cron: failed to parse BILLING_MERCHANT_CONFIG");
+                    last_run_month = Some((year, month));
+                    continue;
+                }
+            };
+
+            // Bill for the previous calendar month (the one that just ended).
+            let (bill_year, bill_month) = if month == 1 { (year - 1, 12u32) } else { (year, month - 1) };
+            tracing::info!(
+                merchants  = merchants.len(),
+                bill_year  = bill_year,
+                bill_month = bill_month,
+                "Monthly billing cron: starting run",
+            );
+
+            for m in &merchants {
+                let Some(tenant_id) = m["tenant_id"].as_str().and_then(|s| s.parse::<uuid::Uuid>().ok()) else { continue; };
+                let Some(merchant_id) = m["merchant_id"].as_str().and_then(|s| s.parse::<uuid::Uuid>().ok()) else { continue; };
+                let tenant_code = m["tenant_code"].as_str().unwrap_or("PH1").to_owned();
+                let merchant_email = m["merchant_email"].as_str().filter(|s| !s.is_empty()).map(str::to_owned);
+
+                use crate::application::commands::RunBillingCommand;
+                let cmd = RunBillingCommand {
+                    tenant_id,
+                    tenant_code,
+                    merchant_id,
+                    merchant_email,
+                    year: bill_year,
+                    month: bill_month,
+                };
+                if let Err(e) = billing_svc_for_cron.run_monthly(cmd).await {
+                    tracing::error!(
+                        err         = %e,
+                        tenant_id   = %tenant_id,
+                        merchant_id = %merchant_id,
+                        "Monthly billing cron: failed for merchant",
+                    );
+                } else {
+                    tracing::info!(
+                        tenant_id   = %tenant_id,
+                        merchant_id = %merchant_id,
+                        "Monthly billing cron: invoice issued",
+                    );
+                }
+            }
+            last_run_month = Some((year, month));
+        }
+    });
 
     // Nightly COD auto-batching — groups all collected-but-unbatched COD by
     // (tenant, merchant) up to previous UTC midnight and creates remittance batches.

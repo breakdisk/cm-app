@@ -58,6 +58,7 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/cod/remittances",                       get(cod_batches::list_remittances))
         .route("/wallet",                                get(wallet::get_wallet))
         .route("/wallet/transactions",                   get(wallet::list_transactions))
+        .route("/wallet/withdrawal-requests",            get(wallet::list_withdrawal_requests))
         .route("/wallet/withdraw",                       post(wallet::request_withdrawal))
         .route(
             "/admin/merchants/:merchant_id/billing-account",

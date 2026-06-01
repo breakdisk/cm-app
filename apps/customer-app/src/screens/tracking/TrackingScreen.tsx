@@ -15,7 +15,7 @@ import { useDispatch, useSelector } from "react-redux";
 import { trackingActions } from "../../store";
 import type { RootState } from "../../store";
 import { useTracking } from "../../hooks/useTracking";
-import { useRoute } from "@react-navigation/native";
+import { useNavigation, useRoute } from "@react-navigation/native";
 import { useNetInfo } from "@react-native-community/netinfo";
 import { getDatabase } from "../../db/sqlite";
 import OfflineIndicator from "../../components/OfflineIndicator";
@@ -75,6 +75,7 @@ const STATUS_ORDER: ShipmentStatus[] = [
 
 export function TrackingScreen() {
   const dispatch    = useDispatch();
+  const navigation = useNavigation<any>();
   const route = useRoute();
   const { isConnected } = useNetInfo();
   const recentSearches = useSelector((s: RootState) => s.tracking.history);
@@ -91,6 +92,9 @@ export function TrackingScreen() {
   const [feedbackModal, setFeedbackModal] = useState(false);
   const [feedbackRating, setFeedbackRating] = useState(0);
   const [feedbackComment, setFeedbackComment] = useState("");
+  // Persists the invoice_id returned by confirmReceipt so we can navigate to
+  // InvoiceDetailScreen after the feedback flow completes.
+  const [confirmedInvoiceId, setConfirmedInvoiceId] = useState<string | null>(null);
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
 
   // Use the tracking hook for the current AWB
@@ -188,7 +192,9 @@ export function TrackingScreen() {
     if (!currentAwb) return;
     setConfirmLoading(true);
     try {
-      await trackingApi.confirmReceipt(currentAwb);
+      const res = await trackingApi.confirmReceipt(currentAwb);
+      const invoiceId = (res.data as any)?.invoice_id ?? (res as any)?.invoice_id ?? null;
+      setConfirmedInvoiceId(invoiceId);
       setConfirmModal(false);
       // Update local status optimistically
       setResult(prev => prev ? { ...prev, status: "delivered" } : prev);
@@ -208,13 +214,22 @@ export function TrackingScreen() {
       setFeedbackModal(false);
       setFeedbackRating(0);
       setFeedbackComment("");
-      Alert.alert("Thank you!", "Your feedback helps us improve our delivery service.");
+      // Navigate to the payment receipt if the server returned one from confirmReceipt.
+      if (confirmedInvoiceId) {
+        Alert.alert(
+          "Thank you!",
+          "Your feedback helps us improve our delivery service. Tap OK to view your receipt.",
+          [{ text: "OK", onPress: () => (navigation as any).navigate("InvoiceDetail", { invoiceId: confirmedInvoiceId }) }]
+        );
+      } else {
+        Alert.alert("Thank you!", "Your feedback helps us improve our delivery service.");
+      }
     } catch {
       setFeedbackModal(false);
     } finally {
       setFeedbackSubmitting(false);
     }
-  }, [currentAwb, feedbackRating, feedbackComment]);
+  }, [currentAwb, feedbackRating, feedbackComment, confirmedInvoiceId, navigation]);
 
   return (
     <ScrollView style={s.container} contentContainerStyle={{ paddingBottom: 40 }} keyboardShouldPersistTaps="handled">

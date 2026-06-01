@@ -32,18 +32,13 @@ impl WithdrawalService {
         Self { wallet_repo, withdrawal_repo, kafka }
     }
 
-    /// Find a withdrawal request by ID or return NotFound.
-    /// Also verifies the request belongs to the given tenant (returns NotFound if not, to avoid leaking IDs).
+    /// Find a withdrawal request by ID scoped to the tenant, or return NotFound.
     async fn find_or_error(&self, id: Uuid, tenant_id: &TenantId) -> AppResult<WithdrawalRequest> {
-        let req = self.withdrawal_repo
-            .find_by_id(id)
+        self.withdrawal_repo
+            .find_by_id(id, tenant_id.inner())
             .await
             .map_err(AppError::Internal)?
-            .ok_or_else(|| AppError::NotFound { resource: "withdrawal_request", id: id.to_string() })?;
-        if req.tenant_id != tenant_id.inner() {
-            return Err(AppError::NotFound { resource: "withdrawal_request", id: id.to_string() });
-        }
-        Ok(req)
+            .ok_or_else(|| AppError::NotFound { resource: "withdrawal_request", id: id.to_string() })
     }
 
     /// Find a wallet by ID or return NotFound.
@@ -62,6 +57,7 @@ impl WithdrawalService {
         tenant_id:       &TenantId,
         amount_centavos: i64,
         requested_by:    Uuid,
+        carrier_email:   Option<String>,
     ) -> AppResult<WithdrawalRequest> {
         if amount_centavos < MIN_WITHDRAWAL_CENTS {
             return Err(AppError::BusinessRule(format!(
@@ -81,7 +77,7 @@ impl WithdrawalService {
 
         self.wallet_repo.save_wallet(&wallet).await.map_err(AppError::Internal)?;
 
-        let req = WithdrawalRequest::new(tenant_id.inner(), wallet.id, amount_centavos, requested_by);
+        let req = WithdrawalRequest::new(tenant_id.inner(), wallet.id, amount_centavos, requested_by, carrier_email);
         self.withdrawal_repo.insert(&req).await.map_err(AppError::Internal)?;
 
         tracing::info!(
@@ -157,6 +153,7 @@ impl WithdrawalService {
                 wallet_id:       req.wallet_id,
                 amount_centavos: req.amount_centavos,
                 disbursed_by:    reviewed_by,
+                carrier_email:   req.carrier_email.clone().unwrap_or_default(),
             },
         );
         self.kafka
@@ -209,6 +206,7 @@ impl WithdrawalService {
                 amount_centavos: req.amount_centavos,
                 rejected_by:     reviewed_by,
                 review_note:     req.review_note.clone(),
+                carrier_email:   req.carrier_email.clone().unwrap_or_default(),
             },
         );
         self.kafka
@@ -229,6 +227,15 @@ impl WithdrawalService {
     pub async fn list_pending(&self, tenant_id: Uuid) -> AppResult<Vec<WithdrawalRequest>> {
         self.withdrawal_repo
             .list_by_status(tenant_id, WithdrawalStatus::Pending)
+            .await
+            .map_err(AppError::Internal)
+    }
+
+    /// List all withdrawal requests for a tenant (all statuses), newest first.
+    /// Used by the partner portal to show the carrier their withdrawal history.
+    pub async fn list_for_tenant(&self, tenant_id: &TenantId) -> AppResult<Vec<WithdrawalRequest>> {
+        self.withdrawal_repo
+            .list_all_for_tenant(tenant_id.inner())
             .await
             .map_err(AppError::Internal)
     }

@@ -13,6 +13,8 @@
 //!   payments.invoice.generated → "invoice_issued"        → Email                    (recipient_type=merchant)
 //!   payments.invoice.generated → "payment_receipt"      → WhatsApp + Email + Push  (recipient_type=customer)
 //!   payments.cod.remitted      → "cod_remitted"          → Email                    (merchant wallet credited)
+//!   payments.wallet.withdrawal_disbursed → "withdrawal_disbursed" → Email + Push    (carrier payout sent)
+//!   payments.wallet.withdrawal_rejected  → "withdrawal_rejected"  → Email + Push    (carrier payout declined)
 //!   tracking.receipt.email.requested → "shipment_confirmation" → Email   (customer-initiated re-send)
 
 use tracing::{error, info, warn};
@@ -73,6 +75,16 @@ fn get_mapping(event_type: &str) -> Option<EventNotificationMapping> {
             priority: NotificationPriority::Normal,
             channels: &["email"],
         }),
+        topics::WALLET_WITHDRAWAL_DISBURSED => Some(EventNotificationMapping {
+            template_id: "withdrawal_disbursed",
+            priority: NotificationPriority::High,
+            channels: &["email", "push"],
+        }),
+        topics::WALLET_WITHDRAWAL_REJECTED => Some(EventNotificationMapping {
+            template_id: "withdrawal_rejected",
+            priority: NotificationPriority::High,
+            channels: &["email", "push"],
+        }),
         topics::RECEIPT_EMAIL_REQUESTED => Some(EventNotificationMapping {
             template_id: "shipment_confirmation",
             priority: NotificationPriority::Normal,
@@ -121,12 +133,17 @@ pub async fn process_event(
 
     // Invoice events branch on recipient_type ("merchant" | "customer").
     // All other events address the delivery customer directly.
-    let is_invoice_event   = event_type == topics::INVOICE_GENERATED;
-    let is_cod_remitted    = event_type == topics::COD_REMITTED;
+    let is_invoice_event    = event_type == topics::INVOICE_GENERATED;
+    let is_cod_remitted     = event_type == topics::COD_REMITTED;
+    let is_withdrawal_event = event_type == topics::WALLET_WITHDRAWAL_DISBURSED
+                           || event_type == topics::WALLET_WITHDRAWAL_REJECTED;
 
     // For invoice events we resolve (template_id, channels) dynamically here
     // and override the sentinel values from get_mapping().
-    let (resolved_template, resolved_channels): (&str, &[&str]) = if is_invoice_event {
+    let (resolved_template, resolved_channels): (&str, &[&str]) = if is_withdrawal_event {
+        // Template/channels already set correctly in get_mapping(); pass through.
+        (mapping.template_id, mapping.channels)
+    } else if is_invoice_event {
         let recipient_type = data["recipient_type"].as_str().unwrap_or("merchant");
         if recipient_type == "customer" {
             ("payment_receipt", &["whatsapp", "email", "push"])
@@ -137,7 +154,32 @@ pub async fn process_event(
         (mapping.template_id, mapping.channels)
     };
 
-    let (customer_id, phone, email, vars) = if is_cod_remitted {
+    let (customer_id, phone, email, vars) = if is_withdrawal_event {
+        // Withdrawal disbursed/rejected — notify the carrier partner.
+        // The event envelope carries tenant_id; email is not yet in the event
+        // payload (TODO: add carrier_email to WithdrawalDisbursed/Rejected when
+        // the payments service gains identity-service lookup). Push fires via
+        // tenant_id; email channel gracefully no-ops when address is empty.
+        let amount_cents   = data["amount_centavos"].as_i64().unwrap_or(0);
+        let amount_php     = format!("{:.2}", amount_cents as f64 / 100.0);
+        let review_note    = data["review_note"].as_str().unwrap_or("").to_owned();
+        let withdrawal_id  = data["withdrawal_id"].as_str().unwrap_or("");
+        let is_disbursed   = event_type == topics::WALLET_WITHDRAWAL_DISBURSED;
+
+        let carrier_email = data["carrier_email"].as_str().unwrap_or("").to_owned();
+
+        let vars = serde_json::json!({
+            "withdrawal_id": withdrawal_id,
+            "amount":        amount_php,
+            "currency":      "PHP",
+            "status":        if is_disbursed { "disbursed" } else { "rejected" },
+            "review_note":   review_note,
+        });
+
+        // customer_id is tenant_id — sufficient for FCM push lookup.
+        // carrier_email is stored on WithdrawalRequest since migration 0013.
+        (tenant_id, String::new(), carrier_email, vars)
+    } else if is_cod_remitted {
         // COD_REMITTED — notify the merchant that their wallet has been credited.
         // Uses merchant_id as the audit key; phone is empty (email-only).
         let merchant_id = data["merchant_id"].as_str()
@@ -389,6 +431,25 @@ pub async fn process_event(
                  Credited At:     {{remitted_at}}\n\n\
                  You can view your wallet balance and transaction history in the CargoMarket Merchant Portal.\n\n\
                  — CargoMarket Billing".to_owned(),
+            ),
+            "withdrawal_disbursed" => (
+                Some(format!("Withdrawal of PHP {} Disbursed", vars["amount"].as_str().unwrap_or(""))),
+                "Your withdrawal request has been approved and the funds have been transferred.\n\n\
+                 Amount:    {{currency}} {{amount}}\n\
+                 Reference: {{withdrawal_id}}\n\n\
+                 Please allow 1–3 business days for the transfer to appear in your bank account.\n\n\
+                 You can view your full payout history in the CargoMarket Partner Portal.\n\n\
+                 — CargoMarket Finance".to_owned(),
+            ),
+            "withdrawal_rejected" => (
+                Some("Withdrawal Request Not Approved".to_owned()),
+                "Your withdrawal request could not be approved at this time.\n\n\
+                 Amount:    {{currency}} {{amount}}\n\
+                 Reference: {{withdrawal_id}}\n\
+                 Reason:    {{review_note}}\n\n\
+                 If you have questions, please contact our partner support team.\n\
+                 You can submit a new request from the CargoMarket Partner Portal.\n\n\
+                 — CargoMarket Finance".to_owned(),
             ),
             "campaign_message" => (
                 data.get("subject").and_then(|v| v.as_str()).map(|s| s.to_owned()),

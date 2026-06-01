@@ -3,40 +3,58 @@ import { createApiClient } from "./client";
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface Wallet {
-  tenant_id: string;
-  merchant_id?: string;
-  balance_php: number;
-  reserved_php: number;
+  wallet_id:     string;
+  tenant_id:     string;
+  balance_php:   number;
+  reserved_php:  number;
   available_php: number;
-  currency: "PHP";
+  currency:      "PHP";
+  updated_at:    string;
 }
 
 export interface WalletTransaction {
-  id: string;
-  type: "credit" | "debit";
-  amount_php: number;
-  description: string;
-  reference_id?: string | null;
-  balance_after_php: number;
-  created_at: string;
+  id:           string;
+  type:         "credit" | "debit";
+  amount_php:   number;
+  description:  string;
+  reference_id: string;
+  created_at:   string;
 }
 
-export type InvoiceStatus = "draft" | "issued" | "paid" | "overdue" | "cancelled";
+export type InvoiceStatus =
+  | "draft"
+  | "issued"
+  | "paid"
+  | "overdue"
+  | "cancelled"
+  | "disputed";
 
 export interface Invoice {
-  id: string;
+  id:             string;
   invoice_number: string;
-  status: InvoiceStatus;
-  period_from: string;
-  period_to: string;
-  total_php: number;
-  due_date: string;
-  paid_at?: string | null;
-  created_at: string;
+  invoice_type:   string;
+  status:         InvoiceStatus;
+  awb_count:      number;
+  subtotal_php:   number;
+  vat_php:        number;
+  total_php:      number;
+  period_from:    string;
+  period_to:      string;
+  due_date:       string;
+  paid_at?:       string | null;
+  created_at:     string;
 }
 
-export interface WithdrawRequest {
-  amount_php: number;
+export type WithdrawalStatus = "pending" | "approved" | "disbursed" | "rejected";
+
+export interface WithdrawalHistoryItem {
+  id:          string;
+  amount_php:  number;
+  currency:    string;
+  status:      WithdrawalStatus;
+  review_note: string | null;
+  created_at:  string;
+  updated_at:  string;
 }
 
 // ── API ───────────────────────────────────────────────────────────────────────
@@ -63,38 +81,29 @@ export const paymentsApi = {
     return data.data ?? [];
   },
 
-  /** Request a withdrawal from the carrier wallet. Returns the updated wallet. */
-  async withdraw(req: WithdrawRequest): Promise<Wallet> {
+  /**
+   * Request a withdrawal from the carrier wallet.
+   * Sends amount in centavos (amount_php × 100) to match the backend command.
+   * Optionally sends carrier_email so the engagement service can email the
+   * partner when the withdrawal is disbursed or rejected.
+   * Returns the updated wallet summary.
+   */
+  async withdraw(amount_php: number, carrier_email?: string): Promise<Wallet> {
     const { data } = await createApiClient().post<{ data: Wallet }>(
       "/v1/wallet/withdraw",
-      req
+      {
+        amount_cents:  Math.round(amount_php * 100),
+        carrier_email: carrier_email ?? null,
+      }
     );
     return data.data;
   },
 
-  /** Fetch the commission breakdown for a given merchant, year and month. */
-  async getCommissionBreakdown(params: { merchant_id: string; year: number; month: number }): Promise<{
-    period:                  string;
-    base_charges_centavos:   number;
-    cod_remittance_centavos: number;
-    bonuses_centavos:        number;
-    total_centavos:          number;
-    currency:                string;
-  }> {
-    const { data } = await createApiClient().get<{ data: {
-      period:                  string;
-      base_charges_centavos:   number;
-      cod_remittance_centavos: number;
-      bonuses_centavos:        number;
-      total_centavos:          number;
-      currency:                string;
-    } }>("/v1/partner/commission/breakdown", {
-      params: {
-        merchant_id: params.merchant_id,
-        year:        params.year,
-        month:       params.month,
-      },
-    });
-    return data.data;
+  /** List all withdrawal requests for the authenticated carrier, newest first. */
+  async getWithdrawalRequests(): Promise<WithdrawalHistoryItem[]> {
+    const { data } = await createApiClient().get<{ data: WithdrawalHistoryItem[] }>(
+      "/v1/wallet/withdrawal-requests"
+    );
+    return data.data ?? [];
   },
 };

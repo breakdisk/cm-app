@@ -219,7 +219,7 @@ impl InvoiceRepository for PgInvoiceRepository {
     async fn save(&self, inv: &Invoice) -> anyhow::Result<()> {
         let status       = status_str(inv.status);
         let inv_type     = invoice_type_str(inv.invoice_type);
-        let currency     = format!("{:?}", inv.currency);
+        let currency     = inv.currency.to_string();
         let line_items   = serde_json::to_value(&inv.line_items)?;
         let adjustments  = serde_json::to_value(&inv.adjustments)?;
         let inv_num      = inv.invoice_number.to_string();

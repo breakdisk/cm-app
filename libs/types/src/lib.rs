@@ -109,6 +109,18 @@ pub enum Currency {
     IDR,
 }
 
+impl std::fmt::Display for Currency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Currency::PHP => write!(f, "PHP"),
+            Currency::USD => write!(f, "USD"),
+            Currency::SGD => write!(f, "SGD"),
+            Currency::MYR => write!(f, "MYR"),
+            Currency::IDR => write!(f, "IDR"),
+        }
+    }
+}
+
 // ── Address ──────────────────────────────────────────────────
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Address {
