@@ -42,6 +42,12 @@ const TYPE_CONFIG: Record<VehicleType, TypeConfig> = {
 
 const ALL_TYPES = Object.keys(TYPE_CONFIG) as VehicleType[];
 
+// Most-used vehicle colors in PH logistics fleet (ordered by frequency)
+const COMMON_COLORS = [
+  "White", "Pearl White", "Silver", "Gray", "Charcoal", "Black",
+  "Red", "Maroon", "Blue", "Dark Blue", "Beige", "Ivory", "Orange", "Yellow", "Green",
+];
+
 // ── Make / Model data (Philippines logistics market) ──────────────────────────
 
 const MAKES_BY_TYPE: Record<VehicleType, string[]> = {
@@ -59,7 +65,7 @@ const MAKES_BY_TYPE: Record<VehicleType, string[]> = {
 };
 
 const MODELS_BY_MAKE: Record<string, Partial<Record<VehicleType, string[]>>> = {
-  Toyota:          { Sedan: ["Vios", "Corolla Altis", "Corolla Cross", "Camry", "Yaris"], Van: ["Hiace Commuter", "Hiace GL Grandia", "Hiace Super Grandia"], Truck_1T: ["Dyna 100", "Dyna 150"], Recovery_Truck: ["Land Cruiser"] },
+  Toyota:          { Sedan: ["Vios", "Corolla Altis", "Corolla Cross", "Camry", "Yaris"], Van: ["Hiace Commuter", "Hiace GL Grandia", "Hiace Super Grandia"], Truck_1T: ["Hilux (Single Cab)", "Hilux (Double Cab)", "Dyna 100", "Dyna 150"], Recovery_Truck: ["Land Cruiser"] },
   Nissan:          { Sedan: ["Almera", "Sylphy", "Sentra"], Van: ["Urvan", "NV350 Urvan"] },
   Honda:           { Scooter: ["Click 125i", "ADV 160", "PCX 160", "BeAT 125"], Motorcycle: ["XRM 125", "TMX 125 Alpha", "CB300R", "CRF300L"], Sedan: ["Brio", "City", "Civic", "Accord", "Jazz"], Van: ["Odyssey"] },
   Yamaha:          { Scooter: ["Mio i 125", "NMAX 155", "Fino 125", "Aerox 155"], Motorcycle: ["MT-15", "R15", "XSR 155", "Tenere 700"] },
@@ -624,12 +630,11 @@ export function RegisterVehicleModal({ open, onClose, onSuccess }: Props) {
                   {/* Color */}
                   <div>
                     <label className={labelCls}>Color</label>
-                    <input
-                      className={inputCls}
+                    <ComboboxInput
                       value={s1.color}
-                      onChange={(e) => setS1((p) => ({ ...p, color: e.target.value }))}
+                      onChange={(v) => setS1((p) => ({ ...p, color: v }))}
+                      options={COMMON_COLORS}
                       placeholder="White"
-                      required
                     />
                   </div>
 
