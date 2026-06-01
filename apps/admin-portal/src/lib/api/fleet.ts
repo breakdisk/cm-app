@@ -1,7 +1,18 @@
 import { createApiClient, ApiResponse, PaginatedApiResponse } from "./client";
 
 export type VehicleStatus = "active" | "idle" | "maintenance" | "offline";
-export type VehicleType   = "Motorcycle" | "Van" | "Truck" | "Bicycle" | "Car";
+export type VehicleType   =
+  | "Scooter"
+  | "Motorcycle"
+  | "Sedan"
+  | "Van"
+  | "Truck_1T"
+  | "Truck_3T"
+  | "Truck_7T"
+  | "Truck_10T"
+  | "Trailer"
+  | "Refrigerated_Truck"
+  | "Recovery_Truck";
 
 export interface Vehicle {
   id: string;
