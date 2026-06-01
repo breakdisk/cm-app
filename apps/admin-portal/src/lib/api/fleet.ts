@@ -1,11 +1,12 @@
 import { createApiClient, ApiResponse, PaginatedApiResponse } from "./client";
 
 export type VehicleStatus = "active" | "idle" | "maintenance" | "offline";
+export type VehicleType   = "Motorcycle" | "Van" | "Truck" | "Bicycle" | "Car";
 
 export interface Vehicle {
   id: string;
   plate: string;
-  type: "Motorcycle" | "Van" | "Truck";
+  type: VehicleType;
   driver_id?: string;
   driver_name?: string;
   status: VehicleStatus;
@@ -27,6 +28,15 @@ export interface FleetSummary {
   total_km_today: number;
 }
 
+export interface RegisterVehiclePayload {
+  plate_number:  string;
+  vehicle_type:  VehicleType;
+  make:          string;
+  model:         string;
+  year:          number;
+  color:         string;
+}
+
 export function createFleetApi() {
   const client = createApiClient();
 
@@ -44,6 +54,11 @@ export function createFleetApi() {
     getSummary: () =>
       client
         .get<ApiResponse<FleetSummary>>("/v1/fleet/summary")
+        .then((r) => r.data),
+
+    registerVehicle: (payload: RegisterVehiclePayload) =>
+      client
+        .post<ApiResponse<Vehicle>>("/v1/fleet/vehicles", payload)
         .then((r) => r.data),
   };
 }

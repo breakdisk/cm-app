@@ -5,14 +5,13 @@
  * and `marketplace.bookings` (ADR-0013). The tenant_admin sees all rows by
  * virtue of `scope=tenant` in the session GUC — no partner filter applied.
  *
- * Pre-backend stub. Swap to `authFetch` when the service ships.
- *
- * Cross-portal propagation (pre-backend): merchant-portal and partner-portal
- * publish to the shared marketplace-bus; this module merges all rows in
- * `fetchAllBookings()` without partner filter (ADR-0013 §RLS extension:
- * scope=tenant matches any partner_id / merchant_id within the tenant).
+ * Real API: calls /v1/marketplace/* on the carrier service via authFetch.
+ * Bus fallback: for bookings, merges in-flight bus rows (partner/merchant
+ * portal demo layer) so cross-portal receipts remain visible while the
+ * receipt service is still pre-ship.
  */
 
+import { authFetch } from "@/lib/auth/auth-fetch";
 import {
   readBus,
   subscribeToBus,
@@ -20,6 +19,8 @@ import {
   type BusBooking,
   type BusReceipt,
 } from "./marketplace-bus";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export type { BusReceipt } from "./marketplace-bus";
 
@@ -83,190 +84,103 @@ export interface MarketplaceStats {
   partners_participating: number;
 }
 
-// ── Mock data ─────────────────────────────────────────────────────────────────
+// ── Raw API response shapes (carrier service) ─────────────────────────────────
 
-const iso = (d: Date) => d.toISOString();
-const addHours = (d: Date, h: number) => new Date(d.getTime() + h * 3_600_000);
-const now = () => new Date();
+interface ApiListing {
+  id:                       string;
+  carrier_id:               string;
+  vehicle_plate:             string;
+  size_class:               SizeClass;
+  features?:                VehicleFeature[];
+  max_weight_kg:            number;
+  base_price_cents:         number;
+  per_km_cents:             number;
+  service_area_label:       string;
+  idle_until:               string;
+  status:                   ListingStatus;
+  bookings_today?:          number;
+  revenue_today_cents?:     number;
+  updated_at:               string;
+}
 
-const P_FASTSHIP = { id: "a1b2c3d4-0000-0000-0000-000000000001", name: "FastShip Co.",      type: "alliance"    as PartnerType };
-const P_NORTH    = { id: "a1b2c3d4-0000-0000-0000-000000000002", name: "NorthLink Logistics", type: "alliance"   as PartnerType };
-const P_MANILA   = { id: "a1b2c3d4-0000-0000-0000-000000000003", name: "Manila MoveIt",     type: "marketplace" as PartnerType };
-const P_CEBU     = { id: "a1b2c3d4-0000-0000-0000-000000000004", name: "Cebu Carriers Co-op", type: "marketplace" as PartnerType };
+interface ApiBooking {
+  id:                   string;
+  listing_id:           string;
+  shipment_id:          string;
+  awb:                  string;
+  carrier_id:           string;
+  consumer_name:        string;
+  consumer_phone:       string | null;
+  pickup_label:         string;
+  dropoff_label:        string;
+  cargo_weight_kg:      number;
+  quoted_price_cents:   number;
+  status:               BookingStatus;
+  pickup_at:            string;
+  created_at:           string;
+  picked_up_at:         string | null;
+  picked_up_by:         string | null;
+  pickup_notes:         string | null;
+}
 
-const P_COLDEX = { id: "a1b2c3d4-0000-0000-0000-000000000005", name: "ColdEx Freight", type: "marketplace" as PartnerType };
+// ── API helpers ───────────────────────────────────────────────────────────────
 
-const MOCK_LISTINGS: AdminListing[] = [
-  {
-    id: "l1000000-0000-0000-0000-000000000001",
-    partner_id: P_FASTSHIP.id, partner_display_name: P_FASTSHIP.name, partner_type: P_FASTSHIP.type,
-    vehicle_plate: "NKT-4821", size_class: "1ton", features: ["tail_lift"], max_weight_kg: 1000,
-    base_price_cents: 150000, per_km_cents: 2500,
-    service_area_label: "Metro Manila · Luzon",
-    idle_until: iso(addHours(now(), 6)),
-    status: "active", bookings_today: 3, revenue_today_cents: 540000, rating: 4.8,
-    updated_at: iso(addHours(now(), -2)),
-  },
-  {
-    id: "l1000000-0000-0000-0000-000000000002",
-    partner_id: P_FASTSHIP.id, partner_display_name: P_FASTSHIP.name, partner_type: P_FASTSHIP.type,
-    vehicle_plate: "JBX-9930", size_class: "motorcycle", features: [], max_weight_kg: 30,
-    base_price_cents: 8000, per_km_cents: 900,
-    service_area_label: "Metro Manila only",
-    idle_until: iso(addHours(now(), 4)),
-    status: "booked", bookings_today: 7, revenue_today_cents: 63000, rating: 4.9,
-    updated_at: iso(addHours(now(), -0.5)),
-  },
-  {
-    id: "l2000000-0000-0000-0000-000000000001",
-    partner_id: P_NORTH.id, partner_display_name: P_NORTH.name, partner_type: P_NORTH.type,
-    vehicle_plate: "TLX-7765", size_class: "10ton", features: ["tail_lift"], max_weight_kg: 10000,
-    base_price_cents: 800000, per_km_cents: 5500,
-    service_area_label: "Luzon inter-provincial",
-    idle_until: iso(addHours(now(), 12)),
-    status: "active", bookings_today: 2, revenue_today_cents: 1640000, rating: 4.7,
-    updated_at: iso(addHours(now(), -1)),
-  },
-  {
-    id: "l3000000-0000-0000-0000-000000000001",
-    partner_id: P_MANILA.id, partner_display_name: P_MANILA.name, partner_type: P_MANILA.type,
-    vehicle_plate: "MLI-2211", size_class: "van", features: [], max_weight_kg: 800,
-    base_price_cents: 90000, per_km_cents: 1800,
-    service_area_label: "NCR + Cavite",
-    idle_until: iso(addHours(now(), 3)),
-    status: "active", bookings_today: 4, revenue_today_cents: 380000, rating: 4.5,
-    updated_at: iso(addHours(now(), -0.3)),
-  },
-  {
-    id: "l3000000-0000-0000-0000-000000000002",
-    partner_id: P_MANILA.id, partner_display_name: P_MANILA.name, partner_type: P_MANILA.type,
-    vehicle_plate: "MLI-4483", size_class: "sedan", features: [], max_weight_kg: 200,
-    base_price_cents: 35000, per_km_cents: 1200,
-    service_area_label: "Metro Manila",
-    idle_until: iso(addHours(now(), 8)),
-    status: "paused", bookings_today: 0, revenue_today_cents: 0, rating: 4.2,
-    updated_at: iso(addHours(now(), -0.1)),
-  },
-  {
-    id: "l4000000-0000-0000-0000-000000000001",
-    partner_id: P_CEBU.id, partner_display_name: P_CEBU.name, partner_type: P_CEBU.type,
-    vehicle_plate: "CEB-9001", size_class: "7ton", features: [], max_weight_kg: 7000,
-    base_price_cents: 450000, per_km_cents: 4200,
-    service_area_label: "Cebu island",
-    idle_until: iso(addHours(now(), 18)),
-    status: "active", bookings_today: 1, revenue_today_cents: 510000, rating: 4.6,
-    updated_at: iso(addHours(now(), -3)),
-  },
-  {
-    id: "l5000000-0000-0000-0000-000000000001",
-    partner_id: P_COLDEX.id, partner_display_name: P_COLDEX.name, partner_type: P_COLDEX.type,
-    vehicle_plate: "CLX-3301", size_class: "refrigerated_truck", features: ["freezer"], max_weight_kg: 5000,
-    base_price_cents: 350000, per_km_cents: 4800,
-    service_area_label: "Metro Manila · Luzon · Visayas",
-    idle_until: iso(addHours(now(), 8)),
-    status: "active", bookings_today: 2, revenue_today_cents: 720000, rating: 4.9,
-    updated_at: iso(addHours(now(), -0.5)),
-  },
-  {
-    id: "l6000000-0000-0000-0000-000000000001",
-    partner_id: P_NORTH.id, partner_display_name: P_NORTH.name, partner_type: P_NORTH.type,
-    vehicle_plate: "TLX-8812", size_class: "trailer", features: [], max_weight_kg: 25000,
-    base_price_cents: 1200000, per_km_cents: 6500,
-    service_area_label: "Nationwide · Flatbed available",
-    idle_until: iso(addHours(now(), 24)),
-    status: "active", bookings_today: 1, revenue_today_cents: 1500000, rating: 4.8,
-    updated_at: iso(addHours(now(), -1)),
-  },
-  {
-    id: "l7000000-0000-0000-0000-000000000001",
-    partner_id: P_FASTSHIP.id, partner_display_name: P_FASTSHIP.name, partner_type: P_FASTSHIP.type,
-    vehicle_plate: "RSQ-5521", size_class: "recovery_truck", features: [], max_weight_kg: 5000,
-    base_price_cents: 250000, per_km_cents: 3500,
-    service_area_label: "Metro Manila · Luzon",
-    idle_until: iso(addHours(now(), 6)),
-    status: "active", bookings_today: 0, revenue_today_cents: 0, rating: 4.6,
-    updated_at: iso(addHours(now(), -2)),
-  },
-];
+async function apiGet<T>(path: string): Promise<T | null> {
+  try {
+    const res = await authFetch(`${API_BASE}${path}`);
+    if (!res.ok) return null;
+    return res.json() as Promise<T>;
+  } catch {
+    return null;
+  }
+}
 
-const MOCK_BOOKINGS: AdminBooking[] = [
-  {
-    id: "b1000000-0000-0000-0000-000000000001",
-    shipment_id: "s1000000-0000-0000-0000-000000000001",
-    awb: "CM-PHL-S0000042X",
-    partner_id: P_FASTSHIP.id, partner_display_name: P_FASTSHIP.name,
-    merchant_type: "consumer", merchant_id: null,
-    consumer_display: "M. Reyes",
-    size_class: "motorcycle", cargo_weight_kg: 12,
-    pickup_label: "Makati CBD", dropoff_label: "BGC, Taguig",
-    quoted_price_cents: 14500, status: "in_transit",
-    pickup_at: iso(addHours(now(), -0.5)), created_at: iso(addHours(now(), -1)),
-    picked_up_at: iso(addHours(now(), -0.4)),
-    picked_up_by: "Driver J. Santos", pickup_notes: null,
-  },
-  {
-    id: "b1000000-0000-0000-0000-000000000002",
-    shipment_id: "s1000000-0000-0000-0000-000000000002",
-    awb: "CM-PHL-E0000099Y",
-    partner_id: P_FASTSHIP.id, partner_display_name: P_FASTSHIP.name,
-    merchant_type: "business", merchant_id: "m2000000-0000-0000-0000-000000000001",
-    consumer_display: "A. Dela Cruz",
-    size_class: "1ton", cargo_weight_kg: 820,
-    pickup_label: "Pasig Warehouse", dropoff_label: "Laguna Techno Park",
-    quoted_price_cents: 285000, status: "pending",
-    pickup_at: iso(addHours(now(), 1.5)), created_at: iso(addHours(now(), -0.3)),
-    picked_up_at: null, picked_up_by: null, pickup_notes: null,
-  },
-  {
-    id: "b2000000-0000-0000-0000-000000000001",
-    shipment_id: "s2000000-0000-0000-0000-000000000001",
-    awb: "CM-PHL-S0000121K",
-    partner_id: P_NORTH.id, partner_display_name: P_NORTH.name,
-    merchant_type: "business", merchant_id: "m2000000-0000-0000-0000-000000000002",
-    consumer_display: "Sy Lumber Corp.",
-    size_class: "10ton", cargo_weight_kg: 9400,
-    pickup_label: "Valenzuela", dropoff_label: "Tarlac City",
-    quoted_price_cents: 1420000, status: "accepted",
-    pickup_at: iso(addHours(now(), 4)), created_at: iso(addHours(now(), -2)),
-    picked_up_at: null, picked_up_by: null, pickup_notes: null,
-  },
-  {
-    id: "b3000000-0000-0000-0000-000000000001",
-    shipment_id: "s3000000-0000-0000-0000-000000000001",
-    awb: "CM-PHL-S0000155M",
-    partner_id: P_MANILA.id, partner_display_name: P_MANILA.name,
-    merchant_type: "consumer", merchant_id: null,
-    consumer_display: "R. Santos",
-    size_class: "van", cargo_weight_kg: 340,
-    pickup_label: "Quezon City", dropoff_label: "Antipolo",
-    quoted_price_cents: 54000, status: "disputed",
-    pickup_at: iso(addHours(now(), -3)), created_at: iso(addHours(now(), -4)),
-    picked_up_at: iso(addHours(now(), -2.8)),
-    picked_up_by: "Driver L. Tan", pickup_notes: null,
-  },
-  {
-    id: "b4000000-0000-0000-0000-000000000001",
-    shipment_id: "s4000000-0000-0000-0000-000000000001",
-    awb: "CM-PHL-S0000188P",
-    partner_id: P_CEBU.id, partner_display_name: P_CEBU.name,
-    merchant_type: "business", merchant_id: "m2000000-0000-0000-0000-000000000003",
-    consumer_display: "Mactan Traders",
-    size_class: "7ton", cargo_weight_kg: 4800,
-    pickup_label: "Mactan Port", dropoff_label: "Cebu IT Park",
-    quoted_price_cents: 380000, status: "delivered",
-    pickup_at: iso(addHours(now(), -6)), created_at: iso(addHours(now(), -8)),
-    picked_up_at: iso(addHours(now(), -5.5)),
-    picked_up_by: "Driver M. Yu", pickup_notes: null,
-  },
-];
+// ── Projection helpers ────────────────────────────────────────────────────────
 
-// ── API stubs ─────────────────────────────────────────────────────────────────
+function apiListingToAdmin(l: ApiListing): AdminListing {
+  return {
+    id:                   l.id,
+    partner_id:           l.carrier_id,
+    partner_display_name: l.carrier_id.slice(0, 8),   // filled in by backend once tenant-scope endpoint lands
+    partner_type:         "marketplace" as PartnerType,
+    vehicle_plate:        l.vehicle_plate,
+    size_class:           l.size_class,
+    features:             (l.features ?? []) as VehicleFeature[],
+    max_weight_kg:        l.max_weight_kg,
+    base_price_cents:     l.base_price_cents,
+    per_km_cents:         l.per_km_cents,
+    service_area_label:   l.service_area_label,
+    idle_until:           l.idle_until,
+    status:               l.status,
+    bookings_today:       l.bookings_today ?? 0,
+    revenue_today_cents:  l.revenue_today_cents ?? 0,
+    rating:               0,
+    updated_at:           l.updated_at,
+  };
+}
 
-const latency = (ms = 220) => new Promise((r) => setTimeout(r, ms));
-
-export async function fetchAllListings(): Promise<AdminListing[]> {
-  await latency();
-  return structuredClone(MOCK_LISTINGS);
+function apiBookingToAdmin(b: ApiBooking): AdminBooking {
+  return {
+    id:                   b.id,
+    shipment_id:          b.shipment_id,
+    awb:                  b.awb,
+    partner_id:           b.carrier_id,
+    partner_display_name: b.carrier_id.slice(0, 8),
+    merchant_type:        "consumer" as MerchantType,
+    merchant_id:          null,
+    consumer_display:     b.consumer_name,
+    size_class:           "van" as SizeClass,          // not in booking response; default
+    cargo_weight_kg:      b.cargo_weight_kg,
+    pickup_label:         b.pickup_label,
+    dropoff_label:        b.dropoff_label,
+    quoted_price_cents:   b.quoted_price_cents,
+    status:               b.status,
+    pickup_at:            b.pickup_at,
+    created_at:           b.created_at,
+    picked_up_at:         b.picked_up_at,
+    picked_up_by:         b.picked_up_by,
+    pickup_notes:         b.pickup_notes,
+  };
 }
 
 // Project a canonical bus row into admin's AdminBooking view. No partner
@@ -280,7 +194,7 @@ function busToAdminBooking(b: BusBooking): AdminBooking {
     partner_display_name: b.partner_display_name,
     merchant_type:        b.merchant_type,
     merchant_id:          b.merchant_id,
-    consumer_display:     b.merchant_display,     // admin sees unmasked merchant/consumer name
+    consumer_display:     b.merchant_display,
     size_class:           b.size_class,
     cargo_weight_kg:      b.cargo_weight_kg,
     pickup_label:         b.pickup_label,
@@ -295,40 +209,83 @@ function busToAdminBooking(b: BusBooking): AdminBooking {
   };
 }
 
+// ── Public API functions ──────────────────────────────────────────────────────
+
+export async function fetchAllListings(): Promise<AdminListing[]> {
+  const json = await apiGet<{ listings?: ApiListing[] } | ApiListing[]>("/v1/marketplace/listings");
+  if (!json) return [];
+  const raw = Array.isArray(json) ? json : (json.listings ?? []);
+  return raw.map(apiListingToAdmin);
+}
+
 export async function fetchAllBookings(): Promise<AdminBooking[]> {
-  await latency();
   const busRows = readBus().map(busToAdminBooking);
+  const json = await apiGet<{ bookings?: ApiBooking[] } | ApiBooking[]>("/v1/marketplace/bookings");
+  const apiRows = json
+    ? (Array.isArray(json) ? json : (json.bookings ?? [])).map(apiBookingToAdmin)
+    : [];
+
+  // Bus rows overlay API rows (bus has richer display names from the pre-service demo layer)
   const byId = new Map<string, AdminBooking>();
-  for (const b of MOCK_BOOKINGS) byId.set(b.id, b);
-  for (const b of busRows)      byId.set(b.id, b);
+  for (const b of apiRows)  byId.set(b.id, b);
+  for (const b of busRows)  byId.set(b.id, b);
   return [...byId.values()].sort(
-    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
   );
+}
+
+export async function fetchMarketplaceStats(): Promise<MarketplaceStats> {
+  const [listings, bookings] = await Promise.all([fetchAllListings(), fetchAllBookings()]);
+  const active      = listings.filter((l) => l.status === "active" || l.status === "booked").length;
+  const todayGmv    = listings.reduce((s, l) => s + l.revenue_today_cents, 0);
+  const partners    = new Set(listings.map((l) => l.partner_id)).size;
+  const now         = Date.now();
+  const idleNext6h  = listings.filter((l) => {
+    const ms = new Date(l.idle_until).getTime() - now;
+    return ms > 0 && ms < 6 * 3_600_000;
+  }).length;
+  return {
+    active_listings:        active,
+    idle_vehicles_next_6h:  idleNext6h,
+    bookings_today:         bookings.length,
+    gmv_today_cents:        todayGmv,
+    avg_match_seconds:      0,
+    partners_participating: partners,
+  };
+}
+
+export interface CreateListingPayload {
+  vehicle_plate:                string;
+  size_class:                   SizeClass;
+  features:                     VehicleFeature[];
+  max_weight_kg:                number;
+  max_volume_m3:                number | null;
+  base_price_cents:             number;
+  per_km_cents:                 number;
+  per_kg_cents:                 number | null;
+  service_area_label:           string;
+  idle_from:                    string;
+  idle_until:                   string;
+  status:                       ListingStatus;
+  carrier_response_window_mins: number;
+}
+
+export async function createVehicleListing(payload: CreateListingPayload): Promise<void> {
+  const res = await authFetch(`${API_BASE}/v1/marketplace/listings`, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`POST /v1/marketplace/listings failed ${res.status}: ${text}`);
+  }
 }
 
 export { subscribeToBus as subscribeToMarketplaceUpdates };
 
 export async function fetchReceiptForBooking(bookingId: string): Promise<BusReceipt | null> {
   return busFindReceiptByBookingId(bookingId);
-}
-
-export async function fetchMarketplaceStats(): Promise<MarketplaceStats> {
-  await latency(150);
-  const active  = MOCK_LISTINGS.filter((l) => l.status === "active" || l.status === "booked").length;
-  const todayGmv = MOCK_LISTINGS.reduce((s, l) => s + l.revenue_today_cents, 0);
-  const bookings = MOCK_BOOKINGS.length;
-  const partners = new Set(MOCK_LISTINGS.map((l) => l.partner_id)).size;
-  return {
-    active_listings:        active,
-    idle_vehicles_next_6h:  MOCK_LISTINGS.filter((l) =>
-      new Date(l.idle_until).getTime() - Date.now() < 6 * 3_600_000 &&
-      new Date(l.idle_until).getTime() > Date.now()
-    ).length,
-    bookings_today:         bookings,
-    gmv_today_cents:        todayGmv,
-    avg_match_seconds:      42,
-    partners_participating: partners,
-  };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
