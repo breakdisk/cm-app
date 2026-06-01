@@ -18,13 +18,29 @@ impl Default for VehicleId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum VehicleType {
+    // aliases keep rows written by the old snake_case serde readable
+    #[serde(alias = "bicycle")]
+    Scooter,
+    #[serde(alias = "motorcycle")]
     Motorcycle,
+    #[serde(alias = "car")]
+    Sedan,
+    #[serde(alias = "van")]
     Van,
-    Truck,
-    Bicycle,
-    Car,
+    #[serde(rename = "Truck_1T", alias = "truck")]
+    Truck1T,
+    #[serde(rename = "Truck_3T")]
+    Truck3T,
+    #[serde(rename = "Truck_7T")]
+    Truck7T,
+    #[serde(rename = "Truck_10T")]
+    Truck10T,
+    Trailer,
+    #[serde(rename = "Refrigerated_Truck")]
+    RefrigeratedTruck,
+    #[serde(rename = "Recovery_Truck")]
+    RecoveryTruck,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
