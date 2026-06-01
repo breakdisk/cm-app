@@ -465,36 +465,37 @@ function DeliveryReceiptModal({ shipment, onClose }: { shipment: Shipment; onClo
   const [copied,        setCopied]        = useState(false);
 
   useEffect(() => {
-    const trackingFetch = authFetch(`${DELIVERY_EXPERIENCE_URL}/v1/tracking/${shipment.id}`)
+    // The delivery-experience authenticated tracking endpoint now returns an
+    // enriched payload: TrackingRecord fields + `pop` (POP evidence) + `pod`
+    // (POD evidence with all photo URLs) + `events` alias for status_history.
+    // This replaces the previous two-fetch pattern (tracking + separate pod call).
+    authFetch(`${DELIVERY_EXPERIENCE_URL}/v1/tracking/${shipment.id}`)
       .then(r => r.ok ? r.json() : null)
       .then(json => {
-        // Response shape: { data: LiveTrackingData } from the delivery-experience service.
         const data = json?.data ?? json;
-        const pod  = data?.pod;
-        if (pod?.delivered_at)   setDeliveredAt(pod.delivered_at as string);
+
+        // POD delivery evidence — injected by delivery-experience from the pod service.
+        const pod = data?.pod;
+        if (pod?.delivered_at)        setDeliveredAt(pod.delivered_at as string);
         if (pod?.photo_urls?.length)  setPodPhotos(pod.photo_urls as string[]);
-        if (pod?.signature_url)  setPodSignature(pod.signature_url as string);
-        if (pod?.recipient_name) setPodRecipient(pod.recipient_name as string);
-        // Find the picked_up event to show a pickup timestamp.
-        const pickupEvent = (data?.events ?? []).find(
-          (e: { status: string; occurred_at: string }) => e.status === "picked_up"
-        );
+        if (pod?.signature_url)       setPodSignature(pod.signature_url as string);
+        if (pod?.recipient_name)      setPodRecipient(pod.recipient_name as string);
+
+        // POP pickup evidence — also injected by delivery-experience.
+        const pop = data?.pop;
+        if (pop?.photo_url) setPopPhotoUrl(pop.photo_url as string);
+
+        // Find the picked_up event for the pickup timestamp.
+        // `events` is an alias delivery-experience adds for `status_history`.
+        const events: Array<{ status: string; occurred_at: string }> =
+          data?.events ?? data?.status_history ?? [];
+        const pickupEvent = events.find(e => e.status === "picked_up");
         if (pickupEvent?.occurred_at) setPickupAt(pickupEvent.occurred_at as string);
+        // Fallback: if no picked_up event, use the POP captured_at timestamp.
+        else if (pop?.captured_at)    setPickupAt(pop.captured_at as string);
       })
-      .catch(() => {});
-
-    // Fetch POP pickup photo from the POD service (same API gateway).
-    const popFetch = authFetch(`${ORDER_INTAKE_URL}/v1/pod/pops?shipment_id=${shipment.id}`)
-      .then(r => r.ok ? r.json() : null)
-      .then(json => {
-        const pop = json?.data;
-        if (pop && typeof pop === "object" && !Array.isArray(pop) && (pop as Record<string, unknown>).photo_url) {
-          setPopPhotoUrl((pop as Record<string, unknown>).photo_url as string);
-        }
-      })
-      .catch(() => {});
-
-    Promise.all([trackingFetch, popFetch]).finally(() => setLoading(false));
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, [shipment.id]);
 
   function copyAwb() {

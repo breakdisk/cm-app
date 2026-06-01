@@ -94,7 +94,25 @@ async fn get_by_shipment_id(
         return Err(AppError::Forbidden { resource: "shipment".to_owned() });
     }
 
-    Ok::<_, AppError>((StatusCode::OK, Json(record)))
+    // Fetch POP + POD evidence from the pod service (non-blocking; optional).
+    // Failure is logged by PodClient and surfaced as None so the tracking
+    // response degrades gracefully instead of returning 500.
+    let evidence = state.pod_client.get_evidence(record.shipment_id).await;
+
+    // Build the enriched response: start with all TrackingRecord fields, then
+    // inject the nested `pop` and `pod` evidence objects the merchant portal
+    // expects. Also alias `status_history` → `events` for portal compatibility.
+    let mut body = serde_json::to_value(&record)
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+    if let Some(ev) = evidence {
+        body["pop"] = ev["pop"].clone();
+        body["pod"] = ev["pod"].clone();
+    }
+    // `events` is an alias for `status_history` used by merchant portal timeline.
+    body["events"] = body["status_history"].clone();
+
+    Ok::<_, AppError>((StatusCode::OK, Json(body)))
 }
 
 // ---------------------------------------------------------------------------

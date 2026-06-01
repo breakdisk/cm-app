@@ -550,6 +550,9 @@ services:
       SERVICES__MARKETING_URL: http://marketing:8014
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
+      # Pod service internal URL for POP/POD evidence enrichment in tracking responses.
+      # Must match the pod service name on the logisticos compose network.
+      POD_INTERNAL_URL: http://pod:8011
       RUST_LOG: info
     depends_on:
       postgres:

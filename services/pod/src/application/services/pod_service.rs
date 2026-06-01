@@ -708,6 +708,36 @@ impl PodService {
         })
     }
 
+    /// Map a POD entity to the merchant/customer evidence shape.
+    /// Presigns ALL photos into `photo_urls: Vec<String>` (not just the first).
+    /// Used by the internal `/v1/internal/pop-evidence/:id` endpoint so the
+    /// delivery-experience service can embed full photo evidence in tracking responses.
+    pub async fn pod_evidence_to_view(&self, pod: &ProofOfDelivery) -> serde_json::Value {
+        let mut photo_urls: Vec<String> = Vec::new();
+        for photo in &pod.photos {
+            match self.pod_storage.presign_download(&photo.s3_key, 3600).await {
+                Ok(url) => photo_urls.push(url),
+                Err(e)  => tracing::warn!(
+                    error = %e,
+                    s3_key = %photo.s3_key,
+                    "Failed to presign POD photo for evidence view — skipping"
+                ),
+            }
+        }
+
+        let signature_url = pod.signature_data.as_ref().map(|b64| {
+            format!("data:image/png;base64,{b64}")
+        });
+
+        serde_json::json!({
+            "photo_urls":        photo_urls,
+            "signature_url":     signature_url,
+            "delivered_at":      pod.captured_at,
+            "recipient_name":    pod.recipient_name,
+            "geofence_verified": pod.geofence_verified,
+        })
+    }
+
     /// Map a POD entity to the JSON shape expected by the admin portal.
     /// Generates a presigned download URL for the first photo (1-hour TTL)
     /// and converts signature base64 to a data URI the browser can render.

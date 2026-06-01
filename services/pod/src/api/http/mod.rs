@@ -22,7 +22,8 @@ pub fn router(state: Arc<AppState>) -> Router {
 /// Internal service-to-service routes — no JWT, protected by Istio mTLS in production.
 fn internal_router() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/internal/pop-status", get(pod::pop_status_internal))
+        .route("/internal/pop-status",           get(pod::pop_status_internal))
+        .route("/internal/pop-evidence/:shipment_id", get(pod::get_evidence_internal))
 }
 
 fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
