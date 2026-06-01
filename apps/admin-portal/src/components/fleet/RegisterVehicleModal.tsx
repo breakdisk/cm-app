@@ -27,17 +27,17 @@ interface TypeConfig {
 }
 
 const TYPE_CONFIG: Record<VehicleType, TypeConfig> = {
-  Scooter:            { label: "Scooter / Bicycle", size_class: "scooter_bicycle",   icon: "🛵", def_features: [],             def_weight_kg: 30,    def_base_php: 150,  def_km_php: 8  },
-  Motorcycle:         { label: "Motorcycle",         size_class: "motorcycle",         icon: "🏍", def_features: [],             def_weight_kg: 80,    def_base_php: 250,  def_km_php: 12 },
-  Sedan:              { label: "Sedan / Car",         size_class: "sedan",              icon: "🚗", def_features: [],             def_weight_kg: 300,   def_base_php: 500,  def_km_php: 15 },
-  Van:                { label: "Van",                 size_class: "van",                icon: "🚐", def_features: [],             def_weight_kg: 800,   def_base_php: 900,  def_km_php: 18 },
-  Truck_1T:           { label: "Truck — 1 Ton",       size_class: "1ton",               icon: "🚛", def_features: [],             def_weight_kg: 1000,  def_base_php: 1200, def_km_php: 22 },
-  Truck_3T:           { label: "Truck — 3 Ton",       size_class: "3ton",               icon: "🚛", def_features: ["tail_lift"],   def_weight_kg: 3000,  def_base_php: 2200, def_km_php: 28 },
-  Truck_7T:           { label: "Truck — 7 Ton",       size_class: "7ton",               icon: "🚛", def_features: ["tail_lift"],   def_weight_kg: 7000,  def_base_php: 3800, def_km_php: 35 },
-  Truck_10T:          { label: "Truck — 10 Ton",      size_class: "10ton",              icon: "🚛", def_features: ["tail_lift"],   def_weight_kg: 10000, def_base_php: 5500, def_km_php: 42 },
-  Trailer:            { label: "Trailer",             size_class: "trailer",            icon: "🚚", def_features: ["tail_lift"],   def_weight_kg: 20000, def_base_php: 9000, def_km_php: 55 },
-  Refrigerated_Truck: { label: "Refrigerated Truck",  size_class: "refrigerated_truck", icon: "❄️", def_features: ["chiller"],     def_weight_kg: 5000,  def_base_php: 4500, def_km_php: 40 },
-  Recovery_Truck:     { label: "Recovery Truck",      size_class: "recovery_truck",     icon: "🔧", def_features: [],             def_weight_kg: 5000,  def_base_php: 3000, def_km_php: 35 },
+  Scooter:            { label: "Scooter / Bicycle", size_class: "scooter_bicycle",   icon: "🛵", def_features: [], def_weight_kg: 30,    def_base_php: 150,  def_km_php: 8  },
+  Motorcycle:         { label: "Motorcycle",         size_class: "motorcycle",         icon: "🏍", def_features: [], def_weight_kg: 80,    def_base_php: 250,  def_km_php: 12 },
+  Sedan:              { label: "Sedan",               size_class: "sedan",              icon: "🚗", def_features: [], def_weight_kg: 300,   def_base_php: 500,  def_km_php: 15 },
+  Van:                { label: "Van",                 size_class: "van",                icon: "🚐", def_features: [], def_weight_kg: 800,   def_base_php: 900,  def_km_php: 18 },
+  Truck_1T:           { label: "1 Ton - Pickup",      size_class: "1ton",               icon: "🚛", def_features: [], def_weight_kg: 1000,  def_base_php: 1200, def_km_php: 22 },
+  Truck_3T:           { label: "3 Ton",               size_class: "3ton",               icon: "🚛", def_features: [], def_weight_kg: 3000,  def_base_php: 2200, def_km_php: 28 },
+  Truck_7T:           { label: "7 Ton",               size_class: "7ton",               icon: "🚛", def_features: [], def_weight_kg: 7000,  def_base_php: 3800, def_km_php: 35 },
+  Truck_10T:          { label: "10 Ton",              size_class: "10ton",              icon: "🚛", def_features: [], def_weight_kg: 10000, def_base_php: 5500, def_km_php: 42 },
+  Trailer:            { label: "Trailer",             size_class: "trailer",            icon: "🚚", def_features: [], def_weight_kg: 20000, def_base_php: 9000, def_km_php: 55 },
+  Refrigerated_Truck: { label: "Refrigerated Truck",  size_class: "refrigerated_truck", icon: "❄️", def_features: [], def_weight_kg: 5000,  def_base_php: 4500, def_km_php: 40 },
+  Recovery_Truck:     { label: "Recovery Truck",      size_class: "recovery_truck",     icon: "🔧", def_features: [], def_weight_kg: 5000,  def_base_php: 3000, def_km_php: 35 },
 };
 
 const ALL_TYPES = Object.keys(TYPE_CONFIG) as VehicleType[];
