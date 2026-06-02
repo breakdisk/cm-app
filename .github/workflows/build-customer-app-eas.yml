@@ -1,0 +1,108 @@
+# ============================================================
+# LogisticOS — Customer App EAS Build
+# ============================================================
+# Builds the Expo customer app via EAS Build (cloud). The KYC pipeline
+# pulls in native modules (react-native-document-scanner-plugin,
+# react-native-webview) that do not run in Expo Go, so a real EAS/dev
+# build is required to test them.
+#
+# Auth: requires an EXPO_TOKEN repository secret (Expo access token for
+# the `cargomarket` account). Create one at
+# https://expo.dev/accounts/[account]/settings/access-tokens and add it
+# under Settings → Secrets and variables → Actions → New repository secret.
+#
+# Triggered manually (workflow_dispatch) so builds are intentional and
+# don't burn EAS quota on every push. Pick platform + profile at run time.
+# ============================================================
+
+name: Build Customer App (EAS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Target platform"
+        type: choice
+        required: true
+        default: android
+        options:
+          - android
+          - ios
+          - all
+      profile:
+        description: "EAS build profile"
+        type: choice
+        required: true
+        default: preview
+        options:
+          - development
+          - preview
+          - production
+      submit:
+        description: "Submit to store after build (production only)"
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: eas-customer-app-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: EAS Build — ${{ inputs.platform }} / ${{ inputs.profile }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/customer-app
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: apps/customer-app/package-lock.json
+
+      - name: Verify EXPO_TOKEN is set
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "::error::EXPO_TOKEN repository secret is not set. Add it under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          echo "EXPO_TOKEN is present."
+
+      - name: Set up EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: EAS Build (non-interactive, wait for completion)
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          eas build \
+            --platform ${{ inputs.platform }} \
+            --profile ${{ inputs.profile }} \
+            --non-interactive \
+            --wait
+
+      - name: EAS Submit (production only)
+        if: ${{ inputs.submit && inputs.profile == 'production' }}
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          eas submit \
+            --platform ${{ inputs.platform }} \
+            --profile production \
+            --non-interactive \
+            --latest
