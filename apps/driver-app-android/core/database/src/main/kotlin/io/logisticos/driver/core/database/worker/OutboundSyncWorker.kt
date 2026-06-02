@@ -110,7 +110,8 @@ class OutboundSyncWorker @AssistedInject constructor(
                     "IN_PROGRESS" -> driverOpsApi.startTask(taskId)
                     "COMPLETED"   -> {
                         val podId = payload["podId"]?.jsonPrimitive?.contentOrNull
-                        driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId))
+                        val popId = payload["popId"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                        driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId, popId = popId))
                     }
                     "FAILED"      -> {
                         driverOpsApi.failTask(taskId, FailTaskRequest(reason = reason ?: "unknown"))
@@ -363,13 +364,37 @@ class OutboundSyncWorker @AssistedInject constructor(
                     "OutboundSyncWorker",
                     "POP submitted: pop_id=$popId task=$taskId has_photo=${photoS3Key != null}"
                 )
+
+                // Complete the task with the now-known pop_id. If the inline call fails,
+                // enqueue TASK_COMPLETE so the pop_id is carried through on retry.
+                // This mirrors the POD_SUBMIT → TASK_COMPLETE pattern for delivery tasks.
+                try {
+                    driverOpsApi.completeTask(taskId, CompleteTaskRequest(popId = popId))
+                    taskDao.markSynced(taskId)
+                } catch (e: Exception) {
+                    android.util.Log.w("OutboundSyncWorker", "completeTask after POP_SUBMIT failed — queuing TASK_COMPLETE: ${e.message}")
+                    syncQueueDao.enqueue(
+                        SyncQueueEntity(
+                            action      = SyncAction.TASK_COMPLETE,
+                            payloadJson = Json.encodeToString(mapOf("taskId" to taskId, "popId" to popId)),
+                            createdAt   = System.currentTimeMillis(),
+                        )
+                    )
+                    OutboundSyncWorker.kickOnce(applicationContext)
+                }
             }
 
             SyncAction.TASK_COMPLETE -> {
                 val taskId = payload["taskId"]?.jsonPrimitive?.contentOrNull
                     ?: run { syncQueueDao.remove(item.id); return }
                 val podId = payload["podId"]?.jsonPrimitive?.contentOrNull
-                    ?: run { syncQueueDao.remove(item.id); return }
+                val popId = payload["popId"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+
+                // Either a pod_id (delivery) or pop_id (pickup) is required.
+                if (podId == null && popId == null) {
+                    syncQueueDao.remove(item.id)
+                    return
+                }
 
                 // After 7 days with no success, the backend may have auto-cancelled the task.
                 // Mark locally as permanently failed so the driver knows to contact support.
@@ -380,10 +405,15 @@ class OutboundSyncWorker @AssistedInject constructor(
                     return
                 }
 
-                driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId))
+                driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId, popId = popId))
                 taskDao.markSynced(taskId)
-                taskDao.setPodId(taskId, podId, System.currentTimeMillis())
-                podDao.markSynced(taskId)
+                val now = System.currentTimeMillis()
+                if (podId != null) {
+                    taskDao.setPodId(taskId, podId, now)
+                    podDao.markSynced(taskId)
+                } else if (popId != null) {
+                    taskDao.setPopId(taskId, popId, now)
+                }
             }
 
             SyncAction.SHIFT_START -> {

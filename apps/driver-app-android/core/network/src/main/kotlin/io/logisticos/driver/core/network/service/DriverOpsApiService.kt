@@ -34,6 +34,7 @@ data class TaskItem(
 @Serializable
 data class CompleteTaskRequest(
     @SerialName("pod_id")               val podId: String? = null,
+    @SerialName("pop_id")               val popId: String? = null,
     @SerialName("cod_collected_cents")  val codCollectedCents: Long? = null
 )
 

@@ -19,6 +19,9 @@ pub struct TaskCompleted {
     pub shipment_id: Uuid,
     pub tenant_id: Uuid,
     pub pod_id: Option<Uuid>,
+    /// POP reference — set for pickup tasks; None for delivery tasks.
+    #[serde(default)]
+    pub pop_id: Option<Uuid>,
     pub completed_at: chrono::DateTime<chrono::Utc>,
     // Customer fields — denormalized from DriverTask so engagement can send
     // delivery receipt without querying other services.

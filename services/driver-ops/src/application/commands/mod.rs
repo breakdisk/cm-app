@@ -58,6 +58,7 @@ pub struct CompleteTaskCommand {
     #[serde(default)]
     pub task_id: Uuid,
     pub pod_id: Option<Uuid>,       // Required for delivery tasks
+    pub pop_id: Option<Uuid>,       // Required for pickup tasks
     pub cod_collected_cents: Option<i64>,
 }
 

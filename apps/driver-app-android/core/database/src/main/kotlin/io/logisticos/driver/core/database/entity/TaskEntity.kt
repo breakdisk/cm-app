@@ -1,5 +1,6 @@
 package io.logisticos.driver.core.database.entity
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
@@ -39,5 +40,6 @@ data class TaskEntity(
     val syncedAt: Long?,
     val isSynced: Boolean = true,
     val podId: String? = null,
+    @ColumnInfo(name = "pop_id") val popId: String? = null,
     val completedAt: Long? = null,
 )

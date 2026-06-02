@@ -140,15 +140,19 @@ impl TaskService {
             return Err(AppError::BusinessRule("Can only complete an in-progress task".into()));
         }
 
-        // Delivery tasks must always link to a POD — no completions without evidence.
+        // Both task types require evidence before completion.
         if task.task_type == TaskType::Delivery && cmd.pod_id.is_none() {
             return Err(AppError::BusinessRule(
                 "delivery task completion requires pod_id".into(),
             ));
         }
+        if task.task_type == TaskType::Pickup && cmd.pop_id.is_none() {
+            return Err(AppError::BusinessRule(
+                "pickup task completion requires pop_id".into(),
+            ));
+        }
 
-        task.complete(cmd.pod_id)
-            .map_err(|e| AppError::BusinessRule(e.to_string()))?;
+        task.complete(cmd.pod_id, cmd.pop_id);
 
         self.task_repo.save(&task).await.map_err(AppError::Internal)?;
 
@@ -166,6 +170,7 @@ impl TaskService {
             shipment_id: task.shipment_id,
             tenant_id: tenant_id.inner(),
             pod_id: cmd.pod_id,
+            pop_id: cmd.pop_id,
             completed_at: task.completed_at.unwrap_or_else(chrono::Utc::now),
             customer_name: task.customer_name.clone(),
             customer_phone: task.customer_phone.clone(),
