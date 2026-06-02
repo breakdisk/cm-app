@@ -97,7 +97,7 @@ mod tests {
     use super::*;
 
     fn req() -> WithdrawalRequest {
-        WithdrawalRequest::new(Uuid::new_v4(), Uuid::new_v4(), 50_000, Uuid::new_v4())
+        WithdrawalRequest::new(Uuid::new_v4(), Uuid::new_v4(), 50_000, Uuid::new_v4(), None)
     }
 
     #[test]
