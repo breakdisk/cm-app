@@ -133,7 +133,9 @@ export default function PartnerOverviewPage() {
       await Promise.allSettled([
         authFetch(`${DISPATCH_URL}/v1/queue?status=all`),
         authFetch(`${DRIVER_OPS_URL}/v1/drivers`),
-        carrierId ? carriersApi.manifest(today, carrierId) : Promise.resolve({ data: [], date: today, carrier_id: null }),
+        carrierId
+          ? authFetch(`${DRIVER_OPS_URL}/v1/tasks/manifest?date=${today}&carrier_id=${carrierId}`)
+          : Promise.resolve(null),
         authFetch(`${PAYMENTS_URL}/v1/invoices`),
         authFetch(`${PAYMENTS_URL}/v1/wallet`),
         authFetch(`${ANALYTICS_URL}/v1/analytics/timeseries?from=${daysAgoStr(30)}&to=${new Date().toISOString()}`),
@@ -152,10 +154,15 @@ export default function PartnerOverviewPage() {
     let todayDeliveries = 0;
     const zoneCounts = new Map<string, { delivered: number; total: number }>();
 
-    if (manifestRes.status === "fulfilled") {
-      const m = (manifestRes.value as { data: Array<{ task_type: string; completed: number }> }).data ?? [];
-      for (const row of m) {
-        if (row.task_type === "delivery") todayDeliveries += row.completed;
+    if (manifestRes.status === "fulfilled" && manifestRes.value) {
+      // authFetch returns a Response; parse it only when the call was made (carrierId non-null).
+      const res = manifestRes.value as Response;
+      if (res.ok) {
+        const j = await res.json().catch(() => ({}));
+        const m: Array<{ task_type: string; completed: number }> = j.data ?? [];
+        for (const row of m) {
+          if (row.task_type === "delivery") todayDeliveries += row.completed;
+        }
       }
     }
 

@@ -223,17 +223,6 @@ export const carriersApi = {
     return { records: data.records ?? [], count: data.count ?? 0 };
   },
 
-  /**
-   * Daily manifest aggregation from driver-ops. Passing `carrierId` filters
-   * to that partner's drivers (via drivers.carrier_id); passing null returns
-   * the whole-tenant view (useful for admin-scoped callers).
-   */
-  async manifest(date: string, carrierId?: string | null): Promise<ManifestResponse> {
-    const { data } = await createApiClient().get<ManifestResponse>("/v1/tasks/manifest", {
-      params: { date, carrier_id: carrierId ?? undefined },
-    });
-    return data;
-  },
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────────

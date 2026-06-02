@@ -18,8 +18,22 @@ import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { FileText, Search, Building2, RefreshCw, Calendar, CheckCircle2, Clock, X, Download, ExternalLink } from "lucide-react";
-import { carriersApi, type ManifestEntry } from "@/lib/api/carriers";
+import { type ManifestEntry } from "@/lib/api/carriers";
 import { useCarrier } from "@/contexts/carrier-context";
+import { authFetch } from "@/lib/auth/auth-fetch";
+
+const DRIVER_OPS_URL = process.env.NEXT_PUBLIC_DRIVER_OPS_URL ?? "http://localhost:8006";
+
+async function fetchManifest(date: string, carrierId: string): Promise<ManifestEntry[]> {
+  const params = new URLSearchParams({ date, carrier_id: carrierId });
+  const res = await authFetch(`${DRIVER_OPS_URL}/v1/tasks/manifest?${params}`);
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(body || `Request failed with status code ${res.status}`);
+  }
+  const json = await res.json();
+  return json.data ?? [];
+}
 
 type DerivedStatus = "pending" | "in_progress" | "completed" | "failed";
 
@@ -96,8 +110,8 @@ function ManifestsPageInner() {
     setError(null);
     setLoading(true);
     try {
-      const resp = await carriersApi.manifest(date, carrierId);
-      setEntries(resp.data ?? []);
+      const data = await fetchManifest(date, carrierId);
+      setEntries(data);
     } catch (e) {
       const err = e as { message?: string };
       setError(err?.message ?? "Failed to load manifest");
