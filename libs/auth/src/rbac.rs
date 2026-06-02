@@ -38,6 +38,8 @@ pub mod permissions {
     // Aliases used by the payments service HTTP handlers
     pub const BILLING_VIEW:      &str = "payments:read";
     pub const BILLING_MANAGE:    &str = "payments:reconcile";
+    /// Elevated billing admin — approve/disburse/reject withdrawal requests.
+    pub const BILLING_ADMIN:     &str = "payments:admin";
     // Narrow self-scoped permission: a driver may read their own day's COD
     // summary (end-of-shift cash bag) but nothing else billing-related.
     pub const DRIVER_COD_VIEW:   &str = "payments:cod-read-own";
@@ -94,6 +96,7 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::DRIVER_CREATE, permissions::DRIVER_READ, permissions::DRIVER_MANAGE,
             permissions::FLEET_READ, permissions::FLEET_MANAGE,
             permissions::PAYMENTS_READ, permissions::PAYMENTS_RECONCILE, permissions::PAYMENTS_EXPORT,
+            permissions::BILLING_ADMIN,
             permissions::ANALYTICS_VIEW, permissions::ANALYTICS_EXPORT,
             permissions::CAMPAIGNS_CREATE, permissions::CAMPAIGNS_SEND,
             permissions::USERS_INVITE, permissions::USERS_MANAGE,
@@ -121,7 +124,8 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
         ],
         "finance" => vec![
             permissions::PAYMENTS_READ, permissions::PAYMENTS_RECONCILE,
-            permissions::PAYMENTS_EXPORT, permissions::ANALYTICS_VIEW,
+            permissions::PAYMENTS_EXPORT, permissions::BILLING_ADMIN,
+            permissions::ANALYTICS_VIEW,
         ],
         "readonly" => vec![
             permissions::SHIPMENT_READ, permissions::DISPATCH_VIEW,
@@ -147,6 +151,7 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::DRIVER_CREATE, permissions::DRIVER_READ, permissions::DRIVER_MANAGE,
             permissions::FLEET_READ, permissions::FLEET_MANAGE,
             permissions::PAYMENTS_READ, permissions::PAYMENTS_RECONCILE, permissions::PAYMENTS_EXPORT,
+            permissions::BILLING_ADMIN,
             permissions::ANALYTICS_VIEW, permissions::ANALYTICS_EXPORT,
             permissions::CAMPAIGNS_CREATE, permissions::CAMPAIGNS_SEND,
             permissions::USERS_INVITE, permissions::USERS_MANAGE,

@@ -9,6 +9,7 @@ pub const MARKETPLACE_PICKUP_RECORDED:     &str = "logisticos.carrier.marketplac
 
 // Identity
 pub const TENANT_CREATED:            &str = "logisticos.identity.tenant.created";
+pub const TENANT_FINALIZED:          &str = "logisticos.identity.tenant.finalized";
 pub const USER_INVITED:              &str = "logisticos.identity.user.invited";
 pub const USER_CREATED:              &str = "logisticos.identity.user.created";
 
@@ -83,7 +84,7 @@ mod tests {
         let topics: &[&str] = &[
             CARRIER_ONBOARDED, CARRIER_STATUS_CHANGED, CARRIER_ALLOCATED, CARRIER_TRACKING_EVENT,
             MARKETPLACE_BOOKING_ACCEPTED, MARKETPLACE_BOOKING_REJECTED, MARKETPLACE_PICKUP_RECORDED,
-            TENANT_CREATED, USER_CREATED, USER_INVITED,
+            TENANT_CREATED, TENANT_FINALIZED, USER_CREATED, USER_INVITED,
             SHIPMENT_CREATED, SHIPMENT_CONFIRMED, SHIPMENT_CANCELLED, SHIPMENT_RESCHEDULED,
             AWB_ISSUED, PIECE_SCANNED, WEIGHT_DISCREPANCY_FOUND,
             PALLET_SEALED, CONTAINER_DEPARTED, CONTAINER_ARRIVED,

@@ -110,7 +110,7 @@ async fn handle_shipment_created(
         origin_lat:           d.origin_lat,
         origin_lng:           d.origin_lng,
         cod_amount_cents:     d.cod_amount_cents,
-        special_instructions: None,             // TODO: ShipmentCreated payload doesn't carry special_instructions yet
+        special_instructions: d.special_instructions.clone(),
         service_type:         d.service_type,
         status:               "pending".to_string(),
         auto_dispatch_attempts: 0,

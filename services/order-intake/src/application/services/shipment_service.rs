@@ -76,6 +76,17 @@ pub trait AddressNormalizer: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<logisticos_types::Address>> + Send + 'a>>;
 }
 
+/// Human-readable SLA label for the estimated delivery field on `ShipmentCreated`.
+fn sla_label(service_type: &str) -> &'static str {
+    match service_type {
+        "express"       => "Next business day",
+        "same_day"      => "Today",
+        "balikbayan"    => "21–45 business days",
+        "international" => "7–14 business days",
+        _               => "2–3 business days",  // standard (default)
+    }
+}
+
 pub struct ShipmentService {
     pub repo:          Arc<dyn ShipmentRepository>,
     pub publisher:     Arc<dyn EventPublisher>,
@@ -291,9 +302,10 @@ impl ShipmentService {
                 total_fee_cents,
                 currency:             "PHP".into(),
                 weight_grams:         billable_grams,
-                estimated_delivery:   String::new(), // TODO: derive from service_type SLA
+                estimated_delivery:   sla_label(service_type.as_str()).to_string(),
                 booked_by_customer:   shipment.booked_by_customer,
-                auto_dispatch:        shipment.auto_dispatch,  // true = nearest-driver auto-assign on creation
+                auto_dispatch:        shipment.auto_dispatch,
+                special_instructions: shipment.special_instructions.clone(),
             },
         );
         let payload = serde_json::to_string(&event).map_err(|e| AppError::Internal(e.into()))?;

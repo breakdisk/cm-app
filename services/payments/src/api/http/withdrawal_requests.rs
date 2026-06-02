@@ -13,8 +13,7 @@ pub async fn list_withdrawal_requests(
     AuthClaims(claims): AuthClaims,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // TODO: define BILLING_ADMIN permission in rbac.rs
-    require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_MANAGE);
+    require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_ADMIN);
     let requests = state.withdrawal_service.list_pending(claims.tenant_id).await?;
     Ok(Json(serde_json::json!({ "data": requests })))
 }
@@ -25,8 +24,7 @@ pub async fn approve_withdrawal(
     Path(id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // TODO: define BILLING_ADMIN permission in rbac.rs
-    require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_MANAGE);
+    require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_ADMIN);
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let req = state.withdrawal_service.approve(id, claims.user_id, &tenant_id).await?;
     Ok(Json(serde_json::json!({ "data": req })))
@@ -38,8 +36,7 @@ pub async fn disburse_withdrawal(
     Path(id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // TODO: define BILLING_ADMIN permission in rbac.rs
-    require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_MANAGE);
+    require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_ADMIN);
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let req = state.withdrawal_service.disburse(id, claims.user_id, &tenant_id).await?;
     Ok(Json(serde_json::json!({ "data": req })))
@@ -55,8 +52,7 @@ pub async fn reject_withdrawal(
     State(state): State<Arc<AppState>>,
     Json(body): Json<RejectBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // TODO: define BILLING_ADMIN permission in rbac.rs
-    require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_MANAGE);
+    require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_ADMIN);
     if body.reason.trim().is_empty() {
         return Err(AppError::BusinessRule("Rejection reason must not be empty".into()));
     }

@@ -26,7 +26,7 @@ function getComplianceClient() {
 }
 
 export type DocumentStatus = 'pending' | 'approved' | 'rejected' | 'expired';
-export type ContentType = 'image/jpeg' | 'image/png' | 'application/pdf';
+export type ContentType = 'image/jpeg' | 'image/png' | 'image/webp' | 'application/pdf';
 
 export interface DriverDocument {
   id: string;

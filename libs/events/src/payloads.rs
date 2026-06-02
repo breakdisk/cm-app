@@ -11,6 +11,16 @@ pub struct TenantCreated {
     pub subscription_tier: String,
 }
 
+/// Emitted by identity when a draft tenant completes onboarding setup.
+/// Consumed by: engagement (send welcome email), billing (create billing account).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TenantFinalized {
+    pub tenant_id:     Uuid,
+    pub name:          String,
+    pub owner_email:   String,
+    pub finalized_at:  String,
+}
+
 // Enriched ShipmentCreated — consumed by dispatch, engagement, analytics, delivery-experience
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShipmentCreated {
@@ -72,6 +82,10 @@ pub struct ShipmentCreated {
     /// compatibility with events emitted before this field existed.
     #[serde(default)]
     pub auto_dispatch:        bool,
+    /// Free-text delivery notes from the merchant (e.g. "Leave at reception").
+    /// Passed through to the dispatch task and shown to the driver.
+    #[serde(default)]
+    pub special_instructions: Option<String>,
 }
 
 fn default_currency() -> String { "PHP".into() }

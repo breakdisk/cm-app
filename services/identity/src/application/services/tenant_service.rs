@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use logisticos_auth::password::hash_password;
 use logisticos_errors::{AppError, AppResult};
-use logisticos_events::{producer::KafkaProducer, topics, payloads::{TenantCreated, UserCreated}, envelope::Event};
+use logisticos_events::{producer::KafkaProducer, topics, payloads::{TenantCreated, TenantFinalized, UserCreated}, envelope::Event};
 use crate::{
     application::commands::{CreateTenantCommand, FinalizeTenantCommand, GenerateDriverInviteLinkResult, InviteUserCommand},
     domain::{
@@ -131,10 +131,27 @@ impl TenantService {
             "Tenant finalized"
         );
 
-        // TODO: emit `tenant.finalized` Kafka event once libs/events has the
-        // payload; downstream consumers (engagement welcome flow, billing
-        // setup) currently react to `tenant.created` which is already fired
-        // for draft tenants at provision time.
+        // Emit tenant.finalized — consumed by engagement (welcome flow) and
+        // billing (create billing account). Fire-and-forget; Kafka outages
+        // must not block tenant activation.
+        let fin_event = Event::new(
+            "logisticos/identity",
+            "tenant.finalized",
+            tenant.id.inner(),
+            TenantFinalized {
+                tenant_id:    tenant.id.inner(),
+                name:         tenant.name.clone(),
+                owner_email:  tenant.owner_email.clone(),
+                finalized_at: chrono::Utc::now().to_rfc3339(),
+            },
+        );
+        if let Err(e) = self.kafka.publish_event(topics::TENANT_FINALIZED, &fin_event).await {
+            tracing::warn!(
+                error = %e,
+                tenant_id = %tenant.id,
+                "TenantFinalized event publish failed (non-fatal)"
+            );
+        }
 
         Ok(tenant)
     }
