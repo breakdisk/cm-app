@@ -124,6 +124,10 @@ impl PalletService {
         Self { pallet_repo, container_repo, kafka }
     }
 
+    pub async fn find_pallet(&self, id: PalletId) -> AppResult<Option<Pallet>> {
+        self.pallet_repo.find_by_id(&id).await.map_err(AppError::Internal)
+    }
+
     // ── Piece → Pallet ────────────────────────────────────────────────────────
 
     /// Load a scanned piece onto an open pallet at the hub.

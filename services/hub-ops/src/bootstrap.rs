@@ -16,7 +16,7 @@ use logisticos_auth::middleware::AuthClaims;
 use logisticos_auth::rbac::permissions;
 use logisticos_errors::AppError;
 
-use logisticos_events::{producer::KafkaProducer, topics};
+use logisticos_events::producer::KafkaProducer;
 
 use crate::{
     application::services::{
@@ -29,8 +29,8 @@ use crate::{
         },
         PalletService,
         pallet_service::{
-            ArriveContainerCommand, DepartContainerCommand, LoadPieceCommand,
-            SealPalletCommand, LoadPalletIntoContainerCommand, CreateContainerCommand,
+            ArriveContainerCommand, LoadPieceCommand,
+            SealPalletCommand, LoadPalletIntoContainerCommand,
         },
     },
     domain::entities::consolidation::{ConsolidationPlan, TruckSpec},
@@ -1228,17 +1228,11 @@ async fn get_pallet_handler(
     Ok::<_, AppError>((StatusCode::OK, Json(pallet)))
 }
 
-#[derive(serde::Deserialize)]
-struct SealPalletBody {
-    // sealed_by comes from JWT claims; body may be empty
-}
-
 /// `POST /v1/pallets/:id/seal` — seal a pallet (no more pieces).
 async fn seal_pallet_handler(
     State(s): State<AppState>,
     claims: AuthClaims,
     Path(id): Path<Uuid>,
-    _body: Option<Json<SealPalletBody>>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
     let pallet = s.pallet_svc.seal_pallet(SealPalletCommand {
@@ -1511,6 +1505,12 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/v1/containers/:id/load-loose-piece", post(load_loose_piece_handler))
         .route("/v1/containers/:id/finalise",         post(finalise_manifest_handler))
         .route("/v1/containers/:id/depart",           axum::routing::put(depart_container))
+        // Pallet lifecycle — piece scanning, sealing, container loading
+        .route("/v1/hubs/:id/pieces",          post(scan_piece_handler))
+        .route("/v1/pallets/:id",              get(get_pallet_handler))
+        .route("/v1/pallets/:id/seal",         post(seal_pallet_handler))
+        .route("/v1/pallets/:id/load",         post(load_pallet_into_container_handler))
+        .route("/v1/containers/:id/arrive",    post(arrive_container_handler))
         // Consolidation — truck specs
         .route("/v1/consolidation/specs",     get(list_truck_specs).post(create_truck_spec))
         .route("/v1/consolidation/specs/:id", axum::routing::put(update_truck_spec))
