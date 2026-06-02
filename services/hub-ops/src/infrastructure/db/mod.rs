@@ -16,11 +16,21 @@ use async_trait::async_trait;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use logisticos_types::TenantId;
+use logisticos_types::{
+    TenantId, PalletId, ContainerId, PalletStatus, ContainerStatus, TransportMode,
+    awb::{Awb, ChildAwb},
+};
 
 use crate::{
-    application::services::{HubRepository, InductionRepository},
-    domain::entities::{Hub, HubId, InductionId, InductionStatus, ParcelInduction},
+    application::services::{
+        HubRepository, InductionRepository,
+        pallet_service::{PalletRepository, ContainerRepository},
+    },
+    domain::entities::{
+        Hub, HubId, InductionId, InductionStatus, ParcelInduction,
+        pallet::Pallet,
+        container::Container,
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -333,6 +343,403 @@ impl InductionRepository for PgInductionRepository {
         .execute(&self.pool)
         .await?;
 
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers: enum → DB string
+// ---------------------------------------------------------------------------
+
+fn pallet_status_str(s: &PalletStatus) -> &'static str {
+    match s {
+        PalletStatus::Open      => "open",
+        PalletStatus::Sealed    => "sealed",
+        PalletStatus::Loaded    => "loaded",
+        PalletStatus::InTransit => "in_transit",
+        PalletStatus::Arrived   => "arrived",
+        PalletStatus::Broken    => "broken",
+    }
+}
+
+fn pallet_status_from_str(s: &str) -> PalletStatus {
+    match s {
+        "sealed"     => PalletStatus::Sealed,
+        "loaded"     => PalletStatus::Loaded,
+        "in_transit" => PalletStatus::InTransit,
+        "arrived"    => PalletStatus::Arrived,
+        "broken"     => PalletStatus::Broken,
+        _            => PalletStatus::Open,
+    }
+}
+
+fn container_status_str(s: &ContainerStatus) -> &'static str {
+    match s {
+        ContainerStatus::Planning      => "planning",
+        ContainerStatus::Manifested    => "manifested",
+        ContainerStatus::Loading       => "loading",
+        ContainerStatus::Sealed        => "sealed",
+        ContainerStatus::InTransit     => "in_transit",
+        ContainerStatus::ArrivedAtPort => "arrived_at_port",
+        ContainerStatus::Customs       => "customs",
+        ContainerStatus::Released      => "released",
+        ContainerStatus::Delivered     => "delivered",
+    }
+}
+
+fn container_status_from_str(s: &str) -> ContainerStatus {
+    match s {
+        "manifested"      => ContainerStatus::Manifested,
+        "loading"         => ContainerStatus::Loading,
+        "sealed"          => ContainerStatus::Sealed,
+        "in_transit"      => ContainerStatus::InTransit,
+        "arrived_at_port" => ContainerStatus::ArrivedAtPort,
+        "customs"         => ContainerStatus::Customs,
+        "released"        => ContainerStatus::Released,
+        "delivered"       => ContainerStatus::Delivered,
+        _                 => ContainerStatus::Planning,
+    }
+}
+
+fn transport_mode_str(m: &TransportMode) -> &'static str {
+    match m {
+        TransportMode::Road                              => "road",
+        TransportMode::SeaFcl | TransportMode::SeaLcl   => "sea",
+        TransportMode::AirUld | TransportMode::AirLoose => "air",
+    }
+}
+
+fn transport_mode_from_str(s: &str) -> TransportMode {
+    match s {
+        "sea" => TransportMode::SeaFcl,
+        "air" => TransportMode::AirUld,
+        _     => TransportMode::Road,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PgPalletRepository
+// ---------------------------------------------------------------------------
+
+#[derive(sqlx::FromRow)]
+struct PalletRow {
+    id:                 Uuid,
+    tenant_id:          Uuid,
+    origin_hub_id:      Uuid,
+    destination_hub_id: Option<Uuid>,
+    total_weight_grams: i32,
+    status:             String,
+    sealed_at:          Option<chrono::DateTime<chrono::Utc>>,
+    sealed_by:          Option<Uuid>,
+    created_at:         chrono::DateTime<chrono::Utc>,
+    updated_at:         chrono::DateTime<chrono::Utc>,
+}
+
+pub struct PgPalletRepository {
+    pub pool: PgPool,
+}
+
+impl PgPalletRepository {
+    pub fn new(pool: PgPool) -> Self { Self { pool } }
+
+    async fn load_pieces(&self, pallet_id: Uuid) -> anyhow::Result<Vec<ChildAwb>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT piece_awb FROM hub_ops.pallet_pieces WHERE pallet_id = $1 ORDER BY loaded_at"
+        )
+        .bind(pallet_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|(awb,)| ChildAwb::parse(&awb).map_err(|e| anyhow::anyhow!("{e}")))
+            .collect()
+    }
+
+    fn row_to_pallet(&self, r: PalletRow, pieces: Vec<ChildAwb>) -> Pallet {
+        Pallet {
+            id:                 PalletId::from_uuid(r.id),
+            tenant_id:          TenantId::from_uuid(r.tenant_id),
+            origin_hub_id:      logisticos_types::HubId::from_uuid(r.origin_hub_id),
+            destination_hub:    r.destination_hub_id.map(logisticos_types::HubId::from_uuid),
+            pieces,
+            total_weight_grams: r.total_weight_grams as u32,
+            status:             pallet_status_from_str(&r.status),
+            created_at:         r.created_at,
+            sealed_at:          r.sealed_at,
+            sealed_by:          r.sealed_by,
+            updated_at:         r.updated_at,
+        }
+    }
+}
+
+#[async_trait]
+impl PalletRepository for PgPalletRepository {
+    async fn find_by_id(&self, id: &PalletId) -> anyhow::Result<Option<Pallet>> {
+        let row = sqlx::query_as::<_, PalletRow>(
+            r#"SELECT id, tenant_id, origin_hub_id, destination_hub_id,
+                      total_weight_grams, status, sealed_at, sealed_by,
+                      created_at, updated_at
+               FROM hub_ops.pallets WHERE id = $1"#
+        )
+        .bind(id.inner())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            None    => Ok(None),
+            Some(r) => {
+                let pieces = self.load_pieces(r.id).await?;
+                Ok(Some(self.row_to_pallet(r, pieces)))
+            }
+        }
+    }
+
+    async fn find_open_for_hub(
+        &self,
+        hub_id:             &logisticos_types::HubId,
+        destination_hub_id: Option<&logisticos_types::HubId>,
+    ) -> anyhow::Result<Option<Pallet>> {
+        let row = match destination_hub_id {
+            Some(dest) => sqlx::query_as::<_, PalletRow>(
+                r#"SELECT id, tenant_id, origin_hub_id, destination_hub_id,
+                          total_weight_grams, status, sealed_at, sealed_by,
+                          created_at, updated_at
+                   FROM hub_ops.pallets
+                   WHERE origin_hub_id = $1 AND destination_hub_id = $2 AND status = 'open'
+                   ORDER BY created_at ASC LIMIT 1"#
+            )
+            .bind(hub_id.inner()).bind(dest.inner())
+            .fetch_optional(&self.pool)
+            .await?,
+
+            None => sqlx::query_as::<_, PalletRow>(
+                r#"SELECT id, tenant_id, origin_hub_id, destination_hub_id,
+                          total_weight_grams, status, sealed_at, sealed_by,
+                          created_at, updated_at
+                   FROM hub_ops.pallets
+                   WHERE origin_hub_id = $1 AND destination_hub_id IS NULL AND status = 'open'
+                   ORDER BY created_at ASC LIMIT 1"#
+            )
+            .bind(hub_id.inner())
+            .fetch_optional(&self.pool)
+            .await?,
+        };
+
+        match row {
+            None    => Ok(None),
+            Some(r) => {
+                let pieces = self.load_pieces(r.id).await?;
+                Ok(Some(self.row_to_pallet(r, pieces)))
+            }
+        }
+    }
+
+    async fn save(&self, pallet: &Pallet) -> anyhow::Result<()> {
+        let status = pallet_status_str(&pallet.status);
+        sqlx::query(
+            r#"INSERT INTO hub_ops.pallets
+               (id, tenant_id, origin_hub_id, destination_hub_id,
+                total_weight_grams, status, sealed_at, sealed_by, created_at, updated_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+               ON CONFLICT (id) DO UPDATE SET
+                total_weight_grams = EXCLUDED.total_weight_grams,
+                status             = EXCLUDED.status,
+                sealed_at          = EXCLUDED.sealed_at,
+                sealed_by          = EXCLUDED.sealed_by,
+                updated_at         = EXCLUDED.updated_at"#
+        )
+        .bind(pallet.id.inner())
+        .bind(pallet.tenant_id.inner())
+        .bind(pallet.origin_hub_id.inner())
+        .bind(pallet.destination_hub.as_ref().map(|h| h.inner()))
+        .bind(pallet.total_weight_grams as i32)
+        .bind(status)
+        .bind(pallet.sealed_at)
+        .bind(pallet.sealed_by)
+        .bind(pallet.created_at)
+        .bind(pallet.updated_at)
+        .execute(&self.pool)
+        .await?;
+
+        // Insert new pieces — append-only; ignore already-stored ones.
+        for piece in &pallet.pieces {
+            sqlx::query(
+                "INSERT INTO hub_ops.pallet_pieces (pallet_id, tenant_id, piece_awb)
+                 VALUES ($1,$2,$3)
+                 ON CONFLICT (piece_awb) DO NOTHING"
+            )
+            .bind(pallet.id.inner())
+            .bind(pallet.tenant_id.inner())
+            .bind(piece.as_str())
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PgPalletContainerRepository  (ContainerRepository trait for PalletService)
+// ---------------------------------------------------------------------------
+
+#[derive(sqlx::FromRow)]
+struct ContainerRow2 {
+    id:                 Uuid,
+    tenant_id:          Uuid,
+    transport_mode:     String,
+    carrier_ref:        Option<String>,
+    origin_hub_id:      Uuid,
+    destination_hub_id: Uuid,
+    master_awbs:        Vec<String>,
+    status:             String,
+    departed_at:        Option<chrono::DateTime<chrono::Utc>>,
+    estimated_arrival:  Option<chrono::DateTime<chrono::Utc>>,
+    arrived_at:         Option<chrono::DateTime<chrono::Utc>>,
+    created_at:         chrono::DateTime<chrono::Utc>,
+    updated_at:         chrono::DateTime<chrono::Utc>,
+}
+
+pub struct PgPalletContainerRepository {
+    pub pool: PgPool,
+}
+
+impl PgPalletContainerRepository {
+    pub fn new(pool: PgPool) -> Self { Self { pool } }
+
+    async fn load_pallet_ids(&self, container_id: Uuid) -> anyhow::Result<Vec<PalletId>> {
+        let rows: Vec<(Uuid,)> = sqlx::query_as(
+            "SELECT pallet_id FROM hub_ops.container_pallets WHERE container_id = $1"
+        )
+        .bind(container_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(id,)| PalletId::from_uuid(id)).collect())
+    }
+
+    async fn load_loose_pieces(&self, container_id: Uuid) -> anyhow::Result<Vec<ChildAwb>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT piece_awb FROM hub_ops.container_loose_pieces WHERE container_id = $1"
+        )
+        .bind(container_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|(awb,)| ChildAwb::parse(&awb).map_err(|e| anyhow::anyhow!("{e}")))
+            .collect()
+    }
+
+    fn row_to_container(&self, r: ContainerRow2, pallets: Vec<PalletId>, loose: Vec<ChildAwb>) -> Container {
+        let master_awbs: Vec<Awb> = r.master_awbs.iter()
+            .filter_map(|s| Awb::parse(s).ok())
+            .collect();
+        Container {
+            id:                ContainerId::from_uuid(r.id),
+            tenant_id:         TenantId::from_uuid(r.tenant_id),
+            transport_mode:    transport_mode_from_str(&r.transport_mode),
+            carrier_ref:       r.carrier_ref,
+            origin_hub_id:     logisticos_types::HubId::from_uuid(r.origin_hub_id),
+            destination_hub:   logisticos_types::HubId::from_uuid(r.destination_hub_id),
+            pallets,
+            loose_pieces:      loose,
+            master_awbs,
+            truck_spec_id:     None,
+            status:            container_status_from_str(&r.status),
+            departed_at:       r.departed_at,
+            estimated_arrival: r.estimated_arrival,
+            arrived_at:        r.arrived_at,
+            created_at:        r.created_at,
+            updated_at:        r.updated_at,
+        }
+    }
+}
+
+#[async_trait]
+impl ContainerRepository for PgPalletContainerRepository {
+    async fn find_by_id(&self, id: &ContainerId) -> anyhow::Result<Option<Container>> {
+        let row = sqlx::query_as::<_, ContainerRow2>(
+            r#"SELECT id, tenant_id, transport_mode, carrier_ref,
+                      origin_hub_id, destination_hub_id, master_awbs,
+                      status, departed_at, estimated_arrival, arrived_at,
+                      created_at, updated_at
+               FROM hub_ops.containers WHERE id = $1"#
+        )
+        .bind(id.inner())
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            None    => Ok(None),
+            Some(r) => {
+                let id_uuid = r.id;
+                let pallets = self.load_pallet_ids(id_uuid).await?;
+                let loose   = self.load_loose_pieces(id_uuid).await?;
+                Ok(Some(self.row_to_container(r, pallets, loose)))
+            }
+        }
+    }
+
+    async fn save(&self, c: &Container) -> anyhow::Result<()> {
+        let status       = container_status_str(&c.status);
+        let mode         = transport_mode_str(&c.transport_mode);
+        let master_awbs: Vec<&str> = c.master_awbs.iter().map(|a| a.as_str()).collect();
+
+        sqlx::query(
+            r#"INSERT INTO hub_ops.containers
+               (id, tenant_id, transport_mode, carrier_ref,
+                origin_hub_id, destination_hub_id, master_awbs,
+                status, departed_at, estimated_arrival, arrived_at,
+                created_at, updated_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+               ON CONFLICT (id) DO UPDATE SET
+                master_awbs       = EXCLUDED.master_awbs,
+                status            = EXCLUDED.status,
+                departed_at       = EXCLUDED.departed_at,
+                estimated_arrival = EXCLUDED.estimated_arrival,
+                arrived_at        = EXCLUDED.arrived_at,
+                updated_at        = EXCLUDED.updated_at"#
+        )
+        .bind(c.id.inner())
+        .bind(c.tenant_id.inner())
+        .bind(mode)
+        .bind(&c.carrier_ref)
+        .bind(c.origin_hub_id.inner())
+        .bind(c.destination_hub.inner())
+        .bind(&master_awbs)
+        .bind(status)
+        .bind(c.departed_at)
+        .bind(c.estimated_arrival)
+        .bind(c.arrived_at)
+        .bind(c.created_at)
+        .bind(c.updated_at)
+        .execute(&self.pool)
+        .await?;
+
+        // Insert pallet links — ignore duplicates.
+        for pallet_id in &c.pallets {
+            sqlx::query(
+                "INSERT INTO hub_ops.container_pallets (container_id, pallet_id, tenant_id)
+                 VALUES ($1,$2,$3)
+                 ON CONFLICT (container_id, pallet_id) DO NOTHING"
+            )
+            .bind(c.id.inner())
+            .bind(pallet_id.inner())
+            .bind(c.tenant_id.inner())
+            .execute(&self.pool)
+            .await?;
+        }
+
+        // Insert loose pieces — ignore duplicates.
+        for piece in &c.loose_pieces {
+            sqlx::query(
+                "INSERT INTO hub_ops.container_loose_pieces (container_id, tenant_id, piece_awb)
+                 VALUES ($1,$2,$3)
+                 ON CONFLICT (piece_awb) DO NOTHING"
+            )
+            .bind(c.id.inner())
+            .bind(c.tenant_id.inner())
+            .bind(piece.as_str())
+            .execute(&self.pool)
+            .await?;
+        }
         Ok(())
     }
 }

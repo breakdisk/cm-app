@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 import { authFetch } from "@/lib/auth/auth-fetch";
+import QRCodeSVG from "react-qr-code";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -463,6 +464,10 @@ function DeliveryReceiptModal({ shipment, onClose }: { shipment: Shipment; onClo
   const [popPhotoUrl,   setPopPhotoUrl]   = useState<string | null>(null);
   const [loading,       setLoading]       = useState(true);
   const [copied,        setCopied]        = useState(false);
+  const [sharedLink,    setSharedLink]    = useState(false);
+  const [showSendForm,  setShowSendForm]  = useState(false);
+  const [sendEmail,     setSendEmail]     = useState("");
+  const [sendStatus,    setSendStatus]    = useState<"idle" | "sending" | "sent" | "error">("idle");
 
   useEffect(() => {
     // The delivery-experience authenticated tracking endpoint now returns an
@@ -504,6 +509,31 @@ function DeliveryReceiptModal({ shipment, onClose }: { shipment: Shipment; onClo
     setTimeout(() => setCopied(false), 2000);
   }
 
+  function shareTrackingLink() {
+    const url = `${DELIVERY_EXPERIENCE_URL}/track/${shipment.tracking_number}`;
+    if (navigator.share) {
+      navigator.share({ title: "Track your shipment", url }).catch(() => {});
+    } else {
+      navigator.clipboard.writeText(url).catch(() => {});
+    }
+    setSharedLink(true);
+    setTimeout(() => setSharedLink(false), 2000);
+  }
+
+  async function handleSendReceipt() {
+    if (!sendEmail.trim() || sendStatus === "sending") return;
+    setSendStatus("sending");
+    try {
+      const res = await authFetch(
+        `${DELIVERY_EXPERIENCE_URL}/v1/tracking/${shipment.tracking_number}/send-receipt`,
+        { method: "POST", body: JSON.stringify({ email: sendEmail.trim() }) },
+      );
+      setSendStatus(res.ok ? "sent" : "error");
+    } catch {
+      setSendStatus("error");
+    }
+  }
+
   const deliveryDate = deliveredAt
     ? new Date(deliveredAt).toLocaleString("en-PH", { dateStyle: "medium", timeStyle: "short" })
     : "—";
@@ -537,10 +567,16 @@ function DeliveryReceiptModal({ shipment, onClose }: { shipment: Shipment; onClo
 
         {/* Body */}
         <div className="flex flex-col gap-4 px-6 py-6 max-h-[80vh] overflow-y-auto overscroll-contain">
-          {/* AWB block */}
+          {/* AWB block — real scannable QR */}
           <div className="flex flex-col items-center gap-3 rounded-2xl border border-green-signal/20 bg-glass-100 p-5">
-            <div className="flex h-16 w-16 items-center justify-center rounded-xl border border-white/10 bg-white/5">
-              <QrCode size={32} className="text-green-signal" />
+            <div className="rounded-xl border-2 border-white/10 bg-white p-3">
+              <QRCodeSVG
+                value={shipment.tracking_number}
+                size={140}
+                bgColor="#FFFFFF"
+                fgColor="#050810"
+                level="M"
+              />
             </div>
             <p className="font-mono text-lg font-bold text-green-signal tracking-wider">{shipment.tracking_number}</p>
             <button
@@ -626,6 +662,59 @@ function DeliveryReceiptModal({ shipment, onClose }: { shipment: Shipment; onClo
           <p className="text-2xs font-mono text-center text-white/25">
             POD captured by driver · verified via LogisticOS
           </p>
+
+          {/* Share + Send Receipt actions */}
+          <div className="flex gap-2">
+            <button
+              onClick={shareTrackingLink}
+              className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-glass-border bg-glass-100 py-2.5 text-xs font-mono text-white/50 hover:text-white transition-colors"
+            >
+              <Share2 size={12} />
+              {sharedLink ? "Copied!" : "Share Link"}
+            </button>
+            <button
+              onClick={() => { setShowSendForm(v => !v); setSendStatus("idle"); }}
+              className={cn(
+                "flex flex-1 items-center justify-center gap-1.5 rounded-xl border py-2.5 text-xs font-mono transition-colors",
+                showSendForm
+                  ? "border-cyan-neon/30 bg-cyan-surface text-cyan-neon"
+                  : "border-glass-border bg-glass-100 text-white/50 hover:text-white",
+              )}
+            >
+              <FileText size={12} />
+              Send Receipt
+            </button>
+          </div>
+
+          {/* Inline send-receipt email form */}
+          {showSendForm && (
+            <div className="rounded-xl border border-glass-border bg-glass-100 p-4 space-y-2">
+              <p className="text-2xs font-mono text-white/40 uppercase tracking-wider">Email receipt to recipient</p>
+              <div className="flex gap-2">
+                <input
+                  type="email"
+                  value={sendEmail}
+                  onChange={(e) => { setSendEmail(e.target.value); setSendStatus("idle"); }}
+                  placeholder="recipient@email.com"
+                  className="flex-1 rounded-lg border border-glass-border bg-glass-200 px-3 py-2 text-xs font-mono text-white placeholder-white/25 focus:outline-none focus:border-cyan-neon/40 transition-colors"
+                />
+                <button
+                  onClick={handleSendReceipt}
+                  disabled={!sendEmail.trim() || sendStatus === "sending" || sendStatus === "sent"}
+                  className="rounded-lg px-4 py-2 text-xs font-semibold text-canvas disabled:opacity-40 transition-opacity"
+                  style={{ background: "linear-gradient(135deg, #00E5FF, #A855F7)" }}
+                >
+                  {sendStatus === "sending" ? "…" : sendStatus === "sent" ? "Sent!" : "Send"}
+                </button>
+              </div>
+              {sendStatus === "error" && (
+                <p className="text-2xs font-mono text-red-400">Failed to send. Please try again.</p>
+              )}
+              {sendStatus === "sent" && (
+                <p className="text-2xs font-mono text-green-signal">Receipt sent to {sendEmail}</p>
+              )}
+            </div>
+          )}
 
           <button
             onClick={onClose}

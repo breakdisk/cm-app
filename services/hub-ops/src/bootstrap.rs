@@ -16,6 +16,8 @@ use logisticos_auth::middleware::AuthClaims;
 use logisticos_auth::rbac::permissions;
 use logisticos_errors::AppError;
 
+use logisticos_events::{producer::KafkaProducer, topics};
+
 use crate::{
     application::services::{
         CreateHubCommand, HubRepository, HubService, InductParcelCommand,
@@ -25,9 +27,17 @@ use crate::{
             ComputePlanCommand, CreateSpecCommand, ConsolidationPlanRepository,
             TruckSpecRepository, UpdatePlacementsBody, UpdateSpecCommand,
         },
+        PalletService,
+        pallet_service::{
+            ArriveContainerCommand, DepartContainerCommand, LoadPieceCommand,
+            SealPalletCommand, LoadPalletIntoContainerCommand, CreateContainerCommand,
+        },
     },
     domain::entities::consolidation::{ConsolidationPlan, TruckSpec},
-    infrastructure::hub_ws::HubBroadcaster,
+    infrastructure::{
+        hub_ws::HubBroadcaster,
+        db::{PgPalletRepository, PgPalletContainerRepository},
+    },
     config::Config,
 };
 
@@ -710,6 +720,7 @@ struct AppState {
     svc:               Arc<HubService>,
     containers:        Arc<PgContainerRepository>,
     consolidation_svc: Arc<ConsolidationService>,
+    pallet_svc:        Arc<PalletService>,
     hub_broadcaster:   HubBroadcaster,
     payments_url:      String,
     pod_url:           String,
@@ -1157,6 +1168,144 @@ async fn throughput_today(State(s): State<AppState>, claims: AuthClaims) -> impl
 }
 
 // ---------------------------------------------------------------------------
+// Pallet lifecycle handlers
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct ScanPieceBody {
+    piece_awb:          String,
+    master_awb:         String,
+    declared_weight_g:  u32,
+    actual_weight_g:    Option<u32>,
+    destination_hub_id: Option<Uuid>,
+}
+
+/// `POST /v1/hubs/:hub_id/pieces` — scan a piece onto the open pallet for this hub.
+async fn scan_piece_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(hub_id): Path<Uuid>,
+    Json(body): Json<ScanPieceBody>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+
+    let piece_awb  = logisticos_types::awb::ChildAwb::parse(&body.piece_awb)
+        .map_err(|e| AppError::Validation(e.to_string()))?;
+    let master_awb = logisticos_types::awb::Awb::parse(&body.master_awb)
+        .map_err(|e| AppError::Validation(e.to_string()))?;
+
+    let pallet = s.pallet_svc.load_piece_onto_pallet(LoadPieceCommand {
+        tenant_id:           logisticos_types::TenantId::from_uuid(claims.tenant_id),
+        hub_id:              logisticos_types::HubId::from_uuid(hub_id),
+        destination_hub_id:  body.destination_hub_id.map(logisticos_types::HubId::from_uuid),
+        piece_awb,
+        master_awb,
+        declared_weight_g:   body.declared_weight_g,
+        actual_weight_g:     body.actual_weight_g,
+        scanned_by:          claims.user_id,
+    }).await.map_err(|e| AppError::BusinessRule(e.to_string()))?;
+
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+        "pallet_id":    pallet.id,
+        "piece_count":  pallet.piece_count(),
+        "weight_kg":    pallet.total_weight_kg(),
+        "status":       format!("{:?}", pallet.status),
+    }))))
+}
+
+/// `GET /v1/pallets/:id` — fetch pallet state.
+async fn get_pallet_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_READ)?;
+    let pallet = s.pallet_svc
+        .find_pallet(logisticos_types::PalletId::from_uuid(id))
+        .await
+        .map_err(AppError::internal)?
+        .ok_or_else(|| AppError::NotFound { resource: "pallet", id: id.to_string() })?;
+    Ok::<_, AppError>((StatusCode::OK, Json(pallet)))
+}
+
+#[derive(serde::Deserialize)]
+struct SealPalletBody {
+    // sealed_by comes from JWT claims; body may be empty
+}
+
+/// `POST /v1/pallets/:id/seal` — seal a pallet (no more pieces).
+async fn seal_pallet_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+    _body: Option<Json<SealPalletBody>>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    let pallet = s.pallet_svc.seal_pallet(SealPalletCommand {
+        pallet_id: logisticos_types::PalletId::from_uuid(id),
+        sealed_by: claims.user_id,
+    }).await.map_err(|e| AppError::BusinessRule(e.to_string()))?;
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+        "pallet_id":   pallet.id,
+        "piece_count": pallet.piece_count(),
+        "weight_kg":   pallet.total_weight_kg(),
+        "sealed_at":   pallet.sealed_at,
+        "status":      format!("{:?}", pallet.status),
+    }))))
+}
+
+#[derive(serde::Deserialize)]
+struct LoadPalletIntoContainerBody {
+    container_id: Uuid,
+    /// Master AWBs in this pallet — used to populate container.master_awbs.
+    /// If omitted the container's AWB denorm won't be updated at load time.
+    #[serde(default)]
+    pallet_awbs: Vec<String>,
+}
+
+/// `POST /v1/pallets/:id/load` — load a sealed pallet into a container.
+async fn load_pallet_into_container_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(pallet_id): Path<Uuid>,
+    Json(body): Json<LoadPalletIntoContainerBody>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+
+    let pallet_awbs: Vec<logisticos_types::awb::Awb> = body.pallet_awbs
+        .iter()
+        .filter_map(|s| logisticos_types::awb::Awb::parse(s).ok())
+        .collect();
+
+    s.pallet_svc.load_pallet_into_container(LoadPalletIntoContainerCommand {
+        container_id: logisticos_types::ContainerId::from_uuid(body.container_id),
+        pallet_id:    logisticos_types::PalletId::from_uuid(pallet_id),
+        pallet_awbs,
+    }).await.map_err(|e| AppError::BusinessRule(e.to_string()))?;
+
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+        "container_id": body.container_id,
+        "pallet_id":    pallet_id,
+    }))))
+}
+
+/// `POST /v1/containers/:id/arrive` — record container arrival at destination hub.
+async fn arrive_container_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(container_id): Path<Uuid>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    s.pallet_svc.arrive_container(ArriveContainerCommand {
+        container_id: logisticos_types::ContainerId::from_uuid(container_id),
+    }).await.map_err(|e| AppError::BusinessRule(e.to_string()))?;
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+        "container_id": container_id,
+        "status":       "delivered",
+    }))))
+}
+
+// ---------------------------------------------------------------------------
 // Consolidation handlers
 // ---------------------------------------------------------------------------
 
@@ -1323,11 +1472,21 @@ pub async fn run() -> anyhow::Result<()> {
     let consolidation_svc = Arc::new(ConsolidationService::new(
         spec_repo, plan_repo, hub_broadcaster.clone(),
     ));
+
+    let kafka = Arc::new(
+        KafkaProducer::new(&cfg.kafka.brokers)
+            .context("failed to create Kafka producer for hub-ops")?,
+    );
+    let pallet_repo    = Arc::new(PgPalletRepository::new(pool.clone()));
+    let pallet_ctr_repo = Arc::new(PgPalletContainerRepository::new(pool.clone()));
+    let pallet_svc     = Arc::new(PalletService::new(pallet_repo, pallet_ctr_repo, kafka));
+
     let payments_url = cfg.payments.url.clone();
     let pod_url      = cfg.pod.url.clone();
     let state = AppState {
         svc, containers: container_repo,
-        consolidation_svc, hub_broadcaster,
+        consolidation_svc, pallet_svc,
+        hub_broadcaster,
         payments_url, pod_url,
         pool: pool.clone(),
     };
