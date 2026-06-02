@@ -1222,8 +1222,7 @@ async fn get_pallet_handler(
     claims.require_permission(permissions::SHIPMENT_READ)?;
     let pallet = s.pallet_svc
         .find_pallet(logisticos_types::PalletId::from_uuid(id))
-        .await
-        .map_err(AppError::internal)?
+        .await?
         .ok_or_else(|| AppError::NotFound { resource: "pallet", id: id.to_string() })?;
     Ok::<_, AppError>((StatusCode::OK, Json(pallet)))
 }
