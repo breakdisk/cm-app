@@ -1,0 +1,133 @@
+# ============================================================
+# LogisticOS — Customer App EAS Build
+# ============================================================
+# Builds the Expo customer app via EAS Build (cloud). The KYC pipeline
+# pulls in native modules (react-native-document-scanner-plugin,
+# react-native-webview) that do not run in Expo Go, so a real EAS/dev
+# build is required to test them.
+#
+# Auth: requires an EXPO_TOKEN repository secret (Expo access token for
+# the `cargomarket` account). Create one at
+# https://expo.dev/accounts/[account]/settings/access-tokens and add it
+# under Settings → Secrets and variables → Actions → New repository secret.
+#
+# Triggered:
+#   - automatically on push to master that touches the customer app
+#     (builds the `preview` profile for Android — internal APK)
+#   - manually (workflow_dispatch) with a choice of platform + profile
+#     and an optional production submit step.
+# ============================================================
+
+name: Build Customer App (EAS)
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "apps/customer-app/**"
+      - ".github/workflows/build-customer-app-eas.yml"
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Target platform"
+        type: choice
+        required: true
+        default: android
+        options:
+          - android
+          - ios
+          - all
+      profile:
+        description: "EAS build profile"
+        type: choice
+        required: true
+        default: preview
+        options:
+          - development
+          - preview
+          - production
+      submit:
+        description: "Submit to store after build (production only)"
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: eas-customer-app-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: EAS Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/customer-app
+    env:
+      # On push, inputs.* are empty → fall back to android/preview.
+      # On workflow_dispatch, the chosen inputs win.
+      PLATFORM: ${{ inputs.platform || 'android' }}
+      PROFILE: ${{ inputs.profile || 'preview' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: apps/customer-app/package-lock.json
+
+      - name: Check EXPO_TOKEN
+        id: token
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        # Missing token is a hard error on a manual run (the user explicitly
+        # asked for a build), but only a skipped build + warning on auto-push
+        # so it never red-X's every master commit before the secret is added.
+        run: |
+          if [ -n "$EXPO_TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "EXPO_TOKEN is present."
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "::error::EXPO_TOKEN repository secret is not set. Add it under Settings → Secrets and variables → Actions."
+            exit 1
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::EXPO_TOKEN not set — skipping the EAS build. Add the secret to enable auto-builds."
+          fi
+
+      - name: Set up EAS
+        if: steps.token.outputs.present == 'true'
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install dependencies
+        if: steps.token.outputs.present == 'true'
+        run: npm ci
+
+      - name: EAS Build (non-interactive, wait for completion)
+        if: steps.token.outputs.present == 'true'
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          eas build \
+            --platform "$PLATFORM" \
+            --profile "$PROFILE" \
+            --non-interactive \
+            --wait
+
+      - name: EAS Submit (production only)
+        if: ${{ steps.token.outputs.present == 'true' && inputs.submit && inputs.profile == 'production' }}
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          eas submit \
+            --platform "$PLATFORM" \
+            --profile production \
+            --non-interactive \
+            --latest
