@@ -26,8 +26,12 @@
       "permissions": [
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.CAMERA",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.CAMERA"
-      ]
+      ],
+      "versionCode": 6
     },
     "web": {
       "bundler": "metro",
@@ -55,6 +59,12 @@
         "projectId": "b6f52d17-dfea-45cf-88bb-c00907b0d90c"
       }
     },
-    "owner": "cargomarket"
+    "owner": "cargomarket",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/b6f52d17-dfea-45cf-88bb-c00907b0d90c"
+    }
   }
 }

@@ -203,17 +203,20 @@ export function QuoteScreen({ navigation, route }: any) {
 
   const handleBookNow = useCallback(() => {
     const size = BOX_SIZES.find(s => s.id === sizeId);
-    navigation.navigate('Book', {
-      prefill: {
-        length_cm: measuredDims?.length ?? size?.dims_cm[0] ?? 0,
-        width_cm:  measuredDims?.width  ?? size?.dims_cm[1] ?? 0,
-        height_cm: measuredDims?.height ?? size?.dims_cm[2] ?? 0,
-        weight_kg: weightKg,
-        box_size:  sizeId,
-        freight_mode: mode,
-        origin: originKey,
-        estimated_total: result?.total_origin_currency,
-        currency: result?.origin_currency,
+    navigation.navigate('Tabs', {
+      screen: 'Book',
+      params: {
+        prefill: {
+          length_cm: measuredDims?.length ?? size?.dims_cm[0] ?? 0,
+          width_cm:  measuredDims?.width  ?? size?.dims_cm[1] ?? 0,
+          height_cm: measuredDims?.height ?? size?.dims_cm[2] ?? 0,
+          weight_kg: weightKg,
+          box_size:  sizeId,
+          freight_mode: mode,
+          origin: originKey,
+          estimated_total: result?.total_origin_currency,
+          currency: result?.origin_currency,
+        },
       },
     });
   }, [navigation, sizeId, measuredDims, weightKg, mode, originKey, result]);

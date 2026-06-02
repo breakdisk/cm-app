@@ -195,7 +195,7 @@ function CountryPickerRN({ value, onChange, accent = CYAN }: {
 
 // ── Main screen ─────────────────────────────────────────────────────────────
 
-export function BookingScreen() {
+export function BookingScreen({ route }: { route?: any }) {
   const dispatch      = useDispatch<AppDispatch>();
   const navigation    = useNavigation<any>();
   const loyaltyPoints = useSelector((s: RootState) => s.auth.loyaltyPoints);
@@ -212,6 +212,19 @@ export function BookingScreen() {
   React.useEffect(() => {
     getStoredToken().then((t) => setIsDemo(!t));
   }, []);
+
+  // Pre-populate form when arriving from QuoteScreen
+  React.useEffect(() => {
+    const prefill = route?.params?.prefill;
+    if (!prefill) return;
+    if (prefill.length_cm)    setBoxLength(String(prefill.length_cm));
+    if (prefill.width_cm)     setBoxWidth(String(prefill.width_cm));
+    if (prefill.height_cm)    setBoxHeight(String(prefill.height_cm));
+    if (prefill.weight_kg)    setWeight(String(prefill.weight_kg));
+    if (prefill.freight_mode) setFreightMode(prefill.freight_mode as FreightMode);
+    // Balikbayan boxes are always destined for the Philippines
+    setReceiverCountry('PH');
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Toast & loading
   const [toastMessage, setToastMessage] = useState("");
@@ -407,7 +420,7 @@ export function BookingScreen() {
           postal_code:  receiverZip || '0000',
           country_code: receiverCountry || 'PH',
         },
-        service_type:      isIntl ? (freightMode === 'sea' ? 'balikbayan' : 'standard') : 'standard',
+        service_type:      isIntl ? (freightMode === 'sea' ? 'balikbayan' : 'express') : 'standard',
         weight_grams:      Math.round((parseFloat(weight) || 1) * 1000),
         description:       isIntl ? (contents || 'Balikbayan Box') : (description || 'Parcel'),
         cod_amount_cents:  isCOD && !isIntl ? Math.round(parseInt(codAmount || '0') * 100) : undefined,
@@ -421,6 +434,7 @@ export function BookingScreen() {
         : now.toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" });
 
       dispatch(shipmentsActions.addShipment({
+        id: response.id,
         awb: response.awb ?? response.tracking_number,
         type: isIntl ? "international" : "local",
         status: "confirmed",
@@ -730,6 +744,16 @@ export function BookingScreen() {
           <FadeInView fromY={16} style={s.card}>
             <Text style={s.cardTitle}>Box Details</Text>
 
+            {/* Pre-fill banner — shown when dimensions came from QuoteScreen */}
+            {route?.params?.prefill && (
+              <FadeInView duration={250} style={[s.intlHint, { borderColor: "rgba(0,255,136,0.25)", backgroundColor: "rgba(0,255,136,0.06)" }]}>
+                <Ionicons name="checkmark-circle-outline" size={14} color={GREEN} />
+                <Text style={[s.intlHintText, { color: "rgba(0,255,136,0.8)" }]}>
+                  Dimensions pre-filled from your quote. Review and adjust if needed.
+                </Text>
+              </FadeInView>
+            )}
+
             <Text style={s.label}>Box Dimensions (cm)</Text>
             <View style={{ flexDirection: "row", gap: 8 }}>
               {([
@@ -1009,7 +1033,7 @@ export function BookingScreen() {
                 <Text style={[s.awbBoxValue, { color: isIntl ? PURPLE : CYAN }]}>{confirmedAwb}</Text>
               </View>
 
-              <AwbQRCode awb={confirmedAwb} size={180} accent={isIntl ? PURPLE : CYAN} />
+              <AwbQRCode awb={confirmedAwb} size={232} accent={isIntl ? PURPLE : CYAN} />
 
               <View style={s.successRows}>
                 {[

@@ -1,6 +1,7 @@
 import React from 'react';
 import { ScrollView, View, Text, Animated, ActivityIndicator, Pressable } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import { useAppSelector } from '../../store/hooks';
 import { useShipments } from '../../hooks/useShipments';
 import { COLORS } from '../../utils/colors';
@@ -32,10 +33,27 @@ export function HomeScreen({ navigation }: any) {
     >
       {/* Header */}
       <Animated.View style={[headerAnim, { marginBottom: 24 }]}>
-        <Text style={{ color: COLORS.TEXT_SECONDARY, fontSize: 14 }}>Welcome back</Text>
-        <Text style={{ color: COLORS.TEXT_PRIMARY, fontSize: 24, fontWeight: '700', marginTop: 4 }}>
-          {auth.name || 'Customer'}
-        </Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+          <View>
+            <Text style={{ color: COLORS.TEXT_SECONDARY, fontSize: 14 }}>Welcome back</Text>
+            <Text style={{ color: COLORS.TEXT_PRIMARY, fontSize: 24, fontWeight: '700', marginTop: 4 }}>
+              {auth.name || 'Customer'}
+            </Text>
+          </View>
+          <Pressable
+            onPress={() => navigation.navigate('Notifications')}
+            hitSlop={12}
+            style={({ pressed }) => ({
+              width: 40, height: 40, borderRadius: 20,
+              backgroundColor: 'rgba(255,255,255,0.05)',
+              borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)',
+              alignItems: 'center', justifyContent: 'center',
+              opacity: pressed ? 0.7 : 1,
+            })}
+          >
+            <Ionicons name="notifications-outline" size={20} color={COLORS.TEXT_PRIMARY} />
+          </Pressable>
+        </View>
       </Animated.View>
 
       {/* Loyalty Banner — taps jump to Profile where the full loyalty view lives */}

@@ -10,6 +10,11 @@ const webMapsStub = path.resolve(__dirname, "web-maps-stub.js");
 config.resolver.platforms = ["ios", "android", "web"];
 
 config.resolver.resolveRequest = (context, moduleName, platform) => {
+  // ── qrcode: redirect to pure-JS core (avoids pngjs/yargs on native) ───────
+  if (moduleName === "qrcode" && platform !== "web") {
+    return { type: "sourceFile", filePath: require.resolve("qrcode/lib/core/qrcode") };
+  }
+
   // ── @/ path alias ──────────────────────────────────────────────────────────
   if (moduleName.startsWith("@/")) {
     const rel  = moduleName.slice(2);
