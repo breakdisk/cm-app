@@ -47,6 +47,7 @@ impl DriverService {
             cod_commission_rate_bps: 0,
             zone: None,
             vehicle_type: None,
+            carrier_id: cmd.carrier_id,
             created_at: now,
             updated_at: now,
         };
@@ -71,6 +72,7 @@ impl DriverService {
         if let Some(v) = cmd.zone                    { driver.zone = Some(v); }
         if let Some(v) = cmd.vehicle_type            { driver.vehicle_type = Some(v); }
         if let Some(v) = cmd.is_active               { driver.is_active = v; }
+        if cmd.carrier_id.is_some()                  { driver.carrier_id = cmd.carrier_id; }
         driver.updated_at = chrono::Utc::now();
         self.driver_repo.save(&driver).await.map_err(AppError::Internal)?;
         Ok(driver)

@@ -13,6 +13,9 @@ pub struct RegisterDriverCommand {
     #[validate(length(min = 7, max = 20))]
     pub phone: String,
     pub vehicle_id: Option<Uuid>,
+    /// Partner portal passes its own carrier UUID on registration so the driver
+    /// is immediately visible in that carrier's manifest.
+    pub carrier_id: Option<Uuid>,
 }
 
 /// Partial-update command from the partner portal. Every field is optional;
@@ -35,6 +38,8 @@ pub struct UpdateDriverCommand {
     #[validate(length(max = 50))]
     pub vehicle_type: Option<String>,
     pub is_active: Option<bool>,
+    /// Set to link (or unlink with null) a driver to a carrier for manifest scoping.
+    pub carrier_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]

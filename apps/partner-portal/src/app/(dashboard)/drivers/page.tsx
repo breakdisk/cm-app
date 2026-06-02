@@ -9,11 +9,12 @@ import { motion, AnimatePresence } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
-import { Users, Clock, Briefcase, Search, Check, Pencil, X, UserPlus, Loader2, MapPin, Truck } from "lucide-react";
+import { Users, Clock, Briefcase, Search, Check, Pencil, X, UserPlus, Loader2, MapPin, Truck, Link2, Unlink } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 import { ComplianceBadge, canAssign } from "@/components/compliance/compliance-badge";
 import { authFetch } from "@/lib/auth/auth-fetch";
 import { useRosterEvents } from "@/hooks/useRosterEvents";
+import { useCarrier } from "@/contexts/carrier-context";
 
 // ── API helpers ────────────────────────────────────────────────────────────────
 
@@ -40,6 +41,7 @@ interface Driver {
   status:             "active" | "offline" | "on_delivery";
   compliance_status:  "compliant" | "expiring_soon" | "expired" | "suspended" | "under_review" | "pending_submission" | "rejected";
   compliance_detail?: string;   // e.g. "License · 18d left"
+  carrierId:         string | null;
 }
 
 // ── API fetch ──────────────────────────────────────────────────────────────────
@@ -65,6 +67,7 @@ function dtoToDriver(d: any): Driver {
     status:            onlineStatus,
     compliance_status: d.compliance_status ?? "compliant",
     compliance_detail: d.compliance_detail ?? undefined,
+    carrierId:         d.carrier_id ?? null,
   };
 }
 
@@ -113,6 +116,7 @@ async function registerDriverApi(input: {
   firstName:  string;
   lastName:   string;
   phone:      string;
+  carrierId:  string | null;
 }): Promise<RegisterResult> {
   try {
     const inviteRes = await authFetch(`${API_BASE}/v1/users`, {
@@ -143,6 +147,7 @@ async function registerDriverApi(input: {
         first_name: input.firstName,
         last_name:  input.lastName,
         phone:      input.phone,
+        carrier_id: input.carrierId ?? undefined,
       }),
     });
     if (!regRes.ok) {
@@ -333,7 +338,7 @@ function EditDrawer({
 
 // ── Driver row ─────────────────────────────────────────────────────────────────
 
-function DriverRow({ driver, onEdit, onAssign }: { driver: Driver; onEdit: () => void; onAssign: () => void }) {
+function DriverRow({ driver, onEdit, onAssign, onLink }: { driver: Driver; onEdit: () => void; onAssign: () => void; onLink: () => void }) {
   const isPartTime  = driver.driverType === "part_time";
   const statusCfg   = STATUS_CONFIG[driver.status];
 
@@ -432,6 +437,24 @@ function DriverRow({ driver, onEdit, onAssign }: { driver: Driver; onEdit: () =>
             <Truck className="h-3 w-3" />
             Fleet
           </a>
+          {driver.carrierId ? (
+            <span
+              className="inline-flex items-center gap-1 rounded-lg border border-green-signal/20 bg-green-signal/5 px-2.5 py-1.5 text-xs text-green-signal/60"
+              title="Linked to this carrier"
+            >
+              <Link2 className="h-3 w-3" />
+              Linked
+            </span>
+          ) : (
+            <button
+              onClick={onLink}
+              className="inline-flex items-center gap-1 rounded-lg border border-amber-400/30 bg-amber-400/10 px-2.5 py-1.5 text-xs text-amber-400 transition-all hover:bg-amber-400/20"
+              title="Link this driver to your carrier so they appear in your Manifest"
+            >
+              <Unlink className="h-3 w-3" />
+              Link
+            </button>
+          )}
           <button
             onClick={onEdit}
             className="inline-flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-2.5 py-1.5 text-xs text-white/50 transition-all hover:border-cyan-signal/30 hover:bg-glass-200 hover:text-white/80"
@@ -447,7 +470,7 @@ function DriverRow({ driver, onEdit, onAssign }: { driver: Driver; onEdit: () =>
 
 // ── Register-driver modal ──────────────────────────────────────────────────────
 
-function RegisterModal({ onClose, onRegistered }: { onClose: () => void; onRegistered: () => void }) {
+function RegisterModal({ onClose, onRegistered, carrierId }: { onClose: () => void; onRegistered: () => void; carrierId: string | null }) {
   const [firstName, setFirstName] = useState("");
   const [lastName,  setLastName]  = useState("");
   const [email,     setEmail]     = useState("");
@@ -460,7 +483,7 @@ function RegisterModal({ onClose, onRegistered }: { onClose: () => void; onRegis
   async function handleSubmit() {
     if (!canSubmit) return;
     setSubmitting(true);
-    const res = await registerDriverApi({ firstName, lastName, email, phone });
+    const res = await registerDriverApi({ firstName, lastName, email, phone, carrierId });
     setSubmitting(false);
     setResult(res);
     if (!res.error) onRegistered();
@@ -597,6 +620,7 @@ function DriversPageInner() {
   // Deep-link from admin-portal: /partner/drivers?focus=<driver_id> pre-populates
   // the search box so the row is visible immediately on load.
   const focusParam                  = searchParams.get("focus") ?? "";
+  const { carrierId }               = useCarrier();
   const [drivers, setDrivers]       = useState<Driver[]>([]);
   const [loading, setLoading]       = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -646,6 +670,14 @@ function DriversPageInner() {
 
   function handleAssign(driverId: string) {
     router.push(`/orders?assignTo=${encodeURIComponent(driverId)}`);
+  }
+
+  async function handleLink(driverId: string) {
+    if (!carrierId) return;
+    const saved = await patchDriver(driverId, { carrier_id: carrierId });
+    if (saved) {
+      setDrivers((prev) => prev.map((d) => d.id === driverId ? { ...d, carrierId } : d));
+    }
   }
 
   const partTimeCount = drivers.filter((d) => d.driverType === "part_time").length;
@@ -802,6 +834,7 @@ function DriversPageInner() {
                     driver={driver}
                     onEdit={() => setEditing(driver)}
                     onAssign={() => handleAssign(driver.id)}
+                    onLink={() => handleLink(driver.id)}
                   />
                 ))}
                 {loading && (
@@ -881,6 +914,7 @@ function DriversPageInner() {
         {registerOpen && (
           <RegisterModal
             key="register-modal"
+            carrierId={carrierId}
             onClose={() => setRegisterOpen(false)}
             onRegistered={() => {
               loadDrivers();

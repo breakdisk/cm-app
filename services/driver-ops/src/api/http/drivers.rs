@@ -33,6 +33,7 @@ struct DriverDto {
     last_location_at: Option<chrono::DateTime<chrono::Utc>>,
     active_route_id: Option<Uuid>,
     is_active: bool,
+    carrier_id: Option<Uuid>,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -76,6 +77,7 @@ impl From<&Driver> for DriverDto {
             last_location_at: d.last_location_at,
             active_route_id: d.active_route_id,
             is_active: d.is_active,
+            carrier_id: d.carrier_id,
             created_at: d.created_at,
             updated_at: d.updated_at,
         }
