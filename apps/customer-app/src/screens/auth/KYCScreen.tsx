@@ -218,6 +218,7 @@ export function KYCScreen() {
     if (!selectedId || !imageUri || !imageBase64 || isProcessing || docNumber.trim().length === 0) return;
 
     setSubmitting(true);
+    let tempUploadUri: string | null = null;
     try {
       const token = await getStoredToken();
       if (!token) {
@@ -232,12 +233,42 @@ export function KYCScreen() {
         return;
       }
 
-      await complianceApi.uploadDocument({
+      // Step 1 — get a presigned R2 PUT URL from the compliance service
+      const { upload_url, s3_key, upload_headers } = await complianceApi.getUploadUrl(imageMime);
+
+      // Step 2 — write the processed base64 image to a temp file and upload
+      // the raw bytes directly to Cloudflare R2 (no base64 body through the
+      // backend, no 33% bandwidth overhead)
+      const ext = imageMime === 'image/webp' ? 'webp' : imageMime === 'image/png' ? 'png' : 'jpg';
+      tempUploadUri = `${FileSystem.cacheDirectory}kyc_r2_${Date.now()}.${ext}`;
+      await FileSystem.writeAsStringAsync(tempUploadUri, imageBase64, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      // BINARY_CONTENT is required: without it Expo wraps the body in
+      // multipart/form-data, which mismatches the Content-Type signed into the
+      // presigned URL and causes R2 to return SignatureDoesNotMatch.
+      const uploadResult = await FileSystem.uploadAsync(upload_url, tempUploadUri, {
+        httpMethod: 'PUT',
+        uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+        headers: { 'Content-Type': imageMime, ...upload_headers },
+      });
+
+      if (uploadResult.status === 401) {
+        throw Object.assign(new Error('Session expired'), { status: 401 });
+      }
+      if (uploadResult.status < 200 || uploadResult.status >= 300) {
+        throw new Error(`Direct R2 upload failed with status ${uploadResult.status}`);
+      }
+
+      // Step 3 — register the uploaded document with the compliance service
+      await complianceApi.confirmDocument({
         document_type_code: selectedId,
         document_number:    docNumber.trim(),
-        file_base64:        imageBase64,
+        s3_key,
         content_type:       imageMime,
       });
+
       dispatch(authActions.submitKyc({ idType: selectedId }));
     } catch (err: unknown) {
       const status = (err as { status?: number })?.status;
@@ -255,6 +286,9 @@ export function KYCScreen() {
       const msg = (err as { message?: string })?.message ?? "Please check your connection and try again.";
       Alert.alert("Upload failed", msg);
     } finally {
+      if (tempUploadUri) {
+        FileSystem.deleteAsync(tempUploadUri, { idempotent: true }).catch(() => {});
+      }
       setSubmitting(false);
     }
   }

@@ -50,6 +50,14 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
                 // Scoped to this route only — the default 2 MB limit stays in
                 // force everywhere else to keep the DoS surface small.
                 .layer(DefaultBodyLimit::max(MAX_UPLOAD_BODY_BYTES)))
+        // Presigned R2 upload flow (preferred for customer-app):
+        //   POST upload-url  → get presigned PUT URL + s3_key
+        //   PUT  <R2 url>    → client uploads file directly to R2
+        //   POST confirm     → register the completed upload as a DriverDocument
+        .route("/api/v1/compliance/me/documents/upload-url",
+            post(driver_routes::get_kyc_upload_url))
+        .route("/api/v1/compliance/me/documents/confirm",
+            post(driver_routes::confirm_document))
         .route("/api/v1/compliance/me/documents/:doc_id",
             get(driver_routes::get_document))
         .route("/api/v1/compliance/me/documents/:doc_id/url",

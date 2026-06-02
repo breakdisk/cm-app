@@ -1,8 +1,8 @@
 use anyhow::{bail, Context};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-const MAX_FILE_BYTES: usize = 10 * 1024 * 1024; // 10 MB
-const PRESIGN_TTL_SECS: u64 = 900;              // 15 minutes
+const MAX_FILE_BYTES: usize = 10 * 1024 * 1024;  // 10 MB
+pub(crate) const PRESIGN_TTL_SECS: u64 = 900;   // 15 minutes — used by handlers for `expires_in`
 
 pub struct DocumentStorage {
     client: aws_sdk_s3::Client,
@@ -14,6 +14,30 @@ pub struct DocumentStorage {
 
 impl DocumentStorage {
     pub async fn new(cfg: &crate::config::StorageConfig) -> anyhow::Result<Self> {
+        // Detect Cloudflare R2 by endpoint host.  R2 credentials are *exactly*
+        // 32 chars; AWS S3 keys are 20 chars; MinIO accepts anything.  We've
+        // seen deploys burn because the AWS SDK silently picked up a leftover
+        // 20-char AWS_ACCESS_KEY_ID from the container env and R2 rejected
+        // every PUT with "Credential access key has length 20, should be 32".
+        // Panic at boot rather than at the first customer KYC upload.
+        let is_r2 = cfg.endpoint.contains("r2.cloudflarestorage.com");
+
+        if is_r2 {
+            if cfg.access_key.len() != 32 {
+                bail!(
+                    "STORAGE__ACCESS_KEY is {} chars but Cloudflare R2 requires exactly 32. \
+                     This is usually an AWS S3 key (20 chars) set instead of an R2 API token. \
+                     Generate an R2 token at https://dash.cloudflare.com/?to=/:account/r2/api-tokens \
+                     and update STORAGE__ACCESS_KEY / STORAGE__SECRET_KEY.",
+                    cfg.access_key.len()
+                );
+            }
+            // Explicit credentials_provider below already overrides any ambient
+            // AWS_* env vars for this client — no need to scrub the process env
+            // (which would be unsafe on a multi-threaded Tokio runtime).
+            tracing::info!(key_len = 32, "compliance storage: targeting Cloudflare R2");
+        }
+
         // Always inject the region explicitly so the AWS SDK never falls back to
         // IMDS. On a non-AWS VPS, IMDS times out (1 s per call) and then the SDK
         // errors every S3 call with "A region must be set". Cloudflare R2 uses the
@@ -30,10 +54,14 @@ impl DocumentStorage {
             .load()
             .await;
 
-        // force_path_style is MANDATORY for MinIO: without it the SDK builds
-        // virtual-hosted URLs (`bucket.minio:9000`) which fail DNS resolution
-        // inside the Docker network. R2 works with either for direct API calls.
-        let force_path_style = cfg.force_path_style.unwrap_or(true);
+        // force_path_style:
+        //   - true  (path-style)    → required for MinIO (`bucket.minio:9000` fails DNS)
+        //   - false (virtual-hosted) → required for Cloudflare R2 presigned PUTs
+        //     (R2 rejects presigned PUTs generated with path-style addressing)
+        //
+        // Default: false when R2 is detected, true otherwise (MinIO default).
+        // Override via STORAGE__FORCE_PATH_STYLE if needed.
+        let force_path_style = cfg.force_path_style.unwrap_or(!is_r2);
 
         let s3_cfg = aws_sdk_s3::config::Builder::from(&sdk_cfg)
             .endpoint_url(&cfg.endpoint)
@@ -56,10 +84,23 @@ impl DocumentStorage {
         // (e.g. MinIO not ready yet at startup — compliance only depends on it
         // with `service_started`), `upload()` retries the provisioning lazily
         // so a slow-starting backend never wedges KYC uploads permanently.
-        let ready = storage.ensure_bucket().await;
-        storage.bucket_ready.store(ready, Ordering::Relaxed);
+        //
+        // Skipped for R2: R2 buckets must be pre-provisioned in the dashboard;
+        // the R2 API token typically lacks CreateBucket permission by design.
+        if !is_r2 {
+            let ready = storage.ensure_bucket().await;
+            storage.bucket_ready.store(ready, Ordering::Relaxed);
+        } else {
+            storage.bucket_ready.store(true, Ordering::Relaxed);
+        }
 
         Ok(storage)
+    }
+
+    /// Bucket name — used by handlers to reconstruct `s3://bucket/key` URIs
+    /// for confirmed presigned uploads.
+    pub fn bucket(&self) -> &str {
+        &self.bucket
     }
 
     /// Ensure the configured bucket exists. Best-effort and non-fatal: on real
@@ -93,7 +134,66 @@ impl DocumentStorage {
         }
     }
 
-    /// Upload raw bytes; returns an `s3://bucket/key` URI stored in `driver_documents.file_url`.
+    /// Generate a 15-minute presigned PUT URL for direct-to-R2 upload from the
+    /// customer app.  Returns `(upload_url, s3_key, upload_headers)` where
+    /// `s3_key` is stored in `driver_documents.file_url` (after the caller
+    /// wraps it in `s3://bucket/key`) and `upload_headers` are any headers the
+    /// SDK says the client MUST include in the PUT request alongside the URL.
+    ///
+    /// Do NOT add `x-amz-content-sha256` as a sidecar header manually — the
+    /// presigned URL already encodes UNSIGNED-PAYLOAD in the canonical request.
+    /// Sending it as an unsigned header causes R2 to include it in its canonical
+    /// request while our signature excludes it → "SignatureDoesNotMatch".
+    pub async fn presign_upload(
+        &self,
+        tenant_id: uuid::Uuid,
+        content_type: &str,
+        ttl_secs: u64,
+    ) -> anyhow::Result<(String, String, std::collections::HashMap<String, String>)> {
+        if !matches!(content_type, "image/jpeg" | "image/png" | "image/webp" | "application/pdf") {
+            bail!("Invalid content type: must be image/jpeg, image/png, image/webp, or application/pdf");
+        }
+        let key = format!("compliance/{}/{}", tenant_id, uuid::Uuid::new_v4());
+
+        let presigned = self.client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(&key)
+            .content_type(content_type)
+            .presigned(
+                aws_sdk_s3::presigning::PresigningConfig::expires_in(
+                    std::time::Duration::from_secs(ttl_secs),
+                )?,
+            )
+            .await
+            .context("Failed to generate presigned upload URL")?;
+
+        let url = presigned.uri().to_string();
+        let headers: std::collections::HashMap<String, String> = presigned
+            .headers()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+
+        let signed_headers = url
+            .split("X-Amz-SignedHeaders=")
+            .nth(1)
+            .and_then(|s| s.split('&').next())
+            .unwrap_or("<none>");
+        tracing::info!(
+            bucket = %self.bucket,
+            key = %key,
+            content_type = %content_type,
+            signed_headers = %signed_headers,
+            "Generated compliance presigned PUT URL",
+        );
+
+        Ok((url, key, headers))
+    }
+
+    /// Upload raw bytes server-side; returns an `s3://bucket/key` URI stored in
+    /// `driver_documents.file_url`.  Kept for backwards-compatibility (admin bulk
+    /// ingest, driver-app callers).  New customer-app KYC uploads use
+    /// `presign_upload` + `confirm_document` for a direct-to-R2 flow.
     pub async fn upload(
         &self,
         tenant_id: uuid::Uuid,
@@ -162,6 +262,20 @@ impl DocumentStorage {
             .send()
             .await
             .map(|_| ())
+    }
+
+    /// Confirm that a key exists in the bucket (HeadObject).  Used by
+    /// `confirm_document` to verify the caller actually uploaded a file before
+    /// the document record is created in the database.
+    pub async fn head_object(&self, key: &str) -> anyhow::Result<()> {
+        self.client
+            .head_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+            .context("Object not found in storage — upload may have failed or the presigned URL expired")?;
+        Ok(())
     }
 
     /// Generate a 15-minute presigned GET URL for a stored document.
