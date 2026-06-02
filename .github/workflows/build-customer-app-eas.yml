@@ -11,13 +11,21 @@
 # https://expo.dev/accounts/[account]/settings/access-tokens and add it
 # under Settings → Secrets and variables → Actions → New repository secret.
 #
-# Triggered manually (workflow_dispatch) so builds are intentional and
-# don't burn EAS quota on every push. Pick platform + profile at run time.
+# Triggered:
+#   - automatically on push to master that touches the customer app
+#     (builds the `preview` profile for Android — internal APK)
+#   - manually (workflow_dispatch) with a choice of platform + profile
+#     and an optional production submit step.
 # ============================================================
 
 name: Build Customer App (EAS)
 
 on:
+  push:
+    branches: [master]
+    paths:
+      - "apps/customer-app/**"
+      - ".github/workflows/build-customer-app-eas.yml"
   workflow_dispatch:
     inputs:
       platform:
@@ -50,11 +58,16 @@ concurrency:
 
 jobs:
   build:
-    name: EAS Build — ${{ inputs.platform }} / ${{ inputs.profile }}
+    name: EAS Build
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: apps/customer-app
+    env:
+      # On push, inputs.* are empty → fall back to android/preview.
+      # On workflow_dispatch, the chosen inputs win.
+      PLATFORM: ${{ inputs.platform || 'android' }}
+      PROFILE: ${{ inputs.profile || 'preview' }}
 
     steps:
       - name: Checkout
@@ -67,42 +80,54 @@ jobs:
           cache: "npm"
           cache-dependency-path: apps/customer-app/package-lock.json
 
-      - name: Verify EXPO_TOKEN is set
+      - name: Check EXPO_TOKEN
+        id: token
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        # Missing token is a hard error on a manual run (the user explicitly
+        # asked for a build), but only a skipped build + warning on auto-push
+        # so it never red-X's every master commit before the secret is added.
         run: |
-          if [ -z "$EXPO_TOKEN" ]; then
+          if [ -n "$EXPO_TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "EXPO_TOKEN is present."
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "::error::EXPO_TOKEN repository secret is not set. Add it under Settings → Secrets and variables → Actions."
             exit 1
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::EXPO_TOKEN not set — skipping the EAS build. Add the secret to enable auto-builds."
           fi
-          echo "EXPO_TOKEN is present."
 
       - name: Set up EAS
+        if: steps.token.outputs.present == 'true'
         uses: expo/expo-github-action@v8
         with:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
 
       - name: Install dependencies
+        if: steps.token.outputs.present == 'true'
         run: npm ci
 
       - name: EAS Build (non-interactive, wait for completion)
+        if: steps.token.outputs.present == 'true'
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
           eas build \
-            --platform ${{ inputs.platform }} \
-            --profile ${{ inputs.profile }} \
+            --platform "$PLATFORM" \
+            --profile "$PROFILE" \
             --non-interactive \
             --wait
 
       - name: EAS Submit (production only)
-        if: ${{ inputs.submit && inputs.profile == 'production' }}
+        if: ${{ steps.token.outputs.present == 'true' && inputs.submit && inputs.profile == 'production' }}
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: |
           eas submit \
-            --platform ${{ inputs.platform }} \
+            --platform "$PLATFORM" \
             --profile production \
             --non-interactive \
             --latest
