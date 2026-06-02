@@ -2,6 +2,7 @@
 pub const CARRIER_ONBOARDED:               &str = "logisticos.carrier.onboarded";
 pub const CARRIER_STATUS_CHANGED:          &str = "logisticos.carrier.status_changed";
 pub const CARRIER_ALLOCATED:               &str = "logisticos.carrier.allocated";
+pub const CARRIER_TRACKING_EVENT:          &str = "logisticos.carrier.tracking.event";
 pub const MARKETPLACE_BOOKING_ACCEPTED:    &str = "logisticos.carrier.marketplace.booking.accepted";
 pub const MARKETPLACE_BOOKING_REJECTED:    &str = "logisticos.carrier.marketplace.booking.rejected";
 pub const MARKETPLACE_PICKUP_RECORDED:     &str = "logisticos.carrier.marketplace.pickup.recorded";
@@ -80,7 +81,7 @@ mod tests {
     #[test]
     fn all_topics_are_lowercase_dot_separated() {
         let topics: &[&str] = &[
-            CARRIER_ONBOARDED, CARRIER_STATUS_CHANGED, CARRIER_ALLOCATED,
+            CARRIER_ONBOARDED, CARRIER_STATUS_CHANGED, CARRIER_ALLOCATED, CARRIER_TRACKING_EVENT,
             MARKETPLACE_BOOKING_ACCEPTED, MARKETPLACE_BOOKING_REJECTED, MARKETPLACE_PICKUP_RECORDED,
             TENANT_CREATED, USER_CREATED, USER_INVITED,
             SHIPMENT_CREATED, SHIPMENT_CONFIRMED, SHIPMENT_CANCELLED, SHIPMENT_RESCHEDULED,

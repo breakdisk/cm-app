@@ -564,14 +564,22 @@ async fn carrier_tracking_webhook(
     }
 
     tracing::info!(
-        carrier_id = %carrier_id,
-        event      = %body.event,
-        reference  = ?body.reference,
+        carrier_id  = %carrier_id,
+        event       = %body.event,
+        reference   = ?body.reference,
         shipment_id = ?body.shipment_id,
-        message    = ?body.message,
+        message     = ?body.message,
         "Inbound 3PL tracking event received",
     );
 
-    // Future: forward event to engagement engine / update shipment status.
+    state.carrier_svc.publish_tracking_event(
+        carrier_id,
+        carrier.tenant_id.inner(),
+        body.reference,
+        body.shipment_id,
+        body.event.clone(),
+        body.message,
+    ).await?;
+
     Ok((StatusCode::OK, Json(serde_json::json!({"received": true, "event": body.event}))))
 }

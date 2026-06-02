@@ -272,6 +272,7 @@ impl CarrierAdapter for AramexAdapter {
             booking_ref:        tnum.clone(),
             tracking_number:    tnum,
             label_url:          label,
+            label_bytes:        None,
             estimated_delivery: shipment["ScheduledDelivery"].as_str().map(String::from),
         })
     }

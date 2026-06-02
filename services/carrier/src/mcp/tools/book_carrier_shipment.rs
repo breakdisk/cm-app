@@ -8,8 +8,9 @@ use std::sync::Arc;
 use crate::AppState;
 use crate::mcp::context::McpContext;
 use crate::infrastructure::adapters::{Address, BookingRequest};
+use crate::infrastructure::db::CarrierBookingRecord;
 
-pub async fn handle(args: &Value, _ctx: &McpContext, state: &Arc<AppState>) -> Result<Value, String> {
+pub async fn handle(args: &Value, ctx: &McpContext, state: &Arc<AppState>) -> Result<Value, String> {
     let carrier_code = args["carrier_code"]
         .as_str()
         .ok_or("carrier_code is required")?
@@ -33,14 +34,61 @@ pub async fn handle(args: &Value, _ctx: &McpContext, state: &Arc<AppState>) -> R
         reference:            args["reference"].as_str().map(String::from),
     };
 
-    let confirmation = adapter.book_shipment(&req).await
+    let req_payload = serde_json::to_value(&req).unwrap_or_default();
+
+    let mut confirmation = adapter.book_shipment(&req).await
         .map_err(|e| format!("{carrier_code} booking failed: {e}"))?;
 
+    // G2 — Upload inline label bytes to R2/S3 and return a presigned download URL.
+    if let Some(bytes) = confirmation.label_bytes.take() {
+        if let Some(storage) = &state.storage {
+            let key = format!("labels/{}/{}.pdf", carrier_code, confirmation.booking_ref);
+            if let Err(e) = storage.put_bytes(&key, bytes, "application/pdf").await {
+                tracing::warn!(key, "Label upload failed in MCP tool: {e}");
+            } else {
+                match storage.presign_download(&key, 3600).await {
+                    Ok(url) => confirmation.label_url = Some(url),
+                    Err(e)  => tracing::warn!(key, "Label presign failed: {e}"),
+                }
+            }
+        }
+    }
+
+    let resp_payload = json!({
+        "booking_ref":        confirmation.booking_ref,
+        "tracking_number":    confirmation.tracking_number,
+        "label_url":          confirmation.label_url,
+        "estimated_delivery": confirmation.estimated_delivery,
+    });
+
+    // G1 — Write audit row to carrier.carrier_bookings.
+    if let Some(booking_repo) = &state.booking_repo {
+        let shipment_id = args["shipment_id"].as_str()
+            .and_then(|s| uuid::Uuid::parse_str(s).ok());
+        let awb = args["reference"].as_str().map(String::from);
+
+        if let Err(e) = booking_repo.insert(&CarrierBookingRecord {
+            tenant_id:        ctx.tenant_id,
+            carrier_code:     carrier_code.clone(),
+            shipment_id,
+            awb,
+            service_code:     req.service_code.clone(),
+            booking_ref:      confirmation.booking_ref.clone(),
+            tracking_number:  confirmation.tracking_number.clone(),
+            label_url:        confirmation.label_url.clone(),
+            request_payload:  req_payload,
+            response_payload: resp_payload.clone(),
+            booked_by_actor:  Some(ctx.actor_uid),
+        }).await {
+            tracing::warn!("carrier_bookings insert failed: {e}");
+        }
+    }
+
     Ok(json!({
-        "carrier_code":     carrier_code,
-        "booking_ref":      confirmation.booking_ref,
-        "tracking_number":  confirmation.tracking_number,
-        "label_url":        confirmation.label_url,
+        "carrier_code":       carrier_code,
+        "booking_ref":        confirmation.booking_ref,
+        "tracking_number":    confirmation.tracking_number,
+        "label_url":          confirmation.label_url,
         "estimated_delivery": confirmation.estimated_delivery,
     }))
 }
@@ -83,7 +131,8 @@ pub fn schema() -> Value {
             "description":   { "type": "string", "description": "Contents description for customs" },
             "declared_value_cents": { "type": "integer", "description": "Declared value in minor currency units" },
             "currency":      { "type": "string", "description": "ISO 4217" },
-            "reference":     { "type": "string", "description": "Platform AWB — sent as customer reference to carrier" }
+            "reference":     { "type": "string", "description": "Platform AWB — sent as customer reference to carrier" },
+            "shipment_id":   { "type": "string", "format": "uuid", "description": "Platform shipment UUID for audit log" }
         },
         "required": ["carrier_code", "service_code", "shipper", "consignee", "weight_kg"],
         "definitions": {

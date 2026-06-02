@@ -307,6 +307,32 @@ impl CarrierService {
         Ok(raw_key)
     }
 
+    /// Publish an inbound 3PL tracking event to Kafka (G3 — webhook wiring).
+    /// Called by the carrier_tracking_webhook HTTP handler after API key auth.
+    pub async fn publish_tracking_event(
+        &self,
+        carrier_id: Uuid,
+        tenant_id: Uuid,
+        carrier_ref: Option<String>,
+        shipment_id: Option<uuid::Uuid>,
+        event: String,
+        message: Option<String>,
+    ) -> AppResult<()> {
+        let payload = logisticos_events::payloads::CarrierTrackingEvent {
+            carrier_id,
+            tenant_id,
+            carrier_ref,
+            shipment_id,
+            event,
+            message,
+            received_at: chrono::Utc::now().to_rfc3339(),
+        };
+        if let Err(e) = self.publisher.carrier_tracking_event(tenant_id, payload).await {
+            tracing::warn!("Failed to publish carrier_tracking_event: {e}");
+        }
+        Ok(())
+    }
+
     /// Expose repo handles so `CarrierCommandHandler` can reach them
     /// without duplicating the Kafka consumer's outcome logic.
     pub fn sla_repo(&self) -> &Arc<dyn crate::domain::repositories::SlaRecordRepository> {

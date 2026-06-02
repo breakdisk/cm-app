@@ -498,6 +498,25 @@ pub struct MarketplacePickupRecorded {
     pub picked_up_at:  String,
 }
 
+/// Emitted by carrier service when an inbound 3PL tracking webhook is received
+/// and authenticated. Consumed by: delivery-experience (status update),
+/// engagement (customer notification), analytics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CarrierTrackingEvent {
+    pub carrier_id:      Uuid,
+    pub tenant_id:       Uuid,
+    /// Carrier's own shipment/tracking reference.
+    pub carrier_ref:     Option<String>,
+    /// LogisticOS shipment UUID (preferred; may be absent for pure-tracking events).
+    pub shipment_id:     Option<Uuid>,
+    /// Carrier status code — e.g. "picked_up", "in_transit", "delivered", "failed".
+    pub event:           String,
+    /// Human-readable message from the 3PL.
+    pub message:         Option<String>,
+    /// ISO-8601 receipt timestamp (server clock).
+    pub received_at:     String,
+}
+
 /// Emitted by carrier service when dispatch records a carrier allocation for a
 /// shipment (POST /v1/internal/sla-records). Consumed by: analytics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
