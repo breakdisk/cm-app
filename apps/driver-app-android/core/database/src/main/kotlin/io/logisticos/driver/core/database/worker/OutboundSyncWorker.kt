@@ -28,6 +28,8 @@ import io.logisticos.driver.core.network.service.AttachSignatureRequest
 import io.logisticos.driver.core.network.service.BulkLocationRequest
 import io.logisticos.driver.core.network.service.CompleteTaskRequest
 import io.logisticos.driver.core.network.service.DriverOpsApiService
+import io.logisticos.driver.core.network.service.HubOpsApiService
+import io.logisticos.driver.core.network.service.RecordScanRequest
 import io.logisticos.driver.core.network.service.FailTaskRequest
 import io.logisticos.driver.core.network.service.GetUploadUrlRequest
 import io.logisticos.driver.core.network.service.InitiatePopRequest
@@ -63,6 +65,7 @@ class OutboundSyncWorker @AssistedInject constructor(
     private val locationDao: LocationBreadcrumbDao,
     private val driverOpsApi: DriverOpsApiService,
     private val podApi: PodApiService,
+    private val hubOpsApi: HubOpsApiService,
     private val okHttpClient: OkHttpClient,
     private val sessionManager: SessionManager,
 ) : CoroutineWorker(context, workerParams) {
@@ -427,6 +430,35 @@ class OutboundSyncWorker @AssistedInject constructor(
             SyncAction.SHIFT_END -> {
                 // Mirror of SHIFT_START — retry POST /v1/drivers/go-offline.
                 driverOpsApi.goOffline()
+            }
+
+            SyncAction.HUB_SCAN -> {
+                // Replay a hub chain-of-custody scan that was queued while offline.
+                // device_timestamp is preserved from the original scan moment — not re-sampled.
+                val hubId      = payload["hub_id"]?.jsonPrimitive?.contentOrNull ?: run { syncQueueDao.remove(item.id); return }
+                val pieceAwb   = payload["piece_awb"]?.jsonPrimitive?.contentOrNull ?: run { syncQueueDao.remove(item.id); return }
+                val masterAwb  = payload["master_awb"]?.jsonPrimitive?.contentOrNull ?: run { syncQueueDao.remove(item.id); return }
+                val shipmentId = payload["shipment_id"]?.jsonPrimitive?.contentOrNull ?: run { syncQueueDao.remove(item.id); return }
+                val scanType   = payload["scan_type"]?.jsonPrimitive?.contentOrNull ?: run { syncQueueDao.remove(item.id); return }
+                val deviceTs   = payload["device_timestamp"]?.jsonPrimitive?.contentOrNull ?: run { syncQueueDao.remove(item.id); return }
+                val palletId   = payload["pallet_id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                val containerId = payload["container_id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                val exception  = payload["exception"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+
+                hubOpsApi.recordScan(
+                    RecordScanRequest(
+                        hubId           = hubId,
+                        pieceAwb        = pieceAwb,
+                        masterAwb       = masterAwb,
+                        shipmentId      = shipmentId,
+                        scanType        = scanType,
+                        deviceTimestamp = deviceTs,
+                        palletId        = palletId,
+                        containerId     = containerId,
+                        exception       = exception,
+                    )
+                )
+                android.util.Log.d("OutboundSyncWorker", "HUB_SCAN replayed: type=$scanType awb=$pieceAwb")
             }
 
             // Any future SyncAction variants without a handler yet.

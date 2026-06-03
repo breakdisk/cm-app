@@ -4,7 +4,9 @@ import androidx.room.Entity
 import androidx.room.PrimaryKey
 
 enum class SyncAction {
-    TASK_STATUS_UPDATE, POD_SUBMIT, POP_SUBMIT, TASK_COMPLETE, SHIFT_START, SHIFT_END
+    TASK_STATUS_UPDATE, POD_SUBMIT, POP_SUBMIT, TASK_COMPLETE, SHIFT_START, SHIFT_END,
+    /** Hub chain-of-custody scan — queued when hub agent is offline. */
+    HUB_SCAN
 }
 
 @Entity(tableName = "sync_queue")

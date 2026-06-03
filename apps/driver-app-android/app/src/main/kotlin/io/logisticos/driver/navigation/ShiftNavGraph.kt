@@ -36,6 +36,8 @@ import io.logisticos.driver.feature.profile.ui.ProfileScreen
 import io.logisticos.driver.feature.route.presentation.RouteViewModel
 import io.logisticos.driver.feature.route.ui.RouteScreen
 import io.logisticos.driver.core.location.LocationForegroundService
+import io.logisticos.driver.feature.hub.domain.HubScanType
+import io.logisticos.driver.feature.hub.ui.HubScanScreen
 import io.logisticos.driver.feature.scanner.ui.ScannerScreen
 
 // ── Route constants ───────────────────────────────────────────────────────────
@@ -60,6 +62,12 @@ private const val BOX_MEASURE_ROUTE =
 // BookShipmentScreen can display a pre-filled form without ViewModel coupling.
 private const val BOOK_SHIPMENT_ROUTE =
     "book_shipment?sizeId={sizeId}&mode={mode}&origin={origin}&l={l}&w={w}&h={h}&total={total}&currency={currency}"
+
+/**
+ * Hub Mode scan: optional hubId + scanType args.
+ * Deep-linkable from HomeScreen "Hub Mode" button or HUB_INBOUND task nav.
+ */
+private const val HUB_SCAN_ROUTE = "hub_scan?hubId={hubId}&scanType={scanType}"
 
 /**
  * Top-level shift scaffold: owns the BottomNavBar and an inner NavHost.
@@ -378,8 +386,35 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                     onBack = { shiftNavController.popBackStack() },
                 )
             }
+
+            // ── Hub Mode ──────────────────────────────────────────────────
+            composable(
+                route = HUB_SCAN_ROUTE,
+                arguments = listOf(
+                    navArgument("hubId")    { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("scanType") { type = NavType.StringType; nullable = true; defaultValue = null },
+                ),
+            ) { backStack ->
+                val hubId    = backStack.arguments?.getString("hubId") ?: ""
+                val typeStr  = backStack.arguments?.getString("scanType") ?: ""
+                val scanType = HubScanType.entries.firstOrNull { it.name == typeStr }
+                    ?: HubScanType.INBOUND_RECEIVE
+                HubScanScreen(
+                    initialHubId    = hubId,
+                    initialScanType = scanType,
+                    onBack          = { shiftNavController.popBackStack() },
+                )
+            }
         }
     }
+}
+
+/** Navigate to the Hub Mode scan screen. Convenience extension on [NavHostController]. */
+fun androidx.navigation.NavController.navigateToHubScan(
+    hubId:    String = "",
+    scanType: HubScanType = HubScanType.INBOUND_RECEIVE,
+) {
+    navigate("hub_scan?hubId=${hubId}&scanType=${scanType.name}")
 }
 
 /**

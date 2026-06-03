@@ -11,6 +11,7 @@ import io.logisticos.driver.core.network.interceptor.TenantInterceptor
 import io.logisticos.driver.core.network.service.ComplianceApiService
 import io.logisticos.driver.core.network.service.DirectionsApiService
 import io.logisticos.driver.core.network.service.DriverOpsApiService
+import io.logisticos.driver.core.network.service.HubOpsApiService
 import io.logisticos.driver.core.network.service.IdentityApiService
 import io.logisticos.driver.core.network.service.PodApiService
 import kotlinx.serialization.json.Json
@@ -145,4 +146,8 @@ object NetworkModule {
     @Provides @Singleton
     fun provideComplianceApiService(retrofit: Retrofit): ComplianceApiService =
         retrofit.create(ComplianceApiService::class.java)
+
+    @Provides @Singleton
+    fun provideHubOpsApiService(retrofit: Retrofit): HubOpsApiService =
+        retrofit.create(HubOpsApiService::class.java)
 }
