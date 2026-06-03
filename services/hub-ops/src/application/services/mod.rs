@@ -2,6 +2,11 @@ pub mod pallet_service;
 pub use pallet_service::PalletService;
 pub mod consolidation_service;
 pub use consolidation_service::ConsolidationService;
+pub mod hub_transfer_repositories;
+pub use hub_transfer_repositories::{
+    HubInventoryRepository, HubLocationRepository, HubRoutingConfigRepository, HubScanRepository,
+    HubTransferManifestRepository,
+};
 
 use std::sync::Arc;
 use serde::Deserialize;

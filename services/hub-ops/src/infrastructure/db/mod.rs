@@ -12,6 +12,8 @@
 //! Both `save` methods use `INSERT … ON CONFLICT (id) DO UPDATE SET` for
 //! upsert semantics, making them safe to call from both create and update paths.
 
+pub mod hub_transfer;
+
 use async_trait::async_trait;
 use sqlx::PgPool;
 use uuid::Uuid;
