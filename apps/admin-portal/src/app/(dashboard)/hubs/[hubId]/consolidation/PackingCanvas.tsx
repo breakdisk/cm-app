@@ -48,6 +48,7 @@ function TruckWireframe({ spec }: { spec: TruckSpec }) {
 interface PackedBoxProps {
   placement:  Placement;
   isSelected: boolean;
+  isLoaded:   boolean;
   onClick:    () => void;
   index:      number;
 }
@@ -55,7 +56,7 @@ interface PackedBoxProps {
 // Deterministic colour cycle for individual boxes.
 const BOX_COLORS = [PURPLE, GREEN, AMBER, '#3B82F6', '#EC4899', '#14B8A6'];
 
-function PackedBox({ placement: p, isSelected, onClick, index }: PackedBoxProps) {
+function PackedBox({ placement: p, isSelected, isLoaded, onClick, index }: PackedBoxProps) {
   const meshRef = useRef<THREE.Mesh>(null);
 
   // Algorithm coords: x=along truck length, y=along width, z=up.
@@ -73,7 +74,7 @@ function PackedBox({ placement: p, isSelected, onClick, index }: PackedBoxProps)
     ? AMBER
     : BOX_COLORS[index % BOX_COLORS.length];
 
-  const color = isSelected ? '#FFFFFF' : baseColor;
+  const color = isSelected ? '#FFFFFF' : (isLoaded ? GREEN : baseColor);
 
   useFrame(() => {
     if (!meshRef.current) return;
@@ -146,6 +147,7 @@ export interface PackingCanvasProps {
   selectedAwb: string | null;
   onSelect:    (awb: string | null) => void;
   onNudge:     (awb: string, axis: NudgeAxis, delta: number) => void;
+  loadedAwbs?: Set<string>;
 }
 
 export default function PackingCanvas({
@@ -154,6 +156,7 @@ export default function PackingCanvas({
   selectedAwb,
   onSelect,
   onNudge,
+  loadedAwbs,
 }: PackingCanvasProps) {
   const l = toM(spec.interior_length_cm);
   const h = toM(spec.interior_height_cm);
@@ -209,6 +212,7 @@ export default function PackingCanvas({
           placement={p}
           index={i}
           isSelected={selectedAwb === p.awb}
+          isLoaded={loadedAwbs?.has(p.awb) ?? false}
           onClick={() => onSelect(p.awb)}
         />
       ))}
