@@ -398,6 +398,20 @@ impl HubTransferService {
         self.manifest_repo.find_by_container(container_id).await.map_err(AppError::Internal)
     }
 
+    /// Container + its transfer manifest — backs the `get_container_status` MCP tool.
+    pub async fn get_container_status(
+        &self,
+        container_id: ContainerId,
+    ) -> AppResult<(Container, Option<HubTransferManifest>)> {
+        let container = self.load_container(&container_id).await?;
+        let manifest  = self
+            .manifest_repo
+            .find_by_container(container_id.inner())
+            .await
+            .map_err(AppError::Internal)?;
+        Ok((container, manifest))
+    }
+
     pub async fn list_customs_queue(
         &self,
         hub_id:    Uuid,
