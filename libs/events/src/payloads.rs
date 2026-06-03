@@ -549,6 +549,29 @@ pub struct CarrierAllocated {
 
 // ── Cross-Border Hub Transfer events ──────────────────────────────────────────
 
+/// Per-shipment detail attached to container **milestone** events, supplied by the
+/// arrive/customs HTTP requests (the "enrich from request" approach). A container
+/// covers many shipments, so milestone events carry a list of these.
+///
+/// Engagement uses the `customer_*` fields to notify recipients; payments uses the
+/// `merchant_*` / `duty_cents` fields (on customs-cleared) to bill duties.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ShipmentMilestoneDetail {
+    pub shipment_id:     Uuid,
+    #[serde(default)] pub master_awb:      String,
+    #[serde(default)] pub tracking_number: String,
+    // Recipient (engagement)
+    #[serde(default)] pub customer_id:     Option<Uuid>,
+    #[serde(default)] pub customer_name:   String,
+    #[serde(default)] pub customer_phone:  String,
+    #[serde(default)] pub customer_email:  String,
+    // Payer (payments duties — customs-cleared only)
+    #[serde(default)] pub merchant_id:     Option<Uuid>,
+    #[serde(default)] pub merchant_email:  String,
+    #[serde(default)] pub duty_cents:      i64,
+}
+
+
 /// Emitted by hub-ops on an `InboundReceive` scan at the origin hub.
 /// Consumed by: order-intake (ShipmentStatus::AtHub), analytics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -574,6 +597,9 @@ pub struct ContainerArrivedAtPort {
     pub tenant_id:    Uuid,
     pub port_hub_id:  Option<Uuid>,
     pub master_awbs:  Vec<String>,
+    /// Per-shipment recipient detail for customer notifications.
+    #[serde(default)]
+    pub details:      Vec<ShipmentMilestoneDetail>,
     pub arrived_at:   String,
 }
 
@@ -584,6 +610,9 @@ pub struct ContainerCustomsHold {
     pub container_id: Uuid,
     pub tenant_id:    Uuid,
     pub master_awbs:  Vec<String>,
+    /// Per-shipment recipient detail for customer notifications.
+    #[serde(default)]
+    pub details:      Vec<ShipmentMilestoneDetail>,
     pub held_at:      String,
 }
 
@@ -601,6 +630,12 @@ pub struct ContainerCustomsCleared {
     pub duties_total_cents: Option<i64>,
     #[serde(default)]
     pub customs_filing_ref: Option<String>,
+    /// 3-char tenant code for duties invoice number generation (e.g. "PH1").
+    #[serde(default)]
+    pub tenant_code:        String,
+    /// Per-shipment detail: recipients (engagement) + payer/duty (payments).
+    #[serde(default)]
+    pub details:            Vec<ShipmentMilestoneDetail>,
     pub cleared_at:         String,
 }
 
@@ -711,6 +746,8 @@ mod cross_border_tests {
             cleared_by: by,
             duties_total_cents: Some(150_00),
             customs_filing_ref: Some("BRK-123".into()),
+            tenant_code: "PH1".into(),
+            details: Vec::new(),
             cleared_at: "2026-06-03T09:00:00Z".into(),
         };
         let json = serde_json::to_string(&p).unwrap();

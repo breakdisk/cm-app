@@ -1665,14 +1665,24 @@ async fn list_scans_handler(
     Ok::<_, AppError>((StatusCode::OK, Json(scans)))
 }
 
+/// Optional per-shipment recipient detail for milestone customer notifications.
+#[derive(serde::Deserialize, Default)]
+struct MilestoneDetailsRequest {
+    #[serde(default)]
+    details: Vec<logisticos_events::payloads::ShipmentMilestoneDetail>,
+}
+
 async fn arrive_at_port_handler(
     State(s): State<AppState>,
     claims: AuthClaims,
     Path(container_id): Path<Uuid>,
+    Json(req): Json<MilestoneDetailsRequest>,
 ) -> impl IntoResponse {
     use logisticos_types::ContainerId;
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
-    let c = s.hub_transfer_svc.arrive_at_port(ContainerId::from_uuid(container_id)).await?;
+    let c = s.hub_transfer_svc
+        .arrive_at_port(ContainerId::from_uuid(container_id), req.details)
+        .await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
         "container_id": container_id, "status": format!("{:?}", c.status),
     }))))
@@ -1682,10 +1692,13 @@ async fn enter_customs_handler(
     State(s): State<AppState>,
     claims: AuthClaims,
     Path(container_id): Path<Uuid>,
+    Json(req): Json<MilestoneDetailsRequest>,
 ) -> impl IntoResponse {
     use logisticos_types::ContainerId;
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
-    let c = s.hub_transfer_svc.enter_customs(ContainerId::from_uuid(container_id)).await?;
+    let c = s.hub_transfer_svc
+        .enter_customs(ContainerId::from_uuid(container_id), req.details)
+        .await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
         "container_id": container_id, "status": format!("{:?}", c.status),
     }))))
@@ -1697,6 +1710,10 @@ struct ClearCustomsRequest {
     #[serde(default)] cleared_by:         Option<Uuid>,
     #[serde(default)] duties_total_cents: Option<i64>,
     #[serde(default)] customs_filing_ref: Option<String>,
+    /// 3-char tenant code for duties invoice numbering (forwarded to payments).
+    #[serde(default)] tenant_code:        String,
+    /// Per-shipment recipients + duty payers (the "enrich from request" data).
+    #[serde(default)] details:            Vec<logisticos_events::payloads::ShipmentMilestoneDetail>,
 }
 
 /// `POST /v1/containers/:id/clear-customs` — mandatory human clearance gate.
@@ -1713,6 +1730,8 @@ async fn clear_customs_handler(
         cleared_by:         req.cleared_by.unwrap_or(claims.user_id),
         duties_total_cents: req.duties_total_cents,
         customs_filing_ref: req.customs_filing_ref,
+        tenant_code:        req.tenant_code,
+        details:            req.details,
     }).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
         "container_id": container_id, "status": format!("{:?}", c.status),

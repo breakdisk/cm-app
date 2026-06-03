@@ -23,7 +23,7 @@ use logisticos_events::{
     payloads::{
         ContainerArrivedAtPort, ContainerCustomsCleared, ContainerCustomsHold,
         ContainerDeconsolidated, ContainerReleasedDomestic, HubCarrierBookingRequested,
-        HubDispatchRequested, PieceScannedInbound,
+        HubDispatchRequested, PieceScannedInbound, ShipmentMilestoneDetail,
     },
     producer::KafkaProducer,
     topics,
@@ -50,6 +50,10 @@ pub struct ClearCustomsCommand {
     pub cleared_by:         Uuid,
     pub duties_total_cents: Option<i64>,
     pub customs_filing_ref: Option<String>,
+    /// 3-char tenant code for duties invoice numbering (forwarded to payments).
+    pub tenant_code:        String,
+    /// Per-shipment recipients + duty payers (the "enrich from request" data).
+    pub details:            Vec<ShipmentMilestoneDetail>,
 }
 
 #[derive(Debug)]
@@ -147,7 +151,11 @@ impl HubTransferService {
 
     /// InTransit → ArrivedAtPort (sea/air). Ensures a manifest exists and emits
     /// `hub.container.arrived_at_port`.
-    pub async fn arrive_at_port(&self, container_id: ContainerId) -> AppResult<Container> {
+    pub async fn arrive_at_port(
+        &self,
+        container_id: ContainerId,
+        details:      Vec<ShipmentMilestoneDetail>,
+    ) -> AppResult<Container> {
         let mut container = self.load_container(&container_id).await?;
         container.arrive_at_port().map_err(business_rule)?;
         self.container_repo.save(&container).await.map_err(AppError::Internal)?;
@@ -162,6 +170,7 @@ impl HubTransferService {
                 tenant_id:    container.tenant_id.inner(),
                 port_hub_id:  Some(container.destination_hub.inner()),
                 master_awbs:  master_awb_strings(&container),
+                details,
                 arrived_at:   container.arrived_at.unwrap_or_else(Utc::now).to_rfc3339(),
             },
         );
@@ -173,7 +182,11 @@ impl HubTransferService {
     }
 
     /// ArrivedAtPort → Customs. Holds the manifest and emits `hub.container.customs_hold`.
-    pub async fn enter_customs(&self, container_id: ContainerId) -> AppResult<Container> {
+    pub async fn enter_customs(
+        &self,
+        container_id: ContainerId,
+        details:      Vec<ShipmentMilestoneDetail>,
+    ) -> AppResult<Container> {
         let mut container = self.load_container(&container_id).await?;
         container.enter_customs().map_err(business_rule)?;
         self.container_repo.save(&container).await.map_err(AppError::Internal)?;
@@ -190,6 +203,7 @@ impl HubTransferService {
                 container_id: container.id.inner(),
                 tenant_id:    container.tenant_id.inner(),
                 master_awbs:  master_awb_strings(&container),
+                details,
                 held_at:      Utc::now().to_rfc3339(),
             },
         );
@@ -228,6 +242,8 @@ impl HubTransferService {
                 cleared_by:         cmd.cleared_by,
                 duties_total_cents: manifest.duties_total_cents,
                 customs_filing_ref: manifest.customs_filing_ref.clone(),
+                tenant_code:        cmd.tenant_code.clone(),
+                details:            cmd.details.clone(),
                 cleared_at:         manifest.cleared_at.unwrap_or_else(Utc::now).to_rfc3339(),
             },
         );
