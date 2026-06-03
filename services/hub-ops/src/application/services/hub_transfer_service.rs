@@ -285,6 +285,27 @@ impl HubTransferService {
         let children = container.deconsolidate().map_err(business_rule)?;
         self.container_repo.save(&container).await.map_err(AppError::Internal)?;
 
+        // Auto-resolve shipment IDs from the container's master AWBs when the
+        // caller (e.g. the MCP tool) did not supply them explicitly. This ensures
+        // fan_out_routing emits dispatch/carrier events for every parcel.
+        let resolved_ids: Vec<Uuid>;
+        let cmd = if cmd.shipment_ids.is_empty() {
+            let awbs = master_awb_strings(&container);
+            resolved_ids = self
+                .container_repo
+                .resolve_awbs_to_shipment_ids(&awbs)
+                .await
+                .map_err(AppError::Internal)?;
+            tracing::info!(
+                container_id = %container.id.inner(),
+                resolved     = resolved_ids.len(),
+                "deconsolidate: auto-resolved shipment IDs from master AWBs"
+            );
+            DeconsolidateCommand { shipment_ids: resolved_ids, ..cmd }
+        } else {
+            cmd
+        };
+
         let child_awbs: Vec<String> = children.iter().map(|c| c.as_str().to_string()).collect();
         let event = Event::new(
             "hub-ops",

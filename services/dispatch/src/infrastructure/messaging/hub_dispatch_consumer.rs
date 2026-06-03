@@ -115,7 +115,7 @@ async fn handle(
                 );
                 let fallback = Event::new(
                     "dispatch",
-                    "hub.shipment.carrier_booking_requested",
+                    topics::HUB_CARRIER_BOOKING_REQUESTED,
                     d.tenant_id,
                     HubCarrierBookingRequested {
                         shipment_id:      d.shipment_id,

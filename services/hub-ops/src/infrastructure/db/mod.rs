@@ -746,4 +746,16 @@ impl ContainerRepository for PgPalletContainerRepository {
         }
         Ok(())
     }
+
+    async fn resolve_awbs_to_shipment_ids(&self, awbs: &[String]) -> anyhow::Result<Vec<uuid::Uuid>> {
+        if awbs.is_empty() { return Ok(vec![]); }
+        let rows: Vec<(uuid::Uuid,)> = sqlx::query_as(
+            "SELECT DISTINCT shipment_id FROM hub_ops.parcel_inductions \
+             WHERE tracking_number = ANY($1)"
+        )
+        .bind(awbs)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
 }
