@@ -628,6 +628,10 @@ pub struct ContainerDeconsolidated {
 
 /// Emitted by hub-ops when a shipment should be dispatched to an own driver for
 /// last-mile (HubRoutingConfig = OwnDriver or Auto). Consumed by: dispatch.
+///
+/// Enrichment fields (`service_level`, `sla_hours`, `total_cost_cents`) are
+/// supplied via the deconsolidate request and forwarded to the carrier booking
+/// event on Auto fallback so the carrier SLA record is accurate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HubDispatchRequested {
     pub shipment_id:               Uuid,
@@ -637,6 +641,14 @@ pub struct HubDispatchRequested {
     /// Auto-mode fallback window; 0 for OwnDriver (no fallback).
     #[serde(default)]
     pub auto_fallback_window_mins: i32,
+    /// "standard" | "next_day" | "same_day" — defaults to "standard" when empty.
+    #[serde(default)]
+    pub service_level:             String,
+    /// SLA window in hours; 0 means use the consumer default.
+    #[serde(default)]
+    pub sla_hours:                 i64,
+    #[serde(default)]
+    pub total_cost_cents:          i64,
     pub requested_at:              String,
 }
 
@@ -650,6 +662,14 @@ pub struct HubCarrierBookingRequested {
     pub destination_zone: String,
     #[serde(default)]
     pub carrier_id:       Option<Uuid>,
+    /// "standard" | "next_day" | "same_day" — defaults to "standard" when empty.
+    #[serde(default)]
+    pub service_level:    String,
+    /// SLA window in hours; 0 means use the consumer default.
+    #[serde(default)]
+    pub sla_hours:        i64,
+    #[serde(default)]
+    pub total_cost_cents: i64,
     pub requested_at:     String,
 }
 

@@ -123,6 +123,9 @@ async fn handle(
                         hub_id:           d.hub_id,
                         destination_zone: d.destination_zone.clone(),
                         carrier_id:       None,
+                        service_level:    d.service_level.clone(),
+                        sla_hours:        d.sla_hours,
+                        total_cost_cents: d.total_cost_cents,
                         requested_at:     chrono::Utc::now().to_rfc3339(),
                     },
                 );

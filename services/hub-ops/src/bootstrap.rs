@@ -1737,6 +1737,10 @@ struct DeconsolidateRequest {
     destination_zone: String,
     /// Master AWBs in the container — resolved to shipment IDs for routing fan-out.
     #[serde(default)] master_awbs: Vec<String>,
+    /// Last-mile service level forwarded to dispatch/carrier ("standard" default).
+    #[serde(default)] service_level: String,
+    /// SLA window in hours forwarded to the carrier booking (0 = consumer default).
+    #[serde(default)] sla_hours: i64,
 }
 
 /// `POST /v1/containers/:id/deconsolidate` — break-bulk + last-mile routing fan-out.
@@ -1759,6 +1763,8 @@ async fn deconsolidate_handler(
         container_id:     ContainerId::from_uuid(container_id),
         destination_zone: req.destination_zone,
         shipment_ids:     shipment_ids.clone(),
+        service_level:    req.service_level,
+        sla_hours:        req.sla_hours,
     }).await?;
 
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({

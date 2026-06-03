@@ -59,6 +59,10 @@ pub struct DeconsolidateCommand {
     pub destination_zone: String,
     /// Shipments to fan out for last-mile (resolved from master AWBs by the caller).
     pub shipment_ids:     Vec<Uuid>,
+    /// Enrichment supplied by the deconsolidate request — forwarded to the
+    /// dispatch/carrier events so downstream SLA records are accurate.
+    pub service_level:    String,
+    pub sla_hours:        i64,
 }
 
 // ── Service ─────────────────────────────────────────────────────────────────────
@@ -284,7 +288,7 @@ impl HubTransferService {
             .await
             .map_err(AppError::Internal)?;
 
-        self.fan_out_routing(&container, &cmd.destination_zone, &cmd.shipment_ids).await?;
+        self.fan_out_routing(&container, &cmd).await?;
         Ok(container)
     }
 
@@ -292,10 +296,13 @@ impl HubTransferService {
     /// request per shipment. Defaults to own-driver dispatch when no rule exists.
     async fn fan_out_routing(
         &self,
-        container:        &Container,
-        destination_zone: &str,
-        shipment_ids:     &[Uuid],
+        container: &Container,
+        cmd:       &DeconsolidateCommand,
     ) -> AppResult<()> {
+        let destination_zone = cmd.destination_zone.as_str();
+        let shipment_ids     = cmd.shipment_ids.as_slice();
+        let service_level    = cmd.service_level.clone();
+        let sla_hours        = cmd.sla_hours;
         let tenant_id = container.tenant_id.inner();
         let hub_id    = container.destination_hub.inner();
         let config = self
@@ -322,6 +329,9 @@ impl HubTransferService {
                             hub_id,
                             destination_zone: destination_zone.to_string(),
                             carrier_id,
+                            service_level: service_level.clone(),
+                            sla_hours,
+                            total_cost_cents: 0,
                             requested_at: now.clone(),
                         },
                     );
@@ -342,6 +352,9 @@ impl HubTransferService {
                             hub_id,
                             destination_zone: destination_zone.to_string(),
                             auto_fallback_window_mins: fallback,
+                            service_level: service_level.clone(),
+                            sla_hours,
+                            total_cost_cents: 0,
                             requested_at: now.clone(),
                         },
                     );
