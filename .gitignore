@@ -59,6 +59,9 @@ libs/proto/src/generated/
 .worktrees/
 .claude/worktrees/
 .claude/scheduled_tasks.lock
+
+# Local Claude overrides (personal dev notes, not shared)
+.claude.local.md
 .claire/
 .clone/
 .playwright-mcp/

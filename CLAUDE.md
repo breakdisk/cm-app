@@ -523,7 +523,7 @@ logisticos/
 
 ## Development Workflow
 
-1. **Feature branches** from `main` — naming: `feat/service-name/description`
+1. **Feature branches** from `master` — naming: `feat/service-name/description`
 2. **OpenAPI/Protobuf spec** reviewed and merged before implementation
 3. **ADR created** for any architectural decision
 4. **Implementation** with unit + integration tests required
@@ -543,6 +543,34 @@ logisticos/
 - **Multi-language support** — UI must support i18n from day one (EN, PH priority)
 - **Mobile-first** — all customer and driver interfaces designed mobile-first
 - **Accessibility** — WCAG 2.1 AA minimum for all web portals
+
+---
+
+## Development Environment & Gotchas
+
+### Git
+- **Default branch is `master`**, not `main` — use `origin/master` in all log/diff comparisons
+- **Commit messages with `•` bullets break PowerShell heredocs** — use `git commit -F /tmp/msg.txt` instead of `-m` with special characters
+- **`settings.local.json` is tracked** — scrub any secrets (tokens, API keys) from the tool-allowlist before staging; the file accumulates literal command strings from prior sessions
+
+### Rust / Cargo (dev machine)
+- **C: drive fills to 0 bytes during long build sessions** — clear `C:\cargo-target-logisticos\debug\incremental` (~10 GB, safe to delete; Cargo regenerates) to recover ~9 GB
+- **Set `CARGO_INCREMENTAL=0`** on every `cargo build/check` to prevent incremental cache regrowth
+- **`link.exe` exit code 1318 is a disk-full linker error**, not a code error — `cargo check` (skips linking) is sufficient for type verification during development
+- **Multi-crate check:** `cargo check -p crate-a -p crate-b` validates several crates in one invocation
+
+### Axum routing
+- **Duplicate `.route()` calls on the same path panic at startup** — combine HTTP methods on one call: `.route("/v1/foo", get(list).post(create))`
+
+### Engagement service — notification templates
+- **`event_consumer.rs` uses inline Rust `match` arms, not the DB registry** — `engagement.notification_templates` is only read by the HTTP `/v1/send` path. Kafka-driven consumer notifications need a match arm in `event_consumer.rs`; a DB seed alone has no effect on consumer-triggered messages
+
+### hub-ops — repository layers
+- **Two separate container repo structs exist** — `PgContainerRepository` (in `bootstrap.rs`, used directly by HTTP handlers) and `PgPalletContainerRepository` (in `infrastructure/db/mod.rs`, implements `ContainerRepository` trait used by `HubTransferService`). Add new trait methods to `PgPalletContainerRepository`
+
+### Android driver app
+- **Cannot run Gradle locally** — Android changes follow the existing feature-module pattern and are validated by the GitHub Actions Android CI workflow; use `cargo check` / `tsc --noEmit` for backend/portal verification within sessions
+- **`device_timestamp` discipline** — capture `System.currentTimeMillis()` at the physical event (scan callback, shutter click) and convert immediately with `HubRepository.isoFromMillis()`; never re-sample at coroutine launch or network-send time
 
 ---
 
