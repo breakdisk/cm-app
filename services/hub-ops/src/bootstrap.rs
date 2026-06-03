@@ -1524,7 +1524,7 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/v1/hubs/sort",               post(sort))
         .route("/v1/hubs/dispatch/:id",       post(dispatch))
         // Container CRUD — create, load, finalise, depart (billing clearance + POP guard)
-        .route("/v1/containers",                      post(create_container_handler))
+        .route("/v1/containers",                      get(list_containers_handler).post(create_container_handler))
         .route("/v1/containers/:id/load-pallet",      post(load_pallet_handler))
         .route("/v1/containers/:id/load-loose-piece", post(load_loose_piece_handler))
         .route("/v1/containers/:id/finalise",         post(finalise_manifest_handler))
@@ -1931,6 +1931,58 @@ async fn move_inventory_handler(
     s.hub_transfer_svc.move_inventory(req.inventory_id, req.to_location_id).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
         "inventory_id": req.inventory_id, "location_id": req.to_location_id,
+    }))))
+}
+
+#[derive(serde::Deserialize)]
+struct ListContainersQuery {
+    #[serde(default)] hub_id: Option<Uuid>,
+    #[serde(default)] status: Option<String>,
+}
+
+#[derive(sqlx::FromRow, serde::Serialize)]
+struct ContainerSummaryRow {
+    id:                 Uuid,
+    transport_mode:     String,
+    origin_hub_id:      Uuid,
+    destination_hub_id: Uuid,
+    status:             String,
+    awb_count:          Option<i32>,
+    departed_at:        Option<chrono::DateTime<chrono::Utc>>,
+    estimated_arrival:  Option<chrono::DateTime<chrono::Utc>>,
+    arrived_at:         Option<chrono::DateTime<chrono::Utc>>,
+    created_at:         chrono::DateTime<chrono::Utc>,
+    updated_at:         chrono::DateTime<chrono::Utc>,
+}
+
+/// `GET /v1/containers?hub_id=&status=` — container board listing (tenant-scoped).
+async fn list_containers_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Query(q): Query<ListContainersQuery>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_READ)?;
+    let rows: Vec<ContainerSummaryRow> = sqlx::query_as(
+        r#"SELECT id, transport_mode, origin_hub_id, destination_hub_id, status,
+                  array_length(master_awbs, 1) AS awb_count,
+                  departed_at, estimated_arrival, arrived_at, created_at, updated_at
+           FROM hub_ops.containers
+           WHERE tenant_id = $1
+             AND ($2::uuid IS NULL OR origin_hub_id = $2 OR destination_hub_id = $2)
+             AND ($3::text IS NULL OR status = $3)
+           ORDER BY updated_at DESC
+           LIMIT 200"#,
+    )
+    .bind(claims.tenant_id)
+    .bind(q.hub_id)
+    .bind(q.status)
+    .fetch_all(&s.pool)
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+
+    let count = rows.len();
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+        "containers": rows, "count": count,
     }))))
 }
 
