@@ -23,7 +23,8 @@ import {
 } from "lucide-react";
 import { createHubsApi, hubIdOf, type Hub } from "@/lib/api/hubs";
 import {
-  createHubTransferApi, CONTAINER_BOARD_COLUMNS, TRANSPORT_MODES, customsTone,
+  createHubTransferApi, CONTAINER_BOARD_COLUMNS, TRANSPORT_MODES,
+  customsTone, transportModeLabel, isCustomsMode,
   type ContainerSummary, type TransferManifest, type RoutingConfig,
   type HubLocation, type HubInventory, type RoutingType,
 } from "@/lib/api/hub-transfer";
@@ -56,7 +57,7 @@ function CreateContainerModal({
 }) {
   const api = useMemo(() => createHubTransferApi(), []);
   const [form, setForm] = useState({
-    transport_mode: "sea_fcl",
+    transport_mode: "sea",
     origin_hub_id: "",
     destination_hub_id: "",
     carrier_ref: "",
@@ -240,14 +241,24 @@ function ContainerBoard({ hubId, hubs }: { hubId: string; hubs: Hub[] }) {
     finally { setBusy(null); }
   }
 
-  // Next transition available per status.
+  // Next transition — transport-mode-aware.
+  // Road containers skip port/customs: in_transit → release-domestic → deconsolidate.
+  // Sea/air containers go through port → customs → release → deconsolidate.
   function nextAction(c: ContainerSummary): { label: string; run: () => void } | null {
+    const customs = isCustomsMode(c.transport_mode);
     switch (c.status) {
-      case "in_transit":      return { label: "Arrive at Port", run: () => act(c.id, () => api.arriveAtPort(c.id), "Arrived at port ✓") };
-      case "arrived_at_port": return { label: "Enter Customs",  run: () => act(c.id, () => api.enterCustoms(c.id), "Entered customs ✓") };
-      case "customs":         return { label: "Clear Customs",  run: () => act(c.id, () => api.clearCustoms(c.id), "Customs cleared ✓") };
-      case "released":        return { label: "Deconsolidate",  run: () => setDeconsolidateId(c.id) };
-      default: return null;
+      case "in_transit":
+        return customs
+          ? { label: "Arrive at Port",    run: () => act(c.id, () => api.arriveAtPort(c.id),    "Arrived at port ✓") }
+          : { label: "Release Domestic",  run: () => act(c.id, () => api.releaseDomestic(c.id), "Released domestic ✓") };
+      case "arrived_at_port":
+        return { label: "Enter Customs",  run: () => act(c.id, () => api.enterCustoms(c.id),    "Entered customs ✓") };
+      case "customs":
+        return { label: "Clear Customs",  run: () => act(c.id, () => api.clearCustoms(c.id),    "Customs cleared ✓") };
+      case "released":
+        return { label: "Deconsolidate",  run: () => setDeconsolidateId(c.id) };
+      default:
+        return null;
     }
   }
 
@@ -284,7 +295,7 @@ function ContainerBoard({ hubId, hubs }: { hubId: string; hubs: Hub[] }) {
                         <div className="flex items-center justify-between">
                           <span className="font-mono text-xs text-white">{shortId(c.id)}</span>
                           <span className="text-2xs font-mono text-white/30 uppercase">
-                            {c.transport_mode.replace(/_/g, " ")}
+                            {transportModeLabel(c.transport_mode)}
                           </span>
                         </div>
                         <p className="mt-1 text-2xs font-mono text-white/40">
@@ -374,7 +385,7 @@ function CustomsQueue({ hubId }: { hubId: string }) {
                 </NeonBadge>
               </div>
               <p className="mt-1 text-2xs font-mono text-white/40">
-                {m.transport_mode} · filing {m.customs_filing_ref ?? "—"} ·
+                {transportModeLabel(m.transport_mode)} · filing {m.customs_filing_ref ?? "—"} ·
                 {m.duties_total_cents != null ? ` duties ₱${(m.duties_total_cents / 100).toLocaleString()}` : " no duties"}
               </p>
             </div>

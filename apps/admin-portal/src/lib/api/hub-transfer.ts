@@ -160,13 +160,37 @@ export function createHubTransferApi() {
 
 // ── UI helpers ──────────────────────────────────────────────────────────────────
 
+// The DB stores exactly three transport-mode strings (road | sea | air).
+// transport_mode_str() in hub-ops/src/infrastructure/db/mod.rs collapses
+// SeaFcl/SeaLcl → "sea" and AirUld/AirLoose → "air". The create endpoint
+// validates against exactly these three values.
 export const TRANSPORT_MODES = [
-  { value: "road",      label: "Road" },
-  { value: "sea_fcl",   label: "Sea — FCL" },
-  { value: "sea_lcl",   label: "Sea — LCL" },
-  { value: "air_uld",   label: "Air — ULD" },
-  { value: "air_loose", label: "Air — Loose" },
+  { value: "road", label: "Road" },
+  { value: "sea",  label: "Sea Freight" },
+  { value: "air",  label: "Air Freight" },
 ] as const;
+
+/** Human-readable label for a stored transport_mode string. */
+export function transportModeLabel(mode: string): string {
+  switch (mode) {
+    case "road": return "Road";
+    case "sea":  return "Sea";
+    case "air":  return "Air";
+    // Domain entity serializes TransportMode enum as PascalCase variants
+    // (no serde rename_all on the enum); normalise for display.
+    case "SeaFcl": case "SeaLcl": return "Sea";
+    case "AirUld": case "AirLoose": return "Air";
+    case "Road": return "Road";
+    default: return mode.replace(/_/g, " ");
+  }
+}
+
+/** True for modes that go through port/customs (sea and air). */
+export function isCustomsMode(mode: string): boolean {
+  return mode === "sea" || mode === "air"
+    || mode === "SeaFcl" || mode === "SeaLcl"
+    || mode === "AirUld" || mode === "AirLoose";
+}
 
 export const CONTAINER_BOARD_COLUMNS: { status: ContainerStatus; label: string }[] = [
   { status: "manifested",      label: "Manifested" },
