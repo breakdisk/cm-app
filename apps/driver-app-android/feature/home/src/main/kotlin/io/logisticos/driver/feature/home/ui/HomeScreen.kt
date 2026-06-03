@@ -188,6 +188,23 @@ fun HomeScreen(
             }
         }
 
+        // \u2500\u2500 Hub Mode quick-access \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+        // Placed above all conditional banners so it is always visible above the
+        // fold regardless of how many warning cards are showing below.
+        Button(
+            onClick = onNavigateToHubScan,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp),
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Cyan.copy(alpha = 0.15f),
+                contentColor   = Cyan,
+            ),
+        ) {
+            Text("\ud83c\udfed  Hub Mode", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+        }
+
         // Compliance warning \u2014 surfaces when the driver's documents are missing,
         // rejected, or the profile has been suspended. Blocked drivers won't
         // receive dispatch assignments until compliance is resolved.
@@ -427,18 +444,6 @@ fun HomeScreen(
             colors = ButtonDefaults.outlinedButtonColors(contentColor = Purple)
         ) {
             Text("📦  Measure & Quote Box", fontWeight = FontWeight.Medium, fontSize = 15.sp)
-        }
-
-        OutlinedButton(
-            onClick = onNavigateToHubScan,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp),
-            shape = RoundedCornerShape(12.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, Cyan.copy(alpha = 0.5f)),
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = Cyan)
-        ) {
-            Text("🏭  Hub Mode", fontWeight = FontWeight.Medium, fontSize = 15.sp)
         }
     }
 
