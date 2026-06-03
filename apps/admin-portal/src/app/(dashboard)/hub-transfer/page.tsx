@@ -3,7 +3,7 @@
  * Admin Portal — Cross-Border Hub Transfer
  *
  * LIVE backend (hub-ops service via gateway):
- *  - Container Board  : GET /v1/containers (+ lifecycle transition actions)
+ *  - Container Board  : GET /v1/containers (+ lifecycle transition actions + POST create)
  *  - Customs Queue    : GET /v1/hubs/:id/customs-queue, POST .../clear-customs
  *  - Routing Config   : GET/POST /v1/hub-transfer/routing-config
  *  - Inventory Map    : GET /v1/hub-transfer/locations, /v1/hub-transfer/inventory
@@ -12,18 +12,18 @@
  * tenant-scoped server-side via the JWT; this page never sends tenant_id.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { motion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import { toast } from "sonner";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import {
   Container, ShieldCheck, Boxes, Route, Loader2, ChevronRight,
-  PackageCheck, MapPin, AlertTriangle, ArrowRight,
+  PackageCheck, MapPin, AlertTriangle, ArrowRight, Plus, X,
 } from "lucide-react";
 import { createHubsApi, hubIdOf, type Hub } from "@/lib/api/hubs";
 import {
-  createHubTransferApi, CONTAINER_BOARD_COLUMNS, customsTone,
+  createHubTransferApi, CONTAINER_BOARD_COLUMNS, TRANSPORT_MODES, customsTone,
   type ContainerSummary, type TransferManifest, type RoutingConfig,
   type HubLocation, type HubInventory, type RoutingType,
 } from "@/lib/api/hub-transfer";
@@ -46,12 +46,183 @@ const STATUS_TONE: Record<string, "green" | "amber" | "red" | "muted" | "cyan"> 
 
 function shortId(id: string) { return id.slice(0, 8); }
 
+// ── Create Container Modal ────────────────────────────────────────────────────
+function CreateContainerModal({
+  hubs, onClose, onCreate,
+}: {
+  hubs: Hub[];
+  onClose: () => void;
+  onCreate: () => void;
+}) {
+  const api = useMemo(() => createHubTransferApi(), []);
+  const [form, setForm] = useState({
+    transport_mode: "sea_fcl",
+    origin_hub_id: "",
+    destination_hub_id: "",
+    carrier_ref: "",
+  });
+  const [saving, setSaving] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!form.origin_hub_id || !form.destination_hub_id) {
+      toast.error("Origin and destination hubs are required");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.createContainer({
+        transport_mode:     form.transport_mode,
+        origin_hub_id:      form.origin_hub_id,
+        destination_hub_id: form.destination_hub_id,
+        carrier_ref:        form.carrier_ref || undefined,
+      });
+      toast.success("Container created");
+      onCreate();
+    } catch (e) {
+      toast.error((e as { message?: string })?.message ?? "Failed to create container");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      onClick={onClose}>
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      <motion.div initial={{ opacity: 0, y: 14, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 14, scale: 0.97 }}
+        transition={{ type: "spring", damping: 28, stiffness: 260 }}
+        className="relative w-full max-w-md rounded-2xl border border-glass-border bg-[#0d1422] shadow-2xl overflow-hidden"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-glass-border px-5 py-4">
+          <div className="flex items-center gap-2">
+            <Container size={15} className="text-cyan-neon" />
+            <h2 className="font-heading text-sm font-bold text-white">New Container</h2>
+          </div>
+          <button onClick={onClose} className="rounded-lg p-1.5 text-white/40 transition-colors hover:bg-glass-200 hover:text-white">
+            <X size={14} />
+          </button>
+        </div>
+        <form onSubmit={submit} className="space-y-4 p-5">
+          <Field label="Transport Mode">
+            <select value={form.transport_mode} onChange={(e) => setForm((f) => ({ ...f, transport_mode: e.target.value }))}
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white focus:border-cyan-500 focus:outline-none">
+              {TRANSPORT_MODES.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+            </select>
+          </Field>
+          <Field label="Origin Hub *">
+            <select value={form.origin_hub_id} onChange={(e) => setForm((f) => ({ ...f, origin_hub_id: e.target.value }))}
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white focus:border-cyan-500 focus:outline-none">
+              <option value="">— select hub —</option>
+              {hubs.map((h) => <option key={hubIdOf(h)} value={hubIdOf(h)}>{h.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Destination Hub *">
+            <select value={form.destination_hub_id} onChange={(e) => setForm((f) => ({ ...f, destination_hub_id: e.target.value }))}
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white focus:border-cyan-500 focus:outline-none">
+              <option value="">— select hub —</option>
+              {hubs.map((h) => <option key={hubIdOf(h)} value={hubIdOf(h)}>{h.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Carrier Ref (optional)">
+            <input value={form.carrier_ref} onChange={(e) => setForm((f) => ({ ...f, carrier_ref: e.target.value }))}
+              placeholder="MAWB / Bill of Lading"
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/20 focus:border-cyan-500 focus:outline-none" />
+          </Field>
+          <div className="flex items-center justify-end gap-3 pt-1">
+            <button type="button" onClick={onClose}
+              className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/60 transition-colors hover:text-white">
+              Cancel
+            </button>
+            <button type="submit" disabled={saving}
+              className="flex items-center gap-1.5 rounded-xl border border-cyan-500/50 bg-cyan-500/10 px-5 py-2 text-sm font-semibold text-cyan-300 transition-all hover:bg-cyan-500/20 disabled:opacity-40">
+              {saving ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
+              {saving ? "Creating…" : "Create"}
+            </button>
+          </div>
+        </form>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ── Deconsolidate Zone Modal ──────────────────────────────────────────────────
+function DeconsolidateModal({
+  containerId, onClose, onDone, api,
+}: {
+  containerId: string;
+  onClose: () => void;
+  onDone: () => void;
+  api: ReturnType<typeof createHubTransferApi>;
+}) {
+  const [zone, setZone] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api.deconsolidate(containerId, zone.trim());
+      toast.success("Deconsolidation triggered — routing fan-out in progress");
+      onDone();
+    } catch (e) {
+      toast.error((e as { message?: string })?.message ?? "Deconsolidation failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      onClick={onClose}>
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      <motion.div initial={{ opacity: 0, y: 14, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 14, scale: 0.97 }}
+        transition={{ type: "spring", damping: 28, stiffness: 260 }}
+        className="relative w-full max-w-sm rounded-2xl border border-glass-border bg-[#0d1422] shadow-2xl overflow-hidden"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-glass-border px-5 py-4">
+          <h2 className="font-heading text-sm font-bold text-white">Deconsolidate Container</h2>
+          <button onClick={onClose} className="rounded-lg p-1.5 text-white/40 transition-colors hover:bg-glass-200 hover:text-white"><X size={14} /></button>
+        </div>
+        <form onSubmit={submit} className="space-y-4 p-5">
+          <p className="font-mono text-xs text-white/50">
+            Enter the destination zone for routing rule lookup. Leave blank to use
+            the default own-driver routing.
+          </p>
+          <Field label="Destination Zone">
+            <input value={zone} onChange={(e) => setZone(e.target.value)}
+              placeholder="e.g. Metro Manila, Visayas"
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/20 focus:border-cyan-500 focus:outline-none" />
+          </Field>
+          <div className="flex items-center justify-end gap-3 pt-1">
+            <button type="button" onClick={onClose}
+              className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/60 transition-colors hover:text-white">
+              Cancel
+            </button>
+            <button type="submit" disabled={busy}
+              className="flex items-center gap-1.5 rounded-xl border border-purple-plasma/50 bg-purple-plasma/10 px-5 py-2 text-sm font-semibold text-purple-plasma transition-all hover:bg-purple-plasma/20 disabled:opacity-40">
+              {busy ? <Loader2 size={13} className="animate-spin" /> : <ArrowRight size={13} />}
+              {busy ? "Processing…" : "Deconsolidate"}
+            </button>
+          </div>
+        </form>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 // ── Container Board ───────────────────────────────────────────────────────────
-function ContainerBoard({ hubId }: { hubId: string }) {
+function ContainerBoard({ hubId, hubs }: { hubId: string; hubs: Hub[] }) {
   const api = useMemo(() => createHubTransferApi(), []);
   const [containers, setContainers] = useState<ContainerSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [deconsolidateId, setDeconsolidateId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -69,63 +240,94 @@ function ContainerBoard({ hubId }: { hubId: string }) {
     finally { setBusy(null); }
   }
 
-  // Next transition available per status (drives the inline action button).
-  function nextAction(c: ContainerSummary): { label: string; run: () => Promise<unknown> } | null {
+  // Next transition available per status.
+  function nextAction(c: ContainerSummary): { label: string; run: () => void } | null {
     switch (c.status) {
-      case "in_transit":      return { label: "Arrive at Port", run: () => api.arriveAtPort(c.id) };
-      case "arrived_at_port": return { label: "Enter Customs",  run: () => api.enterCustoms(c.id) };
-      case "customs":         return { label: "Clear Customs",  run: () => api.clearCustoms(c.id) };
-      case "released":        return { label: "Deconsolidate",  run: () => api.deconsolidate(c.id, "") };
+      case "in_transit":      return { label: "Arrive at Port", run: () => act(c.id, () => api.arriveAtPort(c.id), "Arrived at port ✓") };
+      case "arrived_at_port": return { label: "Enter Customs",  run: () => act(c.id, () => api.enterCustoms(c.id), "Entered customs ✓") };
+      case "customs":         return { label: "Clear Customs",  run: () => act(c.id, () => api.clearCustoms(c.id), "Customs cleared ✓") };
+      case "released":        return { label: "Deconsolidate",  run: () => setDeconsolidateId(c.id) };
       default: return null;
     }
   }
 
-  if (loading) return <CardLoader label="loading containers…" />;
-  if (containers.length === 0) return <EmptyState icon={Container} title="No containers in scope" hint="Containers appear here once manifested for this hub." />;
-
   const byStatus = (s: string) => containers.filter((c) => c.status === s);
 
   return (
-    <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-      {CONTAINER_BOARD_COLUMNS.map((col) => {
-        const items = byStatus(col.status);
-        return (
-          <GlassCard key={col.status} size="sm" className="flex flex-col">
-            <div className="mb-3 flex items-center justify-between">
-              <p className="text-2xs font-mono uppercase tracking-widest text-white/40">{col.label}</p>
-              <NeonBadge variant={STATUS_TONE[col.status] ?? "muted"}>{items.length}</NeonBadge>
-            </div>
-            <div className="flex flex-col gap-2">
-              {items.length === 0 && <p className="py-3 text-center text-2xs font-mono text-white/20">—</p>}
-              {items.map((c) => {
-                const next = nextAction(c);
-                return (
-                  <div key={c.id} className="rounded-xl border border-glass-border bg-glass-100 p-3">
-                    <div className="flex items-center justify-between">
-                      <span className="font-mono text-xs text-white">{shortId(c.id)}</span>
-                      <span className="text-2xs font-mono text-white/30 uppercase">{c.transport_mode}</span>
-                    </div>
-                    <p className="mt-1 text-2xs font-mono text-white/40">
-                      {c.awb_count ?? 0} AWB · {shortId(c.origin_hub_id)} → {shortId(c.destination_hub_id)}
-                    </p>
-                    {next && (
-                      <button
-                        onClick={() => act(c.id, next.run, `${next.label} ✓`)}
-                        disabled={busy === c.id}
-                        className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2 py-1.5 text-2xs font-semibold text-cyan-300 transition-colors hover:bg-cyan-500/20 disabled:opacity-40"
-                      >
-                        {busy === c.id ? <Loader2 size={11} className="animate-spin" /> : <ChevronRight size={11} />}
-                        {next.label}
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </GlassCard>
-        );
-      })}
-    </div>
+    <>
+      {/* Toolbar */}
+      <div className="mb-3 flex items-center justify-end">
+        <button onClick={() => setCreateOpen(true)}
+          className="flex items-center gap-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-300 transition-colors hover:bg-cyan-500/20">
+          <Plus size={12} /> New Container
+        </button>
+      </div>
+
+      {loading ? <CardLoader label="loading containers…" /> : containers.length === 0 ? (
+        <EmptyState icon={Container} title="No containers in scope" hint="Create a container or wait for manifests to appear." />
+      ) : (
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {CONTAINER_BOARD_COLUMNS.map((col) => {
+            const items = byStatus(col.status);
+            return (
+              <GlassCard key={col.status} size="sm" className="flex flex-col">
+                <div className="mb-3 flex items-center justify-between">
+                  <p className="text-2xs font-mono uppercase tracking-widest text-white/40">{col.label}</p>
+                  <NeonBadge variant={STATUS_TONE[col.status] ?? "muted"}>{items.length}</NeonBadge>
+                </div>
+                <div className="flex flex-col gap-2">
+                  {items.length === 0 && <p className="py-3 text-center text-2xs font-mono text-white/20">—</p>}
+                  {items.map((c) => {
+                    const next = nextAction(c);
+                    return (
+                      <div key={c.id} className="rounded-xl border border-glass-border bg-glass-100 p-3">
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-xs text-white">{shortId(c.id)}</span>
+                          <span className="text-2xs font-mono text-white/30 uppercase">
+                            {c.transport_mode.replace(/_/g, " ")}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-2xs font-mono text-white/40">
+                          {c.awb_count ?? 0} AWB · {shortId(c.origin_hub_id)} → {shortId(c.destination_hub_id)}
+                        </p>
+                        {next && (
+                          <button
+                            onClick={next.run}
+                            disabled={busy === c.id}
+                            className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2 py-1.5 text-2xs font-semibold text-cyan-300 transition-colors hover:bg-cyan-500/20 disabled:opacity-40"
+                          >
+                            {busy === c.id ? <Loader2 size={11} className="animate-spin" /> : <ChevronRight size={11} />}
+                            {next.label}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </GlassCard>
+            );
+          })}
+        </div>
+      )}
+
+      <AnimatePresence>
+        {createOpen && (
+          <CreateContainerModal
+            hubs={hubs}
+            onClose={() => setCreateOpen(false)}
+            onCreate={() => { setCreateOpen(false); load(); }}
+          />
+        )}
+        {deconsolidateId && (
+          <DeconsolidateModal
+            containerId={deconsolidateId}
+            api={api}
+            onClose={() => setDeconsolidateId(null)}
+            onDone={() => { setDeconsolidateId(null); load(); }}
+          />
+        )}
+      </AnimatePresence>
+    </>
   );
 }
 
@@ -451,7 +653,7 @@ export default function HubTransferPage() {
       <motion.div variants={variants.fadeInUp}>
         {!hubId ? (
           <EmptyState icon={Container} title="Select a hub" hint="Choose a hub from the selector to view its transfer operations." />
-        ) : tab === "board" ? <ContainerBoard hubId={hubId} />
+        ) : tab === "board" ? <ContainerBoard hubId={hubId} hubs={hubs} />
           : tab === "customs" ? <CustomsQueue hubId={hubId} />
           : tab === "routing" ? <RoutingConfigView hubId={hubId} />
           : <InventoryMap hubId={hubId} />}

@@ -37,6 +37,7 @@ fun HomeScreen(
     onNavigateToRoute: () -> Unit,
     onNavigateToCompliance: () -> Unit,
     onNavigateToBoxMeasure: () -> Unit = {},
+    onNavigateToHubScan: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -426,6 +427,18 @@ fun HomeScreen(
             colors = ButtonDefaults.outlinedButtonColors(contentColor = Purple)
         ) {
             Text("📦  Measure & Quote Box", fontWeight = FontWeight.Medium, fontSize = 15.sp)
+        }
+
+        OutlinedButton(
+            onClick = onNavigateToHubScan,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp),
+            shape = RoundedCornerShape(12.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, Cyan.copy(alpha = 0.5f)),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = Cyan)
+        ) {
+            Text("🏭  Hub Mode", fontWeight = FontWeight.Medium, fontSize = 15.sp)
         }
     }
 

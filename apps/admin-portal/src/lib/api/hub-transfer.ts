@@ -92,6 +92,13 @@ export interface ClearCustomsBody {
   tenant_code?:        string;
 }
 
+export interface CreateContainerBody {
+  transport_mode:     string;
+  origin_hub_id:      string;
+  destination_hub_id: string;
+  carrier_ref?:       string;
+}
+
 // ── Client ────────────────────────────────────────────────────────────────────
 
 export function createHubTransferApi() {
@@ -116,6 +123,9 @@ export function createHubTransferApi() {
     },
 
     // ── Container customs lifecycle transitions ──
+    createContainer: (body: CreateContainerBody) =>
+      http.post<ContainerSummary>("/v1/containers", body),
+
     arriveAtPort:    (id: string) => http.post(`/v1/containers/${id}/arrive-at-port`, { details: [] }),
     enterCustoms:    (id: string) => http.post(`/v1/containers/${id}/enter-customs`, { details: [] }),
     releaseDomestic: (id: string) => http.post(`/v1/containers/${id}/release-domestic`),
@@ -149,6 +159,14 @@ export function createHubTransferApi() {
 }
 
 // ── UI helpers ──────────────────────────────────────────────────────────────────
+
+export const TRANSPORT_MODES = [
+  { value: "road",      label: "Road" },
+  { value: "sea_fcl",   label: "Sea — FCL" },
+  { value: "sea_lcl",   label: "Sea — LCL" },
+  { value: "air_uld",   label: "Air — ULD" },
+  { value: "air_loose", label: "Air — Loose" },
+] as const;
 
 export const CONTAINER_BOARD_COLUMNS: { status: ContainerStatus; label: string }[] = [
   { status: "manifested",      label: "Manifested" },

@@ -1812,7 +1812,11 @@ async fn customs_queue_handler(
 ) -> impl IntoResponse {
     claims.require_permission(permissions::SHIPMENT_READ)?;
     let queue = s.hub_transfer_svc.list_customs_queue(hub_id, claims.tenant_id).await?;
-    Ok::<_, AppError>((StatusCode::OK, Json(queue)))
+    let count = queue.len();
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+        "containers": queue,
+        "count": count,
+    }))))
 }
 
 #[derive(serde::Deserialize)]
