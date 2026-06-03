@@ -608,6 +608,56 @@ impl ConsolidationPlanRepository for PgConsolidationPlanRepository {
         self.find(id, tenant_id).await?
             .ok_or_else(|| anyhow::anyhow!("plan not found after placements update"))
     }
+
+    async fn confirm(
+        &self, id: Uuid, tenant_id: Uuid, container_id: Uuid,
+    ) -> anyhow::Result<ConsolidationPlan> {
+        let now = chrono::Utc::now();
+        sqlx::query(
+            "UPDATE hub_ops.consolidation_plans
+                SET status = 'confirmed', container_id = $1, updated_at = $2
+              WHERE id = $3 AND tenant_id = $4"
+        )
+        .bind(container_id).bind(now).bind(id).bind(tenant_id)
+        .execute(&self.pool).await?;
+        self.find(id, tenant_id).await?
+            .ok_or_else(|| anyhow::anyhow!("plan not found after confirm"))
+    }
+
+    async fn mark_loaded(&self, id: Uuid, tenant_id: Uuid) -> anyhow::Result<()> {
+        let now = chrono::Utc::now();
+        sqlx::query(
+            "UPDATE hub_ops.consolidation_plans
+                SET status = 'loaded', updated_at = $1
+              WHERE id = $2 AND tenant_id = $3"
+        )
+        .bind(now).bind(id).bind(tenant_id)
+        .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    async fn insert_loading(
+        &self, plan_id: Uuid, tenant_id: Uuid, awb: &str, scanned_by: Option<Uuid>,
+    ) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            r#"INSERT INTO hub_ops.consolidation_plan_loadings
+               (plan_id, tenant_id, awb, scanned_by)
+               VALUES ($1, $2, $3, $4)
+               ON CONFLICT (plan_id, awb) DO NOTHING"#
+        )
+        .bind(plan_id).bind(tenant_id).bind(awb).bind(scanned_by)
+        .execute(&self.pool).await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn loading_count(&self, plan_id: Uuid) -> anyhow::Result<i64> {
+        let row: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM hub_ops.consolidation_plan_loadings WHERE plan_id = $1"
+        )
+        .bind(plan_id)
+        .fetch_one(&self.pool).await?;
+        Ok(row.0)
+    }
 }
 
 // ---------------------------------------------------------------------------

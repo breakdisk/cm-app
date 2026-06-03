@@ -30,6 +30,25 @@ pub trait ConsolidationPlanRepository: Send + Sync {
         tenant_id: Uuid,
         placements: serde_json::Value,
     ) -> anyhow::Result<ConsolidationPlan>;
+    async fn confirm(
+        &self, id: Uuid, tenant_id: Uuid, container_id: Uuid,
+    ) -> anyhow::Result<ConsolidationPlan>;
+    async fn mark_loaded(&self, id: Uuid, tenant_id: Uuid) -> anyhow::Result<()>;
+    /// Returns `true` if the row was inserted, `false` if the AWB was already present.
+    async fn insert_loading(
+        &self, plan_id: Uuid, tenant_id: Uuid, awb: &str, scanned_by: Option<Uuid>,
+    ) -> anyhow::Result<bool>;
+    async fn loading_count(&self, plan_id: Uuid) -> anyhow::Result<i64>;
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ScanPieceResult {
+    pub awb:          String,
+    pub loaded_count: i64,
+    pub total_count:  i32,
+    pub plan_status:  String,
+    pub hub_id:       Uuid,
+    pub container_id: Option<Uuid>,
 }
 
 // ── Commands / DTOs ────────────────────────────────────────────────────────────
@@ -245,5 +264,31 @@ impl ConsolidationService {
         self.broadcaster.broadcast(plan.hub_id, event.to_string()).await;
 
         Ok(updated)
+    }
+
+    pub async fn find_spec(
+        &self, id: Uuid, tenant_id: Uuid,
+    ) -> anyhow::Result<Option<TruckSpec>> {
+        self.specs.find(id, tenant_id).await
+    }
+
+    pub async fn set_confirmed(
+        &self, id: Uuid, tenant_id: Uuid, container_id: Uuid,
+    ) -> anyhow::Result<ConsolidationPlan> {
+        self.plans.confirm(id, tenant_id, container_id).await
+    }
+
+    pub async fn insert_loading(
+        &self, plan_id: Uuid, tenant_id: Uuid, awb: &str, scanned_by: Option<Uuid>,
+    ) -> anyhow::Result<bool> {
+        self.plans.insert_loading(plan_id, tenant_id, awb, scanned_by).await
+    }
+
+    pub async fn loading_count(&self, plan_id: Uuid) -> anyhow::Result<i64> {
+        self.plans.loading_count(plan_id).await
+    }
+
+    pub async fn mark_loaded(&self, id: Uuid, tenant_id: Uuid) -> anyhow::Result<()> {
+        self.plans.mark_loaded(id, tenant_id).await
     }
 }
