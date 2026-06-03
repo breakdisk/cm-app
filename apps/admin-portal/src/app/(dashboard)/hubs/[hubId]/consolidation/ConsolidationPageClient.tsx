@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
@@ -221,6 +221,9 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
   const [showConfirmForm, setShowConfirmForm]  = useState(false);
   const [confirming,      setConfirming]       = useState(false);
   const [loadedAwbs,      setLoadedAwbs]       = useState<Set<string>>(new Set());
+  const [scanInput,       setScanInput]        = useState('');
+  const [scanning,        setScanning]         = useState(false);
+  const scanInputRef = useRef<HTMLInputElement>(null);
 
   // Initialise — load specs and latest plan together.
   // `retryKey` increments on manual retry to re-trigger this effect.
@@ -281,6 +284,13 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
     return () => { cancelled = true; };
   }, [hubId, consolidationApi, retryKey]);
 
+  // Auto-focus scan input when plan enters confirmed status.
+  useEffect(() => {
+    if (currentPlan?.status === 'confirmed') {
+      setTimeout(() => scanInputRef.current?.focus(), 100);
+    }
+  }, [currentPlan?.status]);
+
   // WebSocket — live plan_computed and box_scanned events.
   useHubEvents({
     hubId,
@@ -304,8 +314,13 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
       if (event.type === 'parcel_dispatched' && event.tracking_number) {
         toast.success(`Dispatched: ${event.tracking_number}`, { duration: 4000 });
       }
-      if (event.type === 'box_scanned' && event.plan_id) {
-        setScanFeed(prev => [event.plan_id!, ...prev].slice(0, 20));
+      if (event.type === 'box_scanned' && event.awb) {
+        setLoadedAwbs(prev => new Set([...prev, event.awb as string]));
+        setScanFeed(prev => [event.awb as string, ...prev].slice(0, 20));
+      }
+      if (event.type === 'plan_loaded' && event.plan_id) {
+        setCurrentPlan(prev => prev ? { ...prev, status: 'loaded' } : prev);
+        toast.success('All pieces loaded — container sealed!', { duration: 6000 });
       }
       if (event.type === 'plan_confirmed' && event.plan_id) {
         try {
@@ -444,6 +459,37 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
       toast.error((e as { message?: string })?.message ?? 'Failed to confirm plan.');
     } finally {
       setConfirming(false);
+    }
+  }
+
+  async function handleScan(awb: string) {
+    if (!currentPlan || !awb.trim()) return;
+    setScanning(true);
+    try {
+      const result = await consolidationApi.scanPiece(currentPlan.id, awb.trim());
+      setLoadedAwbs(prev => new Set([...prev, result.awb]));
+      setScanInput('');
+      if (result.plan_status === 'loaded') {
+        setCurrentPlan(prev => prev ? { ...prev, status: 'loaded' } : prev);
+        toast.success('All pieces loaded — container sealed!');
+      } else {
+        toast.success(`Loaded ${result.loaded_count} / ${result.total_count}`);
+      }
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: string; message?: string } }; message?: string };
+      const code    = err.response?.data?.error;
+      const message = err.response?.data?.message ?? err.message ?? 'Scan failed.';
+      if (code === 'AWB_NOT_IN_PLAN') {
+        toast.error(`Not in plan: ${awb}`);
+      } else if (code === 'ALREADY_SCANNED') {
+        toast(message, { icon: '⚠️' });
+      } else {
+        toast.error(message);
+      }
+      setScanInput('');
+    } finally {
+      setScanning(false);
+      scanInputRef.current?.focus();
     }
   }
 
@@ -696,6 +742,111 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
             </div>
           )}
           </div>
+
+          {/* ── Confirmed mode: scan input ────────────────────────── */}
+          {currentPlan?.status === 'confirmed' && (
+            <div className="flex flex-col gap-3">
+              {/* Progress bar */}
+              <div>
+                <div className="mb-1 flex justify-between text-[11px] text-white/40">
+                  <span className="uppercase tracking-wider">Loading progress</span>
+                  <span className="font-mono text-green-400">
+                    {loadedAwbs.size} / {currentPlan.piece_count}
+                  </span>
+                </div>
+                <div className="h-2 w-full overflow-hidden rounded-full bg-white/10">
+                  <div
+                    className="h-full rounded-full transition-all duration-300"
+                    style={{
+                      width:      `${currentPlan.piece_count > 0 ? (loadedAwbs.size / currentPlan.piece_count) * 100 : 0}%`,
+                      background: '#00FF88',
+                      boxShadow:  '0 0 8px #00FF8880',
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* AWB scan input */}
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] text-white/40 uppercase tracking-wider">Scan AWB</label>
+                <input
+                  ref={scanInputRef}
+                  type="text"
+                  value={scanInput}
+                  onChange={e => setScanInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleScan(scanInput); }}
+                  placeholder="Scan or type AWB…"
+                  disabled={scanning}
+                  autoFocus
+                  className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm font-mono text-white placeholder-white/20 focus:border-green-400 focus:outline-none disabled:opacity-40"
+                />
+              </div>
+
+              {/* Piece checklist */}
+              <div>
+                <div className="mb-1 text-[11px] uppercase tracking-wider text-white/40">
+                  Pieces ({placements.length})
+                </div>
+                <div className="flex max-h-48 flex-col gap-0.5 overflow-y-auto">
+                  {placements.map(p => (
+                    <div
+                      key={p.awb}
+                      className={cn(
+                        'flex items-center gap-2 rounded-lg px-2 py-1 text-xs transition-colors',
+                        loadedAwbs.has(p.awb)
+                          ? 'bg-green-500/10 text-green-400'
+                          : 'bg-white/5 text-white/40',
+                      )}
+                    >
+                      <CheckCircle2
+                        size={11}
+                        className={loadedAwbs.has(p.awb) ? 'text-green-400' : 'text-white/20'}
+                      />
+                      <span className="truncate font-mono">{p.awb}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── Loaded mode: success banner ───────────────────────── */}
+          {currentPlan?.status === 'loaded' && (
+            <div className="flex flex-col gap-3 rounded-xl border border-green-500/30 bg-green-500/10 p-4">
+              <div className="flex items-center gap-2 text-green-400">
+                <CheckCircle2 size={16} />
+                <span className="text-sm font-semibold">Container Sealed</span>
+              </div>
+              {currentPlan.container_id && (
+                <>
+                  <div className="flex flex-col gap-1">
+                    <span className="text-[10px] text-white/40 uppercase tracking-wider">Container ID</span>
+                    <div className="flex items-center gap-2">
+                      <span className="flex-1 truncate rounded bg-white/5 px-2 py-1 font-mono text-[11px] text-green-300">
+                        {currentPlan.container_id}
+                      </span>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(currentPlan.container_id!);
+                          toast.success('Copied');
+                        }}
+                        className="shrink-0 text-[10px] text-white/40 hover:text-white transition-colors"
+                      >
+                        Copy
+                      </button>
+                    </div>
+                  </div>
+                  <a
+                    href={`/hub-transfer?container_id=${currentPlan.container_id}`}
+                    className="flex items-center justify-center gap-1.5 rounded-lg bg-white/5 py-2 text-xs text-cyan-400 hover:bg-white/10 transition-colors"
+                  >
+                    <MapPin size={11} />
+                    View in Hub Transfer Board
+                  </a>
+                </>
+              )}
+            </div>
+          )}
 
           {/* Selected box info + nudge controls */}
           <AnimatePresence>

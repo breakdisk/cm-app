@@ -5,6 +5,7 @@ import { useEffect, useRef, useCallback } from 'react';
 export type HubEventType =
   | 'plan_computed'
   | 'plan_confirmed'
+  | 'plan_loaded'
   | 'placements_updated'
   | 'box_scanned'
   | 'parcel_inducted'
@@ -18,6 +19,7 @@ export interface HubEvent {
   hub_id?:          string;
   shipment_id?:     string;
   tracking_number?: string;
+  awb?:             string;
   volume_pct?:      number;
   weight_kg?:       number;
   piece_count?:     number;
