@@ -546,3 +546,172 @@ pub struct CarrierAllocated {
     /// "rate_shop" (auto-selected cheapest) | "manual" (operator chose).
     pub method:           String,
 }
+
+// ── Cross-Border Hub Transfer events ──────────────────────────────────────────
+
+/// Emitted by hub-ops on an `InboundReceive` scan at the origin hub.
+/// Consumed by: order-intake (ShipmentStatus::AtHub), analytics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PieceScannedInbound {
+    pub piece_awb:        String,
+    pub master_awb:       String,
+    pub shipment_id:      Uuid,
+    pub tenant_id:        Uuid,
+    pub hub_id:           Uuid,
+    pub scanned_by:       Uuid,
+    /// Hardware clock at scan moment (ISO-8601). Primary basis for SLA.
+    #[serde(default)]
+    pub device_timestamp: Option<String>,
+    /// Backend receipt time (ISO-8601).
+    pub server_timestamp: String,
+}
+
+/// Emitted by hub-ops when a sea/air container reaches the destination
+/// port/airport. Consumed by: engagement (customer "at port" notification).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerArrivedAtPort {
+    pub container_id: Uuid,
+    pub tenant_id:    Uuid,
+    pub port_hub_id:  Option<Uuid>,
+    pub master_awbs:  Vec<String>,
+    pub arrived_at:   String,
+}
+
+/// Emitted by hub-ops when a container enters customs hold.
+/// Consumed by: order-intake (ShipmentStatus::CustomsHold), engagement.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerCustomsHold {
+    pub container_id: Uuid,
+    pub tenant_id:    Uuid,
+    pub master_awbs:  Vec<String>,
+    pub held_at:      String,
+}
+
+/// Emitted by hub-ops when a hub agent approves customs clearance (human gate).
+/// Consumed by: order-intake (ShipmentStatus::InTransit), payments (duties
+/// invoice if `duties_total_cents` > 0), engagement.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerCustomsCleared {
+    pub container_id:       Uuid,
+    pub tenant_id:          Uuid,
+    pub master_awbs:        Vec<String>,
+    /// Hub agent who approved clearance (mandatory human gate).
+    pub cleared_by:         Uuid,
+    #[serde(default)]
+    pub duties_total_cents: Option<i64>,
+    #[serde(default)]
+    pub customs_filing_ref: Option<String>,
+    pub cleared_at:         String,
+}
+
+/// Emitted by hub-ops when a domestic road container is released at destination
+/// (skips port/customs). Consumed by: analytics, hub-ops internal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerReleasedDomestic {
+    pub container_id: Uuid,
+    pub tenant_id:    Uuid,
+    pub master_awbs:  Vec<String>,
+    pub released_at:  String,
+}
+
+/// Emitted by hub-ops when a container is broken back into individual pieces at
+/// the destination hub. Consumed by: order-intake (ShipmentStatus::AtHub dest).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerDeconsolidated {
+    pub container_id:        Uuid,
+    pub tenant_id:           Uuid,
+    pub destination_hub_id:  Uuid,
+    pub master_awbs:         Vec<String>,
+    pub child_awbs:          Vec<String>,
+    pub deconsolidated_at:   String,
+}
+
+/// Emitted by hub-ops when a shipment should be dispatched to an own driver for
+/// last-mile (HubRoutingConfig = OwnDriver or Auto). Consumed by: dispatch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubDispatchRequested {
+    pub shipment_id:               Uuid,
+    pub tenant_id:                 Uuid,
+    pub hub_id:                    Uuid,
+    pub destination_zone:          String,
+    /// Auto-mode fallback window; 0 for OwnDriver (no fallback).
+    #[serde(default)]
+    pub auto_fallback_window_mins: i32,
+    pub requested_at:              String,
+}
+
+/// Emitted by hub-ops (Carrier routing) or dispatch (Auto fallback) when a
+/// shipment should be booked with a 3PL carrier. Consumed by: carrier.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubCarrierBookingRequested {
+    pub shipment_id:      Uuid,
+    pub tenant_id:        Uuid,
+    pub hub_id:           Uuid,
+    pub destination_zone: String,
+    #[serde(default)]
+    pub carrier_id:       Option<Uuid>,
+    pub requested_at:     String,
+}
+
+#[cfg(test)]
+mod cross_border_tests {
+    use super::*;
+    use crate::Event;
+
+    #[test]
+    fn piece_scanned_inbound_roundtrips_in_envelope() {
+        let sid = Uuid::new_v4();
+        let evt = Event::new(
+            "logisticos/hub-ops",
+            "hub.piece.scanned_inbound",
+            Uuid::new_v4(),
+            PieceScannedInbound {
+                piece_awb: "CM-PH1-B0009012Z-002".into(),
+                master_awb: "CM-PH1-B0009012Z".into(),
+                shipment_id: sid,
+                tenant_id: Uuid::new_v4(),
+                hub_id: Uuid::new_v4(),
+                scanned_by: Uuid::new_v4(),
+                device_timestamp: Some("2026-06-03T08:00:00Z".into()),
+                server_timestamp: "2026-06-03T08:00:01Z".into(),
+            },
+        );
+        let json = serde_json::to_string(&evt).unwrap();
+        let back: Event<PieceScannedInbound> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.data.shipment_id, sid);
+    }
+
+    #[test]
+    fn customs_cleared_carries_duties_and_clearer() {
+        let by = Uuid::new_v4();
+        let p = ContainerCustomsCleared {
+            container_id: Uuid::new_v4(),
+            tenant_id: Uuid::new_v4(),
+            master_awbs: vec!["CM-PH1-B0009012Z".into()],
+            cleared_by: by,
+            duties_total_cents: Some(150_00),
+            customs_filing_ref: Some("BRK-123".into()),
+            cleared_at: "2026-06-03T09:00:00Z".into(),
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        let back: ContainerCustomsCleared = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.cleared_by, by);
+        assert_eq!(back.duties_total_cents, Some(150_00));
+        assert_eq!(back.master_awbs.len(), 1);
+    }
+
+    #[test]
+    fn deconsolidated_carries_child_awbs() {
+        let p = ContainerDeconsolidated {
+            container_id: Uuid::new_v4(),
+            tenant_id: Uuid::new_v4(),
+            destination_hub_id: Uuid::new_v4(),
+            master_awbs: vec!["CM-PH1-B0009012Z".into()],
+            child_awbs: vec!["CM-PH1-B0009012Z-001".into(), "CM-PH1-B0009012Z-002".into()],
+            deconsolidated_at: "2026-06-03T10:00:00Z".into(),
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        let back: ContainerDeconsolidated = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.child_awbs.len(), 2);
+    }
+}

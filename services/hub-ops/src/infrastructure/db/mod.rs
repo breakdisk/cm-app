@@ -383,6 +383,7 @@ fn container_status_str(s: &ContainerStatus) -> &'static str {
         ContainerStatus::ArrivedAtPort => "arrived_at_port",
         ContainerStatus::Customs       => "customs",
         ContainerStatus::Released      => "released",
+        ContainerStatus::Deconsolidated => "deconsolidated",
         ContainerStatus::Delivered     => "delivered",
     }
 }
@@ -396,6 +397,7 @@ fn container_status_from_str(s: &str) -> ContainerStatus {
         "arrived_at_port" => ContainerStatus::ArrivedAtPort,
         "customs"         => ContainerStatus::Customs,
         "released"        => ContainerStatus::Released,
+        "deconsolidated"  => ContainerStatus::Deconsolidated,
         "delivered"       => ContainerStatus::Delivered,
         _                 => ContainerStatus::Planning,
     }
