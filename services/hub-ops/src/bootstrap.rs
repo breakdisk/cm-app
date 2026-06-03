@@ -1538,6 +1538,137 @@ async fn confirm_plan_handler(
 }
 
 // ---------------------------------------------------------------------------
+// Consolidation scan handler
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct ScanConsolidationPieceBody {
+    awb: String,
+}
+
+/// `POST /v1/consolidation/plans/:id/scan`
+///
+/// Validates that `awb` is in the plan's placements list, inserts a loading
+/// record, and transitions the plan to `loaded` (auto-finalising the container)
+/// once every placed AWB has been scanned.
+///
+/// Returns:
+///   409 PLAN_NOT_CONFIRMED  — plan is not in confirmed status
+///   422 AWB_NOT_IN_PLAN     — awb not found in plan.placements
+///   409 ALREADY_SCANNED     — this awb already has a loading record
+async fn scan_consolidation_piece_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+    Json(body): Json<ScanConsolidationPieceBody>,
+) -> impl IntoResponse {
+    use crate::domain::algorithms::bin_pack::Placement;
+    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+
+    let plan = s.consolidation_svc
+        .get_plan(id, claims.tenant_id).await
+        .map_err(AppError::internal)?
+        .ok_or_else(|| AppError::NotFound { resource: "consolidation_plan", id: id.to_string() })?;
+
+    if plan.status != "confirmed" {
+        return Ok::<_, AppError>((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error":   "PLAN_NOT_CONFIRMED",
+                "message": "Scanning requires the plan to be in confirmed status.",
+                "status":  plan.status,
+            })),
+        ));
+    }
+
+    // Validate AWB is in the plan's placements.
+    let placements: Vec<Placement> = serde_json::from_value(plan.placements.clone())
+        .map_err(|e| AppError::internal(anyhow::anyhow!(e)))?;
+
+    if !placements.iter().any(|p| p.awb == body.awb) {
+        return Ok((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({
+                "error":   "AWB_NOT_IN_PLAN",
+                "message": "The scanned AWB is not in this load plan.",
+                "awb":     body.awb,
+            })),
+        ));
+    }
+
+    // Insert the loading record. `false` means UNIQUE conflict → already scanned.
+    let inserted = s.consolidation_svc
+        .insert_loading(id, claims.tenant_id, &body.awb, Some(claims.user_id)).await
+        .map_err(AppError::internal)?;
+
+    if !inserted {
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error":   "ALREADY_SCANNED",
+                "message": "This AWB has already been loaded against this plan.",
+                "awb":     body.awb,
+            })),
+        ));
+    }
+
+    let loaded_count = s.consolidation_svc
+        .loading_count(id).await
+        .map_err(AppError::internal)?;
+    let total_count = plan.piece_count;
+
+    // Broadcast box_scanned for live 3D viewer update.
+    let box_event = serde_json::json!({
+        "type":         "box_scanned",
+        "awb":          body.awb,
+        "plan_id":      id,
+        "hub_id":       plan.hub_id,
+        "loaded_count": loaded_count,
+        "total_count":  total_count,
+    });
+    s.hub_broadcaster.broadcast(plan.hub_id, box_event.to_string()).await;
+
+    let plan_status = if loaded_count >= total_count as i64 {
+        s.consolidation_svc
+            .mark_loaded(id, claims.tenant_id).await
+            .map_err(AppError::internal)?;
+
+        if let Some(container_id) = plan.container_id {
+            s.containers.finalise(container_id).await
+                .map_err(|e| AppError::BusinessRule(e.to_string()))?;
+
+            let loaded_event = serde_json::json!({
+                "type":         "plan_loaded",
+                "plan_id":      id,
+                "container_id": container_id,
+                "hub_id":       plan.hub_id,
+            });
+            s.hub_broadcaster.broadcast(plan.hub_id, loaded_event.to_string()).await;
+
+            tracing::info!(
+                plan_id      = %id,
+                container_id = %container_id,
+                tenant_id    = %claims.tenant_id,
+                "Consolidation plan fully loaded — container finalised"
+            );
+        }
+        "loaded"
+    } else {
+        "confirmed"
+    };
+
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "awb":          body.awb,
+            "loaded_count": loaded_count,
+            "total_count":  total_count,
+            "plan_status":  plan_status,
+        })),
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // WebSocket handler — hub event bus
 // ---------------------------------------------------------------------------
 
@@ -1700,6 +1831,7 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/v1/consolidation/plans",                       post(compute_plan))
         .route("/v1/consolidation/plans/:id",                   get(get_plan))
         .route("/v1/consolidation/plans/:id/confirm",           post(confirm_plan_handler))
+        .route("/v1/consolidation/plans/:id/scan",              post(scan_consolidation_piece_handler))
         .route("/v1/consolidation/plans/:id/placements",        axum::routing::put(update_placements_handler))
         .route("/v1/hubs/:hub_id/consolidation/plans",          get(list_hub_plans))
         .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth));
