@@ -38,6 +38,9 @@ pub trait HubLocationRepository: Send + Sync {
 pub trait HubInventoryRepository: Send + Sync {
     /// Insert or update in place (location moves are a single row update).
     async fn upsert(&self, inventory: &HubInventory) -> anyhow::Result<()>;
+    /// Re-point an existing inventory record to a new location. Returns rows affected
+    /// (0 = unknown id).
+    async fn move_to(&self, inventory_id: Uuid, to_location_id: Uuid) -> anyhow::Result<u64>;
     async fn list_at_location(&self, location_id: Uuid) -> anyhow::Result<Vec<HubInventory>>;
     async fn find_by_unit(
         &self,

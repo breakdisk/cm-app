@@ -7,6 +7,8 @@ pub use hub_transfer_repositories::{
     HubInventoryRepository, HubLocationRepository, HubRoutingConfigRepository, HubScanRepository,
     HubTransferManifestRepository,
 };
+pub mod hub_transfer_service;
+pub use hub_transfer_service::{ClearCustomsCommand, DeconsolidateCommand, HubTransferService};
 
 use std::sync::Arc;
 use serde::Deserialize;

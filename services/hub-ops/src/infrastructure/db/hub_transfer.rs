@@ -429,6 +429,17 @@ impl HubInventoryRepository for PgHubInventoryRepository {
         Ok(())
     }
 
+    async fn move_to(&self, inventory_id: Uuid, to_location_id: Uuid) -> anyhow::Result<u64> {
+        let result = sqlx::query(
+            "UPDATE hub_ops.hub_inventory SET location_id = $2, updated_at = NOW() WHERE id = $1",
+        )
+        .bind(inventory_id)
+        .bind(to_location_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     async fn list_at_location(&self, location_id: Uuid) -> anyhow::Result<Vec<HubInventory>> {
         let rows: Vec<HubInventoryRow> = sqlx::query_as(
             r#"SELECT id, tenant_id, hub_id, location_id, unit_kind, unit_ref,
