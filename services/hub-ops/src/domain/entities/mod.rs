@@ -1,6 +1,17 @@
 pub mod pallet;
 pub mod container;
 pub mod consolidation;
+pub mod hub_scan;
+pub mod hub_location;
+pub mod hub_inventory;
+pub mod hub_transfer_manifest;
+pub mod hub_routing_config;
+
+pub use hub_scan::{HubScan, ScanException, ScanType};
+pub use hub_location::HubLocation;
+pub use hub_inventory::{HubInventory, InventoryUnit};
+pub use hub_transfer_manifest::{CustomsStatus, HubTransferManifest, ManifestError};
+pub use hub_routing_config::{HubRoutingConfig, RoutingType};
 
 /// Hub Operations — sorting hub / cross-dock facility management.
 ///

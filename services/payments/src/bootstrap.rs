@@ -15,7 +15,7 @@ use crate::infrastructure::db::{
 };
 use crate::infrastructure::http::OrderIntakeClient;
 use crate::api::http::{router, AppState};
-use crate::infrastructure::messaging::{PodConsumer, WeightDiscrepancyConsumer, PickupCapturedConsumer};
+use crate::infrastructure::messaging::{PodConsumer, WeightDiscrepancyConsumer, PickupCapturedConsumer, CustomsDutyConsumer};
 use logisticos_auth::jwt::JwtService;
 use logisticos_events::producer::KafkaProducer;
 
@@ -272,6 +272,17 @@ pub async fn run() -> anyhow::Result<()> {
     )
     .context("Failed to create PickupCapturedConsumer")?;
     tokio::spawn(async move { pickup_consumer.run().await });
+
+    // Spawn customs-duty consumer — generates a customs-duty invoice per payer
+    // when a container clears customs with duties owed.
+    let (_customs_duty_shutdown_tx, customs_duty_shutdown_rx) = tokio::sync::watch::channel(false);
+    let customs_duty_consumer = CustomsDutyConsumer::new(
+        &cfg.kafka.brokers,
+        &cfg.kafka.group_id,
+        Arc::clone(&invoice_service),
+    )
+    .context("Failed to create CustomsDutyConsumer")?;
+    tokio::spawn(async move { customs_duty_consumer.run(customs_duty_shutdown_rx).await });
 
     let addr = format!("{}:{}", cfg.app.host, cfg.app.port);
     let listener = tokio::net::TcpListener::bind(&addr)

@@ -6,7 +6,7 @@ use logisticos_auth::jwt::JwtService;
 
 use crate::{
     application::services::{
-        event_consumer::{handle_campaign_triggered, process_event, EngagementPublisher},
+        event_consumer::{handle_campaign_triggered, handle_hub_milestone, process_event, EngagementPublisher},
         notification_service::NotificationService,
     },
     config::Config,
@@ -315,6 +315,9 @@ async fn run_kafka_consumer(
         topics::CAMPAIGN_TRIGGERED,
         topics::SUPPORT_TICKET_OPENED,
         topics::SUPPORT_TICKET_CLOSED,
+        topics::CONTAINER_ARRIVED_AT_PORT,
+        topics::CONTAINER_CUSTOMS_HOLD,
+        topics::CONTAINER_CUSTOMS_CLEARED,
     ]).expect("Engagement consumer subscription failed");
 
     loop {
@@ -346,6 +349,11 @@ async fn run_kafka_consumer(
                                             &cache,
                                             publisher.as_ref(),
                                         ).await;
+                                    }
+                                    topics::CONTAINER_ARRIVED_AT_PORT
+                                    | topics::CONTAINER_CUSTOMS_HOLD
+                                    | topics::CONTAINER_CUSTOMS_CLEARED => {
+                                        handle_hub_milestone(topic, &json, &svc, &cache).await;
                                     }
                                     _ => {
                                         process_event(topic, &json, &svc, &cache).await;

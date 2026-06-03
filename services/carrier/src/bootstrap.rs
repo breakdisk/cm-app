@@ -132,6 +132,22 @@ pub async fn run() -> anyhow::Result<()> {
         });
     }
 
+    // Spawn hub-carrier consumer — books a 3PL SLA allocation when hub-ops (or
+    // dispatch Auto fallback) requests carrier last-mile for a deconsolidated shipment.
+    {
+        let brokers   = cfg.kafka.brokers.clone();
+        let group_id  = cfg.kafka.group_id.clone();
+        let svc       = Arc::clone(&carrier_svc);
+        let rx        = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::infrastructure::hub_carrier_consumer::start_hub_carrier_consumer(
+                &brokers, &group_id, svc, rx,
+            ).await {
+                tracing::error!("Hub-carrier consumer exited with error: {e}");
+            }
+        });
+    }
+
     // Build 3PL adapter registry — only adapters with credentials are registered.
     let mut registry = AdapterRegistry::new();
 

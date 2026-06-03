@@ -32,6 +32,16 @@ pub const PALLET_SEALED:             &str = "logisticos.hub.pallet.sealed";
 pub const CONTAINER_DEPARTED:        &str = "logisticos.fleet.container.departed";
 pub const CONTAINER_ARRIVED:         &str = "logisticos.fleet.container.arrived";
 
+// Cross-border hub transfer (hub-ops emits)
+pub const HUB_PIECE_SCANNED_INBOUND:     &str = "logisticos.hub.piece.scanned_inbound";
+pub const CONTAINER_ARRIVED_AT_PORT:     &str = "logisticos.hub.container.arrived_at_port";
+pub const CONTAINER_CUSTOMS_HOLD:        &str = "logisticos.hub.container.customs_hold";
+pub const CONTAINER_CUSTOMS_CLEARED:     &str = "logisticos.hub.container.customs_cleared";
+pub const CONTAINER_RELEASED_DOMESTIC:   &str = "logisticos.hub.container.released_domestic";
+pub const CONTAINER_DECONSOLIDATED:      &str = "logisticos.hub.container.deconsolidated";
+pub const HUB_DISPATCH_REQUESTED:        &str = "logisticos.hub.shipment.dispatch_requested";
+pub const HUB_CARRIER_BOOKING_REQUESTED: &str = "logisticos.hub.shipment.carrier_booking_requested";
+
 // Invoice / Billing
 pub const WEIGHT_ADJUSTMENT_INVOICED: &str = "logisticos.payments.invoice.weight_adjustment";
 
@@ -80,6 +90,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cross_border_hub_topics_namespaced() {
+        assert_eq!(HUB_PIECE_SCANNED_INBOUND,     "logisticos.hub.piece.scanned_inbound");
+        assert_eq!(CONTAINER_ARRIVED_AT_PORT,     "logisticos.hub.container.arrived_at_port");
+        assert_eq!(CONTAINER_CUSTOMS_HOLD,        "logisticos.hub.container.customs_hold");
+        assert_eq!(CONTAINER_CUSTOMS_CLEARED,     "logisticos.hub.container.customs_cleared");
+        assert_eq!(CONTAINER_RELEASED_DOMESTIC,   "logisticos.hub.container.released_domestic");
+        assert_eq!(CONTAINER_DECONSOLIDATED,      "logisticos.hub.container.deconsolidated");
+        assert_eq!(HUB_DISPATCH_REQUESTED,        "logisticos.hub.shipment.dispatch_requested");
+        assert_eq!(HUB_CARRIER_BOOKING_REQUESTED, "logisticos.hub.shipment.carrier_booking_requested");
+    }
+
+    #[test]
     fn all_topics_are_lowercase_dot_separated() {
         let topics: &[&str] = &[
             CARRIER_ONBOARDED, CARRIER_STATUS_CHANGED, CARRIER_ALLOCATED, CARRIER_TRACKING_EVENT,
@@ -88,6 +110,9 @@ mod tests {
             SHIPMENT_CREATED, SHIPMENT_CONFIRMED, SHIPMENT_CANCELLED, SHIPMENT_RESCHEDULED,
             AWB_ISSUED, PIECE_SCANNED, WEIGHT_DISCREPANCY_FOUND,
             PALLET_SEALED, CONTAINER_DEPARTED, CONTAINER_ARRIVED,
+            HUB_PIECE_SCANNED_INBOUND, CONTAINER_ARRIVED_AT_PORT, CONTAINER_CUSTOMS_HOLD,
+            CONTAINER_CUSTOMS_CLEARED, CONTAINER_RELEASED_DOMESTIC, CONTAINER_DECONSOLIDATED,
+            HUB_DISPATCH_REQUESTED, HUB_CARRIER_BOOKING_REQUESTED,
             ROUTE_CREATED, DRIVER_ASSIGNED, ROUTE_OPTIMIZED,
             DRIVER_AVAILABLE,
             PICKUP_COMPLETED, DELIVERY_ATTEMPTED, DELIVERY_COMPLETED, DELIVERY_FAILED,

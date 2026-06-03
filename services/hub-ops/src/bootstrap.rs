@@ -32,11 +32,23 @@ use crate::{
             ArriveContainerCommand, LoadPieceCommand,
             SealPalletCommand, LoadPalletIntoContainerCommand,
         },
+        HubTransferService,
+        hub_transfer_service::{ClearCustomsCommand, DeconsolidateCommand},
     },
-    domain::entities::consolidation::{ConsolidationPlan, TruckSpec},
+    domain::entities::{
+        consolidation::{ConsolidationPlan, TruckSpec},
+        HubInventory, HubLocation, HubRoutingConfig, HubScan, InventoryUnit, RoutingType,
+        ScanException, ScanType,
+    },
     infrastructure::{
         hub_ws::HubBroadcaster,
-        db::{PgPalletRepository, PgPalletContainerRepository},
+        db::{
+            PgPalletRepository, PgPalletContainerRepository,
+            hub_transfer::{
+                PgHubInventoryRepository, PgHubLocationRepository, PgHubRoutingConfigRepository,
+                PgHubScanRepository, PgHubTransferManifestRepository,
+            },
+        },
     },
     config::Config,
 };
@@ -721,6 +733,7 @@ struct AppState {
     containers:        Arc<PgContainerRepository>,
     consolidation_svc: Arc<ConsolidationService>,
     pallet_svc:        Arc<PalletService>,
+    hub_transfer_svc:  Arc<HubTransferService>,
     hub_broadcaster:   HubBroadcaster,
     payments_url:      String,
     pod_url:           String,
@@ -1472,13 +1485,25 @@ pub async fn run() -> anyhow::Result<()> {
     );
     let pallet_repo    = Arc::new(PgPalletRepository::new(pool.clone()));
     let pallet_ctr_repo = Arc::new(PgPalletContainerRepository::new(pool.clone()));
-    let pallet_svc     = Arc::new(PalletService::new(pallet_repo, pallet_ctr_repo, kafka));
+    let pallet_svc     = Arc::new(PalletService::new(pallet_repo, pallet_ctr_repo.clone(), kafka.clone()));
+
+    // Cross-border hub transfer service — reuses the typed container repo + kafka.
+    let hub_transfer_svc = Arc::new(HubTransferService::new(
+        pallet_ctr_repo.clone(),
+        Arc::new(PgHubScanRepository::new(pool.clone())),
+        Arc::new(PgHubLocationRepository::new(pool.clone())),
+        Arc::new(PgHubInventoryRepository::new(pool.clone())),
+        Arc::new(PgHubTransferManifestRepository::new(pool.clone())),
+        Arc::new(PgHubRoutingConfigRepository::new(pool.clone())),
+        kafka.clone(),
+    ));
 
     let payments_url = cfg.payments.url.clone();
     let pod_url      = cfg.pod.url.clone();
     let state = AppState {
         svc, containers: container_repo,
         consolidation_svc, pallet_svc,
+        hub_transfer_svc,
         hub_broadcaster,
         payments_url, pod_url,
         pool: pool.clone(),
@@ -1499,7 +1524,7 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/v1/hubs/sort",               post(sort))
         .route("/v1/hubs/dispatch/:id",       post(dispatch))
         // Container CRUD — create, load, finalise, depart (billing clearance + POP guard)
-        .route("/v1/containers",                      post(create_container_handler))
+        .route("/v1/containers",                      get(list_containers_handler).post(create_container_handler))
         .route("/v1/containers/:id/load-pallet",      post(load_pallet_handler))
         .route("/v1/containers/:id/load-loose-piece", post(load_loose_piece_handler))
         .route("/v1/containers/:id/finalise",         post(finalise_manifest_handler))
@@ -1510,6 +1535,21 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/v1/pallets/:id/seal",         post(seal_pallet_handler))
         .route("/v1/pallets/:id/load",         post(load_pallet_into_container_handler))
         .route("/v1/containers/:id/arrive",    post(arrive_container_handler))
+        // Cross-border hub transfer — scans, container customs lifecycle, fan-out
+        .route("/v1/hub-transfer/scans",                    post(record_scan_handler))
+        .route("/v1/hub-transfer/scans/:shipment_id",       get(list_scans_handler))
+        .route("/v1/containers/:id/arrive-at-port",         post(arrive_at_port_handler))
+        .route("/v1/containers/:id/enter-customs",          post(enter_customs_handler))
+        .route("/v1/containers/:id/clear-customs",          post(clear_customs_handler))
+        .route("/v1/containers/:id/release-domestic",       post(release_domestic_handler))
+        .route("/v1/containers/:id/deconsolidate",          post(deconsolidate_handler))
+        .route("/v1/containers/:id/manifest",               get(get_manifest_handler))
+        .route("/v1/hubs/:id/customs-queue",                get(customs_queue_handler))
+        // Hub transfer admin — locations, inventory, routing config
+        .route("/v1/hub-transfer/locations",                get(list_locations_handler).post(create_location_handler))
+        .route("/v1/hub-transfer/inventory",                get(list_inventory_handler).post(check_in_inventory_handler))
+        .route("/v1/hub-transfer/inventory/move",           post(move_inventory_handler))
+        .route("/v1/hub-transfer/routing-config",           get(list_routing_handler).post(upsert_routing_handler))
         // Consolidation — truck specs
         .route("/v1/consolidation/specs",     get(list_truck_specs).post(create_truck_spec))
         .route("/v1/consolidation/specs/:id", axum::routing::put(update_truck_spec))
@@ -1543,6 +1583,446 @@ pub async fn run() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Cross-border hub transfer handlers
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct RecordScanRequest {
+    hub_id:           Uuid,
+    piece_awb:        String,
+    master_awb:       String,
+    shipment_id:      Uuid,
+    scan_type:        ScanType,
+    /// Hardware clock at the physical scan moment (ISO-8601).
+    device_timestamp: chrono::DateTime<chrono::Utc>,
+    #[serde(default)] pallet_id:    Option<Uuid>,
+    #[serde(default)] container_id: Option<Uuid>,
+    #[serde(default)] exception:    Option<ScanException>,
+}
+
+/// `POST /v1/hub-transfer/scans` — record an immutable hub scan.
+/// `InboundReceive` requires a completed POP (chain-of-custody open bookend).
+async fn record_scan_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Json(req): Json<RecordScanRequest>,
+) -> impl IntoResponse {
+    use logisticos_types::{awb::{Awb, ChildAwb}, ContainerId, HubId, PalletId, ShipmentId, TenantId};
+    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+
+    // POP-before-InboundReceive gate.
+    if matches!(req.scan_type, ScanType::InboundReceive) && !s.pod_url.is_empty() {
+        let (all_completed, missing_pop) =
+            check_pop_status(&s.pod_url, &[req.shipment_id]).await.map_err(AppError::internal)?;
+        if !all_completed {
+            return Ok::<_, AppError>((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({
+                    "error":   "POP_REQUIRED",
+                    "message": "Inbound receive blocked: shipment has no completed Proof of Pickup.",
+                    "shipment_ids_missing_pop": missing_pop,
+                })),
+            ));
+        }
+    }
+
+    let piece  = ChildAwb::parse(&req.piece_awb).map_err(|e| AppError::Validation(e.to_string()))?;
+    let master = Awb::parse(&req.master_awb).map_err(|e| AppError::Validation(e.to_string()))?;
+
+    let mut scan = HubScan::record(
+        TenantId::from_uuid(claims.tenant_id),
+        HubId::from_uuid(req.hub_id),
+        piece,
+        master,
+        ShipmentId::from_uuid(req.shipment_id),
+        req.scan_type,
+        claims.user_id,
+        req.device_timestamp,
+    );
+    if let Some(p) = req.pallet_id    { scan = scan.with_pallet(PalletId::from_uuid(p)); }
+    if let Some(c) = req.container_id { scan = scan.with_container(ContainerId::from_uuid(c)); }
+    if let Some(e) = req.exception    { scan = scan.with_exception(e); }
+
+    let scan = s.hub_transfer_svc.record_scan(scan).await?;
+    let body = serde_json::to_value(&scan)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    Ok((StatusCode::CREATED, Json(body)))
+}
+
+/// `GET /v1/hub-transfer/scans/:shipment_id` — scan history for a shipment.
+async fn list_scans_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(shipment_id): Path<Uuid>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_READ)?;
+    let scans = s.hub_transfer_svc
+        .list_scans(shipment_id, claims.tenant_id)
+        .await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(scans)))
+}
+
+/// Optional per-shipment recipient detail for milestone customer notifications.
+#[derive(serde::Deserialize, Default)]
+struct MilestoneDetailsRequest {
+    #[serde(default)]
+    details: Vec<logisticos_events::payloads::ShipmentMilestoneDetail>,
+}
+
+async fn arrive_at_port_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(container_id): Path<Uuid>,
+    Json(req): Json<MilestoneDetailsRequest>,
+) -> impl IntoResponse {
+    use logisticos_types::ContainerId;
+    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    let c = s.hub_transfer_svc
+        .arrive_at_port(ContainerId::from_uuid(container_id), req.details)
+        .await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+        "container_id": container_id, "status": format!("{:?}", c.status),
+    }))))
+}
+
+async fn enter_customs_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(container_id): Path<Uuid>,
+    Json(req): Json<MilestoneDetailsRequest>,
+) -> impl IntoResponse {
+    use logisticos_types::ContainerId;
+    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    let c = s.hub_transfer_svc
+        .enter_customs(ContainerId::from_uuid(container_id), req.details)
+        .await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+        "container_id": container_id, "status": format!("{:?}", c.status),
+    }))))
+}
+
+#[derive(serde::Deserialize)]
+struct ClearCustomsRequest {
+    /// Defaults to the authenticated user when omitted.
+    #[serde(default)] cleared_by:         Option<Uuid>,
+    #[serde(default)] duties_total_cents: Option<i64>,
+    #[serde(default)] customs_filing_ref: Option<String>,
+    /// 3-char tenant code for duties invoice numbering (forwarded to payments).
+    #[serde(default)] tenant_code:        String,
+    /// Per-shipment recipients + duty payers (the "enrich from request" data).
+    #[serde(default)] details:            Vec<logisticos_events::payloads::ShipmentMilestoneDetail>,
+}
+
+/// `POST /v1/containers/:id/clear-customs` — mandatory human clearance gate.
+async fn clear_customs_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(container_id): Path<Uuid>,
+    Json(req): Json<ClearCustomsRequest>,
+) -> impl IntoResponse {
+    use logisticos_types::ContainerId;
+    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    let c = s.hub_transfer_svc.clear_customs(ClearCustomsCommand {
+        container_id:       ContainerId::from_uuid(container_id),
+        cleared_by:         req.cleared_by.unwrap_or(claims.user_id),
+        duties_total_cents: req.duties_total_cents,
+        customs_filing_ref: req.customs_filing_ref,
+        tenant_code:        req.tenant_code,
+        details:            req.details,
+    }).await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+        "container_id": container_id, "status": format!("{:?}", c.status),
+    }))))
+}
+
+async fn release_domestic_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(container_id): Path<Uuid>,
+) -> impl IntoResponse {
+    use logisticos_types::ContainerId;
+    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    let c = s.hub_transfer_svc.release_domestic(ContainerId::from_uuid(container_id)).await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+        "container_id": container_id, "status": format!("{:?}", c.status),
+    }))))
+}
+
+#[derive(serde::Deserialize)]
+struct DeconsolidateRequest {
+    destination_zone: String,
+    /// Master AWBs in the container — resolved to shipment IDs for routing fan-out.
+    #[serde(default)] master_awbs: Vec<String>,
+    /// Last-mile service level forwarded to dispatch/carrier ("standard" default).
+    #[serde(default)] service_level: String,
+    /// SLA window in hours forwarded to the carrier booking (0 = consumer default).
+    #[serde(default)] sla_hours: i64,
+}
+
+/// `POST /v1/containers/:id/deconsolidate` — break-bulk + last-mile routing fan-out.
+async fn deconsolidate_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(container_id): Path<Uuid>,
+    Json(req): Json<DeconsolidateRequest>,
+) -> impl IntoResponse {
+    use logisticos_types::ContainerId;
+    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+
+    let shipment_ids = if req.master_awbs.is_empty() {
+        Vec::new()
+    } else {
+        s.containers.resolve_awbs_to_shipment_ids(&req.master_awbs).await.map_err(AppError::internal)?
+    };
+
+    let c = s.hub_transfer_svc.deconsolidate(DeconsolidateCommand {
+        container_id:     ContainerId::from_uuid(container_id),
+        destination_zone: req.destination_zone,
+        shipment_ids:     shipment_ids.clone(),
+        service_level:    req.service_level,
+        sla_hours:        req.sla_hours,
+    }).await?;
+
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+        "container_id":   container_id,
+        "status":         format!("{:?}", c.status),
+        "fanned_out":     shipment_ids.len(),
+    }))))
+}
+
+async fn get_manifest_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(container_id): Path<Uuid>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_READ)?;
+    match s.hub_transfer_svc.get_manifest(container_id).await? {
+        Some(m) => Ok::<_, AppError>((StatusCode::OK, Json(m))),
+        None => Err(AppError::NotFound { resource: "manifest", id: container_id.to_string() }),
+    }
+}
+
+async fn customs_queue_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(hub_id): Path<Uuid>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_READ)?;
+    let queue = s.hub_transfer_svc.list_customs_queue(hub_id, claims.tenant_id).await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(queue)))
+}
+
+#[derive(serde::Deserialize)]
+struct HubScopedQuery {
+    hub_id:  Uuid,
+    #[serde(default)] zone_id: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct CreateLocationRequest {
+    hub_id:       Uuid,
+    zone_id:      String,
+    location_tag: String,
+    #[serde(default)] aisle:        Option<String>,
+    #[serde(default)] rack:         Option<String>,
+    #[serde(default)] shelf:        Option<String>,
+    #[serde(default)] bin:          Option<String>,
+    #[serde(default)] capacity_cbm: Option<f64>,
+}
+
+async fn create_location_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Json(req): Json<CreateLocationRequest>,
+) -> impl IntoResponse {
+    use logisticos_types::{HubId, TenantId};
+    claims.require_permission(permissions::FLEET_MANAGE)?;
+    let location = HubLocation::new(
+        TenantId::from_uuid(claims.tenant_id),
+        HubId::from_uuid(req.hub_id),
+        req.zone_id,
+        req.location_tag,
+    )
+    .with_path(req.aisle, req.rack, req.shelf, req.bin);
+    let mut location = location;
+    location.capacity_cbm = req.capacity_cbm;
+    s.hub_transfer_svc.create_location(&location).await?;
+    Ok::<_, AppError>((StatusCode::CREATED, Json(location)))
+}
+
+async fn list_locations_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Query(q): Query<HubScopedQuery>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_READ)?;
+    let locations = s.hub_transfer_svc.list_locations(q.hub_id, q.zone_id.as_deref()).await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(locations)))
+}
+
+#[derive(serde::Deserialize)]
+struct CheckInInventoryRequest {
+    hub_id:      Uuid,
+    location_id: Uuid,
+    /// "piece" → unit_ref is a ChildAwb; "consolidated" → unit_ref is a PalletId uuid.
+    unit_kind:   String,
+    unit_ref:    String,
+    #[serde(default)] batch_number: Option<String>,
+}
+
+async fn check_in_inventory_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Json(req): Json<CheckInInventoryRequest>,
+) -> impl IntoResponse {
+    use logisticos_types::{awb::ChildAwb, HubId, PalletId, TenantId};
+    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+
+    let unit = match req.unit_kind.as_str() {
+        "piece" => InventoryUnit::Piece(
+            ChildAwb::parse(&req.unit_ref).map_err(|e| AppError::Validation(e.to_string()))?,
+        ),
+        "consolidated" => InventoryUnit::Consolidated(PalletId::from_uuid(
+            Uuid::parse_str(&req.unit_ref).map_err(|e| AppError::Validation(e.to_string()))?,
+        )),
+        other => return Err(AppError::Validation(format!("unknown unit_kind '{other}'"))),
+    };
+
+    let mut inv = HubInventory::check_in(
+        TenantId::from_uuid(claims.tenant_id),
+        HubId::from_uuid(req.hub_id),
+        req.location_id,
+        unit,
+        claims.user_id,
+    );
+    inv.batch_number = req.batch_number;
+    s.hub_transfer_svc.check_in_inventory(&inv).await?;
+    Ok::<_, AppError>((StatusCode::CREATED, Json(inv)))
+}
+
+#[derive(serde::Deserialize)]
+struct InventoryLocationQuery { location_id: Uuid }
+
+async fn list_inventory_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Query(q): Query<InventoryLocationQuery>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_READ)?;
+    let items = s.hub_transfer_svc.list_inventory_at(q.location_id).await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(items)))
+}
+
+#[derive(serde::Deserialize)]
+struct MoveInventoryRequest {
+    inventory_id:   Uuid,
+    to_location_id: Uuid,
+}
+
+async fn move_inventory_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Json(req): Json<MoveInventoryRequest>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_UPDATE)?;
+    s.hub_transfer_svc.move_inventory(req.inventory_id, req.to_location_id).await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+        "inventory_id": req.inventory_id, "location_id": req.to_location_id,
+    }))))
+}
+
+#[derive(serde::Deserialize)]
+struct ListContainersQuery {
+    #[serde(default)] hub_id: Option<Uuid>,
+    #[serde(default)] status: Option<String>,
+}
+
+#[derive(sqlx::FromRow, serde::Serialize)]
+struct ContainerSummaryRow {
+    id:                 Uuid,
+    transport_mode:     String,
+    origin_hub_id:      Uuid,
+    destination_hub_id: Uuid,
+    status:             String,
+    awb_count:          Option<i32>,
+    departed_at:        Option<chrono::DateTime<chrono::Utc>>,
+    estimated_arrival:  Option<chrono::DateTime<chrono::Utc>>,
+    arrived_at:         Option<chrono::DateTime<chrono::Utc>>,
+    created_at:         chrono::DateTime<chrono::Utc>,
+    updated_at:         chrono::DateTime<chrono::Utc>,
+}
+
+/// `GET /v1/containers?hub_id=&status=` — container board listing (tenant-scoped).
+async fn list_containers_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Query(q): Query<ListContainersQuery>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_READ)?;
+    let rows: Vec<ContainerSummaryRow> = sqlx::query_as(
+        r#"SELECT id, transport_mode, origin_hub_id, destination_hub_id, status,
+                  array_length(master_awbs, 1) AS awb_count,
+                  departed_at, estimated_arrival, arrived_at, created_at, updated_at
+           FROM hub_ops.containers
+           WHERE tenant_id = $1
+             AND ($2::uuid IS NULL OR origin_hub_id = $2 OR destination_hub_id = $2)
+             AND ($3::text IS NULL OR status = $3)
+           ORDER BY updated_at DESC
+           LIMIT 200"#,
+    )
+    .bind(claims.tenant_id)
+    .bind(q.hub_id)
+    .bind(q.status)
+    .fetch_all(&s.pool)
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+
+    let count = rows.len();
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
+        "containers": rows, "count": count,
+    }))))
+}
+
+async fn list_routing_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Query(q): Query<HubScopedQuery>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_READ)?;
+    let configs = s.hub_transfer_svc.list_routing_configs(q.hub_id, claims.tenant_id).await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(configs)))
+}
+
+#[derive(serde::Deserialize)]
+struct UpsertRoutingRequest {
+    hub_id:           Uuid,
+    destination_zone: String,
+    /// "own_driver" | "carrier" | "auto"
+    routing_type:     RoutingType,
+    #[serde(default)] carrier_id:                Option<Uuid>,
+    #[serde(default)] auto_fallback_window_mins: i32,
+}
+
+async fn upsert_routing_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Json(req): Json<UpsertRoutingRequest>,
+) -> impl IntoResponse {
+    use logisticos_types::{HubId, TenantId};
+    claims.require_permission(permissions::FLEET_MANAGE)?;
+    let mut config = HubRoutingConfig::new(
+        TenantId::from_uuid(claims.tenant_id),
+        HubId::from_uuid(req.hub_id),
+        req.destination_zone,
+        req.routing_type,
+    )
+    .with_fallback_window(req.auto_fallback_window_mins);
+    config.carrier_id = req.carrier_id;
+    s.hub_transfer_svc.upsert_routing_config(&config).await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(config)))
 }
 
 async fn shutdown_signal() {

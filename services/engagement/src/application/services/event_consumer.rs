@@ -99,7 +99,62 @@ fn get_mapping(event_type: &str) -> Option<EventNotificationMapping> {
             priority: NotificationPriority::Normal,
             channels: &[],               // sentinel — overridden below
         }),
+        // Cross-border hub milestones — fanned out per recipient by
+        // `handle_hub_milestone`, which synthesises a single-recipient payload and
+        // re-enters `process_event` for each shipment in the container.
+        topics::CONTAINER_ARRIVED_AT_PORT => Some(EventNotificationMapping {
+            template_id: "shipment_at_port",
+            priority: NotificationPriority::Normal,
+            channels: &["whatsapp", "push"],
+        }),
+        topics::CONTAINER_CUSTOMS_HOLD => Some(EventNotificationMapping {
+            template_id: "shipment_customs_hold",
+            priority: NotificationPriority::Normal,
+            channels: &["whatsapp", "push"],
+        }),
+        topics::CONTAINER_CUSTOMS_CLEARED => Some(EventNotificationMapping {
+            template_id: "shipment_customs_cleared",
+            priority: NotificationPriority::Normal,
+            channels: &["whatsapp", "push"],
+        }),
         _ => None,
+    }
+}
+
+/// Fan-out handler for container milestone events. A container covers many
+/// shipments, so these events carry a `details` list of per-shipment recipients.
+/// For each recipient we synthesise a single-recipient payload and re-enter
+/// `process_event`, reusing the full template/channel/suppression machinery.
+pub async fn handle_hub_milestone(
+    event_type: &str,
+    payload: &serde_json::Value,
+    notification_service: &NotificationService,
+    suppression_cache: &SuppressionCache,
+) {
+    let tenant_id = payload["tenant_id"].as_str().unwrap_or_default();
+    let data = payload.get("data").unwrap_or(payload);
+    let Some(details) = data["details"].as_array() else {
+        warn!(event_type, "hub milestone event has no recipient details — no notifications sent");
+        return;
+    };
+    if details.is_empty() {
+        warn!(event_type, "hub milestone event has empty details — no notifications sent");
+        return;
+    }
+
+    for detail in details {
+        let synthetic = serde_json::json!({
+            "tenant_id": tenant_id,
+            "data": {
+                "customer_id":     detail["customer_id"].clone(),
+                "shipment_id":     detail["shipment_id"].clone(),
+                "customer_phone":  detail["customer_phone"].clone(),
+                "customer_email":  detail["customer_email"].clone(),
+                "customer_name":   detail["customer_name"].clone(),
+                "tracking_number": detail["tracking_number"].clone(),
+            }
+        });
+        process_event(event_type, &synthetic, notification_service, suppression_cache).await;
     }
 }
 

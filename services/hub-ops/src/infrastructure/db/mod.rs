@@ -12,6 +12,8 @@
 //! Both `save` methods use `INSERT … ON CONFLICT (id) DO UPDATE SET` for
 //! upsert semantics, making them safe to call from both create and update paths.
 
+pub mod hub_transfer;
+
 use async_trait::async_trait;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -383,6 +385,7 @@ fn container_status_str(s: &ContainerStatus) -> &'static str {
         ContainerStatus::ArrivedAtPort => "arrived_at_port",
         ContainerStatus::Customs       => "customs",
         ContainerStatus::Released      => "released",
+        ContainerStatus::Deconsolidated => "deconsolidated",
         ContainerStatus::Delivered     => "delivered",
     }
 }
@@ -396,6 +399,7 @@ fn container_status_from_str(s: &str) -> ContainerStatus {
         "arrived_at_port" => ContainerStatus::ArrivedAtPort,
         "customs"         => ContainerStatus::Customs,
         "released"        => ContainerStatus::Released,
+        "deconsolidated"  => ContainerStatus::Deconsolidated,
         "delivered"       => ContainerStatus::Delivered,
         _                 => ContainerStatus::Planning,
     }
