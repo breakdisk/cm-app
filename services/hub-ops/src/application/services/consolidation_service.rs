@@ -185,6 +185,8 @@ impl ConsolidationService {
             volume_used_cm3:  result.volume_used_cm3 as i64,
             volume_total_cm3: result.volume_total_cm3 as i64,
             piece_count:      result.placements.len() as i32,
+            status:           "draft".to_owned(),
+            loaded_awbs:      vec![],
             computed_at:      Utc::now(),
             created_at:       Utc::now(),
             updated_at:       Utc::now(),

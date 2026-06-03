@@ -504,6 +504,8 @@ struct PlanRow {
     total_weight_kg: f64,
     volume_used_cm3: i64, volume_total_cm3: i64,
     piece_count: i32,
+    status: String,
+    loaded_awbs: Vec<String>,
     computed_at: chrono::DateTime<chrono::Utc>,
     created_at:  chrono::DateTime<chrono::Utc>,
     updated_at:  chrono::DateTime<chrono::Utc>,
@@ -517,8 +519,12 @@ fn row_to_plan(r: PlanRow) -> ConsolidationPlan {
         total_weight_kg: r.total_weight_kg,
         volume_used_cm3:  r.volume_used_cm3,
         volume_total_cm3: r.volume_total_cm3,
-        piece_count: r.piece_count, computed_at: r.computed_at,
-        created_at: r.created_at, updated_at: r.updated_at,
+        piece_count:  r.piece_count,
+        status:       r.status,
+        loaded_awbs:  r.loaded_awbs,
+        computed_at:  r.computed_at,
+        created_at:   r.created_at,
+        updated_at:   r.updated_at,
     }
 }
 
@@ -529,7 +535,8 @@ impl ConsolidationPlanRepository for PgConsolidationPlanRepository {
             r#"SELECT id, tenant_id, hub_id, truck_spec_id, container_id,
                       items, placements, unplaced,
                       total_weight_kg::float8, volume_used_cm3, volume_total_cm3,
-                      piece_count, computed_at, created_at, updated_at
+                      piece_count, status, '{}'::text[] AS loaded_awbs,
+                      computed_at, created_at, updated_at
                FROM hub_ops.consolidation_plans
                WHERE hub_id = $1 AND tenant_id = $2
                ORDER BY created_at DESC
@@ -540,12 +547,18 @@ impl ConsolidationPlanRepository for PgConsolidationPlanRepository {
 
     async fn find(&self, id: Uuid, tenant_id: Uuid) -> anyhow::Result<Option<ConsolidationPlan>> {
         let row = sqlx::query_as::<_, PlanRow>(
-            r#"SELECT id, tenant_id, hub_id, truck_spec_id, container_id,
-                      items, placements, unplaced,
-                      total_weight_kg::float8, volume_used_cm3, volume_total_cm3,
-                      piece_count, computed_at, created_at, updated_at
-               FROM hub_ops.consolidation_plans
-               WHERE id = $1 AND tenant_id = $2"#
+            r#"SELECT p.id, p.tenant_id, p.hub_id, p.truck_spec_id, p.container_id,
+                      p.items, p.placements, p.unplaced,
+                      p.total_weight_kg::float8, p.volume_used_cm3, p.volume_total_cm3,
+                      p.piece_count, p.status,
+                      COALESCE(
+                          ARRAY(SELECT awb FROM hub_ops.consolidation_plan_loadings
+                                WHERE plan_id = p.id ORDER BY scanned_at),
+                          '{}'::text[]
+                      ) AS loaded_awbs,
+                      p.computed_at, p.created_at, p.updated_at
+               FROM hub_ops.consolidation_plans p
+               WHERE p.id = $1 AND p.tenant_id = $2"#
         ).bind(id).bind(tenant_id).fetch_optional(&self.pool).await?;
         Ok(row.map(row_to_plan))
     }
@@ -556,8 +569,8 @@ impl ConsolidationPlanRepository for PgConsolidationPlanRepository {
                 id, tenant_id, hub_id, truck_spec_id, container_id,
                 items, placements, unplaced,
                 total_weight_kg, volume_used_cm3, volume_total_cm3,
-                piece_count, computed_at, created_at, updated_at
-               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                piece_count, status, computed_at, created_at, updated_at
+               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
                ON CONFLICT (id) DO UPDATE SET
                 placements       = EXCLUDED.placements,
                 unplaced         = EXCLUDED.unplaced,
@@ -572,7 +585,8 @@ impl ConsolidationPlanRepository for PgConsolidationPlanRepository {
         .bind(plan.container_id)
         .bind(&plan.items).bind(&plan.placements).bind(&plan.unplaced)
         .bind(plan.total_weight_kg).bind(plan.volume_used_cm3).bind(plan.volume_total_cm3)
-        .bind(plan.piece_count).bind(plan.computed_at).bind(plan.created_at).bind(plan.updated_at)
+        .bind(plan.piece_count).bind(&plan.status)
+        .bind(plan.computed_at).bind(plan.created_at).bind(plan.updated_at)
         .execute(&self.pool).await?;
         Ok(plan.clone())
     }

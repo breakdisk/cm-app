@@ -61,6 +61,8 @@ pub struct ConsolidationPlan {
     pub volume_used_cm3:  i64,
     pub volume_total_cm3: i64,
     pub piece_count:      i32,
+    pub status:           String,      // "draft" | "confirmed" | "loaded"
+    pub loaded_awbs:      Vec<String>, // populated by find(); list() returns empty vec
     pub computed_at:      DateTime<Utc>,
     pub created_at:       DateTime<Utc>,
     pub updated_at:       DateTime<Utc>,
