@@ -7,7 +7,7 @@ import {
   Boxes, Truck, Weight, Package, AlertTriangle,
   Wifi, WifiOff, RefreshCw, ChevronRight, Settings2,
   Download, ArrowRight, ArrowLeft, ArrowUp, ArrowDown,
-  Info,
+  Info, CheckCircle2, MapPin,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { createApiClient } from '@/lib/api/client';
@@ -16,7 +16,7 @@ import type {
   TruckSpec, ConsolidationPlan, Placement, UnplacedItem,
   CreateSpecBody, UpdateSpecBody,
 } from '@/lib/api/consolidation';
-import { createHubsApi } from '@/lib/api/hubs';
+import { createHubsApi, hubIdOf, type Hub } from '@/lib/api/hubs';
 import { useHubEvents } from '@/hooks/useHubEvents';
 import { cn } from '@/lib/utils';
 
@@ -216,6 +216,11 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
   const [wsConnected,    setWsConnected]    = useState(false);
   const [specsModalOpen, setSpecsModalOpen] = useState(false);
   const [scanFeed,       setScanFeed]       = useState<string[]>([]);
+  const [hubs,            setHubs]            = useState<Hub[]>([]);
+  const [destHubId,       setDestHubId]       = useState('');
+  const [showConfirmForm, setShowConfirmForm]  = useState(false);
+  const [confirming,      setConfirming]       = useState(false);
+  const [loadedAwbs,      setLoadedAwbs]       = useState<Set<string>>(new Set());
 
   // Initialise — load specs and latest plan together.
   // `retryKey` increments on manual retry to re-trigger this effect.
@@ -254,9 +259,25 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
         setCurrentPlan(plans[0]);
         setPlacements(plans[0].placements as Placement[]);
       }
+
+      // Seed loadedAwbs from the plan if it was previously confirmed.
+      if (plans.length > 0 && plans[0].loaded_awbs.length > 0) {
+        setLoadedAwbs(new Set(plans[0].loaded_awbs));
+      }
       setLoading(false);
     }
     init();
+
+    async function loadHubs() {
+      try {
+        const list = await hubsApi.list();
+        setHubs(list);
+      } catch {
+        // non-fatal — confirm form will just show an empty dropdown
+      }
+    }
+    loadHubs();
+
     return () => { cancelled = true; };
   }, [hubId, consolidationApi, retryKey]);
 
@@ -285,6 +306,15 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
       }
       if (event.type === 'box_scanned' && event.plan_id) {
         setScanFeed(prev => [event.plan_id!, ...prev].slice(0, 20));
+      }
+      if (event.type === 'plan_confirmed' && event.plan_id) {
+        try {
+          const plan = await consolidationApi.getPlan(event.plan_id);
+          setCurrentPlan(plan);
+          toast.success('Plan confirmed by another terminal.');
+        } catch {
+          toast.error('Failed to fetch confirmed plan.');
+        }
       }
     }, [consolidationApi]),
   });
@@ -396,6 +426,24 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
       toast.error(msg);
     } finally {
       setOptimizing(false);
+    }
+  }
+
+  async function handleConfirm() {
+    if (!currentPlan || !selectedSpec || !destHubId) return;
+    setConfirming(true);
+    try {
+      const confirmed = await consolidationApi.confirmPlan(currentPlan.id, {
+        destination_hub_id: destHubId,
+        transport_mode: selectedSpec.transport_mode as 'road' | 'sea' | 'air',
+      });
+      setCurrentPlan(confirmed);
+      setShowConfirmForm(false);
+      toast.success('Plan confirmed — container created. Ready for scanning.');
+    } catch (e) {
+      toast.error((e as { message?: string })?.message ?? 'Failed to confirm plan.');
+    } finally {
+      setConfirming(false);
     }
   }
 
@@ -597,6 +645,56 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
                 ? `Reload Manifest (${manifestCount})`
                 : 'Load from Manifest'}
             </button>
+
+          {currentPlan?.status === 'draft' && placements.length > 0 && (
+            <div className="flex flex-col gap-2">
+              {!showConfirmForm ? (
+                <button
+                  onClick={() => setShowConfirmForm(true)}
+                  className={cn(
+                    'flex items-center justify-center gap-2 rounded-xl py-3 text-sm font-semibold transition-all',
+                    'border border-green-500/50 bg-green-500/10 text-green-300',
+                    'hover:bg-green-500/20 hover:border-green-400',
+                  )}
+                >
+                  <CheckCircle2 size={14} />
+                  Confirm &amp; Create Container
+                </button>
+              ) : (
+                <div className="flex flex-col gap-2 rounded-xl border border-green-500/20 bg-green-500/5 p-3">
+                  <p className="text-[11px] text-green-300/70 uppercase tracking-wider">Destination Hub</p>
+                  <select
+                    value={destHubId}
+                    onChange={e => setDestHubId(e.target.value)}
+                    className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white focus:border-green-400 focus:outline-none"
+                  >
+                    <option value="">Select destination…</option>
+                    {hubs.map(h => {
+                      const hid = hubIdOf(h);
+                      return hid !== hubId ? (
+                        <option key={hid} value={hid} className="bg-gray-900">{h.name}</option>
+                      ) : null;
+                    })}
+                  </select>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleConfirm}
+                      disabled={!destHubId || confirming}
+                      className="flex-1 rounded-lg bg-green-500/20 py-2 text-sm font-semibold text-green-300 hover:bg-green-500/30 disabled:opacity-40 transition-colors"
+                    >
+                      {confirming ? 'Confirming…' : 'Confirm'}
+                    </button>
+                    <button
+                      onClick={() => setShowConfirmForm(false)}
+                      className="rounded-lg bg-white/5 px-3 py-2 text-sm text-white/50 hover:bg-white/10 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           </div>
 
           {/* Selected box info + nudge controls */}
@@ -679,6 +777,7 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
               selectedAwb={selectedAwb}
               onSelect={setSelectedAwb}
               onNudge={handleNudge}
+              loadedAwbs={loadedAwbs}
             />
           ) : (
             <div className="flex h-full items-center justify-center">

@@ -4,6 +4,7 @@ import { useEffect, useRef, useCallback } from 'react';
 
 export type HubEventType =
   | 'plan_computed'
+  | 'plan_confirmed'
   | 'placements_updated'
   | 'box_scanned'
   | 'parcel_inducted'
