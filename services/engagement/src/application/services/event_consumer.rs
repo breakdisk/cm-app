@@ -512,6 +512,29 @@ pub async fn process_event(
                     .unwrap_or("Hi {{customer_name}}, we have an update for you!")
                     .to_owned(),
             ),
+            // ── Cross-border hub milestones (fanned out per recipient) ──
+            "shipment_at_port" => (
+                Some("Arrived at destination port".to_owned()),
+                "Hi {{customer_name}},\n\n\
+                 Good news — your shipment {{tracking_number}} has arrived at the destination port and is now awaiting customs processing.\n\n\
+                 We'll let you know as soon as it clears. Track it here: {{tracking_url}}\n\n\
+                 — CargoMarket".to_owned(),
+            ),
+            "shipment_customs_hold" => (
+                Some("Shipment held at customs".to_owned()),
+                "Hi {{customer_name}},\n\n\
+                 Your shipment {{tracking_number}} is currently held by customs. This step can take a little longer than usual.\n\n\
+                 No action is needed from you right now — we're handling it and will notify you the moment it clears.\n\
+                 Track it: {{tracking_url}}\n\n\
+                 — CargoMarket".to_owned(),
+            ),
+            "shipment_customs_cleared" => (
+                Some("Cleared customs — on the way".to_owned()),
+                "Hi {{customer_name}},\n\n\
+                 Your shipment {{tracking_number}} has cleared customs and is now moving to final delivery.\n\n\
+                 Track its journey: {{tracking_url}}\n\n\
+                 — CargoMarket".to_owned(),
+            ),
             _ => (None, "{{body}}".to_owned()),
         };
 
