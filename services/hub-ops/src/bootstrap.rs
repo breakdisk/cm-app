@@ -624,16 +624,16 @@ impl ConsolidationPlanRepository for PgConsolidationPlanRepository {
             .ok_or_else(|| anyhow::anyhow!("plan not found after confirm"))
     }
 
-    async fn mark_loaded(&self, id: Uuid, tenant_id: Uuid) -> anyhow::Result<()> {
+    async fn mark_loaded(&self, id: Uuid, tenant_id: Uuid) -> anyhow::Result<bool> {
         let now = chrono::Utc::now();
-        sqlx::query(
+        let result = sqlx::query(
             "UPDATE hub_ops.consolidation_plans
                 SET status = 'loaded', updated_at = $1
-              WHERE id = $2 AND tenant_id = $3"
+              WHERE id = $2 AND tenant_id = $3 AND status = 'confirmed'"
         )
         .bind(now).bind(id).bind(tenant_id)
         .execute(&self.pool).await?;
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
     async fn insert_loading(
@@ -1513,9 +1513,21 @@ async fn confirm_plan_handler(
         None,
     ).await.map_err(AppError::internal)?;
 
-    let confirmed = s.consolidation_svc
+    let confirmed = match s.consolidation_svc
         .set_confirmed(id, claims.tenant_id, container_id).await
-        .map_err(|e| AppError::BusinessRule(e.to_string()))?;
+    {
+        Ok(plan) => plan,
+        Err(e) => {
+            // Best-effort cleanup — delete the planning-state container we just created.
+            let _ = sqlx::query(
+                "DELETE FROM hub_ops.containers WHERE id = $1 AND status = 'planning'"
+            )
+            .bind(container_id)
+            .execute(&s.pool)
+            .await;
+            return Err(AppError::BusinessRule(e.to_string()));
+        }
+    };
 
     let event = serde_json::json!({
         "type":         "plan_confirmed",
@@ -1629,28 +1641,32 @@ async fn scan_consolidation_piece_handler(
     s.hub_broadcaster.broadcast(plan.hub_id, box_event.to_string()).await;
 
     let plan_status = if loaded_count >= total_count as i64 {
-        s.consolidation_svc
+        let transitioned = s.consolidation_svc
             .mark_loaded(id, claims.tenant_id).await
             .map_err(AppError::internal)?;
 
-        if let Some(container_id) = plan.container_id {
-            s.containers.finalise(container_id).await
-                .map_err(|e| AppError::BusinessRule(e.to_string()))?;
+        // Only finalise and broadcast plan_loaded if this call was the one that
+        // actually transitioned the status (concurrent last-scan safety).
+        if transitioned {
+            if let Some(container_id) = plan.container_id {
+                s.containers.finalise(container_id).await
+                    .map_err(|e| AppError::BusinessRule(e.to_string()))?;
 
-            let loaded_event = serde_json::json!({
-                "type":         "plan_loaded",
-                "plan_id":      id,
-                "container_id": container_id,
-                "hub_id":       plan.hub_id,
-            });
-            s.hub_broadcaster.broadcast(plan.hub_id, loaded_event.to_string()).await;
+                let loaded_event = serde_json::json!({
+                    "type":         "plan_loaded",
+                    "plan_id":      id,
+                    "container_id": container_id,
+                    "hub_id":       plan.hub_id,
+                });
+                s.hub_broadcaster.broadcast(plan.hub_id, loaded_event.to_string()).await;
 
-            tracing::info!(
-                plan_id      = %id,
-                container_id = %container_id,
-                tenant_id    = %claims.tenant_id,
-                "Consolidation plan fully loaded — container finalised"
-            );
+                tracing::info!(
+                    plan_id      = %id,
+                    container_id = %container_id,
+                    tenant_id    = %claims.tenant_id,
+                    "Consolidation plan fully loaded — container finalised"
+                );
+            }
         }
         "loaded"
     } else {

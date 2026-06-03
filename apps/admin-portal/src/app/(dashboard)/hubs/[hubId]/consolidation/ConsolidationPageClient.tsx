@@ -448,9 +448,10 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
     if (!currentPlan || !selectedSpec || !destHubId) return;
     setConfirming(true);
     try {
+      const planSpec = specs.find(s => s.id === currentPlan.truck_spec_id) ?? selectedSpec;
       const confirmed = await consolidationApi.confirmPlan(currentPlan.id, {
         destination_hub_id: destHubId,
-        transport_mode: selectedSpec.transport_mode as 'road' | 'sea' | 'air',
+        transport_mode: planSpec.transport_mode as 'road' | 'sea' | 'air',
       });
       setCurrentPlan(confirmed);
       setShowConfirmForm(false);

@@ -33,7 +33,7 @@ pub trait ConsolidationPlanRepository: Send + Sync {
     async fn confirm(
         &self, id: Uuid, tenant_id: Uuid, container_id: Uuid,
     ) -> anyhow::Result<ConsolidationPlan>;
-    async fn mark_loaded(&self, id: Uuid, tenant_id: Uuid) -> anyhow::Result<()>;
+    async fn mark_loaded(&self, id: Uuid, tenant_id: Uuid) -> anyhow::Result<bool>;
     /// Returns `true` if the row was inserted, `false` if the AWB was already present.
     async fn insert_loading(
         &self, plan_id: Uuid, tenant_id: Uuid, awb: &str, scanned_by: Option<Uuid>,
@@ -288,7 +288,7 @@ impl ConsolidationService {
         self.plans.loading_count(plan_id).await
     }
 
-    pub async fn mark_loaded(&self, id: Uuid, tenant_id: Uuid) -> anyhow::Result<()> {
+    pub async fn mark_loaded(&self, id: Uuid, tenant_id: Uuid) -> anyhow::Result<bool> {
         self.plans.mark_loaded(id, tenant_id).await
     }
 }
