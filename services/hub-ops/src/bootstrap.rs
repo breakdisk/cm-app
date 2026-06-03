@@ -1459,6 +1459,85 @@ async fn update_placements_handler(
 }
 
 // ---------------------------------------------------------------------------
+// Consolidation confirm handler
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct ConfirmPlanBody {
+    destination_hub_id: Uuid,
+    /// "road" | "sea" | "air" — derived from TruckSpec on the frontend.
+    transport_mode: String,
+}
+
+/// `POST /v1/consolidation/plans/:id/confirm`
+///
+/// Transitions a draft plan to confirmed: creates a container and links it.
+/// Returns 409 if the plan is not in draft status.
+async fn confirm_plan_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+    Json(body): Json<ConfirmPlanBody>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::FLEET_MANAGE)?;
+
+    if !["road", "sea", "air"].contains(&body.transport_mode.as_str()) {
+        return Err(AppError::Validation(
+            "transport_mode must be 'road', 'sea', or 'air'".into(),
+        ));
+    }
+
+    let plan = s.consolidation_svc
+        .get_plan(id, claims.tenant_id).await
+        .map_err(AppError::internal)?
+        .ok_or_else(|| AppError::NotFound { resource: "consolidation_plan", id: id.to_string() })?;
+
+    if plan.status != "draft" {
+        return Ok::<_, AppError>((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error":   "PLAN_NOT_DRAFT",
+                "message": "Plan must be in draft status to confirm.",
+                "status":  plan.status,
+            })),
+        ));
+    }
+
+    let container_id = Uuid::new_v4();
+    s.containers.create(
+        container_id,
+        claims.tenant_id,
+        &body.transport_mode,
+        plan.hub_id,
+        body.destination_hub_id,
+        None,
+    ).await.map_err(AppError::internal)?;
+
+    let confirmed = s.consolidation_svc
+        .set_confirmed(id, claims.tenant_id, container_id).await
+        .map_err(|e| AppError::BusinessRule(e.to_string()))?;
+
+    let event = serde_json::json!({
+        "type":         "plan_confirmed",
+        "plan_id":      id,
+        "container_id": container_id,
+        "hub_id":       plan.hub_id,
+    });
+    s.hub_broadcaster.broadcast(plan.hub_id, event.to_string()).await;
+
+    tracing::info!(
+        plan_id      = %id,
+        container_id = %container_id,
+        tenant_id    = %claims.tenant_id,
+        "Consolidation plan confirmed"
+    );
+
+    let body = serde_json::to_value(&confirmed)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+    Ok((StatusCode::OK, Json(body)))
+}
+
+// ---------------------------------------------------------------------------
 // WebSocket handler — hub event bus
 // ---------------------------------------------------------------------------
 
@@ -1620,6 +1699,7 @@ pub async fn run() -> anyhow::Result<()> {
         // Consolidation — plans
         .route("/v1/consolidation/plans",                       post(compute_plan))
         .route("/v1/consolidation/plans/:id",                   get(get_plan))
+        .route("/v1/consolidation/plans/:id/confirm",           post(confirm_plan_handler))
         .route("/v1/consolidation/plans/:id/placements",        axum::routing::put(update_placements_handler))
         .route("/v1/hubs/:hub_id/consolidation/plans",          get(list_hub_plans))
         .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth));
