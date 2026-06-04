@@ -115,7 +115,7 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                     onNavigateToRoute = { shiftNavController.navigate(ROUTE_ROUTE) },
                     onNavigateToCompliance = { shiftNavController.navigate(COMPLIANCE_ROUTE) },
                     onNavigateToBoxMeasure = { shiftNavController.navigate("box_measure/quote") },
-                    onNavigateToHubScan = { shiftNavController.navigateToHubScan() },
+                    onNavigateToHubScan = { hubId -> shiftNavController.navigateToHubScan(hubId = hubId) },
                 )
             }
 
