@@ -42,5 +42,10 @@ enum class HubScanType(
         apiValue    = "local_sort_assign",
         label       = "Local Sort",
         description = "Scan piece into a last-mile delivery cage or bin",
+    ),
+    EXCEPTION_FLAG(
+        apiValue    = "exception_flag",
+        label       = "Exception",
+        description = "Flag parcel as missing, damaged, or weight mismatch",
     );
 }

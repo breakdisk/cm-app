@@ -75,16 +75,35 @@ class HubScanViewModelTest {
     }
 
     @Test fun `HubScanType apiValues match backend serde snake_case names`() {
-        assertEquals("inbound_receive",        HubScanType.INBOUND_RECEIVE.apiValue)
-        assertEquals("pallet_assign",          HubScanType.PALLET_ASSIGN.apiValue)
-        assertEquals("outbound_load",          HubScanType.OUTBOUND_LOAD.apiValue)
+        assertEquals("inbound_receive",         HubScanType.INBOUND_RECEIVE.apiValue)
+        assertEquals("pallet_assign",           HubScanType.PALLET_ASSIGN.apiValue)
+        assertEquals("outbound_load",           HubScanType.OUTBOUND_LOAD.apiValue)
         assertEquals("container_deconsolidate", HubScanType.CONTAINER_DECONSOLIDATE.apiValue)
-        assertEquals("local_sort_assign",      HubScanType.LOCAL_SORT_ASSIGN.apiValue)
+        assertEquals("local_sort_assign",       HubScanType.LOCAL_SORT_ASSIGN.apiValue)
+        assertEquals("exception_flag",          HubScanType.EXCEPTION_FLAG.apiValue)
     }
 
     @Test fun `isoFromMillis produces valid ISO-8601 UTC string`() {
         val ts = HubRepository.isoFromMillis(0L)
         assertTrue(ts.contains("1970-01-01"), "Expected UTC ISO string, got: $ts")
         assertTrue(ts.endsWith("+00:00") || ts.endsWith("Z"), "Expected offset, got: $ts")
+    }
+
+    @Test fun `EXCEPTION_FLAG apiValue is exception_flag`() {
+        assertEquals("exception_flag", HubScanType.EXCEPTION_FLAG.apiValue)
+    }
+
+    @Test fun `canSubmit false for EXCEPTION_FLAG when exception blank`() {
+        assertFalse(
+            minimalState(scanType = HubScanType.EXCEPTION_FLAG)
+                .copy(exception = "").canSubmit
+        )
+    }
+
+    @Test fun `canSubmit true for EXCEPTION_FLAG when exception set to damaged`() {
+        assertTrue(
+            minimalState(scanType = HubScanType.EXCEPTION_FLAG)
+                .copy(exception = "damaged").canSubmit
+        )
     }
 }

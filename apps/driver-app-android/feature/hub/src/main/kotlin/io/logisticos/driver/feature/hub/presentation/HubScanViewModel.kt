@@ -43,8 +43,9 @@ data class HubScanUiState(
      */
     val canSubmit: Boolean get() {
         if (hubId.isBlank() || pieceAwb.isBlank() || masterAwb.isBlank() || shipmentId.isBlank()) return false
-        if (scanType.requiresPallet && palletId.isBlank())       return false
-        if (scanType.requiresContainer && containerId.isBlank()) return false
+        if (scanType.requiresPallet && palletId.isBlank())                 return false
+        if (scanType.requiresContainer && containerId.isBlank())           return false
+        if (scanType == HubScanType.EXCEPTION_FLAG && exception.isNullOrBlank()) return false
         return !isSubmitting
     }
 }
