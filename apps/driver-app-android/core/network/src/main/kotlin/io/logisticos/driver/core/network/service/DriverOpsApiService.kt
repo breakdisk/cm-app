@@ -79,6 +79,19 @@ data class RejectAssignmentRequest(
     val reason: String
 )
 
+/**
+ * Minimal driver profile returned by GET /v1/drivers/me.
+ * Wrapped in the standard { "data": ... } envelope.
+ */
+@Serializable
+data class DriverProfileData(
+    val id: String = "",
+    @SerialName("hub_id") val hubId: String? = null,
+)
+
+@Serializable
+data class DriverProfileResponse(val data: DriverProfileData)
+
 // ─── API interface ────────────────────────────────────────────────────────────
 
 interface DriverOpsApiService {
@@ -125,6 +138,13 @@ interface DriverOpsApiService {
     /** POST /v1/drivers/go-offline */
     @POST("v1/drivers/go-offline")
     suspend fun goOffline()
+
+    /**
+     * GET /v1/drivers/me — returns the authenticated driver's own profile.
+     * Called after OTP login and on HomeScreen foreground to detect hub assignment.
+     */
+    @GET("v1/drivers/me")
+    suspend fun getMyProfile(): DriverProfileResponse
 
     /** PUT /v1/assignments/:id/accept — driver accepts an incoming shipment assignment */
     @PUT("v1/assignments/{id}/accept")
