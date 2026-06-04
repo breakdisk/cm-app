@@ -40,6 +40,10 @@ pub struct UpdateDriverCommand {
     pub is_active: Option<bool>,
     /// Set to link (or unlink with null) a driver to a carrier for manifest scoping.
     pub carrier_id: Option<Uuid>,
+    /// Set the driver's hub assignment. None = not sent (no change).
+    pub hub_id: Option<Uuid>,
+    /// Set true to explicitly clear the driver's hub assignment.
+    pub remove_hub_id: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

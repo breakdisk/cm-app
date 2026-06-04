@@ -74,6 +74,8 @@ impl DriverService {
         if let Some(v) = cmd.vehicle_type            { driver.vehicle_type = Some(v); }
         if let Some(v) = cmd.is_active               { driver.is_active = v; }
         if cmd.carrier_id.is_some()                  { driver.carrier_id = cmd.carrier_id; }
+        if cmd.remove_hub_id == Some(true)           { driver.hub_id = None; }
+        else if cmd.hub_id.is_some()                 { driver.hub_id = cmd.hub_id; }
         driver.updated_at = chrono::Utc::now();
         self.driver_repo.save(&driver).await.map_err(AppError::Internal)?;
         Ok(driver)
