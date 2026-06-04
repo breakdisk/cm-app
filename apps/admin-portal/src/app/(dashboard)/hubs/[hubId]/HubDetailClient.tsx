@@ -7,7 +7,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Building2, ChevronLeft, MapPin, Layers,
   Package, Boxes, AlertTriangle, RefreshCw,
-  FileText, ArrowRight,
+  FileText, ArrowRight, Users,
 } from 'lucide-react';
 import { GlassCard } from '@/components/ui/glass-card';
 import { NeonBadge } from '@/components/ui/neon-badge';
@@ -19,15 +19,17 @@ import {
   type Hub, type HubStatusTier, type HubManifest,
 } from '@/lib/api/hubs';
 import ConsolidationPageClient from './consolidation/ConsolidationPageClient';
+import HubStaffTab from './HubStaffTab';
 
 // ── Tab types ─────────────────────────────────────────────────────────────────
 
-const HUB_TABS = ['overview', 'plan-load'] as const;
+const HUB_TABS = ['overview', 'plan-load', 'hub-staff'] as const;
 type HubTab = (typeof HUB_TABS)[number];
 
 const TAB_LABELS: Record<HubTab, string> = {
   'overview':   'Overview',
   'plan-load':  'Plan Load (3D)',
+  'hub-staff':  'Hub Staff',
 };
 
 // ── Status config ─────────────────────────────────────────────────────────────
@@ -269,7 +271,9 @@ export default function HubDetailClient({ hubId, token, initialTab }: Props) {
   // Keep URL in sync with active tab without creating browser history entries.
   function switchTab(tab: HubTab) {
     setActiveTab(tab);
-    const url = tab === 'overview' ? `/hubs/${hubId}` : `/hubs/${hubId}?tab=plan-load`;
+    const url = tab === 'overview'
+      ? `/hubs/${hubId}`
+      : `/hubs/${hubId}?tab=${tab}`;
     router.replace(url, { scroll: false });
   }
 
@@ -350,8 +354,9 @@ export default function HubDetailClient({ hubId, token, initialTab }: Props) {
                   : 'text-white/40 hover:text-white/70',
               )}
             >
-              {tab === 'plan-load' && <Boxes size={13} />}
-              {tab === 'overview'  && <Package size={13} />}
+              {tab === 'plan-load'  && <Boxes   size={13} />}
+              {tab === 'overview'   && <Package size={13} />}
+              {tab === 'hub-staff'  && <Users   size={13} />}
               {TAB_LABELS[tab]}
             </button>
           ))}
@@ -397,6 +402,19 @@ export default function HubDetailClient({ hubId, token, initialTab }: Props) {
                 token={token}
                 heightClass="h-full"
               />
+            </motion.div>
+          )}
+
+          {activeTab === 'hub-staff' && (
+            <motion.div
+              key="hub-staff-tab"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.15 }}
+              className="h-full overflow-y-auto"
+            >
+              <HubStaffTab hubId={hubId} />
             </motion.div>
           )}
 
