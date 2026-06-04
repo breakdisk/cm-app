@@ -114,6 +114,14 @@ fun HubScanScreen(
             modifier  = Modifier.padding(horizontal = 16.dp),
         )
 
+        if (state.scanType == HubScanType.EXCEPTION_FLAG) {
+            ExceptionSubTypeSelector(
+                selected = state.exception,
+                onSelect = viewModel::setException,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
+        }
+
         Spacer(Modifier.height(12.dp))
 
         // ── Camera Viewfinder ────────────────────────────────────────────────
@@ -239,6 +247,55 @@ private fun ScanTypeSelector(
                     .clickable { onSelect(type) }
                     .padding(horizontal = 8.dp, vertical = 4.dp),
             )
+        }
+    }
+}
+
+// ── Exception sub-type selector (shown only for EXCEPTION_FLAG) ───────────────
+
+private val exceptionOptions = listOf(
+    "missing"         to "Missing",
+    "damaged"         to "Damaged",
+    "weight_mismatch" to "Weight Mismatch",
+)
+
+@Composable
+private fun ExceptionSubTypeSelector(
+    selected: String?,
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier) {
+        Text(
+            "Exception type *",
+            color      = Amber,
+            fontFamily = FontFamily.Monospace,
+            fontSize   = 11.sp,
+            modifier   = Modifier.padding(bottom = 4.dp),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            exceptionOptions.forEach { (value, label) ->
+                val isSelected = value == selected
+                Text(
+                    text       = label,
+                    color      = if (isSelected) Amber else TextMuted,
+                    fontSize   = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                    modifier   = Modifier
+                        .border(
+                            width = 1.dp,
+                            color = if (isSelected) Amber.copy(alpha = 0.5f) else Border,
+                            shape = RoundedCornerShape(8.dp),
+                        )
+                        .background(
+                            color = if (isSelected) Amber.copy(alpha = 0.08f) else Color.Transparent,
+                            shape = RoundedCornerShape(8.dp),
+                        )
+                        .clickable { onSelect(value) }
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                )
+            }
         }
     }
 }
