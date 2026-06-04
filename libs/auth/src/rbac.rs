@@ -161,6 +161,10 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::COMPLIANCE_REVIEW, permissions::COMPLIANCE_ADMIN,
             permissions::WEBHOOKS_READ, permissions::WEBHOOKS_MANAGE,
         ],
+        "hub_scanner" => vec![
+            permissions::SHIPMENT_READ,
+            permissions::SHIPMENT_UPDATE,
+        ],
         _ => vec![],
     }
 }
