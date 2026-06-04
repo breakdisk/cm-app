@@ -106,4 +106,26 @@ class HubScanViewModelTest {
                 .copy(exception = "damaged").canSubmit
         )
     }
+
+    @Test fun `AWB_PATTERN matches canonical CM AWB`() {
+        val pattern = Regex("^CM-[A-Z]{3}-[A-Z]\\d{7}$")
+        assertTrue(pattern.matches("CM-PHL-S0012345"))
+        assertTrue(pattern.matches("CM-SGP-E9876543"))
+        assertFalse(pattern.matches("CM-PHL-S001234"))    // too short
+        assertFalse(pattern.matches("CM-PHL-S00123456"))  // too long
+        assertFalse(pattern.matches("CM-phl-S0012345"))   // lowercase location
+        assertFalse(pattern.matches("partial"))
+    }
+
+    @Test fun `isResolvingShipment defaults to false`() {
+        assertFalse(HubScanUiState().isResolvingShipment)
+    }
+
+    @Test fun `shipmentResolveFailed defaults to false`() {
+        assertFalse(HubScanUiState().shipmentResolveFailed)
+    }
+
+    @Test fun `canSubmit false when isResolvingShipment true`() {
+        assertFalse(minimalState().copy(isResolvingShipment = true).canSubmit)
+    }
 }
