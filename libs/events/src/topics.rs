@@ -42,6 +42,12 @@ pub const CONTAINER_DECONSOLIDATED:      &str = "logisticos.hub.container.decons
 pub const HUB_DISPATCH_REQUESTED:        &str = "logisticos.hub.shipment.dispatch_requested";
 pub const HUB_CARRIER_BOOKING_REQUESTED: &str = "logisticos.hub.shipment.carrier_booking_requested";
 
+// Consolidation (hub-ops emits)
+/// All pieces scanned and container sealed by the 3D load-planning flow.
+/// Payload: `{ "plan_id": uuid, "container_id": uuid, "master_awbs": [str] }`.
+/// order-intake subscribes to flip qualifying shipments → `at_hub`.
+pub const CONSOLIDATION_PLAN_LOADED:     &str = "logisticos.hub.consolidation.plan_loaded";
+
 // Invoice / Billing
 pub const WEIGHT_ADJUSTMENT_INVOICED: &str = "logisticos.payments.invoice.weight_adjustment";
 
@@ -99,6 +105,7 @@ mod tests {
         assert_eq!(CONTAINER_DECONSOLIDATED,      "logisticos.hub.container.deconsolidated");
         assert_eq!(HUB_DISPATCH_REQUESTED,        "logisticos.hub.shipment.dispatch_requested");
         assert_eq!(HUB_CARRIER_BOOKING_REQUESTED, "logisticos.hub.shipment.carrier_booking_requested");
+        assert_eq!(CONSOLIDATION_PLAN_LOADED,     "logisticos.hub.consolidation.plan_loaded");
     }
 
     #[test]
@@ -113,6 +120,7 @@ mod tests {
             HUB_PIECE_SCANNED_INBOUND, CONTAINER_ARRIVED_AT_PORT, CONTAINER_CUSTOMS_HOLD,
             CONTAINER_CUSTOMS_CLEARED, CONTAINER_RELEASED_DOMESTIC, CONTAINER_DECONSOLIDATED,
             HUB_DISPATCH_REQUESTED, HUB_CARRIER_BOOKING_REQUESTED,
+            CONSOLIDATION_PLAN_LOADED,
             ROUTE_CREATED, DRIVER_ASSIGNED, ROUTE_OPTIMIZED,
             DRIVER_AVAILABLE,
             PICKUP_COMPLETED, DELIVERY_ATTEMPTED, DELIVERY_COMPLETED, DELIVERY_FAILED,

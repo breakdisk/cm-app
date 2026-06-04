@@ -532,14 +532,19 @@ fn row_to_plan(r: PlanRow) -> ConsolidationPlan {
 impl ConsolidationPlanRepository for PgConsolidationPlanRepository {
     async fn list(&self, hub_id: Uuid, tenant_id: Uuid) -> anyhow::Result<Vec<ConsolidationPlan>> {
         let rows = sqlx::query_as::<_, PlanRow>(
-            r#"SELECT id, tenant_id, hub_id, truck_spec_id, container_id,
-                      items, placements, unplaced,
-                      total_weight_kg::float8, volume_used_cm3, volume_total_cm3,
-                      piece_count, status, '{}'::text[] AS loaded_awbs,
-                      computed_at, created_at, updated_at
-               FROM hub_ops.consolidation_plans
-               WHERE hub_id = $1 AND tenant_id = $2
-               ORDER BY created_at DESC
+            r#"SELECT p.id, p.tenant_id, p.hub_id, p.truck_spec_id, p.container_id,
+                      p.items, p.placements, p.unplaced,
+                      p.total_weight_kg::float8, p.volume_used_cm3, p.volume_total_cm3,
+                      p.piece_count, p.status,
+                      COALESCE(
+                          ARRAY(SELECT awb FROM hub_ops.consolidation_plan_loadings
+                                WHERE plan_id = p.id ORDER BY scanned_at),
+                          '{}'::text[]
+                      ) AS loaded_awbs,
+                      p.computed_at, p.created_at, p.updated_at
+               FROM hub_ops.consolidation_plans p
+               WHERE p.hub_id = $1 AND p.tenant_id = $2
+               ORDER BY p.created_at DESC
                LIMIT 20"#
         ).bind(hub_id).bind(tenant_id).fetch_all(&self.pool).await?;
         Ok(rows.into_iter().map(row_to_plan).collect())
@@ -799,6 +804,7 @@ struct AppState {
     pallet_svc:        Arc<PalletService>,
     hub_transfer_svc:  Arc<HubTransferService>,
     hub_broadcaster:   HubBroadcaster,
+    kafka:             Arc<KafkaProducer>,
     payments_url:      String,
     pod_url:           String,
     /// Raw pool kept for ad-hoc analytical queries (e.g. throughput buckets)
@@ -1660,6 +1666,46 @@ async fn scan_consolidation_piece_handler(
                 });
                 s.hub_broadcaster.broadcast(plan.hub_id, loaded_event.to_string()).await;
 
+                // Emit Kafka event so order-intake can flip shipment statuses to at_hub.
+                // Extract placed AWBs from the plan's placements array.
+                let master_awbs: Vec<String> = {
+                    #[derive(serde::Deserialize)]
+                    struct AwbOnly { awb: String }
+                    serde_json::from_value::<Vec<AwbOnly>>(plan.placements.clone())
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|p| p.awb)
+                        .collect()
+                };
+
+                if !master_awbs.is_empty() {
+                    #[derive(serde::Serialize)]
+                    struct ConsolidationPlanLoadedEvt {
+                        plan_id:      uuid::Uuid,
+                        container_id: uuid::Uuid,
+                        master_awbs:  Vec<String>,
+                    }
+                    let evt = logisticos_events::Event::new(
+                        "logisticos/hub-ops",
+                        logisticos_events::topics::CONSOLIDATION_PLAN_LOADED,
+                        claims.tenant_id,
+                        ConsolidationPlanLoadedEvt { plan_id: id, container_id, master_awbs },
+                    );
+                    if let Err(e) = s.kafka
+                        .publish_event(logisticos_events::topics::CONSOLIDATION_PLAN_LOADED, &evt)
+                        .await
+                    {
+                        // Non-fatal — log and continue. Kafka unavailability must
+                        // not block the scan response. The container is already sealed.
+                        tracing::warn!(
+                            plan_id      = %id,
+                            container_id = %container_id,
+                            err          = %e,
+                            "CONSOLIDATION_PLAN_LOADED Kafka emit failed (non-fatal)"
+                        );
+                    }
+                }
+
                 tracing::info!(
                     plan_id      = %id,
                     container_id = %container_id,
@@ -1795,6 +1841,7 @@ pub async fn run() -> anyhow::Result<()> {
         consolidation_svc, pallet_svc,
         hub_transfer_svc,
         hub_broadcaster,
+        kafka,
         payments_url, pod_url,
         pool: pool.clone(),
     };

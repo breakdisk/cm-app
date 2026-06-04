@@ -71,6 +71,9 @@ fn hub_status_mapping(topic: &str) -> Option<(&'static str, MatchKey)> {
     use MatchKey::*;
     Some(match topic {
         topics::HUB_PIECE_SCANNED_INBOUND     => ("at_hub",           ShipmentId),
+        // Consolidation flow: all pieces loaded onto truck via 3D load-plan scan →
+        // flip any shipment not yet at_hub (induction-only path, no explicit scan).
+        topics::CONSOLIDATION_PLAN_LOADED     => ("at_hub",           MasterAwbs),
         topics::CONTAINER_DEPARTED            => ("in_transit",       MasterAwbs),
         topics::CONTAINER_CUSTOMS_HOLD        => ("customs_hold",     MasterAwbs),
         topics::CONTAINER_CUSTOMS_CLEARED     => ("in_transit",       MasterAwbs),
@@ -108,6 +111,8 @@ pub async fn start_status_consumer(
         topics::CONTAINER_DECONSOLIDATED,
         topics::HUB_DISPATCH_REQUESTED,
         topics::HUB_CARRIER_BOOKING_REQUESTED,
+        // Consolidation milestones
+        topics::CONSOLIDATION_PLAN_LOADED,
     ])?;
 
     loop {
@@ -291,6 +296,10 @@ mod tests {
         assert_eq!(
             hub_status_mapping(topics::HUB_PIECE_SCANNED_INBOUND),
             Some(("at_hub", MatchKey::ShipmentId))
+        );
+        assert_eq!(
+            hub_status_mapping(topics::CONSOLIDATION_PLAN_LOADED),
+            Some(("at_hub", MatchKey::MasterAwbs))
         );
         assert_eq!(
             hub_status_mapping(topics::CONTAINER_DEPARTED),
