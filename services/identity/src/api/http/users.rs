@@ -93,6 +93,15 @@ pub async fn patch_user_roles(
         return Err(AppError::NotFound { resource: "User", id: id.to_string() });
     }
 
+    // Only roles in this allowlist may be assigned or revoked through this endpoint.
+    // Prevents privilege escalation via a compromised admin account.
+    const ASSIGNABLE_ROLES: &[&str] = &["hub_scanner", "driver", "readonly", "dispatcher"];
+    if !ASSIGNABLE_ROLES.contains(&body.role.as_str()) {
+        return Err(AppError::Validation(
+            format!("Role '{}' cannot be managed via this endpoint", body.role)
+        ));
+    }
+
     match body.action.as_str() {
         "assign" => user.assign_role(&body.role),
         "revoke" => user.revoke_role(&body.role),
