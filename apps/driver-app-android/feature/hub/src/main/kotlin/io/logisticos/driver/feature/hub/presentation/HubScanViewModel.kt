@@ -125,7 +125,12 @@ class HubScanViewModel @Inject constructor(
                 }
             }.onFailure { e ->
                 _uiState.update {
-                    it.copy(isSubmitting = false, lastSubmitSuccess = false, error = e.message)
+                    it.copy(
+                        isSubmitting      = false,
+                        lastSubmitSuccess = false,
+                        error             = e.message,
+                        pieceAwb          = "",
+                    )
                 }
             }
         }

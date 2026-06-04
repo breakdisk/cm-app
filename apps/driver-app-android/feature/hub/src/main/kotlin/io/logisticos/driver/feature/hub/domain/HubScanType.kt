@@ -33,9 +33,10 @@ enum class HubScanType(
         requiresContainer = true,
     ),
     CONTAINER_DECONSOLIDATE(
-        apiValue    = "container_deconsolidate",
-        label       = "Break-Bulk",
-        description = "Piece broken out of a container at destination hub",
+        apiValue          = "container_deconsolidate",
+        label             = "Break-Bulk",
+        description       = "Piece broken out of a container at destination hub",
+        requiresContainer = true,
     ),
     LOCAL_SORT_ASSIGN(
         apiValue    = "local_sort_assign",
