@@ -48,6 +48,7 @@ impl DriverService {
             zone: None,
             vehicle_type: None,
             carrier_id: cmd.carrier_id,
+            hub_id:     None,
             created_at: now,
             updated_at: now,
         };

@@ -163,6 +163,7 @@ impl LocationService {
             zone:                    None,
             vehicle_type:            None,
             carrier_id:              None,
+            hub_id:                  None,
             created_at:              now,
             updated_at:              now,
         };
