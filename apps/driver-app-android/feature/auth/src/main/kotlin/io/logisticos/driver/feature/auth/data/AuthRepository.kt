@@ -1,6 +1,7 @@
 package io.logisticos.driver.feature.auth.data
 
 import io.logisticos.driver.core.network.auth.SessionManager
+import io.logisticos.driver.core.network.service.DriverOpsApiService
 import io.logisticos.driver.core.network.service.IdentityApiService
 import io.logisticos.driver.core.network.service.OtpSendRequest
 import io.logisticos.driver.core.network.service.OtpVerifyRequest
@@ -11,15 +12,17 @@ import javax.inject.Singleton
 
 @Singleton
 class AuthRepository @Inject constructor(
-    private val apiService: IdentityApiService,
+    private val apiService:     IdentityApiService,
+    private val driverOpsApi:   DriverOpsApiService,
     private val sessionManager: SessionManager,
     /** Shared OkHttpClient — used on logout to cancel all in-flight requests so
      *  that pending TokenAuthenticator.runBlocking calls don't deadlock the
      *  OkHttp dispatcher and prevent the next sendOtp call from being dispatched. */
-    private val okHttpClient: OkHttpClient,
+    private val okHttpClient:   OkHttpClient,
     /** True only in debug builds — gates the 123456 OTP shortcut for local development. */
     @Named("dev_bypass_enabled") private val devBypassEnabled: Boolean,
 ) {
+
     /**
      * Sends an OTP to the given phone/email for the specified tenant.
      *
@@ -28,8 +31,8 @@ class AuthRepository @Inject constructor(
      *                    with no tenant context.
      */
     suspend fun sendOtp(
-        phone: String? = null,
-        email: String? = null,
+        phone:      String? = null,
+        email:      String? = null,
         tenantSlug: String,
     ): Result<Unit> {
         // runCatching is intentionally avoided here: it catches CancellationException,
@@ -48,14 +51,17 @@ class AuthRepository @Inject constructor(
     }
 
     /**
-     * Verifies the OTP and persists the session tokens.
-     * On success, saves `tenantSlug` to SessionManager so dispatch queries
-     * resolve the correct tenant for this driver going forward.
+     * Verifies the OTP and persists the session tokens, then performs an initial
+     * profile hydration: fetches roles from identity and hub_id from driver-ops.
+     * Both fetches are non-fatal — auth completes even if profile services are down.
+     *
+     * The dev bypass path (otp == "123456") skips profile hydration intentionally:
+     * the dev-token is not a valid JWT and would be rejected by real service endpoints.
      */
     suspend fun verifyOtp(
-        phone: String? = null,
-        otp: String,
-        email: String? = null,
+        phone:      String? = null,
+        otp:        String,
+        email:      String? = null,
         tenantSlug: String,
     ): Result<Unit> {
         if (devBypassEnabled && otp == "123456") {
@@ -73,6 +79,19 @@ class AuthRepository @Inject constructor(
             sessionManager.saveTenantId(response.tenantId)
             sessionManager.saveTenantSlug(tenantSlug)
             sessionManager.saveDriverId(response.driverId)
+
+            // ── Initial profile hydration ─────────────────────────────────
+            // Both calls use the JWT just saved above. runCatching prevents
+            // a profile service outage from blocking login.
+            runCatching { apiService.getMe() }
+                .onSuccess { me ->
+                    sessionManager.saveIsHubScanner(me.data.roles.contains("hub_scanner"))
+                }
+            runCatching { driverOpsApi.getMyProfile() }
+                .onSuccess { r ->
+                    sessionManager.saveHubId(r.data.hubId)
+                }
+
             // FCM token registration is handled by MainViewModel.onAuthSuccess() via
             // addOnSuccessListener (non-blocking). Do NOT await it here — Firebase token
             // fetch can stall indefinitely on first launch and would keep isLoading=true.
