@@ -3,9 +3,11 @@ package io.logisticos.driver.core.network.service
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import retrofit2.http.Body
+import retrofit2.http.GET
 import retrofit2.http.POST
+import retrofit2.http.Query
 
-// ── Request ───────────────────────────────────────────────────────────────────
+// ── Request / Response models ─────────────────────────────────────────────────
 
 /**
  * Mirrors `RecordScanRequest` in `services/hub-ops/src/bootstrap.rs`.
@@ -38,13 +40,31 @@ data class RecordScanResponse(
     @SerialName("server_timestamp") val serverTimestamp: String,
 )
 
+/**
+ * Mirrors `ShipmentByAwbResponse` in `services/hub-ops/src/bootstrap.rs`.
+ * Returned by `GET /v1/hub-transfer/shipment-by-awb?awb={tracking_number}`.
+ */
+@Serializable
+data class ShipmentByAwbResponse(
+    @SerialName("shipment_id") val shipmentId: String,
+    @SerialName("master_awb")  val masterAwb:  String,
+)
+
 // ── Service ───────────────────────────────────────────────────────────────────
 
 interface HubOpsApiService {
-    /**
-     * POST /v1/hub-transfer/scans
-     * Records an immutable chain-of-custody scan event at the hub.
-     */
+
+    /** POST /v1/hub-transfer/scans — record an immutable hub scan. */
     @POST("v1/hub-transfer/scans")
     suspend fun recordScan(@Body body: RecordScanRequest): RecordScanResponse
+
+    /**
+     * GET /v1/hub-transfer/shipment-by-awb?awb={tracking_number}
+     *
+     * Resolves a master AWB to the shipment UUID stored in parcel_inductions.
+     * Throws [retrofit2.HttpException] with code 404 when not found — callers
+     * should catch 404 and allow manual UUID entry as fallback.
+     */
+    @GET("v1/hub-transfer/shipment-by-awb")
+    suspend fun getShipmentByAwb(@Query("awb") awb: String): ShipmentByAwbResponse
 }

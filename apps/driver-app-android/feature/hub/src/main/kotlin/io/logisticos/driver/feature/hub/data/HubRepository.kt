@@ -100,6 +100,23 @@ class HubRepository @Inject constructor(
         }
     }
 
+    /**
+     * Resolves a master AWB tracking number to its shipment UUID.
+     *
+     * Returns the shipment UUID string on success, or `null` when the backend
+     * responds with HTTP 404 (AWB not found in parcel_inductions).
+     * All other HTTP/network errors propagate as exceptions.
+     *
+     * @param awb Master AWB in canonical format, e.g. "CM-PHL-S0012345".
+     */
+    suspend fun lookupShipmentByAwb(awb: String): String? {
+        return try {
+            hubApi.getShipmentByAwb(awb).shipmentId
+        } catch (e: retrofit2.HttpException) {
+            if (e.code() == 404) null else throw e
+        }
+    }
+
     companion object {
         private const val TAG = "HubRepository"
 
