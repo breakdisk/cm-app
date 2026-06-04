@@ -1911,6 +1911,7 @@ pub async fn run() -> anyhow::Result<()> {
         // Cross-border hub transfer — scans, container customs lifecycle, fan-out
         .route("/v1/hub-transfer/scans",                    post(record_scan_handler))
         .route("/v1/hub-transfer/scans/:shipment_id",       get(list_scans_handler))
+        .route("/v1/hub-transfer/shipment-by-awb",          get(shipment_by_awb_handler))
         .route("/v1/containers/:id/arrive-at-port",         post(arrive_at_port_handler))
         .route("/v1/containers/:id/enter-customs",          post(enter_customs_handler))
         .route("/v1/containers/:id/clear-customs",          post(clear_customs_handler))
@@ -1963,6 +1964,19 @@ pub async fn run() -> anyhow::Result<()> {
 // ---------------------------------------------------------------------------
 // Cross-border hub transfer handlers
 // ---------------------------------------------------------------------------
+
+// ── AWB → shipment-ID lookup ─────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct AwbQuery {
+    awb: String,
+}
+
+#[derive(serde::Serialize)]
+struct ShipmentByAwbResponse {
+    shipment_id: Uuid,
+    master_awb:  String,
+}
 
 #[derive(serde::Deserialize)]
 struct RecordScanRequest {
@@ -2038,6 +2052,54 @@ async fn list_scans_handler(
         .list_scans(shipment_id, claims.tenant_id)
         .await?;
     Ok::<_, AppError>((StatusCode::OK, Json(scans)))
+}
+
+/// `GET /v1/hub-transfer/shipment-by-awb?awb=<tracking_number>`
+///
+/// Resolves a master AWB (tracking number) to the shipment UUID recorded in
+/// `hub_ops.parcel_inductions`. Used by the Android hub-scanner app to
+/// auto-populate the Shipment ID field when the agent scans or types the master AWB.
+///
+/// Returns 404 when the AWB has no matching induction record.
+async fn shipment_by_awb_handler(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Query(params): Query<AwbQuery>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_READ)?;
+
+    #[derive(sqlx::FromRow)]
+    struct AwbRow {
+        shipment_id:     Uuid,
+        tracking_number: String,
+    }
+
+    let row = sqlx::query_as::<_, AwbRow>(
+        r#"SELECT shipment_id, tracking_number
+           FROM   hub_ops.parcel_inductions
+           WHERE  tenant_id = $1
+             AND  tracking_number = $2
+           LIMIT  1"#,
+    )
+    .bind(claims.tenant_id)
+    .bind(&params.awb)
+    .fetch_optional(&s.pool)
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+
+    match row {
+        Some(r) => Ok::<_, AppError>((
+            StatusCode::OK,
+            Json(ShipmentByAwbResponse {
+                shipment_id: r.shipment_id,
+                master_awb:  r.tracking_number,
+            }),
+        )),
+        None => Err(AppError::NotFound {
+            resource: "parcel_induction",
+            id: params.awb,
+        }),
+    }
 }
 
 /// Optional per-shipment recipient detail for milestone customer notifications.
