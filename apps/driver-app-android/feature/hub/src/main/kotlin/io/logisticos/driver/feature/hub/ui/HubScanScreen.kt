@@ -147,8 +147,12 @@ fun HubScanScreen(
                 placeholder = "UUID of this hub")
             HubField(label = "Master AWB *", value = state.masterAwb, onValueChange = viewModel::setMasterAwb,
                 placeholder = "e.g. CM-PHL-S0012345")
-            HubField(label = "Shipment ID *", value = state.shipmentId, onValueChange = viewModel::setShipmentId,
-                placeholder = "UUID from master AWB lookup")
+            ShipmentIdField(
+                value         = state.shipmentId,
+                isResolving   = state.isResolvingShipment,
+                resolveFailed = state.shipmentResolveFailed,
+                onValueChange = viewModel::setShipmentId,
+            )
             HubField(label = "Piece AWB (scanned)", value = state.pieceAwb, onValueChange = {
                 viewModel.onPieceScan(ScanResult(it, "manual"), System.currentTimeMillis())
             }, placeholder = "Scan or type child AWB")
@@ -297,6 +301,81 @@ private fun ExceptionSubTypeSelector(
                 )
             }
         }
+    }
+}
+
+// ── Shipment ID field with auto-resolve feedback ──────────────────────────────
+
+@Composable
+private fun ShipmentIdField(
+    value:         String,
+    isResolving:   Boolean,
+    resolveFailed: Boolean,
+    onValueChange: (String) -> Unit,
+) {
+    val borderColor = when {
+        resolveFailed      -> Amber.copy(alpha = 0.55f)
+        value.isNotBlank() -> Green.copy(alpha = 0.45f)
+        else               -> Border
+    }
+    Column {
+        Text(
+            "Shipment ID *",
+            color      = TextMuted,
+            fontFamily = FontFamily.Monospace,
+            fontSize   = 11.sp,
+            modifier   = Modifier.padding(bottom = 4.dp),
+        )
+        OutlinedTextField(
+            value         = value,
+            onValueChange = onValueChange,
+            enabled       = !isResolving,
+            placeholder   = {
+                Text(
+                    text = when {
+                        isResolving   -> "Resolving…"
+                        resolveFailed -> "AWB not found — enter manually"
+                        else          -> "Scan master AWB to auto-fill"
+                    },
+                    color      = TextMuted,
+                    fontSize   = 12.sp,
+                    fontFamily = FontFamily.Monospace,
+                )
+            },
+            trailingIcon = {
+                when {
+                    isResolving                           ->
+                        CircularProgressIndicator(
+                            modifier    = Modifier.size(16.dp).padding(2.dp),
+                            color       = Cyan,
+                            strokeWidth = 1.5.dp,
+                        )
+                    value.isNotBlank() && !resolveFailed ->
+                        Icon(Icons.Default.CheckCircle, contentDescription = null,
+                            tint = Green, modifier = Modifier.size(18.dp))
+                    resolveFailed                        ->
+                        Icon(Icons.Default.Warning, contentDescription = null,
+                            tint = Amber, modifier = Modifier.size(18.dp))
+                    else -> {}
+                }
+            },
+            textStyle = LocalTextStyle.current.copy(
+                color      = Color.White,
+                fontFamily = FontFamily.Monospace,
+                fontSize   = 13.sp,
+            ),
+            colors = OutlinedTextFieldDefaults.colors(
+                unfocusedBorderColor    = borderColor,
+                focusedBorderColor      = Cyan.copy(alpha = 0.6f),
+                unfocusedContainerColor = Surface,
+                focusedContainerColor   = Surface,
+                disabledBorderColor     = Cyan.copy(alpha = 0.3f),
+                disabledContainerColor  = Surface,
+                disabledTextColor       = Color.White.copy(alpha = 0.6f),
+            ),
+            shape    = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth().height(50.dp),
+        )
     }
 }
 
