@@ -246,6 +246,13 @@ impl PgContainerRepository {
         Ok(rows.into_iter().map(|(sid,)| sid).collect())
     }
 
+    async fn master_awbs(&self, id: Uuid) -> anyhow::Result<Vec<String>> {
+        let row: Option<(Vec<String>,)> = sqlx::query_as(
+            "SELECT master_awbs FROM hub_ops.containers WHERE id = $1"
+        ).bind(id).fetch_optional(&self.pool).await?;
+        Ok(row.map(|(awbs,)| awbs).unwrap_or_default())
+    }
+
     async fn mark_departed(
         &self,
         id:  Uuid,
@@ -888,6 +895,35 @@ async fn depart_container(
     // All clear — mark the container as departed.
     s.containers.mark_departed(container_id, req.eta).await
         .map_err(|e| AppError::BusinessRule(e.to_string()))?;
+
+    // Emit CONTAINER_DEPARTED so order-intake status_consumer can flip all
+    // shipments in this container to `in_transit`.
+    {
+        #[derive(serde::Serialize)]
+        struct ContainerDepartedEvt {
+            container_id: uuid::Uuid,
+            master_awbs:  Vec<String>,
+        }
+        let master_awbs = container.master_awbs.clone();
+        if !master_awbs.is_empty() {
+            let evt = logisticos_events::Event::new(
+                "logisticos/hub-ops",
+                logisticos_events::topics::CONTAINER_DEPARTED,
+                container.tenant_id,
+                ContainerDepartedEvt { container_id, master_awbs },
+            );
+            if let Err(e) = s.kafka
+                .publish_event(logisticos_events::topics::CONTAINER_DEPARTED, &evt)
+                .await
+            {
+                tracing::warn!(
+                    container_id = %container_id,
+                    err          = %e,
+                    "CONTAINER_DEPARTED Kafka emit failed (non-fatal)"
+                );
+            }
+        }
+    }
 
     tracing::info!(
         container_id = %container_id,

@@ -1,9 +1,9 @@
 package io.logisticos.driver.feature.hub.presentation
 
+import io.logisticos.driver.feature.hub.data.HubRepository
 import io.logisticos.driver.feature.hub.domain.HubScanType
-import io.logisticos.driver.feature.scanner.domain.ScanResult
-import org.junit.Assert.*
-import org.junit.Test
+import org.junit.jupiter.api.Assertions.*
+import org.junit.jupiter.api.Test
 
 /**
  * Pure logic tests for [HubScanUiState.canSubmit] — no ViewModel / coroutine needed.
@@ -62,6 +62,14 @@ class HubScanViewModelTest {
         assertTrue(minimalState(scanType = HubScanType.OUTBOUND_LOAD, containerId = "container-uuid").canSubmit)
     }
 
+    @Test fun `canSubmit false for CONTAINER_DECONSOLIDATE when containerId missing`() {
+        assertFalse(minimalState(scanType = HubScanType.CONTAINER_DECONSOLIDATE, containerId = "").canSubmit)
+    }
+
+    @Test fun `canSubmit true for CONTAINER_DECONSOLIDATE when containerId provided`() {
+        assertTrue(minimalState(scanType = HubScanType.CONTAINER_DECONSOLIDATE, containerId = "container-uuid").canSubmit)
+    }
+
     @Test fun `canSubmit false when isSubmitting true`() {
         assertFalse(minimalState().copy(isSubmitting = true).canSubmit)
     }
@@ -76,7 +84,7 @@ class HubScanViewModelTest {
 
     @Test fun `isoFromMillis produces valid ISO-8601 UTC string`() {
         val ts = HubRepository.isoFromMillis(0L)
-        assertTrue("Expected UTC ISO string, got: $ts", ts.contains("1970-01-01"))
-        assertTrue("Expected offset, got: $ts", ts.endsWith("+00:00") || ts.endsWith("Z"))
+        assertTrue(ts.contains("1970-01-01"), "Expected UTC ISO string, got: $ts")
+        assertTrue(ts.endsWith("+00:00") || ts.endsWith("Z"), "Expected offset, got: $ts")
     }
 }
