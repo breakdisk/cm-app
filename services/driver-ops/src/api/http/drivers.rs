@@ -34,6 +34,7 @@ struct DriverDto {
     active_route_id: Option<Uuid>,
     is_active: bool,
     carrier_id: Option<Uuid>,
+    hub_id:     Option<Uuid>,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -78,6 +79,7 @@ impl From<&Driver> for DriverDto {
             active_route_id: d.active_route_id,
             is_active: d.is_active,
             carrier_id: d.carrier_id,
+            hub_id:     d.hub_id,
             created_at: d.created_at,
             updated_at: d.updated_at,
         }
@@ -164,6 +166,26 @@ pub async fn update_driver(
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let driver_id = DriverId::from_uuid(id);
     let driver = state.driver_service.update(&tenant_id, &driver_id, cmd).await?;
+    Ok(Json(serde_json::json!({ "data": DriverDto::from(&driver) })))
+}
+
+/// `GET /v1/drivers/me`
+///
+/// Returns the authenticated driver's own profile, including `hub_id` when
+/// assigned as a hub scanner. Called by the Android app after OTP login and
+/// on every HomeScreen foreground to detect hub assignment changes.
+///
+/// Note: driver_id == user_id by design in this system.
+pub async fn get_me_driver(
+    AuthClaims(claims): AuthClaims,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let driver_id = logisticos_types::DriverId::from_uuid(claims.user_id);
+    let driver = state.driver_service.get(&driver_id).await?;
+    // Tenant isolation
+    if driver.tenant_id.inner() != claims.tenant_id {
+        return Err(AppError::NotFound { resource: "Driver", id: claims.user_id.to_string() });
+    }
     Ok(Json(serde_json::json!({ "data": DriverDto::from(&driver) })))
 }
 

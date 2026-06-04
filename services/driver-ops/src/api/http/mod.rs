@@ -81,6 +81,7 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         // Static sub-paths must be declared before /:id to prevent matchit capturing them as ids.
         .route("/drivers",              get(drivers::list_drivers).post(drivers::register_driver))
         .route("/drivers/summary",      get(drivers::get_summary))
+        .route("/drivers/me",           get(drivers::get_me_driver))
         .route("/drivers/go-online",    post(drivers::go_online))
         .route("/drivers/go-offline",   post(drivers::go_offline))
         .route("/drivers/:id",          get(drivers::get_driver).patch(drivers::update_driver).delete(drivers::delete_driver))
