@@ -90,6 +90,13 @@ impl DriverService {
             .ok_or_else(|| AppError::NotFound { resource: "Driver", id: driver_id.inner().to_string() })
     }
 
+    /// Looks up a driver by their identity `user_id` (the UUID from the JWT).
+    /// Used by `GET /v1/drivers/me` where we know the caller's user_id but not
+    /// the internal driver_id (which equals user_id only for modern registrations).
+    pub async fn find_by_user_id(&self, user_id: uuid::Uuid) -> AppResult<Option<Driver>> {
+        self.driver_repo.find_by_user_id(user_id).await.map_err(AppError::Internal)
+    }
+
     /// Admin hard-delete — permanently removes the driver profile.
     ///
     /// Guards:

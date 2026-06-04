@@ -1,4 +1,4 @@
-use axum::{extract::{Path, State}, Json};
+use axum::{extract::{Path, Query as AxumQuery, State}, Json};
 use std::sync::Arc;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -86,13 +86,36 @@ impl From<&Driver> for DriverDto {
     }
 }
 
+#[derive(serde::Deserialize, Default)]
+pub struct ListDriversQuery {
+    pub hub_id: Option<uuid::Uuid>,
+    pub search: Option<String>,
+}
+
 pub async fn list_drivers(
     AuthClaims(claims): AuthClaims,
     State(state): State<Arc<AppState>>,
+    AxumQuery(q): AxumQuery<ListDriversQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     require_permission!(claims, logisticos_auth::rbac::permissions::FLEET_VIEW);
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
-    let drivers = state.driver_service.list_by_tenant(&tenant_id).await?;
+    let mut drivers = state.driver_service.list_by_tenant(&tenant_id).await?;
+
+    // Filter by hub_id when provided (Hub Staff tab — assigned scanners).
+    if let Some(hub_id) = q.hub_id {
+        drivers.retain(|d| d.hub_id == Some(hub_id));
+    }
+
+    // Filter by search when provided (Hub Staff assign-modal search).
+    if let Some(search) = &q.search {
+        let s = search.to_lowercase();
+        drivers.retain(|d| {
+            d.first_name.to_lowercase().contains(&s)
+                || d.last_name.to_lowercase().contains(&s)
+                || d.phone.contains(&s)
+        });
+    }
+
     let dtos: Vec<DriverDto> = drivers.iter().map(DriverDto::from).collect();
     Ok(Json(serde_json::json!({ "data": dtos })))
 }
@@ -180,8 +203,9 @@ pub async fn get_me_driver(
     AuthClaims(claims): AuthClaims,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let driver_id = logisticos_types::DriverId::from_uuid(claims.user_id);
-    let driver = state.driver_service.get(&driver_id).await?;
+    let driver = state.driver_service.find_by_user_id(claims.user_id)
+        .await?
+        .ok_or(AppError::NotFound { resource: "Driver", id: claims.user_id.to_string() })?;
     // Tenant isolation
     if driver.tenant_id.inner() != claims.tenant_id {
         return Err(AppError::NotFound { resource: "Driver", id: claims.user_id.to_string() });
