@@ -59,7 +59,19 @@ pub async fn run() -> anyhow::Result<()> {
     // 20-char AWS keys that R2 rejects with "Credential access key has length 20,
     // should be 32".
     let s3_bucket           = std::env::var("S3_BUCKET").unwrap_or_else(|_| "logisticos-pod-photos".to_string());
-    let pop_s3_bucket       = std::env::var("POP_S3_BUCKET").unwrap_or_else(|_| "logisticos-pop-photos".to_string());
+    // POP photos default to the SAME bucket as POD. They are keyspace-partitioned
+    // by the `pop/` key prefix (POD uses `pod/`), so there is no collision.
+    //
+    // Why not a dedicated bucket by default: a separate `logisticos-pop-photos`
+    // bucket only works if it is actually provisioned in R2 AND the R2 API token
+    // is scoped to it. When it wasn't, every POP presigned PUT/GET failed against
+    // a non-existent (or unauthorised) bucket — so POP photos uploaded by the
+    // driver were never stored and never displayed in the admin portal, while POD
+    // (on the proven `logisticos-pod-photos` bucket) kept working. Reusing the POD
+    // bucket removes that hidden infra dependency. Operators who genuinely want
+    // bucket-level isolation can still set POP_S3_BUCKET explicitly — but they
+    // must provision the bucket and scope the token to it first.
+    let pop_s3_bucket       = std::env::var("POP_S3_BUCKET").unwrap_or_else(|_| s3_bucket.clone());
     let s3_endpoint         = std::env::var("S3_ENDPOINT_URL").ok();
     let s3_region           = std::env::var("S3_REGION").or_else(|_| std::env::var("AWS_REGION")).ok();
     let s3_force_path_style = std::env::var("S3_FORCE_PATH_STYLE")
@@ -119,9 +131,10 @@ pub async fn run() -> anyhow::Result<()> {
         S3StorageAdapter::new(s3_endpoint.clone(), s3_bucket, s3_region.clone(), s3_force_path_style, s3_credentials.clone()).await
             .context("Failed to init POD S3 storage (logisticos-pod-photos)")?
     );
+    tracing::info!(pop_bucket = %pop_s3_bucket, "POP photo storage bucket resolved");
     let pop_storage = Arc::new(
-        S3StorageAdapter::new(s3_endpoint, pop_s3_bucket, s3_region, s3_force_path_style, s3_credentials).await
-            .context("Failed to init POP S3 storage (logisticos-pop-photos)")?
+        S3StorageAdapter::new(s3_endpoint, pop_s3_bucket.clone(), s3_region, s3_force_path_style, s3_credentials).await
+            .with_context(|| format!("Failed to init POP S3 storage (bucket: {pop_s3_bucket})"))?
     );
 
     // Twilio SMS for OTP delivery.
