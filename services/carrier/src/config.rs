@@ -10,7 +10,31 @@ pub struct Config {
     /// if absent, that carrier's adapter is not registered at startup.
     #[serde(default)]
     pub carriers: CarriersConfig,
+    /// S3-compatible object storage for carrier labels (Cloudflare R2 / MinIO / AWS S3).
+    #[serde(default)]
+    pub s3: StorageConfig,
+    /// URLs of sibling services consumed by background workers.
+    #[serde(default)]
+    pub services: ServicesConfig,
 }
+
+/// S3 / Cloudflare R2 / MinIO storage for carrier label files.
+/// Env vars: S3__ACCESS_KEY_ID, S3__SECRET_ACCESS_KEY
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct StorageConfig {
+    pub access_key_id:     Option<String>,
+    pub secret_access_key: Option<String>,
+}
+
+/// HTTP URLs for sibling services — used by the allocation booking worker.
+/// Env vars: SERVICES__ORDER_INTAKE_URL
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ServicesConfig {
+    #[serde(default = "default_order_intake_url")]
+    pub order_intake_url: String,
+}
+
+fn default_order_intake_url() -> String { "http://localhost:8004".into() }
 
 /// Top-level carrier credentials container.
 /// Each carrier section maps to env vars:

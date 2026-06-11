@@ -54,14 +54,15 @@ impl ProxyClient {
         // Fleet Management
         } else if path.starts_with("/v1/fleet") || path.starts_with("/v1/vehicles") {
             Some(&self.services.fleet_url)
-        // Hub Operations (hubs, consolidation plans/specs, container management)
+        // Hub Operations (hubs, consolidation plans/specs, container/pallet management)
         } else if path.starts_with("/v1/hubs")
             || path.starts_with("/v1/consolidation")
             || path.starts_with("/v1/containers")
+            || path.starts_with("/v1/pallets")
         {
             Some(&self.services.hub_ops_url)
-        // Carrier Management
-        } else if path.starts_with("/v1/carriers") {
+        // Carrier Management + Marketplace listings/bookings
+        } else if path.starts_with("/v1/carriers") || path.starts_with("/v1/marketplace") {
             Some(&self.services.carrier_url)
         // Proof of Delivery + Proof of Pickup (includes /otps for recipient OTP verification)
         } else if path.starts_with("/v1/pod") || path.starts_with("/v1/pops") || path.starts_with("/v1/otps") {

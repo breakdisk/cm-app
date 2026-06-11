@@ -97,7 +97,7 @@ impl CodRepository for PgCodRepository {
 
     async fn save(&self, c: &CodCollection) -> anyhow::Result<()> {
         let status = status_str(c.status);
-        let currency = format!("{:?}", c.amount.currency);
+        let currency = c.amount.currency.to_string();
         sqlx::query(
             r#"INSERT INTO payments.cod_collections
                    (id, tenant_id, merchant_id, shipment_id, driver_id, pod_id, amount_cents,

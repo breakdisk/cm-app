@@ -59,6 +59,9 @@ libs/proto/src/generated/
 .worktrees/
 .claude/worktrees/
 .claude/scheduled_tasks.lock
+
+# Local Claude overrides (personal dev notes, not shared)
+.claude.local.md
 .claire/
 .clone/
 .playwright-mcp/
@@ -77,3 +80,19 @@ google-services.json
 **/google-services.json
 agenticlogistic-firebase-adminsdk-*.json
 *-firebase-adminsdk-*.json
+
+# APK drop folders — build artifacts belong in GitHub Releases, not the source tree
+apk-*/
+driver-app-*-release-*/
+driver-app-*-debug-*/
+*.apk
+
+# Office documents / spreadsheets at repo root (use docs/ or a shared drive instead)
+/*.xlsx
+/*.xls
+/*.csv
+/*.docx
+/*.pptx
+
+# Keystore files (signing keys must never enter source control)
+*.jks

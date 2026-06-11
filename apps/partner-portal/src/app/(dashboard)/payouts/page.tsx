@@ -1,18 +1,10 @@
 "use client";
-/**
- * Partner Portal — Payouts Page
- * Live wallet balance, withdrawal modal, transaction history, and invoice table.
- * Backed by paymentsApi (wallet, transactions, invoices).
- */
 import { useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-} from "recharts";
 import { CreditCard, Download, X } from "lucide-react";
 import {
   paymentsApi,
@@ -20,18 +12,13 @@ import {
   type WalletTransaction,
   type Invoice,
   type InvoiceStatus,
+  type WithdrawalHistoryItem,
+  type WithdrawalStatus,
 } from "@/lib/api/payments";
 import { useRosterEvents } from "@/hooks/useRosterEvents";
+import { useCarrier } from "@/contexts/carrier-context";
 
-// ── Empty seed for monthly chart (populated at runtime from commission API) ────
-const MONTHLY_PAYOUTS = [
-  { month: "–", base: 0, cod: 0, bonus: 0 },
-  { month: "–", base: 0, cod: 0, bonus: 0 },
-  { month: "–", base: 0, cod: 0, bonus: 0 },
-  { month: "–", base: 0, cod: 0, bonus: 0 },
-  { month: "–", base: 0, cod: 0, bonus: 0 },
-  { month: "–", base: 0, cod: 0, bonus: 0 },
-];
+// ── Constants ─────────────────────────────────────────────────────────────────
 
 const STATUS_VARIANT: Record<InvoiceStatus, { label: string; variant: "green" | "amber" | "red" | "cyan" | "muted" }> = {
   paid:      { label: "Paid",      variant: "green" },
@@ -39,21 +26,31 @@ const STATUS_VARIANT: Record<InvoiceStatus, { label: string; variant: "green" | 
   overdue:   { label: "Overdue",   variant: "red"   },
   draft:     { label: "Draft",     variant: "cyan"  },
   cancelled: { label: "Cancelled", variant: "muted" },
+  disputed:  { label: "Disputed",  variant: "red"   },
+};
+
+const WITHDRAWAL_VARIANT: Record<WithdrawalStatus, { label: string; variant: "green" | "amber" | "red" | "cyan" | "muted" }> = {
+  pending:   { label: "Pending",   variant: "amber" },
+  approved:  { label: "Approved",  variant: "cyan"  },
+  disbursed: { label: "Paid Out",  variant: "green" },
+  rejected:  { label: "Rejected",  variant: "red"   },
 };
 
 // ── Withdrawal modal ──────────────────────────────────────────────────────────
 function WithdrawModal({
   wallet,
+  carrierEmail,
   onClose,
   onSuccess,
 }: {
   wallet: Wallet;
+  carrierEmail?: string;
   onClose: () => void;
   onSuccess: (updated: Wallet) => void;
 }) {
-  const [amount, setAmount]   = useState("");
-  const [saving, setSaving]   = useState(false);
-  const [error,  setError]    = useState<string | null>(null);
+  const [amount, setAmount] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error,  setError]  = useState<string | null>(null);
 
   async function handleSubmit() {
     const php = parseFloat(amount);
@@ -68,7 +65,7 @@ function WithdrawModal({
     setSaving(true);
     setError(null);
     try {
-      const updated = await paymentsApi.withdraw({ amount_php: php });
+      const updated = await paymentsApi.withdraw(php, carrierEmail);
       onSuccess(updated);
     } catch (e) {
       const err = e as { message?: string };
@@ -122,57 +119,64 @@ function WithdrawModal({
   );
 }
 
+// ── CSV export helper ─────────────────────────────────────────────────────────
+function exportCsv(transactions: WalletTransaction[], invoices: Invoice[]) {
+  const txRows = transactions.map((tx) =>
+    [
+      tx.created_at,
+      "transaction",
+      tx.type,
+      tx.amount_php.toFixed(2),
+      `"${tx.description.replace(/"/g, '""')}"`,
+      tx.reference_id,
+    ].join(",")
+  );
+  const invRows = invoices.map((inv) =>
+    [
+      inv.created_at,
+      "invoice",
+      inv.status,
+      inv.total_php.toFixed(2),
+      `"${inv.invoice_number}"`,
+      inv.id,
+    ].join(",")
+  );
+  const header = "date,record_type,type_or_status,amount_php,description_or_number,reference_id";
+  const csv = [header, ...txRows, ...invRows].join("\n");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `payouts-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 100);
+}
+
 // ── Page ─────────────────────────────────────────────────────────────────────
 export default function PayoutsPage() {
-  const [wallet,       setWallet]       = useState<Wallet | null>(null);
+  const { carrier } = useCarrier();
+  const [wallet,      setWallet]      = useState<Wallet | null>(null);
   const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
-  const [invoices,     setInvoices]     = useState<Invoice[]>([]);
-  const [loading,      setLoading]      = useState(true);
-  const [error,        setError]        = useState<string | null>(null);
+  const [invoices,    setInvoices]    = useState<Invoice[]>([]);
+  const [withdrawals, setWithdrawals] = useState<WithdrawalHistoryItem[]>([]);
+  const [loading,     setLoading]     = useState(true);
+  const [error,       setError]       = useState<string | null>(null);
   const [showWithdraw, setShowWithdraw] = useState(false);
-  const [monthlyChart, setMonthlyChart] = useState(MONTHLY_PAYOUTS);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [w, txs, invs] = await Promise.all([
+      const [w, txs, invs, withdrawalHistory] = await Promise.all([
         paymentsApi.getWallet(),
         paymentsApi.getTransactions(),
         paymentsApi.getInvoices(),
+        paymentsApi.getWithdrawalRequests(),
       ]);
       setWallet(w);
       setTransactions(txs);
       setInvoices(invs);
-
-      // Fetch last 6 months of commission breakdown
-      // merchant_id is preferred; fall back to tenant_id if not yet returned by backend
-      const merchantId = w.merchant_id ?? w.tenant_id;
-      const now = new Date();
-      const months = Array.from({ length: 6 }, (_, i) => {
-        const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (5 - i), 1));
-        return {
-          year:  d.getUTCFullYear(),
-          month: d.getUTCMonth() + 1,
-          label: d.toLocaleString("en", { month: "short", timeZone: "UTC" }),
-        };
-      });
-      const breakdowns = await Promise.all(
-        months.map(({ year, month }) =>
-          paymentsApi.getCommissionBreakdown({ merchant_id: merchantId, year, month })
-            .catch(() => null)
-        )
-      );
-      const liveChart = months.map(({ label }, i) => {
-        const b = breakdowns[i];
-        return {
-          month: label,
-          base:  b ? Math.round(b.base_charges_centavos  / 100) : 0,
-          cod:   b ? Math.round(b.cod_remittance_centavos / 100) : 0,
-          bonus: b ? Math.round(b.bonuses_centavos        / 100) : 0,
-        };
-      });
-      setMonthlyChart(liveChart);
+      setWithdrawals(withdrawalHistory);
     } catch (e) {
       const err = e as { message?: string };
       setError(err?.message ?? "Failed to load payout data");
@@ -183,17 +187,16 @@ export default function PayoutsPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Refresh when driver roster flips — commission accrual moves wallet balance.
   useRosterEvents((event) => {
     if (event.type === "status_changed") load();
   });
 
   const pendingTotal = invoices
-    .filter(i => i.status === "issued" || i.status === "overdue")
+    .filter((i) => i.status === "issued" || i.status === "overdue")
     .reduce((s, i) => s + i.total_php, 0);
 
   const paidMtd = invoices
-    .filter(i => {
+    .filter((i) => {
       if (i.status !== "paid" || !i.paid_at) return false;
       const d = new Date(i.paid_at);
       const now = new Date();
@@ -206,10 +209,13 @@ export default function PayoutsPage() {
       {showWithdraw && wallet && (
         <WithdrawModal
           wallet={wallet}
+          carrierEmail={carrier?.contact_email}
           onClose={() => setShowWithdraw(false)}
           onSuccess={(updated) => {
             setWallet(updated);
             setShowWithdraw(false);
+            // Refresh withdrawal history so the new pending request appears immediately.
+            paymentsApi.getWithdrawalRequests().then(setWithdrawals).catch(() => null);
           }}
         />
       )}
@@ -229,7 +235,11 @@ export default function PayoutsPage() {
             </h1>
             <p className="text-sm text-white/40 font-mono mt-0.5">Payout schedule: 5th of each month</p>
           </div>
-          <button className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors">
+          <button
+            onClick={() => exportCsv(transactions, invoices)}
+            disabled={loading || (transactions.length === 0 && invoices.length === 0)}
+            className="flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white/60 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
             <Download size={12} /> Export CSV
           </button>
         </motion.div>
@@ -245,7 +255,7 @@ export default function PayoutsPage() {
         {/* KPI row */}
         <motion.div variants={variants.fadeInUp} className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <GlassCard size="sm" glow="green" accent>
-            <LiveMetric label="Wallet Balance" value={wallet?.balance_php ?? 0} trend={0} color="green" format="currency" />
+            <LiveMetric label="Total Balance" value={wallet?.balance_php ?? 0} trend={0} color="green" format="currency" />
           </GlassCard>
           <GlassCard size="sm" glow="amber" accent>
             <LiveMetric label="Pending Invoices" value={pendingTotal} trend={0} color="amber" format="currency" />
@@ -266,7 +276,7 @@ export default function PayoutsPage() {
                 </p>
                 {wallet && wallet.reserved_php > 0 && (
                   <p className="text-xs font-mono text-white/30 mt-1">
-                    ₱{wallet.reserved_php.toLocaleString()} reserved
+                    ₱{wallet.reserved_php.toLocaleString()} reserved (pending withdrawal)
                   </p>
                 )}
               </div>
@@ -281,41 +291,55 @@ export default function PayoutsPage() {
           </GlassCard>
         </motion.div>
 
-        {/* Payout trend chart (live data from invoices, fallback to seed) */}
+        {/* Withdrawal request history */}
         <motion.div variants={variants.fadeInUp}>
-          <GlassCard glow="green">
-            <div className="flex items-center justify-between mb-5">
-              <div>
-                <h2 className="font-heading text-sm font-semibold text-white">Monthly Payout Breakdown</h2>
-                <p className="text-2xs font-mono text-white/30">Base · COD Remittance · Bonus</p>
+          <GlassCard padding="none">
+            <div className="px-5 py-4 border-b border-glass-border">
+              <h2 className="font-heading text-sm font-semibold text-white">Withdrawal Requests</h2>
+            </div>
+            {loading ? (
+              <div className="py-6 text-center">
+                <p className="text-xs text-white/30 font-mono">loading…</p>
               </div>
-            </div>
-            <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={monthlyChart} margin={{ top: 0, right: 0, bottom: 0, left: -24 }}>
-                <CartesianGrid stroke="rgba(255,255,255,0.04)" strokeDasharray="4 4" vertical={false} />
-                <XAxis dataKey="month" tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 11, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10, fontFamily: "JetBrains Mono" }} axisLine={false} tickLine={false} />
-                <Tooltip
-                  contentStyle={{ background: "rgba(13,20,34,0.95)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, fontFamily: "JetBrains Mono", fontSize: 11 }}
-                  formatter={(v) => [`₱${Number(v).toLocaleString()}`, ""]}
-                />
-                <Bar dataKey="base"  fill="#00FF88" radius={[0,0,0,0]} fillOpacity={0.85} stackId="a" />
-                <Bar dataKey="cod"   fill="#00E5FF" radius={[0,0,0,0]} fillOpacity={0.7}  stackId="a" />
-                <Bar dataKey="bonus" fill="#A855F7" radius={[4,4,0,0]} fillOpacity={0.8}  stackId="a" />
-              </BarChart>
-            </ResponsiveContainer>
-            <div className="flex items-center gap-4 mt-3">
-              {[["Base Rate", "#00FF88"], ["COD Remittance", "#00E5FF"], ["Bonus", "#A855F7"]].map(([label, color]) => (
-                <div key={label} className="flex items-center gap-1.5">
-                  <div className="h-2 w-2 rounded-full" style={{ background: color }} />
-                  <span className="text-2xs font-mono text-white/40">{label}</span>
+            ) : withdrawals.length === 0 ? (
+              <div className="py-6 text-center">
+                <p className="text-xs text-white/30 font-mono">No withdrawal requests yet.</p>
+              </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-[1fr_120px_100px] gap-3 px-5 py-2.5 border-b border-glass-border">
+                  {["Date", "Amount", "Status"].map((h) => (
+                    <span key={h} className="text-2xs font-mono text-white/30 uppercase tracking-wider">{h}</span>
+                  ))}
                 </div>
-              ))}
-            </div>
+                {withdrawals.map((wr) => {
+                  const cfg = WITHDRAWAL_VARIANT[wr.status];
+                  return (
+                    <div
+                      key={wr.id}
+                      className="grid grid-cols-[1fr_120px_100px] gap-3 items-center px-5 py-3.5 border-b border-glass-border/50 hover:bg-glass-100 transition-colors"
+                    >
+                      <div>
+                        <p className="text-xs font-mono text-white/70">
+                          {new Date(wr.created_at).toLocaleDateString()}
+                        </p>
+                        {wr.review_note && (
+                          <p className="text-2xs font-mono text-white/30 mt-0.5">{wr.review_note}</p>
+                        )}
+                      </div>
+                      <span className="text-sm font-bold font-heading text-green-signal">
+                        ₱{wr.amount_php.toLocaleString()}
+                      </span>
+                      <NeonBadge variant={cfg.variant}>{cfg.label}</NeonBadge>
+                    </div>
+                  );
+                })}
+              </>
+            )}
           </GlassCard>
         </motion.div>
 
-        {/* Transactions */}
+        {/* Recent transactions */}
         <motion.div variants={variants.fadeInUp}>
           <GlassCard padding="none">
             <div className="px-5 py-4 border-b border-glass-border">

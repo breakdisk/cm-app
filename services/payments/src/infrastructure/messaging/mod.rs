@@ -9,3 +9,5 @@ pub mod weight_discrepancy_consumer;
 pub use weight_discrepancy_consumer::WeightDiscrepancyConsumer;
 pub mod pickup_consumer;
 pub use pickup_consumer::PickupCapturedConsumer;
+pub mod customs_duty_consumer;
+pub use customs_duty_consumer::CustomsDutyConsumer;

@@ -237,6 +237,7 @@ impl CarrierAdapter for FedexAdapter {
             booking_ref:        tnum.clone(),
             tracking_number:    tnum,
             label_url:          label,
+            label_bytes:        None,
             estimated_delivery: pkg["operationalDetail"]["deliveryDate"]
                 .as_str()
                 .map(String::from),

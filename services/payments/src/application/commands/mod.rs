@@ -82,7 +82,13 @@ pub struct ReconcileCodCommand {
 #[derive(Debug, Deserialize)]
 pub struct RequestWithdrawalCommand {
     pub amount_cents:    i64,
-    pub bank_account_id: Uuid,
+    #[serde(default)]
+    pub bank_account_id: Option<Uuid>,
+    /// Carrier contact email — supplied by the partner portal so the engagement
+    /// service can send an email notification when the withdrawal is disbursed or
+    /// rejected. Optional; email channel is silently skipped when absent.
+    #[serde(default)]
+    pub carrier_email:   Option<String>,
 }
 
 /// Create a COD remittance batch for one (tenant, merchant) grouping all
@@ -128,27 +134,60 @@ pub struct AdminRunBillingCommand {
 
 // ── Response shapes ───────────────────────────────────────────────────────────
 
+/// Invoice list item returned to the partner portal and admin console.
+/// All monetary values are in PHP (centavos ÷ 100) so the frontend consumes
+/// them directly without conversion.
 #[derive(Debug, Serialize)]
 pub struct InvoiceSummary {
-    pub invoice_id:      Uuid,
-    pub invoice_number:  String,
-    pub invoice_type:    String,
-    pub status:          String,
-    pub awb_count:       usize,
-    pub subtotal_cents:  i64,
-    pub vat_cents:       i64,
-    pub total_cents:     i64,
-    pub billing_period:  String,  // "2026-04"
-    pub due_at:          String,
-    pub issued_at:       String,
+    pub id:             Uuid,
+    pub invoice_number: String,
+    pub invoice_type:   String,
+    pub status:         String,
+    pub awb_count:      usize,
+    pub subtotal_php:   f64,
+    pub vat_php:        f64,
+    pub total_php:      f64,
+    pub period_from:    String,   // "2026-04-01"
+    pub period_to:      String,   // "2026-04-30"
+    pub due_date:       String,   // RFC 3339
+    pub paid_at:        Option<String>,
+    pub created_at:     String,   // RFC 3339 (= issued_at)
 }
 
+/// Wallet balance summary returned to the partner portal.
+/// All monetary values are in PHP; centavos stay internal to the domain.
 #[derive(Debug, Serialize)]
 pub struct WalletSummary {
-    pub wallet_id:          Uuid,
-    pub balance_cents:      i64,
-    pub currency:           String,
-    pub reserved_centavos:  i64,
-    pub available_centavos: i64,
-    pub updated_at:         String,
+    pub wallet_id:     Uuid,
+    pub tenant_id:     Uuid,
+    pub balance_php:   f64,
+    pub reserved_php:  f64,
+    pub available_php: f64,
+    pub currency:      String,
+    pub updated_at:    String,
+}
+
+/// Wallet transaction item. Maps internal TransactionType to "credit"/"debit"
+/// and converts centavos to PHP at the HTTP boundary.
+#[derive(Debug, Serialize)]
+pub struct WalletTransactionDto {
+    pub id:           Uuid,
+    #[serde(rename = "type")]
+    pub kind:         &'static str,  // "credit" | "debit"
+    pub amount_php:   f64,
+    pub description:  String,
+    pub reference_id: Uuid,
+    pub created_at:   String,
+}
+
+/// Withdrawal request item returned to the partner portal history list.
+#[derive(Debug, Serialize)]
+pub struct WithdrawalRequestDto {
+    pub id:          Uuid,
+    pub amount_php:  f64,
+    pub currency:    String,
+    pub status:      crate::domain::entities::WithdrawalStatus,
+    pub review_note: Option<String>,
+    pub created_at:  String,
+    pub updated_at:  String,
 }

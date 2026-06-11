@@ -110,7 +110,7 @@ impl WalletRepository for PgWalletRepository {
     }
 
     async fn save_wallet(&self, w: &Wallet) -> anyhow::Result<()> {
-        let currency = format!("{:?}", w.currency);
+        let currency = w.currency.to_string();
         // Optimistic concurrency: the WHERE version check prevents double-credit
         let rows = sqlx::query(
             r#"INSERT INTO payments.wallets (id, tenant_id, balance_cents, currency, version, reserved_centavos, created_at, updated_at)
@@ -134,7 +134,7 @@ impl WalletRepository for PgWalletRepository {
 
     async fn record_transaction(&self, tx: &WalletTransaction) -> anyhow::Result<()> {
         let tx_type = tx_type_str(tx.transaction_type);
-        let currency = format!("{:?}", tx.amount.currency);
+        let currency = tx.amount.currency.to_string();
         sqlx::query(
             "INSERT INTO payments.wallet_transactions
                  (id, wallet_id, tenant_id, transaction_type, amount_cents, currency,

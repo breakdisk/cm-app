@@ -5,21 +5,31 @@
  * LIVE:  Hub cards — GET /v1/hubs (hub-ops service). Capacity tier is
  *        derived client-side from current_load / capacity.
  * LIVE:  KPI totals — computed from the hub list (not a backend call).
- * STATIC: Hourly throughput chart + dock schedule — hub-ops doesn't
- *        yet expose time-bucketed throughput or dock scheduling. Left
- *        as placeholders with 0-valued charts when no data; replace
- *        with real endpoints when those ship.
+ * LIVE:  Create hub — POST /v1/hubs (hub-ops service).
+ * STATIC: Hourly throughput chart — hub-ops doesn't yet expose
+ *        time-bucketed throughput. Left as a pending placeholder with
+ *        0-valued bars; replace with real data when that endpoint ships.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
+import { toast } from "sonner";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
-import { Building2, Package, Truck, AlertTriangle, FileText, RefreshCw, X, MapPin, Layers, ExternalLink, Boxes } from "lucide-react";
-import { createHubsApi, hubIdOf, hubUtilization, hubStatusTier, type Hub, type HubStatusTier, type HubThroughputBucket } from "@/lib/api/hubs";
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+} from "recharts";
+import {
+  Building2, Package, Truck, AlertTriangle, FileText, RefreshCw,
+  X, MapPin, Layers, ExternalLink, Boxes, Plus, Loader2, ChevronDown,
+} from "lucide-react";
+import {
+  createHubsApi, hubIdOf, hubUtilization, hubStatusTier,
+  type Hub, type HubStatusTier, type HubThroughputBucket, type CreateHubBody,
+} from "@/lib/api/hubs";
+import { cn } from "@/lib/utils";
 
 const STATUS_CONFIG: Record<HubStatusTier, { label: string; variant: "green" | "amber" | "red"; color: string }> = {
   normal:   { label: "Normal",   variant: "green", color: "#00FF88" },
@@ -34,6 +44,200 @@ const THROUGHPUT_FALLBACK: HubThroughputBucket[] = [
   { hour: "12PM", sorted: 0, inducted: 0 },
   { hour: "2PM",  sorted: 0, inducted: 0 },
 ];
+
+// ── Create Hub Modal ──────────────────────────────────────────────────────────
+
+interface CreateHubModalProps {
+  onClose:  () => void;
+  onCreate: (body: CreateHubBody) => Promise<void>;
+}
+
+const BLANK_HUB = {
+  name: "", address: "", lat: "", lng: "",
+  capacity: "", zones: "",
+};
+
+function CreateHubModal({ onClose, onCreate }: CreateHubModalProps) {
+  const [form,   setForm]   = useState(BLANK_HUB);
+  const [saving, setSaving] = useState(false);
+  const [error,  setError]  = useState<string | null>(null);
+
+  function set(k: keyof typeof BLANK_HUB) {
+    return (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+      setForm(f => ({ ...f, [k]: e.target.value }));
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+
+    const lat = parseFloat(form.lat);
+    const lng = parseFloat(form.lng);
+    const cap = parseInt(form.capacity, 10);
+
+    if (!form.name.trim())          { setError("Hub name is required."); return; }
+    if (!form.address.trim())       { setError("Address is required."); return; }
+    if (isNaN(lat) || isNaN(lng))   { setError("Lat/Lng must be valid decimal numbers."); return; }
+    if (isNaN(cap) || cap <= 0)     { setError("Capacity must be a positive integer."); return; }
+
+    const zones = form.zones
+      .split(",")
+      .map(z => z.trim())
+      .filter(Boolean);
+
+    setSaving(true);
+    try {
+      await onCreate({ name: form.name.trim(), address: form.address.trim(), lat, lng, capacity: cap, serving_zones: zones });
+      onClose();
+    } catch (err) {
+      setError((err as { message?: string })?.message ?? "Failed to create hub.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      <motion.div
+        initial={{ opacity: 0, y: 16, scale: 0.97 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 16, scale: 0.97 }}
+        transition={{ type: "spring", damping: 28, stiffness: 260 }}
+        className="relative w-full max-w-lg bg-[#0d1422] border border-glass-border rounded-2xl shadow-2xl overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-glass-border">
+          <div className="flex items-center gap-2">
+            <Building2 size={16} className="text-purple-plasma" />
+            <h2 className="font-heading text-sm font-bold text-white">New Hub</h2>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-glass-200 transition-colors">
+            <X size={14} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          {error && (
+            <p className="text-xs font-mono text-red-signal bg-red-500/10 border border-red-500/20 rounded-xl px-3 py-2">
+              {error}
+            </p>
+          )}
+
+          {/* Name */}
+          <div>
+            <label className="block text-[11px] font-mono text-white/40 uppercase tracking-wider mb-1.5">
+              Hub Name <span className="text-red-signal">*</span>
+            </label>
+            <input
+              value={form.name}
+              onChange={set("name")}
+              placeholder="e.g. Manila South Hub"
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/20 focus:border-cyan-500 focus:outline-none transition-colors"
+            />
+          </div>
+
+          {/* Address */}
+          <div>
+            <label className="block text-[11px] font-mono text-white/40 uppercase tracking-wider mb-1.5">
+              Address <span className="text-red-signal">*</span>
+            </label>
+            <input
+              value={form.address}
+              onChange={set("address")}
+              placeholder="Full street address"
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/20 focus:border-cyan-500 focus:outline-none transition-colors"
+            />
+          </div>
+
+          {/* Lat / Lng */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[11px] font-mono text-white/40 uppercase tracking-wider mb-1.5">
+                Latitude <span className="text-red-signal">*</span>
+              </label>
+              <input
+                value={form.lat}
+                onChange={set("lat")}
+                placeholder="14.5995"
+                type="number"
+                step="any"
+                className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/20 focus:border-cyan-500 focus:outline-none transition-colors"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-mono text-white/40 uppercase tracking-wider mb-1.5">
+                Longitude <span className="text-red-signal">*</span>
+              </label>
+              <input
+                value={form.lng}
+                onChange={set("lng")}
+                placeholder="120.9842"
+                type="number"
+                step="any"
+                className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/20 focus:border-cyan-500 focus:outline-none transition-colors"
+              />
+            </div>
+          </div>
+
+          {/* Capacity */}
+          <div>
+            <label className="block text-[11px] font-mono text-white/40 uppercase tracking-wider mb-1.5">
+              Parcel Capacity <span className="text-red-signal">*</span>
+            </label>
+            <input
+              value={form.capacity}
+              onChange={set("capacity")}
+              placeholder="e.g. 5000"
+              type="number"
+              min={1}
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/20 focus:border-cyan-500 focus:outline-none transition-colors"
+            />
+          </div>
+
+          {/* Zones */}
+          <div>
+            <label className="block text-[11px] font-mono text-white/40 uppercase tracking-wider mb-1.5">
+              Serving Zones <span className="text-white/20 normal-case">(comma-separated)</span>
+            </label>
+            <input
+              value={form.zones}
+              onChange={set("zones")}
+              placeholder="e.g. Makati, Pasay, Paranaque"
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/20 focus:border-cyan-500 focus:outline-none transition-colors"
+            />
+          </div>
+
+          {/* Footer */}
+          <div className="flex items-center justify-end gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/60 hover:text-white transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="flex items-center gap-2 rounded-xl border border-cyan-500/50 bg-cyan-500/10 px-5 py-2 text-sm font-semibold text-cyan-300 hover:bg-cyan-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            >
+              {saving ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
+              {saving ? "Creating…" : "Create Hub"}
+            </button>
+          </div>
+        </form>
+      </motion.div>
+    </motion.div>
+  );
+}
 
 // ── Hub Detail Drawer ─────────────────────────────────────────────────────────
 function HubDetailDrawer({ hub, onClose }: { hub: Hub; onClose: () => void }) {
@@ -209,13 +413,22 @@ function HubDetailDrawer({ hub, onClose }: { hub: Hub; onClose: () => void }) {
 }
 
 export default function HubOpsPage() {
-  const api = useMemo(() => createHubsApi(), []);
+  const api    = useMemo(() => createHubsApi(), []);
+  const router = useRouter();
 
   const [hubs, setHubs]               = useState<Hub[]>([]);
   const [loading, setLoading]         = useState(true);
   const [error, setError]             = useState<string | null>(null);
   const [throughput, setThroughput]   = useState<HubThroughputBucket[]>(THROUGHPUT_FALLBACK);
   const [throughputLive, setThroughputLive] = useState(false);
+  const [drawerHub, setDrawerHub]     = useState<Hub | null>(null);
+  const [createOpen, setCreateOpen]   = useState(false);
+
+  // Keep drawer contents in sync when the hub list refreshes (60s poll).
+  const drawerHubId = useRef<string | null>(null);
+  useEffect(() => {
+    drawerHubId.current = drawerHub ? hubIdOf(drawerHub) : null;
+  }, [drawerHub]);
 
   const load = useCallback(async () => {
     setError(null);
@@ -223,10 +436,18 @@ export default function HubOpsPage() {
       const [list] = await Promise.all([
         api.list(),
         api.throughputToday()
-          .then((buckets) => { setThroughput(buckets.length > 0 ? buckets : THROUGHPUT_FALLBACK); setThroughputLive(true); })
+          .then((buckets) => {
+            setThroughput(buckets.length > 0 ? buckets : THROUGHPUT_FALLBACK);
+            setThroughputLive(true);
+          })
           .catch(() => { /* endpoint not yet deployed — keep fallback zeros */ }),
       ]);
       setHubs(list);
+      // Re-sync drawer if it's open (list may have fresh current_load).
+      if (drawerHubId.current) {
+        const fresh = list.find(h => hubIdOf(h) === drawerHubId.current);
+        if (fresh) setDrawerHub(fresh);
+      }
     } catch (e) {
       const err = e as { message?: string };
       setError(err?.message ?? "Failed to load hubs");
@@ -237,13 +458,17 @@ export default function HubOpsPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Poll every 60s — hub current_load changes as parcels are inducted and sorted.
+  // Poll every 60 s — hub current_load changes as parcels are inducted/sorted.
   useEffect(() => {
     const id = setInterval(load, 60_000);
     return () => clearInterval(id);
   }, [load]);
 
-  const [drawerHub, setDrawerHub] = useState<Hub | null>(null);
+  async function handleCreateHub(body: CreateHubBody) {
+    const hub = await api.create(body);
+    setHubs(prev => [...prev, hub]);
+    toast.success(`Hub "${hub.name}" created successfully.`);
+  }
 
   const kpis = useMemo(() => {
     const inHub     = hubs.reduce((n, h) => n + h.current_load, 0);
@@ -286,6 +511,12 @@ export default function HubOpsPage() {
           >
             <RefreshCw size={12} />
           </button>
+          <button
+            onClick={() => setCreateOpen(true)}
+            className="flex items-center gap-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/20 transition-colors"
+          >
+            <Plus size={12} /> New Hub
+          </button>
           <NeonBadge variant="green" dot>Live</NeonBadge>
         </div>
       </motion.div>
@@ -317,8 +548,15 @@ export default function HubOpsPage() {
       ) : hubs.length === 0 ? (
         <motion.div variants={variants.fadeInUp}>
           <GlassCard className="text-center py-10">
+            <Building2 size={36} className="mx-auto mb-3 text-white/20" />
             <p className="text-sm text-white/60 font-mono">No hubs configured yet.</p>
-            <p className="text-xs text-white/30 font-mono mt-1">Create a hub via POST /v1/hubs or contact ops.</p>
+            <p className="text-xs text-white/30 font-mono mt-1 mb-4">Create your first hub to start managing operations.</p>
+            <button
+              onClick={() => setCreateOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-500/40 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-300 hover:bg-cyan-500/20 transition-colors"
+            >
+              <Plus size={14} /> Create Hub
+            </button>
           </GlassCard>
         </motion.div>
       ) : (
@@ -370,15 +608,25 @@ export default function HubOpsPage() {
                       <AlertTriangle size={10} /> Near capacity
                     </div>
                   )}
-                  {/* Cross-portal: manifests (daily pickup/delivery lists) live in partner-portal */}
-                  <a
-                    href={`/partner/manifests?hub=${encodeURIComponent(id)}`}
-                    title="Open hub manifests in Partner Portal"
-                    onClick={(e) => e.stopPropagation()}
-                    className="ml-auto inline-flex items-center gap-1 rounded-md border border-glass-border bg-glass-100 px-1.5 py-0.5 text-2xs font-mono text-white/50 hover:border-cyan-neon/40 hover:text-cyan-neon transition-colors"
-                  >
-                    <FileText size={9} /> Manifests
-                  </a>
+                  <div className="ml-auto flex items-center gap-1.5">
+                    {/* 3D Load Planner — one-click from the hub card */}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); router.push(`/hubs/${id}?tab=plan-load`); }}
+                      title="Open 3D Load Planner"
+                      className="inline-flex items-center gap-1 rounded-md border border-cyan-neon/30 bg-cyan-neon/5 px-1.5 py-0.5 text-2xs font-mono text-cyan-neon/70 hover:border-cyan-neon/60 hover:text-cyan-neon transition-colors"
+                    >
+                      <Boxes size={9} /> 3D Plan
+                    </button>
+                    {/* Cross-portal: manifests (daily pickup/delivery lists) live in partner-portal */}
+                    <a
+                      href={`/partner/manifests?hub=${encodeURIComponent(id)}`}
+                      title="Open hub manifests in Partner Portal"
+                      onClick={(e) => e.stopPropagation()}
+                      className="inline-flex items-center gap-1 rounded-md border border-glass-border bg-glass-100 px-1.5 py-0.5 text-2xs font-mono text-white/50 hover:border-cyan-neon/40 hover:text-cyan-neon transition-colors"
+                    >
+                      <FileText size={9} /> Manifests
+                    </a>
+                  </div>
                 </div>
               </GlassCard>
             );
@@ -390,6 +638,16 @@ export default function HubOpsPage() {
       <AnimatePresence>
         {drawerHub && (
           <HubDetailDrawer hub={drawerHub} onClose={() => setDrawerHub(null)} />
+        )}
+      </AnimatePresence>
+
+      {/* Create Hub Modal */}
+      <AnimatePresence>
+        {createOpen && (
+          <CreateHubModal
+            onClose={() => setCreateOpen(false)}
+            onCreate={handleCreateHub}
+          />
         )}
       </AnimatePresence>
 

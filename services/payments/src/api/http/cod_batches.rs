@@ -85,7 +85,7 @@ fn render_batch(b: &CodRemittanceBatch) -> serde_json::Value {
         "tenant_id":          b.tenant_id.inner(),
         "merchant_id":        b.merchant_id.inner(),
         "cutoff_date":        b.cutoff_date.to_string(),
-        "currency":           format!("{:?}", b.currency),
+        "currency":           b.currency.to_string(),
         "cod_count":          b.cod_count,
         "gross_cents":        b.gross_cents,
         "platform_fee_cents": b.platform_fee_cents,

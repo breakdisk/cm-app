@@ -162,6 +162,8 @@ impl LocationService {
             cod_commission_rate_bps: 0,
             zone:                    None,
             vehicle_type:            None,
+            carrier_id:              None,
+            hub_id:                  None,
             created_at:              now,
             updated_at:              now,
         };

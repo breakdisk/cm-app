@@ -54,16 +54,22 @@ data class HomeUiState(
      *  the first successful fetch completes. Null while loading or if the
      *  service is unreachable (banner stays hidden on error — non-blocking). */
     val complianceStatus: String? = null,
+    /** True when the driver has the hub_scanner role. Gates Hub Mode button visibility. */
+    val isHubScanner: Boolean = false,
+    /** Hub UUID pre-filled into HubScanScreen. Empty string when no hub is assigned. */
+    val hubId: String = "",
 )
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val repo: ShiftRepository,
-    private val api: DriverOpsApiService,
+    private val repo:          ShiftRepository,
+    private val api:           DriverOpsApiService,
     private val complianceApi: ComplianceApiService,
-    private val locationRepo: LocationRepository,
-    private val syncQueueDao: SyncQueueDao,
+    private val identityApi:   io.logisticos.driver.core.network.service.IdentityApiService,
+    private val locationRepo:  LocationRepository,
+    private val syncQueueDao:  SyncQueueDao,
+    private val sessionManager: io.logisticos.driver.core.network.auth.SessionManager,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(HomeUiState())
@@ -89,6 +95,13 @@ class HomeViewModel @Inject constructor(
         collectSyncBus()
         collectLocationUpdates()
         loadComplianceStatus()
+        // Phase 1 — instant render from cache
+        _uiState.update { it.copy(
+            isHubScanner = sessionManager.isHubScanner(),
+            hubId        = sessionManager.getHubId() ?: "",
+        ) }
+        // Phase 2 — silent background re-sync
+        refreshHubProfile()
     }
 
     private fun loadComplianceStatus() {
@@ -98,6 +111,27 @@ class HomeViewModel @Inject constructor(
                     _uiState.update { it.copy(complianceStatus = envelope.data.profile.overallStatus) }
                 }
             // On failure, complianceStatus stays null — banner stays hidden.
+        }
+    }
+
+    /**
+     * Silently re-fetches role and hub_id from the backend.
+     * Called in init{} and from syncShift() so it fires on every foreground —
+     * mid-shift role changes take effect without re-login.
+     */
+    private fun refreshHubProfile() {
+        viewModelScope.launch {
+            runCatching { identityApi.getMe() }
+                .onSuccess { me ->
+                    val isHub = me.data.roles.contains("hub_scanner")
+                    sessionManager.saveIsHubScanner(isHub)
+                    _uiState.update { it.copy(isHubScanner = isHub) }
+                }
+            runCatching { api.getMyProfile() }
+                .onSuccess { r ->
+                    sessionManager.saveHubId(r.data.hubId)
+                    _uiState.update { it.copy(hubId = r.data.hubId ?: "") }
+                }
         }
     }
 
@@ -162,6 +196,7 @@ class HomeViewModel @Inject constructor(
                 .onSuccess { _uiState.update { it.copy(isOfflineMode = false) } }
             _uiState.update { it.copy(isLoading = false) }
             loadComplianceStatus()
+            refreshHubProfile()
         }
     }
 

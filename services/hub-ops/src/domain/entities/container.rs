@@ -145,11 +145,103 @@ impl Container {
         Ok(())
     }
 
+    /// Sea/air only: InTransit → ArrivedAtPort. Emits `hub.container.arrived_at_port`.
+    pub fn arrive_at_port(&mut self) -> Result<(), ContainerError> {
+        if self.transport_mode == TransportMode::Road {
+            return Err(ContainerError::InvalidTransition {
+                from: format!("Road mode ({:?})", self.status),
+                to:   "ArrivedAtPort".to_string(),
+            });
+        }
+        if self.status != ContainerStatus::InTransit {
+            return Err(ContainerError::InvalidTransition {
+                from: format!("{:?}", self.status),
+                to:   "ArrivedAtPort".to_string(),
+            });
+        }
+        let now = Utc::now();
+        self.status     = ContainerStatus::ArrivedAtPort;
+        self.arrived_at = Some(now);
+        self.updated_at = now;
+        Ok(())
+    }
+
+    /// ArrivedAtPort → Customs. Emits `hub.container.customs_hold`.
+    pub fn enter_customs(&mut self) -> Result<(), ContainerError> {
+        if self.status != ContainerStatus::ArrivedAtPort {
+            return Err(ContainerError::InvalidTransition {
+                from: format!("{:?}", self.status),
+                to:   "Customs".to_string(),
+            });
+        }
+        self.status     = ContainerStatus::Customs;
+        self.updated_at = Utc::now();
+        Ok(())
+    }
+
+    /// Customs → Released. The `cleared_by` audit is recorded on the
+    /// `HubTransferManifest` by the service layer (mandatory human gate).
+    /// Emits `hub.container.customs_cleared`.
+    pub fn clear_customs(&mut self) -> Result<(), ContainerError> {
+        if self.status != ContainerStatus::Customs {
+            return Err(ContainerError::InvalidTransition {
+                from: format!("{:?}", self.status),
+                to:   "Released".to_string(),
+            });
+        }
+        self.status     = ContainerStatus::Released;
+        self.updated_at = Utc::now();
+        Ok(())
+    }
+
+    /// Road mode only: InTransit → Released (skips ArrivedAtPort/Customs).
+    /// Emits `hub.container.released_domestic`.
+    pub fn release_domestic(&mut self) -> Result<(), ContainerError> {
+        if self.transport_mode != TransportMode::Road {
+            return Err(ContainerError::InvalidTransition {
+                from: format!("{:?} mode", self.transport_mode),
+                to:   "Released (domestic)".to_string(),
+            });
+        }
+        if self.status != ContainerStatus::InTransit {
+            return Err(ContainerError::InvalidTransition {
+                from: format!("{:?}", self.status),
+                to:   "Released".to_string(),
+            });
+        }
+        self.status     = ContainerStatus::Released;
+        self.updated_at = Utc::now();
+        Ok(())
+    }
+
+    /// Released → Deconsolidated (terminal). Returns all loose `ChildAwb`s for
+    /// routing fan-out; pallet pieces are resolved by the service layer from
+    /// pallet records. Emits `hub.container.deconsolidated`.
+    pub fn deconsolidate(&mut self) -> Result<Vec<ChildAwb>, ContainerError> {
+        if self.status != ContainerStatus::Released {
+            return Err(ContainerError::InvalidTransition {
+                from: format!("{:?}", self.status),
+                to:   "Deconsolidated".to_string(),
+            });
+        }
+        self.status     = ContainerStatus::Deconsolidated;
+        self.updated_at = Utc::now();
+        Ok(self.loose_pieces.clone())
+    }
+
     pub fn pallet_count(&self) -> usize    { self.pallets.len() }
     pub fn loose_piece_count(&self) -> usize { self.loose_pieces.len() }
 
     fn require_mutable(&self) -> Result<(), ContainerError> {
-        if matches!(self.status, ContainerStatus::InTransit | ContainerStatus::Delivered | ContainerStatus::Customs | ContainerStatus::Released) {
+        if matches!(
+            self.status,
+            ContainerStatus::InTransit
+                | ContainerStatus::ArrivedAtPort
+                | ContainerStatus::Customs
+                | ContainerStatus::Released
+                | ContainerStatus::Deconsolidated
+                | ContainerStatus::Delivered
+        ) {
             return Err(ContainerError::AlreadyDeparted);
         }
         Ok(())
@@ -243,5 +335,73 @@ mod tests {
     fn cannot_manifest_empty_container() {
         let mut c = make_container();
         assert_eq!(c.finalise_manifest().unwrap_err(), ContainerError::Empty);
+    }
+
+    fn departed(mode: TransportMode) -> Container {
+        let mut c = Container::new(TenantId::new(), mode, HubId::new(), HubId::new());
+        c.load_pallet(PalletId::new(), vec![make_awb(1)]).unwrap();
+        c.finalise_manifest().unwrap();
+        c.depart(None).unwrap();
+        c
+    }
+
+    #[test]
+    fn cross_border_flow_in_transit_to_deconsolidated() {
+        let mut c = Container::new(TenantId::new(), TransportMode::SeaFcl, HubId::new(), HubId::new());
+        let master = make_awb(1);
+        c.load_loose_piece(make_child(&master, 1), master.clone()).unwrap();
+        c.finalise_manifest().unwrap();
+        c.depart(None).unwrap();
+
+        c.arrive_at_port().unwrap();
+        assert_eq!(c.status, ContainerStatus::ArrivedAtPort);
+        c.enter_customs().unwrap();
+        assert_eq!(c.status, ContainerStatus::Customs);
+        c.clear_customs().unwrap();
+        assert_eq!(c.status, ContainerStatus::Released);
+
+        let pieces = c.deconsolidate().unwrap();
+        assert_eq!(c.status, ContainerStatus::Deconsolidated);
+        assert_eq!(pieces.len(), 1);
+    }
+
+    #[test]
+    fn domestic_road_flow_in_transit_to_deconsolidated() {
+        let mut c = departed(TransportMode::Road);
+        c.release_domestic().unwrap();
+        assert_eq!(c.status, ContainerStatus::Released);
+        c.deconsolidate().unwrap();
+        assert_eq!(c.status, ContainerStatus::Deconsolidated);
+    }
+
+    #[test]
+    fn arrive_at_port_rejects_road_mode() {
+        let mut c = departed(TransportMode::Road);
+        assert!(c.arrive_at_port().is_err());
+    }
+
+    #[test]
+    fn release_domestic_rejects_sea_air_mode() {
+        let mut c = departed(TransportMode::SeaFcl);
+        assert!(c.release_domestic().is_err());
+    }
+
+    #[test]
+    fn enter_customs_requires_arrived_at_port() {
+        let mut c = departed(TransportMode::AirUld); // still InTransit
+        assert!(c.enter_customs().is_err());
+    }
+
+    #[test]
+    fn clear_customs_requires_customs_state() {
+        let mut c = departed(TransportMode::SeaFcl);
+        c.arrive_at_port().unwrap(); // ArrivedAtPort, not Customs
+        assert!(c.clear_customs().is_err());
+    }
+
+    #[test]
+    fn deconsolidate_requires_released() {
+        let mut c = departed(TransportMode::Road); // InTransit
+        assert!(c.deconsolidate().is_err());
     }
 }

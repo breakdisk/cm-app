@@ -28,6 +28,8 @@ import io.logisticos.driver.core.network.service.AttachSignatureRequest
 import io.logisticos.driver.core.network.service.BulkLocationRequest
 import io.logisticos.driver.core.network.service.CompleteTaskRequest
 import io.logisticos.driver.core.network.service.DriverOpsApiService
+import io.logisticos.driver.core.network.service.HubOpsApiService
+import io.logisticos.driver.core.network.service.RecordScanRequest
 import io.logisticos.driver.core.network.service.FailTaskRequest
 import io.logisticos.driver.core.network.service.GetUploadUrlRequest
 import io.logisticos.driver.core.network.service.InitiatePopRequest
@@ -63,6 +65,7 @@ class OutboundSyncWorker @AssistedInject constructor(
     private val locationDao: LocationBreadcrumbDao,
     private val driverOpsApi: DriverOpsApiService,
     private val podApi: PodApiService,
+    private val hubOpsApi: HubOpsApiService,
     private val okHttpClient: OkHttpClient,
     private val sessionManager: SessionManager,
 ) : CoroutineWorker(context, workerParams) {
@@ -110,7 +113,8 @@ class OutboundSyncWorker @AssistedInject constructor(
                     "IN_PROGRESS" -> driverOpsApi.startTask(taskId)
                     "COMPLETED"   -> {
                         val podId = payload["podId"]?.jsonPrimitive?.contentOrNull
-                        driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId))
+                        val popId = payload["popId"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                        driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId, popId = popId))
                     }
                     "FAILED"      -> {
                         driverOpsApi.failTask(taskId, FailTaskRequest(reason = reason ?: "unknown"))
@@ -280,6 +284,15 @@ class OutboundSyncWorker @AssistedInject constructor(
                 val pickupLng  = payload["pickupLng"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()  ?: captureLng
                 val deviceTs   = payload["deviceTimestamp"]?.jsonPrimitive?.contentOrNull
                 val photoPath  = payload["photoPath"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                // AR dimensioning carried through the offline replay (blank → null).
+                fun dimD(k: String) = payload[k]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.toDoubleOrNull()
+                val verifiedLengthCm   = dimD("verifiedLengthCm")
+                val verifiedWidthCm    = dimD("verifiedWidthCm")
+                val verifiedHeightCm   = dimD("verifiedHeightCm")
+                val verifiedCbm        = dimD("verifiedCbm")
+                val volumetricWeightKg = dimD("volumetricWeightKg")
+                val boxQuantity        = payload["boxQuantity"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.toIntOrNull()
+                val dimensionIntegrity = payload["dimensionIntegrity"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
 
                 val popResp = podApi.initiatePop(
                     InitiatePopRequest(
@@ -337,23 +350,54 @@ class OutboundSyncWorker @AssistedInject constructor(
                 podApi.submitPop(
                     popId,
                     SubmitPopRequest(
-                        scannedBarcode  = scannedBarcode,
-                        deviceTimestamp = deviceTs,
-                        photoS3Key      = photoS3Key,
-                        photoSizeBytes  = photoSizeBytes,
+                        scannedBarcode     = scannedBarcode,
+                        deviceTimestamp    = deviceTs,
+                        photoS3Key         = photoS3Key,
+                        photoSizeBytes     = photoSizeBytes,
+                        verifiedLengthCm   = verifiedLengthCm,
+                        verifiedWidthCm    = verifiedWidthCm,
+                        verifiedHeightCm   = verifiedHeightCm,
+                        verifiedCbm        = verifiedCbm,
+                        volumetricWeightKg = volumetricWeightKg,
+                        boxQuantity        = boxQuantity,
+                        dimensionIntegrity = dimensionIntegrity,
                     )
                 )
                 android.util.Log.d(
                     "OutboundSyncWorker",
                     "POP submitted: pop_id=$popId task=$taskId has_photo=${photoS3Key != null}"
                 )
+
+                // Complete the task with the now-known pop_id. If the inline call fails,
+                // enqueue TASK_COMPLETE so the pop_id is carried through on retry.
+                // This mirrors the POD_SUBMIT → TASK_COMPLETE pattern for delivery tasks.
+                try {
+                    driverOpsApi.completeTask(taskId, CompleteTaskRequest(popId = popId))
+                    taskDao.markSynced(taskId)
+                } catch (e: Exception) {
+                    android.util.Log.w("OutboundSyncWorker", "completeTask after POP_SUBMIT failed — queuing TASK_COMPLETE: ${e.message}")
+                    syncQueueDao.enqueue(
+                        SyncQueueEntity(
+                            action      = SyncAction.TASK_COMPLETE,
+                            payloadJson = Json.encodeToString(mapOf("taskId" to taskId, "popId" to popId)),
+                            createdAt   = System.currentTimeMillis(),
+                        )
+                    )
+                    OutboundSyncWorker.kickOnce(applicationContext)
+                }
             }
 
             SyncAction.TASK_COMPLETE -> {
                 val taskId = payload["taskId"]?.jsonPrimitive?.contentOrNull
                     ?: run { syncQueueDao.remove(item.id); return }
                 val podId = payload["podId"]?.jsonPrimitive?.contentOrNull
-                    ?: run { syncQueueDao.remove(item.id); return }
+                val popId = payload["popId"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+
+                // Either a pod_id (delivery) or pop_id (pickup) is required.
+                if (podId == null && popId == null) {
+                    syncQueueDao.remove(item.id)
+                    return
+                }
 
                 // After 7 days with no success, the backend may have auto-cancelled the task.
                 // Mark locally as permanently failed so the driver knows to contact support.
@@ -364,10 +408,15 @@ class OutboundSyncWorker @AssistedInject constructor(
                     return
                 }
 
-                driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId))
+                driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId, popId = popId))
                 taskDao.markSynced(taskId)
-                taskDao.setPodId(taskId, podId, System.currentTimeMillis())
-                podDao.markSynced(taskId)
+                val now = System.currentTimeMillis()
+                if (podId != null) {
+                    taskDao.setPodId(taskId, podId, now)
+                    podDao.markSynced(taskId)
+                } else if (popId != null) {
+                    taskDao.setPopId(taskId, popId, now)
+                }
             }
 
             SyncAction.SHIFT_START -> {
@@ -381,6 +430,35 @@ class OutboundSyncWorker @AssistedInject constructor(
             SyncAction.SHIFT_END -> {
                 // Mirror of SHIFT_START — retry POST /v1/drivers/go-offline.
                 driverOpsApi.goOffline()
+            }
+
+            SyncAction.HUB_SCAN -> {
+                // Replay a hub chain-of-custody scan that was queued while offline.
+                // device_timestamp is preserved from the original scan moment — not re-sampled.
+                val hubId      = payload["hub_id"]?.jsonPrimitive?.contentOrNull ?: run { syncQueueDao.remove(item.id); return }
+                val pieceAwb   = payload["piece_awb"]?.jsonPrimitive?.contentOrNull ?: run { syncQueueDao.remove(item.id); return }
+                val masterAwb  = payload["master_awb"]?.jsonPrimitive?.contentOrNull ?: run { syncQueueDao.remove(item.id); return }
+                val shipmentId = payload["shipment_id"]?.jsonPrimitive?.contentOrNull ?: run { syncQueueDao.remove(item.id); return }
+                val scanType   = payload["scan_type"]?.jsonPrimitive?.contentOrNull ?: run { syncQueueDao.remove(item.id); return }
+                val deviceTs   = payload["device_timestamp"]?.jsonPrimitive?.contentOrNull ?: run { syncQueueDao.remove(item.id); return }
+                val palletId   = payload["pallet_id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                val containerId = payload["container_id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                val exception  = payload["exception"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+
+                hubOpsApi.recordScan(
+                    RecordScanRequest(
+                        hubId           = hubId,
+                        pieceAwb        = pieceAwb,
+                        masterAwb       = masterAwb,
+                        shipmentId      = shipmentId,
+                        scanType        = scanType,
+                        deviceTimestamp = deviceTs,
+                        palletId        = palletId,
+                        containerId     = containerId,
+                        exception       = exception,
+                    )
+                )
+                android.util.Log.d("OutboundSyncWorker", "HUB_SCAN replayed: type=$scanType awb=$pieceAwb")
             }
 
             // Any future SyncAction variants without a handler yet.

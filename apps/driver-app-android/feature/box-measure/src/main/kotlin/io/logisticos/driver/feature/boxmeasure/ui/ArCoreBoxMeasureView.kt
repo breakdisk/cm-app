@@ -8,13 +8,18 @@ import android.opengl.GLSurfaceView
 import android.opengl.Matrix
 import android.os.Handler
 import android.os.Looper
-import android.view.MotionEvent
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.viewinterop.AndroidView
 import com.google.ar.core.*
 import com.google.ar.core.exceptions.*
 import io.logisticos.driver.feature.boxmeasure.presentation.BoxMeasureViewModel
+import io.logisticos.driver.feature.boxmeasure.presentation.DimAxis
+import io.logisticos.driver.feature.boxmeasure.presentation.DimLabel
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -58,33 +63,57 @@ fun ArCoreBoxMeasureView(
 ) {
     val tapQueue   = remember { ConcurrentLinkedQueue<Pair<Float, Float>>() }
     val rendererRef = remember { mutableStateOf<ArRenderer?>(null) }
+    val resetToken = viewModel.uiState.collectAsState().value.resetToken
 
     DisposableEffect(Unit) {
         onDispose { rendererRef.value?.closeOnGlThread() }
     }
 
-    AndroidView(
-        modifier = modifier,
-        factory = { ctx ->
-            ArRenderer(
-                ctx                  = ctx,
-                tapQueue             = tapQueue,
-                onSessionReady       = { viewModel.onArSessionReady() },
-                onSessionError       = { msg -> viewModel.onArSessionError(msg) },
-                onMeasurementPoint   = { idx, x, y, z -> viewModel.onMeasurementPoint(idx, x, y, z) },
-                onMeasurementComplete = { l, w, h, conf -> viewModel.onMeasurementComplete(l, w, h, conf) },
-            ).also { rendererRef.value = it }.glView
-        },
-        update = { glView ->
-            glView.setOnTouchListener { _, event ->
-                if (event.action == MotionEvent.ACTION_UP &&
-                    viewModel.uiState.value.tapCount < 4) {
-                    tapQueue.offer(Pair(event.x, event.y))
-                }
-                true
-            }
+    // Re-measure: when the ViewModel bumps the reset token, drop the renderer's
+    // captured tap points and any queued taps so the next tap begins a fresh box.
+    LaunchedEffect(resetToken) {
+        if (resetToken > 0) {
+            tapQueue.clear()
+            rendererRef.value?.clearPoints()
         }
-    )
+    }
+
+    Box(modifier = modifier) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                ArRenderer(
+                    ctx                  = ctx,
+                    tapQueue             = tapQueue,
+                    onSessionReady       = { viewModel.onArSessionReady() },
+                    onSessionError       = { msg -> viewModel.onArSessionError(msg) },
+                    onMeasurementPoint   = { idx, x, y, z -> viewModel.onMeasurementPoint(idx, x, y, z) },
+                    onMeasurementComplete = { l, w, h, conf -> viewModel.onMeasurementComplete(l, w, h, conf) },
+                    onLiveDistance       = { cm -> viewModel.onLiveDistance(cm) },
+                    onDimLabels          = { labels -> viewModel.onDimLabels(labels) },
+                ).also { rendererRef.value = it }.glView
+            },
+        )
+
+        // Transparent tap-capture layer ON TOP of the GLSurfaceView. A dedicated
+        // Compose node reliably receives gestures in every layout — unlike
+        // `pointerInput` placed on the AndroidView itself, where interop touch
+        // dispatch to the embedded GLSurfaceView is unreliable and left tap-to-place
+        // dead. `detectTapGestures` ignores vertical drags, so the parent scroll
+        // still works when the viewport is inline. `offset` is in local pixels,
+        // matching the GL display geometry passed to `frame.hitTest`.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures { offset ->
+                        if (viewModel.uiState.value.tapCount < 4) {
+                            tapQueue.offer(Pair(offset.x, offset.y))
+                        }
+                    }
+                }
+        )
+    }
 }
 
 // ── Renderer ───────────────────────────────────────────────────────────────────
@@ -96,6 +125,10 @@ private class ArRenderer(
     private val onSessionError: (String) -> Unit,
     private val onMeasurementPoint: (index: Int, x: Float, y: Float, z: Float) -> Unit,
     private val onMeasurementComplete: (l: Double, w: Double, h: Double, confidence: Double) -> Unit,
+    /** Euclidean distance in cm from the last placed anchor to the current aim point.
+     *  Null when no anchor is placed yet or when the centre hit-test misses a plane. */
+    private val onLiveDistance: (cm: Double?) -> Unit,
+    private val onDimLabels: (labels: List<DimLabel>) -> Unit,
 ) : GLSurfaceView.Renderer {
 
     val glView: GLSurfaceView = GLSurfaceView(ctx).also { surface ->
@@ -111,6 +144,18 @@ private class ArRenderer(
 
     // World-space tap points: p0..p3 owned exclusively by the GL thread.
     private val worldPts = mutableListOf<FloatArray>()
+
+    // Viewport size (set in onSurfaceChanged) + reticle throttle. Used to hit-test
+    // the screen centre each frame and report live X/Y/Z under the reticle.
+    private var viewW = 0
+    private var viewH = 0
+    private var lastReticleMs = 0L
+
+    // Dimension-label projection: scratch vectors + throttle for posting the 2D
+    // screen positions of the cuboid edge midpoints to Compose (the floating chips).
+    private val worldTmp = FloatArray(4)
+    private val clipTmp  = FloatArray(4)
+    private var lastLabelMs = 0L
 
     // ── Camera background ──────────────────────────────────────────────────────
 
@@ -133,9 +178,31 @@ private class ArRenderer(
     private var markerColorUniform  = 0
     private var markerPositionAttr  = 0
 
+    // ── Face (semi-transparent surface) shader ─────────────────────────────
+    // Separate from markerProgram — no gl_PointCoord discard so GL_TRIANGLE_FAN
+    // fragments are never culled by the circular-dot clip in the marker shader.
+    private var faceProgram         = 0
+    private var faceMvpUniform      = 0
+    private var faceColorUniform    = 0
+    private var facePositionAttr    = 0
+
+    // ── Grid (spatial-mapping dots) shader ─────────────────────────────────
+    // Fixed 3-px point size — the adaptive size from markerProgram would make
+    // distant grid dots unreadably large or nearby ones bloated.
+    private var gridProgram         = 0
+    private var gridMvpUniform      = 0
+    private var gridColorUniform    = 0
+    private var gridPositionAttr    = 0
+
     // Reusable scratch buffer: avoids allocating per-draw on the GL thread.
     // Max usage: 6 floats (2 points × 3 components) for a line segment.
     private val scratchBuf: FloatBuffer = nativeFloatBuffer(6)
+
+    // Face quad buffer: 4 vertices × 3 components for GL_TRIANGLE_FAN face draws.
+    private val faceBuf: FloatBuffer = nativeFloatBuffer(12)
+
+    // Floor grid buffer: 21 × 21 = 441 dots × 3 components each.
+    private val gridBuf: FloatBuffer = nativeFloatBuffer(1323)
 
     private val projMatrix = FloatArray(16)
     private val viewMatrix = FloatArray(16)
@@ -168,6 +235,18 @@ private class ArRenderer(
         markerMvpUniform   = GLES20.glGetUniformLocation(markerProgram, "u_MVP")
         markerColorUniform = GLES20.glGetUniformLocation(markerProgram, "u_Color")
         markerPositionAttr = GLES20.glGetAttribLocation(markerProgram,  "a_Position")
+
+        // Face shader — identical vertex transform but no gl_PointCoord discard in frag.
+        faceProgram      = compileProgram(MARKER_VERT_SRC, FACE_FRAG_SRC)
+        faceMvpUniform   = GLES20.glGetUniformLocation(faceProgram, "u_MVP")
+        faceColorUniform = GLES20.glGetUniformLocation(faceProgram, "u_Color")
+        facePositionAttr = GLES20.glGetAttribLocation(faceProgram,  "a_Position")
+
+        // Grid shader — fixed 3-px points for the spatial-mapping dot matrix.
+        gridProgram      = compileProgram(GRID_VERT_SRC, MARKER_FRAG_SRC)
+        gridMvpUniform   = GLES20.glGetUniformLocation(gridProgram, "u_MVP")
+        gridColorUniform = GLES20.glGetUniformLocation(gridProgram, "u_Color")
+        gridPositionAttr = GLES20.glGetAttribLocation(gridProgram,  "a_Position")
 
         // ARCore session
         try {
@@ -202,6 +281,8 @@ private class ArRenderer(
     override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) {
         GLES20.glViewport(0, 0, w, h)
         session?.setDisplayGeometry(0, w, h)
+        viewW = w
+        viewH = h
         texCoordsReady = false
     }
 
@@ -214,6 +295,33 @@ private class ArRenderer(
 
         if (frame.camera.trackingState == TrackingState.TRACKING) {
             drawMarkersAndLines(frame)
+        }
+
+        // Live reticle: hit-test the screen centre and report world X/Y/Z (throttled
+        // to ~6 Hz to keep recomposition cheap). Drives the on-screen coordinate
+        // readout that replaces the static bullseye. Must run before the tap-poll
+        // early-return below, which fires every frame there is no pending tap.
+        val nowMs = System.currentTimeMillis()
+        if (nowMs - lastReticleMs >= 150 && worldPts.size < 4) {
+            lastReticleMs = nowMs
+            if (frame.camera.trackingState == TrackingState.TRACKING && viewW > 0) {
+                val cHits = frame.hitTest(viewW / 2f, viewH / 2f)
+                val cHit = cHits.firstOrNull { h ->
+                    h.trackable is Plane && (h.trackable as Plane).isPoseInPolygon(h.hitPose)
+                } ?: cHits.firstOrNull()
+                // Compute Euclidean distance from the last placed anchor to the aim point
+                // and convert to cm.  If no anchor is placed yet (worldPts empty) post null
+                // so the reticle shows the "Tap to place anchor" hint instead of a value.
+                val liveCm: Double? = if (cHit != null && worldPts.isNotEmpty()) {
+                    val cp   = cHit.hitPose
+                    val last = worldPts.last()
+                    val dx   = (cp.tx() - last[0]).toDouble()
+                    val dy   = (cp.ty() - last[1]).toDouble()
+                    val dz   = (cp.tz() - last[2]).toDouble()
+                    sqrt(dx * dx + dy * dy + dz * dz) * 100.0
+                } else null
+                mainHandler.post { onLiveDistance(liveCm) }
+            }
         }
 
         // Hit-test for the next pending tap
@@ -301,6 +409,9 @@ private class ArRenderer(
         GLES20.glUseProgram(markerProgram)
         GLES20.glUniformMatrix4fv(markerMvpUniform, 1, false, mvpMatrix, 0)
 
+        // ── Spatial floor grid (drawn first — behind all markers and edges) ───
+        drawFloorGrid()
+
         // ── Dots ──────────────────────────────────────────────────────────────
         worldPts.forEachIndexed { idx, pt ->
             GLES20.glUniform4fv(markerColorUniform, 1, DOT_COLORS[idx.coerceAtMost(3)], 0)
@@ -312,29 +423,285 @@ private class ArRenderer(
             GLES20.glDrawArrays(GLES20.GL_POINTS, 0, 1)
         }
 
-        // ── Lines between consecutive dots ────────────────────────────────────
-        if (worldPts.size >= 2) {
-            GLES20.glLineWidth(6f)
+        // ── Edges ─────────────────────────────────────────────────────────────
+        GLES20.glLineWidth(6f)
+        val corners = cuboidCorners()
+        if (corners == null) {
+            // Progressive feedback: colored polyline between consecutive taps.
             for (i in 0 until worldPts.size - 1) {
-                val p0 = worldPts[i]; val p1 = worldPts[i + 1]
-                GLES20.glUniform4fv(markerColorUniform, 1, LINE_COLORS[i.coerceAtMost(2)], 0)
-                scratchBuf.rewind()
-                scratchBuf.put(p0[0]); scratchBuf.put(p0[1]); scratchBuf.put(p0[2])
-                scratchBuf.put(p1[0]); scratchBuf.put(p1[1]); scratchBuf.put(p1[2])
-                scratchBuf.rewind()
-                GLES20.glVertexAttribPointer(markerPositionAttr, 3, GLES20.GL_FLOAT, false, 0, scratchBuf)
-                GLES20.glEnableVertexAttribArray(markerPositionAttr)
-                GLES20.glDrawArrays(GLES20.GL_LINES, 0, 2)
+                drawSolidEdge(worldPts[i], worldPts[i + 1], LINE_COLORS[i.coerceAtMost(2)])
             }
+            // Y guide: vertical green reference line + tick-ruler when the driver
+            // is about to place tap 4 (height measurement).
+            if (worldPts.size == 3) drawYGuide()
+        } else {
+            // Full AR dimensioning cuboid: semi-transparent faces first (depth no-write),
+            // then opaque colored wireframe on top.
+            drawBoxFaces(corners)
+            drawBoxWireframe(corners)
+            postDimLabels(corners)
         }
 
         GLES20.glDisableVertexAttribArray(markerPositionAttr)
+    }
+
+    /**
+     * Builds the 8 cuboid corners from the 4 measured taps, or null until 4 exist.
+     * worldPts = [p0 length-start, p1 length-end, p2 width-end, p3 height-top].
+     * Base rectangle is anchored at p1: length = p1→p0, width = p1→p2; the box is
+     * extruded vertically by the measured height |p3.y − p2.y|.
+     * Returns [r0, r1, r2, r3, r0t, r1t, r2t, r3t] (base CCW, then the top face).
+     */
+    private fun cuboidCorners(): Array<FloatArray>? {
+        if (worldPts.size < 4) return null
+        val p0 = worldPts[0]; val p1 = worldPts[1]; val p2 = worldPts[2]; val p3 = worldPts[3]
+        val lx = p0[0] - p1[0]; val ly = p0[1] - p1[1]; val lz = p0[2] - p1[2]   // length vec p1→p0
+        val wx = p2[0] - p1[0]; val wy = p2[1] - p1[1]; val wz = p2[2] - p1[2]   // width  vec p1→p2
+        val h  = abs(p3[1] - p2[1])                                              // height (vertical)
+        val r0 = floatArrayOf(p1[0],           p1[1],           p1[2])
+        val r1 = floatArrayOf(p1[0] + lx,      p1[1] + ly,      p1[2] + lz)      // = p0
+        val r2 = floatArrayOf(p1[0] + lx + wx, p1[1] + ly + wy, p1[2] + lz + wz)
+        val r3 = floatArrayOf(p1[0] + wx,      p1[1] + wy,      p1[2] + wz)      // = p2
+        fun up(p: FloatArray) = floatArrayOf(p[0], p[1] + h, p[2])
+        return arrayOf(r0, r1, r2, r3, up(r0), up(r1), up(r2), up(r3))
+    }
+
+    private fun drawBoxWireframe(c: Array<FloatArray>) {
+        val r0 = c[0]; val r1 = c[1]; val r2 = c[2]; val r3 = c[3]
+        val t0 = c[4]; val t1 = c[5]; val t2 = c[6]; val t3 = c[7]
+        // Measured edges — solid + colored.
+        drawSolidEdge(r0, r1, COL_LENGTH)   // length
+        drawSolidEdge(r3, r0, COL_WIDTH)    // width
+        drawSolidEdge(r3, t3, COL_HEIGHT)   // height (vertical at the width-end corner)
+        // Remaining 9 edges — dashed white silhouette.
+        drawDashedEdge(r1, r2); drawDashedEdge(r2, r3)
+        drawDashedEdge(t0, t1); drawDashedEdge(t1, t2); drawDashedEdge(t2, t3); drawDashedEdge(t3, t0)
+        drawDashedEdge(r0, t0); drawDashedEdge(r1, t1); drawDashedEdge(r2, t2)
+    }
+
+    private fun drawSolidEdge(a: FloatArray, b: FloatArray, color: FloatArray) {
+        GLES20.glUniform4fv(markerColorUniform, 1, color, 0)
+        scratchBuf.rewind()
+        scratchBuf.put(a[0]); scratchBuf.put(a[1]); scratchBuf.put(a[2])
+        scratchBuf.put(b[0]); scratchBuf.put(b[1]); scratchBuf.put(b[2])
+        scratchBuf.rewind()
+        GLES20.glVertexAttribPointer(markerPositionAttr, 3, GLES20.GL_FLOAT, false, 0, scratchBuf)
+        GLES20.glEnableVertexAttribArray(markerPositionAttr)
+        GLES20.glDrawArrays(GLES20.GL_LINES, 0, 2)
+    }
+
+    /** Dashed edge: draws alternate sub-segments along a→b in [color] (default: dashed white). */
+    private fun drawDashedEdge(a: FloatArray, b: FloatArray, color: FloatArray = COL_DASH) {
+        GLES20.glUniform4fv(markerColorUniform, 1, color, 0)
+        val dashes = 11
+        var i = 0
+        while (i < dashes) {
+            val s = i.toFloat() / dashes
+            val e = (i + 1).toFloat() / dashes
+            scratchBuf.rewind()
+            scratchBuf.put(a[0] + (b[0] - a[0]) * s); scratchBuf.put(a[1] + (b[1] - a[1]) * s); scratchBuf.put(a[2] + (b[2] - a[2]) * s)
+            scratchBuf.put(a[0] + (b[0] - a[0]) * e); scratchBuf.put(a[1] + (b[1] - a[1]) * e); scratchBuf.put(a[2] + (b[2] - a[2]) * e)
+            scratchBuf.rewind()
+            GLES20.glVertexAttribPointer(markerPositionAttr, 3, GLES20.GL_FLOAT, false, 0, scratchBuf)
+            GLES20.glEnableVertexAttribArray(markerPositionAttr)
+            GLES20.glDrawArrays(GLES20.GL_LINES, 0, 2)
+            i += 2
+        }
+    }
+
+    // ── Spatial floor grid ────────────────────────────────────────────────────
+
+    /**
+     * Renders a 21×21 dot-matrix spatial-mapping grid on the floor plane.
+     * The floor Y is taken from the first placed anchor, spacing is 7 cm.
+     * Uses [gridProgram] (fixed 3-px point size) so the dots stay small and
+     * non-intrusive regardless of camera distance.
+     */
+    private fun drawFloorGrid() {
+        if (worldPts.isEmpty()) return
+        val origin  = worldPts[0]
+        val groundY = origin[1]
+        val half    = 10
+        val spacing = 0.07f   // 7 cm between grid dots
+        var count   = 0
+        gridBuf.rewind()
+        for (i in -half..half) {
+            for (j in -half..half) {
+                gridBuf.put(origin[0] + i * spacing)
+                gridBuf.put(groundY)
+                gridBuf.put(origin[2] + j * spacing)
+                count++
+            }
+        }
+        gridBuf.rewind()
+        GLES20.glUseProgram(gridProgram)
+        GLES20.glUniformMatrix4fv(gridMvpUniform, 1, false, mvpMatrix, 0)
+        GLES20.glUniform4fv(gridColorUniform, 1, COL_GRID, 0)
+        GLES20.glVertexAttribPointer(gridPositionAttr, 3, GLES20.GL_FLOAT, false, 0, gridBuf)
+        GLES20.glEnableVertexAttribArray(gridPositionAttr)
+        GLES20.glDrawArrays(GLES20.GL_POINTS, 0, count)
+        GLES20.glDisableVertexAttribArray(gridPositionAttr)
+        // Restore marker program so subsequent draws (dots, edges) work correctly.
+        GLES20.glUseProgram(markerProgram)
+        GLES20.glUniformMatrix4fv(markerMvpUniform, 1, false, mvpMatrix, 0)
+    }
+
+    // ── Volumetric box faces ──────────────────────────────────────────────────
+
+    /**
+     * Renders 6 semi-transparent face quads over the completed bounding box using
+     * alpha blending.  Face colour is keyed to the adjacent measured axis:
+     *   Blue faces  — length axis (front + back, parallel to the blue edge)
+     *   Red  faces  — width  axis (left  + right, parallel to the red edge)
+     *   Neutral     — top / bottom
+     *
+     * Must be called BEFORE [drawBoxWireframe] so the opaque wireframe renders
+     * on top of the transparent tint.  Uses [faceProgram] (no gl_PointCoord discard)
+     * so GL_TRIANGLE_FAN fragments are never culled.
+     */
+    private fun drawBoxFaces(c: Array<FloatArray>) {
+        val r0 = c[0]; val r1 = c[1]; val r2 = c[2]; val r3 = c[3]
+        val t0 = c[4]; val t1 = c[5]; val t2 = c[6]; val t3 = c[7]
+        GLES20.glUseProgram(faceProgram)
+        GLES20.glUniformMatrix4fv(faceMvpUniform, 1, false, mvpMatrix, 0)
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glDepthMask(false)                       // don't write to depth for transparent geometry
+        // Top / bottom — neutral
+        drawQuadFace(r0, r1, r2, r3, COL_FACE_TOP)
+        drawQuadFace(t0, t1, t2, t3, COL_FACE_TOP)
+        // Length-axis faces (r0↔r1 = blue edge; front + back) — blue tint
+        drawQuadFace(r0, r1, t1, t0, COL_FACE_LEN)
+        drawQuadFace(r2, r3, t3, t2, COL_FACE_LEN)
+        // Width-axis faces (r1↔r2 = red edge; left + right) — red tint
+        drawQuadFace(r1, r2, t2, t1, COL_FACE_WID)
+        drawQuadFace(r3, r0, t0, t3, COL_FACE_WID)
+        GLES20.glDisableVertexAttribArray(facePositionAttr)
+        GLES20.glDepthMask(true)
+        GLES20.glDisable(GLES20.GL_BLEND)
+        // Restore marker program for the wireframe draw that follows.
+        GLES20.glUseProgram(markerProgram)
+        GLES20.glUniformMatrix4fv(markerMvpUniform, 1, false, mvpMatrix, 0)
+    }
+
+    private fun drawQuadFace(a: FloatArray, b: FloatArray, c: FloatArray, d: FloatArray, col: FloatArray) {
+        GLES20.glUniform4fv(faceColorUniform, 1, col, 0)
+        faceBuf.rewind()
+        faceBuf.put(a[0]); faceBuf.put(a[1]); faceBuf.put(a[2])
+        faceBuf.put(b[0]); faceBuf.put(b[1]); faceBuf.put(b[2])
+        faceBuf.put(c[0]); faceBuf.put(c[1]); faceBuf.put(c[2])
+        faceBuf.put(d[0]); faceBuf.put(d[1]); faceBuf.put(d[2])
+        faceBuf.rewind()
+        GLES20.glVertexAttribPointer(facePositionAttr, 3, GLES20.GL_FLOAT, false, 0, faceBuf)
+        GLES20.glEnableVertexAttribArray(facePositionAttr)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, 4)
+    }
+
+    // ── Y-axis measurement guide ──────────────────────────────────────────────
+
+    /**
+     * Y guide: shown when [worldPts].size == 3 (driver is about to tap box top).
+     *
+     * Renders:
+     *   • A bright green dashed vertical line rising 1.5 m from worldPts[2].
+     *   • 10 major horizontal tick marks at 9 cm intervals (spans 0 → 90 cm).
+     *   • A sub-tick midpoint at each 4.5 cm interval between majors.
+     *   • A solid GL_POINTS dot on every major tick for instant spatial recognition.
+     *
+     * Tick half-width is 6 cm each side (12 cm total) — wide enough to be clearly
+     * visible in real-world footage even at 50–80 cm camera distance.
+     */
+    private fun drawYGuide() {
+        val p        = worldPts[2]
+        val guideTop = floatArrayOf(p[0], p[1] + 1.5f, p[2])
+
+        // ① Bright dashed green spine rising 1.5 m
+        GLES20.glLineWidth(8f)
+        drawDashedEdge(p, guideTop, COL_HEIGHT)
+
+        // ② Major tick marks every 9 cm — 10 ticks spanning 0 → 90 cm
+        GLES20.glLineWidth(6f)
+        val hw    = 0.060f   // 6 cm half-width → 12 cm total tick length
+        val step  = 0.09f    // 9 cm between majors
+        for (i in 1..10) {
+            val ty = p[1] + i * step
+            val ta = floatArrayOf(p[0] - hw, ty, p[2])
+            val tb = floatArrayOf(p[0] + hw, ty, p[2])
+            drawSolidEdge(ta, tb, COL_Y_TICK)
+
+            // Solid dot on the guide axis at each major tick for extra legibility
+            GLES20.glUniform4fv(markerColorUniform, 1, COL_Y_TICK, 0)
+            scratchBuf.rewind()
+            scratchBuf.put(p[0]); scratchBuf.put(ty); scratchBuf.put(p[2])
+            scratchBuf.rewind()
+            GLES20.glVertexAttribPointer(markerPositionAttr, 3, GLES20.GL_FLOAT, false, 0, scratchBuf)
+            GLES20.glEnableVertexAttribArray(markerPositionAttr)
+            GLES20.glDrawArrays(GLES20.GL_POINTS, 0, 1)
+        }
+
+        // ③ Minor sub-ticks at every 4.5 cm between majors (half-width 3 cm)
+        GLES20.glLineWidth(3f)
+        val hwMinor = 0.030f
+        for (i in 1..20) {
+            val ty = p[1] + i * (step / 2f)
+            if (i % 2 == 0) continue    // skip even: already drawn as major
+            val ta = floatArrayOf(p[0] - hwMinor, ty, p[2])
+            val tb = floatArrayOf(p[0] + hwMinor, ty, p[2])
+            drawSolidEdge(ta, tb, COL_Y_MINOR)
+        }
+
+        // Restore standard line width for subsequent draw calls
+        GLES20.glLineWidth(6f)
+    }
+
+    /**
+     * Projects the 3 measured edge midpoints to screen pixels and posts them (with
+     * their cm value) to Compose for the floating dimension chips. Throttled to keep
+     * recomposition cheap; midpoints behind the camera are dropped.
+     */
+    private fun postDimLabels(c: Array<FloatArray>) {
+        val now = System.currentTimeMillis()
+        if (now - lastLabelMs < 60) return
+        lastLabelMs = now
+        val p0 = worldPts[0]; val p1 = worldPts[1]; val p2 = worldPts[2]; val p3 = worldPts[3]
+        val lenCm = dist(p0, p1) * 100
+        val widCm = dist(p1, p2) * 100
+        val hgtCm = abs((p3[1] - p2[1]).toDouble()) * 100
+        val labels = listOfNotNull(
+            projectMidLabel(c[0], c[1], DimAxis.LENGTH, lenCm),  // length mid(r0, r1)
+            projectMidLabel(c[3], c[0], DimAxis.WIDTH,  widCm),  // width  mid(r3, r0)
+            projectMidLabel(c[3], c[7], DimAxis.HEIGHT, hgtCm),  // height mid(r3, t3)
+        )
+        mainHandler.post { onDimLabels(labels) }
+    }
+
+    private fun projectMidLabel(a: FloatArray, b: FloatArray, axis: DimAxis, cm: Double): DimLabel? {
+        worldTmp[0] = (a[0] + b[0]) * 0.5f
+        worldTmp[1] = (a[1] + b[1]) * 0.5f
+        worldTmp[2] = (a[2] + b[2]) * 0.5f
+        worldTmp[3] = 1f
+        Matrix.multiplyMV(clipTmp, 0, mvpMatrix, 0, worldTmp, 0)
+        val w = clipTmp[3]
+        if (w <= 0.0001f || viewW == 0) return null   // behind camera / not laid out
+        val ndcX = clipTmp[0] / w
+        val ndcY = clipTmp[1] / w
+        val sx = (ndcX * 0.5f + 0.5f) * viewW
+        val sy = (1f - (ndcY * 0.5f + 0.5f)) * viewH
+        return DimLabel(axis, sx, sy, cm)
     }
 
     // ── Lifecycle ──────────────────────────────────────────────────────────────
 
     fun closeOnGlThread() {
         glView.queueEvent { session?.close(); session = null }
+    }
+
+    /** Drops captured world-space tap points on the GL thread (re-measure). */
+    fun clearPoints() {
+        glView.queueEvent {
+            worldPts.clear()
+            mainHandler.post { onDimLabels(emptyList()) }
+        }
     }
 }
 
@@ -377,6 +744,7 @@ private const val MARKER_VERT_SRC = """
 /**
  * Marker fragment shader.
  * Discards corners of the GL_POINTS square to produce a circular dot.
+ * (Used for point sprites only — not for triangles or lines.)
  */
 private const val MARKER_FRAG_SRC = """
     precision mediump float;
@@ -388,22 +756,59 @@ private const val MARKER_FRAG_SRC = """
     }
 """
 
+/**
+ * Face fragment shader — same colour output but NO gl_PointCoord discard.
+ * Used for GL_TRIANGLE_FAN face quads where gl_PointCoord is undefined; the
+ * discard in MARKER_FRAG_SRC would cull triangle fragments on most GPUs.
+ */
+private const val FACE_FRAG_SRC = """
+    precision mediump float;
+    uniform vec4 u_Color;
+    void main() { gl_FragColor = u_Color; }
+"""
+
+/**
+ * Grid vertex shader — fixed 3-px point size for the spatial-mapping dot matrix.
+ * The adaptive `clamp(70/w, ...)` in MARKER_VERT_SRC makes distant grid dots huge;
+ * a tiny fixed size keeps the grid subtle and non-intrusive.
+ */
+private const val GRID_VERT_SRC = """
+    uniform mat4  u_MVP;
+    attribute vec3 a_Position;
+    void main() {
+        gl_Position  = u_MVP * vec4(a_Position, 1.0);
+        gl_PointSize = 3.0;
+    }
+"""
+
 // ── Measurement dimension color palette ───────────────────────────────────────
+// Industrial axis palette (matches Compose DimChip tokens exactly):
+//   Length → #2196F3 blue    Width → #F44336 red    Height → #00FF88 green
+// Non-measured cuboid edges render as dashed white.
 
-/** Dot fill colors indexed by tap point (0–3). */
-private val DOT_COLORS = arrayOf(
-    floatArrayOf(0.000f, 0.898f, 1.000f, 1f),   // [0] Cyan   — length start
-    floatArrayOf(0.000f, 0.898f, 1.000f, 1f),   // [1] Cyan   — length end
-    floatArrayOf(0.000f, 1.000f, 0.533f, 1f),   // [2] Green  — width end
-    floatArrayOf(0.659f, 0.333f, 0.969f, 1f),   // [3] Purple — height top
-)
+private val COL_LENGTH = floatArrayOf(0.129f, 0.588f, 0.953f, 1f)   // #2196F3 blue
+private val COL_WIDTH  = floatArrayOf(0.957f, 0.263f, 0.212f, 1f)   // #F44336 red
+private val COL_HEIGHT = floatArrayOf(0.000f, 1.000f, 0.533f, 1f)   // #00FF88 green
+private val COL_DASH   = floatArrayOf(1.000f, 1.000f, 1.000f, 0.75f) // dashed white silhouette
 
-/** Line colors indexed by segment (0 = length, 1 = width, 2 = height). */
-private val LINE_COLORS = arrayOf(
-    floatArrayOf(0.000f, 0.898f, 1.000f, 0.85f), // [0] Cyan
-    floatArrayOf(0.000f, 1.000f, 0.533f, 0.85f), // [1] Green
-    floatArrayOf(0.659f, 0.333f, 0.969f, 0.85f), // [2] Purple
-)
+// Semi-transparent face tints — alpha ~0.09 for volumetric depth cue
+private val COL_FACE_LEN = floatArrayOf(0.129f, 0.588f, 0.953f, 0.09f)  // blue face tint
+private val COL_FACE_WID = floatArrayOf(0.957f, 0.263f, 0.212f, 0.09f)  // red  face tint
+private val COL_FACE_TOP = floatArrayOf(0.800f, 0.900f, 1.000f, 0.05f)  // neutral top/bottom tint
+
+// Spatial-mapping floor grid: faint blue dots
+private val COL_GRID   = floatArrayOf(0.129f, 0.588f, 0.953f, 0.22f)
+
+// Y guide major tick marks: bright green, clearly visible in world footage
+private val COL_Y_TICK  = floatArrayOf(0.000f, 1.000f, 0.533f, 0.85f)
+// Y guide minor sub-ticks: same hue, lower alpha so majors stay dominant
+private val COL_Y_MINOR = floatArrayOf(0.000f, 1.000f, 0.533f, 0.38f)
+
+/** Dot fill colors indexed by tap point (0–3): length start/end, width end, height top. */
+private val DOT_COLORS = arrayOf(COL_LENGTH, COL_LENGTH, COL_WIDTH, COL_HEIGHT)
+
+/** Progressive polyline colors indexed by segment (0 = length, 1 = width, 2 = height). */
+private val LINE_COLORS = arrayOf(COL_LENGTH, COL_WIDTH, COL_HEIGHT)
 
 // ── GL helpers ─────────────────────────────────────────────────────────────────
 

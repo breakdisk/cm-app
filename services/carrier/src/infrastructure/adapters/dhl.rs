@@ -175,10 +175,23 @@ impl CarrierAdapter for DhlAdapter {
         let data = Self::check_error(resp).await?;
         let tnum = data["shipmentTrackingNumber"].as_str().unwrap_or("").to_string();
 
+        // Extract inline label bytes from documentImages[0].content (base64 PDF).
+        // DHL returns the label in the booking response when outputImageProperties is set.
+        let label_bytes = data["documents"]
+            .as_array()
+            .and_then(|docs| docs.iter().find(|d| d["typeCode"] == "label"))
+            .or_else(|| data["shipmentTrackingNumber"].as_str().and_then(|_| {
+                // Fallback: check documentImages array (older DHL API versions)
+                data["documentImages"].as_array()?.iter().find(|d| d["typeCode"] == "label")
+            }))
+            .and_then(|doc| doc["content"].as_str())
+            .and_then(|b64| STANDARD.decode(b64).ok());
+
         Ok(BookingConfirmation {
             booking_ref:        tnum.clone(),
             tracking_number:    tnum,
             label_url:          None,
+            label_bytes,
             estimated_delivery: data["estimatedDeliveryDate"].as_str().map(String::from),
         })
     }
@@ -216,17 +229,31 @@ impl CarrierAdapter for DhlAdapter {
     }
 
     async fn cancel_shipment(&self, booking_ref: &str) -> Result<(), AdapterError> {
-        // DHL MyDHL+ does not expose a REST cancellation endpoint for most
-        // account tiers.  Route to DHL support with the booking reference.
+        // Attempt DELETE /mydhlapi/shipments/{ref} — available on accounts with
+        // the shipment-management permission. Fall back gracefully with a 501 if
+        // DHL returns 403/404/405, so callers know manual intervention is needed.
+        let resp = self.http
+            .delete(format!("{}/mydhlapi/shipments/{}", self.base_url, booking_ref))
+            .header("Authorization", self.auth_header())
+            .send()
+            .await?;
+
+        let status = resp.status();
+        if status.is_success() {
+            tracing::info!(booking_ref, "DHL shipment cancelled via API");
+            return Ok(());
+        }
+
+        let body = resp.text().await.unwrap_or_default();
         tracing::warn!(
             booking_ref,
-            carrier = "DHL",
-            "DHL cancellation requires manual intervention — no REST endpoint available"
+            %status,
+            "DHL REST cancellation failed — manual intervention required. Body: {body}"
         );
         Err(AdapterError::CarrierError {
             status: 501,
-            body:   format!(
-                "DHL Express does not support API-level cancellation. \
+            body: format!(
+                "DHL API cancellation returned {status}. \
                  Contact DHL support with booking reference: {booking_ref}"
             ),
         })

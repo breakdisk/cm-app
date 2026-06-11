@@ -6,6 +6,19 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub redis: RedisConfig,
     pub kafka: KafkaConfig,
+    /// Internal URL of the pod service — used to fetch POP/POD evidence when
+    /// building enriched tracking responses for merchant/customer portals.
+    /// Defaults to the Dokploy Docker-network hostname.
+    /// Override with `POD_INTERNAL_URL` env var.
+    #[serde(default = "default_pod_internal_url")]
+    pub pod_internal_url: String,
+}
+
+fn default_pod_internal_url() -> String {
+    // "pod" is the Docker Compose service name — reachable on the logisticos
+    // bridge network. Dokploy uses the same name. Override with POD_INTERNAL_URL
+    // in local dev where the service name isn't resolvable.
+    "http://pod:8011".to_string()
 }
 
 #[derive(Debug, Deserialize, Clone)]

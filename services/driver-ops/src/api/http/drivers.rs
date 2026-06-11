@@ -1,4 +1,4 @@
-use axum::{extract::{Path, State}, Json};
+use axum::{extract::{Path, Query as AxumQuery, State}, Json};
 use std::sync::Arc;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -33,6 +33,8 @@ struct DriverDto {
     last_location_at: Option<chrono::DateTime<chrono::Utc>>,
     active_route_id: Option<Uuid>,
     is_active: bool,
+    carrier_id: Option<Uuid>,
+    hub_id:     Option<Uuid>,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -76,19 +78,44 @@ impl From<&Driver> for DriverDto {
             last_location_at: d.last_location_at,
             active_route_id: d.active_route_id,
             is_active: d.is_active,
+            carrier_id: d.carrier_id,
+            hub_id:     d.hub_id,
             created_at: d.created_at,
             updated_at: d.updated_at,
         }
     }
 }
 
+#[derive(serde::Deserialize, Default)]
+pub struct ListDriversQuery {
+    pub hub_id: Option<uuid::Uuid>,
+    pub search: Option<String>,
+}
+
 pub async fn list_drivers(
     AuthClaims(claims): AuthClaims,
     State(state): State<Arc<AppState>>,
+    AxumQuery(q): AxumQuery<ListDriversQuery>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     require_permission!(claims, logisticos_auth::rbac::permissions::FLEET_VIEW);
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
-    let drivers = state.driver_service.list_by_tenant(&tenant_id).await?;
+    let mut drivers = state.driver_service.list_by_tenant(&tenant_id).await?;
+
+    // Filter by hub_id when provided (Hub Staff tab — assigned scanners).
+    if let Some(hub_id) = q.hub_id {
+        drivers.retain(|d| d.hub_id == Some(hub_id));
+    }
+
+    // Filter by search when provided (Hub Staff assign-modal search).
+    if let Some(search) = &q.search {
+        let s = search.to_lowercase();
+        drivers.retain(|d| {
+            d.first_name.to_lowercase().contains(&s)
+                || d.last_name.to_lowercase().contains(&s)
+                || d.phone.contains(&s)
+        });
+    }
+
     let dtos: Vec<DriverDto> = drivers.iter().map(DriverDto::from).collect();
     Ok(Json(serde_json::json!({ "data": dtos })))
 }
@@ -162,6 +189,27 @@ pub async fn update_driver(
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let driver_id = DriverId::from_uuid(id);
     let driver = state.driver_service.update(&tenant_id, &driver_id, cmd).await?;
+    Ok(Json(serde_json::json!({ "data": DriverDto::from(&driver) })))
+}
+
+/// `GET /v1/drivers/me`
+///
+/// Returns the authenticated driver's own profile, including `hub_id` when
+/// assigned as a hub scanner. Called by the Android app after OTP login and
+/// on every HomeScreen foreground to detect hub assignment changes.
+///
+/// Note: driver_id == user_id by design in this system.
+pub async fn get_me_driver(
+    AuthClaims(claims): AuthClaims,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let driver = state.driver_service.find_by_user_id(claims.user_id)
+        .await?
+        .ok_or(AppError::NotFound { resource: "Driver", id: claims.user_id.to_string() })?;
+    // Tenant isolation
+    if driver.tenant_id.inner() != claims.tenant_id {
+        return Err(AppError::NotFound { resource: "Driver", id: claims.user_id.to_string() });
+    }
     Ok(Json(serde_json::json!({ "data": DriverDto::from(&driver) })))
 }
 

@@ -1,3 +1,6 @@
+pub mod booking_repo;
+pub use booking_repo::{CarrierBookingRecord, PgCarrierBookingRepository};
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;

@@ -81,6 +81,7 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/users",                     get(users::list_users).post(users::invite_user))
         .route("/users/:id",                 get(users::get_user))
         .route("/users/:id/invite-link",     post(users::generate_invite_link))
+        .route("/users/:id/roles",           patch(users::patch_user_roles))
         .route("/pickup-addresses",              get(addresses::list).post(addresses::create))
         .route("/pickup-addresses/:id",          delete(addresses::delete))
         .route("/pickup-addresses/:id/default",  patch(addresses::set_default))

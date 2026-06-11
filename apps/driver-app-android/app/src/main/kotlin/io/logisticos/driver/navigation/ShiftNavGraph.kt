@@ -28,6 +28,7 @@ import io.logisticos.driver.feature.home.ui.HubScreen
 import io.logisticos.driver.feature.navigation.ui.NavigationScreen
 import io.logisticos.driver.feature.notifications.presentation.NotificationsViewModel
 import io.logisticos.driver.feature.notifications.ui.NotificationsScreen
+import io.logisticos.driver.feature.pickup.presentation.BoxAuditDims
 import io.logisticos.driver.feature.pickup.ui.PickupScreen
 import io.logisticos.driver.feature.pod.ui.PodScreen
 import io.logisticos.driver.feature.profile.presentation.ProfileViewModel
@@ -36,6 +37,8 @@ import io.logisticos.driver.feature.profile.ui.ProfileScreen
 import io.logisticos.driver.feature.route.presentation.RouteViewModel
 import io.logisticos.driver.feature.route.ui.RouteScreen
 import io.logisticos.driver.core.location.LocationForegroundService
+import io.logisticos.driver.feature.hub.domain.HubScanType
+import io.logisticos.driver.feature.hub.ui.HubScanScreen
 import io.logisticos.driver.feature.scanner.ui.ScannerScreen
 
 // ── Route constants ───────────────────────────────────────────────────────────
@@ -61,6 +64,12 @@ private const val BOX_MEASURE_ROUTE =
 // BookShipmentScreen can display a pre-filled form without ViewModel coupling.
 private const val BOOK_SHIPMENT_ROUTE =
     "book_shipment?sizeId={sizeId}&mode={mode}&origin={origin}&l={l}&w={w}&h={h}&total={total}&currency={currency}"
+
+/**
+ * Hub Mode scan: optional hubId + scanType args.
+ * Deep-linkable from HomeScreen "Hub Mode" button or HUB_INBOUND task nav.
+ */
+private const val HUB_SCAN_ROUTE = "hub_scan?hubId={hubId}&scanType={scanType}"
 
 /**
  * Top-level shift scaffold: owns the BottomNavBar and an inner NavHost.
@@ -109,6 +118,7 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                     onNavigateToCompliance = { shiftNavController.navigate(COMPLIANCE_ROUTE) },
                     onNavigateToBoxMeasure = { shiftNavController.navigate("box_measure/quote") },
                     onNavigateToHub = { shiftNavController.navigate(HUB_ROUTE) },
+                    onNavigateToHubScan = { hubId -> shiftNavController.navigateToHubScan(hubId = hubId) },
                 )
             }
 
@@ -247,8 +257,14 @@ fun ShiftScaffold(rootNavController: NavHostController) {
 
             composable(PICKUP_ROUTE) { backStack ->
                 val taskId = backStack.arguments?.getString("taskId") ?: ""
+                // AR dimensioning returned from BoxMeasureScreen (VERIFY) is stashed in
+                // this entry's SavedStateHandle; read it reactively for the POP audit panel.
+                val dimsRaw = backStack.savedStateHandle
+                    .getStateFlow<String?>("verified_dimensioning", null)
+                    .collectAsState()
                 PickupScreen(
                     taskId = taskId,
+                    auditDims = BoxAuditDims.fromEncoded(dimsRaw.value),
                     onCompleted = {
                         shiftNavController.navigate(HOME_ROUTE) {
                             popUpTo(HOME_ROUTE) { inclusive = true }
@@ -297,12 +313,15 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                     // (Track-A Balikbayan: verified_box_size, outer_packaging_integrity).
                     // BoxMeasureScreen calls onBack() immediately after this callback —
                     // do NOT also call popBackStack() here or the back stack pops twice.
-                    onDimensionsVerified = { l: Double, w: Double, h: Double ->
-                        shiftNavController.previousBackStackEntry?.savedStateHandle?.run {
-                            set("verified_box_l", l.toFloat())
-                            set("verified_box_w", w.toFloat())
-                            set("verified_box_h", h.toFloat())
-                        }
+                    onDimensionsVerified = { dim ->
+                        // Encode the full AR dimensioning into the pickup back-stack so
+                        // PickupScreen can render the POP audit panel (size / volumetric
+                        // weight / quantity / integrity) on return.
+                        shiftNavController.previousBackStackEntry?.savedStateHandle?.set(
+                            "verified_dimensioning",
+                            "${dim.lengthCm}|${dim.widthCm}|${dim.heightCm}|${dim.cbm}|" +
+                                "${dim.volumetricWeightKg}|${dim.quantity}|${dim.integrity}",
+                        )
                     },
                     // QUOTE mode only: driver taps "Book This Shipment" after getting a price.
                     // Navigate to BookShipmentScreen with all quote data as route params so the
@@ -383,8 +402,35 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                     onBack = { shiftNavController.popBackStack() },
                 )
             }
+
+            // ── Hub Mode ──────────────────────────────────────────────────
+            composable(
+                route = HUB_SCAN_ROUTE,
+                arguments = listOf(
+                    navArgument("hubId")    { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("scanType") { type = NavType.StringType; nullable = true; defaultValue = null },
+                ),
+            ) { backStack ->
+                val hubId    = backStack.arguments?.getString("hubId") ?: ""
+                val typeStr  = backStack.arguments?.getString("scanType") ?: ""
+                val scanType = HubScanType.entries.firstOrNull { it.name == typeStr }
+                    ?: HubScanType.INBOUND_RECEIVE
+                HubScanScreen(
+                    initialHubId    = hubId,
+                    initialScanType = scanType,
+                    onBack          = { shiftNavController.popBackStack() },
+                )
+            }
         }
     }
+}
+
+/** Navigate to the Hub Mode scan screen. Convenience extension on [NavHostController]. */
+fun androidx.navigation.NavController.navigateToHubScan(
+    hubId:    String = "",
+    scanType: HubScanType = HubScanType.INBOUND_RECEIVE,
+) {
+    navigate("hub_scan?hubId=${hubId}&scanType=${scanType.name}")
 }
 
 /**

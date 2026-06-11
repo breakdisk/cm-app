@@ -6,7 +6,7 @@ import React, { useState } from "react";
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FadeInView } from '../../components/FadeInView';
 import {
-  View, Text, StyleSheet, ScrollView, Pressable,
+  View, Text, StyleSheet, ScrollView, Pressable, Alert, ActivityIndicator, Modal,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
@@ -16,6 +16,7 @@ import type { ShipmentRecord, ShipmentStatus } from "../../store";
 import { AwbQRCode } from "../../components/AwbQRCode";
 import SkeletonLoader from "../../components/SkeletonLoader";
 import { useShipments } from "../../hooks/useShipments";
+import { cancelShipment } from "../../services/api/shipments";
 
 const CANVAS = "#050810";
 const CYAN   = "#00E5FF";
@@ -71,8 +72,10 @@ const DEMO_SHIPMENTS: ShipmentRecord[] = [
 
 // Statuses where driver pickup QR is relevant
 const PICKUP_STATUSES: ShipmentStatus[] = ["pending", "confirmed"];
+// Statuses where the customer can still cancel
+const CANCELLABLE_STATUSES: ShipmentStatus[] = ["pending", "confirmed"];
 
-function ShipmentCard({ item, onShowQR, onViewReceipt, onTrackPickup }: { item: ShipmentRecord; onShowQR: (awb: string) => void; onViewReceipt: (item: ShipmentRecord) => void; onTrackPickup: (item: ShipmentRecord) => void }) {
+function ShipmentCard({ item, onShowQR, onViewReceipt, onTrackPickup, onCancel }: { item: ShipmentRecord; onShowQR: (awb: string) => void; onViewReceipt: (item: ShipmentRecord) => void; onTrackPickup: (item: ShipmentRecord) => void; onCancel: (item: ShipmentRecord) => void }) {
   const cfg       = STATUS_CONFIG[item.status] ?? { label: item.status, color: AMBER, icon: "time-outline" };
   const isIntl    = item.type === "international";
   const showQRBtn = PICKUP_STATUSES.includes(item.status);
@@ -167,12 +170,24 @@ function ShipmentCard({ item, onShowQR, onViewReceipt, onTrackPickup }: { item: 
           <Ionicons name="chevron-forward" size={12} color={GREEN + "80"} />
         </Pressable>
       )}
+
+      {/* Cancel button — only for pending/confirmed with a known UUID */}
+      {CANCELLABLE_STATUSES.includes(item.status) && !!item.id && (
+        <Pressable
+          onPress={() => onCancel(item)}
+          style={[s.qrBtn, { borderColor: RED + "40", backgroundColor: RED + "08" }]}
+        >
+          <Ionicons name="close-circle-outline" size={14} color={RED} />
+          <Text style={[s.qrBtnText, { color: RED }]}>Cancel Shipment</Text>
+          <Ionicons name="chevron-forward" size={12} color={RED + "80"} />
+        </Pressable>
+      )}
     </FadeInView>
   );
 }
 
 export function HistoryScreen({ navigation }: { navigation: any }) {
-  const { list: hookShipments, loading } = useShipments();
+  const { list: hookShipments, loading, refetch } = useShipments();
   const reduxShipments = useSelector((s: RootState) => s.shipments.list);
 
   // Prefer the hook's live list, fall back to Redux cache, else empty.
@@ -182,8 +197,10 @@ export function HistoryScreen({ navigation }: { navigation: any }) {
     ? (hookShipments as ShipmentRecord[])
     : reduxShipments;
 
-  const [filter,  setFilter]  = useState<FilterTab>("all");
-  const [qrAwb,   setQrAwb]   = useState<string | null>(null);
+  const [filter,       setFilter]       = useState<FilterTab>("all");
+  const [qrAwb,        setQrAwb]        = useState<string | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<ShipmentRecord | null>(null);
+  const [cancelling,   setCancelling]   = useState(false);
 
   function handleViewReceipt(item: ShipmentRecord) {
     navigation.navigate("Receipt", { shipment: item });
@@ -195,6 +212,25 @@ export function HistoryScreen({ navigation }: { navigation: any }) {
       shipmentId: item.id,
       type: item.type,
     });
+  }
+
+  function handleCancelPress(item: ShipmentRecord) {
+    setCancelTarget(item);
+  }
+
+  async function handleCancelConfirm() {
+    if (!cancelTarget?.id) return;
+    setCancelling(true);
+    try {
+      await cancelShipment(cancelTarget.id, "Cancelled by customer");
+      setCancelTarget(null);
+      // Refresh the list so the updated status shows immediately
+      refetch();
+    } catch (err: any) {
+      Alert.alert("Cancel Failed", err?.message ?? "Could not cancel shipment. Please try again.");
+    } finally {
+      setCancelling(false);
+    }
   }
 
   const filtered = shipments.filter((s) => {
@@ -272,7 +308,7 @@ export function HistoryScreen({ navigation }: { navigation: any }) {
       ) : (
         <View style={s.list}>
           {filtered.map((item) => (
-            <ShipmentCard key={item.awb} item={item} onShowQR={setQrAwb} onViewReceipt={handleViewReceipt} onTrackPickup={handleTrackPickup} />
+            <ShipmentCard key={item.awb} item={item} onShowQR={setQrAwb} onViewReceipt={handleViewReceipt} onTrackPickup={handleTrackPickup} onCancel={handleCancelPress} />
           ))}
         </View>
       )}
@@ -287,6 +323,35 @@ export function HistoryScreen({ navigation }: { navigation: any }) {
         onClose={() => setQrAwb(null)}
       />
     )}
+
+    {/* Cancel confirmation modal */}
+    <Modal visible={!!cancelTarget} transparent animationType="fade" onRequestClose={() => setCancelTarget(null)}>
+      <View style={s.modalOverlay}>
+        <View style={s.modalSheet}>
+          <View style={[s.modalIconWrap, { backgroundColor: RED + "18" }]}>
+            <Ionicons name="close-circle-outline" size={36} color={RED} />
+          </View>
+          <Text style={s.modalTitle}>Cancel Shipment?</Text>
+          <Text style={s.modalBody}>
+            {cancelTarget?.awb}{"\n\n"}This cannot be undone. The shipment will be cancelled and a driver will not be dispatched.
+          </Text>
+          <Pressable
+            onPress={handleCancelConfirm}
+            disabled={cancelling}
+            style={({ pressed }) => [s.modalPrimaryBtn, { opacity: pressed || cancelling ? 0.75 : 1 }]}
+          >
+            <View style={[s.modalBtnInner, { backgroundColor: RED }]}>
+              {cancelling
+                ? <ActivityIndicator size="small" color="#FFF" />
+                : <Text style={s.modalBtnText}>Yes, Cancel It</Text>}
+            </View>
+          </Pressable>
+          <Pressable onPress={() => setCancelTarget(null)} style={s.modalSecondaryBtn}>
+            <Text style={s.modalSecondaryText}>Keep Shipment</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
     </View>
   );
 }
@@ -334,4 +399,16 @@ const s = StyleSheet.create({
   emptyCard:      { marginHorizontal: 16, alignItems: "center", gap: 8, paddingVertical: 48 },
   emptyText:      { fontSize: 16, fontWeight: "600", color: "rgba(255,255,255,0.3)", fontFamily: "SpaceGrotesk-SemiBold" },
   emptySub:       { fontSize: 12, color: "rgba(255,255,255,0.2)", fontFamily: "JetBrainsMono-Regular", textAlign: "center" },
+
+  // Cancel modal
+  modalOverlay:      { flex: 1, backgroundColor: "rgba(0,0,0,0.85)", justifyContent: "flex-end" },
+  modalSheet:        { backgroundColor: "#0A0E1A", borderTopLeftRadius: 24, borderTopRightRadius: 24, borderWidth: 1, borderColor: BORDER, padding: 28, paddingBottom: 48, alignItems: "center", gap: 14 },
+  modalIconWrap:     { width: 64, height: 64, borderRadius: 20, alignItems: "center", justifyContent: "center", marginBottom: 4 },
+  modalTitle:        { fontSize: 20, fontWeight: "700", color: "#FFF", fontFamily: "SpaceGrotesk-Bold", textAlign: "center" },
+  modalBody:         { fontSize: 14, color: "rgba(255,255,255,0.5)", textAlign: "center", lineHeight: 20, paddingHorizontal: 8 },
+  modalPrimaryBtn:   { width: "100%", borderRadius: 14, overflow: "hidden", marginTop: 6 },
+  modalBtnInner:     { paddingVertical: 16, alignItems: "center", justifyContent: "center", borderRadius: 14 },
+  modalBtnText:      { fontSize: 15, fontWeight: "700", color: "#FFF", fontFamily: "SpaceGrotesk-Bold" },
+  modalSecondaryBtn: { paddingVertical: 12 },
+  modalSecondaryText:{ fontSize: 14, color: "rgba(255,255,255,0.35)" },
 });

@@ -98,8 +98,13 @@ pub struct BookingRequest {
 pub struct BookingConfirmation {
     pub booking_ref:        String,
     pub tracking_number:    String,
-    /// Direct URL to download the label (if carrier provides one)
+    /// Direct URL to download the label (if carrier provides one).
+    /// Populated by the MCP handler / allocation worker after uploading to R2.
     pub label_url:          Option<String>,
+    /// Raw label bytes returned inline by the carrier API (e.g. DHL documentImages).
+    /// Not serialized — consumed by the booking handler before the response is sent.
+    #[serde(skip)]
+    pub label_bytes:        Option<Vec<u8>>,
     /// ISO-8601 date
     pub estimated_delivery: Option<String>,
 }

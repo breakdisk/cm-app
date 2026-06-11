@@ -10,7 +10,7 @@ use crate::infrastructure::db::{
     PgDispatchQueueRepository, PgDriverProfilesRepository,
 };
 use crate::infrastructure::messaging::compliance_consumer::start_compliance_consumer;
-use crate::infrastructure::messaging::{start_driver_available_consumer, start_shipment_consumer, start_user_consumer};
+use crate::infrastructure::messaging::{start_driver_available_consumer, start_hub_dispatch_consumer, start_shipment_consumer, start_user_consumer};
 use crate::application::commands::QuickDispatchCommand;
 use crate::api::http::{router, AppState};
 use logisticos_types::TenantId;
@@ -130,6 +130,25 @@ pub async fn run() -> anyhow::Result<()> {
             shutdown_rx_shipment,
         ).await {
             tracing::error!("Shipment consumer crashed: {e}");
+        }
+    });
+
+    // Spawn hub-dispatch consumer — last-mile dispatch requests from hub-ops
+    // deconsolidation (own-driver, with Auto fallback to carrier).
+    let brokers_hub        = cfg.kafka.brokers.clone();
+    let group_hub          = cfg.kafka.group_id.clone();
+    let dispatch_svc_hub   = Arc::clone(&dispatch_service);
+    let kafka_hub          = Arc::clone(&kafka);
+    let shutdown_rx_hub    = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        if let Err(e) = start_hub_dispatch_consumer(
+            &brokers_hub,
+            &group_hub,
+            dispatch_svc_hub,
+            kafka_hub,
+            shutdown_rx_hub,
+        ).await {
+            tracing::error!("Hub-dispatch consumer crashed: {e}");
         }
     });
 

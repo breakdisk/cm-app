@@ -65,6 +65,65 @@ pub async fn get_user(
     Ok(Json(serde_json::json!({ "data": user })))
 }
 
+/// `PATCH /v1/users/:id/roles`
+///
+/// Grants or revokes a single named role on a user within the calling tenant.
+/// Supports role `"hub_scanner"` (SHIPMENT_READ + SHIPMENT_UPDATE permissions).
+///
+/// Body: `{ "role": "hub_scanner", "action": "assign" | "revoke" }`
+/// Requires: `USERS_MANAGE` permission.
+pub async fn patch_user_roles(
+    AuthClaims(claims): AuthClaims,
+    Path(id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<PatchRolesRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_permission!(claims, logisticos_auth::rbac::permissions::USERS_MANAGE);
+
+    let user_id = logisticos_types::UserId::from_uuid(id);
+    let repo    = state.tenant_service.user_repo_ref();
+
+    let mut user = repo.find_by_id(&user_id)
+        .await
+        .map_err(AppError::Internal)?
+        .ok_or(AppError::NotFound { resource: "User", id: id.to_string() })?;
+
+    // Tenant isolation
+    if user.tenant_id.inner() != claims.tenant_id {
+        return Err(AppError::NotFound { resource: "User", id: id.to_string() });
+    }
+
+    // Only roles in this allowlist may be assigned or revoked through this endpoint.
+    // Prevents privilege escalation via a compromised admin account.
+    const ASSIGNABLE_ROLES: &[&str] = &["hub_scanner", "driver", "readonly", "dispatcher"];
+    if !ASSIGNABLE_ROLES.contains(&body.role.as_str()) {
+        return Err(AppError::Validation(
+            format!("Role '{}' cannot be managed via this endpoint", body.role)
+        ));
+    }
+
+    match body.action.as_str() {
+        "assign" => user.assign_role(&body.role),
+        "revoke" => user.revoke_role(&body.role),
+        other    => return Err(AppError::Validation(
+            format!("Unknown action '{}'; expected 'assign' or 'revoke'", other)
+        )),
+    }
+
+    repo.save(&user)
+        .await
+        .map_err(AppError::Internal)?;
+
+    Ok(Json(serde_json::json!({ "data": user })))
+}
+
+#[derive(serde::Deserialize)]
+pub struct PatchRolesRequest {
+    pub role:   String,
+    /// "assign" or "revoke"
+    pub action: String,
+}
+
 /// POST /v1/users/:id/invite-link
 ///
 /// Generates a signed deep-link invite URL for a pre-registered driver.

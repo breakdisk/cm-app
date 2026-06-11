@@ -26,6 +26,7 @@ import {
   Zap,
   Menu,
   X,
+  Container,
 } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 import { DriverRosterProvider } from "@/context/driver-roster-context";
@@ -58,6 +59,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Compliance",       href: "/compliance",  icon: ShieldCheck,requiredPermission: "compliance:review"  },
   { label: "Fleet",            href: "/fleet",       icon: Truck,      requiredPermission: "fleet:read"         },
   { label: "Hubs",             href: "/hubs",        icon: Building2,  requiredPermission: "dispatch:view"      },
+  { label: "Hub Transfer",     href: "/hub-transfer",icon: Container,  requiredPermission: "dispatch:view"      },
   { label: "Carriers",         href: "/carriers",    icon: Boxes,      requiredPermission: "carriers:read"      },
   { label: "Marketplace",      href: "/marketplace", icon: Store                                                },
   { label: "Finance",          href: "/finance",     icon: Receipt,    requiredPermission: "payments:read"      },

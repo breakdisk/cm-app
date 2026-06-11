@@ -11,6 +11,16 @@ pub struct TenantCreated {
     pub subscription_tier: String,
 }
 
+/// Emitted by identity when a draft tenant completes onboarding setup.
+/// Consumed by: engagement (send welcome email), billing (create billing account).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TenantFinalized {
+    pub tenant_id:     Uuid,
+    pub name:          String,
+    pub owner_email:   String,
+    pub finalized_at:  String,
+}
+
 // Enriched ShipmentCreated — consumed by dispatch, engagement, analytics, delivery-experience
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShipmentCreated {
@@ -72,6 +82,10 @@ pub struct ShipmentCreated {
     /// compatibility with events emitted before this field existed.
     #[serde(default)]
     pub auto_dispatch:        bool,
+    /// Free-text delivery notes from the merchant (e.g. "Leave at reception").
+    /// Passed through to the dispatch task and shown to the driver.
+    #[serde(default)]
+    pub special_instructions: Option<String>,
 }
 
 fn default_currency() -> String { "PHP".into() }
@@ -498,6 +512,25 @@ pub struct MarketplacePickupRecorded {
     pub picked_up_at:  String,
 }
 
+/// Emitted by carrier service when an inbound 3PL tracking webhook is received
+/// and authenticated. Consumed by: delivery-experience (status update),
+/// engagement (customer notification), analytics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CarrierTrackingEvent {
+    pub carrier_id:      Uuid,
+    pub tenant_id:       Uuid,
+    /// Carrier's own shipment/tracking reference.
+    pub carrier_ref:     Option<String>,
+    /// LogisticOS shipment UUID (preferred; may be absent for pure-tracking events).
+    pub shipment_id:     Option<Uuid>,
+    /// Carrier status code — e.g. "picked_up", "in_transit", "delivered", "failed".
+    pub event:           String,
+    /// Human-readable message from the 3PL.
+    pub message:         Option<String>,
+    /// ISO-8601 receipt timestamp (server clock).
+    pub received_at:     String,
+}
+
 /// Emitted by carrier service when dispatch records a carrier allocation for a
 /// shipment (POST /v1/internal/sla-records). Consumed by: analytics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -512,4 +545,230 @@ pub struct CarrierAllocated {
     pub promised_by:      String,
     /// "rate_shop" (auto-selected cheapest) | "manual" (operator chose).
     pub method:           String,
+}
+
+// ── Cross-Border Hub Transfer events ──────────────────────────────────────────
+
+/// Per-shipment detail attached to container **milestone** events, supplied by the
+/// arrive/customs HTTP requests (the "enrich from request" approach). A container
+/// covers many shipments, so milestone events carry a list of these.
+///
+/// Engagement uses the `customer_*` fields to notify recipients; payments uses the
+/// `merchant_*` / `duty_cents` fields (on customs-cleared) to bill duties.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ShipmentMilestoneDetail {
+    pub shipment_id:     Uuid,
+    #[serde(default)] pub master_awb:      String,
+    #[serde(default)] pub tracking_number: String,
+    // Recipient (engagement)
+    #[serde(default)] pub customer_id:     Option<Uuid>,
+    #[serde(default)] pub customer_name:   String,
+    #[serde(default)] pub customer_phone:  String,
+    #[serde(default)] pub customer_email:  String,
+    // Payer (payments duties — customs-cleared only)
+    #[serde(default)] pub merchant_id:     Option<Uuid>,
+    #[serde(default)] pub merchant_email:  String,
+    #[serde(default)] pub duty_cents:      i64,
+}
+
+
+/// Emitted by hub-ops on an `InboundReceive` scan at the origin hub.
+/// Consumed by: order-intake (ShipmentStatus::AtHub), analytics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PieceScannedInbound {
+    pub piece_awb:        String,
+    pub master_awb:       String,
+    pub shipment_id:      Uuid,
+    pub tenant_id:        Uuid,
+    pub hub_id:           Uuid,
+    pub scanned_by:       Uuid,
+    /// Hardware clock at scan moment (ISO-8601). Primary basis for SLA.
+    #[serde(default)]
+    pub device_timestamp: Option<String>,
+    /// Backend receipt time (ISO-8601).
+    pub server_timestamp: String,
+}
+
+/// Emitted by hub-ops when a sea/air container reaches the destination
+/// port/airport. Consumed by: engagement (customer "at port" notification).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerArrivedAtPort {
+    pub container_id: Uuid,
+    pub tenant_id:    Uuid,
+    pub port_hub_id:  Option<Uuid>,
+    pub master_awbs:  Vec<String>,
+    /// Per-shipment recipient detail for customer notifications.
+    #[serde(default)]
+    pub details:      Vec<ShipmentMilestoneDetail>,
+    pub arrived_at:   String,
+}
+
+/// Emitted by hub-ops when a container enters customs hold.
+/// Consumed by: order-intake (ShipmentStatus::CustomsHold), engagement.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerCustomsHold {
+    pub container_id: Uuid,
+    pub tenant_id:    Uuid,
+    pub master_awbs:  Vec<String>,
+    /// Per-shipment recipient detail for customer notifications.
+    #[serde(default)]
+    pub details:      Vec<ShipmentMilestoneDetail>,
+    pub held_at:      String,
+}
+
+/// Emitted by hub-ops when a hub agent approves customs clearance (human gate).
+/// Consumed by: order-intake (ShipmentStatus::InTransit), payments (duties
+/// invoice if `duties_total_cents` > 0), engagement.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerCustomsCleared {
+    pub container_id:       Uuid,
+    pub tenant_id:          Uuid,
+    pub master_awbs:        Vec<String>,
+    /// Hub agent who approved clearance (mandatory human gate).
+    pub cleared_by:         Uuid,
+    #[serde(default)]
+    pub duties_total_cents: Option<i64>,
+    #[serde(default)]
+    pub customs_filing_ref: Option<String>,
+    /// 3-char tenant code for duties invoice number generation (e.g. "PH1").
+    #[serde(default)]
+    pub tenant_code:        String,
+    /// Per-shipment detail: recipients (engagement) + payer/duty (payments).
+    #[serde(default)]
+    pub details:            Vec<ShipmentMilestoneDetail>,
+    pub cleared_at:         String,
+}
+
+/// Emitted by hub-ops when a domestic road container is released at destination
+/// (skips port/customs). Consumed by: analytics, hub-ops internal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerReleasedDomestic {
+    pub container_id: Uuid,
+    pub tenant_id:    Uuid,
+    pub master_awbs:  Vec<String>,
+    pub released_at:  String,
+}
+
+/// Emitted by hub-ops when a container is broken back into individual pieces at
+/// the destination hub. Consumed by: order-intake (ShipmentStatus::AtHub dest).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContainerDeconsolidated {
+    pub container_id:        Uuid,
+    pub tenant_id:           Uuid,
+    pub destination_hub_id:  Uuid,
+    pub master_awbs:         Vec<String>,
+    pub child_awbs:          Vec<String>,
+    pub deconsolidated_at:   String,
+}
+
+/// Emitted by hub-ops when a shipment should be dispatched to an own driver for
+/// last-mile (HubRoutingConfig = OwnDriver or Auto). Consumed by: dispatch.
+///
+/// Enrichment fields (`service_level`, `sla_hours`, `total_cost_cents`) are
+/// supplied via the deconsolidate request and forwarded to the carrier booking
+/// event on Auto fallback so the carrier SLA record is accurate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubDispatchRequested {
+    pub shipment_id:               Uuid,
+    pub tenant_id:                 Uuid,
+    pub hub_id:                    Uuid,
+    pub destination_zone:          String,
+    /// Auto-mode fallback window; 0 for OwnDriver (no fallback).
+    #[serde(default)]
+    pub auto_fallback_window_mins: i32,
+    /// "standard" | "next_day" | "same_day" — defaults to "standard" when empty.
+    #[serde(default)]
+    pub service_level:             String,
+    /// SLA window in hours; 0 means use the consumer default.
+    #[serde(default)]
+    pub sla_hours:                 i64,
+    #[serde(default)]
+    pub total_cost_cents:          i64,
+    pub requested_at:              String,
+}
+
+/// Emitted by hub-ops (Carrier routing) or dispatch (Auto fallback) when a
+/// shipment should be booked with a 3PL carrier. Consumed by: carrier.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubCarrierBookingRequested {
+    pub shipment_id:      Uuid,
+    pub tenant_id:        Uuid,
+    pub hub_id:           Uuid,
+    pub destination_zone: String,
+    #[serde(default)]
+    pub carrier_id:       Option<Uuid>,
+    /// "standard" | "next_day" | "same_day" — defaults to "standard" when empty.
+    #[serde(default)]
+    pub service_level:    String,
+    /// SLA window in hours; 0 means use the consumer default.
+    #[serde(default)]
+    pub sla_hours:        i64,
+    #[serde(default)]
+    pub total_cost_cents: i64,
+    pub requested_at:     String,
+}
+
+#[cfg(test)]
+mod cross_border_tests {
+    use super::*;
+    use crate::Event;
+
+    #[test]
+    fn piece_scanned_inbound_roundtrips_in_envelope() {
+        let sid = Uuid::new_v4();
+        let evt = Event::new(
+            "logisticos/hub-ops",
+            "hub.piece.scanned_inbound",
+            Uuid::new_v4(),
+            PieceScannedInbound {
+                piece_awb: "CM-PH1-B0009012Z-002".into(),
+                master_awb: "CM-PH1-B0009012Z".into(),
+                shipment_id: sid,
+                tenant_id: Uuid::new_v4(),
+                hub_id: Uuid::new_v4(),
+                scanned_by: Uuid::new_v4(),
+                device_timestamp: Some("2026-06-03T08:00:00Z".into()),
+                server_timestamp: "2026-06-03T08:00:01Z".into(),
+            },
+        );
+        let json = serde_json::to_string(&evt).unwrap();
+        let back: Event<PieceScannedInbound> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.data.shipment_id, sid);
+    }
+
+    #[test]
+    fn customs_cleared_carries_duties_and_clearer() {
+        let by = Uuid::new_v4();
+        let p = ContainerCustomsCleared {
+            container_id: Uuid::new_v4(),
+            tenant_id: Uuid::new_v4(),
+            master_awbs: vec!["CM-PH1-B0009012Z".into()],
+            cleared_by: by,
+            duties_total_cents: Some(150_00),
+            customs_filing_ref: Some("BRK-123".into()),
+            tenant_code: "PH1".into(),
+            details: Vec::new(),
+            cleared_at: "2026-06-03T09:00:00Z".into(),
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        let back: ContainerCustomsCleared = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.cleared_by, by);
+        assert_eq!(back.duties_total_cents, Some(150_00));
+        assert_eq!(back.master_awbs.len(), 1);
+    }
+
+    #[test]
+    fn deconsolidated_carries_child_awbs() {
+        let p = ContainerDeconsolidated {
+            container_id: Uuid::new_v4(),
+            tenant_id: Uuid::new_v4(),
+            destination_hub_id: Uuid::new_v4(),
+            master_awbs: vec!["CM-PH1-B0009012Z".into()],
+            child_awbs: vec!["CM-PH1-B0009012Z-001".into(), "CM-PH1-B0009012Z-002".into()],
+            deconsolidated_at: "2026-06-03T10:00:00Z".into(),
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        let back: ContainerDeconsolidated = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.child_awbs.len(), 2);
+    }
 }

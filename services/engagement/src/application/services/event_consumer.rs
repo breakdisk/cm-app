@@ -13,6 +13,8 @@
 //!   payments.invoice.generated → "invoice_issued"        → Email                    (recipient_type=merchant)
 //!   payments.invoice.generated → "payment_receipt"      → WhatsApp + Email + Push  (recipient_type=customer)
 //!   payments.cod.remitted      → "cod_remitted"          → Email                    (merchant wallet credited)
+//!   payments.wallet.withdrawal_disbursed → "withdrawal_disbursed" → Email + Push    (carrier payout sent)
+//!   payments.wallet.withdrawal_rejected  → "withdrawal_rejected"  → Email + Push    (carrier payout declined)
 //!   tracking.receipt.email.requested → "shipment_confirmation" → Email   (customer-initiated re-send)
 
 use tracing::{error, info, warn};
@@ -73,6 +75,16 @@ fn get_mapping(event_type: &str) -> Option<EventNotificationMapping> {
             priority: NotificationPriority::Normal,
             channels: &["email"],
         }),
+        topics::WALLET_WITHDRAWAL_DISBURSED => Some(EventNotificationMapping {
+            template_id: "withdrawal_disbursed",
+            priority: NotificationPriority::High,
+            channels: &["email", "push"],
+        }),
+        topics::WALLET_WITHDRAWAL_REJECTED => Some(EventNotificationMapping {
+            template_id: "withdrawal_rejected",
+            priority: NotificationPriority::High,
+            channels: &["email", "push"],
+        }),
         topics::RECEIPT_EMAIL_REQUESTED => Some(EventNotificationMapping {
             template_id: "shipment_confirmation",
             priority: NotificationPriority::Normal,
@@ -87,7 +99,62 @@ fn get_mapping(event_type: &str) -> Option<EventNotificationMapping> {
             priority: NotificationPriority::Normal,
             channels: &[],               // sentinel — overridden below
         }),
+        // Cross-border hub milestones — fanned out per recipient by
+        // `handle_hub_milestone`, which synthesises a single-recipient payload and
+        // re-enters `process_event` for each shipment in the container.
+        topics::CONTAINER_ARRIVED_AT_PORT => Some(EventNotificationMapping {
+            template_id: "shipment_at_port",
+            priority: NotificationPriority::Normal,
+            channels: &["whatsapp", "push"],
+        }),
+        topics::CONTAINER_CUSTOMS_HOLD => Some(EventNotificationMapping {
+            template_id: "shipment_customs_hold",
+            priority: NotificationPriority::Normal,
+            channels: &["whatsapp", "push"],
+        }),
+        topics::CONTAINER_CUSTOMS_CLEARED => Some(EventNotificationMapping {
+            template_id: "shipment_customs_cleared",
+            priority: NotificationPriority::Normal,
+            channels: &["whatsapp", "push"],
+        }),
         _ => None,
+    }
+}
+
+/// Fan-out handler for container milestone events. A container covers many
+/// shipments, so these events carry a `details` list of per-shipment recipients.
+/// For each recipient we synthesise a single-recipient payload and re-enter
+/// `process_event`, reusing the full template/channel/suppression machinery.
+pub async fn handle_hub_milestone(
+    event_type: &str,
+    payload: &serde_json::Value,
+    notification_service: &NotificationService,
+    suppression_cache: &SuppressionCache,
+) {
+    let tenant_id = payload["tenant_id"].as_str().unwrap_or_default();
+    let data = payload.get("data").unwrap_or(payload);
+    let Some(details) = data["details"].as_array() else {
+        warn!(event_type, "hub milestone event has no recipient details — no notifications sent");
+        return;
+    };
+    if details.is_empty() {
+        warn!(event_type, "hub milestone event has empty details — no notifications sent");
+        return;
+    }
+
+    for detail in details {
+        let synthetic = serde_json::json!({
+            "tenant_id": tenant_id,
+            "data": {
+                "customer_id":     detail["customer_id"].clone(),
+                "shipment_id":     detail["shipment_id"].clone(),
+                "customer_phone":  detail["customer_phone"].clone(),
+                "customer_email":  detail["customer_email"].clone(),
+                "customer_name":   detail["customer_name"].clone(),
+                "tracking_number": detail["tracking_number"].clone(),
+            }
+        });
+        process_event(event_type, &synthetic, notification_service, suppression_cache).await;
     }
 }
 
@@ -121,12 +188,17 @@ pub async fn process_event(
 
     // Invoice events branch on recipient_type ("merchant" | "customer").
     // All other events address the delivery customer directly.
-    let is_invoice_event   = event_type == topics::INVOICE_GENERATED;
-    let is_cod_remitted    = event_type == topics::COD_REMITTED;
+    let is_invoice_event    = event_type == topics::INVOICE_GENERATED;
+    let is_cod_remitted     = event_type == topics::COD_REMITTED;
+    let is_withdrawal_event = event_type == topics::WALLET_WITHDRAWAL_DISBURSED
+                           || event_type == topics::WALLET_WITHDRAWAL_REJECTED;
 
     // For invoice events we resolve (template_id, channels) dynamically here
     // and override the sentinel values from get_mapping().
-    let (resolved_template, resolved_channels): (&str, &[&str]) = if is_invoice_event {
+    let (resolved_template, resolved_channels): (&str, &[&str]) = if is_withdrawal_event {
+        // Template/channels already set correctly in get_mapping(); pass through.
+        (mapping.template_id, mapping.channels)
+    } else if is_invoice_event {
         let recipient_type = data["recipient_type"].as_str().unwrap_or("merchant");
         if recipient_type == "customer" {
             ("payment_receipt", &["whatsapp", "email", "push"])
@@ -137,7 +209,32 @@ pub async fn process_event(
         (mapping.template_id, mapping.channels)
     };
 
-    let (customer_id, phone, email, vars) = if is_cod_remitted {
+    let (customer_id, phone, email, vars) = if is_withdrawal_event {
+        // Withdrawal disbursed/rejected — notify the carrier partner.
+        // The event envelope carries tenant_id; email is not yet in the event
+        // payload (TODO: add carrier_email to WithdrawalDisbursed/Rejected when
+        // the payments service gains identity-service lookup). Push fires via
+        // tenant_id; email channel gracefully no-ops when address is empty.
+        let amount_cents   = data["amount_centavos"].as_i64().unwrap_or(0);
+        let amount_php     = format!("{:.2}", amount_cents as f64 / 100.0);
+        let review_note    = data["review_note"].as_str().unwrap_or("").to_owned();
+        let withdrawal_id  = data["withdrawal_id"].as_str().unwrap_or("");
+        let is_disbursed   = event_type == topics::WALLET_WITHDRAWAL_DISBURSED;
+
+        let carrier_email = data["carrier_email"].as_str().unwrap_or("").to_owned();
+
+        let vars = serde_json::json!({
+            "withdrawal_id": withdrawal_id,
+            "amount":        amount_php,
+            "currency":      "PHP",
+            "status":        if is_disbursed { "disbursed" } else { "rejected" },
+            "review_note":   review_note,
+        });
+
+        // customer_id is tenant_id — sufficient for FCM push lookup.
+        // carrier_email is stored on WithdrawalRequest since migration 0013.
+        (tenant_id, String::new(), carrier_email, vars)
+    } else if is_cod_remitted {
         // COD_REMITTED — notify the merchant that their wallet has been credited.
         // Uses merchant_id as the audit key; phone is empty (email-only).
         let merchant_id = data["merchant_id"].as_str()
@@ -390,11 +487,53 @@ pub async fn process_event(
                  You can view your wallet balance and transaction history in the CargoMarket Merchant Portal.\n\n\
                  — CargoMarket Billing".to_owned(),
             ),
+            "withdrawal_disbursed" => (
+                Some(format!("Withdrawal of PHP {} Disbursed", vars["amount"].as_str().unwrap_or(""))),
+                "Your withdrawal request has been approved and the funds have been transferred.\n\n\
+                 Amount:    {{currency}} {{amount}}\n\
+                 Reference: {{withdrawal_id}}\n\n\
+                 Please allow 1–3 business days for the transfer to appear in your bank account.\n\n\
+                 You can view your full payout history in the CargoMarket Partner Portal.\n\n\
+                 — CargoMarket Finance".to_owned(),
+            ),
+            "withdrawal_rejected" => (
+                Some("Withdrawal Request Not Approved".to_owned()),
+                "Your withdrawal request could not be approved at this time.\n\n\
+                 Amount:    {{currency}} {{amount}}\n\
+                 Reference: {{withdrawal_id}}\n\
+                 Reason:    {{review_note}}\n\n\
+                 If you have questions, please contact our partner support team.\n\
+                 You can submit a new request from the CargoMarket Partner Portal.\n\n\
+                 — CargoMarket Finance".to_owned(),
+            ),
             "campaign_message" => (
                 data.get("subject").and_then(|v| v.as_str()).map(|s| s.to_owned()),
                 data.get("body").and_then(|v| v.as_str())
                     .unwrap_or("Hi {{customer_name}}, we have an update for you!")
                     .to_owned(),
+            ),
+            // ── Cross-border hub milestones (fanned out per recipient) ──
+            "shipment_at_port" => (
+                Some("Arrived at destination port".to_owned()),
+                "Hi {{customer_name}},\n\n\
+                 Good news — your shipment {{tracking_number}} has arrived at the destination port and is now awaiting customs processing.\n\n\
+                 We'll let you know as soon as it clears. Track it here: {{tracking_url}}\n\n\
+                 — CargoMarket".to_owned(),
+            ),
+            "shipment_customs_hold" => (
+                Some("Shipment held at customs".to_owned()),
+                "Hi {{customer_name}},\n\n\
+                 Your shipment {{tracking_number}} is currently held by customs. This step can take a little longer than usual.\n\n\
+                 No action is needed from you right now — we're handling it and will notify you the moment it clears.\n\
+                 Track it: {{tracking_url}}\n\n\
+                 — CargoMarket".to_owned(),
+            ),
+            "shipment_customs_cleared" => (
+                Some("Cleared customs — on the way".to_owned()),
+                "Hi {{customer_name}},\n\n\
+                 Your shipment {{tracking_number}} has cleared customs and is now moving to final delivery.\n\n\
+                 Track its journey: {{tracking_url}}\n\n\
+                 — CargoMarket".to_owned(),
             ),
             _ => (None, "{{body}}".to_owned()),
         };

@@ -66,6 +66,7 @@ import { findReceiptByBookingId, type BusReceipt } from "@/lib/api/marketplace-b
 import { ReceiptModal, type ReceiptModalBooking } from "@/components/marketplace/ReceiptModal";
 import { PickupModal, type PickupModalBooking } from "@/components/marketplace/PickupModal";
 import { useCarrier } from "@/contexts/carrier-context";
+import { CurrencySelect } from "@/components/balikbayan/CurrencySelect";
 
 // ── Status styling ────────────────────────────────────────────────────────────
 
@@ -185,6 +186,7 @@ interface DrawerFormState {
   features: VehicleFeature[];
   max_weight_kg: number;
   max_volume_m3: number | null;
+  currency: string;
   base_price_cents: number;
   per_km_cents: number;
   per_kg_cents: number | null;
@@ -206,6 +208,7 @@ function defaultForm(): DrawerFormState {
     features: [],
     max_weight_kg: 800,
     max_volume_m3: 5,
+    currency: "PHP",
     base_price_cents: 90_000,
     per_km_cents: 1_800,
     per_kg_cents: null,
@@ -224,6 +227,7 @@ function fromListing(l: VehicleListing): DrawerFormState {
     features:      l.features ?? [],
     max_weight_kg: l.max_weight_kg,
     max_volume_m3: l.max_volume_m3,
+    currency:      l.currency ?? "PHP",
     base_price_cents: l.base_price_cents,
     per_km_cents:     l.per_km_cents,
     per_kg_cents:     l.per_kg_cents,
@@ -262,6 +266,7 @@ function ListingDrawer({
       if (mode.kind === "edit") {
         await updateListing(mode.listing.id, {
           status:                       form.status,
+          currency:                     form.currency,
           base_price_cents:             form.base_price_cents,
           per_km_cents:                 form.per_km_cents,
           per_kg_cents:                 form.per_kg_cents,
@@ -278,6 +283,7 @@ function ListingDrawer({
           features:         form.features,
           max_weight_kg:    form.max_weight_kg,
           max_volume_m3:    form.max_volume_m3,
+          currency:         form.currency,
           base_price_cents: form.base_price_cents,
           per_km_cents:     form.per_km_cents,
           per_kg_cents:     form.per_kg_cents,
@@ -432,8 +438,19 @@ function ListingDrawer({
                   </Field>
                 </div>
 
+                <Field label="Currency">
+                  <CurrencySelect
+                    value={form.currency}
+                    onChange={(code) => setForm((f) => ({ ...f, currency: code }))}
+                    className="input"
+                  />
+                  <p className="mt-1 text-2xs text-white/40">
+                    All prices below are denominated in this currency.
+                  </p>
+                </Field>
+
                 <div className="grid grid-cols-3 gap-4">
-                  <Field label="Base price (₱)">
+                  <Field label={`Base price (${form.currency})`}>
                     <input
                       type="number"
                       value={form.base_price_cents / 100}
@@ -441,7 +458,7 @@ function ListingDrawer({
                       className="input"
                     />
                   </Field>
-                  <Field label="Per km (₱)">
+                  <Field label={`Per km (${form.currency})`}>
                     <input
                       type="number"
                       step="0.01"
@@ -450,7 +467,7 @@ function ListingDrawer({
                       className="input"
                     />
                   </Field>
-                  <Field label="Per kg (₱)">
+                  <Field label={`Per kg (${form.currency})`}>
                     <input
                       type="number"
                       step="0.01"

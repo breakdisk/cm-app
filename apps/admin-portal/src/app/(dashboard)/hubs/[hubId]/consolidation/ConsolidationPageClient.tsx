@@ -1,26 +1,34 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Boxes, Truck, Weight, Package, AlertTriangle,
   Wifi, WifiOff, RefreshCw, ChevronRight, Settings2,
   Download, ArrowRight, ArrowLeft, ArrowUp, ArrowDown,
-  Info,
+  Info, CheckCircle2, MapPin,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { createApiClient } from '@/lib/api/client';
 import { createConsolidationApi } from '@/lib/api/consolidation';
 import type {
   TruckSpec, ConsolidationPlan, Placement, UnplacedItem,
   CreateSpecBody, UpdateSpecBody,
 } from '@/lib/api/consolidation';
-import { createHubsApi } from '@/lib/api/hubs';
+import { createHubsApi, hubIdOf, type Hub } from '@/lib/api/hubs';
 import { useHubEvents } from '@/hooks/useHubEvents';
 import { cn } from '@/lib/utils';
 
 // R3F Canvas — SSR-disabled (WebGL needs browser).
-const PackingCanvas = dynamic(() => import('./PackingCanvas'), { ssr: false });
+const PackingCanvas = dynamic(() => import('./PackingCanvas'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-full items-center justify-center">
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan-500 border-t-transparent" />
+    </div>
+  ),
+});
 const TruckSpecModal = dynamic(() => import('./TruckSpecModal'), { ssr: false });
 
 // ── Client-side collision / bounds helpers ────────────────────────────────────
@@ -56,6 +64,36 @@ function loadLabel(volumePct: number): { label: string; color: string } {
 
 function kgStr(grams: number): string {
   return (grams / 1000).toFixed(1);
+}
+
+// ── Built-in vehicle presets ───────────────────────────────────────────────────
+// Truck specs are tenant-scoped and intentionally NOT seeded by migration
+// (see hub-ops/migrations/0004_consolidation.sql — they need a real tenant_id).
+// Without this fallback, a fresh tenant has zero specs, so `selectedSpec` is
+// null and the 3D canvas never mounts — the operator just sees an empty
+// placeholder. These presets let the 3D viewer always render an empty-truck
+// layout immediately. Ids are prefixed `preset:` so we can detect them and
+// persist the chosen one to the backend on first optimise (so plans can FK to
+// a real spec row). Dimensions mirror TruckSpecModal's PH freight presets.
+const PRESET_PREFIX = 'preset:';
+
+const DEFAULT_SPECS: TruckSpec[] = ([
+  { name: 'L300 Van',   transport_mode: 'road', size_class: 'L300',      interior_length_cm: 280,  interior_width_cm: 170, interior_height_cm: 140, max_payload_kg: 1500  },
+  { name: '6-Wheeler',  transport_mode: 'road', size_class: '6Wheeler',  interior_length_cm: 520,  interior_width_cm: 220, interior_height_cm: 200, max_payload_kg: 5000  },
+  { name: '10-Wheeler', transport_mode: 'road', size_class: '10Wheeler', interior_length_cm: 780,  interior_width_cm: 240, interior_height_cm: 230, max_payload_kg: 10000 },
+  { name: 'FCL 20-ft',  transport_mode: 'sea',  size_class: 'FCL20',     interior_length_cm: 589,  interior_width_cm: 235, interior_height_cm: 239, max_payload_kg: 21700 },
+  { name: 'FCL 40-ft',  transport_mode: 'sea',  size_class: 'FCL40',     interior_length_cm: 1203, interior_width_cm: 235, interior_height_cm: 239, max_payload_kg: 26480 },
+] as const).map((p) => ({
+  ...p,
+  id:         `${PRESET_PREFIX}${p.size_class}`,
+  tenant_id:  '',
+  is_active:  true,
+  created_at: new Date(0).toISOString(),
+  updated_at: new Date(0).toISOString(),
+}));
+
+function isPreset(spec: TruckSpec | null): boolean {
+  return !!spec && spec.id.startsWith(PRESET_PREFIX);
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -149,9 +187,11 @@ function NudgeBtn({
 interface Props {
   hubId:       string;
   token:       string;
-  /** Override root height class. Defaults to h-[calc(100vh-4rem)] for the
-   *  standalone full-page route. Pass a smaller value when embedding inside
-   *  a tabbed layout (e.g. "h-[calc(100vh-10rem)]"). */
+  /** Override root height class.
+   *  - Standalone full-page route: omit (defaults to h-[calc(100vh-6rem)] md:h-[calc(100vh-7rem)]
+   *    which accounts for the dashboard header + p-4/p-6 padding).
+   *  - Embedded in a tabbed layout: pass "h-full" so the component fills the
+   *    parent container whose height is already fixed by the tab layout. */
   heightClass?: string;
 }
 
@@ -166,7 +206,8 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
   const [currentPlan,    setCurrentPlan]    = useState<ConsolidationPlan | null>(null);
   const [placements,     setPlacements]     = useState<Placement[]>([]);
   const [loading,        setLoading]        = useState(true);
-  const [initError,      setInitError]      = useState<string | null>(null);
+  const [offline,        setOffline]        = useState(false);   // planning service unreachable
+  const [usingPresets,   setUsingPresets]   = useState(false);   // showing built-in fallback specs
   const [retryKey,       setRetryKey]       = useState(0);
   const [optimizing,     setOptimizing]     = useState(false);
   const [loadingManifest, setLoadingManifest] = useState(false);
@@ -175,6 +216,14 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
   const [wsConnected,    setWsConnected]    = useState(false);
   const [specsModalOpen, setSpecsModalOpen] = useState(false);
   const [scanFeed,       setScanFeed]       = useState<string[]>([]);
+  const [hubs,            setHubs]            = useState<Hub[]>([]);
+  const [destHubId,       setDestHubId]       = useState('');
+  const [showConfirmForm, setShowConfirmForm]  = useState(false);
+  const [confirming,      setConfirming]       = useState(false);
+  const [loadedAwbs,      setLoadedAwbs]       = useState<Set<string>>(new Set());
+  const [scanInput,       setScanInput]        = useState('');
+  const [scanning,        setScanning]         = useState(false);
+  const scanInputRef = useRef<HTMLInputElement>(null);
 
   // Initialise — load specs and latest plan together.
   // `retryKey` increments on manual retry to re-trigger this effect.
@@ -182,38 +231,65 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
     let cancelled = false;
     async function init() {
       setLoading(true);
-      setInitError(null);
-      try {
-        const [specsData, plans] = await Promise.all([
-          consolidationApi.listSpecs(),
-          consolidationApi.listPlans(hubId),
-        ]);
-        if (cancelled) return;
+      // Settle independently so a backend outage on either call still lets the
+      // 3D viewer render with whatever we have (and presets as a last resort).
+      const [specsRes, plansRes] = await Promise.allSettled([
+        consolidationApi.listSpecs(),
+        consolidationApi.listPlans(hubId),
+      ]);
+      if (cancelled) return;
+
+      const specsOk   = specsRes.status === 'fulfilled';
+      const specsData = specsOk ? specsRes.value : [];
+      const plans     = plansRes.status === 'fulfilled' ? plansRes.value : [];
+
+      if (!specsOk) console.error('consolidation listSpecs error', specsRes.reason);
+
+      // Always end up with at least one spec selected so the canvas mounts.
+      // Real tenant specs win; otherwise fall back to built-in presets.
+      if (specsData.length > 0) {
         setSpecs(specsData);
-        if (specsData.length > 0) {
-          setSelectedSpecId(specsData[0].id);
-        } else {
-          // First-time setup: no specs exist yet — open the modal automatically
-          // so the operator is guided to create one rather than seeing a silent
-          // empty state.
-          setSpecsModalOpen(true);
-        }
-        if (plans.length > 0) {
-          setCurrentPlan(plans[0]);
-          setPlacements(plans[0].placements as Placement[]);
-        }
-      } catch (e) {
-        if (cancelled) return;
-        console.error('consolidation init error', e);
-        const msg = (e as { message?: string })?.message;
-        setInitError(msg ?? 'Failed to load plan data — check your connection and retry.');
-      } finally {
-        if (!cancelled) setLoading(false);
+        setSelectedSpecId(specsData[0].id);
+        setUsingPresets(false);
+      } else {
+        setSpecs(DEFAULT_SPECS);
+        setSelectedSpecId(DEFAULT_SPECS[0].id);
+        setUsingPresets(true);
       }
+      setOffline(!specsOk);
+
+      if (plans.length > 0) {
+        setCurrentPlan(plans[0]);
+        setPlacements(plans[0].placements as Placement[]);
+      }
+
+      // Seed loadedAwbs from the plan if it was previously confirmed.
+      if (plans.length > 0 && plans[0].loaded_awbs.length > 0) {
+        setLoadedAwbs(new Set(plans[0].loaded_awbs));
+      }
+      setLoading(false);
     }
     init();
+
+    async function loadHubs() {
+      try {
+        const list = await hubsApi.list();
+        setHubs(list);
+      } catch {
+        // non-fatal — confirm form will just show an empty dropdown
+      }
+    }
+    loadHubs();
+
     return () => { cancelled = true; };
   }, [hubId, consolidationApi, retryKey]);
+
+  // Auto-focus scan input when plan enters confirmed status.
+  useEffect(() => {
+    if (currentPlan?.status === 'confirmed') {
+      setTimeout(() => scanInputRef.current?.focus(), 100);
+    }
+  }, [currentPlan?.status]);
 
   // WebSocket — live plan_computed and box_scanned events.
   useHubEvents({
@@ -227,10 +303,33 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
           const plan = await consolidationApi.getPlan(event.plan_id);
           setCurrentPlan(plan);
           setPlacements(plan.placements as Placement[]);
-        } catch {}
+          toast.success('Load plan updated.', { duration: 3000 });
+        } catch {
+          toast.error('Failed to fetch updated plan.');
+        }
       }
-      if (event.type === 'box_scanned' && event.plan_id) {
-        setScanFeed(prev => [event.plan_id!, ...prev].slice(0, 20));
+      if (event.type === 'parcel_inducted' && event.tracking_number) {
+        toast.info(`Inducted: ${event.tracking_number}${event.zone ? ` → ${event.zone}` : ''}`, { duration: 4000 });
+      }
+      if (event.type === 'parcel_dispatched' && event.tracking_number) {
+        toast.success(`Dispatched: ${event.tracking_number}`, { duration: 4000 });
+      }
+      if (event.type === 'box_scanned' && event.awb) {
+        setLoadedAwbs(prev => new Set([...prev, event.awb as string]));
+        setScanFeed(prev => [event.awb as string, ...prev].slice(0, 20));
+      }
+      if (event.type === 'plan_loaded' && event.plan_id) {
+        setCurrentPlan(prev => prev ? { ...prev, status: 'loaded' } : prev);
+        toast.success('All pieces loaded — container sealed!', { duration: 6000 });
+      }
+      if (event.type === 'plan_confirmed' && event.plan_id) {
+        try {
+          const plan = await consolidationApi.getPlan(event.plan_id);
+          setCurrentPlan(plan);
+          toast.success('Plan confirmed by another terminal.');
+        } catch {
+          toast.error('Failed to fetch confirmed plan.');
+        }
       }
     }, [consolidationApi]),
   });
@@ -245,6 +344,30 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
     ? pct(currentPlan.volume_used_cm3, currentPlan.volume_total_cm3)
     : 0;
   const { label: loadLbl, color: loadColor } = loadLabel(volumePct);
+
+  // Resolve the spec id to send to the optimiser. A built-in preset has no DB
+  // row, so persist it on first use and swap it into the list before computing
+  // (the plan's truck_spec_id FK requires a real spec). Returns null if no spec
+  // is selected. Throws are handled by the caller's try/catch.
+  async function resolveSpecId(): Promise<string | null> {
+    const spec = specs.find(s => s.id === selectedSpecId) ?? null;
+    if (!spec) return null;
+    if (!isPreset(spec)) return spec.id;
+
+    const created = await consolidationApi.createSpec({
+      name:               spec.name,
+      transport_mode:     spec.transport_mode,
+      size_class:         spec.size_class,
+      interior_length_cm: spec.interior_length_cm,
+      interior_width_cm:  spec.interior_width_cm,
+      interior_height_cm: spec.interior_height_cm,
+      max_payload_kg:     spec.max_payload_kg,
+    });
+    setSpecs(prev => prev.map(s => (s.id === spec.id ? created : s)));
+    setSelectedSpecId(created.id);
+    setUsingPresets(false);
+    return created.id;
+  }
 
   // ── Load from Hub Manifest ──────────────────────────────────────────────────
   async function handleLoadManifest() {
@@ -266,12 +389,13 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
       if (items.length === 0) return;
 
       // Immediately run the optimiser with the manifest items.
-      if (!selectedSpecId) return;
+      const specId = await resolveSpecId();
+      if (!specId) return;
       setOptimizing(true);
       try {
         const plan = await consolidationApi.computePlan({
           hub_id:        hubId,
-          truck_spec_id: selectedSpecId,
+          truck_spec_id: specId,
           items,
         });
         setCurrentPlan(plan);
@@ -280,7 +404,8 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
         setOptimizing(false);
       }
     } catch (e) {
-      console.error('manifest load error', e);
+      const msg = (e as { message?: string })?.message ?? 'Failed to load manifest.';
+      toast.error(msg);
     } finally {
       setLoadingManifest(false);
     }
@@ -302,17 +427,70 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
         return;
       }
 
+      const specId = await resolveSpecId();
+      if (!specId) return;
       const plan = await consolidationApi.computePlan({
         hub_id:        hubId,
-        truck_spec_id: selectedSpecId,
+        truck_spec_id: specId,
         items,
       });
       setCurrentPlan(plan);
       setPlacements(plan.placements as Placement[]);
     } catch (e) {
-      console.error('compute_plan error', e);
+      const msg = (e as { message?: string })?.message ?? 'Optimisation failed.';
+      toast.error(msg);
     } finally {
       setOptimizing(false);
+    }
+  }
+
+  async function handleConfirm() {
+    if (!currentPlan || !selectedSpec || !destHubId) return;
+    setConfirming(true);
+    try {
+      const planSpec = specs.find(s => s.id === currentPlan.truck_spec_id) ?? selectedSpec;
+      const confirmed = await consolidationApi.confirmPlan(currentPlan.id, {
+        destination_hub_id: destHubId,
+        transport_mode: planSpec.transport_mode as 'road' | 'sea' | 'air',
+      });
+      setCurrentPlan(confirmed);
+      setShowConfirmForm(false);
+      toast.success('Plan confirmed — container created. Ready for scanning.');
+    } catch (e) {
+      toast.error((e as { message?: string })?.message ?? 'Failed to confirm plan.');
+    } finally {
+      setConfirming(false);
+    }
+  }
+
+  async function handleScan(awb: string) {
+    if (!currentPlan || !awb.trim()) return;
+    setScanning(true);
+    try {
+      const result = await consolidationApi.scanPiece(currentPlan.id, awb.trim());
+      setLoadedAwbs(prev => new Set([...prev, result.awb]));
+      setScanInput('');
+      if (result.plan_status === 'loaded') {
+        setCurrentPlan(prev => prev ? { ...prev, status: 'loaded' } : prev);
+        toast.success('All pieces loaded — container sealed!');
+      } else {
+        toast.success(`Loaded ${result.loaded_count} / ${result.total_count}`);
+      }
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { error?: string; message?: string } }; message?: string };
+      const code    = err.response?.data?.error;
+      const message = err.response?.data?.message ?? err.message ?? 'Scan failed.';
+      if (code === 'AWB_NOT_IN_PLAN') {
+        toast.error(`Not in plan: ${awb}`);
+      } else if (code === 'ALREADY_SCANNED') {
+        toast(message, { icon: '⚠️' });
+      } else {
+        toast.error(message);
+      }
+      setScanInput('');
+    } finally {
+      setScanning(false);
+      scanInputRef.current?.focus();
     }
   }
 
@@ -348,26 +526,43 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
   // ── Spec management ──────────────────────────────────────────────────────────
   async function handleCreateSpec(body: CreateSpecBody) {
     const spec = await consolidationApi.createSpec(body);
-    setSpecs(prev => [...prev, spec]);
-    if (!selectedSpecId) {
-      // First spec ever — select it and dismiss the modal so the canvas
-      // becomes visible immediately instead of being hidden behind it.
+    if (usingPresets) {
+      // First real spec ever — drop the built-in presets, select it, and
+      // dismiss the modal so the canvas reflects the saved vehicle.
+      setSpecs([spec]);
       setSelectedSpecId(spec.id);
+      setUsingPresets(false);
       setSpecsModalOpen(false);
+    } else {
+      setSpecs(prev => [...prev, spec]);
+      if (!selectedSpecId) {
+        setSelectedSpecId(spec.id);
+        setSpecsModalOpen(false);
+      }
     }
   }
 
   async function handleUpdateSpec(id: string, body: UpdateSpecBody) {
-    const updated = await consolidationApi.updateSpec(id, body);
-    setSpecs(prev => prev.map(s => s.id === id ? updated : s));
+    try {
+      const updated = await consolidationApi.updateSpec(id, body);
+      setSpecs(prev => prev.map(s => s.id === id ? updated : s));
+      toast.success('Vehicle spec updated.');
+    } catch (e) {
+      toast.error((e as { message?: string })?.message ?? 'Failed to update spec.');
+      throw e;
+    }
   }
 
   // ── Selected box info ────────────────────────────────────────────────────────
   const selectedPlacement = placements.find(p => p.awb === selectedAwb) ?? null;
 
+  // Height sentinel used by loading / error states — identical logic to the
+  // main content wrapper so the full viewport area is always claimed.
+  const rootH = heightClass ?? 'h-[calc(100vh-6rem)] md:h-[calc(100vh-7rem)]';
+
   if (loading) {
     return (
-      <div className="flex h-full items-center justify-center">
+      <div className={cn('flex items-center justify-center', rootH)}>
         <div className="flex flex-col items-center gap-3">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan-500 border-t-transparent" />
           <span className="text-sm text-white/40">Loading consolidation plan…</span>
@@ -376,26 +571,9 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
     );
   }
 
-  if (initError) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <div className="flex flex-col items-center gap-4 text-center max-w-xs">
-          <AlertTriangle size={32} className="text-amber-400" />
-          <p className="text-sm font-mono text-white/60">{initError}</p>
-          <button
-            onClick={() => setRetryKey(k => k + 1)}
-            className="flex items-center gap-2 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-4 py-2 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/20 transition-all"
-          >
-            <RefreshCw size={12} /> Retry
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <>
-      <div className={cn('flex gap-4 p-4 overflow-hidden', heightClass ?? 'h-[calc(100vh-4rem)]')}>
+      <div className={cn('flex gap-4 p-4 overflow-hidden', rootH)}>
 
         {/* ── Left panel ─────────────────────────────────────────────── */}
         <div className="flex w-64 shrink-0 flex-col gap-3 overflow-y-auto">
@@ -415,6 +593,35 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
               Manage Specs
             </button>
           </div>
+
+          {/* Planning-service offline — non-blocking; presets keep the viewer alive */}
+          {offline && (
+            <div className="flex items-center justify-between gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+              <span className="flex items-center gap-1.5">
+                <AlertTriangle size={12} /> Planning service offline — showing presets
+              </span>
+              <button
+                onClick={() => setRetryKey(k => k + 1)}
+                title="Retry"
+                className="text-amber-200 hover:text-white transition-colors"
+              >
+                <RefreshCw size={12} />
+              </button>
+            </div>
+          )}
+
+          {/* Fresh tenant with no saved specs yet — guide ops to persist one */}
+          {!offline && usingPresets && (
+            <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-3 py-2 text-[11px] leading-relaxed text-cyan-300/80">
+              <span className="flex items-center gap-1.5 font-semibold text-cyan-300">
+                <Info size={11} /> Default vehicle presets
+              </span>
+              <span className="mt-0.5 block text-cyan-300/60">
+                Pick a vehicle to preview the 3D layout. Save your own dimensions via{' '}
+                <span className="font-semibold text-cyan-300">Manage Specs</span>.
+              </span>
+            </div>
+          )}
 
           {/* Load status badge */}
           {currentPlan && (
@@ -485,7 +692,162 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
                 ? `Reload Manifest (${manifestCount})`
                 : 'Load from Manifest'}
             </button>
+
+          {currentPlan?.status === 'draft' && placements.length > 0 && (
+            <div className="flex flex-col gap-2">
+              {!showConfirmForm ? (
+                <button
+                  onClick={() => setShowConfirmForm(true)}
+                  className={cn(
+                    'flex items-center justify-center gap-2 rounded-xl py-3 text-sm font-semibold transition-all',
+                    'border border-green-500/50 bg-green-500/10 text-green-300',
+                    'hover:bg-green-500/20 hover:border-green-400',
+                  )}
+                >
+                  <CheckCircle2 size={14} />
+                  Confirm &amp; Create Container
+                </button>
+              ) : (
+                <div className="flex flex-col gap-2 rounded-xl border border-green-500/20 bg-green-500/5 p-3">
+                  <p className="text-[11px] text-green-300/70 uppercase tracking-wider">Destination Hub</p>
+                  <select
+                    value={destHubId}
+                    onChange={e => setDestHubId(e.target.value)}
+                    className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white focus:border-green-400 focus:outline-none"
+                  >
+                    <option value="">Select destination…</option>
+                    {hubs.map(h => {
+                      const hid = hubIdOf(h);
+                      return hid !== hubId ? (
+                        <option key={hid} value={hid} className="bg-gray-900">{h.name}</option>
+                      ) : null;
+                    })}
+                  </select>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleConfirm}
+                      disabled={!destHubId || confirming}
+                      className="flex-1 rounded-lg bg-green-500/20 py-2 text-sm font-semibold text-green-300 hover:bg-green-500/30 disabled:opacity-40 transition-colors"
+                    >
+                      {confirming ? 'Confirming…' : 'Confirm'}
+                    </button>
+                    <button
+                      onClick={() => setShowConfirmForm(false)}
+                      className="rounded-lg bg-white/5 px-3 py-2 text-sm text-white/50 hover:bg-white/10 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           </div>
+
+          {/* ── Confirmed mode: scan input ────────────────────────── */}
+          {currentPlan?.status === 'confirmed' && (
+            <div className="flex flex-col gap-3">
+              {/* Progress bar */}
+              <div>
+                <div className="mb-1 flex justify-between text-[11px] text-white/40">
+                  <span className="uppercase tracking-wider">Loading progress</span>
+                  <span className="font-mono text-green-400">
+                    {loadedAwbs.size} / {currentPlan.piece_count}
+                  </span>
+                </div>
+                <div className="h-2 w-full overflow-hidden rounded-full bg-white/10">
+                  <div
+                    className="h-full rounded-full transition-all duration-300"
+                    style={{
+                      width:      `${currentPlan.piece_count > 0 ? (loadedAwbs.size / currentPlan.piece_count) * 100 : 0}%`,
+                      background: '#00FF88',
+                      boxShadow:  '0 0 8px #00FF8880',
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* AWB scan input */}
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] text-white/40 uppercase tracking-wider">Scan AWB</label>
+                <input
+                  ref={scanInputRef}
+                  type="text"
+                  value={scanInput}
+                  onChange={e => setScanInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') handleScan(scanInput); }}
+                  placeholder="Scan or type AWB…"
+                  disabled={scanning}
+                  autoFocus
+                  className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm font-mono text-white placeholder-white/20 focus:border-green-400 focus:outline-none disabled:opacity-40"
+                />
+              </div>
+
+              {/* Piece checklist */}
+              <div>
+                <div className="mb-1 text-[11px] uppercase tracking-wider text-white/40">
+                  Pieces ({placements.length})
+                </div>
+                <div className="flex max-h-48 flex-col gap-0.5 overflow-y-auto">
+                  {placements.map(p => (
+                    <div
+                      key={p.awb}
+                      className={cn(
+                        'flex items-center gap-2 rounded-lg px-2 py-1 text-xs transition-colors',
+                        loadedAwbs.has(p.awb)
+                          ? 'bg-green-500/10 text-green-400'
+                          : 'bg-white/5 text-white/40',
+                      )}
+                    >
+                      <CheckCircle2
+                        size={11}
+                        className={loadedAwbs.has(p.awb) ? 'text-green-400' : 'text-white/20'}
+                      />
+                      <span className="truncate font-mono">{p.awb}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── Loaded mode: success banner ───────────────────────── */}
+          {currentPlan?.status === 'loaded' && (
+            <div className="flex flex-col gap-3 rounded-xl border border-green-500/30 bg-green-500/10 p-4">
+              <div className="flex items-center gap-2 text-green-400">
+                <CheckCircle2 size={16} />
+                <span className="text-sm font-semibold">Container Sealed</span>
+              </div>
+              {currentPlan.container_id && (
+                <>
+                  <div className="flex flex-col gap-1">
+                    <span className="text-[10px] text-white/40 uppercase tracking-wider">Container ID</span>
+                    <div className="flex items-center gap-2">
+                      <span className="flex-1 truncate rounded bg-white/5 px-2 py-1 font-mono text-[11px] text-green-300">
+                        {currentPlan.container_id}
+                      </span>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(currentPlan.container_id!);
+                          toast.success('Copied');
+                        }}
+                        className="shrink-0 text-[10px] text-white/40 hover:text-white transition-colors"
+                      >
+                        Copy
+                      </button>
+                    </div>
+                  </div>
+                  <a
+                    href={`/hub-transfer?container_id=${currentPlan.container_id}`}
+                    className="flex items-center justify-center gap-1.5 rounded-lg bg-white/5 py-2 text-xs text-cyan-400 hover:bg-white/10 transition-colors"
+                  >
+                    <MapPin size={11} />
+                    View in Hub Transfer Board
+                  </a>
+                </>
+              )}
+            </div>
+          )}
 
           {/* Selected box info + nudge controls */}
           <AnimatePresence>
@@ -567,6 +929,7 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
               selectedAwb={selectedAwb}
               onSelect={setSelectedAwb}
               onNudge={handleNudge}
+              loadedAwbs={loadedAwbs}
             />
           ) : (
             <div className="flex h-full items-center justify-center">

@@ -2,12 +2,14 @@
 pub const CARRIER_ONBOARDED:               &str = "logisticos.carrier.onboarded";
 pub const CARRIER_STATUS_CHANGED:          &str = "logisticos.carrier.status_changed";
 pub const CARRIER_ALLOCATED:               &str = "logisticos.carrier.allocated";
+pub const CARRIER_TRACKING_EVENT:          &str = "logisticos.carrier.tracking.event";
 pub const MARKETPLACE_BOOKING_ACCEPTED:    &str = "logisticos.carrier.marketplace.booking.accepted";
 pub const MARKETPLACE_BOOKING_REJECTED:    &str = "logisticos.carrier.marketplace.booking.rejected";
 pub const MARKETPLACE_PICKUP_RECORDED:     &str = "logisticos.carrier.marketplace.pickup.recorded";
 
 // Identity
 pub const TENANT_CREATED:            &str = "logisticos.identity.tenant.created";
+pub const TENANT_FINALIZED:          &str = "logisticos.identity.tenant.finalized";
 pub const USER_INVITED:              &str = "logisticos.identity.user.invited";
 pub const USER_CREATED:              &str = "logisticos.identity.user.created";
 
@@ -30,9 +32,23 @@ pub const PALLET_SEALED:             &str = "logisticos.hub.pallet.sealed";
 pub const CONTAINER_DEPARTED:        &str = "logisticos.fleet.container.departed";
 pub const CONTAINER_ARRIVED:         &str = "logisticos.fleet.container.arrived";
 
+// Cross-border hub transfer (hub-ops emits)
+pub const HUB_PIECE_SCANNED_INBOUND:     &str = "logisticos.hub.piece.scanned_inbound";
+pub const CONTAINER_ARRIVED_AT_PORT:     &str = "logisticos.hub.container.arrived_at_port";
+pub const CONTAINER_CUSTOMS_HOLD:        &str = "logisticos.hub.container.customs_hold";
+pub const CONTAINER_CUSTOMS_CLEARED:     &str = "logisticos.hub.container.customs_cleared";
+pub const CONTAINER_RELEASED_DOMESTIC:   &str = "logisticos.hub.container.released_domestic";
+pub const CONTAINER_DECONSOLIDATED:      &str = "logisticos.hub.container.deconsolidated";
+pub const HUB_DISPATCH_REQUESTED:        &str = "logisticos.hub.shipment.dispatch_requested";
+pub const HUB_CARRIER_BOOKING_REQUESTED: &str = "logisticos.hub.shipment.carrier_booking_requested";
+
+// Consolidation (hub-ops emits)
+/// All pieces scanned and container sealed by the 3D load-planning flow.
+/// Payload: `{ "plan_id": uuid, "container_id": uuid, "master_awbs": [str] }`.
+/// order-intake subscribes to flip qualifying shipments → `at_hub`.
+pub const CONSOLIDATION_PLAN_LOADED:     &str = "logisticos.hub.consolidation.plan_loaded";
+
 // Invoice / Billing
-pub const INVOICE_FINALIZED:         &str = "logisticos.payments.invoice.finalized";
-pub const COD_REMITTANCE_READY:      &str = "logisticos.payments.cod.remittance_ready";
 pub const WEIGHT_ADJUSTMENT_INVOICED: &str = "logisticos.payments.invoice.weight_adjustment";
 
 // Dispatch
@@ -80,21 +96,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cross_border_hub_topics_namespaced() {
+        assert_eq!(HUB_PIECE_SCANNED_INBOUND,     "logisticos.hub.piece.scanned_inbound");
+        assert_eq!(CONTAINER_ARRIVED_AT_PORT,     "logisticos.hub.container.arrived_at_port");
+        assert_eq!(CONTAINER_CUSTOMS_HOLD,        "logisticos.hub.container.customs_hold");
+        assert_eq!(CONTAINER_CUSTOMS_CLEARED,     "logisticos.hub.container.customs_cleared");
+        assert_eq!(CONTAINER_RELEASED_DOMESTIC,   "logisticos.hub.container.released_domestic");
+        assert_eq!(CONTAINER_DECONSOLIDATED,      "logisticos.hub.container.deconsolidated");
+        assert_eq!(HUB_DISPATCH_REQUESTED,        "logisticos.hub.shipment.dispatch_requested");
+        assert_eq!(HUB_CARRIER_BOOKING_REQUESTED, "logisticos.hub.shipment.carrier_booking_requested");
+        assert_eq!(CONSOLIDATION_PLAN_LOADED,     "logisticos.hub.consolidation.plan_loaded");
+    }
+
+    #[test]
     fn all_topics_are_lowercase_dot_separated() {
         let topics: &[&str] = &[
-            CARRIER_ONBOARDED, CARRIER_STATUS_CHANGED, CARRIER_ALLOCATED,
+            CARRIER_ONBOARDED, CARRIER_STATUS_CHANGED, CARRIER_ALLOCATED, CARRIER_TRACKING_EVENT,
             MARKETPLACE_BOOKING_ACCEPTED, MARKETPLACE_BOOKING_REJECTED, MARKETPLACE_PICKUP_RECORDED,
-            TENANT_CREATED, USER_CREATED, USER_INVITED,
+            TENANT_CREATED, TENANT_FINALIZED, USER_CREATED, USER_INVITED,
             SHIPMENT_CREATED, SHIPMENT_CONFIRMED, SHIPMENT_CANCELLED, SHIPMENT_RESCHEDULED,
             AWB_ISSUED, PIECE_SCANNED, WEIGHT_DISCREPANCY_FOUND,
             PALLET_SEALED, CONTAINER_DEPARTED, CONTAINER_ARRIVED,
+            HUB_PIECE_SCANNED_INBOUND, CONTAINER_ARRIVED_AT_PORT, CONTAINER_CUSTOMS_HOLD,
+            CONTAINER_CUSTOMS_CLEARED, CONTAINER_RELEASED_DOMESTIC, CONTAINER_DECONSOLIDATED,
+            HUB_DISPATCH_REQUESTED, HUB_CARRIER_BOOKING_REQUESTED,
+            CONSOLIDATION_PLAN_LOADED,
             ROUTE_CREATED, DRIVER_ASSIGNED, ROUTE_OPTIMIZED,
             DRIVER_AVAILABLE,
             PICKUP_COMPLETED, DELIVERY_ATTEMPTED, DELIVERY_COMPLETED, DELIVERY_FAILED,
             LOCATION_UPDATED, DRIVER_LOCATION_UPDATED,
             POD_CAPTURED, PICKUP_CAPTURED,
-            INVOICE_GENERATED, INVOICE_FINALIZED, PAYMENT_RECEIVED,
-            COD_COLLECTED, COD_REMITTANCE_READY, WEIGHT_ADJUSTMENT_INVOICED,
+            INVOICE_GENERATED, PAYMENT_RECEIVED,
+            COD_COLLECTED, WEIGHT_ADJUSTMENT_INVOICED,
             WALLET_WITHDRAWAL_DISBURSED, WALLET_WITHDRAWAL_REJECTED,
             NOTIFICATION_QUEUED, CAMPAIGN_TRIGGERED, CAMPAIGN_COMPLETED, CUSTOMER_SEGMENT_UPDATED,
             TASK_ASSIGNED,

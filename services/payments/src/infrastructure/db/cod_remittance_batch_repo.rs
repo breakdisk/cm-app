@@ -103,7 +103,7 @@ impl CodRemittanceBatchRepository for PgCodRemittanceBatchRepository {
     }
 
     async fn save(&self, b: &CodRemittanceBatch) -> anyhow::Result<()> {
-        let currency = format!("{:?}", b.currency);
+        let currency = b.currency.to_string();
         sqlx::query(
             r#"INSERT INTO payments.cod_remittance_batches
                    (id, tenant_id, merchant_id, cutoff_date, currency, cod_count,

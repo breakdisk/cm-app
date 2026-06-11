@@ -69,6 +69,13 @@ class EncryptedTokenStorage @Inject constructor(
             .remove(KEY_INVITE_SIG)
             .apply()
     }
+    override fun saveHubId(hubId: String?) {
+        if (hubId != null) prefs.edit().putString(KEY_HUB_ID, hubId).apply()
+        else               prefs.edit().remove(KEY_HUB_ID).apply()
+    }
+    override fun getHubId(): String? = prefs.getString(KEY_HUB_ID, null)
+    override fun saveIsHubScanner(isHub: Boolean) = prefs.edit().putBoolean(KEY_IS_HUB_SCANNER, isHub).apply()
+    override fun isHubScanner(): Boolean = prefs.getBoolean(KEY_IS_HUB_SCANNER, false)
     override fun clearAll() = prefs.edit().clear().apply()
 
     companion object {
@@ -80,5 +87,7 @@ class EncryptedTokenStorage @Inject constructor(
         private const val KEY_INVITE_SLUG  = "invite_slug"
         private const val KEY_INVITE_PHONE = "invite_phone"
         private const val KEY_INVITE_SIG   = "invite_sig"
+        private const val KEY_HUB_ID       = "hub_id"
+        private const val KEY_IS_HUB_SCANNER = "is_hub_scanner"
     }
 }

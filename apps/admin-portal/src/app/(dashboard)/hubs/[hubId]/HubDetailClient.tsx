@@ -7,7 +7,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Building2, ChevronLeft, MapPin, Layers,
   Package, Boxes, AlertTriangle, RefreshCw,
-  FileText, ArrowRight,
+  FileText, ArrowRight, Users,
 } from 'lucide-react';
 import { GlassCard } from '@/components/ui/glass-card';
 import { NeonBadge } from '@/components/ui/neon-badge';
@@ -19,15 +19,17 @@ import {
   type Hub, type HubStatusTier, type HubManifest,
 } from '@/lib/api/hubs';
 import ConsolidationPageClient from './consolidation/ConsolidationPageClient';
+import HubStaffTab from './HubStaffTab';
 
 // ── Tab types ─────────────────────────────────────────────────────────────────
 
-const HUB_TABS = ['overview', 'plan-load'] as const;
+const HUB_TABS = ['overview', 'plan-load', 'hub-staff'] as const;
 type HubTab = (typeof HUB_TABS)[number];
 
 const TAB_LABELS: Record<HubTab, string> = {
   'overview':   'Overview',
   'plan-load':  'Plan Load (3D)',
+  'hub-staff':  'Hub Staff',
 };
 
 // ── Status config ─────────────────────────────────────────────────────────────
@@ -164,17 +166,22 @@ function OverviewTab({ hub, manifest, manifestLoading, onGoToPlanLoad }: {
               {manifest ? manifest.count : '—'}
               <span className="text-sm text-white/30 ml-1">parcels</span>
             </p>
-            {manifest && manifest.count > 0 && (
-              <button
-                onClick={onGoToPlanLoad}
-                className="mt-4 flex w-full items-center justify-between rounded-xl border border-cyan-neon/30 bg-cyan-neon/5 px-4 py-3 text-sm font-semibold text-cyan-neon hover:border-cyan-neon/60 hover:bg-cyan-neon/10 transition-all"
-              >
-                <span className="flex items-center gap-2">
-                  <Boxes size={14} /> Plan Load (3D)
-                </span>
+            <button
+              onClick={onGoToPlanLoad}
+              className="mt-4 flex w-full items-center justify-between rounded-xl border border-cyan-neon/30 bg-cyan-neon/5 px-4 py-3 text-sm font-semibold text-cyan-neon hover:border-cyan-neon/60 hover:bg-cyan-neon/10 transition-all"
+            >
+              <span className="flex items-center gap-2">
+                <Boxes size={14} /> Plan Load (3D)
+              </span>
+              <div className="flex items-center gap-2">
+                {manifest && manifest.count > 0 && (
+                  <span className="font-mono text-xs text-cyan-neon/60">
+                    {manifest.count} parcels
+                  </span>
+                )}
                 <ArrowRight size={14} />
-              </button>
-            )}
+              </div>
+            </button>
           </GlassCard>
         </motion.div>
       </div>
@@ -264,7 +271,9 @@ export default function HubDetailClient({ hubId, token, initialTab }: Props) {
   // Keep URL in sync with active tab without creating browser history entries.
   function switchTab(tab: HubTab) {
     setActiveTab(tab);
-    const url = tab === 'overview' ? `/hubs/${hubId}` : `/hubs/${hubId}?tab=plan-load`;
+    const url = tab === 'overview'
+      ? `/hubs/${hubId}`
+      : `/hubs/${hubId}?tab=${tab}`;
     router.replace(url, { scroll: false });
   }
 
@@ -345,8 +354,9 @@ export default function HubDetailClient({ hubId, token, initialTab }: Props) {
                   : 'text-white/40 hover:text-white/70',
               )}
             >
-              {tab === 'plan-load' && <Boxes size={13} />}
-              {tab === 'overview'  && <Package size={13} />}
+              {tab === 'plan-load'  && <Boxes   size={13} />}
+              {tab === 'overview'   && <Package size={13} />}
+              {tab === 'hub-staff'  && <Users   size={13} />}
               {TAB_LABELS[tab]}
             </button>
           ))}
@@ -392,6 +402,19 @@ export default function HubDetailClient({ hubId, token, initialTab }: Props) {
                 token={token}
                 heightClass="h-full"
               />
+            </motion.div>
+          )}
+
+          {activeTab === 'hub-staff' && (
+            <motion.div
+              key="hub-staff-tab"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.15 }}
+              className="h-full overflow-y-auto"
+            >
+              <HubStaffTab hubId={hubId} />
             </motion.div>
           )}
 

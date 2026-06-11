@@ -1,45 +1,46 @@
 /**
  * Customer App — KYC Identity Verification Screen
- * Step 3 of onboarding: select ID type (Passport / Emirates ID), upload front page.
+ * Step 3 of onboarding: select ID type, scan / upload a document image.
  *
- * Local shipments: Passport OR Emirates ID accepted.
- * International shipments: Passport only (customs requirement).
+ * Image pipeline (all on-device):
+ *   1. Acquire  — native document scanner (VisionKit / ML Kit) with auto-crop
+ *                 and perspective correction; falls back to camera / library picker.
+ *   2. Grayscale — offscreen WebView canvas (GrayscaleProcessor) applying
+ *                  ITU-R BT.601 luma; also pre-scales to ≤ 1280 px.
+ *   3. Compress  — expo-image-manipulator: resize (if still oversized) + WebP 75 %
+ *                  with JPEG fallback for devices without a WebP encoder.
+ *
+ * Result: base64 WebP/JPEG that is typically < 200 KB — well under the gateway's
+ * 16 MB limit and the backend's 10 MB storage cap.
  */
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FadeInView } from '../../components/FadeInView';
+import GrayscaleProcessor, { GrayscaleProcessorRef } from '../../components/GrayscaleProcessor';
+import { processKycImage, type KycContentType } from '../../utils/imageProcessing';
 import {
   View, Text, StyleSheet, Pressable, Image,
-  ScrollView, Platform, Alert, TextInput,
+  ScrollView, Platform, Alert, TextInput, ActivityIndicator,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
+import * as FileSystem from "expo-file-system";
 import { useDispatch, useSelector } from "react-redux";
 import { authActions } from "../../store";
 import type { RootState, AppDispatch, IdType } from "../../store";
-import { complianceApi, type ContentType } from "../../services/api/compliance";
+import { complianceApi } from "../../services/api/compliance";
 import { getStoredToken, logout } from "../../services/api/auth";
+import DocumentScanner from "react-native-document-scanner-plugin";
 
-const RED = "#FF3B5C";
-
-const CANVAS  = "#050810";
-const CYAN    = "#00E5FF";
-const GREEN   = "#00FF88";
-const AMBER   = "#FFAB00";
-const PURPLE  = "#A855F7";
-const GLASS   = "rgba(255,255,255,0.04)";
-const BORDER  = "rgba(255,255,255,0.08)";
-
-/** Map an ImagePicker mimeType or file extension into one of the three
- *  content-types the compliance backend accepts. Default to JPEG for
- *  camera captures (the most common case). */
-function inferMime(hint: string): ContentType {
-  const h = hint.toLowerCase();
-  if (h.includes("png"))  return "image/png";
-  if (h.includes("pdf"))  return "application/pdf";
-  return "image/jpeg";
-}
+const RED    = "#FF3B5C";
+const CANVAS = "#050810";
+const CYAN   = "#00E5FF";
+const GREEN  = "#00FF88";
+const AMBER  = "#FFAB00";
+const PURPLE = "#A855F7";
+const GLASS  = "rgba(255,255,255,0.04)";
+const BORDER = "rgba(255,255,255,0.08)";
 
 const ID_OPTIONS: Array<{
   type:     IdType;
@@ -71,16 +72,17 @@ export function KYCScreen() {
   const dispatch = useDispatch<AppDispatch>();
   const name     = useSelector((s: RootState) => s.auth.name);
 
-  const [selectedId,  setSelectedId]  = useState<IdType | null>(null);
-  const [imageUri,    setImageUri]    = useState<string | null>(null);
-  const [imageBase64, setImageBase64] = useState<string | null>(null);
-  const [imageMime,   setImageMime]   = useState<ContentType>("image/jpeg");
-  const [docNumber,   setDocNumber]   = useState<string>("");
-  const [submitting,  setSubmitting]  = useState(false);
-  const [isDemo,      setIsDemo]      = useState(false);
+  const [selectedId,    setSelectedId]    = useState<IdType | null>(null);
+  const [imageUri,      setImageUri]      = useState<string | null>(null);
+  const [imageBase64,   setImageBase64]   = useState<string | null>(null);
+  const [imageMime,     setImageMime]     = useState<KycContentType>("image/jpeg");
+  const [docNumber,     setDocNumber]     = useState<string>("");
+  const [submitting,    setSubmitting]    = useState(false);
+  const [isProcessing,  setIsProcessing]  = useState(false);
+  const [isDemo,        setIsDemo]        = useState(false);
 
-  // Check on mount whether the user has a real JWT. If not, they are in demo
-  // mode (OTP bypassed the backend) and cannot upload to the compliance service.
+  const grayscaleRef = useRef<GrayscaleProcessorRef>(null);
+
   React.useEffect(() => {
     getStoredToken().then((t) => setIsDemo(!t));
   }, []);
@@ -90,6 +92,101 @@ export function KYCScreen() {
     setImageBase64(null);
   }
 
+  /**
+   * Shared post-acquisition pipeline:
+   *   raw URI → grayscale (optional, non-fatal) → resize + WebP → state
+   */
+  async function processCapture(rawUri: string) {
+    setIsProcessing(true);
+    setImageUri(rawUri);    // show preview immediately
+    setImageBase64(null);   // clear until pipeline finishes
+
+    let processedUri = rawUri;
+    let tmpPath: string | null = null;
+
+    try {
+      // ── Step 1: grayscale + pre-scale to ≤ 1280 px (WebView canvas) ────────
+      if (grayscaleRef.current) {
+        try {
+          const grayB64 = await grayscaleRef.current.process(rawUri);
+          tmpPath = `${FileSystem.cacheDirectory}kyc_gray_${Date.now()}.jpg`;
+          await FileSystem.writeAsStringAsync(tmpPath, grayB64, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          processedUri = tmpPath;
+        } catch (e) {
+          // Non-fatal: proceed without grayscale
+          console.warn('[KYC] Grayscale step failed, using original:', e);
+        }
+      }
+
+      // ── Step 2: resize (guard) + encode to WebP 75 % ────────────────────────
+      const { base64, contentType } = await processKycImage(processedUri);
+      setImageBase64(base64);
+      setImageMime(contentType);
+
+    } catch {
+      Alert.alert("Image Error", "Could not process the document. Please try again.");
+      setImageUri(null);
+    } finally {
+      // Clean up the intermediate grayscale temp file
+      if (tmpPath) {
+        FileSystem.deleteAsync(tmpPath, { idempotent: true }).catch(() => {});
+      }
+      setIsProcessing(false);
+    }
+  }
+
+  /**
+   * "Take Photo" — tries the native document scanner first (edge detection +
+   * perspective correction via VisionKit on iOS / ML Kit on Android).
+   * Falls back to the plain camera picker if the scanner is unavailable or
+   * the user cancels out of it.
+   */
+  async function takePhoto() {
+    if (Platform.OS === "web") {
+      // Web: no scanner, just use placeholder for demo
+      setImageUri("https://via.placeholder.com/400x240/0A0F1E/00E5FF?text=ID+Document");
+      setImageBase64("placeholder");
+      return;
+    }
+
+    // ── Native document scanner ────────────────────────────────────────────
+    try {
+      const { scannedImages, status } = await DocumentScanner.scanDocument({
+        maxNumDocuments: 1,
+        croppedImageQuality: 90,
+      });
+      if (status === "cancel" || !scannedImages?.length) return;
+      await processCapture(scannedImages[0]!);
+      return;
+    } catch {
+      // Scanner not available (old device, missing Play Services, etc.)
+      // → fall through to camera picker
+    }
+
+    // ── Fallback: camera picker ────────────────────────────────────────────
+    try {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert("Permission needed", "Go to Settings and allow camera access.");
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({
+        quality: 1,
+        allowsEditing: true,
+        aspect: [4, 3],
+        base64: false,
+      });
+      if (!result.canceled && result.assets?.length) {
+        await processCapture(result.assets[0]!.uri);
+      }
+    } catch {
+      Alert.alert("Error", "Could not open camera. Please try again.");
+    }
+  }
+
+  /** "Choose File" — photo library picker → same pipeline. */
   async function pickImage() {
     if (Platform.OS === "web") {
       setImageUri("https://via.placeholder.com/400x240/0A0F1E/00E5FF?text=ID+Document");
@@ -97,61 +194,32 @@ export function KYCScreen() {
       return;
     }
     try {
-      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!permission.granted) {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
         Alert.alert("Permission needed", "Go to Settings and allow photo library access.");
         return;
       }
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'] as any,
-        quality: 0.85,
+        quality: 1,
         allowsEditing: true,
         aspect: [4, 3],
-        base64: true,
+        base64: false,   // pipeline handles encoding
       });
-      if (!result.canceled && result.assets?.length > 0) {
-        const asset = result.assets[0];
-        if (!asset) return;
-        setImageUri(asset.uri);
-        setImageBase64(asset.base64 ?? null);
-        setImageMime(inferMime(asset.mimeType ?? asset.uri));
+      if (!result.canceled && result.assets?.length) {
+        await processCapture(result.assets[0]!.uri);
       }
     } catch {
       Alert.alert("Error", "Could not open photo library. Please try again.");
     }
   }
 
-  async function takePhoto() {
-    if (Platform.OS === "web") { pickImage(); return; }
-    try {
-      const permission = await ImagePicker.requestCameraPermissionsAsync();
-      if (!permission.granted) {
-        Alert.alert("Permission needed", "Go to Settings and allow camera access.");
-        return;
-      }
-      const result = await ImagePicker.launchCameraAsync({
-        quality: 0.85,
-        allowsEditing: true,
-        aspect: [4, 3],
-        base64: true,
-      });
-      if (!result.canceled && result.assets?.length > 0) {
-        const asset = result.assets[0];
-        if (!asset) return;
-        setImageUri(asset.uri);
-        setImageBase64(asset.base64 ?? null);
-        setImageMime(inferMime(asset.mimeType ?? asset.uri));
-      }
-    } catch {
-      Alert.alert("Error", "Could not open camera. Please try again.");
-    }
-  }
-
   async function handleSubmit() {
-    if (!selectedId || !imageUri || !imageBase64 || docNumber.trim().length === 0) return;
+    if (!selectedId || !imageUri || !imageBase64 || isProcessing || docNumber.trim().length === 0) return;
+
     setSubmitting(true);
+    let tempUploadUri: string | null = null;
     try {
-      // Guard: no token means the user is in demo mode or their session expired.
       const token = await getStoredToken();
       if (!token) {
         Alert.alert(
@@ -160,17 +228,47 @@ export function KYCScreen() {
           [
             { text: "Log out", style: "destructive", onPress: async () => { await logout(); dispatch(authActions.logout()); } },
             { text: "Cancel", style: "cancel" },
-          ]
+          ],
         );
         return;
       }
 
-      await complianceApi.uploadDocument({
+      // Step 1 — get a presigned R2 PUT URL from the compliance service
+      const { upload_url, s3_key, upload_headers } = await complianceApi.getUploadUrl(imageMime);
+
+      // Step 2 — write the processed base64 image to a temp file and upload
+      // the raw bytes directly to Cloudflare R2 (no base64 body through the
+      // backend, no 33% bandwidth overhead)
+      const ext = imageMime === 'image/webp' ? 'webp' : imageMime === 'image/png' ? 'png' : 'jpg';
+      tempUploadUri = `${FileSystem.cacheDirectory}kyc_r2_${Date.now()}.${ext}`;
+      await FileSystem.writeAsStringAsync(tempUploadUri, imageBase64, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      // BINARY_CONTENT is required: without it Expo wraps the body in
+      // multipart/form-data, which mismatches the Content-Type signed into the
+      // presigned URL and causes R2 to return SignatureDoesNotMatch.
+      const uploadResult = await FileSystem.uploadAsync(upload_url, tempUploadUri, {
+        httpMethod: 'PUT',
+        uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+        headers: { 'Content-Type': imageMime, ...upload_headers },
+      });
+
+      if (uploadResult.status === 401) {
+        throw Object.assign(new Error('Session expired'), { status: 401 });
+      }
+      if (uploadResult.status < 200 || uploadResult.status >= 300) {
+        throw new Error(`Direct R2 upload failed with status ${uploadResult.status}`);
+      }
+
+      // Step 3 — register the uploaded document with the compliance service
+      await complianceApi.confirmDocument({
         document_type_code: selectedId,
         document_number:    docNumber.trim(),
-        file_base64:        imageBase64,
+        s3_key,
         content_type:       imageMime,
       });
+
       dispatch(authActions.submitKyc({ idType: selectedId }));
     } catch (err: unknown) {
       const status = (err as { status?: number })?.status;
@@ -181,204 +279,220 @@ export function KYCScreen() {
           [
             { text: "Log out", style: "destructive", onPress: async () => { await logout(); dispatch(authActions.logout()); } },
             { text: "Cancel", style: "cancel" },
-          ]
+          ],
         );
         return;
       }
       const msg = (err as { message?: string })?.message ?? "Please check your connection and try again.";
       Alert.alert("Upload failed", msg);
     } finally {
+      if (tempUploadUri) {
+        FileSystem.deleteAsync(tempUploadUri, { idempotent: true }).catch(() => {});
+      }
       setSubmitting(false);
     }
   }
 
-  const canSubmit = !isDemo && !!selectedId && !!imageUri && !!imageBase64 && docNumber.trim().length > 0;
+  const canSubmit = !isDemo && !!selectedId && !!imageUri && !!imageBase64 && !isProcessing && docNumber.trim().length > 0;
 
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: CANVAS }} contentContainerStyle={{ paddingBottom: 48 }}>
+    <>
+      {/* Off-screen grayscale processor — must stay mounted for the JS context */}
+      <GrayscaleProcessor ref={grayscaleRef} />
 
-      <LinearGradient colors={["rgba(0,255,136,0.08)", "transparent"]} style={s.hero}>
-        <FadeInView fromY={-16}>
-          {/* Progress */}
-          <View style={s.progressRow}>
-            {[1, 2, 3].map((n) => (
-              <View key={n} style={[s.progressDot, { backgroundColor: n <= 3 ? GREEN : "rgba(255,255,255,0.08)" }]} />
-            ))}
-          </View>
-          <Text style={s.heroTitle}>Verify Your Identity</Text>
-          <Text style={s.heroSub}>
-            Hi {name?.split(" ")[0] ?? "there"}, one last step before you can book shipments.
-          </Text>
-        </FadeInView>
-      </LinearGradient>
+      <ScrollView style={{ flex: 1, backgroundColor: CANVAS }} contentContainerStyle={{ paddingBottom: 48 }}>
 
-      {/* Demo-mode warning — shown when user signed in without a real OTP */}
-      {isDemo && (
-        <FadeInView fromY={-8} style={s.demoBanner}>
-          <Ionicons name="warning-outline" size={16} color={RED} />
-          <View style={{ flex: 1 }}>
-            <Text style={s.demoBannerTitle}>Demo mode — upload disabled</Text>
-            <Text style={s.demoBannerBody}>
-              You signed in without connecting to the server. Log out and sign in again with your real phone number to upload documents.
-            </Text>
-          </View>
-          <Pressable
-            onPress={async () => { await logout(); dispatch(authActions.logout()); }}
-            style={s.demoBannerBtn}
-          >
-            <Text style={s.demoBannerBtnText}>Log out</Text>
-          </Pressable>
-        </FadeInView>
-      )}
-
-      {/* ID type selector */}
-      <FadeInView delay={80} fromY={16} style={s.section}>
-        <Text style={s.sectionLabel}>Select ID Type</Text>
-        <View style={s.idOptions}>
-          {ID_OPTIONS.map((opt) => (
-            <Pressable
-              key={opt.type}
-              onPress={() => { setSelectedId(opt.type); clearImage(); }}
-              style={[
-                s.idOption,
-                selectedId === opt.type && { borderColor: opt.color + "60", backgroundColor: opt.color + "0D" },
-              ]}
-            >
-              <View style={[s.idIconWrap, { backgroundColor: opt.color + "15" }]}>
-                <Ionicons name={opt.icon as never} size={22} color={opt.color} />
-              </View>
-              <Text style={[s.idLabel, selectedId === opt.type && { color: opt.color }]}>{opt.label}</Text>
-              <Text style={s.idSublabel}>{opt.sublabel}</Text>
-              <Text style={[s.idNote, { color: opt.color + "80" }]}>{opt.note}</Text>
-              {selectedId === opt.type && (
-                <View style={[s.selectedCheck, { backgroundColor: opt.color }]}>
-                  <Ionicons name="checkmark" size={11} color={CANVAS} />
-                </View>
-              )}
-            </Pressable>
-          ))}
-        </View>
-      </FadeInView>
-
-      {/* Document number — free-text, validated server-side (1-100 chars) */}
-      {selectedId && (
-        <FadeInView duration={300} style={s.section}>
-          <Text style={s.sectionLabel}>
-            {selectedId === "passport" ? "Passport Number" : "Emirates ID Number"}
-          </Text>
-          <TextInput
-            value={docNumber}
-            onChangeText={setDocNumber}
-            placeholder={selectedId === "passport" ? "e.g. P1234567A" : "784-XXXX-XXXXXXX-X"}
-            placeholderTextColor="rgba(255,255,255,0.2)"
-            autoCapitalize="characters"
-            autoCorrect={false}
-            maxLength={100}
-            style={{
-              backgroundColor: "rgba(255,255,255,0.03)",
-              borderWidth: 1,
-              borderColor: "rgba(255,255,255,0.08)",
-              borderRadius: 12,
-              paddingHorizontal: 14,
-              paddingVertical: 12,
-              color: "#FFF",
-              fontFamily: "JetBrainsMono-Regular",
-              fontSize: 14,
-              marginHorizontal: 20,
-            }}
-          />
-        </FadeInView>
-      )}
-
-      {/* Upload section */}
-      {selectedId && (
-        <FadeInView duration={300} style={s.section}>
-          <Text style={s.sectionLabel}>
-            Upload {selectedId === "passport" ? "Passport Bio-data Page" : "Emirates ID (Front)"}
-          </Text>
-
-          {/* Requirements */}
-          <View style={s.requirementsBox}>
-            {[
-              "Clear photo — all text must be readable",
-              "No blur, glare, or cut-off corners",
-              selectedId === "passport" ? "Show the page with your photo & details" : "Show the front side with your photo",
-              "Must not be expired",
-            ].map((req, i) => (
-              <View key={i} style={s.reqRow}>
-                <Ionicons name="checkmark-circle-outline" size={13} color="rgba(0,255,136,0.6)" />
-                <Text style={s.reqText}>{req}</Text>
-              </View>
-            ))}
-          </View>
-
-          {/* Image preview or upload zone */}
-          {imageUri ? (
-            <FadeInView duration={200} style={s.previewWrap}>
-              <Image source={{ uri: imageUri }} style={s.previewImage} resizeMode="cover" />
-              <Pressable onPress={clearImage} style={s.removeBtn}>
-                <Ionicons name="close-circle" size={22} color="#FF3B5C" />
-              </Pressable>
-              <View style={s.previewCheck}>
-                <Ionicons name="checkmark-circle" size={18} color={GREEN} />
-                <Text style={s.previewCheckText}>Document ready</Text>
-              </View>
-            </FadeInView>
-          ) : (
-            <View style={s.uploadZone}>
-              <Ionicons name="cloud-upload-outline" size={32} color="rgba(255,255,255,0.2)" />
-              <Text style={s.uploadTitle}>Upload ID Document</Text>
-              <Text style={s.uploadSub}>JPG or PNG · Max 10MB</Text>
-              <View style={s.uploadBtns}>
-                <Pressable onPress={takePhoto} style={s.uploadBtn}>
-                  <Ionicons name="camera-outline" size={15} color={CYAN} />
-                  <Text style={s.uploadBtnText}>Take Photo</Text>
-                </Pressable>
-                <Pressable onPress={pickImage} style={s.uploadBtn}>
-                  <Ionicons name="images-outline" size={15} color={PURPLE} />
-                  <Text style={[s.uploadBtnText, { color: PURPLE }]}>Choose File</Text>
-                </Pressable>
-              </View>
+        <LinearGradient colors={["rgba(0,255,136,0.08)", "transparent"]} style={s.hero}>
+          <FadeInView fromY={-16}>
+            <View style={s.progressRow}>
+              {[1, 2, 3].map((n) => (
+                <View key={n} style={[s.progressDot, { backgroundColor: n <= 3 ? GREEN : "rgba(255,255,255,0.08)" }]} />
+              ))}
             </View>
-          )}
-        </FadeInView>
-      )}
-
-      {/* Emirates ID note */}
-      {selectedId === "emirates_id" && (
-        <FadeInView duration={200} style={[s.section, { paddingTop: 0 }]}>
-          <View style={s.noteBox}>
-            <Ionicons name="information-circle-outline" size={15} color={AMBER} />
-            <Text style={s.noteText}>
-              Emirates ID is accepted for local (domestic) shipments only. For international or Balikbayan Box shipping, a valid Passport is required.
+            <Text style={s.heroTitle}>Verify Your Identity</Text>
+            <Text style={s.heroSub}>
+              Hi {name?.split(" ")[0] ?? "there"}, one last step before you can book shipments.
             </Text>
+          </FadeInView>
+        </LinearGradient>
+
+        {/* Demo-mode warning */}
+        {isDemo && (
+          <FadeInView fromY={-8} style={s.demoBanner}>
+            <Ionicons name="warning-outline" size={16} color={RED} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.demoBannerTitle}>Demo mode — upload disabled</Text>
+              <Text style={s.demoBannerBody}>
+                You signed in without connecting to the server. Log out and sign in again with your real phone number to upload documents.
+              </Text>
+            </View>
+            <Pressable
+              onPress={async () => { await logout(); dispatch(authActions.logout()); }}
+              style={s.demoBannerBtn}
+            >
+              <Text style={s.demoBannerBtnText}>Log out</Text>
+            </Pressable>
+          </FadeInView>
+        )}
+
+        {/* ID type selector */}
+        <FadeInView delay={80} fromY={16} style={s.section}>
+          <Text style={s.sectionLabel}>Select ID Type</Text>
+          <View style={s.idOptions}>
+            {ID_OPTIONS.map((opt) => (
+              <Pressable
+                key={opt.type}
+                onPress={() => { setSelectedId(opt.type); clearImage(); }}
+                style={[
+                  s.idOption,
+                  selectedId === opt.type && { borderColor: opt.color + "60", backgroundColor: opt.color + "0D" },
+                ]}
+              >
+                <View style={[s.idIconWrap, { backgroundColor: opt.color + "15" }]}>
+                  <Ionicons name={opt.icon as never} size={22} color={opt.color} />
+                </View>
+                <Text style={[s.idLabel, selectedId === opt.type && { color: opt.color }]}>{opt.label}</Text>
+                <Text style={s.idSublabel}>{opt.sublabel}</Text>
+                <Text style={[s.idNote, { color: opt.color + "80" }]}>{opt.note}</Text>
+                {selectedId === opt.type && (
+                  <View style={[s.selectedCheck, { backgroundColor: opt.color }]}>
+                    <Ionicons name="checkmark" size={11} color={CANVAS} />
+                  </View>
+                )}
+              </Pressable>
+            ))}
           </View>
         </FadeInView>
-      )}
 
-      {/* Skip / Submit */}
-      <View style={s.footerBtns}>
-        <Pressable
-          onPress={() => dispatch(authActions.skipKyc())}
-          style={s.skipBtn}
-        >
-          <Text style={s.skipText}>Skip for now</Text>
-        </Pressable>
-
-        <Pressable
-          onPress={handleSubmit}
-          disabled={!canSubmit || submitting}
-          style={[s.submitBtnWrap, { flex: 1, opacity: canSubmit && !submitting ? 1 : 0.4 }]}
-        >
-          <LinearGradient colors={[GREEN, CYAN]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.submitBtn}>
-            <Text style={s.submitBtnText}>
-              {submitting ? "Submitting…" : "Submit for Verification"}
+        {/* Document number */}
+        {selectedId && (
+          <FadeInView duration={300} style={s.section}>
+            <Text style={s.sectionLabel}>
+              {selectedId === "passport" ? "Passport Number" : "Emirates ID Number"}
             </Text>
-          </LinearGradient>
-        </Pressable>
-      </View>
+            <TextInput
+              value={docNumber}
+              onChangeText={setDocNumber}
+              placeholder={selectedId === "passport" ? "e.g. P1234567A" : "784-XXXX-XXXXXXX-X"}
+              placeholderTextColor="rgba(255,255,255,0.2)"
+              autoCapitalize="characters"
+              autoCorrect={false}
+              maxLength={100}
+              style={{
+                backgroundColor: "rgba(255,255,255,0.03)",
+                borderWidth: 1,
+                borderColor: "rgba(255,255,255,0.08)",
+                borderRadius: 12,
+                paddingHorizontal: 14,
+                paddingVertical: 12,
+                color: "#FFF",
+                fontFamily: "JetBrainsMono-Regular",
+                fontSize: 14,
+                marginHorizontal: 20,
+              }}
+            />
+          </FadeInView>
+        )}
 
-    </ScrollView>
+        {/* Upload section */}
+        {selectedId && (
+          <FadeInView duration={300} style={s.section}>
+            <Text style={s.sectionLabel}>
+              Upload {selectedId === "passport" ? "Passport Bio-data Page" : "Emirates ID (Front)"}
+            </Text>
+
+            <View style={s.requirementsBox}>
+              {[
+                "Clear photo — all text must be readable",
+                "No blur, glare, or cut-off corners",
+                selectedId === "passport" ? "Show the page with your photo & details" : "Show the front side with your photo",
+                "Must not be expired",
+              ].map((req, i) => (
+                <View key={i} style={s.reqRow}>
+                  <Ionicons name="checkmark-circle-outline" size={13} color="rgba(0,255,136,0.6)" />
+                  <Text style={s.reqText}>{req}</Text>
+                </View>
+              ))}
+            </View>
+
+            {imageUri ? (
+              <FadeInView duration={200} style={s.previewWrap}>
+                <Image source={{ uri: imageUri }} style={s.previewImage} resizeMode="cover" />
+                {/* Processing overlay */}
+                {isProcessing && (
+                  <View style={s.processingOverlay}>
+                    <ActivityIndicator color={CYAN} size="small" />
+                    <Text style={s.processingText}>Optimising image…</Text>
+                  </View>
+                )}
+                {!isProcessing && (
+                  <Pressable onPress={clearImage} style={s.removeBtn}>
+                    <Ionicons name="close-circle" size={22} color={RED} />
+                  </Pressable>
+                )}
+                {!isProcessing && imageBase64 && (
+                  <View style={s.previewCheck}>
+                    <Ionicons name="checkmark-circle" size={18} color={GREEN} />
+                    <Text style={s.previewCheckText}>Document ready</Text>
+                  </View>
+                )}
+              </FadeInView>
+            ) : (
+              <View style={s.uploadZone}>
+                <Ionicons name="scan-outline" size={32} color="rgba(255,255,255,0.2)" />
+                <Text style={s.uploadTitle}>Scan or Upload ID Document</Text>
+                <Text style={s.uploadSub}>Auto-crop · Grayscale · WebP · Max 10 MB</Text>
+                <View style={s.uploadBtns}>
+                  <Pressable onPress={takePhoto} style={s.uploadBtn}>
+                    <Ionicons name="scan-outline" size={15} color={CYAN} />
+                    <Text style={s.uploadBtnText}>Scan Document</Text>
+                  </Pressable>
+                  <Pressable onPress={pickImage} style={s.uploadBtn}>
+                    <Ionicons name="images-outline" size={15} color={PURPLE} />
+                    <Text style={[s.uploadBtnText, { color: PURPLE }]}>Choose File</Text>
+                  </Pressable>
+                </View>
+              </View>
+            )}
+          </FadeInView>
+        )}
+
+        {/* Emirates ID notice */}
+        {selectedId === "emirates_id" && (
+          <FadeInView duration={200} style={[s.section, { paddingTop: 0 }]}>
+            <View style={s.noteBox}>
+              <Ionicons name="information-circle-outline" size={15} color={AMBER} />
+              <Text style={s.noteText}>
+                Emirates ID is accepted for local (domestic) shipments only. For international or Balikbayan Box shipping, a valid Passport is required.
+              </Text>
+            </View>
+          </FadeInView>
+        )}
+
+        {/* Skip / Submit */}
+        <View style={s.footerBtns}>
+          <Pressable
+            onPress={() => dispatch(authActions.skipKyc())}
+            style={s.skipBtn}
+          >
+            <Text style={s.skipText}>Skip for now</Text>
+          </Pressable>
+
+          <Pressable
+            onPress={handleSubmit}
+            disabled={!canSubmit || submitting}
+            style={[s.submitBtnWrap, { flex: 1, opacity: canSubmit && !submitting ? 1 : 0.4 }]}
+          >
+            <LinearGradient colors={[GREEN, CYAN]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.submitBtn}>
+              <Text style={s.submitBtnText}>
+                {submitting ? "Submitting…" : isProcessing ? "Processing…" : "Submit for Verification"}
+              </Text>
+            </LinearGradient>
+          </Pressable>
+        </View>
+
+      </ScrollView>
+    </>
   );
 }
 
@@ -411,11 +525,13 @@ const s = StyleSheet.create({
   uploadBtn:       { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "rgba(255,255,255,0.05)", borderWidth: 1, borderColor: BORDER, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 9 },
   uploadBtnText:   { fontSize: 13, fontFamily: "SpaceGrotesk-SemiBold", color: CYAN },
 
-  previewWrap:     { borderRadius: 16, overflow: "hidden", position: "relative" },
-  previewImage:    { width: "100%", height: 180, borderRadius: 16 },
-  removeBtn:       { position: "absolute", top: 8, right: 8 },
-  previewCheck:    { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 8, justifyContent: "center" },
-  previewCheckText:{ fontSize: 12, color: GREEN, fontFamily: "JetBrainsMono-Regular" },
+  previewWrap:      { borderRadius: 16, overflow: "hidden", position: "relative" },
+  previewImage:     { width: "100%", height: 180, borderRadius: 16 },
+  processingOverlay:{ position: "absolute", inset: 0, backgroundColor: "rgba(5,8,16,0.72)", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: 16 },
+  processingText:   { fontSize: 12, fontFamily: "JetBrainsMono-Regular", color: CYAN },
+  removeBtn:        { position: "absolute", top: 8, right: 8 },
+  previewCheck:     { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 8, justifyContent: "center" },
+  previewCheckText: { fontSize: 12, color: GREEN, fontFamily: "JetBrainsMono-Regular" },
 
   noteBox:         { flexDirection: "row", alignItems: "flex-start", gap: 10, backgroundColor: "rgba(255,171,0,0.07)", borderWidth: 1, borderColor: "rgba(255,171,0,0.2)", borderRadius: 12, padding: 12 },
   noteText:        { flex: 1, fontSize: 12, color: "rgba(255,171,0,0.7)", lineHeight: 18 },

@@ -60,4 +60,7 @@ interface TaskDao {
 
     @Query("UPDATE tasks SET podId = :podId, completedAt = :completedAt WHERE id = :taskId")
     suspend fun setPodId(taskId: String, podId: String, completedAt: Long)
+
+    @Query("UPDATE tasks SET pop_id = :popId, completedAt = :completedAt WHERE id = :taskId")
+    suspend fun setPopId(taskId: String, popId: String, completedAt: Long)
 }

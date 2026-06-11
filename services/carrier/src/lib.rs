@@ -8,7 +8,11 @@ pub mod mcp;
 
 use std::sync::Arc;
 use application::services::{CarrierService, MarketplaceService};
-use infrastructure::adapters::AdapterRegistry;
+use infrastructure::{
+    adapters::AdapterRegistry,
+    db::PgCarrierBookingRepository,
+    storage::StorageAdapter,
+};
 use logisticos_auth::jwt::JwtService;
 
 #[derive(Clone)]
@@ -23,4 +27,9 @@ pub struct AppState {
     /// 3PL carrier adapters — keyed by carrier code (DHL/FEDEX/UPS/TNT/DPD/ARAMEX).
     /// Only carriers whose credentials are present in config are registered.
     pub adapter_registry: Arc<AdapterRegistry>,
+    /// S3/R2 object storage for carrier label files.
+    /// None when storage env vars are absent (dev without R2 credentials).
+    pub storage:          Option<Arc<dyn StorageAdapter>>,
+    /// Append-only audit log for all 3PL carrier API bookings.
+    pub booking_repo:     Option<Arc<PgCarrierBookingRepository>>,
 }

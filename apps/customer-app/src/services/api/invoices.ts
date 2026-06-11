@@ -20,20 +20,27 @@ function getPaymentsClient() {
   return cachedPaymentsClient;
 }
 
-// Shape returned by the payments service for each receipt in the list
+// ── List summary shape (returned by GET /v1/customers/:id/invoices) ───────────
+// Field names match the payments service InvoiceSummary DTO (updated 2026-06).
+
 export interface InvoiceSummary {
-  invoice_id:     string;
+  id:             string;
   invoice_number: string;
-  invoice_type:   string;   // "payment_receipt"
-  status:         string;   // "paid" | "issued" | ...
+  invoice_type:   string;   // "payment_receipt" | "shipment_charges" | etc.
+  status:         string;   // "paid" | "issued" | "draft" | ...
   awb_count:      number;
-  subtotal_cents: number;
-  vat_cents:      number;
-  total_cents:    number;
-  billing_period: string;   // "YYYY-MM"
-  due_at:         string;   // ISO8601
-  issued_at:      string;   // ISO8601
+  subtotal_php:   number;
+  vat_php:        number;
+  total_php:      number;
+  period_from:    string;   // ISO date, e.g. "2026-06-15"
+  period_to:      string;   // ISO date, e.g. "2026-06-15"
+  due_date:       string;   // RFC 3339
+  paid_at:        string | null;
+  created_at:     string;   // RFC 3339 (= issued_at)
 }
+
+// ── Single invoice detail shape (returned by GET /v1/invoices/:id) ────────────
+// The full domain Invoice entity — contains line items with real fee breakdown.
 
 export interface InvoiceDetail {
   id:             string;
@@ -45,11 +52,11 @@ export interface InvoiceDetail {
   due_at:         string;
   paid_at:        string | null;
   line_items:     Array<{
-    charge_type:     string;
-    description:     string;
-    quantity:        number;
-    unit_price:      { amount: number; currency: string };
-    discount:        { amount: number; currency: string } | null;
+    charge_type:  string;
+    description:  string;
+    quantity:     number;
+    unit_price:   { amount: number; currency: string };
+    discount:     { amount: number; currency: string } | null;
   }>;
   total_due:      { amount: number; currency: string };
 }

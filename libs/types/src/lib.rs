@@ -109,6 +109,18 @@ pub enum Currency {
     IDR,
 }
 
+impl std::fmt::Display for Currency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Currency::PHP => write!(f, "PHP"),
+            Currency::USD => write!(f, "USD"),
+            Currency::SGD => write!(f, "SGD"),
+            Currency::MYR => write!(f, "MYR"),
+            Currency::IDR => write!(f, "IDR"),
+        }
+    }
+}
+
 // ── Address ──────────────────────────────────────────────────
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Address {
@@ -252,7 +264,13 @@ pub enum ContainerStatus {
     Customs,
     /// Customs cleared, released for onward movement.
     Released,
+    /// Container broken back into individual ChildAWBs at destination hub for
+    /// last-mile dispatch. Terminal state for the cross-border container lifecycle.
+    Deconsolidated,
     /// Arrived at destination hub, fully unloaded.
+    ///
+    /// DEPRECATED for new flows — `Deconsolidated` is the terminal state.
+    /// Retained for backward compatibility with existing rows.
     Delivered,
 }
 
@@ -276,6 +294,27 @@ pub enum TransportMode {
 pub struct Pagination {
     pub page: u64,
     pub per_page: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn container_status_has_deconsolidated_terminal_variant() {
+        let s = ContainerStatus::Deconsolidated;
+        let json = serde_json::to_string(&s).unwrap();
+        assert_eq!(json, "\"Deconsolidated\"");
+        let back: ContainerStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ContainerStatus::Deconsolidated);
+    }
+
+    #[test]
+    fn container_status_delivered_retained_for_backward_compat() {
+        // Deprecated but must still deserialize for existing rows.
+        let back: ContainerStatus = serde_json::from_str("\"Delivered\"").unwrap();
+        assert_eq!(back, ContainerStatus::Delivered);
+    }
 }
 
 impl Default for Pagination {

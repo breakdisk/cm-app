@@ -184,6 +184,7 @@ impl CarrierAdapter for DpdAdapter {
             booking_ref:        consignment["consignmentRef"].as_str().unwrap_or(&tnum).to_string(),
             tracking_number:    tnum,
             label_url:          None,
+            label_bytes:        None,
             estimated_delivery: consignment["deliveryDate"].as_str().map(String::from),
         })
     }

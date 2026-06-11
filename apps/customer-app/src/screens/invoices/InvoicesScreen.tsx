@@ -61,13 +61,13 @@ function ReceiptCard({ item, onPress }: { item: InvoiceSummary; onPress: () => v
         </View>
         <View style={{ flex: 1 }}>
           <Text style={s.receiptNum} numberOfLines={1}>{item.invoice_number}</Text>
-          <Text style={s.receiptDate}>{formatDate(item.issued_at)}</Text>
+          <Text style={s.receiptDate}>{formatDate(item.created_at)}</Text>
         </View>
       </View>
 
       {/* Amount + status */}
       <View style={s.cardRight}>
-        <Text style={[s.amount, { color: GREEN }]}>{formatAmount(item.total_cents)}</Text>
+        <Text style={[s.amount, { color: GREEN }]}>{`PHP ${item.total_php.toFixed(2)}`}</Text>
         <View style={[s.statusPill, { borderColor: color + '50', backgroundColor: color + '14' }]}>
           <Text style={[s.statusText, { color }]}>{item.status.toUpperCase()}</Text>
         </View>
@@ -125,7 +125,7 @@ export function InvoicesScreen() {
       ) : (
         <FlatList
           data={list}
-          keyExtractor={i => i.invoice_id}
+          keyExtractor={i => i.id}
           contentContainerStyle={{ padding: 16, paddingBottom: 32 + insets.bottom }}
           refreshControl={
             <RefreshControl
@@ -152,7 +152,7 @@ export function InvoicesScreen() {
           renderItem={({ item }) => (
             <ReceiptCard
               item={item}
-              onPress={() => navigation.navigate('InvoiceDetail', { invoiceId: item.invoice_id })}
+              onPress={() => navigation.navigate('InvoiceDetail', { invoiceId: item.id })}
             />
           )}
         />

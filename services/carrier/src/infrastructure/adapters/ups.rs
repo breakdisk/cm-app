@@ -265,6 +265,7 @@ impl CarrierAdapter for UpsAdapter {
             booking_ref:        tnum.clone(),
             tracking_number:    tnum,
             label_url:          label,
+            label_bytes:        None,
             estimated_delivery: result["EstimatedDelivery"]["Date"].as_str().map(String::from),
         })
     }

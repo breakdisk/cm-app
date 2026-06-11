@@ -149,6 +149,15 @@ data class SubmitPopRequest(
      *  server can attach it to the POP record in a single submit call. */
     @SerialName("photo_s3_key")      val photoS3Key: String? = null,
     @SerialName("photo_size_bytes")  val photoSizeBytes: Long? = null,
+    // AR dimensioning captured in VERIFY mode (POP size / quantity / anti-fraud audit).
+    // Null for manual / non-AR pickups; the pod service treats every field as optional.
+    @SerialName("verified_length_cm")   val verifiedLengthCm: Double? = null,
+    @SerialName("verified_width_cm")    val verifiedWidthCm: Double? = null,
+    @SerialName("verified_height_cm")   val verifiedHeightCm: Double? = null,
+    @SerialName("verified_cbm")         val verifiedCbm: Double? = null,
+    @SerialName("volumetric_weight_kg") val volumetricWeightKg: Double? = null,
+    @SerialName("box_quantity")         val boxQuantity: Int? = null,
+    @SerialName("dimension_integrity")  val dimensionIntegrity: String? = null,
 )
 
 @Serializable

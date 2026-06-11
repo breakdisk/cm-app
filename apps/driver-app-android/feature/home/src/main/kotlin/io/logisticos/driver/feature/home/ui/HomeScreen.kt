@@ -38,6 +38,7 @@ fun HomeScreen(
     onNavigateToCompliance: () -> Unit,
     onNavigateToBoxMeasure: () -> Unit = {},
     onNavigateToHub: () -> Unit = {},
+    onNavigateToHubScan: (hubId: String) -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -185,6 +186,25 @@ fun HomeScreen(
                         )
                     )
                 }
+            }
+        }
+
+        // \u2500\u2500 Hub Mode quick-access \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+        // Placed above all conditional banners so it is always visible above the
+        // fold regardless of how many warning cards are showing below.
+        if (state.isHubScanner) {
+            Button(
+                onClick = { onNavigateToHubScan(state.hubId) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp),
+                shape  = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Cyan.copy(alpha = 0.15f),
+                    contentColor   = Cyan,
+                ),
+            ) {
+                Text("\ud83c\udfed  Hub Mode", fontWeight = FontWeight.Bold, fontSize = 15.sp)
             }
         }
 

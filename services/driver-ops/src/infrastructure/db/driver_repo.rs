@@ -35,6 +35,8 @@ struct DriverRow {
     cod_commission_rate_bps:  i32,
     zone:                     Option<String>,
     vehicle_type:             Option<String>,
+    carrier_id:               Option<Uuid>,
+    hub_id:                   Option<Uuid>,
     created_at:               chrono::DateTime<chrono::Utc>,
     updated_at:               chrono::DateTime<chrono::Utc>,
 }
@@ -98,6 +100,8 @@ impl From<DriverRow> for Driver {
             cod_commission_rate_bps: r.cod_commission_rate_bps,
             zone: r.zone,
             vehicle_type: r.vehicle_type,
+            carrier_id: r.carrier_id,
+            hub_id:     r.hub_id,
             created_at: r.created_at,
             updated_at: r.updated_at,
         }
@@ -107,7 +111,7 @@ impl From<DriverRow> for Driver {
 const SELECT_COLUMNS: &str = r#"id, tenant_id, user_id, first_name, last_name, phone, status,
     lat, lng, last_location_at, vehicle_id, active_route_id, is_active,
     driver_type, per_delivery_rate_cents, cod_commission_rate_bps, zone, vehicle_type,
-    created_at, updated_at"#;
+    carrier_id, hub_id, created_at, updated_at"#;
 
 #[async_trait]
 impl DriverRepository for PgDriverRepository {
@@ -163,8 +167,8 @@ impl DriverRepository for PgDriverRepository {
                    (id, tenant_id, user_id, first_name, last_name, phone, status,
                     lat, lng, last_location_at, vehicle_id, active_route_id,
                     is_active, driver_type, per_delivery_rate_cents, cod_commission_rate_bps,
-                    zone, vehicle_type, created_at, updated_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+                    zone, vehicle_type, carrier_id, hub_id, created_at, updated_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
                ON CONFLICT (id) DO UPDATE SET
                    first_name              = EXCLUDED.first_name,
                    last_name               = EXCLUDED.last_name,
@@ -181,6 +185,8 @@ impl DriverRepository for PgDriverRepository {
                    cod_commission_rate_bps = EXCLUDED.cod_commission_rate_bps,
                    zone                    = EXCLUDED.zone,
                    vehicle_type            = EXCLUDED.vehicle_type,
+                   carrier_id              = EXCLUDED.carrier_id,
+                   hub_id                  = EXCLUDED.hub_id,
                    updated_at              = EXCLUDED.updated_at"#
         )
         .bind(d.id.inner())
@@ -201,6 +207,8 @@ impl DriverRepository for PgDriverRepository {
         .bind(d.cod_commission_rate_bps)
         .bind(&d.zone)
         .bind(&d.vehicle_type)
+        .bind(d.carrier_id)
+        .bind(d.hub_id)
         .bind(d.created_at)
         .bind(d.updated_at)
         .execute(&self.pool)

@@ -1,5 +1,6 @@
 use std::{net::SocketAddr, sync::Arc};
 
+use anyhow::Context as _;
 use rdkafka::{consumer::StreamConsumer, ClientConfig};
 use sqlx::postgres::PgPoolOptions;
 
@@ -7,7 +8,7 @@ use crate::{
     api::http,
     application::{handlers, services::{EventPublisher, TrackingService}},
     config::Config,
-    infrastructure::{db::PgTrackingRepository, messaging::KafkaEventPublisher},
+    infrastructure::{db::PgTrackingRepository, external::PodClient, messaging::KafkaEventPublisher},
     AppState,
 };
 
@@ -65,7 +66,13 @@ pub async fn run() -> anyhow::Result<()> {
         handlers::run_consumer(consumer, consumer_repo).await;
     });
 
-    let state = AppState { tracking_svc };
+    let pod_client = Arc::new(
+        PodClient::new(cfg.pod_internal_url.clone())
+            .context("Failed to build PodClient HTTP client")?
+    );
+    tracing::info!(url = %cfg.pod_internal_url, "PodClient: targeting pod service for evidence enrichment");
+
+    let state = AppState { tracking_svc, pod_client };
 
     use tower_http::cors::CorsLayer;
     use axum::http::{HeaderName, HeaderValue, Method};

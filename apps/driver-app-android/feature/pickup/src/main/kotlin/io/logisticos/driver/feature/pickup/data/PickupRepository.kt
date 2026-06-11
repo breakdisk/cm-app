@@ -109,6 +109,15 @@ class PickupRepository @Inject constructor(
         pickupLng: Double,
         photoPath: String?,
         deviceTimestamp: String,
+        // AR dimensioning (VERIFY mode) — persisted on the POP for size / quantity /
+        // anti-fraud audit. Null for manual / non-AR pickups.
+        verifiedLengthCm: Double? = null,
+        verifiedWidthCm: Double? = null,
+        verifiedHeightCm: Double? = null,
+        verifiedCbm: Double? = null,
+        volumetricWeightKg: Double? = null,
+        boxQuantity: Int? = null,
+        dimensionIntegrity: String? = null,
     ) {
         val task = taskDao.getById(taskId) ?: return
         if (!TaskStateMachine.canTransition(task.status, TaskStatus.COMPLETED)) return
@@ -130,6 +139,11 @@ class PickupRepository @Inject constructor(
         // The server requires `scanned_barcode` — use the task AWB when no
         // real scan happened (auto-confirmed UUID AWBs).
         val effectiveBarcode = scannedAwb.ifBlank { task.awb }
+        // Hoisted so that the pop_id is available to completeTask even when
+        // submitPop fails but initiatePop succeeded. The server's idempotent
+        // initiatePop returns the same pop_id on replay, so this is the
+        // canonical chain-of-custody reference for this task completion.
+        var capturedPopId: String? = null
         try {
             val popResp = podApi.initiatePop(
                 InitiatePopRequest(
@@ -142,7 +156,8 @@ class PickupRepository @Inject constructor(
                     deviceTimestamp = deviceTimestamp,
                 )
             )
-            val popId = popResp.data.popId
+            capturedPopId = popResp.data.popId
+            val popId = capturedPopId!!
 
             // ── Upload pickup photo to R2 if captured ───────────────────────
             // Uses the same presigned-URL flow as delivery POD photos.
@@ -180,10 +195,17 @@ class PickupRepository @Inject constructor(
             podApi.submitPop(
                 popId,
                 SubmitPopRequest(
-                    scannedBarcode  = effectiveBarcode,
-                    deviceTimestamp = deviceTimestamp,
-                    photoS3Key      = photoS3Key,
-                    photoSizeBytes  = photoSizeBytes,
+                    scannedBarcode     = effectiveBarcode,
+                    deviceTimestamp    = deviceTimestamp,
+                    photoS3Key         = photoS3Key,
+                    photoSizeBytes     = photoSizeBytes,
+                    verifiedLengthCm   = verifiedLengthCm,
+                    verifiedWidthCm    = verifiedWidthCm,
+                    verifiedHeightCm   = verifiedHeightCm,
+                    verifiedCbm        = verifiedCbm,
+                    volumetricWeightKg = volumetricWeightKg,
+                    boxQuantity        = boxQuantity,
+                    dimensionIntegrity = dimensionIntegrity,
                 )
             )
             android.util.Log.d(
@@ -209,6 +231,14 @@ class PickupRepository @Inject constructor(
                             "pickupLng"       to pickupLng.toString(),
                             "photoPath"       to (compressedPhotoPath ?: ""),
                             "deviceTimestamp" to deviceTimestamp,
+                            // AR dimensioning carried through the offline replay path.
+                            "verifiedLengthCm"   to (verifiedLengthCm?.toString() ?: ""),
+                            "verifiedWidthCm"    to (verifiedWidthCm?.toString() ?: ""),
+                            "verifiedHeightCm"   to (verifiedHeightCm?.toString() ?: ""),
+                            "verifiedCbm"        to (verifiedCbm?.toString() ?: ""),
+                            "volumetricWeightKg" to (volumetricWeightKg?.toString() ?: ""),
+                            "boxQuantity"        to (boxQuantity?.toString() ?: ""),
+                            "dimensionIntegrity" to (dimensionIntegrity ?: ""),
                         )
                     ),
                     createdAt = System.currentTimeMillis(),
@@ -217,18 +247,29 @@ class PickupRepository @Inject constructor(
         }
 
         // ── 2. Task completion ──────────────────────────────────────────────
-        try {
-            driverOpsApi.completeTask(taskId, CompleteTaskRequest())
-        } catch (e: Exception) {
-            enqueueAndKick(
-                SyncQueueEntity(
-                    action = SyncAction.TASK_STATUS_UPDATE,
-                    payloadJson = Json.encodeToString(
-                        mapOf("taskId" to taskId, "status" to TaskStatus.COMPLETED.name)
-                    ),
-                    createdAt = System.currentTimeMillis(),
+        // Attempt inline when capturedPopId is known (initiatePop succeeded even if
+        // submitPop was queued). Skip when capturedPopId is null — the POP_SUBMIT
+        // queue item will call completeTask with the resolved pop_id after submitPop
+        // succeeds (POP_SUBMIT → TASK_COMPLETE chain). A separate TASK_STATUS_UPDATE
+        // is intentionally not enqueued to avoid a double-complete race.
+        if (capturedPopId != null) {
+            try {
+                driverOpsApi.completeTask(taskId, CompleteTaskRequest(popId = capturedPopId))
+            } catch (e: Exception) {
+                android.util.Log.w("PickupRepository", "completeTask failed, queuing TASK_COMPLETE: ${e.message}")
+                enqueueAndKick(
+                    SyncQueueEntity(
+                        action = SyncAction.TASK_COMPLETE,
+                        payloadJson = Json.encodeToString(
+                            mapOf("taskId" to taskId, "popId" to capturedPopId)
+                        ),
+                        createdAt = System.currentTimeMillis(),
+                    )
                 )
-            )
+            }
         }
+        // When capturedPopId is null (total network failure — even initiatePop failed),
+        // POP_SUBMIT in the queue will initiate + submit POP then call completeTask.
+        // No additional queue item needed here.
     }
 }

@@ -56,6 +56,9 @@ pub trait PalletRepository: Send + Sync {
 pub trait ContainerRepository: Send + Sync {
     async fn find_by_id(&self, id: &ContainerId) -> anyhow::Result<Option<Container>>;
     async fn save(&self, container: &Container) -> anyhow::Result<()>;
+    /// Resolve master AWB strings to shipment UUIDs via `hub_ops.parcel_inductions`.
+    /// Returns an empty vec when `awbs` is empty (no query issued).
+    async fn resolve_awbs_to_shipment_ids(&self, awbs: &[String]) -> anyhow::Result<Vec<uuid::Uuid>>;
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────
@@ -122,6 +125,10 @@ impl PalletService {
         kafka:          Arc<KafkaProducer>,
     ) -> Self {
         Self { pallet_repo, container_repo, kafka }
+    }
+
+    pub async fn find_pallet(&self, id: PalletId) -> AppResult<Option<Pallet>> {
+        self.pallet_repo.find_by_id(&id).await.map_err(AppError::Internal)
     }
 
     // ── Piece → Pallet ────────────────────────────────────────────────────────

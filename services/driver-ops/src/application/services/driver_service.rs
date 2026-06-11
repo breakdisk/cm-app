@@ -47,6 +47,8 @@ impl DriverService {
             cod_commission_rate_bps: 0,
             zone: None,
             vehicle_type: None,
+            carrier_id: cmd.carrier_id,
+            hub_id:     None,
             created_at: now,
             updated_at: now,
         };
@@ -71,6 +73,9 @@ impl DriverService {
         if let Some(v) = cmd.zone                    { driver.zone = Some(v); }
         if let Some(v) = cmd.vehicle_type            { driver.vehicle_type = Some(v); }
         if let Some(v) = cmd.is_active               { driver.is_active = v; }
+        if cmd.carrier_id.is_some()                  { driver.carrier_id = cmd.carrier_id; }
+        if cmd.remove_hub_id == Some(true)           { driver.hub_id = None; }
+        else if cmd.hub_id.is_some()                 { driver.hub_id = cmd.hub_id; }
         driver.updated_at = chrono::Utc::now();
         self.driver_repo.save(&driver).await.map_err(AppError::Internal)?;
         Ok(driver)
@@ -83,6 +88,13 @@ impl DriverService {
     pub async fn get(&self, driver_id: &DriverId) -> AppResult<Driver> {
         self.driver_repo.find_by_id(driver_id).await.map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound { resource: "Driver", id: driver_id.inner().to_string() })
+    }
+
+    /// Looks up a driver by their identity `user_id` (the UUID from the JWT).
+    /// Used by `GET /v1/drivers/me` where we know the caller's user_id but not
+    /// the internal driver_id (which equals user_id only for modern registrations).
+    pub async fn find_by_user_id(&self, user_id: uuid::Uuid) -> AppResult<Option<Driver>> {
+        self.driver_repo.find_by_user_id(user_id).await.map_err(AppError::Internal)
     }
 
     /// Admin hard-delete — permanently removes the driver profile.

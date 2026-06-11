@@ -21,6 +21,12 @@ pub struct Driver {
     pub cod_commission_rate_bps: i32,   // basis points (250 = 2.50%)
     pub zone: Option<String>,
     pub vehicle_type: Option<String>,
+    /// Links this driver to a third-party carrier for partner-portal manifest scoping.
+    /// NULL = tenant-owned driver. Set on registration or via PATCH from the partner portal.
+    pub carrier_id: Option<uuid::Uuid>,
+    /// Hub this driver is assigned to for hub scanner operations.
+    /// NULL = field/delivery driver. Set via admin assignment.
+    pub hub_id:     Option<uuid::Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

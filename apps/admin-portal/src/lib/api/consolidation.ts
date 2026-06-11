@@ -58,6 +58,8 @@ export interface ConsolidationPlan {
   volume_used_cm3:  number;
   volume_total_cm3: number;
   piece_count:      number;
+  status:           'draft' | 'confirmed' | 'loaded';
+  loaded_awbs:      string[];
   computed_at:      string;
   created_at:       string;
   updated_at:       string;
@@ -94,6 +96,18 @@ export interface ComputePlanBody {
     width_cm:  number;
     height_cm: number;
   }>;
+}
+
+export interface ConfirmPlanBody {
+  destination_hub_id: string;
+  transport_mode:     'road' | 'sea' | 'air';
+}
+
+export interface ScanPieceResult {
+  awb:          string;
+  loaded_count: number;
+  total_count:  number;
+  plan_status:  'confirmed' | 'loaded';
 }
 
 // ── API factory ───────────────────────────────────────────────────────────────
@@ -143,6 +157,24 @@ export function createConsolidationApi(client: AxiosInstance) {
       const res = await client.put<ConsolidationPlan>(
         `/v1/consolidation/plans/${planId}/placements`,
         { placements }
+      );
+      return res.data;
+    },
+
+    /** Confirm a draft plan — creates a container and links it. */
+    async confirmPlan(planId: string, body: ConfirmPlanBody): Promise<ConsolidationPlan> {
+      const res = await client.post<ConsolidationPlan>(
+        `/v1/consolidation/plans/${planId}/confirm`,
+        body,
+      );
+      return res.data;
+    },
+
+    /** Scan a piece AWB against a confirmed plan. */
+    async scanPiece(planId: string, awb: string): Promise<ScanPieceResult> {
+      const res = await client.post<ScanPieceResult>(
+        `/v1/consolidation/plans/${planId}/scan`,
+        { awb },
       );
       return res.data;
     },

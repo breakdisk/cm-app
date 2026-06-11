@@ -44,6 +44,12 @@ class SessionManager @Inject constructor(
 
     fun clearPendingInvite() = tokenStorage.clearPendingInvite()
 
+    // Hub scanner profile — populated after OTP login and refreshed on foreground.
+    fun getHubId(): String? = tokenStorage.getHubId()
+    fun saveHubId(hubId: String?) = tokenStorage.saveHubId(hubId)
+    fun isHubScanner(): Boolean = tokenStorage.isHubScanner()
+    fun saveIsHubScanner(isHub: Boolean) = tokenStorage.saveIsHubScanner(isHub)
+
     fun clearSession() {
         tokenStorage.clearAll()
         cachedJwt = null

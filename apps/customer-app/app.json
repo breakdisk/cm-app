@@ -15,7 +15,8 @@
       "supportsTablet": true,
       "bundleIdentifier": "io.logisticos.customer",
       "infoPlist": {
-        "NSCameraUsageDescription": "Allow LogisticOS to access your camera for AR box measurement."
+        "NSCameraUsageDescription": "Allow LogisticOS to access your camera for document scanning and AR box measurement.",
+        "NSPhotoLibraryUsageDescription": "Allow LogisticOS to access your photos to upload identity documents."
       }
     },
     "android": {
@@ -26,8 +27,10 @@
       "permissions": [
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_FINE_LOCATION",
-        "android.permission.CAMERA"
-      ]
+        "android.permission.CAMERA",
+        "android.permission.READ_MEDIA_IMAGES"
+      ],
+      "versionCode": 7
     },
     "web": {
       "bundler": "metro",
@@ -36,6 +39,12 @@
     },
     "plugins": [
       "expo-secure-store",
+      [
+        "react-native-document-scanner-plugin",
+        {
+          "cameraPermission": "Allow LogisticOS to access your camera for document scanning and AR box measurement."
+        }
+      ],
       [
         "expo-notifications",
         {
@@ -55,6 +64,12 @@
         "projectId": "b6f52d17-dfea-45cf-88bb-c00907b0d90c"
       }
     },
-    "owner": "cargomarket"
+    "owner": "cargomarket",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/b6f52d17-dfea-45cf-88bb-c00907b0d90c"
+    }
   }
 }

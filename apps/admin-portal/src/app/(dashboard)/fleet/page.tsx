@@ -3,7 +3,7 @@
  * Admin Portal — Fleet Page
  * Vehicle roster, telemetry status, maintenance schedule.
  */
-import { useState, useEffect, useRef, Suspense } from "react";
+import { useState, useEffect, useRef, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion } from "framer-motion";
 import { createFleetApi, Vehicle as ApiVehicle } from "@/lib/api/fleet";
@@ -11,7 +11,9 @@ import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
-import { Truck, Fuel, Wrench, MapPin, AlertTriangle, Briefcase } from "lucide-react";
+import { usePermissions } from "@/hooks/usePermissions";
+import { RegisterVehicleModal } from "@/components/fleet/RegisterVehicleModal";
+import { Truck, Fuel, MapPin, AlertTriangle, Briefcase, Plus } from "lucide-react";
 
 // ── Initial KPI state (zeros — replaced by live API data on mount) ─────────────
 
@@ -59,8 +61,12 @@ function FleetPageInner() {
   const focusDriverId  = searchParams.get("driver");
   const focusCardRef   = useRef<HTMLDivElement | null>(null);
 
-  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
-  const [kpi, setKpi] = useState(EMPTY_KPI);
+  const { hasPermission } = usePermissions();
+  const canManageFleet = hasPermission("fleet:manage");
+
+  const [vehicles, setVehicles]       = useState<Vehicle[]>([]);
+  const [kpi, setKpi]                 = useState(EMPTY_KPI);
+  const [registerOpen, setRegisterOpen] = useState(false);
 
   useEffect(() => {
     if (focusDriverId && focusCardRef.current) {
@@ -68,33 +74,35 @@ function FleetPageInner() {
     }
   }, [focusDriverId, vehicles]);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     const api = createFleetApi();
     Promise.all([api.listVehicles({ per_page: 100 }), api.getSummary()])
       .then(([listRes, summaryRes]) => {
         setVehicles(listRes.data.map((v: ApiVehicle) => ({
-          id:               v.id,
-          plate:            v.plate,
-          type:             v.type,
-          driver:           v.driver_name,
-          driver_id:        v.driver_id,
-          status:           v.status as VehicleStatus,
-          fuel_pct:         v.fuel_pct,
-          km_today:         v.km_today,
-          location:         v.location ?? "Unknown",
-          next_service_km:  v.next_service_km,
-          alerts:           v.alerts,
+          id:              v.id,
+          plate:           v.plate,
+          type:            v.type as Vehicle["type"],
+          driver:          v.driver_name,
+          driver_id:       v.driver_id,
+          status:          v.status as VehicleStatus,
+          fuel_pct:        v.fuel_pct,
+          km_today:        v.km_today,
+          location:        v.location ?? "Unknown",
+          next_service_km: v.next_service_km,
+          alerts:          v.alerts,
         })));
         const s = summaryRes.data;
         setKpi([
-          { label: "Active Vehicles", value: s.active,         trend: 0,    color: "green"  as const, format: "number"  as const },
-          { label: "In Maintenance",  value: s.maintenance,    trend: 0,    color: "amber"  as const, format: "number"  as const },
-          { label: "Avg Fuel Level",  value: s.avg_fuel_pct,   trend: 0,    color: "cyan"   as const, format: "percent" as const },
-          { label: "KM Today",        value: s.total_km_today, trend: 0,    color: "purple" as const, format: "number"  as const },
+          { label: "Active Vehicles", value: s.active,         trend: 0, color: "green"  as const, format: "number"  as const },
+          { label: "In Maintenance",  value: s.maintenance,    trend: 0, color: "amber"  as const, format: "number"  as const },
+          { label: "Avg Fuel Level",  value: s.avg_fuel_pct,   trend: 0, color: "cyan"   as const, format: "percent" as const },
+          { label: "KM Today",        value: s.total_km_today, trend: 0, color: "purple" as const, format: "number"  as const },
         ]);
       })
       .catch(() => { /* keep empty state — no fallback mock data */ });
   }, []);
+
+  useEffect(() => { load(); }, [load]);
 
   return (
     <motion.div
@@ -114,6 +122,16 @@ function FleetPageInner() {
             {vehicles.length} vehicles · {kpi[0].value} active · {kpi[1].value} in maintenance
           </p>
         </div>
+        {canManageFleet && (
+          <button
+            onClick={() => setRegisterOpen(true)}
+            className="flex items-center gap-2 rounded-lg border border-cyan-neon/30 bg-cyan-neon/10 px-4 py-2 text-sm font-semibold text-cyan-neon hover:bg-cyan-neon/20 transition-all"
+            style={{ boxShadow: "0 0 12px rgba(0,229,255,0.15)" }}
+          >
+            <Plus size={14} />
+            Register Vehicle
+          </button>
+        )}
       </motion.div>
 
       {/* KPI row */}
@@ -133,7 +151,9 @@ function FleetPageInner() {
               <Truck size={32} className="text-white/20 mb-3" />
               <p className="text-sm font-semibold text-white/40">No vehicles registered</p>
               <p className="text-xs font-mono text-white/20 mt-1">
-                Vehicles will appear here once registered in the fleet service.
+                {canManageFleet
+                  ? "Use \"Register Vehicle\" above to add your first vehicle."
+                  : "Vehicles will appear here once registered in the fleet service."}
               </p>
             </GlassCard>
           </div>
@@ -218,6 +238,12 @@ function FleetPageInner() {
           );
         })}
       </motion.div>
+
+      <RegisterVehicleModal
+        open={registerOpen}
+        onClose={() => setRegisterOpen(false)}
+        onSuccess={load}
+      />
     </motion.div>
   );
 }

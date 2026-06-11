@@ -116,6 +116,22 @@ pub struct SubmitPickupCommand {
     /// Forwarded into PickupCaptured so payments can issue the Track A/B invoice.
     #[serde(default)]
     pub tenant_code:       String,
+
+    // AR dimensioning from the driver app VERIFY measurement (all optional).
+    #[serde(default)]
+    pub verified_length_cm:   Option<f64>,
+    #[serde(default)]
+    pub verified_width_cm:    Option<f64>,
+    #[serde(default)]
+    pub verified_height_cm:   Option<f64>,
+    #[serde(default)]
+    pub verified_cbm:         Option<f64>,
+    #[serde(default)]
+    pub volumetric_weight_kg: Option<f64>,
+    #[serde(default)]
+    pub box_quantity:         Option<i32>,
+    #[serde(default)]
+    pub dimension_integrity:  Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

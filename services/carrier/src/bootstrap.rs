@@ -21,8 +21,9 @@ use crate::{
             aramex::AramexAdapter,
         },
         cache::CachedCarrierRepository,
-        db::{PgCarrierRepository, PgMarketplaceRepository, PgSlaRecordRepository},
-        messaging::{start_delivery_consumer, CarrierPublisher},
+        db::{PgCarrierBookingRepository, PgCarrierRepository, PgMarketplaceRepository, PgSlaRecordRepository},
+        messaging::{start_allocation_booking_worker, start_delivery_consumer, CarrierPublisher},
+        storage::{S3StorageAdapter, StorageAdapter},
     },
     AppState,
 };
@@ -54,6 +55,7 @@ pub async fn run() -> anyhow::Result<()> {
     let pg_carrier_repo  = Arc::new(PgCarrierRepository::new(pool.clone()));
     let sla_repo         = Arc::new(PgSlaRecordRepository::new(pool.clone()));
     let marketplace_repo = Arc::new(PgMarketplaceRepository::new(pool.clone()));
+    let booking_repo     = Arc::new(PgCarrierBookingRepository::new(pool.clone()));
 
     // Wrap the carrier repo in a Redis write-through cache to cut latency on
     // the hot /me and find_by_id paths (partner portal polls /me on every page).
@@ -88,6 +90,31 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::clone(&kafka_producer),
     ));
 
+    // S3/R2 object storage for carrier label files.
+    let s3_bucket     = std::env::var("S3_BUCKET").unwrap_or_else(|_| "logisticos-carrier-labels".into());
+    let s3_endpoint   = std::env::var("S3_ENDPOINT_URL").ok();
+    let s3_region     = std::env::var("S3_REGION").or_else(|_| std::env::var("AWS_REGION")).ok();
+    let s3_path_style = std::env::var("S3_FORCE_PATH_STYLE")
+        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+        .unwrap_or(false);
+    let s3_creds = match (cfg.s3.access_key_id.clone(), cfg.s3.secret_access_key.clone()) {
+        (Some(k), Some(s)) => Some((k, s)),
+        _ => None,
+    };
+
+    let storage: Option<Arc<dyn StorageAdapter>> = match S3StorageAdapter::new(
+        s3_endpoint, s3_bucket, s3_region, s3_path_style, s3_creds,
+    ).await {
+        Ok(adapter) => {
+            tracing::info!("Carrier label storage (S3/R2) ready");
+            Some(Arc::new(adapter) as Arc<dyn StorageAdapter>)
+        }
+        Err(e) => {
+            tracing::warn!("S3/R2 storage unavailable — labels will not be stored: {e}");
+            None
+        }
+    };
+
     // Graceful shutdown channel
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
@@ -101,6 +128,22 @@ pub async fn run() -> anyhow::Result<()> {
         tokio::spawn(async move {
             if let Err(e) = start_delivery_consumer(&brokers, &group_id, c_repo, s_repo, rx).await {
                 tracing::error!("Delivery consumer exited with error: {e}");
+            }
+        });
+    }
+
+    // Spawn hub-carrier consumer — books a 3PL SLA allocation when hub-ops (or
+    // dispatch Auto fallback) requests carrier last-mile for a deconsolidated shipment.
+    {
+        let brokers   = cfg.kafka.brokers.clone();
+        let group_id  = cfg.kafka.group_id.clone();
+        let svc       = Arc::clone(&carrier_svc);
+        let rx        = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::infrastructure::hub_carrier_consumer::start_hub_carrier_consumer(
+                &brokers, &group_id, svc, rx,
+            ).await {
+                tracing::error!("Hub-carrier consumer exited with error: {e}");
             }
         });
     }
@@ -161,6 +204,26 @@ pub async fn run() -> anyhow::Result<()> {
 
     let adapter_registry = Arc::new(registry);
 
+    // Spawn G4 — allocation booking worker (CARRIER_ALLOCATED → 3PL book_shipment)
+    {
+        let brokers          = cfg.kafka.brokers.clone();
+        let group_id         = cfg.kafka.group_id.clone();
+        let c_repo           = Arc::clone(&carrier_repo);
+        let registry_arc     = Arc::clone(&adapter_registry);
+        let b_repo           = Arc::clone(&booking_repo);
+        let storage_arc      = storage.clone();
+        let order_intake_url = cfg.services.order_intake_url.clone();
+        let rx               = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = start_allocation_booking_worker(
+                brokers, group_id, c_repo, registry_arc,
+                b_repo, storage_arc, order_intake_url, rx,
+            ).await {
+                tracing::error!("Allocation booking worker exited with error: {e}");
+            }
+        });
+    }
+
     let jwt_secret = std::env::var("AUTH__JWT_SECRET")
         .context("AUTH__JWT_SECRET env var not set")?;
     let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
@@ -174,6 +237,8 @@ pub async fn run() -> anyhow::Result<()> {
         marketplace_svc,
         jwt: Arc::clone(&jwt),
         adapter_registry,
+        storage,
+        booking_repo: Some(booking_repo),
     };
 
     // Compose the app:

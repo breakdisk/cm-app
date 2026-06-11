@@ -7,7 +7,6 @@ use logisticos_types::{DriverId, TenantId};
 use crate::{
     api::http::AppState,
     application::commands::*,
-    domain::entities::PopStatus,
 };
 
 #[derive(serde::Deserialize)]
@@ -253,6 +252,41 @@ pub async fn list_pops(
     }
 }
 
+/// `GET /v1/internal/pop-evidence/:shipment_id`
+///
+/// Internal service-to-service endpoint (no JWT — protected by Istio mTLS).
+/// Called by the delivery-experience service to enrich tracking responses with
+/// POP pickup evidence and POD delivery evidence for merchant/customer portals.
+///
+/// Returns:
+/// ```json
+/// {
+///   "pop": { "photo_url": "https://...", "picked_up_at": "...", ... } | null,
+///   "pod": { "photo_urls": [...], "signature_url": "...", "delivered_at": "...", ... } | null
+/// }
+/// ```
+pub async fn get_evidence_internal(
+    Path(shipment_id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    // Fetch the submitted POP for this shipment (if any).
+    let pop_view = match state.pod_service.get_completed_pop_by_shipment(shipment_id).await? {
+        Some(ref pop) => Some(state.pod_service.pop_to_view(pop).await),
+        None          => None,
+    };
+
+    // Fetch the POD for this shipment (if any). Use all-photos evidence view.
+    let pod_view = match state.pod_service.get_by_shipment(shipment_id).await? {
+        Some(ref pod) => Some(state.pod_service.pod_evidence_to_view(pod).await),
+        None          => None,
+    };
+
+    Ok(Json(serde_json::json!({
+        "pop": pop_view,
+        "pod": pod_view,
+    })))
+}
+
 /// `GET /v1/internal/pop-status?shipment_ids=<uuid>&shipment_ids=<uuid>...`
 ///
 /// Internal service-to-service endpoint (no JWT — protected by Istio mTLS).
@@ -268,8 +302,8 @@ pub async fn pop_status_internal(
     let mut all_completed = true;
 
     for shipment_id in &q.shipment_ids {
-        let pop = state.pod_service.get_pop_by_shipment(*shipment_id).await?;
-        let has_completed_pop = pop.map_or(false, |p| p.status == PopStatus::Submitted);
+        let pop = state.pod_service.get_completed_pop_by_shipment(*shipment_id).await?;
+        let has_completed_pop = pop.is_some();
         if !has_completed_pop {
             all_completed = false;
         }

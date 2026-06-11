@@ -19,6 +19,57 @@ import javax.inject.Inject
  */
 enum class BoxMeasureMode { VERIFY, QUOTE }
 
+/**
+ * Integrity classification for a captured measurement — the anti-fraud surface.
+ *
+ * Freight is priced on CBM, so an under-stated box directly under-bills the
+ * shipment. Every measurement is scored before it is allowed to feed a quote or
+ * a POP confirmation:
+ *
+ *   VERIFIED — high-confidence AR scan, or a manual edit within tolerance of one.
+ *   REVIEW   — usable but unverified: low AR confidence, or manual-only entry.
+ *   FLAGGED  — manual entry materially smaller than the trusted AR scan. Booking
+ *              and POP confirmation are blocked; the hub re-measures before billing.
+ */
+enum class MeasurementIntegrity { PENDING, VERIFIED, REVIEW, FLAGGED }
+
+/** The three measured cuboid axes — drives the AR dimension chip colours. */
+enum class DimAxis { LENGTH, WIDTH, HEIGHT }
+
+/**
+ * A projected AR dimension label: the screen-pixel position of a cuboid edge
+ * midpoint (computed by the renderer each frame) plus its measured length in cm.
+ * Rendered as a floating chip over the camera, value shown in inches.
+ */
+data class DimLabel(
+    val axis: DimAxis,
+    val xPx: Float,
+    val yPx: Float,
+    val cm: Double,
+)
+
+/**
+ * AR-measured dimensioning snapshot handed to the Proof-of-Pickup flow. Serves the
+ * POP triple purpose: anti-fraud (integrity + dimensions), size audit (cbm /
+ * volumetric weight), and box count (quantity). [integrity] is a
+ * [MeasurementIntegrity] name.
+ */
+data class PopDimensioning(
+    val lengthCm: Double,
+    val widthCm: Double,
+    val heightCm: Double,
+    val cbm: Double,
+    val volumetricWeightKg: Double,
+    val quantity: Int,
+    val integrity: String,
+)
+
+/** Below this ARCore tracking confidence a scan is downgraded to REVIEW. */
+private const val AR_CONFIDENCE_FLOOR = 0.80
+
+/** A manual edit shrinking AR-scanned volume by more than this share is FLAGGED. */
+private const val MANUAL_UNDERCUT_TOLERANCE = 0.10
+
 data class BoxMeasureUiState(
     // ── AR measurement ──────────────────────────────────────────────────────────
     val arSessionReady: Boolean = false,
@@ -28,6 +79,25 @@ data class BoxMeasureUiState(
     val measuredH: Double? = null,
     val arConfidence: Double = 0.0,
     val measureError: String? = null,
+
+    // Live edge-distance under the centre reticle: distance in **cm** from the last
+    // placed anchor to the current camera aim point.  Null when no anchor is placed yet
+    // or when the reticle misses a plane.  Drives the LiveMeasureReticle chip colour
+    // and value (cyan = LENGTH, pink = WIDTH, green = HEIGHT).
+    val liveDistanceCm: Double? = null,
+
+    // Projected AR dimension chips (length / width / height edge midpoints).
+    val dimLabels: List<DimLabel> = emptyList(),
+
+    // ── Measurement integrity / anti-fraud ──────────────────────────────────────
+    val integrity: MeasurementIntegrity = MeasurementIntegrity.PENDING,
+    val integrityReason: String? = null,
+    val manualOverrideUsed: Boolean = false,
+    // Trusted AR-scan snapshot, retained even after a manual override, so the
+    // deviation between the scan and the edited values stays auditable.
+    val arScanL: Double? = null,
+    val arScanW: Double? = null,
+    val arScanH: Double? = null,
 
     // ── Manual override inputs ──────────────────────────────────────────────────
     val manualMode: Boolean = false,
@@ -57,6 +127,9 @@ data class BoxMeasureUiState(
 
     // ── Confirmation (VERIFY mode only) ─────────────────────────────────────────
     val dimensionConfirmed: Boolean = false,
+
+    // Bumped by resetMeasurement() to signal the AR renderer to drop its tap points.
+    val resetToken: Int = 0,
 )
 
 @HiltViewModel
@@ -86,6 +159,41 @@ class BoxMeasureViewModel @Inject constructor() : ViewModel() {
 
     fun onArSessionReady() = _uiState.update { it.copy(arSessionReady = true) }
 
+    /**
+     * Live edge distance (cm) from the last placed anchor to the reticle aim point,
+     * posted by the renderer ~6 Hz.  Null when no anchor is placed or when the centre
+     * hit-test misses a tracked plane.
+     */
+    fun onLiveDistance(cm: Double?) =
+        _uiState.update { it.copy(liveDistanceCm = cm) }
+
+    /** Projected AR dimension chip positions, throttled by the renderer. */
+    fun onDimLabels(labels: List<DimLabel>) =
+        _uiState.update { it.copy(dimLabels = labels) }
+
+    /**
+     * Clears the current measurement so the driver can re-scan. Drops the captured
+     * dimensions, the integrity score, and the trusted AR-scan snapshot, and bumps
+     * [BoxMeasureUiState.resetToken] — the AR view observes the token and clears the
+     * renderer's world-space tap points so the next tap starts a fresh box.
+     */
+    fun resetMeasurement() = _uiState.update { it.copy(
+        tapCount           = 0,
+        measuredL          = null,
+        measuredW          = null,
+        measuredH          = null,
+        arScanL            = null,
+        arScanW            = null,
+        arScanH            = null,
+        arConfidence       = 0.0,
+        integrity          = MeasurementIntegrity.PENDING,
+        integrityReason    = null,
+        manualOverrideUsed = false,
+        liveDistanceCm     = null,
+        dimLabels          = emptyList(),
+        resetToken         = it.resetToken + 1,
+    )}
+
     fun onArSessionError(msg: String) = _uiState.update { it.copy(measureError = msg, arSessionReady = false) }
 
     /**
@@ -109,14 +217,25 @@ class BoxMeasureViewModel @Inject constructor() : ViewModel() {
 
     fun onMeasurementComplete(l: Double, w: Double, h: Double, confidence: Double) {
         val matched = matchToStandardSize(l, w, h)
+        val integrity = if (confidence >= AR_CONFIDENCE_FLOOR)
+            MeasurementIntegrity.VERIFIED else MeasurementIntegrity.REVIEW
+        val reason = if (confidence < AR_CONFIDENCE_FLOOR)
+            "Low AR tracking confidence (${(confidence * 100).toInt()}%) — re-scan in brighter light against a flatter surface, or enter manually."
+        else null
         _uiState.update { it.copy(
-            measuredL      = l,
-            measuredW      = w,
-            measuredH      = h,
-            arConfidence   = confidence,
-            matchedSizeId  = matched?.id ?: it.matchedSizeId,
-            tapCount       = 4,
-            measureError   = null,
+            measuredL          = l,
+            measuredW          = w,
+            measuredH          = h,
+            arScanL            = l,
+            arScanW            = w,
+            arScanH            = h,
+            arConfidence       = confidence,
+            matchedSizeId      = matched?.id ?: it.matchedSizeId,
+            tapCount           = 4,
+            measureError       = null,
+            manualOverrideUsed = false,
+            integrity          = integrity,
+            integrityReason    = reason,
         )}
     }
 
@@ -132,13 +251,49 @@ class BoxMeasureViewModel @Inject constructor() : ViewModel() {
         val w = _uiState.value.manualW.toDoubleOrNull() ?: return
         val h = _uiState.value.manualH.toDoubleOrNull() ?: return
         val matched = matchToStandardSize(l, w, h)
+        val (integrity, reason) = assessManualOverride(_uiState.value, l, w, h)
         _uiState.update { it.copy(
-            measuredL     = l,
-            measuredW     = w,
-            measuredH     = h,
-            matchedSizeId = matched?.id ?: it.matchedSizeId,
-            manualMode    = false,
+            measuredL          = l,
+            measuredW          = w,
+            measuredH          = h,
+            matchedSizeId      = matched?.id ?: it.matchedSizeId,
+            manualMode         = false,
+            manualOverrideUsed = true,
+            integrity          = integrity,
+            integrityReason    = reason,
         )}
+    }
+
+    /**
+     * Scores a manual entry against the trusted AR scan (if any).
+     *
+     * Manual entry is the primary fraud vector: a driver/agent can type a smaller
+     * box than the one in hand to lower the CBM and the quoted freight. When an AR
+     * scan exists we compare volumes — shrinking it past [MANUAL_UNDERCUT_TOLERANCE]
+     * is FLAGGED (blocks booking/POP). With no AR baseline the entry is allowed but
+     * only ever REVIEW — it is auditable but never silently trusted.
+     */
+    private fun assessManualOverride(
+        s: BoxMeasureUiState, l: Double, w: Double, h: Double,
+    ): Pair<MeasurementIntegrity, String?> {
+        val scanL = s.arScanL; val scanW = s.arScanW; val scanH = s.arScanH
+        if (scanL == null || scanW == null || scanH == null) {
+            return MeasurementIntegrity.REVIEW to
+                "Entered manually without an AR scan — unverified, and subject to re-measurement at the hub."
+        }
+        val scanVol   = scanL * scanW * scanH
+        val manualVol = l * w * h
+        if (scanVol <= 0.0) return MeasurementIntegrity.REVIEW to null
+        val undercut = (scanVol - manualVol) / scanVol
+        return if (undercut > MANUAL_UNDERCUT_TOLERANCE) {
+            val pct = (undercut * 100).toInt()
+            MeasurementIntegrity.FLAGGED to
+                "Manual entry is $pct% smaller than the AR scan " +
+                "(${"%.0f".format(scanL)}×${"%.0f".format(scanW)}×${"%.0f".format(scanH)} cm). " +
+                "Flagged for review — the hub will re-measure before billing."
+        } else {
+            MeasurementIntegrity.VERIFIED to null
+        }
     }
 
     // ── Quote inputs ──────────────────────────────────────────────────────────────
@@ -193,4 +348,19 @@ class BoxMeasureViewModel @Inject constructor() : ViewModel() {
     }
 
     fun activeDimensions(): Triple<Double, Double, Double> = resolveActiveDimensions(_uiState.value)
+
+    /** Full dimensioning snapshot for the POP flow (anti-fraud / audit / quantity). */
+    fun popDimensioning(): PopDimensioning {
+        val s = _uiState.value
+        val (l, w, h) = resolveActiveDimensions(s)
+        return PopDimensioning(
+            lengthCm           = l,
+            widthCm            = w,
+            heightCm           = h,
+            cbm                = computeCbm(l, w, h),
+            volumetricWeightKg = computeVolumetricWeight(l, w, h),
+            quantity           = s.qty,
+            integrity          = s.integrity.name,
+        )
+    }
 }

@@ -146,7 +146,7 @@ impl InvoiceService {
                 customer_email:  None,
                 tenant_id:       tenant_id.inner(),
                 total_cents:     invoice.total_due().amount,
-                currency:        format!("{:?}", invoice.currency),
+                currency:        invoice.currency.to_string(),
                 due_at:          invoice.due_at,
                 // Merchant invoices are periodic aggregates — no single AWB.
                 tracking_number: String::new(),
@@ -329,7 +329,7 @@ impl InvoiceService {
                 customer_email:  cmd.customer_email.clone(),
                 tenant_id:       tenant_id.inner(),
                 total_cents:     invoice.total_due().amount,
-                currency:        format!("{:?}", currency),
+                currency:        currency.to_string(),
                 due_at:          invoice.due_at,
                 tracking_number: billing.awb.clone(),
                 // Recipient details from POD — enable WhatsApp + personalised email.
@@ -466,7 +466,7 @@ impl InvoiceService {
                 customer_email: None, // engagement engine looks this up from CDP
                 tenant_id:      invoice.tenant_id.inner(),
                 total_cents:    invoice.total_due().amount,
-                currency:       format!("{:?}", invoice.currency),
+                currency:       invoice.currency.to_string(),
                 due_at:         invoice.due_at,
                 // Invoice entity doesn't store AWB, customer_name, or phone —
                 // resend is initiated from stored invoice data only. Engagement
@@ -516,20 +516,19 @@ fn parse_charge_type(s: &str) -> Result<ChargeType, String> {
 }
 
 fn invoice_to_summary(inv: Invoice) -> InvoiceSummary {
-    use chrono::Datelike;
-    let year  = inv.billing_period.start.year();
-    let month = inv.billing_period.start.month();
     InvoiceSummary {
-        invoice_id:     inv.id.inner(),
+        id:             inv.id.inner(),
         invoice_number: inv.invoice_number.to_string(),
         invoice_type:   format!("{:?}", inv.invoice_type).to_lowercase(),
         status:         format!("{:?}", inv.status).to_lowercase(),
         awb_count:      inv.awb_count(),
-        subtotal_cents: inv.subtotal().amount,
-        vat_cents:      inv.vat_amount().amount,
-        total_cents:    inv.total_due().amount,
-        billing_period: format!("{:04}-{:02}", year, month),
-        due_at:         inv.due_at.to_rfc3339(),
-        issued_at:      inv.issued_at.to_rfc3339(),
+        subtotal_php:   inv.subtotal().amount as f64 / 100.0,
+        vat_php:        inv.vat_amount().amount as f64 / 100.0,
+        total_php:      inv.total_due().amount as f64 / 100.0,
+        period_from:    inv.billing_period.start.to_string(),
+        period_to:      inv.billing_period.end.to_string(),
+        due_date:       inv.due_at.to_rfc3339(),
+        paid_at:        inv.paid_at.map(|dt| dt.to_rfc3339()),
+        created_at:     inv.issued_at.to_rfc3339(),
     }
 }

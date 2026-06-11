@@ -15,6 +15,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSelector } from "react-redux";
 import { FadeInView } from "../../components/FadeInView";
 import { trackingApi } from "../../services/api/tracking";
+import { listCustomerInvoices, getInvoice, type InvoiceDetail } from "../../services/api/invoices";
 import type { ShipmentRecord, RootState } from "../../store";
 
 const CANVAS = "#050810";
@@ -52,12 +53,15 @@ export function ReceiptScreen({ route, navigation }: ReceiptScreenProps) {
   const { shipment } = route.params;
   const isDelivered = shipment.status === "delivered";
 
-  // Pre-fill email from customer profile
-  const profileEmail = useSelector((s: RootState) => (s.auth as any).profile?.email ?? "");
+  // Pre-fill email + customer identity from auth
+  const profileEmail = useSelector((s: RootState) => (s.auth as any).email ?? (s.auth as any).profile?.email ?? "");
+  const customerId   = useSelector((s: RootState) => (s.auth as any).customerId as string | null | undefined);
 
   const [deliveredAt, setDeliveredAt] = useState<string | null>(null);
   const [driverName, setDriverName] = useState<string | null>(null);
   const [loadingExtra, setLoadingExtra] = useState(isDelivered);
+  // Real invoice line items — fetched for delivered shipments when available.
+  const [invoiceDetail, setInvoiceDetail] = useState<InvoiceDetail | null>(null);
 
   // Email receipt state
   const [emailExpanded, setEmailExpanded] = useState(false);
@@ -77,21 +81,40 @@ export function ReceiptScreen({ route, navigation }: ReceiptScreenProps) {
 
   useEffect(() => {
     if (!isDelivered) return;
-    trackingApi.getLive(shipment.awb, "")
+    // Fetch delivery detail and real invoice line items in parallel.
+    const fetchTracking = trackingApi.getLive(shipment.awb, "")
       .then(res => {
         const data = (res.data as any)?.data ?? res.data as any;
         const deliveryEvent = data.events?.find((e: any) => e.status === "delivered");
         if (deliveryEvent) setDeliveredAt(deliveryEvent.occurred_at);
         if (data.driver?.name) setDriverName(data.driver.name);
       })
-      .catch(() => {/* non-critical */})
+      .catch(() => {/* non-critical */});
+
+    const fetchInvoice = customerId
+      ? listCustomerInvoices(customerId)
+          .then(summaries => {
+            // Find the most recent payment_receipt invoice for this shipment.
+            // Payments service issues one receipt per B2C delivery; match by
+            // period_from date (= delivery date) and invoice_type.
+            const receipt = summaries.find(
+              s => s.invoice_type === "payment_receipt"
+            );
+            if (!receipt) return;
+            return getInvoice(receipt.id).then(setInvoiceDetail);
+          })
+          .catch(() => {/* non-critical — fall back to estimated breakdown */})
+      : Promise.resolve();
+
+    Promise.allSettled([fetchTracking, fetchInvoice])
       .finally(() => setLoadingExtra(false));
-  }, [shipment.awb, isDelivered]);
+  }, [shipment.awb, customerId, isDelivered]);
 
   const totalFee = shipment.totalFee ?? 0;
-  const baseFee = totalFee * 0.85;
-  const taxFee  = totalFee * 0.12;
-  const fuelFee = totalFee - baseFee - taxFee;
+  // Estimated fallback — used when no real invoice is available.
+  const baseFeeEst = totalFee * 0.85;
+  const taxFeeEst  = totalFee * 0.12;
+  const fuelFeeEst = totalFee - baseFeeEst - taxFeeEst;
 
   async function handleShare() {
     const lines = [
@@ -190,13 +213,42 @@ export function ReceiptScreen({ route, navigation }: ReceiptScreenProps) {
           )}
         </FadeInView>
 
-        {/* Fee breakdown card */}
+        {/* Fee breakdown card — real invoice line items when available */}
         <FadeInView delay={120} fromY={12} style={s.card}>
-          <Text style={s.cardTitle}>Fee Breakdown</Text>
+          <Text style={s.cardTitle}>
+            Fee Breakdown{invoiceDetail ? "" : " (Estimate)"}
+          </Text>
           <Divider />
-          <ReceiptRow label="Base Freight"  value={`₱${baseFee.toFixed(2)}`} />
-          <ReceiptRow label="Fuel Surcharge" value={`₱${fuelFee.toFixed(2)}`} />
-          <ReceiptRow label="VAT (12%)"     value={`₱${taxFee.toFixed(2)}`} />
+          {invoiceDetail
+            ? invoiceDetail.line_items.map((li, i) => {
+                const lineTotal = (li.unit_price.amount * li.quantity
+                  - (li.discount?.amount ?? 0)) / 100;
+                const chargeLabel = ({
+                  base_freight:          "Base Freight",
+                  fuel_surcharge:        "Fuel Surcharge",
+                  insurance_fee:         "Shipment Insurance",
+                  weight_surcharge:      "Weight Surcharge",
+                  dimensional_surcharge: "Dimensional Surcharge",
+                  cod_handling_fee:      "COD Handling",
+                  manual_adjustment:     "Adjustment",
+                } as Record<string, string>)[li.charge_type]
+                  ?? li.charge_type.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+                return (
+                  <ReceiptRow
+                    key={i}
+                    label={chargeLabel}
+                    value={`₱${lineTotal.toFixed(2)}`}
+                  />
+                );
+              })
+            : (
+              <>
+                <ReceiptRow label="Base Freight"   value={`₱${baseFeeEst.toFixed(2)}`} />
+                <ReceiptRow label="Fuel Surcharge"  value={`₱${fuelFeeEst.toFixed(2)}`} />
+                <ReceiptRow label="VAT (12%)"       value={`₱${taxFeeEst.toFixed(2)}`} />
+              </>
+            )
+          }
           {shipment.isCOD && shipment.codAmount && (
             <ReceiptRow
               label="COD Amount"
@@ -208,7 +260,9 @@ export function ReceiptScreen({ route, navigation }: ReceiptScreenProps) {
           <View style={[s.row, s.totalRow]}>
             <Text style={s.totalLabel}>Total</Text>
             <Text style={[s.totalValue, { color: shipment.type === "international" ? PURPLE : CYAN }]}>
-              ₱{totalFee.toFixed(2)}
+              {invoiceDetail
+                ? `₱${(invoiceDetail.total_due.amount / 100).toFixed(2)}`
+                : `₱${totalFee.toFixed(2)}`}
             </Text>
           </View>
         </FadeInView>

@@ -435,6 +435,20 @@ impl PodService {
             pop.attach_photo(key.clone(), cmd.photo_size_bytes.unwrap_or(0));
         }
 
+        // AR dimensioning (driver app VERIFY mode) — persisted for the POP
+        // size/quantity/anti-fraud audit. All fields optional.
+        if cmd.verified_length_cm.is_some() || cmd.box_quantity.is_some() {
+            pop.record_dimensions(
+                cmd.verified_length_cm,
+                cmd.verified_width_cm,
+                cmd.verified_height_cm,
+                cmd.verified_cbm,
+                cmd.volumetric_weight_kg,
+                cmd.box_quantity,
+                cmd.dimension_integrity.clone(),
+            );
+        }
+
         // Override device_timestamp if provided at submit time (more accurate).
         if cmd.device_timestamp.is_some() {
             pop.device_timestamp = cmd.device_timestamp;
@@ -455,6 +469,18 @@ impl PodService {
         }
         if let Some(ratio) = pop.weight_overage_ratio() {
             tele_meta["weight_overage_ratio"] = serde_json::json!(ratio);
+        }
+        // AR dimensioning audit trail (anti-fraud / size / quantity).
+        if pop.verified_length_cm.is_some() || pop.box_quantity.is_some() {
+            tele_meta["ar_dimensions"] = serde_json::json!({
+                "length_cm":            pop.verified_length_cm,
+                "width_cm":             pop.verified_width_cm,
+                "height_cm":            pop.verified_height_cm,
+                "cbm":                  pop.verified_cbm,
+                "volumetric_weight_kg": pop.volumetric_weight_kg,
+                "box_quantity":         pop.box_quantity,
+                "integrity":            pop.dimension_integrity,
+            });
         }
         if let Err(e) = self.telemetry.append(TelemetryEntry {
             tenant_id:        tenant_id.inner(),
@@ -625,6 +651,13 @@ impl PodService {
         self.pickup_repo.find_by_shipment(shipment_id).await.map_err(AppError::Internal)
     }
 
+    /// Retrieve the *completed* (submitted) POP for a shipment.
+    /// Returns `None` when pickup has not yet been captured or is still in draft.
+    /// Used by `pop_status_internal` and the carrier container-load guard.
+    pub async fn get_completed_pop_by_shipment(&self, shipment_id: Uuid) -> AppResult<Option<ProofOfPickup>> {
+        self.pickup_repo.find_completed_by_shipment(shipment_id).await.map_err(AppError::Internal)
+    }
+
     /// Retrieve the most recent POD for a shipment (for admin portal panel).
     pub async fn get_by_shipment(&self, shipment_id: Uuid) -> AppResult<Option<ProofOfDelivery>> {
         self.pod_repo.find_by_shipment(shipment_id).await.map_err(AppError::Internal)
@@ -688,9 +721,46 @@ impl PodService {
             "actual_weight_g":        pop.actual_weight_g,
             "declared_weight_g":      pop.declared_weight_g,
             "weight_overage_ratio":   pop.weight_overage_ratio(),
+            "verified_length_cm":     pop.verified_length_cm,
+            "verified_width_cm":      pop.verified_width_cm,
+            "verified_height_cm":     pop.verified_height_cm,
+            "verified_cbm":           pop.verified_cbm,
+            "volumetric_weight_kg":   pop.volumetric_weight_kg,
+            "box_quantity":           pop.box_quantity,
+            "dimension_integrity":    pop.dimension_integrity,
             "photo_url":              photo_url,
             "device_timestamp":       pop.device_timestamp,
             "captured_at":            pop.captured_at,
+        })
+    }
+
+    /// Map a POD entity to the merchant/customer evidence shape.
+    /// Presigns ALL photos into `photo_urls: Vec<String>` (not just the first).
+    /// Used by the internal `/v1/internal/pop-evidence/:id` endpoint so the
+    /// delivery-experience service can embed full photo evidence in tracking responses.
+    pub async fn pod_evidence_to_view(&self, pod: &ProofOfDelivery) -> serde_json::Value {
+        let mut photo_urls: Vec<String> = Vec::new();
+        for photo in &pod.photos {
+            match self.pod_storage.presign_download(&photo.s3_key, 3600).await {
+                Ok(url) => photo_urls.push(url),
+                Err(e)  => tracing::warn!(
+                    error = %e,
+                    s3_key = %photo.s3_key,
+                    "Failed to presign POD photo for evidence view — skipping"
+                ),
+            }
+        }
+
+        let signature_url = pod.signature_data.as_ref().map(|b64| {
+            format!("data:image/png;base64,{b64}")
+        });
+
+        serde_json::json!({
+            "photo_urls":        photo_urls,
+            "signature_url":     signature_url,
+            "delivered_at":      pod.captured_at,
+            "recipient_name":    pod.recipient_name,
+            "geofence_verified": pod.geofence_verified,
         })
     }
 

@@ -550,6 +550,9 @@ services:
       SERVICES__MARKETING_URL: http://marketing:8014
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
+      # Pod service internal URL for POP/POD evidence enrichment in tracking responses.
+      # Must match the pod service name on the logisticos compose network.
+      POD_INTERNAL_URL: http://pod:8011
       RUST_LOG: info
     depends_on:
       postgres:
@@ -1069,6 +1072,14 @@ services:
       STORAGE__BUCKET: compliance
       STORAGE__ACCESS_KEY: minioadmin
       STORAGE__SECRET_KEY: minioadmin
+      # MinIO's default server region. The AWS SDK omits the LocationConstraint
+      # for us-east-1, so CreateBucket succeeds; with the "auto" fallback MinIO
+      # rejects the constraint and the bucket is never provisioned → uploads
+      # fail with "S3 upload failed: NoSuchBucket".
+      STORAGE__REGION: us-east-1
+      # MinIO requires path-style addressing (endpoint/bucket/key); the
+      # virtual-hosted form (bucket.minio:9000) fails DNS inside the network.
+      STORAGE__FORCE_PATH_STYLE: "true"
       AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       RUST_LOG: info,sqlx=warn
     depends_on:

@@ -7,9 +7,19 @@ use logisticos_errors::{AppError, AppResult};
 use logisticos_types::TenantId;
 
 use crate::domain::{
-    entities::{Vehicle, VehicleId, VehicleType},
+    entities::{Vehicle, VehicleId, VehicleStatus, VehicleType},
     repositories::VehicleRepository,
 };
+
+#[derive(Debug, Serialize)]
+pub struct FleetSummary {
+    pub active:          usize,
+    pub idle:            usize,
+    pub maintenance:     usize,
+    pub offline:         usize,
+    pub avg_fuel_pct:    f64,
+    pub total_km_today:  i64,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct CreateVehicleCommand {
@@ -124,5 +134,24 @@ impl FleetService {
             .list_maintenance_due(tenant_id, within_days.clamp(1, 90))
             .await
             .map_err(AppError::internal)
+    }
+
+    pub async fn count(&self, tenant_id: &TenantId) -> AppResult<i64> {
+        self.repo.count(tenant_id).await.map_err(AppError::internal)
+    }
+
+    pub async fn summary(&self, tenant_id: &TenantId) -> AppResult<FleetSummary> {
+        let vehicles = self.repo.list(tenant_id, 1000, 0).await.map_err(AppError::internal)?;
+        let active      = vehicles.iter().filter(|v| v.status == VehicleStatus::Active && v.assigned_driver_id.is_some()).count();
+        let idle        = vehicles.iter().filter(|v| v.status == VehicleStatus::Active && v.assigned_driver_id.is_none()).count();
+        let maintenance = vehicles.iter().filter(|v| v.status == VehicleStatus::UnderMaintenance).count();
+        Ok(FleetSummary {
+            active,
+            idle,
+            maintenance,
+            offline:         0,
+            avg_fuel_pct:    0.0,
+            total_km_today:  0,
+        })
     }
 }
