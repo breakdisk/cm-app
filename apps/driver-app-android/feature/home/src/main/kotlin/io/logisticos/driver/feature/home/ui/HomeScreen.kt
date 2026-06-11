@@ -37,6 +37,7 @@ fun HomeScreen(
     onNavigateToRoute: () -> Unit,
     onNavigateToCompliance: () -> Unit,
     onNavigateToBoxMeasure: () -> Unit = {},
+    onNavigateToHub: () -> Unit = {},
     onNavigateToHubScan: (hubId: String) -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
 ) {
@@ -446,6 +447,22 @@ fun HomeScreen(
             colors = ButtonDefaults.outlinedButtonColors(contentColor = Purple)
         ) {
             Text("📦  Measure & Quote Box", fontWeight = FontWeight.Medium, fontSize = 15.sp)
+        }
+
+        // ── Quick-access: Hub operations ─────────────────────────────────────
+        // Surfaces the driver's pending HUB_DROP and RETURN tasks in one tap so
+        // they don't have to scroll the full route looking for hub stops when
+        // they pull up to the dock.
+        OutlinedButton(
+            onClick = onNavigateToHub,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp),
+            shape = RoundedCornerShape(12.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, Amber.copy(alpha = 0.5f)),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = Amber)
+        ) {
+            Text("🏢  Hub Operations", fontWeight = FontWeight.Medium, fontSize = 15.sp)
         }
     }
 

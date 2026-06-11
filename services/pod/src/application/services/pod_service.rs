@@ -665,9 +665,35 @@ impl PodService {
 
     /// Map a POP entity to the JSON shape expected by the admin portal.
     /// Generates a presigned download URL for the pickup photo (1-hour TTL).
+    ///
+    /// Bucket selection: POP photos uploaded since the `logisticos-pop-photos`
+    /// bucket went live live there. Legacy photos uploaded under the single
+    /// shared adapter live in `logisticos-pod-photos`. To keep both renderable
+    /// from the same `pop.photo_s3_key`, we HEAD the POP bucket first and fall
+    /// back to the POD bucket on 404 — picking whichever bucket actually holds
+    /// the object. presign_download itself never 404s (it just generates a
+    /// URL), so without this check the admin portal would render a presigned
+    /// URL that returns 404 to the browser.
     pub async fn pop_to_view(&self, pop: &ProofOfPickup) -> serde_json::Value {
         let photo_url: Option<String> = if let Some(ref key) = pop.photo_s3_key {
-            self.pop_storage.presign_download(key, 3600).await
+            let storage: &dyn StorageAdapter = match self.pop_storage.object_exists(key).await {
+                Ok(true)  => self.pop_storage.as_ref(),
+                Ok(false) => {
+                    tracing::info!(
+                        s3_key = %key,
+                        "POP photo not in pop bucket — falling back to pod bucket (legacy upload)"
+                    );
+                    self.pod_storage.as_ref()
+                }
+                Err(e) => {
+                    // HEAD failed for a non-404 reason (auth, network). Don't
+                    // burn the request — best-effort presign against the POP
+                    // bucket and let the browser surface any real failure.
+                    tracing::warn!(error = %e, s3_key = %key, "HEAD pop bucket failed — falling back to presign pop bucket anyway");
+                    self.pop_storage.as_ref()
+                }
+            };
+            storage.presign_download(key, 3600).await
                 .map_err(|e| tracing::warn!(error = %e, s3_key = %key, "Failed to presign POP photo"))
                 .ok()
         } else {
