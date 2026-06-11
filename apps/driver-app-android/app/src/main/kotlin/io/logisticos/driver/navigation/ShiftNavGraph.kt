@@ -24,6 +24,7 @@ import io.logisticos.driver.feature.boxmeasure.ui.BookShipmentScreen
 import io.logisticos.driver.feature.boxmeasure.ui.BoxMeasureScreen
 import io.logisticos.driver.feature.delivery.ui.ArrivalScreen
 import io.logisticos.driver.feature.home.ui.HomeScreen
+import io.logisticos.driver.feature.home.ui.HubScreen
 import io.logisticos.driver.feature.navigation.ui.NavigationScreen
 import io.logisticos.driver.feature.notifications.presentation.NotificationsViewModel
 import io.logisticos.driver.feature.notifications.ui.NotificationsScreen
@@ -39,6 +40,7 @@ import io.logisticos.driver.feature.scanner.ui.ScannerScreen
 
 // ── Route constants ───────────────────────────────────────────────────────────
 private const val HOME_ROUTE             = "home"
+private const val HUB_ROUTE              = "hub"
 private const val ROUTE_ROUTE            = "route"
 private const val SCAN_ROUTE             = "scan"
 private const val NOTIFICATIONS_ROUTE    = "notifications"
@@ -106,6 +108,19 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                     onNavigateToRoute = { shiftNavController.navigate(ROUTE_ROUTE) },
                     onNavigateToCompliance = { shiftNavController.navigate(COMPLIANCE_ROUTE) },
                     onNavigateToBoxMeasure = { shiftNavController.navigate("box_measure/quote") },
+                    onNavigateToHub = { shiftNavController.navigate(HUB_ROUTE) },
+                )
+            }
+
+            composable(HUB_ROUTE) {
+                // Tapping a hub task hands off to the same arrival flow used by
+                // the route screen; that screen already routes HUB_DROP / RETURN
+                // through PickupScreen for the custody-open confirmation.
+                HubScreen(
+                    onSelectTask = { taskId ->
+                        shiftNavController.navigate("navigate/$taskId")
+                    },
+                    onBack = { shiftNavController.popBackStack() },
                 )
             }
 

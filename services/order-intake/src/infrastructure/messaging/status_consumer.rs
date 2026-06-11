@@ -2,9 +2,16 @@
 //! services report progress:
 //!
 //!   logisticos.dispatch.driver.assigned   → pickup_assigned
-//!   logisticos.driver.pickup.completed    → picked_up
+//!   logisticos.driver.pickup.completed    → picked_up (driver-ops task completion)
+//!   logisticos.pod.pickup.captured        → picked_up (POP submission — authoritative)
 //!   logisticos.driver.delivery.completed  → delivered
 //!   logisticos.driver.delivery.failed     → failed
+//!
+//! Both PICKUP_COMPLETED and PICKUP_CAPTURED advance the shipment to `picked_up`.
+//! PICKUP_CAPTURED is the canonical chain-of-custody signal (POP submitted) — it
+//! fires even when driver-ops `complete_task` is rejected (e.g. task wasn't in
+//! IN_PROGRESS state) or when the task-completion call is dropped on a flaky
+//! network. The shipment status must reflect the physical pickup regardless.
 //!
 //! All messages are wrapped in Event<T> by KafkaProducer — unwrap `.data` before using payload.
 
@@ -24,6 +31,15 @@ struct DriverAssignedEvt {
 
 #[derive(Serialize, Deserialize)]
 struct PickupCompletedEvt {
+    shipment_id: Uuid,
+}
+
+/// POP-submitted payload from the pod service. Only `shipment_id` is needed
+/// here; the full `PickupCaptured` event in libs/events carries far more
+/// (driver_id, photo_s3_key, weight, etc.) but those fields aren't relevant
+/// for the canonical shipment-status update.
+#[derive(Serialize, Deserialize)]
+struct PickupCapturedEvt {
     shipment_id: Uuid,
 }
 
@@ -58,6 +74,7 @@ pub async fn start_status_consumer(
     consumer.subscribe(&[
         topics::DRIVER_ASSIGNED,
         topics::PICKUP_COMPLETED,
+        topics::PICKUP_CAPTURED,
         topics::DELIVERY_ATTEMPTED,
         topics::DELIVERY_COMPLETED,
         topics::DELIVERY_FAILED,
@@ -122,6 +139,28 @@ async fn handle(pool: &PgPool, topic: &str, payload: &[u8]) -> anyhow::Result<()
                 tracing::warn!(
                     shipment_id = %evt.shipment_id,
                     "PICKUP_COMPLETED: no shipment updated (unknown id or already past pickup)"
+                );
+            }
+        }
+        topics::PICKUP_CAPTURED => {
+            // POP submission — authoritative chain-of-custody open. Advances
+            // shipment regardless of whether driver-ops also published
+            // PICKUP_COMPLETED (it may not if the task wasn't in IN_PROGRESS
+            // state, or if the network dropped the completeTask call).
+            let envelope: Event<PickupCapturedEvt> = serde_json::from_slice(payload)?;
+            let evt = envelope.data;
+            let result = sqlx::query(
+                "UPDATE order_intake.shipments SET status = 'picked_up', updated_at = NOW()
+                 WHERE id = $1
+                   AND status IN ('pending','confirmed','pickup_assigned')",
+            )
+            .bind(evt.shipment_id)
+            .execute(pool)
+            .await?;
+            if result.rows_affected() == 0 {
+                tracing::warn!(
+                    shipment_id = %evt.shipment_id,
+                    "PICKUP_CAPTURED: no shipment updated (unknown id or already past pickup)"
                 );
             }
         }
