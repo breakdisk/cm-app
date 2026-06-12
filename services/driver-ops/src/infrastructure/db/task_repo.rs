@@ -47,6 +47,7 @@ struct TaskRow {
     pickup_lng:           Option<f64>,
     delivery_lat:         Option<f64>,
     delivery_lng:         Option<f64>,
+    payout_cents:         Option<i64>,
     pod_id:               Option<Uuid>,
     pop_id:               Option<Uuid>,
     started_at:           Option<chrono::DateTime<chrono::Utc>>,
@@ -111,6 +112,7 @@ impl From<TaskRow> for DriverTask {
             pickup_lng: r.pickup_lng,
             delivery_lat: r.delivery_lat,
             delivery_lng: r.delivery_lng,
+            payout_cents: r.payout_cents,
             pod_id: r.pod_id,
             pop_id: r.pop_id,
             started_at: r.started_at,
@@ -129,7 +131,7 @@ impl TaskRepository for PgTaskRepository {
                       lat, lng, customer_name, customer_phone, customer_email, customer_id, tracking_number,
                       cod_amount_cents, special_instructions,
                       merchant_name, delivery_category, weight_grams,
-                      pickup_lat, pickup_lng, delivery_lat, delivery_lng,
+                      pickup_lat, pickup_lng, delivery_lat, delivery_lng, payout_cents,
                       pod_id, pop_id, started_at, completed_at, failed_reason
                FROM driver_ops.tasks WHERE id = $1"#
         )
@@ -148,7 +150,7 @@ impl TaskRepository for PgTaskRepository {
                       t.lat, t.lng, t.customer_name, t.customer_phone, t.customer_email, t.customer_id, t.tracking_number,
                       t.cod_amount_cents, t.special_instructions,
                       t.merchant_name, t.delivery_category, t.weight_grams,
-                      t.pickup_lat, t.pickup_lng, t.delivery_lat, t.delivery_lng,
+                      t.pickup_lat, t.pickup_lng, t.delivery_lat, t.delivery_lng, t.payout_cents,
                       t.pod_id, t.pop_id, t.started_at, t.completed_at, t.failed_reason
                FROM driver_ops.tasks t
                JOIN driver_ops.drivers d ON d.id = t.driver_id
@@ -168,7 +170,7 @@ impl TaskRepository for PgTaskRepository {
                       lat, lng, customer_name, customer_phone, customer_email, customer_id, tracking_number,
                       cod_amount_cents, special_instructions,
                       merchant_name, delivery_category, weight_grams,
-                      pickup_lat, pickup_lng, delivery_lat, delivery_lng,
+                      pickup_lat, pickup_lng, delivery_lat, delivery_lng, payout_cents,
                       pod_id, pop_id, started_at, completed_at, failed_reason
                FROM driver_ops.tasks
                WHERE route_id = $1
@@ -190,11 +192,11 @@ impl TaskRepository for PgTaskRepository {
                     lat, lng, customer_name, customer_phone, customer_email, customer_id, tracking_number,
                     cod_amount_cents, special_instructions,
                     merchant_name, delivery_category, weight_grams,
-                    pickup_lat, pickup_lng, delivery_lat, delivery_lng,
+                    pickup_lat, pickup_lng, delivery_lat, delivery_lng, payout_cents,
                     pod_id, pop_id, started_at, completed_at, failed_reason)
                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
-                       $23,$24,$25,$26,$27,$28,$29,
-                       $30,$31,$32,$33,$34)
+                       $23,$24,$25,$26,$27,$28,$29,$30,
+                       $31,$32,$33,$34,$35)
                ON CONFLICT (id) DO UPDATE SET
                    status        = EXCLUDED.status,
                    pod_id        = EXCLUDED.pod_id,
@@ -232,6 +234,7 @@ impl TaskRepository for PgTaskRepository {
         .bind(t.pickup_lng)
         .bind(t.delivery_lat)
         .bind(t.delivery_lng)
+        .bind(t.payout_cents)
         .bind(t.pod_id)
         .bind(t.pop_id)
         .bind(t.started_at)

@@ -37,6 +37,9 @@ pub struct DriverTask {
     pub pickup_lng: Option<f64>,
     pub delivery_lat: Option<f64>,
     pub delivery_lng: Option<f64>,
+    /// Contractual gig payout snapshotted at assignment/claim time. NULL for
+    /// full-time drivers and pre-snapshot rows. Earnings history reads this.
+    pub payout_cents: Option<i64>,
     pub pod_id: Option<uuid::Uuid>,         // Filled when delivery task completed
     pub pop_id: Option<uuid::Uuid>,         // Filled when pickup task completed
     pub started_at: Option<DateTime<Utc>>,

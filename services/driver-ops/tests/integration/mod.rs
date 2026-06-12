@@ -413,6 +413,7 @@ fn make_pending_task(driver_id: &DriverId, task_type: TaskType) -> DriverTask {
         pickup_lng: None,
         delivery_lat: None,
         delivery_lng: None,
+        payout_cents: None,
         pod_id: None,
         pop_id: None,
         started_at: None,

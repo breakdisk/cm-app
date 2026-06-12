@@ -109,7 +109,9 @@ impl TaskService {
             pickup_lng:        t.pickup_lng,
             delivery_lat:      t.delivery_lat,
             delivery_lng:      t.delivery_lng,
-            payout_cents,
+            // Contractual snapshot wins; the live per-delivery rate is only a
+            // display fallback for rows created before the snapshot column.
+            payout_cents:      t.payout_cents.or(payout_cents),
             // Pickup: AWB + parcel photo. Delivery: AWB + parcel photo +
             // signature. OTP only when COD is collected (verifies recipient
             // received cash). Persisted requires_* columns will replace this

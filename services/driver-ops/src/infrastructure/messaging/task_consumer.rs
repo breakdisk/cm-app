@@ -131,14 +131,15 @@ async fn handle_task_assigned(payload: &[u8], pool: &PgPool, fcm: Option<Arc<Fcm
             pickup_lat,
             pickup_lng,
             delivery_lat,
-            delivery_lng
+            delivery_lng,
+            payout_cents
         ) VALUES (
             $1, $2, $3, $4,
             $5, $6, 'pending',
             $7, $8, $9, $10, 'PH',
             $11, $12,
             $13, $14, $15, $16, $17, $18, $19,
-            $20, $21, $22, $23, $24, $25, $26
+            $20, $21, $22, $23, $24, $25, $26, $27
         )
         ON CONFLICT (id) DO NOTHING
         "#,
@@ -169,6 +170,7 @@ async fn handle_task_assigned(payload: &[u8], pool: &PgPool, fcm: Option<Arc<Fcm
     .bind(t.pickup_lng)
     .bind(t.delivery_lat)
     .bind(t.delivery_lng)
+    .bind(t.payout_cents)   // contractual snapshot from dispatch; NULL = full-time
     .execute(pool)
     .await?;
 
