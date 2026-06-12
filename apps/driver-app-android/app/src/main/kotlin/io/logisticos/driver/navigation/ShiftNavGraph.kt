@@ -33,6 +33,7 @@ import io.logisticos.driver.feature.pickup.ui.PickupScreen
 import io.logisticos.driver.feature.pod.ui.PodScreen
 import io.logisticos.driver.feature.profile.presentation.ProfileViewModel
 import io.logisticos.driver.feature.profile.ui.ComplianceScreen
+import io.logisticos.driver.feature.profile.ui.EarningsScreen
 import io.logisticos.driver.feature.profile.ui.ProfileScreen
 import io.logisticos.driver.feature.route.presentation.RouteViewModel
 import io.logisticos.driver.feature.route.ui.RouteScreen
@@ -49,6 +50,7 @@ private const val SCAN_ROUTE             = "scan"
 private const val NOTIFICATIONS_ROUTE    = "notifications"
 private const val PROFILE_ROUTE          = "profile"
 private const val COMPLIANCE_ROUTE       = "compliance"
+private const val EARNINGS_ROUTE         = "earnings"
 private const val NAVIGATE_TO_STOP_ROUTE = "navigate/{taskId}"
 private const val ARRIVAL_ROUTE          = "arrival/{taskId}"
 private const val PICKUP_ROUTE           = "pickup/{taskId}"
@@ -171,6 +173,9 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                     onNavigateToCompliance = {
                         shiftNavController.navigate(COMPLIANCE_ROUTE)
                     },
+                    onNavigateToEarnings = {
+                        shiftNavController.navigate(EARNINGS_ROUTE)
+                    },
                     onLogout = {
                         // 1. Cancel all in-flight OkHttp calls + clear session tokens.
                         //    This unblocks any TokenAuthenticator.runBlocking threads that
@@ -198,6 +203,11 @@ fun ShiftScaffold(rootNavController: NavHostController) {
 
             composable(COMPLIANCE_ROUTE) {
                 ComplianceScreen(onBack = { shiftNavController.popBackStack() })
+            }
+
+            // ── Earnings & COD cash history (Profile → Earnings) ──────────
+            composable(EARNINGS_ROUTE) {
+                EarningsScreen(onBack = { shiftNavController.popBackStack() })
             }
 
             // ── Assignment accept/reject ──────────────────────────────────

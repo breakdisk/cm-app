@@ -4,7 +4,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.logisticos.driver.core.network.auth.SessionManager
+import io.logisticos.driver.core.network.service.DriverOpsApiService
 import io.logisticos.driver.core.network.service.IdentityApiService
+import io.logisticos.driver.core.network.service.PaymentsApiService
 import okhttp3.OkHttpClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -21,13 +23,25 @@ data class ProfileUiState(
     val driverId: String = "",
     val tenantId: String = "",
     val isOfflineMode: Boolean = false,
-    val isLoading: Boolean = false
+    val isLoading: Boolean = false,
+    // ── Financial section ────────────────────────────────────────────────────
+    /** True for part-time (gig) drivers — gates the Earnings card. Full-time
+     *  drivers never see payout figures (only the COD cash position). */
+    val isGigWorker: Boolean = false,
+    val todayCents: Long = 0L,
+    val weekCents: Long = 0L,
+    /** Cents the driver currently owes the hub (open COD ledger balance). */
+    val openBalanceCents: Long = 0L,
+    /** Number of COD/pickup debits behind that balance — "from N deliveries". */
+    val openDebitCount: Int = 0,
 )
 
 @HiltViewModel
 class ProfileViewModel @Inject constructor(
     val sessionManager: SessionManager,
     private val identityApi: IdentityApiService,
+    private val driverOpsApi: DriverOpsApiService,
+    private val paymentsApi: PaymentsApiService,
     private val okHttpClient: OkHttpClient,
 ) : ViewModel() {
 
@@ -44,6 +58,7 @@ class ProfileViewModel @Inject constructor(
         // Don't block profile loading on offline mode — the request will simply
         // fail silently and the raw IDs from SessionManager remain visible.
         loadProfile()
+        loadFinancials()
     }
 
     private fun loadProfile() {
@@ -64,6 +79,38 @@ class ProfileViewModel @Inject constructor(
                 .onFailure {
                     // Profile fetch is best-effort — silently fall back to IDs.
                     _uiState.update { it.copy(isLoading = false) }
+                }
+        }
+    }
+
+    /**
+     * Financial summary — three independent best-effort fetches. Each failure
+     * leaves its section at the zero default (cards hide on zero), so a
+     * payments outage never breaks the profile screen.
+     */
+    private fun loadFinancials() {
+        viewModelScope.launch {
+            runCatching { driverOpsApi.getMyProfile() }
+                .onSuccess { r ->
+                    _uiState.update { it.copy(isGigWorker = r.data.driverType == "part_time") }
+                }
+        }
+        viewModelScope.launch {
+            runCatching { driverOpsApi.getMyEarnings(limit = 1) }
+                .onSuccess { r ->
+                    _uiState.update { it.copy(
+                        todayCents = r.data.todayCents,
+                        weekCents  = r.data.weekCents,
+                    ) }
+                }
+        }
+        viewModelScope.launch {
+            runCatching { paymentsApi.getMyLedger() }
+                .onSuccess { r ->
+                    _uiState.update { it.copy(
+                        openBalanceCents = r.data.openBalanceCents,
+                        openDebitCount   = r.data.openEntries.count { e -> e.amountCents > 0 },
+                    ) }
                 }
         }
     }
