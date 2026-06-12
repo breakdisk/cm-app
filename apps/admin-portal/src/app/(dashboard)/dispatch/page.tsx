@@ -214,6 +214,7 @@ function DispatchPageInner() {
   const [drivers,           setDrivers]           = useState<DriverProfile[]>([]);
   const [driverSummary,     setDriverSummary]     = useState<DriverSummary | null>(null);
   const [dispatching,       setDispatching]       = useState<string | null>(null);
+  const [broadcasting,      setBroadcasting]      = useState<string | null>(null);
   const [cancellingDispatch,setCancellingDispatch]= useState<string | null>(null);
   const [selectedDriver,    setSelectedDriver]    = useState<string>("");
   const [loading,           setLoading]           = useState(false);
@@ -329,6 +330,27 @@ function DispatchPageInner() {
       setError(e instanceof Error ? e.message : "Dispatch error");
     } finally {
       setDispatching(null);
+    }
+  }
+
+  // Broadcast to the gig pool instead of 1:1 dispatch — nearest part-time
+  // drivers all see the offer simultaneously; first atomic claim wins.
+  async function handleBroadcast(shipmentId: string) {
+    setBroadcasting(shipmentId);
+    try {
+      const res = await authFetch(`${API_BASE}/v1/queue/${shipmentId}/broadcast`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error?.message ?? `Broadcast failed (${res.status})`);
+      }
+      await fetchData();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Broadcast error");
+    } finally {
+      setBroadcasting(null);
     }
   }
 
@@ -625,13 +647,23 @@ function DispatchPageInner() {
                   <div className="flex items-center gap-2">
                     {canAssign ? (
                       item.status !== "dispatched" ? (
-                        <button
-                          onClick={() => handleDispatch(item.shipment_id)}
-                          disabled={dispatching === item.shipment_id}
-                          className="flex-1 rounded-lg border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs font-mono text-purple-300 hover:bg-purple-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                        >
-                          {dispatching === item.shipment_id ? "Dispatching…" : "⚡ Dispatch"}
-                        </button>
+                        <>
+                          <button
+                            onClick={() => handleDispatch(item.shipment_id)}
+                            disabled={dispatching === item.shipment_id || broadcasting === item.shipment_id}
+                            className="flex-1 rounded-lg border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs font-mono text-purple-300 hover:bg-purple-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            {dispatching === item.shipment_id ? "Dispatching…" : "⚡ Dispatch"}
+                          </button>
+                          <button
+                            onClick={() => handleBroadcast(item.shipment_id)}
+                            disabled={broadcasting === item.shipment_id || dispatching === item.shipment_id}
+                            title="Fan the offer out to nearby gig drivers — first to grab wins"
+                            className="flex-1 rounded-lg border border-green-500/30 bg-green-500/10 px-3 py-1.5 text-xs font-mono text-green-300 hover:bg-green-500/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            {broadcasting === item.shipment_id ? "Broadcasting…" : "📡 Broadcast"}
+                          </button>
+                        </>
                       ) : (
                         <button
                           onClick={() => handleCancelDispatch(item.shipment_id)}

@@ -160,6 +160,19 @@ export const quickDispatch = (shipmentId: string, preferredDriverId?: string) =>
     })
     .then((r) => r.data.data);
 
+/**
+ * Broadcast a pending shipment to the gig pool — fans the offer out to the
+ * nearest part-time drivers simultaneously; first atomic claim wins. Waves
+ * widen automatically (3→6→10 km); unclaimed offers expire back onto this
+ * console with an attempt-counter flag.
+ */
+export const broadcastToGig = (shipmentId: string) =>
+  createApiClient()
+    .post<{ data: { offer_id: string; wave: number; expires_at: string } }>(
+      `/v1/queue/${shipmentId}/broadcast`,
+    )
+    .then((r) => r.data.data);
+
 /** Cancel a dispatched shipment — returns it to 'pending' for reassignment. */
 export const cancelDispatch = (shipmentId: string) =>
   createApiClient()
