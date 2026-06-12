@@ -91,7 +91,10 @@ fun ShiftScaffold(rootNavController: NavHostController) {
     val pendingPayload by PendingAssignmentBus.pending.collectAsState()
 
     LaunchedEffect(pendingPayload) {
-        if (pendingPayload != null) {
+        // Broadcast gig offers (isGrabOffer) stay on the Home grab card — no
+        // assignment exists until a claim wins, so AssignmentScreen's
+        // accept/reject calls would have nothing to act on.
+        if (pendingPayload != null && pendingPayload?.isGrabOffer != true) {
             shiftNavController.navigate(ASSIGNMENT_ROUTE) {
                 // Don't stack multiple assignment screens if the driver is slow to respond.
                 launchSingleTop = true
@@ -200,9 +203,10 @@ fun ShiftScaffold(rootNavController: NavHostController) {
             // ── Assignment accept/reject ──────────────────────────────────
             composable(ASSIGNMENT_ROUTE) {
                 val payload = pendingPayload
-                if (payload == null) {
-                    // Stale nav entry (e.g. back-stack restoration after process death) —
-                    // pop back rather than showing an empty screen.
+                if (payload == null || payload.isGrabOffer) {
+                    // Stale nav entry (e.g. back-stack restoration after process death),
+                    // or a grab offer that must be acted on from the Home card —
+                    // pop back rather than showing an empty/unactionable screen.
                     LaunchedEffect(Unit) { shiftNavController.popBackStack() }
                     return@composable
                 }

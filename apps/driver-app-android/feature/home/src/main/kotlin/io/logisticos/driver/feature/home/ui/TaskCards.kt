@@ -322,6 +322,205 @@ internal fun TaskOfferCard(
     }
 }
 
+// ─── Broadcast gig offer — GRAB card ─────────────────────────────────────────
+
+/**
+ * Contended broadcast offer: up to [a wave of] drivers see this same task and
+ * the first atomic claim wins. One full-width GRAB button + a quiet Pass —
+ * passing is penalty-free (it only removes this offer; no decline counter).
+ *
+ * [secondsLeft] drives the countdown ring (amber under 10 s). [taken] renders
+ * the brief lost-race overlay before the card dismisses — honest feedback
+ * beats a silent disappearance.
+ */
+@Composable
+internal fun GrabOfferCard(
+    offer: AssignmentPayload,
+    driverLat: Double?,
+    driverLng: Double?,
+    secondsLeft: Int?,
+    taken: Boolean,
+    isActing: Boolean,
+    onGrab: () -> Unit,
+    onPass: () -> Unit,
+) {
+    val urgent = (secondsLeft ?: Int.MAX_VALUE) <= 10
+    val accent = if (taken) Red else if (urgent) Amber else Green
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(Color(0xFF0A0F1E))
+            .border(1.dp, accent.copy(alpha = 0.55f), RoundedCornerShape(20.dp)),
+    ) {
+        RouteSketch(
+            pickupLat = offer.pickupLat, pickupLng = offer.pickupLng,
+            deliveryLat = offer.deliveryLat, deliveryLng = offer.deliveryLng,
+            modifier = Modifier.matchParentSize(),
+        )
+
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            // Header: label + countdown ring + category chip
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    if (taken) "OFFER TAKEN" else "GIG OFFER",
+                    color = accent, fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold, letterSpacing = 2.sp,
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    secondsLeft?.let { CountdownRing(it, urgent, taken) }
+                    CategoryChip(offer.deliveryCategory, offer.weightGrams)
+                }
+            }
+
+            Column {
+                Text(
+                    text = offer.merchantName.ifBlank { offer.customerName },
+                    color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    text = "Deliver to • ${offer.address}",
+                    color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp,
+                )
+                if (offer.trackingNumber.isNotBlank()) {
+                    Text(
+                        offer.trackingNumber,
+                        color = Cyan.copy(alpha = 0.7f), fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
+            }
+
+            // Metrics: distance to pickup, trip distance, ETA — payout is the
+            // headline of a grab card, so it gets the prominent chip below.
+            val toPickupKm = if (driverLat != null && driverLng != null &&
+                offer.pickupLat != null && offer.pickupLng != null
+            ) haversineKm(driverLat, driverLng, offer.pickupLat!!, offer.pickupLng!!) else null
+            val routeKm = if (offer.pickupLat != null && offer.pickupLng != null &&
+                offer.deliveryLat != null && offer.deliveryLng != null
+            ) haversineKm(offer.pickupLat!!, offer.pickupLng!!, offer.deliveryLat!!, offer.deliveryLng!!) else null
+            val totalKm = if (toPickupKm != null || routeKm != null)
+                (toPickupKm ?: 0.0) + (routeKm ?: 0.0) else null
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Metric("To pickup", toPickupKm?.let(::formatKm) ?: "—", Purple)
+                Metric("Trip", routeKm?.let(::formatKm) ?: "—", Cyan)
+                Metric("ETA", totalKm?.let(::etaLabel) ?: "—", Color.White)
+                offer.payoutCents?.let { payout ->
+                    // Contractual price — what the backend snapshotted for THIS driver.
+                    Text(
+                        "₱${"%.2f".format(payout / 100.0)}",
+                        color = Green, fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace,
+                    )
+                }
+            }
+
+            if (offer.codAmountCents > 0) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Amber.copy(alpha = 0.12f))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text("💰 COD to collect", color = Amber, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "₱${"%.2f".format(offer.codAmountCents / 100.0)}",
+                        color = Amber, fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace,
+                    )
+                }
+            }
+
+            if (taken) {
+                // Lost-race state: replaces the buttons; card dismisses shortly.
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Red.copy(alpha = 0.15f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "Taken by another driver",
+                        color = Red, fontWeight = FontWeight.Bold, fontSize = 14.sp,
+                    )
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Button(
+                        onClick = onGrab,
+                        enabled = !isActing,
+                        modifier = Modifier.fillMaxWidth().height(54.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Green),
+                    ) {
+                        if (isActing) {
+                            CircularProgressIndicator(
+                                color = Canvas0, modifier = Modifier.size(18.dp), strokeWidth = 2.dp,
+                            )
+                        } else {
+                            Text("GRAB", color = Canvas0, fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp, letterSpacing = 2.sp)
+                        }
+                    }
+                    TextButton(
+                        onClick = onPass,
+                        enabled = !isActing,
+                        modifier = Modifier.fillMaxWidth().height(36.dp),
+                    ) {
+                        Text("Pass", color = Color.White.copy(alpha = 0.45f), fontSize = 13.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** TTL countdown: sweep arc + seconds, amber when urgent, red when taken. */
+@Composable
+private fun CountdownRing(secondsLeft: Int, urgent: Boolean, taken: Boolean) {
+    val color = if (taken) Red else if (urgent) Amber else Cyan
+    val fraction = (secondsLeft / 30f).coerceIn(0f, 1f)
+    Box(contentAlignment = Alignment.Center, modifier = Modifier.size(34.dp)) {
+        Canvas(modifier = Modifier.matchParentSize()) {
+            drawArc(
+                color = color.copy(alpha = 0.15f),
+                startAngle = -90f, sweepAngle = 360f, useCenter = false,
+                style = Stroke(width = 3.dp.toPx()),
+            )
+            drawArc(
+                color = color,
+                startAngle = -90f, sweepAngle = 360f * fraction, useCenter = false,
+                style = Stroke(width = 3.dp.toPx()),
+            )
+        }
+        Text(
+            "$secondsLeft",
+            color = color, fontSize = 12.sp,
+            fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace,
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun DeclineReasonSheet(
@@ -483,9 +682,13 @@ private fun Metric(label: String, value: String, color: Color) {
 // ─── Performance strip ────────────────────────────────────────────────────────
 
 /**
- * Driver accountability strip: customer rating + (gig only) decline counter.
- * Declines turn amber at 75% of the ban limit so the driver sees the cliff
- * coming before the automatic deactivation at [banLimit].
+ * Driver accountability strip: customer rating + the gig metric.
+ *
+ * Gig metric is the broadcast-offer **acceptance rate** (claims ÷ impression-
+ * verified offers seen) — passing a contended offer is penalty-free, so the
+ * decline-ban counter no longer applies to broadcast work. The counter still
+ * surfaces for gig drivers when they have targeted 1:1 declines on record
+ * (those remain ban-relevant) and they have no offer history yet.
  */
 @Composable
 internal fun PerformanceStrip(
@@ -494,6 +697,8 @@ internal fun PerformanceStrip(
     declineCount: Int,
     banLimit: Int,
     isGigWorker: Boolean,
+    offersSeen: Long = 0L,
+    offersClaimed: Long = 0L,
 ) {
     Row(
         modifier = Modifier
@@ -516,13 +721,22 @@ internal fun PerformanceStrip(
             }
         }
         if (isGigWorker) {
-            val nearBan = declineCount >= (banLimit * 3) / 4
-            Text(
-                text = "Declines $declineCount/$banLimit",
-                color = if (nearBan) Amber else Color.White.copy(alpha = 0.55f),
-                fontSize = 12.sp,
-                fontWeight = if (nearBan) FontWeight.Bold else FontWeight.Medium,
-            )
+            if (offersSeen > 0) {
+                val rate = (offersClaimed * 100 / offersSeen).toInt()
+                Text(
+                    text = "Acceptance $rate%",
+                    color = if (rate >= 50) Green else Color.White.copy(alpha = 0.55f),
+                    fontSize = 12.sp, fontWeight = FontWeight.Medium,
+                )
+            } else {
+                val nearBan = declineCount >= (banLimit * 3) / 4
+                Text(
+                    text = "Declines $declineCount/$banLimit",
+                    color = if (nearBan) Amber else Color.White.copy(alpha = 0.55f),
+                    fontSize = 12.sp,
+                    fontWeight = if (nearBan) FontWeight.Bold else FontWeight.Medium,
+                )
+            }
         }
     }
 }

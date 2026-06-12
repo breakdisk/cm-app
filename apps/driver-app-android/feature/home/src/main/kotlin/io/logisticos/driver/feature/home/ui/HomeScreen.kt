@@ -390,24 +390,40 @@ fun HomeScreen(
         // app restarted. Gig (part-time) drivers see the payout; full-time
         // drivers never see a price.
         state.pendingOffer?.let { offer ->
-            TaskOfferCard(
-                offer          = offer,
-                gigPayoutCents = state.gigRateCents,
-                driverLat      = state.lastLat,
-                driverLng      = state.lastLng,
-                isActing       = state.isActingOnOffer,
-                onAccept       = { viewModel.acceptOffer() },
-                onDecline      = { reason -> viewModel.declineOffer(reason) },
-            )
+            if (offer.isGrabOffer) {
+                // Contended broadcast offer — first atomic claim wins.
+                GrabOfferCard(
+                    offer       = offer,
+                    driverLat   = state.lastLat,
+                    driverLng   = state.lastLng,
+                    secondsLeft = state.offerSecondsLeft,
+                    taken       = state.offerTaken,
+                    isActing    = state.isActingOnOffer,
+                    onGrab      = { viewModel.claimOffer() },
+                    onPass      = { viewModel.passOffer() },
+                )
+            } else {
+                TaskOfferCard(
+                    offer          = offer,
+                    gigPayoutCents = state.gigRateCents,
+                    driverLat      = state.lastLat,
+                    driverLng      = state.lastLng,
+                    isActing       = state.isActingOnOffer,
+                    onAccept       = { viewModel.acceptOffer() },
+                    onDecline      = { reason -> viewModel.declineOffer(reason) },
+                )
+            }
         }
 
-        // ── Driver performance: rating + decline accountability ─────────────
+        // ── Driver performance: rating + gig acceptance rate ────────────────
         PerformanceStrip(
-            ratingAvg    = state.ratingAvg,
-            ratingCount  = state.ratingCount,
-            declineCount = state.declineCount,
-            banLimit     = DECLINE_BAN_LIMIT,
-            isGigWorker  = state.isGigWorker,
+            ratingAvg     = state.ratingAvg,
+            ratingCount   = state.ratingCount,
+            declineCount  = state.declineCount,
+            banLimit      = DECLINE_BAN_LIMIT,
+            isGigWorker   = state.isGigWorker,
+            offersSeen    = state.offersSeen,
+            offersClaimed = state.offersClaimed,
         )
 
         // ── Active task cards ────────────────────────────────────────────────

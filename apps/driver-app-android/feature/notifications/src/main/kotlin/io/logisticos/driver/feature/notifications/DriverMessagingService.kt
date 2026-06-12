@@ -60,10 +60,49 @@ class DriverMessagingService : FirebaseMessagingService() {
                 // Still sync task list so RouteScreen is up to date after accept.
                 TaskSyncBus.requestSync()
             }
+            // Broadcast gig offer — contended; rendered as a GRAB card with a
+            // countdown. assignmentId stays blank: no assignment exists until
+            // a claim wins.
+            "task_offer" -> {
+                val offerId = message.data["offer_id"] ?: ""
+                if (offerId.isNotBlank()) {
+                    PendingAssignmentBus.post(
+                        AssignmentPayload(
+                            assignmentId   = "",
+                            shipmentId     = message.data["shipment_id"]     ?: "",
+                            customerName   = message.data["customer_name"]   ?: "Unknown Customer",
+                            address        = message.data["address"]         ?: "",
+                            taskType       = "delivery",
+                            trackingNumber = message.data["tracking_number"] ?: "",
+                            codAmountCents = message.data["cod_amount_cents"]?.toLongOrNull() ?: 0L,
+                            merchantName     = message.data["merchant_name"]     ?: "",
+                            deliveryCategory = message.data["delivery_category"] ?: "parcel",
+                            weightGrams      = message.data["weight_grams"]?.toLongOrNull() ?: 0L,
+                            pickupLat        = message.data["pickup_lat"]?.toDoubleOrNull(),
+                            pickupLng        = message.data["pickup_lng"]?.toDoubleOrNull(),
+                            deliveryLat      = message.data["delivery_lat"]?.toDoubleOrNull(),
+                            deliveryLng      = message.data["delivery_lng"]?.toDoubleOrNull(),
+                            offerId          = offerId,
+                            payoutCents      = message.data["payout_cents"]?.toLongOrNull(),
+                            expiresAtMillis  = message.data["expires_at_ms"]?.toLongOrNull(),
+                        )
+                    )
+                }
+            }
+            // Another driver won the race (or the offer expired) — flip the
+            // on-screen grab card to "Taken" / dismiss.
+            "offer_closed" -> {
+                val offerId = message.data["offer_id"] ?: ""
+                if (offerId.isNotBlank()) PendingAssignmentBus.markTaken(offerId)
+            }
             "dispatch_message" -> TaskSyncBus.requestSync()
         }
 
-        showSystemNotification(title, body, type, message.data)
+        // offer_closed is in-app state only — a tray notification for every
+        // lost race would be pure noise.
+        if (type != "offer_closed") {
+            showSystemNotification(title, body, type, message.data)
+        }
     }
 
     override fun onNewToken(token: String) {
