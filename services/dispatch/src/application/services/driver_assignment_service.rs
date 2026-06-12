@@ -12,10 +12,10 @@ use crate::{
         RejectAssignmentCommand, RouteView, QuickDispatchCommand,
     },
     domain::{
-        entities::{Route, DeliveryStop, DriverAssignment, StopType, RouteStatus},
+        entities::{Route, DriverAssignment, RouteStatus},
         events::{RouteCreated, DriverAssigned},
         repositories::{RouteRepository, DriverAssignmentRepository, DriverAvailabilityRepository},
-        value_objects::{MAX_STOPS_BUSINESS, DEFAULT_DRIVER_SEARCH_RADIUS_KM, estimate_duration_minutes, vehicle_can_carry},
+        value_objects::{DEFAULT_DRIVER_SEARCH_RADIUS_KM, vehicle_can_carry},
     },
 };
 
@@ -374,8 +374,6 @@ impl DriverAssignmentService {
         tenant_id: TenantId,
         cmd: QuickDispatchCommand,
     ) -> AppResult<DriverAssignment> {
-        use logisticos_events::{payloads::TaskAssigned, topics};
-
         // 1. Load shipment from queue
         let queue_item = self.queue_repo
             .find_by_shipment(cmd.shipment_id)
@@ -514,107 +512,19 @@ impl DriverAssignmentService {
         let assignment = DriverAssignment::new(tenant_id.clone(), driver_id.clone(), route_id.clone());
         self.assignment_repo.save(&assignment).await.map_err(AppError::Internal)?;
 
-        // 6. Emit TASK_ASSIGNED twice — once for the pickup leg (origin) and once
-        //    for the delivery leg (destination). driver-ops creates one DriverTask
-        //    row per event, sequenced so the driver app shows pickup → delivery.
-        //    Both events share the same assignment_id so they belong to the same
-        //    job. We only emit the pickup task when origin coordinates exist —
-        //    legacy shipments without structured origin fall through to a single
-        //    delivery task (pre-Path-A behavior).
-        let has_origin = !queue_item.origin_address_line1.is_empty()
-            || queue_item.origin_lat.is_some();
-
-        let mut next_sequence: i32 = 1;
-        if has_origin {
-            let pickup_task_id = Uuid::new_v4();
-            let pickup_event = Event::new("dispatch", "task.assigned", tenant_id.inner(), TaskAssigned {
-                task_id:              pickup_task_id,
-                assignment_id:        assignment.id,
-                shipment_id:          cmd.shipment_id,
-                route_id:             route_id.inner(),
-                driver_id:            driver_id.inner(),
-                tenant_id:            tenant_id.inner(),
-                sequence:             next_sequence,
-                task_type:            "pickup".into(),
-                address_line1:        queue_item.origin_address_line1.clone(),
-                address_city:         queue_item.origin_city.clone(),
-                address_province:     queue_item.origin_province.clone(),
-                address_postal_code:  queue_item.origin_postal_code.clone(),
-                address_lat:          queue_item.origin_lat,
-                address_lng:          queue_item.origin_lng,
-                customer_name:        queue_item.customer_name.clone(),
-                customer_phone:       queue_item.customer_phone.clone(),
-                cod_amount_cents:     None,                    // COD is collected on delivery, never on pickup
-                special_instructions: queue_item.special_instructions.clone(),
-                tracking_number:      queue_item.tracking_number.clone().unwrap_or_default(),
-                customer_email:       queue_item.customer_email.clone().unwrap_or_default(),
-                customer_id:          Some(queue_item.customer_id),
-                merchant_name:        queue_item.merchant_name.clone(),
-                delivery_category:    queue_item.delivery_category.clone(),
-                weight_grams:         queue_item.weight_grams.max(0) as u32,
-                pickup_lat:           queue_item.origin_lat,
-                pickup_lng:           queue_item.origin_lng,
-                delivery_lat:         queue_item.dest_lat,
-                delivery_lng:         queue_item.dest_lng,
-                payout_cents,
-            });
-            self.kafka.publish_event(topics::TASK_ASSIGNED, &pickup_event).await
-                .map_err(AppError::Internal)?;
-            next_sequence += 1;
-        }
-
-        let delivery_task_id = Uuid::new_v4();
-        let delivery_event = Event::new("dispatch", "task.assigned", tenant_id.inner(), TaskAssigned {
-            task_id:              delivery_task_id,
-            assignment_id:        assignment.id,
-            shipment_id:          cmd.shipment_id,
-            route_id:             route_id.inner(),
-            driver_id:            driver_id.inner(),
-            tenant_id:            tenant_id.inner(),
-            sequence:             next_sequence,
-            task_type:            "delivery".into(),
-            address_line1:        queue_item.dest_address_line1.clone(),
-            address_city:         queue_item.dest_city.clone(),
-            address_province:     queue_item.dest_province.clone(),
-            address_postal_code:  queue_item.dest_postal_code.clone(),
-            address_lat:          queue_item.dest_lat,
-            address_lng:          queue_item.dest_lng,
-            customer_name:        queue_item.customer_name.clone(),
-            customer_phone:       queue_item.customer_phone.clone(),
-            cod_amount_cents:     queue_item.cod_amount_cents,
-            special_instructions: queue_item.special_instructions.clone(),
-            tracking_number:      queue_item.tracking_number.clone().unwrap_or_default(),
-            customer_email:       queue_item.customer_email.clone().unwrap_or_default(),
-            customer_id:          Some(queue_item.customer_id),
-            merchant_name:        queue_item.merchant_name.clone(),
-            delivery_category:    queue_item.delivery_category.clone(),
-            weight_grams:         queue_item.weight_grams.max(0) as u32,
-            pickup_lat:           queue_item.origin_lat,
-            pickup_lng:           queue_item.origin_lng,
-            delivery_lat:         queue_item.dest_lat,
-            delivery_lng:         queue_item.dest_lng,
+        // 6+7. Emit TASK_ASSIGNED (per leg) + DRIVER_ASSIGNED via the shared
+        //      helper — the same emission the gig offer claim path uses, so
+        //      the two assignment flows can never drift.
+        super::assignment_events::emit_assignment_events(
+            &self.kafka,
+            &queue_item,
+            tenant_id.inner(),
+            driver_id.inner(),
+            assignment.id,
+            route_id.inner(),
+            cmd.shipment_id,
             payout_cents,
-        });
-        self.kafka.publish_event(topics::TASK_ASSIGNED, &delivery_event).await
-            .map_err(AppError::Internal)?;
-
-        // 7. Emit DRIVER_ASSIGNED — engagement sends "pickup_scheduled" WhatsApp to customer.
-        //    Denormalize all contact fields here so engagement needs no extra lookup.
-        let driver_assigned_event = Event::new("dispatch", "driver.assigned", tenant_id.inner(), DriverAssigned {
-            assignment_id:         assignment.id,
-            shipment_id:           cmd.shipment_id,
-            customer_id:           queue_item.customer_id,
-            route_id:              route_id.inner(),
-            driver_id:             driver_id.inner(),
-            tenant_id:             tenant_id.inner(),
-            customer_name:         queue_item.customer_name.clone(),
-            customer_phone:        queue_item.customer_phone.clone(),
-            customer_email:        queue_item.customer_email.clone().unwrap_or_default(),
-            tracking_number:       queue_item.tracking_number.clone().unwrap_or_default(),
-            estimated_pickup_time: None,  // ETA not computed at assignment time; driver app shows ETA
-        });
-        self.kafka.publish_event(topics::DRIVER_ASSIGNED, &driver_assigned_event).await
-            .map_err(AppError::Internal)?;
+        ).await.map_err(AppError::Internal)?;
 
         // 8. Mark queue item as dispatched
         self.queue_repo.mark_dispatched(cmd.shipment_id).await

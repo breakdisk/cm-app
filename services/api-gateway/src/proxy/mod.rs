@@ -39,10 +39,12 @@ impl ProxyClient {
         // Order & Shipment Intake
         } else if path.starts_with("/v1/shipments") || path.starts_with("/v1/orders") {
             Some(&self.services.order_intake_url)
-        // Dispatch & Routing — dispatch service exposes /v1/routes, /v1/queue, /v1/assignments
+        // Dispatch & Routing — dispatch service exposes /v1/routes, /v1/queue,
+        // /v1/assignments, and /v1/offers (gig grab surface)
         } else if path.starts_with("/v1/routes")
             || path.starts_with("/v1/queue")
             || path.starts_with("/v1/assignments")
+            || path.starts_with("/v1/offers")
         {
             Some(&self.services.dispatch_url)
         // Driver Operations (includes /tasks and /location from driver app)
