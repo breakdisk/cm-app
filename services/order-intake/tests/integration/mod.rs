@@ -316,6 +316,11 @@ fn build_test_server(repo: Arc<InMemoryShipmentRepository>) -> (TestServer, JwtS
         svc,
         query,
         jwt: Arc::new(JwtService::new(TEST_JWT_SECRET, 3600, 86400)),
+        // Lazy pool never connects — endpoints exercised by these tests go
+        // through the in-memory repo, not the pool.
+        pool: sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+            .expect("lazy pool construction is infallible"),
     };
     let app = router(state);
 
