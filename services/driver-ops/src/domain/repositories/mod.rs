@@ -84,6 +84,53 @@ pub trait TaskRepository: Send + Sync {
     /// queue so the driver can receive new auto-dispatch assignments.
     /// Returns the number of rows updated.
     async fn cancel_all_for_driver(&self, driver_id: &DriverId) -> anyhow::Result<u64>;
+
+    /// Per-task earnings entries for the driver (identified by identity
+    /// user_id), newest first. Only completed DELIVERY tasks count — a
+    /// shipment's pickup+delivery pair pays once, on the delivery leg.
+    /// Default impl returns empty so in-memory test repositories keep
+    /// compiling without stubbing it (same pattern as get_performance).
+    async fn list_earnings(
+        &self,
+        _user_id: Uuid,
+        _from: chrono::DateTime<chrono::Utc>,
+        _to: chrono::DateTime<chrono::Utc>,
+        _limit: i64,
+        _offset: i64,
+    ) -> anyhow::Result<Vec<EarningEntry>> {
+        Ok(Vec::new())
+    }
+
+    /// Daily payout totals over the window — drives the Today / This Week
+    /// summary and the 7-day sparkline. Indexed range aggregate; an async
+    /// rollup table was reviewed and rejected as YAGNI at current volumes.
+    async fn daily_earnings(
+        &self,
+        _user_id: Uuid,
+        _from: chrono::DateTime<chrono::Utc>,
+        _to: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<Vec<DailyEarning>> {
+        Ok(Vec::new())
+    }
+}
+
+/// One earnings line: a completed delivery task with its contractual payout.
+#[derive(Debug, Clone, Serialize)]
+pub struct EarningEntry {
+    pub task_id:           Uuid,
+    pub tracking_number:   Option<String>,
+    pub merchant_name:     String,
+    pub delivery_category: String,
+    pub completed_at:      Option<chrono::DateTime<chrono::Utc>>,
+    pub payout_cents:      Option<i64>,
+}
+
+/// Payout total for one calendar day (UTC).
+#[derive(Debug, Clone, Serialize)]
+pub struct DailyEarning {
+    pub day:         NaiveDate,
+    pub total_cents: i64,
+    pub deliveries:  i64,
 }
 
 #[async_trait]

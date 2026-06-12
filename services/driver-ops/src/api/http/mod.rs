@@ -82,6 +82,8 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/drivers",              get(drivers::list_drivers).post(drivers::register_driver))
         .route("/drivers/summary",      get(drivers::get_summary))
         .route("/drivers/me",           get(drivers::get_me_driver))
+        // Static sub-path before /drivers/:id — same matchit ordering rule.
+        .route("/drivers/me/earnings",  get(tasks::my_earnings))
         .route("/drivers/go-online",    post(drivers::go_online))
         .route("/drivers/go-offline",   post(drivers::go_offline))
         .route("/drivers/:id",          get(drivers::get_driver).patch(drivers::update_driver).delete(drivers::delete_driver))
