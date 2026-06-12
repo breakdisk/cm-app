@@ -485,6 +485,14 @@ impl DriverAssignmentService {
             ));
         }
 
+        // 4b. Snapshot the gig payout NOW — the price attached to the task is
+        // contractual; later rate changes never alter accepted work. None for
+        // full-time drivers (the app must never show them a price). A lookup
+        // failure degrades to "no payout shown", never a dispatch failure.
+        let payout_cents = self.driver_avail_repo
+            .gig_rate_cents(&driver_id).await
+            .unwrap_or(None);
+
         // 4. Create a minimal single-stop route (vehicle_id = nil, stop added by driver-ops)
         let route_id = RouteId::new();
         let route = Route {
@@ -548,6 +556,7 @@ impl DriverAssignmentService {
                 pickup_lng:           queue_item.origin_lng,
                 delivery_lat:         queue_item.dest_lat,
                 delivery_lng:         queue_item.dest_lng,
+                payout_cents,
             });
             self.kafka.publish_event(topics::TASK_ASSIGNED, &pickup_event).await
                 .map_err(AppError::Internal)?;
@@ -584,6 +593,7 @@ impl DriverAssignmentService {
             pickup_lng:           queue_item.origin_lng,
             delivery_lat:         queue_item.dest_lat,
             delivery_lng:         queue_item.dest_lng,
+            payout_cents,
         });
         self.kafka.publish_event(topics::TASK_ASSIGNED, &delivery_event).await
             .map_err(AppError::Internal)?;
@@ -701,6 +711,7 @@ mod tests {
             pickup_lng:          Some(121.0437),
             delivery_lat:        Some(14.5995),
             delivery_lng:        Some(120.9842),
+            payout_cents:        Some(15_000),
         };
     }
 }

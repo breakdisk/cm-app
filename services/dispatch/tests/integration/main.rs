@@ -204,6 +204,11 @@ impl DriverAvailabilityRepository for MockDriverAvailRepo {
             .collect();
         Ok(nearby)
     }
+
+    async fn gig_rate_cents(&self, _driver_id: &DriverId) -> anyhow::Result<Option<i64>> {
+        // Mock fleet is full-time — no payout snapshot.
+        Ok(None)
+    }
 }
 
 // ---------------------------------------------------------------------------

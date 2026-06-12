@@ -38,6 +38,11 @@ pub trait DriverAvailabilityRepository: Send + Sync {
         coords: logisticos_types::Coordinates,
         radius_km: f64,
     ) -> anyhow::Result<Vec<AvailableDriver>>;
+
+    /// Gig payout snapshot source: Some(per_delivery_rate_cents) when the
+    /// driver is part_time, None for full_time — the driver app must never
+    /// show full-time drivers a price.
+    async fn gig_rate_cents(&self, driver_id: &DriverId) -> anyhow::Result<Option<i64>>;
 }
 
 #[derive(Debug, Clone)]
