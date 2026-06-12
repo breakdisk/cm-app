@@ -238,4 +238,16 @@ pub trait DriverLedgerRepository: Send + Sync {
     /// Persists the ledger header and all unsaved entries atomically.
     /// Must increment `version` and enforce optimistic locking.
     async fn save(&self, ledger: &DriverLedger) -> anyhow::Result<()>;
+
+    /// Recent ledgers (open + reconciled, entries included), newest first —
+    /// the driver app's "Cash" history view. Default impl returns empty so
+    /// in-memory test repositories keep compiling without stubbing it.
+    async fn list_recent_for_driver(
+        &self,
+        _tenant_id: &TenantId,
+        _driver_id: Uuid,
+        _limit: i64,
+    ) -> anyhow::Result<Vec<DriverLedger>> {
+        Ok(Vec::new())
+    }
 }

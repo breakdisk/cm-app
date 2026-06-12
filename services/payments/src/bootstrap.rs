@@ -135,6 +135,7 @@ pub async fn run() -> anyhow::Result<()> {
         partner_bonus_repo:                Arc::clone(&partner_bonus_repo),
         withdrawal_service,
         pdf_renderer,
+        driver_ledger_repo:                Arc::clone(&driver_ledger_repo) as _,
     });
     let app = router(state);
 

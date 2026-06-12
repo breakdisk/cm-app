@@ -1,5 +1,6 @@
 pub mod invoices;
 pub mod invoice_pdf;
+pub mod driver_ledger;
 pub mod wallet;
 pub mod billing;
 pub mod billing_clearance;
@@ -27,6 +28,7 @@ pub struct AppState {
     pub partner_bonus_repo:             Arc<crate::infrastructure::db::partner_bonus_repo::PgPartnerBonusRepo>,
     pub withdrawal_service:             Arc<crate::application::services::WithdrawalService>,
     pub pdf_renderer:                   Option<Arc<crate::application::services::pdf_renderer::PdfRenderer>>,
+    pub driver_ledger_repo:             Arc<dyn crate::domain::repositories::DriverLedgerRepository>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -56,6 +58,8 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/cod/reconcile",                         post(wallet::reconcile_cod))
         .route("/cod/balance/:merchant_id",              get(wallet::get_cod_balance))
         .route("/cod/remittances",                       get(cod_batches::list_remittances))
+        // Driver app: own COD cash position (Cash-to-Remit card + history)
+        .route("/cod/driver-ledger/me",                  get(driver_ledger::get_my_ledger))
         .route("/wallet",                                get(wallet::get_wallet))
         .route("/wallet/transactions",                   get(wallet::list_transactions))
         .route("/wallet/withdrawal-requests",            get(wallet::list_withdrawal_requests))
