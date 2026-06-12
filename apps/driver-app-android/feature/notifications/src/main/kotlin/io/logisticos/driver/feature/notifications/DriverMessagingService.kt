@@ -47,6 +47,13 @@ class DriverMessagingService : FirebaseMessagingService() {
                             taskType       = message.data["task_type"]       ?: "delivery",
                             trackingNumber = message.data["tracking_number"] ?: "",
                             codAmountCents = message.data["cod_amount_cents"]?.toLongOrNull() ?: 0L,
+                            merchantName     = message.data["merchant_name"]     ?: "",
+                            deliveryCategory = message.data["delivery_category"] ?: "parcel",
+                            weightGrams      = message.data["weight_grams"]?.toLongOrNull() ?: 0L,
+                            pickupLat        = message.data["pickup_lat"]?.toDoubleOrNull(),
+                            pickupLng        = message.data["pickup_lng"]?.toDoubleOrNull(),
+                            deliveryLat      = message.data["delivery_lat"]?.toDoubleOrNull(),
+                            deliveryLng      = message.data["delivery_lng"]?.toDoubleOrNull(),
                         )
                     )
                 }

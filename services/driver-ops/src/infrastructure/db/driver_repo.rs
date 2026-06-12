@@ -4,7 +4,7 @@ use logisticos_types::{Coordinates, DriverId, TenantId};
 use uuid::Uuid;
 use crate::domain::{
     entities::{Driver, DriverStatus, DriverType},
-    repositories::DriverRepository,
+    repositories::{DriverRepository, DriverPerformance},
 };
 
 pub struct PgDriverRepository {
@@ -149,6 +149,21 @@ impl DriverRepository for PgDriverRepository {
             .fetch_all(&self.pool)
             .await?;
         Ok(rows.into_iter().map(Driver::from).collect())
+    }
+
+    async fn get_performance(&self, user_id: Uuid) -> anyhow::Result<Option<DriverPerformance>> {
+        let row: Option<(i32, Option<f32>, i32)> = sqlx::query_as(
+            "SELECT decline_count, rating_avg, rating_count
+             FROM driver_ops.drivers WHERE user_id = $1",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(decline_count, rating_avg, rating_count)| DriverPerformance {
+            decline_count,
+            rating_avg,
+            rating_count,
+        }))
     }
 
     async fn delete(&self, id: &DriverId) -> anyhow::Result<bool> {

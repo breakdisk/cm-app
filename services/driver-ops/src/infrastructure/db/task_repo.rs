@@ -40,6 +40,13 @@ struct TaskRow {
     tracking_number:      Option<String>,
     cod_amount_cents:     Option<i64>,
     special_instructions: Option<String>,
+    merchant_name:        String,
+    delivery_category:    String,
+    weight_grams:         i64,
+    pickup_lat:           Option<f64>,
+    pickup_lng:           Option<f64>,
+    delivery_lat:         Option<f64>,
+    delivery_lng:         Option<f64>,
     pod_id:               Option<Uuid>,
     pop_id:               Option<Uuid>,
     started_at:           Option<chrono::DateTime<chrono::Utc>>,
@@ -97,6 +104,13 @@ impl From<TaskRow> for DriverTask {
             tracking_number: r.tracking_number,
             cod_amount_cents: r.cod_amount_cents,
             special_instructions: r.special_instructions,
+            merchant_name: r.merchant_name,
+            delivery_category: r.delivery_category,
+            weight_grams: r.weight_grams,
+            pickup_lat: r.pickup_lat,
+            pickup_lng: r.pickup_lng,
+            delivery_lat: r.delivery_lat,
+            delivery_lng: r.delivery_lng,
             pod_id: r.pod_id,
             pop_id: r.pop_id,
             started_at: r.started_at,
@@ -113,7 +127,10 @@ impl TaskRepository for PgTaskRepository {
             r#"SELECT id, driver_id, route_id, shipment_id, task_type, sequence, status,
                       address_line1, address_line2, city, province, postal_code, country AS country_code,
                       lat, lng, customer_name, customer_phone, customer_email, customer_id, tracking_number,
-                      cod_amount_cents, special_instructions, pod_id, pop_id, started_at, completed_at, failed_reason
+                      cod_amount_cents, special_instructions,
+                      merchant_name, delivery_category, weight_grams,
+                      pickup_lat, pickup_lng, delivery_lat, delivery_lng,
+                      pod_id, pop_id, started_at, completed_at, failed_reason
                FROM driver_ops.tasks WHERE id = $1"#
         )
         .bind(id)
@@ -129,7 +146,10 @@ impl TaskRepository for PgTaskRepository {
             r#"SELECT t.id, t.driver_id, t.route_id, t.shipment_id, t.task_type, t.sequence, t.status,
                       t.address_line1, t.address_line2, t.city, t.province, t.postal_code, t.country AS country_code,
                       t.lat, t.lng, t.customer_name, t.customer_phone, t.customer_email, t.customer_id, t.tracking_number,
-                      t.cod_amount_cents, t.special_instructions, t.pod_id, t.pop_id, t.started_at, t.completed_at, t.failed_reason
+                      t.cod_amount_cents, t.special_instructions,
+                      t.merchant_name, t.delivery_category, t.weight_grams,
+                      t.pickup_lat, t.pickup_lng, t.delivery_lat, t.delivery_lng,
+                      t.pod_id, t.pop_id, t.started_at, t.completed_at, t.failed_reason
                FROM driver_ops.tasks t
                JOIN driver_ops.drivers d ON d.id = t.driver_id
                WHERE d.user_id = $1
@@ -146,7 +166,10 @@ impl TaskRepository for PgTaskRepository {
             r#"SELECT id, driver_id, route_id, shipment_id, task_type, sequence, status,
                       address_line1, address_line2, city, province, postal_code, country AS country_code,
                       lat, lng, customer_name, customer_phone, customer_email, customer_id, tracking_number,
-                      cod_amount_cents, special_instructions, pod_id, pop_id, started_at, completed_at, failed_reason
+                      cod_amount_cents, special_instructions,
+                      merchant_name, delivery_category, weight_grams,
+                      pickup_lat, pickup_lng, delivery_lat, delivery_lng,
+                      pod_id, pop_id, started_at, completed_at, failed_reason
                FROM driver_ops.tasks
                WHERE route_id = $1
                ORDER BY sequence ASC"#
@@ -165,8 +188,13 @@ impl TaskRepository for PgTaskRepository {
                    (id, driver_id, route_id, shipment_id, task_type, sequence, status,
                     address_line1, address_line2, city, province, postal_code, country,
                     lat, lng, customer_name, customer_phone, customer_email, customer_id, tracking_number,
-                    cod_amount_cents, special_instructions, pod_id, pop_id, started_at, completed_at, failed_reason)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
+                    cod_amount_cents, special_instructions,
+                    merchant_name, delivery_category, weight_grams,
+                    pickup_lat, pickup_lng, delivery_lat, delivery_lng,
+                    pod_id, pop_id, started_at, completed_at, failed_reason)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
+                       $23,$24,$25,$26,$27,$28,$29,
+                       $30,$31,$32,$33,$34)
                ON CONFLICT (id) DO UPDATE SET
                    status        = EXCLUDED.status,
                    pod_id        = EXCLUDED.pod_id,
@@ -197,6 +225,13 @@ impl TaskRepository for PgTaskRepository {
         .bind(&t.tracking_number)
         .bind(t.cod_amount_cents)
         .bind(&t.special_instructions)
+        .bind(&t.merchant_name)
+        .bind(&t.delivery_category)
+        .bind(t.weight_grams)
+        .bind(t.pickup_lat)
+        .bind(t.pickup_lng)
+        .bind(t.delivery_lat)
+        .bind(t.delivery_lng)
         .bind(t.pod_id)
         .bind(t.pop_id)
         .bind(t.started_at)

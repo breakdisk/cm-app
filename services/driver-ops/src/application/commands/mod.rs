@@ -93,6 +93,20 @@ pub struct TaskSummary {
     pub cod_amount_cents: Option<i64>,
     pub lat: Option<f64>,
     pub lng: Option<f64>,
+    /// Merchant / sender display name — task-card header in the driver app.
+    pub merchant_name: String,
+    /// "food" | "parcel" | "grocery" | "medicine" | "heavy" | "large".
+    pub delivery_category: String,
+    /// Declared weight in grams (0 = unknown).
+    pub weight_grams: i64,
+    /// Full route ends so the app draws the pickup→delivery sketch on the card.
+    pub pickup_lat: Option<f64>,
+    pub pickup_lng: Option<f64>,
+    pub delivery_lat: Option<f64>,
+    pub delivery_lng: Option<f64>,
+    /// Per-task payout in cents — populated ONLY for part-time (gig) drivers.
+    /// `None` for full-time drivers: the app must not show a price to them.
+    pub payout_cents: Option<i64>,
     /// Capture requirements derived from task_type — driver app uses these to
     /// decide which sections of POD/Pickup screens to render. Pickup always
     /// needs the parcel photo + AWB scan; delivery additionally needs a

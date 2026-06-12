@@ -29,6 +29,20 @@ data class TaskItem(
     @SerialName("requires_signature") val requiresSignature: Boolean = false,
     @SerialName("requires_otp")       val requiresOtp: Boolean = false,
     val notes: String? = null,
+    /** Merchant / sender display name — task-card header. Empty when unknown. */
+    @SerialName("merchant_name")      val merchantName: String = "",
+    /** "food" | "parcel" | "grocery" | "medicine" | "heavy" | "large". */
+    @SerialName("delivery_category")  val deliveryCategory: String = "parcel",
+    /** Declared weight in grams (0 = unknown). */
+    @SerialName("weight_grams")       val weightGrams: Long = 0L,
+    /** Full route ends — drawn as the card's route sketch background. */
+    @SerialName("pickup_lat")         val pickupLat: Double? = null,
+    @SerialName("pickup_lng")         val pickupLng: Double? = null,
+    @SerialName("delivery_lat")       val deliveryLat: Double? = null,
+    @SerialName("delivery_lng")       val deliveryLng: Double? = null,
+    /** Per-task payout in cents. Non-null ONLY for part-time (gig) drivers —
+     *  full-time drivers never receive a price from the backend. */
+    @SerialName("payout_cents")       val payoutCents: Long? = null,
 )
 
 @Serializable
@@ -87,6 +101,15 @@ data class RejectAssignmentRequest(
 data class DriverProfileData(
     val id: String = "",
     @SerialName("hub_id") val hubId: String? = null,
+    /** "full_time" | "part_time" — gates the payout chip on task cards. */
+    @SerialName("driver_type")    val driverType: String = "full_time",
+    /** Gig rate per delivery in cents — payout chip on the offer card. */
+    @SerialName("per_delivery_rate_cents") val perDeliveryRateCents: Int = 0,
+    /** Decline counter — performance strip shows "Declines: n/20". */
+    @SerialName("decline_count")  val declineCount: Int = 0,
+    /** Customer rating aggregate (1–5); null until first rating lands. */
+    @SerialName("rating_avg")     val ratingAvg: Float? = null,
+    @SerialName("rating_count")   val ratingCount: Int = 0,
 )
 
 @Serializable

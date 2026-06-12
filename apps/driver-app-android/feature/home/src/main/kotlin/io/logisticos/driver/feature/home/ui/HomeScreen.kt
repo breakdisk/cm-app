@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import io.logisticos.driver.feature.home.presentation.DECLINE_BAN_LIMIT
 import io.logisticos.driver.feature.home.presentation.HomeViewModel
 
 private val Canvas = Color(0xFF050810)
@@ -37,6 +38,7 @@ fun HomeScreen(
     onNavigateToRoute: () -> Unit,
     onNavigateToCompliance: () -> Unit,
     onNavigateToBoxMeasure: () -> Unit = {},
+    onNavigateToHub: () -> Unit = {},
     onNavigateToHubScan: (hubId: String) -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
 ) {
@@ -382,6 +384,51 @@ fun HomeScreen(
             }
         }
 
+        // ── Incoming task offer — Accept / Decline ───────────────────────────
+        // Mirrors the FCM-driven AssignmentScreen flow so the offer is still
+        // actionable from Home after the full-screen card was dismissed or the
+        // app restarted. Gig (part-time) drivers see the payout; full-time
+        // drivers never see a price.
+        state.pendingOffer?.let { offer ->
+            TaskOfferCard(
+                offer          = offer,
+                gigPayoutCents = state.gigRateCents,
+                driverLat      = state.lastLat,
+                driverLng      = state.lastLng,
+                isActing       = state.isActingOnOffer,
+                onAccept       = { viewModel.acceptOffer() },
+                onDecline      = { reason -> viewModel.declineOffer(reason) },
+            )
+        }
+
+        // ── Driver performance: rating + decline accountability ─────────────
+        PerformanceStrip(
+            ratingAvg    = state.ratingAvg,
+            ratingCount  = state.ratingCount,
+            declineCount = state.declineCount,
+            banLimit     = DECLINE_BAN_LIMIT,
+            isGigWorker  = state.isGigWorker,
+        )
+
+        // ── Active task cards ────────────────────────────────────────────────
+        if (state.tasks.isNotEmpty()) {
+            Text(
+                text = "MY TASKS",
+                color = Color.White.copy(alpha = 0.5f),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 2.sp,
+            )
+            state.tasks.forEach { task ->
+                TaskCard(
+                    task      = task,
+                    driverLat = state.lastLat,
+                    driverLng = state.lastLng,
+                    onClick   = onNavigateToRoute,
+                )
+            }
+        }
+
         val shift = state.shift
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -446,6 +493,22 @@ fun HomeScreen(
             colors = ButtonDefaults.outlinedButtonColors(contentColor = Purple)
         ) {
             Text("📦  Measure & Quote Box", fontWeight = FontWeight.Medium, fontSize = 15.sp)
+        }
+
+        // ── Quick-access: Hub operations ─────────────────────────────────────
+        // Surfaces the driver's pending HUB_DROP and RETURN tasks in one tap so
+        // they don't have to scroll the full route looking for hub stops when
+        // they pull up to the dock.
+        OutlinedButton(
+            onClick = onNavigateToHub,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp),
+            shape = RoundedCornerShape(12.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, Amber.copy(alpha = 0.5f)),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = Amber)
+        ) {
+            Text("🏢  Hub Operations", fontWeight = FontWeight.Medium, fontSize = 15.sp)
         }
     }
 

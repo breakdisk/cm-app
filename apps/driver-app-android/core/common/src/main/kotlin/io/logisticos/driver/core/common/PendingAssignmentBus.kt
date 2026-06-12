@@ -19,6 +19,17 @@ data class AssignmentPayload(
     val taskType:       String,   // "pickup" | "delivery"
     val trackingNumber: String,
     val codAmountCents: Long,
+    /** Merchant / sender display name — task-card header. Empty when unknown. */
+    val merchantName:   String = "",
+    /** "food" | "parcel" | "grocery" | "medicine" | "heavy" | "large" — card icon. */
+    val deliveryCategory: String = "parcel",
+    /** Declared weight in grams (0 = unknown). */
+    val weightGrams:    Long = 0L,
+    /** Full route ends for the pickup→delivery sketch on the offer card. */
+    val pickupLat:      Double? = null,
+    val pickupLng:      Double? = null,
+    val deliveryLat:    Double? = null,
+    val deliveryLng:    Double? = null,
 )
 
 object PendingAssignmentBus {

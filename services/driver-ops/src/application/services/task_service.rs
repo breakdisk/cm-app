@@ -53,34 +53,11 @@ impl TaskService {
     }
 
     pub async fn list_my_tasks(&self, driver_id: &DriverId) -> AppResult<Vec<TaskSummary>> {
+        let payout = self.payout_for_driver(driver_id).await;
         let tasks = self.task_repo.list_by_driver(driver_id).await.map_err(AppError::Internal)?;
         Ok(tasks.into_iter()
             .filter(|t| matches!(t.status, TaskStatus::Pending | TaskStatus::InProgress))
-            .map(|t| {
-                let is_delivery = matches!(t.task_type, TaskType::Delivery);
-                let has_cod = t.cod_amount_cents.unwrap_or(0) > 0;
-                TaskSummary {
-                    task_id:           t.id,
-                    shipment_id:       t.shipment_id,
-                    sequence:          t.sequence as u32,
-                    status:            format!("{:?}", t.status).to_lowercase(),
-                    task_type:         format!("{:?}", t.task_type).to_lowercase(),
-                    customer_name:     t.customer_name.clone(),
-                    customer_phone:    t.customer_phone.clone(),
-                    address:           format!("{}, {}", t.address.line1, t.address.city),
-                    tracking_number:   t.tracking_number.clone(),
-                    cod_amount_cents:  t.cod_amount_cents,
-                    lat:               t.address.coordinates.map(|c| c.lat),
-                    lng:               t.address.coordinates.map(|c| c.lng),
-                    // Pickup: AWB + parcel photo. Delivery: AWB + parcel photo +
-                    // signature. OTP only when COD is collected (verifies recipient
-                    // received cash). Persisted requires_* columns will replace this
-                    // heuristic once dispatch propagates the per-shipment policy.
-                    requires_photo:     true,
-                    requires_signature: is_delivery,
-                    requires_otp:       is_delivery && has_cod,
-                }
-            })
+            .map(|t| Self::to_summary(t, payout))
             .collect()
         )
     }
@@ -88,31 +65,59 @@ impl TaskService {
     /// Returns ALL tasks for a driver regardless of status (for history view).
     /// Unlike `list_my_tasks`, completed/failed/cancelled tasks are included.
     pub async fn list_all_tasks(&self, driver_id: &DriverId) -> AppResult<Vec<TaskSummary>> {
+        let payout = self.payout_for_driver(driver_id).await;
         let tasks = self.task_repo.list_by_driver(driver_id).await.map_err(AppError::Internal)?;
         Ok(tasks.into_iter()
-            .map(|t| {
-                let is_delivery = matches!(t.task_type, TaskType::Delivery);
-                let has_cod = t.cod_amount_cents.unwrap_or(0) > 0;
-                TaskSummary {
-                    task_id:           t.id,
-                    shipment_id:       t.shipment_id,
-                    sequence:          t.sequence as u32,
-                    status:            format!("{:?}", t.status).to_lowercase(),
-                    task_type:         format!("{:?}", t.task_type).to_lowercase(),
-                    customer_name:     t.customer_name.clone(),
-                    customer_phone:    t.customer_phone.clone(),
-                    address:           format!("{}, {}", t.address.line1, t.address.city),
-                    tracking_number:   t.tracking_number.clone(),
-                    cod_amount_cents:  t.cod_amount_cents,
-                    lat:               t.address.coordinates.map(|c| c.lat),
-                    lng:               t.address.coordinates.map(|c| c.lng),
-                    requires_photo:     true,
-                    requires_signature: is_delivery,
-                    requires_otp:       is_delivery && has_cod,
-                }
-            })
+            .map(|t| Self::to_summary(t, payout))
             .collect()
         )
+    }
+
+    /// Per-task payout shown on the driver's task card. ONLY part-time (gig)
+    /// drivers see a price — full-time drivers are salaried, so `None` here
+    /// keeps the payment chip hidden in the app. Best-effort: a driver-row
+    /// lookup failure degrades to "no payout shown", never an error.
+    async fn payout_for_driver(&self, driver_id: &DriverId) -> Option<i64> {
+        use crate::domain::entities::DriverType;
+        match self.driver_repo.find_by_user_id(driver_id.inner()).await {
+            Ok(Some(d)) if d.driver_type == DriverType::PartTime =>
+                Some(i64::from(d.per_delivery_rate_cents)),
+            _ => None,
+        }
+    }
+
+    fn to_summary(t: DriverTask, payout_cents: Option<i64>) -> TaskSummary {
+        let is_delivery = matches!(t.task_type, TaskType::Delivery);
+        let has_cod = t.cod_amount_cents.unwrap_or(0) > 0;
+        TaskSummary {
+            task_id:           t.id,
+            shipment_id:       t.shipment_id,
+            sequence:          t.sequence as u32,
+            status:            format!("{:?}", t.status).to_lowercase(),
+            task_type:         format!("{:?}", t.task_type).to_lowercase(),
+            customer_name:     t.customer_name.clone(),
+            customer_phone:    t.customer_phone.clone(),
+            address:           format!("{}, {}", t.address.line1, t.address.city),
+            tracking_number:   t.tracking_number.clone(),
+            cod_amount_cents:  t.cod_amount_cents,
+            lat:               t.address.coordinates.map(|c| c.lat),
+            lng:               t.address.coordinates.map(|c| c.lng),
+            merchant_name:     t.merchant_name.clone(),
+            delivery_category: t.delivery_category.clone(),
+            weight_grams:      t.weight_grams,
+            pickup_lat:        t.pickup_lat,
+            pickup_lng:        t.pickup_lng,
+            delivery_lat:      t.delivery_lat,
+            delivery_lng:      t.delivery_lng,
+            payout_cents,
+            // Pickup: AWB + parcel photo. Delivery: AWB + parcel photo +
+            // signature. OTP only when COD is collected (verifies recipient
+            // received cash). Persisted requires_* columns will replace this
+            // heuristic once dispatch propagates the per-shipment policy.
+            requires_photo:     true,
+            requires_signature: is_delivery,
+            requires_otp:       is_delivery && has_cod,
+        }
     }
 
     pub async fn start_task(&self, driver_id: &DriverId, cmd: StartTaskCommand) -> AppResult<()> {

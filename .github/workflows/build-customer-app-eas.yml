@@ -71,10 +71,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "20"
           cache: "npm"
@@ -101,7 +101,7 @@ jobs:
 
       - name: Set up EAS
         if: steps.token.outputs.present == 'true'
-        uses: expo/expo-github-action@v8
+        uses: expo/expo-github-action@v9
         with:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}

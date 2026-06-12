@@ -5,6 +5,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import io.logisticos.driver.core.common.AssignmentPayload
+import io.logisticos.driver.core.common.PendingAssignmentBus
 import io.logisticos.driver.core.common.TaskSyncBus
 import io.logisticos.driver.core.database.dao.SyncQueueDao
 import io.logisticos.driver.core.database.entity.ShiftEntity
@@ -58,7 +60,32 @@ data class HomeUiState(
     val isHubScanner: Boolean = false,
     /** Hub UUID pre-filled into HubScanScreen. Empty string when no hub is assigned. */
     val hubId: String = "",
+    /** Pending and in-progress tasks rendered as rich cards on the home screen. */
+    val tasks: List<io.logisticos.driver.core.network.service.TaskItem> = emptyList(),
+    /** Incoming assignment offer awaiting Accept/Decline. Mirrors
+     *  PendingAssignmentBus so the offer card renders on Home even if the
+     *  driver dismissed the full-screen AssignmentScreen. */
+    val pendingOffer: AssignmentPayload? = null,
+    /** True while the accept/decline network call is in flight. */
+    val isActingOnOffer: Boolean = false,
+    /** True when the driver is part-time (gig). Gates payout display and the
+     *  decline counter — full-time drivers never see a price. */
+    val isGigWorker: Boolean = false,
+    /** Gig per-delivery rate in cents; null for full-time drivers so the
+     *  offer card's payout chip stays hidden for them. */
+    val gigRateCents: Long? = null,
+    /** Decline counter from the backend (ban at [DECLINE_BAN_LIMIT]). */
+    val declineCount: Int = 0,
+    /** Customer rating aggregate; null until the first rating lands. */
+    val ratingAvg: Float? = null,
+    val ratingCount: Int = 0,
+    /** Last known device position — used for distance/ETA on task cards. */
+    val lastLat: Double? = null,
+    val lastLng: Double? = null,
 )
+
+/** Declines at which a gig driver is automatically deactivated (backend rule). */
+const val DECLINE_BAN_LIMIT = 20
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
@@ -89,7 +116,16 @@ class HomeViewModel @Inject constructor(
                 _uiState.update { it.copy(pendingSyncCount = n) }
             }
         }
+        // Mirror the FCM-driven offer bus into UI state so the home screen can
+        // render an Accept/Decline card (in addition to the full-screen
+        // AssignmentScreen flow, which still works).
+        viewModelScope.launch {
+            PendingAssignmentBus.pending.collect { offer ->
+                _uiState.update { it.copy(pendingOffer = offer) }
+            }
+        }
         syncShift()
+        loadTasks()
         startPolling()
         autoGoOnline()
         collectSyncBus()
@@ -130,8 +166,65 @@ class HomeViewModel @Inject constructor(
             runCatching { api.getMyProfile() }
                 .onSuccess { r ->
                     sessionManager.saveHubId(r.data.hubId)
-                    _uiState.update { it.copy(hubId = r.data.hubId ?: "") }
+                    val isGig = r.data.driverType == "part_time"
+                    _uiState.update { it.copy(
+                        hubId        = r.data.hubId ?: "",
+                        isGigWorker  = isGig,
+                        gigRateCents = if (isGig) r.data.perDeliveryRateCents.toLong() else null,
+                        declineCount = r.data.declineCount,
+                        ratingAvg    = r.data.ratingAvg,
+                        ratingCount  = r.data.ratingCount,
+                    ) }
                 }
+        }
+    }
+
+    /** Pulls the driver's pending/in-progress tasks for the home-screen cards. */
+    private fun loadTasks() {
+        viewModelScope.launch {
+            runCatching { api.listMyTasks() }
+                .onSuccess { r -> _uiState.update { it.copy(tasks = r.data) } }
+            // On failure the previous list stays — offline banner covers connectivity.
+        }
+    }
+
+    /** Accept the pending offer from the home card. Clears the bus on success
+     *  so neither the card nor AssignmentScreen re-renders it. */
+    fun acceptOffer() {
+        val offer = _uiState.value.pendingOffer ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isActingOnOffer = true, error = null) }
+            runCatching { api.acceptAssignment(offer.assignmentId) }
+                .onSuccess {
+                    PendingAssignmentBus.clear()
+                    syncShift()
+                    loadTasks()
+                }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+            _uiState.update { it.copy(isActingOnOffer = false) }
+        }
+    }
+
+    /** Decline the pending offer with a reason. The backend re-queues the
+     *  shipment and counts the decline toward the ban threshold. */
+    fun declineOffer(reason: String) {
+        val offer = _uiState.value.pendingOffer ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isActingOnOffer = true, error = null) }
+            runCatching {
+                api.rejectAssignment(
+                    offer.assignmentId,
+                    io.logisticos.driver.core.network.service.RejectAssignmentRequest(reason),
+                )
+            }
+                .onSuccess {
+                    PendingAssignmentBus.clear()
+                    // Optimistic counter bump; the next profile sync corrects it.
+                    _uiState.update { it.copy(declineCount = it.declineCount + 1) }
+                    refreshHubProfile()
+                }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+            _uiState.update { it.copy(isActingOnOffer = false) }
         }
     }
 
@@ -146,6 +239,7 @@ class HomeViewModel @Inject constructor(
             while (true) {
                 delay(30_000L)
                 runCatching { repo.syncShift() }
+                loadTasks()
             }
         }
     }
@@ -154,6 +248,7 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             TaskSyncBus.events.collect {
                 runCatching { repo.syncShift() }
+                loadTasks()
             }
         }
     }
@@ -170,6 +265,9 @@ class HomeViewModel @Inject constructor(
     private fun collectLocationUpdates() {
         viewModelScope.launch {
             locationRepo.locationUpdates.collect { loc ->
+                // Keep the freshest fix in state — task cards compute
+                // distance-to-pickup and ETA from it.
+                _uiState.update { it.copy(lastLat = loc.lat, lastLng = loc.lng) }
                 runCatching {
                     api.updateLocation(
                         UpdateLocationRequest(
@@ -197,6 +295,7 @@ class HomeViewModel @Inject constructor(
             _uiState.update { it.copy(isLoading = false) }
             loadComplianceStatus()
             refreshHubProfile()
+            loadTasks()
         }
     }
 

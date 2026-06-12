@@ -97,6 +97,14 @@ impl DriverService {
         self.driver_repo.find_by_user_id(user_id).await.map_err(AppError::Internal)
     }
 
+    /// Decline counter + rating aggregate for the driver-app performance strip.
+    pub async fn get_performance(
+        &self,
+        user_id: uuid::Uuid,
+    ) -> AppResult<Option<crate::domain::repositories::DriverPerformance>> {
+        self.driver_repo.get_performance(user_id).await.map_err(AppError::Internal)
+    }
+
     /// Admin hard-delete — permanently removes the driver profile.
     ///
     /// Guards:

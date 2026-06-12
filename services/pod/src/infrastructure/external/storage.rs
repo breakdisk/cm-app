@@ -22,6 +22,13 @@ pub trait StorageAdapter: Send + Sync {
     /// Generate a pre-signed URL for viewing a photo (for merchant portal).
     async fn presign_download(&self, key: &str, ttl_seconds: u32) -> anyhow::Result<String>;
 
+    /// HEAD the object — returns true if the object exists in this bucket.
+    /// Lets callers verify presence before handing a presigned URL to a browser
+    /// that would otherwise render a broken image. Used for the POP→POD
+    /// cross-bucket fallback (legacy POP photos uploaded before the dedicated
+    /// `logisticos-pop-photos` bucket existed still live in `logisticos-pod-photos`).
+    async fn object_exists(&self, key: &str) -> anyhow::Result<bool>;
+
     /// Delete a photo (for disputed/cancelled PODs).
     async fn delete(&self, key: &str) -> anyhow::Result<()>;
 }
@@ -180,5 +187,23 @@ impl StorageAdapter for S3StorageAdapter {
             .send()
             .await?;
         Ok(())
+    }
+
+    async fn object_exists(&self, key: &str) -> anyhow::Result<bool> {
+        // S3/R2 HEAD returns 404 NotFound when the object is absent. The AWS
+        // SDK surfaces that as a service error variant — treat it as "absent"
+        // (Ok(false)) so callers can branch on existence without try/catch.
+        // Real I/O failures (network, auth) propagate as Err.
+        match self.client.head_object().bucket(&self.bucket).key(key).send().await {
+            Ok(_) => Ok(true),
+            Err(sdk_err) => {
+                let svc_err = sdk_err.into_service_error();
+                if svc_err.is_not_found() {
+                    Ok(false)
+                } else {
+                    Err(svc_err.into())
+                }
+            }
+        }
     }
 }

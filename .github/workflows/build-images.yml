@@ -35,7 +35,7 @@ jobs:
       services_to_build:   ${{ steps.collect.outputs.services }}
       portals_to_build:    ${{ steps.collect.outputs.portals }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # paths-filter needs prior commit to diff against on push events
           fetch-depth: 2
@@ -52,7 +52,7 @@ jobs:
       # Cargo.lock affects every Rust crate's resolution, etc.).
       - name: Detect shared/infra changes
         id: shared_detect
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             shared:
@@ -73,7 +73,7 @@ jobs:
       # source tree. The output object has one boolean key per filter name.
       - name: Detect per-image changes
         id: per_image
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             api-gateway:        'services/api-gateway/**'
@@ -200,20 +200,20 @@ jobs:
         service: ${{ fromJSON(needs.changes.outputs.services_to_build) }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build and push ${{ matrix.service }}
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: services/${{ matrix.service }}/Dockerfile
@@ -240,20 +240,20 @@ jobs:
         app: ${{ fromJSON(needs.changes.outputs.portals_to_build) }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build and push ${{ matrix.app }}
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: apps/${{ matrix.app }}/Dockerfile

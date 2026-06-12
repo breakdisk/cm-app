@@ -50,6 +50,29 @@ struct CachedToken {
     valid_until: Instant,
 }
 
+// ── Task-assigned push payload ──────────────────────────────────────────────
+
+/// Field bundle for the rich `task_assigned` FCM data push. The Android app's
+/// DriverMessagingService reads these keys to populate AssignmentPayload and
+/// render the offer card without a network round-trip.
+#[derive(Debug, Clone)]
+pub struct TaskAssignedPush {
+    pub assignment_id:     String,
+    pub shipment_id:       String,
+    pub task_type:         String,
+    pub customer_name:     String,
+    pub merchant_name:     String,
+    pub address:           String,
+    pub tracking_number:   String,
+    pub cod_amount_cents:  i64,
+    pub delivery_category: String,
+    pub weight_grams:      i64,
+    pub pickup_lat:        Option<f64>,
+    pub pickup_lng:        Option<f64>,
+    pub delivery_lat:      Option<f64>,
+    pub delivery_lng:      Option<f64>,
+}
+
 // ── FcmClient ─────────────────────────────────────────────────────────────
 
 pub struct FcmClient {
@@ -129,6 +152,68 @@ impl FcmClient {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// Rich task-assignment push: data map type = "task_assigned" with the full
+    /// offer payload so the app renders the Accept/Decline card immediately.
+    /// All errors are logged and swallowed — push is best-effort.
+    pub async fn notify_task_assigned(&self, driver_user_id: Uuid, push: &TaskAssignedPush) {
+        let tokens = match self.fetch_push_tokens(driver_user_id).await {
+            Err(e) => {
+                tracing::warn!(driver_id = %driver_user_id, err = %e, "FCM: failed to fetch push tokens");
+                return;
+            }
+            Ok(tokens) if tokens.is_empty() => {
+                tracing::debug!(driver_id = %driver_user_id, "FCM: no tokens registered, skipping push");
+                return;
+            }
+            Ok(tokens) => tokens,
+        };
+        let access_token = match self.get_access_token().await {
+            Err(e) => {
+                tracing::warn!(err = %e, "FCM: failed to obtain Google access token");
+                return;
+            }
+            Ok(t) => t,
+        };
+
+        // FCM data maps are string→string; numeric/optional fields serialized
+        // as strings ("" for absent coordinates).
+        let opt = |v: Option<f64>| v.map(|f| f.to_string()).unwrap_or_default();
+        let data = serde_json::json!({
+            "type":              "task_assigned",
+            "title":             "New task offer",
+            "body":              format!("{} — {}", push.merchant_name, push.address),
+            "assignment_id":     push.assignment_id,
+            "shipment_id":       push.shipment_id,
+            "task_type":         push.task_type,
+            "customer_name":     push.customer_name,
+            "merchant_name":     push.merchant_name,
+            "address":           push.address,
+            "tracking_number":   push.tracking_number,
+            "cod_amount_cents":  push.cod_amount_cents.to_string(),
+            "delivery_category": push.delivery_category,
+            "weight_grams":      push.weight_grams.to_string(),
+            "pickup_lat":        opt(push.pickup_lat),
+            "pickup_lng":        opt(push.pickup_lng),
+            "delivery_lat":      opt(push.delivery_lat),
+            "delivery_lng":      opt(push.delivery_lng),
+        });
+
+        for token in tokens {
+            let body = serde_json::json!({
+                "message": {
+                    "token": token,
+                    "data": data,
+                    "android": { "priority": "HIGH" }
+                }
+            });
+            if let Err(e) = self.send_fcm_raw(&body, &access_token).await {
+                tracing::warn!(driver_id = %driver_user_id, err = %e, "FCM: task_assigned send failed");
+            } else {
+                tracing::info!(driver_id = %driver_user_id, "FCM: task_assigned push sent");
             }
         }
     }
@@ -275,6 +360,27 @@ impl FcmClient {
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
             return Err(format!("FCM instruction {status}: {text}"));
+        }
+        Ok(())
+    }
+
+    /// POST a pre-built FCM v1 message body. Shared by the typed senders.
+    async fn send_fcm_raw(&self, body: &serde_json::Value, access_token: &str) -> Result<(), String> {
+        let url = format!(
+            "https://fcm.googleapis.com/v1/projects/{}/messages:send",
+            self.project_id
+        );
+        let resp = self.http
+            .post(&url)
+            .bearer_auth(access_token)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| format!("FCM request: {e}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("FCM {status}: {text}"));
         }
         Ok(())
     }
