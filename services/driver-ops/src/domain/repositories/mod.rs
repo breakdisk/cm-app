@@ -56,6 +56,13 @@ pub trait DriverRepository: Send + Sync {
     async fn get_performance(&self, _user_id: Uuid) -> anyhow::Result<Option<DriverPerformance>> {
         Ok(None)
     }
+    /// Gig offer stats: (impression-verified offers seen, offers claimed).
+    /// Drives the acceptance-rate strip — the broadcast-model replacement for
+    /// the decline counter (passing an offer nine others saw is not a
+    /// refusal). Default None keeps in-memory test repos compiling.
+    async fn get_offer_stats(&self, _user_id: Uuid) -> anyhow::Result<Option<(i64, i64)>> {
+        Ok(None)
+    }
 }
 
 #[async_trait]

@@ -219,6 +219,12 @@ pub async fn get_me_driver(
         data["rating_avg"]    = serde_json::json!(perf.rating_avg);
         data["rating_count"]  = serde_json::json!(perf.rating_count);
     }
+    // Gig acceptance-rate inputs (broadcast offers seen vs claimed) — the
+    // broadcast-model metric; passes are penalty-free, unlike 1:1 declines.
+    if let Ok(Some((seen, claimed))) = state.driver_service.get_offer_stats(claims.user_id).await {
+        data["offers_seen"]    = serde_json::json!(seen);
+        data["offers_claimed"] = serde_json::json!(claimed);
+    }
     Ok(Json(serde_json::json!({ "data": data })))
 }
 

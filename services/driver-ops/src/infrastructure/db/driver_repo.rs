@@ -166,6 +166,31 @@ impl DriverRepository for PgDriverRepository {
         }))
     }
 
+    async fn get_offer_stats(&self, user_id: Uuid) -> anyhow::Result<Option<(i64, i64)>> {
+        // Cross-schema read of dispatch's offer tables — same-instance
+        // precedent as dispatch reading driver_ops.drivers. Soft-fail to None
+        // so a missing dispatch schema (isolated deploys, tests) never breaks
+        // the profile endpoint.
+        let row: Result<Option<(i64, i64)>, _> = sqlx::query_as(
+            r#"SELECT
+                   COUNT(*) FILTER (WHERE c.seen_at IS NOT NULL)::bigint AS seen,
+                   COUNT(*) FILTER (WHERE o.claimed_by = $1)::bigint     AS claimed
+               FROM dispatch.task_offer_candidates c
+               JOIN dispatch.task_offers o ON o.id = c.offer_id
+               WHERE c.driver_id = $1"#,
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await;
+        match row {
+            Ok(stats) => Ok(stats),
+            Err(e) => {
+                tracing::debug!(err = %e, "offer stats unavailable (dispatch schema not reachable)");
+                Ok(None)
+            }
+        }
+    }
+
     async fn delete(&self, id: &DriverId) -> anyhow::Result<bool> {
         let result = sqlx::query("DELETE FROM driver_ops.drivers WHERE id = $1")
             .bind(id.inner())
