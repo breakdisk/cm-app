@@ -210,7 +210,16 @@ pub async fn get_me_driver(
     if driver.tenant_id.inner() != claims.tenant_id {
         return Err(AppError::NotFound { resource: "Driver", id: claims.user_id.to_string() });
     }
-    Ok(Json(serde_json::json!({ "data": DriverDto::from(&driver) })))
+    // Performance strip data (decline counter / rating). Best-effort merge —
+    // a lookup failure must not break the profile call the app depends on.
+    let mut data = serde_json::to_value(DriverDto::from(&driver))
+        .map_err(|e| AppError::Internal(e.into()))?;
+    if let Ok(Some(perf)) = state.driver_service.get_performance(claims.user_id).await {
+        data["decline_count"] = serde_json::json!(perf.decline_count);
+        data["rating_avg"]    = serde_json::json!(perf.rating_avg);
+        data["rating_count"]  = serde_json::json!(perf.rating_count);
+    }
+    Ok(Json(serde_json::json!({ "data": data })))
 }
 
 pub async fn go_online(

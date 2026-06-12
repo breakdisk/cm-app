@@ -124,13 +124,21 @@ async fn handle_task_assigned(payload: &[u8], pool: &PgPool, fcm: Option<Arc<Fcm
             customer_id,
             tracking_number,
             cod_amount_cents,
-            special_instructions
+            special_instructions,
+            merchant_name,
+            delivery_category,
+            weight_grams,
+            pickup_lat,
+            pickup_lng,
+            delivery_lat,
+            delivery_lng
         ) VALUES (
             $1, $2, $3, $4,
             $5, $6, 'pending',
             $7, $8, $9, $10, 'PH',
             $11, $12,
-            $13, $14, $15, $16, $17, $18, $19
+            $13, $14, $15, $16, $17, $18, $19,
+            $20, $21, $22, $23, $24, $25, $26
         )
         ON CONFLICT (id) DO NOTHING
         "#,
@@ -154,6 +162,13 @@ async fn handle_task_assigned(payload: &[u8], pool: &PgPool, fcm: Option<Arc<Fcm
     .bind(if t.tracking_number.is_empty() { None } else { Some(&t.tracking_number) })
     .bind(t.cod_amount_cents)       // Option<i64>
     .bind(t.special_instructions.as_deref())
+    .bind(&t.merchant_name)
+    .bind(&t.delivery_category)
+    .bind(i64::from(t.weight_grams))
+    .bind(t.pickup_lat)
+    .bind(t.pickup_lng)
+    .bind(t.delivery_lat)
+    .bind(t.delivery_lng)
     .execute(pool)
     .await?;
 
@@ -169,10 +184,32 @@ async fn handle_task_assigned(payload: &[u8], pool: &PgPool, fcm: Option<Arc<Fcm
     // Fire-and-forget FCM push — does not block task creation or Kafka commit.
     // t.driver_id is the driver's user_id (identity-service UUID), which is what
     // identity.push_tokens.user_id indexes on.
+    //
+    // The data map carries the full assignment payload (type = "task_assigned")
+    // so the Android app can render the offer card / AssignmentScreen without a
+    // network round-trip. DriverMessagingService falls back to safe defaults
+    // for any missing key.
     if let Some(fcm) = fcm {
         let driver_user_id = t.driver_id;
+        let address = format!("{}, {}", t.address_line1, t.address_city);
+        let data = crate::infrastructure::external::TaskAssignedPush {
+            assignment_id:     t.assignment_id.to_string(),
+            shipment_id:       t.shipment_id.to_string(),
+            task_type:         task_type.to_string(),
+            customer_name:     t.customer_name.clone(),
+            merchant_name:     t.merchant_name.clone(),
+            address,
+            tracking_number:   t.tracking_number.clone(),
+            cod_amount_cents:  t.cod_amount_cents.unwrap_or(0),
+            delivery_category: t.delivery_category.clone(),
+            weight_grams:      i64::from(t.weight_grams),
+            pickup_lat:        t.pickup_lat,
+            pickup_lng:        t.pickup_lng,
+            delivery_lat:      t.delivery_lat,
+            delivery_lng:      t.delivery_lng,
+        };
         tokio::spawn(async move {
-            fcm.notify_driver(driver_user_id).await;
+            fcm.notify_task_assigned(driver_user_id, &data).await;
         });
     }
 

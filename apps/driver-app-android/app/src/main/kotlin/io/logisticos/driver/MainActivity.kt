@@ -108,6 +108,13 @@ class MainActivity : ComponentActivity() {
                 taskType       = intent.getStringExtra("task_type")       ?: "delivery",
                 trackingNumber = intent.getStringExtra("tracking_number") ?: "",
                 codAmountCents = intent.getStringExtra("cod_amount_cents")?.toLongOrNull() ?: 0L,
+                merchantName     = intent.getStringExtra("merchant_name")     ?: "",
+                deliveryCategory = intent.getStringExtra("delivery_category") ?: "parcel",
+                weightGrams      = intent.getStringExtra("weight_grams")?.toLongOrNull() ?: 0L,
+                pickupLat        = intent.getStringExtra("pickup_lat")?.toDoubleOrNull(),
+                pickupLng        = intent.getStringExtra("pickup_lng")?.toDoubleOrNull(),
+                deliveryLat      = intent.getStringExtra("delivery_lat")?.toDoubleOrNull(),
+                deliveryLng      = intent.getStringExtra("delivery_lng")?.toDoubleOrNull(),
             )
         )
     }

@@ -58,6 +58,17 @@ pub struct CreateShipmentCommand {
     /// set false" — useful for admin-role callers who may want manual dispatch.
     #[serde(default)]
     pub auto_dispatch: Option<bool>,
+
+    /// Merchant / sender display name shown on the driver's pickup task card.
+    /// Sent by the merchant portal; omitted on customer-app self-bookings.
+    #[serde(default)]
+    pub merchant_name: Option<String>,
+
+    /// Shipment category for the driver task icon and vehicle matching:
+    /// "food" | "parcel" | "grocery" | "medicine" | "heavy" | "large".
+    /// Derived from service_type/weight when omitted.
+    #[serde(default)]
+    pub delivery_category: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Validate, Serialize)]

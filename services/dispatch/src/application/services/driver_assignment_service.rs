@@ -15,7 +15,7 @@ use crate::{
         entities::{Route, DeliveryStop, DriverAssignment, StopType, RouteStatus},
         events::{RouteCreated, DriverAssigned},
         repositories::{RouteRepository, DriverAssignmentRepository, DriverAvailabilityRepository},
-        value_objects::{MAX_STOPS_BUSINESS, DEFAULT_DRIVER_SEARCH_RADIUS_KM, estimate_duration_minutes},
+        value_objects::{MAX_STOPS_BUSINESS, DEFAULT_DRIVER_SEARCH_RADIUS_KM, estimate_duration_minutes, vehicle_can_carry},
     },
 };
 
@@ -303,6 +303,30 @@ impl DriverAssignmentService {
 
         self.assignment_repo.save(&assignment).await.map_err(AppError::Internal)?;
 
+        // Publish the rejection so driver-ops can maintain the decline counter
+        // (automatic ban at the threshold) and future consumers can re-dispatch
+        // the shipment. Fire-and-forget: a Kafka outage must not block the
+        // driver's decline action.
+        let event = Event::new(
+            "dispatch",
+            "assignment.rejected",
+            assignment.tenant_id.inner(),
+            logisticos_events::payloads::AssignmentRejected {
+                assignment_id: assignment.id,
+                driver_id:     driver_id.inner(),
+                tenant_id:     assignment.tenant_id.inner(),
+                route_id:      assignment.route_id.inner(),
+                reason:        assignment.rejection_reason.clone().unwrap_or_default(),
+            },
+        );
+        if let Err(e) = self.kafka.publish_event(topics::ASSIGNMENT_REJECTED, &event).await {
+            tracing::warn!(
+                assignment_id = %assignment.id,
+                err = %e,
+                "AssignmentRejected event publish failed (non-fatal)"
+            );
+        }
+
         tracing::info!(
             assignment_id = %assignment.id,
             reason = ?assignment.rejection_reason,
@@ -395,6 +419,25 @@ impl DriverAssignmentService {
 
                 if candidates.is_empty() {
                     return Err(AppError::BusinessRule("No available drivers nearby".into()));
+                }
+
+                // Vehicle capacity gate — drop drivers whose vehicle cannot carry
+                // this shipment's weight/category. A dispatcher's explicit
+                // preferred_driver_id (above) bypasses this as a manual override.
+                let candidates: Vec<_> = candidates
+                    .into_iter()
+                    .filter(|c| vehicle_can_carry(
+                        c.vehicle_type.as_deref(),
+                        queue_item.weight_grams,
+                        &queue_item.delivery_category,
+                    ))
+                    .collect();
+
+                if candidates.is_empty() {
+                    return Err(AppError::BusinessRule(format!(
+                        "No available drivers nearby with a vehicle that can carry {} kg ({})",
+                        queue_item.weight_grams / 1000, queue_item.delivery_category
+                    )));
                 }
 
                 candidates.iter()
@@ -498,6 +541,13 @@ impl DriverAssignmentService {
                 tracking_number:      queue_item.tracking_number.clone().unwrap_or_default(),
                 customer_email:       queue_item.customer_email.clone().unwrap_or_default(),
                 customer_id:          Some(queue_item.customer_id),
+                merchant_name:        queue_item.merchant_name.clone(),
+                delivery_category:    queue_item.delivery_category.clone(),
+                weight_grams:         queue_item.weight_grams.max(0) as u32,
+                pickup_lat:           queue_item.origin_lat,
+                pickup_lng:           queue_item.origin_lng,
+                delivery_lat:         queue_item.dest_lat,
+                delivery_lng:         queue_item.dest_lng,
             });
             self.kafka.publish_event(topics::TASK_ASSIGNED, &pickup_event).await
                 .map_err(AppError::Internal)?;
@@ -527,6 +577,13 @@ impl DriverAssignmentService {
             tracking_number:      queue_item.tracking_number.clone().unwrap_or_default(),
             customer_email:       queue_item.customer_email.clone().unwrap_or_default(),
             customer_id:          Some(queue_item.customer_id),
+            merchant_name:        queue_item.merchant_name.clone(),
+            delivery_category:    queue_item.delivery_category.clone(),
+            weight_grams:         queue_item.weight_grams.max(0) as u32,
+            pickup_lat:           queue_item.origin_lat,
+            pickup_lng:           queue_item.origin_lng,
+            delivery_lat:         queue_item.dest_lat,
+            delivery_lng:         queue_item.dest_lng,
         });
         self.kafka.publish_event(topics::TASK_ASSIGNED, &delivery_event).await
             .map_err(AppError::Internal)?;
@@ -637,6 +694,13 @@ mod tests {
             tracking_number:     "CM-PH1-S0001234X".into(),
             customer_email:      "test@example.com".into(),
             customer_id:         Some(uuid::Uuid::new_v4()),
+            merchant_name:       "Test Merchant".into(),
+            delivery_category:   "parcel".into(),
+            weight_grams:        1_000,
+            pickup_lat:          Some(14.6760),
+            pickup_lng:          Some(121.0437),
+            delivery_lat:        Some(14.5995),
+            delivery_lng:        Some(120.9842),
         };
     }
 }

@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import io.logisticos.driver.feature.home.presentation.DECLINE_BAN_LIMIT
 import io.logisticos.driver.feature.home.presentation.HomeViewModel
 
 private val Canvas = Color(0xFF050810)
@@ -378,6 +379,51 @@ fun HomeScreen(
                     color = Color(0xFFFF3B5C),
                     fontSize = 12.sp,
                     modifier = Modifier.padding(12.dp)
+                )
+            }
+        }
+
+        // ── Incoming task offer — Accept / Decline ───────────────────────────
+        // Mirrors the FCM-driven AssignmentScreen flow so the offer is still
+        // actionable from Home after the full-screen card was dismissed or the
+        // app restarted. Gig (part-time) drivers see the payout; full-time
+        // drivers never see a price.
+        state.pendingOffer?.let { offer ->
+            TaskOfferCard(
+                offer          = offer,
+                gigPayoutCents = state.gigRateCents,
+                driverLat      = state.lastLat,
+                driverLng      = state.lastLng,
+                isActing       = state.isActingOnOffer,
+                onAccept       = { viewModel.acceptOffer() },
+                onDecline      = { reason -> viewModel.declineOffer(reason) },
+            )
+        }
+
+        // ── Driver performance: rating + decline accountability ─────────────
+        PerformanceStrip(
+            ratingAvg    = state.ratingAvg,
+            ratingCount  = state.ratingCount,
+            declineCount = state.declineCount,
+            banLimit     = DECLINE_BAN_LIMIT,
+            isGigWorker  = state.isGigWorker,
+        )
+
+        // ── Active task cards ────────────────────────────────────────────────
+        if (state.tasks.isNotEmpty()) {
+            Text(
+                text = "MY TASKS",
+                color = Color.White.copy(alpha = 0.5f),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 2.sp,
+            )
+            state.tasks.forEach { task ->
+                TaskCard(
+                    task      = task,
+                    driverLat = state.lastLat,
+                    driverLng = state.lastLng,
+                    onClick   = onNavigateToRoute,
                 )
             }
         }

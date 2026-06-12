@@ -30,6 +30,17 @@ pub struct ManifestEntry {
     pub pending:     i64,
 }
 
+/// Driver performance counters (decline accountability + customer rating).
+/// Kept off the `Driver` entity so the dozens of existing struct literals
+/// (registration, tests) don't need updating — these are read on demand for
+/// the profile API and the driver-app performance strip.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct DriverPerformance {
+    pub decline_count: i32,
+    pub rating_avg:    Option<f32>,
+    pub rating_count:  i32,
+}
+
 #[async_trait]
 pub trait DriverRepository: Send + Sync {
     async fn find_by_id(&self, id: &DriverId) -> anyhow::Result<Option<Driver>>;
@@ -39,6 +50,12 @@ pub trait DriverRepository: Send + Sync {
     /// Hard-delete a driver row. The caller (DriverService) must verify there
     /// are no active/pending tasks before calling this.
     async fn delete(&self, id: &DriverId) -> anyhow::Result<bool>;
+    /// Performance counters for the driver-app performance strip. Default
+    /// implementation returns None so in-memory test repositories keep
+    /// compiling without stubbing it.
+    async fn get_performance(&self, _user_id: Uuid) -> anyhow::Result<Option<DriverPerformance>> {
+        Ok(None)
+    }
 }
 
 #[async_trait]

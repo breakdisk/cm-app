@@ -257,6 +257,8 @@ async fn internal_create_shipment(
         piece_count:       None,
         booked_by_customer: false,
         auto_dispatch:     Some(true),
+        merchant_name:     None,
+        delivery_category: None,
     };
 
     match s.svc.create(create_cmd).await {

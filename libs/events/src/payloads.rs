@@ -86,10 +86,21 @@ pub struct ShipmentCreated {
     /// Passed through to the dispatch task and shown to the driver.
     #[serde(default)]
     pub special_instructions: Option<String>,
+    /// Merchant / sender display name. Event-time passthrough from the booking
+    /// request — persisted downstream in dispatch_queue and driver_ops.tasks so
+    /// the driver app can show who the pickup party is. Empty when unknown.
+    #[serde(default)]
+    pub merchant_name:        String,
+    /// Shipment category driving the driver-app task icon and vehicle matching:
+    /// "food" | "parcel" | "grocery" | "medicine" | "heavy" | "large".
+    /// Derived by order-intake when not supplied at booking.
+    #[serde(default = "default_delivery_category")]
+    pub delivery_category:    String,
 }
 
 fn default_currency() -> String { "PHP".into() }
 fn default_task_type() -> String { "delivery".into() }
+fn default_delivery_category() -> String { "parcel".into() }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriverAssigned {
@@ -373,6 +384,39 @@ pub struct TaskAssigned {
     /// to engagement for delivery receipt notification routing.
     #[serde(default)]
     pub customer_id:          Option<Uuid>,
+    /// Merchant / sender display name — shown on the driver task card.
+    #[serde(default)]
+    pub merchant_name:        String,
+    /// "food" | "parcel" | "grocery" | "medicine" | "heavy" | "large" — drives
+    /// the task-card icon in the driver app and vehicle matching at dispatch.
+    #[serde(default = "default_delivery_category")]
+    pub delivery_category:    String,
+    /// Declared shipment weight in grams (0 = unknown).
+    #[serde(default)]
+    pub weight_grams:         u32,
+    // Full route ends (both legs carry both ends so the driver app can render
+    // the pickup→delivery route sketch on every task card).
+    #[serde(default)]
+    pub pickup_lat:           Option<f64>,
+    #[serde(default)]
+    pub pickup_lng:           Option<f64>,
+    #[serde(default)]
+    pub delivery_lat:         Option<f64>,
+    #[serde(default)]
+    pub delivery_lng:         Option<f64>,
+}
+
+/// Emitted by dispatch when a driver rejects (declines) an assignment.
+/// Consumed by driver-ops to maintain the driver's decline counter and apply
+/// the automatic ban at the decline threshold; also the future hook for
+/// automatic re-dispatch of the declined shipment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssignmentRejected {
+    pub assignment_id: Uuid,
+    pub driver_id:     Uuid,
+    pub tenant_id:     Uuid,
+    pub route_id:      Uuid,
+    pub reason:        String,
 }
 
 /// Emitted by delivery-experience when a customer taps "Email Receipt" on the

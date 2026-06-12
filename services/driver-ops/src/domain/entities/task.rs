@@ -24,6 +24,19 @@ pub struct DriverTask {
     pub tracking_number: Option<String>,
     pub cod_amount_cents: Option<i64>,
     pub special_instructions: Option<String>,
+    /// Merchant / sender display name — shown on the driver task card.
+    pub merchant_name: String,
+    /// "food" | "parcel" | "grocery" | "medicine" | "heavy" | "large" — drives
+    /// the task-card icon in the driver app.
+    pub delivery_category: String,
+    /// Declared shipment weight in grams (0 = unknown).
+    pub weight_grams: i64,
+    /// Full route ends (pickup AND delivery) regardless of this task's leg,
+    /// so the app can render the route sketch on every card.
+    pub pickup_lat: Option<f64>,
+    pub pickup_lng: Option<f64>,
+    pub delivery_lat: Option<f64>,
+    pub delivery_lng: Option<f64>,
     pub pod_id: Option<uuid::Uuid>,         // Filled when delivery task completed
     pub pop_id: Option<uuid::Uuid>,         // Filled when pickup task completed
     pub started_at: Option<DateTime<Utc>>,

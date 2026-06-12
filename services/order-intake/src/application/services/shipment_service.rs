@@ -76,6 +76,33 @@ pub trait AddressNormalizer: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<logisticos_types::Address>> + Send + 'a>>;
 }
 
+/// Threshold above which an uncategorized shipment is treated as "heavy" for
+/// driver-app iconography and dispatch vehicle matching (20 kg).
+const HEAVY_WEIGHT_GRAMS: u32 = 20_000;
+
+/// Resolve the delivery category for the driver task card / vehicle matching.
+/// An explicit valid category from the booking wins; otherwise derive:
+/// balikbayan → "large" (big shipment), ≥ 20 kg → "heavy", else "parcel".
+fn resolve_delivery_category(
+    requested: Option<&str>,
+    service_type: &str,
+    weight_grams: u32,
+) -> Result<String, String> {
+    if let Some(cat) = requested {
+        return match cat {
+            "food" | "parcel" | "grocery" | "medicine" | "heavy" | "large" => Ok(cat.to_string()),
+            other => Err(format!("Unknown delivery category: {other}")),
+        };
+    }
+    Ok(if service_type == "balikbayan" {
+        "large".to_string()
+    } else if weight_grams >= HEAVY_WEIGHT_GRAMS {
+        "heavy".to_string()
+    } else {
+        "parcel".to_string()
+    })
+}
+
 /// Human-readable SLA label for the estimated delivery field on `ShipmentCreated`.
 fn sla_label(service_type: &str) -> &'static str {
     match service_type {
@@ -138,6 +165,13 @@ impl ShipmentService {
         // ── Validate weight ──────────────────────────────────────────────────
         let weight = ShipmentWeight::from_grams(cmd.weight_grams);
         weight.validate().map_err(|e| AppError::Validation(e.to_string()))?;
+
+        // ── Resolve delivery category (icon + vehicle matching downstream) ───
+        let delivery_category = resolve_delivery_category(
+            cmd.delivery_category.as_deref(),
+            cmd.service_type.as_str(),
+            cmd.weight_grams,
+        ).map_err(AppError::Validation)?;
 
         // ── Business rule: COD must not exceed declared value ────────────────
         if let (Some(cod), Some(declared)) = (cmd.cod_amount_cents, cmd.declared_value_cents) {
@@ -306,6 +340,8 @@ impl ShipmentService {
                 booked_by_customer:   shipment.booked_by_customer,
                 auto_dispatch:        shipment.auto_dispatch,
                 special_instructions: shipment.special_instructions.clone(),
+                merchant_name:        cmd.merchant_name.clone().unwrap_or_default(),
+                delivery_category:    delivery_category.clone(),
             },
         );
         let payload = serde_json::to_string(&event).map_err(|e| AppError::Internal(e.into()))?;

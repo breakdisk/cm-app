@@ -27,6 +27,15 @@ pub struct DispatchQueueRow {
     pub cod_amount_cents:     Option<i64>,
     pub special_instructions: Option<String>,
     pub service_type:         String,
+    /// Merchant / sender display name shown on the driver's task card.
+    #[serde(default)]
+    pub merchant_name:        String,
+    /// "food" | "parcel" | "grocery" | "medicine" | "heavy" | "large".
+    #[serde(default)]
+    pub delivery_category:    String,
+    /// Declared weight in grams (0 = unknown) — drives vehicle matching.
+    #[serde(default)]
+    pub weight_grams:         i64,
     pub status:               String,
     /// Count of failed auto-dispatch attempts. Non-zero means the initial
     /// auto-assign (from a customer/merchant booking) could not find a
@@ -100,8 +109,9 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
                 dest_lat, dest_lng,
                 origin_address_line1, origin_city, origin_province, origin_postal_code,
                 origin_lat, origin_lng,
-                cod_amount_cents, special_instructions, service_type, status
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+                cod_amount_cents, special_instructions, service_type, status,
+                merchant_name, delivery_category, weight_grams
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
             ON CONFLICT (shipment_id) DO NOTHING
             "#,
         )
@@ -129,6 +139,9 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
         .bind(&row.special_instructions)
         .bind(&row.service_type)
         .bind(&row.status)
+        .bind(&row.merchant_name)
+        .bind(&row.delivery_category)
+        .bind(row.weight_grams)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -143,6 +156,7 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
                     origin_address_line1, origin_city, origin_province, origin_postal_code,
                     origin_lat, origin_lng,
                     cod_amount_cents, special_instructions, service_type, status,
+                    merchant_name, delivery_category, weight_grams,
                     auto_dispatch_attempts, last_dispatch_error, last_attempt_at,
                     queued_at, dispatched_at
              FROM dispatch.dispatch_queue WHERE shipment_id = $1",
@@ -169,6 +183,7 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
                            origin_address_line1, origin_city, origin_province, origin_postal_code,
                            origin_lat, origin_lng,
                            cod_amount_cents, special_instructions, service_type, status,
+                           merchant_name, delivery_category, weight_grams,
                            auto_dispatch_attempts, last_dispatch_error, last_attempt_at,
                            queued_at, dispatched_at
                     FROM dispatch.dispatch_queue
@@ -280,6 +295,7 @@ impl DispatchQueueRepository for PgDispatchQueueRepository {
                     origin_address_line1, origin_city, origin_province, origin_postal_code,
                     origin_lat, origin_lng,
                     cod_amount_cents, special_instructions, service_type, status,
+                    merchant_name, delivery_category, weight_grams,
                     auto_dispatch_attempts, last_dispatch_error, last_attempt_at,
                     queued_at, dispatched_at
              FROM dispatch.dispatch_queue

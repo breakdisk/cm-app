@@ -55,6 +55,7 @@ pub const WEIGHT_ADJUSTMENT_INVOICED: &str = "logisticos.payments.invoice.weight
 pub const ROUTE_CREATED:             &str = "logisticos.dispatch.route.created";
 pub const DRIVER_ASSIGNED:           &str = "logisticos.dispatch.driver.assigned";
 pub const ROUTE_OPTIMIZED:           &str = "logisticos.dispatch.route.optimized";
+pub const ASSIGNMENT_REJECTED:       &str = "logisticos.dispatch.assignment.rejected";
 
 // Driver / Field
 pub const DRIVER_AVAILABLE:          &str = "logisticos.driver.available";
