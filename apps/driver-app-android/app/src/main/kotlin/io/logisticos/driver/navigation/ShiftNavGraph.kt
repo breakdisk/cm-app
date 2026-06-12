@@ -33,6 +33,7 @@ import io.logisticos.driver.feature.pickup.ui.PickupScreen
 import io.logisticos.driver.feature.pod.ui.PodScreen
 import io.logisticos.driver.feature.profile.presentation.ProfileViewModel
 import io.logisticos.driver.feature.profile.ui.ComplianceScreen
+import io.logisticos.driver.feature.profile.ui.EarningsScreen
 import io.logisticos.driver.feature.profile.ui.ProfileScreen
 import io.logisticos.driver.feature.route.presentation.RouteViewModel
 import io.logisticos.driver.feature.route.ui.RouteScreen
@@ -49,6 +50,7 @@ private const val SCAN_ROUTE             = "scan"
 private const val NOTIFICATIONS_ROUTE    = "notifications"
 private const val PROFILE_ROUTE          = "profile"
 private const val COMPLIANCE_ROUTE       = "compliance"
+private const val EARNINGS_ROUTE         = "earnings"
 private const val NAVIGATE_TO_STOP_ROUTE = "navigate/{taskId}"
 private const val ARRIVAL_ROUTE          = "arrival/{taskId}"
 private const val PICKUP_ROUTE           = "pickup/{taskId}"
@@ -91,7 +93,10 @@ fun ShiftScaffold(rootNavController: NavHostController) {
     val pendingPayload by PendingAssignmentBus.pending.collectAsState()
 
     LaunchedEffect(pendingPayload) {
-        if (pendingPayload != null) {
+        // Broadcast gig offers (isGrabOffer) stay on the Home grab card — no
+        // assignment exists until a claim wins, so AssignmentScreen's
+        // accept/reject calls would have nothing to act on.
+        if (pendingPayload != null && pendingPayload?.isGrabOffer != true) {
             shiftNavController.navigate(ASSIGNMENT_ROUTE) {
                 // Don't stack multiple assignment screens if the driver is slow to respond.
                 launchSingleTop = true
@@ -168,6 +173,9 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                     onNavigateToCompliance = {
                         shiftNavController.navigate(COMPLIANCE_ROUTE)
                     },
+                    onNavigateToEarnings = {
+                        shiftNavController.navigate(EARNINGS_ROUTE)
+                    },
                     onLogout = {
                         // 1. Cancel all in-flight OkHttp calls + clear session tokens.
                         //    This unblocks any TokenAuthenticator.runBlocking threads that
@@ -197,12 +205,18 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                 ComplianceScreen(onBack = { shiftNavController.popBackStack() })
             }
 
+            // ── Earnings & COD cash history (Profile → Earnings) ──────────
+            composable(EARNINGS_ROUTE) {
+                EarningsScreen(onBack = { shiftNavController.popBackStack() })
+            }
+
             // ── Assignment accept/reject ──────────────────────────────────
             composable(ASSIGNMENT_ROUTE) {
                 val payload = pendingPayload
-                if (payload == null) {
-                    // Stale nav entry (e.g. back-stack restoration after process death) —
-                    // pop back rather than showing an empty screen.
+                if (payload == null || payload.isGrabOffer) {
+                    // Stale nav entry (e.g. back-stack restoration after process death),
+                    // or a grab offer that must be acted on from the Home card —
+                    // pop back rather than showing an empty/unactionable screen.
                     LaunchedEffect(Unit) { shiftNavController.popBackStack() }
                     return@composable
                 }

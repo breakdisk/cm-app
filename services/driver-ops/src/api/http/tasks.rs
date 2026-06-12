@@ -21,6 +21,41 @@ pub async fn list_my_tasks(
 }
 
 #[derive(Debug, Deserialize)]
+pub struct EarningsQuery {
+    /// Window start (inclusive). Defaults to 30 days ago.
+    #[serde(default)]
+    pub from: Option<chrono::DateTime<chrono::Utc>>,
+    /// Window end (exclusive). Defaults to now.
+    #[serde(default)]
+    pub to: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
+/// `GET /v1/drivers/me/earnings?from&to&limit&offset`
+///
+/// Earnings history for the authenticated driver: Today / This Week totals,
+/// daily series (sparkline), and paginated per-task entries. Reads the
+/// contractual `payout_cents` snapshot — completed delivery tasks only.
+pub async fn my_earnings(
+    AuthClaims(claims): AuthClaims,
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<EarningsQuery>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let driver_id = DriverId::from_uuid(claims.user_id);
+    let now    = chrono::Utc::now();
+    let from   = q.from.unwrap_or(now - chrono::Duration::days(30));
+    let to     = q.to.unwrap_or(now);
+    let limit  = q.limit.unwrap_or(50).clamp(1, 200);
+    let offset = q.offset.unwrap_or(0).max(0);
+
+    let view = state.task_service.my_earnings(&driver_id, from, to, limit, offset).await?;
+    Ok(Json(serde_json::json!({ "data": view })))
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ManifestQuery {
     /// Target date in YYYY-MM-DD. Required; we intentionally do not default
     /// to "today" so the caller is forced to think about timezone semantics.

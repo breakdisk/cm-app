@@ -404,6 +404,75 @@ pub struct TaskAssigned {
     pub delivery_lat:         Option<f64>,
     #[serde(default)]
     pub delivery_lng:         Option<f64>,
+    /// Contractual gig payout in cents, snapshotted at assignment/claim time
+    /// from the driver's per_delivery_rate_cents. None for full-time drivers —
+    /// the app must never show them a price. This snapshot is the earnings
+    /// record: later rate changes never alter accepted work.
+    #[serde(default)]
+    pub payout_cents:         Option<i64>,
+}
+
+/// Broadcast gig offer — fanned out to N candidate drivers simultaneously.
+/// Emitted by dispatch when a shipment is broadcast to the gig pool;
+/// driver-ops consumes it to send a per-candidate FCM `task_offer` push.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskOfferCreated {
+    pub offer_id:     Uuid,
+    pub tenant_id:    Uuid,
+    pub shipment_id:  Uuid,
+    pub wave:         i32,
+    pub expires_at:   chrono::DateTime<chrono::Utc>,
+    /// Payout snapshotted per candidate from their per_delivery_rate_cents at
+    /// offer creation — rates are per-driver, so each candidate sees their own
+    /// contractual price; the winner's is copied to the task on claim.
+    pub candidates:   Vec<OfferCandidate>,
+    // Card display fields (mirror the TaskAssigned card enrichment)
+    #[serde(default)]
+    pub merchant_name:     String,
+    #[serde(default = "default_delivery_category")]
+    pub delivery_category: String,
+    #[serde(default)]
+    pub weight_grams:      u32,
+    #[serde(default)]
+    pub tracking_number:   String,
+    #[serde(default)]
+    pub customer_name:     String,
+    #[serde(default)]
+    pub pickup_address:    String,
+    #[serde(default)]
+    pub delivery_address:  String,
+    #[serde(default)]
+    pub cod_amount_cents:  Option<i64>,
+    #[serde(default)]
+    pub pickup_lat:        Option<f64>,
+    #[serde(default)]
+    pub pickup_lng:        Option<f64>,
+    #[serde(default)]
+    pub delivery_lat:      Option<f64>,
+    #[serde(default)]
+    pub delivery_lng:      Option<f64>,
+}
+
+/// One candidate of a broadcast task offer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OfferCandidate {
+    pub driver_id:    Uuid,
+    pub payout_cents: Option<i64>,
+}
+
+/// Offer reached a terminal state (claimed / expired / cancelled).
+/// driver-ops fans an FCM `offer_closed` to every losing candidate so their
+/// grab cards flip to "Taken" and dismiss in real time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskOfferClosed {
+    pub offer_id:    Uuid,
+    pub tenant_id:   Uuid,
+    pub shipment_id: Uuid,
+    /// "claimed" | "expired" | "cancelled"
+    pub reason:      String,
+    pub claimed_by:  Option<Uuid>,
+    /// Everyone who was ever offered it (all waves) — FCM fan-in targets.
+    pub candidate_driver_ids: Vec<Uuid>,
 }
 
 /// Emitted by dispatch when a driver rejects (declines) an assignment.

@@ -3,14 +3,16 @@ pub mod assignments;
 pub mod health;
 pub mod queue;
 pub mod dispatch_ops;
+pub mod offers;
 
 use axum::{Router, routing::{get, post, put}};
 use std::sync::Arc;
-use crate::application::services::DriverAssignmentService;
+use crate::application::services::{DriverAssignmentService, OfferService};
 use crate::infrastructure::db::{DispatchQueueRepository, DriverProfilesRepository};
 
 pub struct AppState {
     pub dispatch_service: Arc<DriverAssignmentService>,
+    pub offer_service:    Arc<OfferService>,
     pub jwt:              Arc<logisticos_auth::jwt::JwtService>,
     pub queue_repo:       Arc<dyn DispatchQueueRepository>,
     pub drivers_repo:     Arc<dyn DriverProfilesRepository>,
@@ -48,8 +50,15 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         // Dispatch queue and driver roster
         .route("/queue",   get(queue::list_queue))
         .route("/drivers", get(queue::list_drivers))
+        // Gig offer broadcast ("grab") — driver-facing surface
+        .route("/offers/open",      get(offers::list_open))
+        .route("/offers/:id/claim", post(offers::claim))
+        .route("/offers/:id/pass",  post(offers::pass))
+        .route("/offers/:id/seen",  post(offers::seen))
         // Quick dispatch — one-shot assign driver to shipment in queue
         .route("/queue/:shipment_id/dispatch",        post(dispatch_ops::quick_dispatch))
+        // Ops-console action: broadcast to the gig pool instead of 1:1 dispatch
+        .route("/queue/:shipment_id/broadcast",       post(offers::broadcast))
         // Admin: cancel a dispatched shipment — returns it to pending for reassignment
         .route("/queue/:shipment_id/cancel-dispatch", post(dispatch_ops::cancel_queue_dispatch))
         // Admin: cancel a driver's stale active assignment (re-enters them into auto-dispatch pool)

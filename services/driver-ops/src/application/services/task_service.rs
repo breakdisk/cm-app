@@ -9,9 +9,20 @@ use crate::{
     domain::{
         entities::{DriverTask, TaskStatus, TaskType},
         events::{TaskCompleted, TaskFailed},
-        repositories::{TaskRepository, DriverRepository, TenantTaskSummary},
+        repositories::{DailyEarning, DriverRepository, EarningEntry, TaskRepository, TenantTaskSummary},
     },
 };
+
+/// Earnings view returned by `GET /v1/drivers/me/earnings`.
+/// `today_cents` / `week_cents` are derived from `daily` server-side so the
+/// app renders the summary card without re-aggregating.
+#[derive(Debug, serde::Serialize)]
+pub struct EarningsView {
+    pub today_cents: i64,
+    pub week_cents:  i64,
+    pub daily:       Vec<DailyEarning>,
+    pub entries:     Vec<EarningEntry>,
+}
 
 pub struct TaskService {
     task_repo: Arc<dyn TaskRepository>,
@@ -50,6 +61,43 @@ impl TaskService {
             .list_manifest(tenant_id, carrier_id, date)
             .await
             .map_err(AppError::Internal)
+    }
+
+    /// Earnings history + daily aggregates for the authenticated driver.
+    /// `from`/`to` window the entry list; the daily series always covers at
+    /// least the trailing 7 days so the summary card and sparkline are stable
+    /// regardless of the requested page window.
+    pub async fn my_earnings(
+        &self,
+        driver_id: &DriverId,
+        from: chrono::DateTime<chrono::Utc>,
+        to: chrono::DateTime<chrono::Utc>,
+        limit: i64,
+        offset: i64,
+    ) -> AppResult<EarningsView> {
+        let now = chrono::Utc::now();
+        let today_start = now.date_naive().and_hms_opt(0, 0, 0)
+            .unwrap_or_default().and_utc();
+        let week_start = today_start - chrono::Duration::days(6);
+
+        let daily_from = week_start.min(from);
+        let daily = self.task_repo
+            .daily_earnings(driver_id.inner(), daily_from, now.max(to))
+            .await.map_err(AppError::Internal)?;
+
+        let today = now.date_naive();
+        let today_cents = daily.iter()
+            .find(|d| d.day == today)
+            .map(|d| d.total_cents).unwrap_or(0);
+        let week_cents = daily.iter()
+            .filter(|d| d.day >= week_start.date_naive() && d.day <= today)
+            .map(|d| d.total_cents).sum();
+
+        let entries = self.task_repo
+            .list_earnings(driver_id.inner(), from, to, limit, offset)
+            .await.map_err(AppError::Internal)?;
+
+        Ok(EarningsView { today_cents, week_cents, daily, entries })
     }
 
     pub async fn list_my_tasks(&self, driver_id: &DriverId) -> AppResult<Vec<TaskSummary>> {
@@ -109,7 +157,9 @@ impl TaskService {
             pickup_lng:        t.pickup_lng,
             delivery_lat:      t.delivery_lat,
             delivery_lng:      t.delivery_lng,
-            payout_cents,
+            // Contractual snapshot wins; the live per-delivery rate is only a
+            // display fallback for rows created before the snapshot column.
+            payout_cents:      t.payout_cents.or(payout_cents),
             // Pickup: AWB + parcel photo. Delivery: AWB + parcel photo +
             // signature. OTP only when COD is collected (verifies recipient
             // received cash). Persisted requires_* columns will replace this

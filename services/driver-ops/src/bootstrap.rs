@@ -5,7 +5,7 @@ use tokio::sync::{broadcast, watch};
 use crate::config::Config;
 use crate::application::services::{DriverService, TaskService, LocationService};
 use crate::infrastructure::db::{PgDriverRepository, PgTaskRepository, PgLocationRepository};
-use crate::infrastructure::messaging::{start_task_consumer, start_assignment_rejected_consumer};
+use crate::infrastructure::messaging::{start_task_consumer, start_assignment_rejected_consumer, start_offer_consumer};
 use crate::infrastructure::external::FcmClient;
 use crate::api::http::{router, AppState, RosterEvent};
 use logisticos_auth::jwt::JwtService;
@@ -65,6 +65,7 @@ pub async fn run() -> anyhow::Result<()> {
     // also attach it to AppState for the HTTP instruction endpoint.
     let fcm_for_state = fcm_client.clone();
     let fcm_for_rejections = fcm_client.clone();
+    let fcm_for_offers = fcm_client.clone();
 
     // Spawn TASK_ASSIGNED consumer — creates driver_ops.tasks rows on dispatch.
     let pool_for_tasks    = pool.clone();
@@ -80,6 +81,21 @@ pub async fn run() -> anyhow::Result<()> {
             shutdown_rx_tasks,
         ).await {
             tracing::error!("Task consumer crashed: {e}");
+        }
+    });
+
+    // Spawn gig offer consumer — FCM fan-out for task_offer / offer_closed.
+    let brokers_for_offers = cfg.kafka.brokers.clone();
+    let group_for_offers   = cfg.kafka.group_id.clone();
+    let shutdown_rx_offers = shutdown_rx.clone();
+    tokio::spawn(async move {
+        if let Err(e) = start_offer_consumer(
+            &brokers_for_offers,
+            &group_for_offers,
+            fcm_for_offers,
+            shutdown_rx_offers,
+        ).await {
+            tracing::error!("Offer consumer crashed: {e}");
         }
     });
 

@@ -113,6 +113,29 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::clone(&queue_repo) as Arc<dyn DispatchQueueRepository>,
     ));
 
+    // Gig offer broadcast ("grab") service + its expiry sweeper.
+    let offer_repo = Arc::new(crate::infrastructure::db::PgTaskOfferRepository::new(pool.clone()));
+    let offer_service = Arc::new(crate::application::services::OfferService::new(
+        Arc::clone(&offer_repo),
+        Arc::clone(&queue_repo) as Arc<dyn DispatchQueueRepository>,
+        Arc::clone(&driver_avail) as _,
+        Arc::clone(&kafka),
+        Some(Arc::clone(&compliance_cache)),
+    ));
+    // Sweeper: every 10 s, escalate expired waves (wider radius, fresh TTL)
+    // or expire wave-3 offers onto the ops console. 10 s granularity against
+    // a 30 s TTL keeps worst-case wave lag at ~33% of the TTL.
+    let offer_svc_sweep = Arc::clone(&offer_service);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(10));
+        loop {
+            tick.tick().await;
+            if let Err(e) = offer_svc_sweep.sweep().await {
+                tracing::warn!(err = %e, "offer-sweep: tick failed");
+            }
+        }
+    });
+
     // Spawn shipment consumer — populates dispatch_queue from SHIPMENT_CREATED events
     // and auto-dispatches customer-app bookings (booked_by_customer == true).
     let pool_for_shipment     = pool.clone();
@@ -277,6 +300,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     let state = Arc::new(AppState {
         dispatch_service,
+        offer_service,
         jwt:          Arc::clone(&jwt),
         queue_repo:   queue_repo as Arc<dyn DispatchQueueRepository>,
         drivers_repo: drivers_repo as Arc<dyn DriverProfilesRepository>,

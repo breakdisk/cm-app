@@ -105,6 +105,11 @@ impl DriverService {
         self.driver_repo.get_performance(user_id).await.map_err(AppError::Internal)
     }
 
+    /// Gig acceptance-rate inputs: (impression-verified offers seen, claimed).
+    pub async fn get_offer_stats(&self, user_id: uuid::Uuid) -> AppResult<Option<(i64, i64)>> {
+        self.driver_repo.get_offer_stats(user_id).await.map_err(AppError::Internal)
+    }
+
     /// Admin hard-delete — permanently removes the driver profile.
     ///
     /// Guards:

@@ -253,4 +253,32 @@ impl DriverLedgerRepository for PgDriverLedgerRepository {
         tx.commit().await?;
         Ok(())
     }
+
+    async fn list_recent_for_driver(
+        &self,
+        tenant_id: &TenantId,
+        driver_id: Uuid,
+        limit: i64,
+    ) -> anyhow::Result<Vec<DriverLedger>> {
+        let rows = sqlx::query_as::<_, LedgerRow>(
+            "SELECT id, tenant_id, driver_id, shift_id, status,
+                    balance_cents, version, created_at, updated_at
+               FROM payments.driver_ledgers
+              WHERE tenant_id = $1 AND driver_id = $2
+              ORDER BY created_at DESC
+              LIMIT $3"
+        )
+        .bind(tenant_id.inner())
+        .bind(driver_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut ledgers = Vec::with_capacity(rows.len());
+        for r in rows {
+            let entries = load_entries(&self.pool, r.id).await?;
+            ledgers.push(row_to_ledger(r, entries));
+        }
+        Ok(ledgers)
+    }
 }

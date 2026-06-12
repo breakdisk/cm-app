@@ -91,14 +91,23 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * When the driver taps a `task_assigned` system notification, the PendingIntent
-     * carries all FCM data fields as extras. If PendingAssignmentBus is empty (process
-     * was killed), re-post from the intent so ShiftScaffold navigates to AssignmentScreen.
+     * When the driver taps a `task_assigned` / `task_offer` system notification,
+     * the PendingIntent carries all FCM data fields as extras. If
+     * PendingAssignmentBus is empty (process was killed), re-post from the
+     * intent — ShiftScaffold navigates to AssignmentScreen for 1:1 assignments;
+     * grab offers render on the Home card instead.
      */
     private fun handleAssignmentIntent(intent: Intent?) {
-        if (intent?.getStringExtra("notification_type") != "task_assigned") return
-        val assignmentId = intent.getStringExtra("assignment_id") ?: return
+        val type = intent?.getStringExtra("notification_type")
+        if (type != "task_assigned" && type != "task_offer") return
         if (PendingAssignmentBus.pending.value != null) return  // already queued by onMessageReceived
+
+        val assignmentId = intent.getStringExtra("assignment_id") ?: ""
+        val offerId      = intent.getStringExtra("offer_id") ?: ""
+        // Each flow needs its own id to be actionable.
+        if (type == "task_assigned" && assignmentId.isBlank()) return
+        if (type == "task_offer" && offerId.isBlank()) return
+
         PendingAssignmentBus.post(
             AssignmentPayload(
                 assignmentId   = assignmentId,
@@ -115,6 +124,9 @@ class MainActivity : ComponentActivity() {
                 pickupLng        = intent.getStringExtra("pickup_lng")?.toDoubleOrNull(),
                 deliveryLat      = intent.getStringExtra("delivery_lat")?.toDoubleOrNull(),
                 deliveryLng      = intent.getStringExtra("delivery_lng")?.toDoubleOrNull(),
+                offerId          = offerId,
+                payoutCents      = intent.getStringExtra("payout_cents")?.toLongOrNull(),
+                expiresAtMillis  = intent.getStringExtra("expires_at_ms")?.toLongOrNull(),
             )
         )
     }

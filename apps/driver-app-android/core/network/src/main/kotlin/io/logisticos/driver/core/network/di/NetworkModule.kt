@@ -13,6 +13,7 @@ import io.logisticos.driver.core.network.service.DirectionsApiService
 import io.logisticos.driver.core.network.service.DriverOpsApiService
 import io.logisticos.driver.core.network.service.HubOpsApiService
 import io.logisticos.driver.core.network.service.IdentityApiService
+import io.logisticos.driver.core.network.service.PaymentsApiService
 import io.logisticos.driver.core.network.service.PodApiService
 import kotlinx.serialization.json.Json
 import okhttp3.CertificatePinner
@@ -150,4 +151,8 @@ object NetworkModule {
     @Provides @Singleton
     fun provideHubOpsApiService(retrofit: Retrofit): HubOpsApiService =
         retrofit.create(HubOpsApiService::class.java)
+
+    @Provides @Singleton
+    fun providePaymentsApiService(retrofit: Retrofit): PaymentsApiService =
+        retrofit.create(PaymentsApiService::class.java)
 }

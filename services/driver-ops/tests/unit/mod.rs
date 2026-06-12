@@ -71,6 +71,7 @@ fn make_task(task_type: TaskType, status: TaskStatus) -> DriverTask {
         pickup_lng: None,
         delivery_lat: None,
         delivery_lng: None,
+        payout_cents: None,
         pod_id: None,
         pop_id: None,
         started_at: None,

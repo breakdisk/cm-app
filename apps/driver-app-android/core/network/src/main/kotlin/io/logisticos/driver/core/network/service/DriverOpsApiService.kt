@@ -110,6 +110,81 @@ data class DriverProfileData(
     /** Customer rating aggregate (1–5); null until first rating lands. */
     @SerialName("rating_avg")     val ratingAvg: Float? = null,
     @SerialName("rating_count")   val ratingCount: Int = 0,
+    /** Gig acceptance-rate inputs: broadcast offers with a client-verified
+     *  impression vs offers this driver won. Passing is penalty-free — this
+     *  ratio replaces the decline counter as THE gig metric. */
+    @SerialName("offers_seen")    val offersSeen: Long = 0L,
+    @SerialName("offers_claimed") val offersClaimed: Long = 0L,
+)
+
+// ─── Gig offer ("grab") models ───────────────────────────────────────────────
+
+@Serializable
+data class OpenOffersResponse(val data: List<OpenOfferItem>)
+
+/** One live broadcast offer for this driver — GET /v1/offers/open. */
+@Serializable
+data class OpenOfferItem(
+    val id: String,
+    @SerialName("shipment_id")       val shipmentId: String,
+    val wave: Int = 1,
+    /** ISO-8601 — converted to epoch millis at the ViewModel. */
+    @SerialName("expires_at")        val expiresAt: String,
+    @SerialName("merchant_name")     val merchantName: String = "",
+    @SerialName("delivery_category") val deliveryCategory: String = "parcel",
+    @SerialName("weight_grams")      val weightGrams: Long = 0L,
+    @SerialName("tracking_number")   val trackingNumber: String = "",
+    @SerialName("customer_name")     val customerName: String = "",
+    @SerialName("pickup_address")    val pickupAddress: String = "",
+    @SerialName("delivery_address")  val deliveryAddress: String = "",
+    @SerialName("cod_amount_cents")  val codAmountCents: Long? = null,
+    @SerialName("pickup_lat")        val pickupLat: Double? = null,
+    @SerialName("pickup_lng")        val pickupLng: Double? = null,
+    @SerialName("delivery_lat")      val deliveryLat: Double? = null,
+    @SerialName("delivery_lng")      val deliveryLng: Double? = null,
+    /** THIS driver's contractual payout — never another driver's rate. */
+    @SerialName("payout_cents")      val payoutCents: Long? = null,
+)
+
+@Serializable
+data class ClaimOfferResponse(val data: ClaimOfferData)
+
+@Serializable
+data class ClaimOfferData(
+    @SerialName("assignment_id") val assignmentId: String,
+    @SerialName("shipment_id")   val shipmentId: String,
+    @SerialName("payout_cents")  val payoutCents: Long? = null,
+)
+
+// ─── Earnings models ─────────────────────────────────────────────────────────
+
+@Serializable
+data class EarningsResponse(val data: EarningsData)
+
+@Serializable
+data class EarningsData(
+    @SerialName("today_cents") val todayCents: Long = 0L,
+    @SerialName("week_cents")  val weekCents: Long = 0L,
+    val daily: List<DailyEarningItem> = emptyList(),
+    val entries: List<EarningEntryItem> = emptyList(),
+)
+
+@Serializable
+data class DailyEarningItem(
+    /** Calendar day, YYYY-MM-DD (UTC). */
+    val day: String,
+    @SerialName("total_cents") val totalCents: Long = 0L,
+    val deliveries: Long = 0L,
+)
+
+@Serializable
+data class EarningEntryItem(
+    @SerialName("task_id")           val taskId: String,
+    @SerialName("tracking_number")   val trackingNumber: String? = null,
+    @SerialName("merchant_name")     val merchantName: String = "",
+    @SerialName("delivery_category") val deliveryCategory: String = "parcel",
+    @SerialName("completed_at")      val completedAt: String? = null,
+    @SerialName("payout_cents")      val payoutCents: Long? = null,
 )
 
 @Serializable
@@ -179,4 +254,33 @@ interface DriverOpsApiService {
         @Path("id") assignmentId: String,
         @Body body: RejectAssignmentRequest
     )
+
+    // ── Gig offer ("grab") surface — gateway routes /v1/offers to dispatch ──
+
+    /** GET /v1/offers/open — live offers for this driver (restart / missed-FCM recovery). */
+    @GET("v1/offers/open")
+    suspend fun listOpenOffers(): OpenOffersResponse
+
+    /**
+     * POST /v1/offers/:id/claim — the atomic grab. 200 = won; HTTP 409 = lost
+     * the race (OFFER_TAKEN) or already busy (DRIVER_BUSY).
+     */
+    @POST("v1/offers/{id}/claim")
+    suspend fun claimOffer(@Path("id") offerId: String): ClaimOfferResponse
+
+    /** POST /v1/offers/:id/pass — penalty-free; never re-offered this task. */
+    @POST("v1/offers/{id}/pass")
+    suspend fun passOffer(@Path("id") offerId: String)
+
+    /** POST /v1/offers/:id/seen — client-verified impression, fired once at
+     *  first card render. The acceptance-rate denominator counts only these. */
+    @POST("v1/offers/{id}/seen")
+    suspend fun markOfferSeen(@Path("id") offerId: String)
+
+    /** GET /v1/drivers/me/earnings — Today/Week totals + per-task history. */
+    @GET("v1/drivers/me/earnings")
+    suspend fun getMyEarnings(
+        @Query("limit") limit: Int = 50,
+        @Query("offset") offset: Int = 0,
+    ): EarningsResponse
 }

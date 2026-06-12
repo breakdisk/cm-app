@@ -68,6 +68,15 @@ data class HomeUiState(
     val pendingOffer: AssignmentPayload? = null,
     /** True while the accept/decline network call is in flight. */
     val isActingOnOffer: Boolean = false,
+    /** True while the on-screen grab offer was just lost to another driver —
+     *  the card renders a brief "Taken" state, then auto-dismisses. */
+    val offerTaken: Boolean = false,
+    /** Seconds remaining on the grab offer's TTL (countdown ring). Null when
+     *  the pending offer is a 1:1 assignment (no deadline). */
+    val offerSecondsLeft: Int? = null,
+    /** Gig acceptance-rate inputs from the profile (impression-verified). */
+    val offersSeen: Long = 0L,
+    val offersClaimed: Long = 0L,
     /** True when the driver is part-time (gig). Gates payout display and the
      *  decline counter — full-time drivers never see a price. */
     val isGigWorker: Boolean = false,
@@ -121,9 +130,39 @@ class HomeViewModel @Inject constructor(
         // AssignmentScreen flow, which still works).
         viewModelScope.launch {
             PendingAssignmentBus.pending.collect { offer ->
-                _uiState.update { it.copy(pendingOffer = offer) }
+                _uiState.update { it.copy(pendingOffer = offer, offerTaken = false) }
+                reportOfferSeen(offer)
             }
         }
+        // Lost-race signal (FCM offer_closed or claim 409): flash "Taken" for
+        // 1.5 s, then dismiss the card.
+        viewModelScope.launch {
+            PendingAssignmentBus.takenOfferId.collect { takenId ->
+                if (takenId != null && _uiState.value.pendingOffer?.offerId == takenId) {
+                    _uiState.update { it.copy(offerTaken = true) }
+                    delay(1_500L)
+                    PendingAssignmentBus.clearTaken()
+                    PendingAssignmentBus.clear()
+                }
+            }
+        }
+        // Countdown ticker for the grab offer's TTL. Expiry dismisses the
+        // card locally — the backend sweeper escalates/expires server-side.
+        viewModelScope.launch {
+            while (true) {
+                delay(1_000L)
+                val offer = _uiState.value.pendingOffer ?: continue
+                val deadline = offer.expiresAtMillis ?: continue
+                val left = ((deadline - System.currentTimeMillis()) / 1000L).toInt()
+                if (left <= 0 && !_uiState.value.offerTaken) {
+                    PendingAssignmentBus.clear()
+                    _uiState.update { it.copy(offerSecondsLeft = null) }
+                } else {
+                    _uiState.update { it.copy(offerSecondsLeft = left.coerceAtLeast(0)) }
+                }
+            }
+        }
+        restoreOpenOffers()
         syncShift()
         loadTasks()
         startPolling()
@@ -168,12 +207,14 @@ class HomeViewModel @Inject constructor(
                     sessionManager.saveHubId(r.data.hubId)
                     val isGig = r.data.driverType == "part_time"
                     _uiState.update { it.copy(
-                        hubId        = r.data.hubId ?: "",
-                        isGigWorker  = isGig,
-                        gigRateCents = if (isGig) r.data.perDeliveryRateCents.toLong() else null,
-                        declineCount = r.data.declineCount,
-                        ratingAvg    = r.data.ratingAvg,
-                        ratingCount  = r.data.ratingCount,
+                        hubId         = r.data.hubId ?: "",
+                        isGigWorker   = isGig,
+                        gigRateCents  = if (isGig) r.data.perDeliveryRateCents.toLong() else null,
+                        declineCount  = r.data.declineCount,
+                        ratingAvg     = r.data.ratingAvg,
+                        ratingCount   = r.data.ratingCount,
+                        offersSeen    = r.data.offersSeen,
+                        offersClaimed = r.data.offersClaimed,
                     ) }
                 }
         }
@@ -225,6 +266,102 @@ class HomeViewModel @Inject constructor(
                 }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
             _uiState.update { it.copy(isActingOnOffer = false) }
+        }
+    }
+
+    // ── Gig offer ("grab") flow ──────────────────────────────────────────────
+
+    /** Offer ids whose impression was already reported — fire once per offer. */
+    private val seenOfferIds = mutableSetOf<String>()
+
+    /**
+     * Client-verified impression: the card actually rendered on THIS phone.
+     * The backend counts only these in the acceptance-rate denominator, so a
+     * push that died in a dead zone never penalizes the driver. Fire-and-
+     * forget — no offline queue: a 30 s offer that can't report an impression
+     * couldn't be grabbed either.
+     */
+    private fun reportOfferSeen(offer: AssignmentPayload?) {
+        val offerId = offer?.offerId ?: return
+        if (offerId.isBlank() || !seenOfferIds.add(offerId)) return
+        viewModelScope.launch {
+            runCatching { api.markOfferSeen(offerId) }
+        }
+    }
+
+    /**
+     * The grab. Optimistic UI: fires immediately on tap; a 409 means another
+     * driver won (or we already hold an assignment) — flip to "Taken".
+     */
+    fun claimOffer() {
+        val offer = _uiState.value.pendingOffer ?: return
+        if (!offer.isGrabOffer || _uiState.value.isActingOnOffer) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isActingOnOffer = true, error = null) }
+            runCatching { api.claimOffer(offer.offerId) }
+                .onSuccess {
+                    PendingAssignmentBus.clear()
+                    syncShift()
+                    loadTasks()
+                }
+                .onFailure { e ->
+                    if ((e as? retrofit2.HttpException)?.code() == 409) {
+                        // Lost the race — honest, brief "Taken" feedback.
+                        PendingAssignmentBus.markTaken(offer.offerId)
+                    } else {
+                        _uiState.update { it.copy(error = e.message) }
+                    }
+                }
+            _uiState.update { it.copy(isActingOnOffer = false) }
+        }
+    }
+
+    /** Penalty-free pass: never re-offered this task; decline_count untouched. */
+    fun passOffer() {
+        val offer = _uiState.value.pendingOffer ?: return
+        if (!offer.isGrabOffer) return
+        viewModelScope.launch {
+            runCatching { api.passOffer(offer.offerId) }
+            PendingAssignmentBus.clear()
+        }
+    }
+
+    /**
+     * App-restart / missed-FCM recovery: pull live offers from the backend.
+     * Only posts when nothing is already on screen — a fresher FCM offer wins.
+     */
+    private fun restoreOpenOffers() {
+        viewModelScope.launch {
+            runCatching { api.listOpenOffers() }
+                .onSuccess { r ->
+                    val offer = r.data.firstOrNull() ?: return@onSuccess
+                    if (PendingAssignmentBus.pending.value != null) return@onSuccess
+                    val expiresMs = runCatching {
+                        java.time.OffsetDateTime.parse(offer.expiresAt).toInstant().toEpochMilli()
+                    }.getOrNull()
+                    PendingAssignmentBus.post(
+                        AssignmentPayload(
+                            assignmentId     = "",
+                            shipmentId       = offer.shipmentId,
+                            customerName     = offer.customerName,
+                            address          = offer.deliveryAddress,
+                            taskType         = "delivery",
+                            trackingNumber   = offer.trackingNumber,
+                            codAmountCents   = offer.codAmountCents ?: 0L,
+                            merchantName     = offer.merchantName,
+                            deliveryCategory = offer.deliveryCategory,
+                            weightGrams      = offer.weightGrams,
+                            pickupLat        = offer.pickupLat,
+                            pickupLng        = offer.pickupLng,
+                            deliveryLat      = offer.deliveryLat,
+                            deliveryLng      = offer.deliveryLng,
+                            offerId          = offer.id,
+                            payoutCents      = offer.payoutCents,
+                            expiresAtMillis  = expiresMs,
+                        )
+                    )
+                }
+            // Failure is silent — FCM remains the primary delivery path.
         }
     }
 

@@ -27,7 +27,7 @@ use logisticos_types::{Coordinates, DriverId, RouteId, TenantId, VehicleId};
 
 use logisticos_dispatch::{
     api::http::{router, AppState},
-    application::services::DriverAssignmentService,
+    application::services::{DriverAssignmentService, OfferService},
     domain::{
         entities::{
             route::{DeliveryStop, Route, RouteStatus, StopType},
@@ -40,7 +40,7 @@ use logisticos_dispatch::{
     },
     infrastructure::db::{
         DispatchQueueRepository, DispatchQueueRow,
-        DriverProfilesRepository, DriverProfileRow,
+        DriverProfilesRepository, DriverProfileRow, PgTaskOfferRepository,
     },
 };
 
@@ -203,6 +203,11 @@ impl DriverAvailabilityRepository for MockDriverAvailRepo {
             .cloned()
             .collect();
         Ok(nearby)
+    }
+
+    async fn gig_rate_cents(&self, _driver_id: &DriverId) -> anyhow::Result<Option<i64>> {
+        // Mock fleet is full-time — no payout snapshot.
+        Ok(None)
     }
 }
 
@@ -382,18 +387,33 @@ fn build_test_app_with_queue(
     let kafka = create_noop_kafka();
     let queue_arc: Arc<dyn DispatchQueueRepository> = Arc::new(queue_repo);
     let profiles_arc: Arc<dyn DriverProfilesRepository> = Arc::new(MockDriverProfilesRepo);
+    let avail_arc: Arc<dyn DriverAvailabilityRepository> = Arc::new(avail_repo);
 
     let dispatch_service = Arc::new(DriverAssignmentService::new(
         Arc::new(route_repo) as _,
         Arc::new(assignment_repo) as _,
-        Arc::new(avail_repo) as _,
-        kafka,
+        Arc::clone(&avail_arc),
+        Arc::clone(&kafka),
         None,               // compliance_cache: None = always assignable in tests
         Arc::clone(&queue_arc),
     ));
 
+    // OfferService takes a concrete Pg repo; a lazy pool never connects and
+    // the offer endpoints are not exercised by these mock-backed tests.
+    let offer_pool = sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+        .expect("lazy pool construction is infallible");
+    let offer_service = Arc::new(OfferService::new(
+        Arc::new(PgTaskOfferRepository::new(offer_pool)),
+        Arc::clone(&queue_arc),
+        avail_arc,
+        kafka,
+        None,
+    ));
+
     let state = Arc::new(AppState {
         dispatch_service,
+        offer_service,
         jwt,
         queue_repo:   queue_arc,
         drivers_repo: profiles_arc,

@@ -110,4 +110,15 @@ impl DriverAvailabilityRepository for PgDriverAvailabilityRepository {
             vehicle_type: r.vehicle_type,
         }).collect())
     }
+
+    async fn gig_rate_cents(&self, driver_id: &DriverId) -> anyhow::Result<Option<i64>> {
+        let row: Option<(String, i32)> = sqlx::query_as(
+            "SELECT driver_type, per_delivery_rate_cents
+             FROM driver_ops.drivers WHERE user_id = $1",
+        )
+        .bind(driver_id.inner())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.and_then(|(t, rate)| (t == "part_time").then_some(i64::from(rate))))
+    }
 }

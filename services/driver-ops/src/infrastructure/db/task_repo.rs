@@ -5,7 +5,7 @@ use logisticos_types::{DriverId, TenantId, Address, Coordinates};
 use uuid::Uuid;
 use crate::domain::{
     entities::{DriverTask, TaskStatus, TaskType},
-    repositories::{ManifestEntry, TaskRepository, TenantTaskSummary},
+    repositories::{DailyEarning, EarningEntry, ManifestEntry, TaskRepository, TenantTaskSummary},
 };
 
 pub struct PgTaskRepository {
@@ -47,6 +47,7 @@ struct TaskRow {
     pickup_lng:           Option<f64>,
     delivery_lat:         Option<f64>,
     delivery_lng:         Option<f64>,
+    payout_cents:         Option<i64>,
     pod_id:               Option<Uuid>,
     pop_id:               Option<Uuid>,
     started_at:           Option<chrono::DateTime<chrono::Utc>>,
@@ -111,6 +112,7 @@ impl From<TaskRow> for DriverTask {
             pickup_lng: r.pickup_lng,
             delivery_lat: r.delivery_lat,
             delivery_lng: r.delivery_lng,
+            payout_cents: r.payout_cents,
             pod_id: r.pod_id,
             pop_id: r.pop_id,
             started_at: r.started_at,
@@ -129,7 +131,7 @@ impl TaskRepository for PgTaskRepository {
                       lat, lng, customer_name, customer_phone, customer_email, customer_id, tracking_number,
                       cod_amount_cents, special_instructions,
                       merchant_name, delivery_category, weight_grams,
-                      pickup_lat, pickup_lng, delivery_lat, delivery_lng,
+                      pickup_lat, pickup_lng, delivery_lat, delivery_lng, payout_cents,
                       pod_id, pop_id, started_at, completed_at, failed_reason
                FROM driver_ops.tasks WHERE id = $1"#
         )
@@ -148,7 +150,7 @@ impl TaskRepository for PgTaskRepository {
                       t.lat, t.lng, t.customer_name, t.customer_phone, t.customer_email, t.customer_id, t.tracking_number,
                       t.cod_amount_cents, t.special_instructions,
                       t.merchant_name, t.delivery_category, t.weight_grams,
-                      t.pickup_lat, t.pickup_lng, t.delivery_lat, t.delivery_lng,
+                      t.pickup_lat, t.pickup_lng, t.delivery_lat, t.delivery_lng, t.payout_cents,
                       t.pod_id, t.pop_id, t.started_at, t.completed_at, t.failed_reason
                FROM driver_ops.tasks t
                JOIN driver_ops.drivers d ON d.id = t.driver_id
@@ -168,7 +170,7 @@ impl TaskRepository for PgTaskRepository {
                       lat, lng, customer_name, customer_phone, customer_email, customer_id, tracking_number,
                       cod_amount_cents, special_instructions,
                       merchant_name, delivery_category, weight_grams,
-                      pickup_lat, pickup_lng, delivery_lat, delivery_lng,
+                      pickup_lat, pickup_lng, delivery_lat, delivery_lng, payout_cents,
                       pod_id, pop_id, started_at, completed_at, failed_reason
                FROM driver_ops.tasks
                WHERE route_id = $1
@@ -190,11 +192,11 @@ impl TaskRepository for PgTaskRepository {
                     lat, lng, customer_name, customer_phone, customer_email, customer_id, tracking_number,
                     cod_amount_cents, special_instructions,
                     merchant_name, delivery_category, weight_grams,
-                    pickup_lat, pickup_lng, delivery_lat, delivery_lng,
+                    pickup_lat, pickup_lng, delivery_lat, delivery_lng, payout_cents,
                     pod_id, pop_id, started_at, completed_at, failed_reason)
                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
-                       $23,$24,$25,$26,$27,$28,$29,
-                       $30,$31,$32,$33,$34)
+                       $23,$24,$25,$26,$27,$28,$29,$30,
+                       $31,$32,$33,$34,$35)
                ON CONFLICT (id) DO UPDATE SET
                    status        = EXCLUDED.status,
                    pod_id        = EXCLUDED.pod_id,
@@ -232,6 +234,7 @@ impl TaskRepository for PgTaskRepository {
         .bind(t.pickup_lng)
         .bind(t.delivery_lat)
         .bind(t.delivery_lng)
+        .bind(t.payout_cents)
         .bind(t.pod_id)
         .bind(t.pop_id)
         .bind(t.started_at)
@@ -348,6 +351,80 @@ impl TaskRepository for PgTaskRepository {
             total_failed:        row.get("total_failed"),
             cod_collected_cents: row.get("cod_collected_cents"),
         })
+    }
+
+    async fn list_earnings(
+        &self,
+        user_id: Uuid,
+        from: chrono::DateTime<chrono::Utc>,
+        to: chrono::DateTime<chrono::Utc>,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<EarningEntry>> {
+        // Join through drivers.user_id (tasks.driver_id is drivers.id, which
+        // may differ from the identity user UUID for API-registered drivers).
+        // Delivery tasks only: the pickup+delivery pair of a shipment pays
+        // once, on the delivery leg.
+        let rows = sqlx::query(
+            r#"SELECT t.id AS task_id, t.tracking_number, t.merchant_name,
+                      t.delivery_category, t.completed_at, t.payout_cents
+               FROM driver_ops.tasks t
+               JOIN driver_ops.drivers d ON d.id = t.driver_id
+               WHERE d.user_id = $1
+                 AND t.task_type = 'delivery'
+                 AND t.status = 'completed'
+                 AND t.completed_at >= $2 AND t.completed_at < $3
+               ORDER BY t.completed_at DESC
+               LIMIT $4 OFFSET $5"#,
+        )
+        .bind(user_id)
+        .bind(from)
+        .bind(to)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|r| EarningEntry {
+            task_id:           r.get("task_id"),
+            tracking_number:   r.get("tracking_number"),
+            merchant_name:     r.get("merchant_name"),
+            delivery_category: r.get("delivery_category"),
+            completed_at:      r.get("completed_at"),
+            payout_cents:      r.get("payout_cents"),
+        }).collect())
+    }
+
+    async fn daily_earnings(
+        &self,
+        user_id: Uuid,
+        from: chrono::DateTime<chrono::Utc>,
+        to: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<Vec<DailyEarning>> {
+        let rows = sqlx::query(
+            r#"SELECT (t.completed_at AT TIME ZONE 'UTC')::date AS day,
+                      COALESCE(SUM(t.payout_cents), 0)::bigint  AS total_cents,
+                      COUNT(*)::bigint                          AS deliveries
+               FROM driver_ops.tasks t
+               JOIN driver_ops.drivers d ON d.id = t.driver_id
+               WHERE d.user_id = $1
+                 AND t.task_type = 'delivery'
+                 AND t.status = 'completed'
+                 AND t.completed_at >= $2 AND t.completed_at < $3
+               GROUP BY day
+               ORDER BY day DESC"#,
+        )
+        .bind(user_id)
+        .bind(from)
+        .bind(to)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|r| DailyEarning {
+            day:         r.get("day"),
+            total_cents: r.get("total_cents"),
+            deliveries:  r.get("deliveries"),
+        }).collect())
     }
 
     async fn cancel_all_for_driver(&self, driver_id: &DriverId) -> anyhow::Result<u64> {

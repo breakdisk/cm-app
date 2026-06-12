@@ -218,6 +218,45 @@ impl FcmClient {
         }
     }
 
+    /// Generic data push — send an arbitrary string→string data map to all of
+    /// a driver's registered devices. Used by the gig offer fan-out
+    /// (`task_offer` / `offer_closed`). Best-effort: errors logged, swallowed.
+    pub async fn notify_data(&self, driver_user_id: Uuid, data: &serde_json::Value) {
+        let tokens = match self.fetch_push_tokens(driver_user_id).await {
+            Err(e) => {
+                tracing::warn!(driver_id = %driver_user_id, err = %e, "FCM: failed to fetch push tokens");
+                return;
+            }
+            Ok(tokens) if tokens.is_empty() => {
+                tracing::debug!(driver_id = %driver_user_id, "FCM: no tokens registered, skipping push");
+                return;
+            }
+            Ok(tokens) => tokens,
+        };
+        let access_token = match self.get_access_token().await {
+            Err(e) => {
+                tracing::warn!(err = %e, "FCM: failed to obtain Google access token");
+                return;
+            }
+            Ok(t) => t,
+        };
+        let kind = data.get("type").and_then(|v| v.as_str()).unwrap_or("data").to_string();
+        for token in tokens {
+            let body = serde_json::json!({
+                "message": {
+                    "token": token,
+                    "data": data,
+                    "android": { "priority": "HIGH" }
+                }
+            });
+            if let Err(e) = self.send_fcm_raw(&body, &access_token).await {
+                tracing::warn!(driver_id = %driver_user_id, push_type = %kind, err = %e, "FCM: data send failed");
+            } else {
+                tracing::info!(driver_id = %driver_user_id, push_type = %kind, "FCM: data push sent");
+            }
+        }
+    }
+
     /// Main entry point: look up the driver's FCM token then send a push.
     /// All errors are logged and swallowed — push is best-effort.
     pub async fn notify_driver(&self, driver_user_id: Uuid) {

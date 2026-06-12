@@ -3,6 +3,8 @@ package io.logisticos.driver.feature.profile.ui
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -27,10 +29,14 @@ private val ProfileGlass  = Color(0x0AFFFFFF)
 private val ProfileBorder = Color(0x14FFFFFF)
 private val ProfileAmber  = Color(0xFFFFAB00)
 private val ProfileCyan   = Color(0xFF00E5FF)
+private val ProfileGreen  = Color(0xFF00FF88)
+
+private fun pesoLabel(cents: Long): String = "₱${"%,.2f".format(cents / 100.0)}"
 
 @Composable
 fun ProfileScreen(
     onNavigateToCompliance: () -> Unit = {},
+    onNavigateToEarnings: () -> Unit = {},
     onLogout: () -> Unit,
     viewModel: ProfileViewModel = hiltViewModel()
 ) {
@@ -40,6 +46,9 @@ fun ProfileScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(ProfileCanvas)
+            // Scrollable: identity + financial + compliance cards exceed small
+            // viewports (5" / 720p) — weight-based spacing can't be used below.
+            .verticalScroll(rememberScrollState())
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
@@ -146,6 +155,92 @@ fun ProfileScreen(
             }
         }
 
+        // ── Financial section ─────────────────────────────────────────────────
+        // Earnings card: gig (part-time) drivers only — full-time drivers never
+        // see payout figures. Reads the contractual payout_cents snapshots.
+        if (state.isGigWorker) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = !state.isOfflineMode, onClick = onNavigateToEarnings),
+                colors = CardDefaults.cardColors(containerColor = ProfileGlass),
+                border = BorderStroke(1.dp, ProfileGreen.copy(alpha = 0.3f))
+            ) {
+                Row(
+                    modifier = Modifier.padding(20.dp).fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            "Earnings",
+                            color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                            Column {
+                                Text(
+                                    pesoLabel(state.todayCents),
+                                    color = ProfileGreen, fontSize = 18.sp,
+                                    fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace
+                                )
+                                Text("Today", color = Color.White.copy(alpha = 0.45f), fontSize = 11.sp)
+                            }
+                            Column {
+                                Text(
+                                    pesoLabel(state.weekCents),
+                                    color = ProfileCyan, fontSize = 18.sp,
+                                    fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace
+                                )
+                                Text("This week", color = Color.White.copy(alpha = 0.45f), fontSize = 11.sp)
+                            }
+                        }
+                    }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = null,
+                        tint = Color.White.copy(alpha = 0.4f),
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+        }
+
+        // Cash-to-remit card: any driver carrying unremitted COD/pickup cash
+        // sees what they owe the hub — the #1 driver-support question.
+        if (state.openBalanceCents > 0) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = !state.isOfflineMode, onClick = onNavigateToEarnings),
+                colors = CardDefaults.cardColors(containerColor = ProfileAmber.copy(alpha = 0.08f)),
+                border = BorderStroke(1.dp, ProfileAmber.copy(alpha = 0.4f))
+            ) {
+                Row(
+                    modifier = Modifier.padding(20.dp).fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            "Cash to remit",
+                            color = ProfileAmber, fontSize = 15.sp, fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            if (state.openDebitCount > 0)
+                                "from ${state.openDebitCount} ${if (state.openDebitCount == 1) "delivery" else "deliveries"}"
+                            else "current shift",
+                            color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp
+                        )
+                    }
+                    Text(
+                        pesoLabel(state.openBalanceCents),
+                        color = ProfileAmber, fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
+        }
+
         // ── Verification documents ────────────────────────────────────────────
         Card(
             modifier = Modifier
@@ -210,7 +305,7 @@ fun ProfileScreen(
             }
         }
 
-        Spacer(modifier = Modifier.weight(1f))
+        Spacer(modifier = Modifier.height(8.dp))
 
         Button(
             onClick = onLogout,
