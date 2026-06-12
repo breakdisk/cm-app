@@ -90,6 +90,7 @@ impl StorageAdapter for MockStorage {
     async fn presign_download(&self, key: &str, _ttl: u32) -> anyhow::Result<String> {
         Ok(format!("https://s3.test/dl/{}", key))
     }
+    async fn object_exists(&self, _key: &str) -> anyhow::Result<bool> { Ok(true) }
     async fn delete(&self, _key: &str) -> anyhow::Result<()> { Ok(()) }
 }
 

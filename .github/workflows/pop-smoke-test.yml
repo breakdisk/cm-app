@@ -1,0 +1,53 @@
+name: POP Photo Smoke Test
+
+# Manual-only: drives the full Proof-of-Pickup photo path against a deployed
+# environment (initiate -> presigned upload -> PUT to R2 -> submit -> read back).
+# Run from the Actions tab after deploying the pod service / creating the
+# logisticos-pop-photos bucket.
+#
+# Required secrets (per environment):
+#   POP_SMOKE_GATEWAY  - base URL of the API gateway, e.g. https://api.example.com
+#   POP_SMOKE_TOKEN    - a valid driver or admin JWT
+# Required inputs:
+#   shipment_id, task_id - a real shipment + its pickup task
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment (selects the secrets scope)"
+        type: choice
+        options:
+          - staging
+          - production
+        default: staging
+      shipment_id:
+        description: "Shipment UUID to attach the test POP to"
+        required: true
+        type: string
+      task_id:
+        description: "Pickup task UUID for that shipment"
+        required: true
+        type: string
+
+jobs:
+  smoke:
+    name: POP photo end-to-end
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run POP photo smoke test
+        env:
+          GATEWAY: ${{ secrets.POP_SMOKE_GATEWAY }}
+          TOKEN: ${{ secrets.POP_SMOKE_TOKEN }}
+          SHIPMENT_ID: ${{ inputs.shipment_id }}
+          TASK_ID: ${{ inputs.task_id }}
+        run: |
+          if [ -z "$GATEWAY" ] || [ -z "$TOKEN" ]; then
+            echo "::error::POP_SMOKE_GATEWAY and POP_SMOKE_TOKEN must be set as ${{ inputs.environment }} environment secrets"
+            exit 1
+          fi
+          chmod +x scripts/pop-photo-smoke.sh
+          ./scripts/pop-photo-smoke.sh
