@@ -57,17 +57,17 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: "npm"
           cache-dependency-path: apps/${{ matrix.app }}/package-lock.json
 
       - name: Restore Next.js build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: apps/${{ matrix.app }}/.next/cache
           key: ${{ runner.os }}-nextjs-${{ matrix.app }}-${{ hashFiles(format('apps/{0}/package-lock.json', matrix.app)) }}
@@ -136,10 +136,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: "npm"
@@ -156,7 +156,7 @@ jobs:
           NODE_ENV: "test"
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         if: github.event_name == 'pull_request'
         with:
           files: coverage/lcov.info
@@ -165,7 +165,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload test results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: always()
         with:
           name: test-results-${{ matrix.app }}-${{ github.sha }}
@@ -200,17 +200,17 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: "npm"
           cache-dependency-path: apps/${{ matrix.app }}/package-lock.json
 
       - name: Restore Next.js build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: apps/${{ matrix.app }}/.next/cache
           key: ${{ runner.os }}-nextjs-build-${{ matrix.app }}-${{ hashFiles(format('apps/{0}/package-lock.json', matrix.app)) }}-${{ hashFiles(format('apps/{0}/src/**', matrix.app)) }}
@@ -244,7 +244,7 @@ jobs:
             -exec echo "LARGE BUNDLE (>500KB): {}" \; 2>/dev/null || true
 
       - name: Upload standalone build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: build-${{ matrix.app }}-${{ github.sha }}
           path: |
@@ -285,10 +285,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
 
@@ -297,7 +297,7 @@ jobs:
         run: npm ci
 
       - name: Download build artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: build-${{ matrix.app }}-${{ github.sha }}
           path: apps/${{ matrix.app }}-build/
@@ -331,7 +331,7 @@ jobs:
           TEST_TENANT_ID: ${{ secrets.E2E_TEST_TENANT_ID }}
 
       - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: always()
         with:
           name: playwright-report-${{ matrix.app }}-${{ github.sha }}
@@ -365,10 +365,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: "npm"

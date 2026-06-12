@@ -376,14 +376,17 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
       const manifest = await hubsApi.manifest(hubId);
       setManifestCount(manifest.count);
       // Build BoxItem list from inductions.
-      // Dims are unknown here — server will estimate from weight_g via DIM factor.
-      // We use 10 kg as a placeholder; ops can see the "EST" flag in the viewer.
+      // Real weight + dims are now enriched from order-intake by the hub-ops
+      // manifest endpoint. When a parcel has actual declared dimensions those
+      // are passed through directly. When they are null (order-intake
+      // unreachable, or merchant didn't declare dims) we pass 0 so the server
+      // estimates via DIM factor — those boxes get the "EST" badge in the viewer.
       const items = manifest.parcels.map(p => ({
         awb:       p.tracking_number,
-        weight_g:  10_000,   // 10 kg placeholder — server estimates dims
-        length_cm: 0,
-        width_cm:  0,
-        height_cm: 0,
+        weight_g:  p.weight_g   ?? 10_000,  // fall back to 10 kg if unavailable
+        length_cm: p.length_cm  ?? 0,
+        width_cm:  p.width_cm   ?? 0,
+        height_cm: p.height_cm  ?? 0,
       }));
 
       if (items.length === 0) return;

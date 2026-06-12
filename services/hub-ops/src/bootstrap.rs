@@ -800,6 +800,80 @@ async fn check_pop_status(
 }
 
 // ---------------------------------------------------------------------------
+// Shipment dims HTTP client — calls order-intake internal endpoint
+// ---------------------------------------------------------------------------
+
+/// Per-shipment dimension record returned by order-intake.
+#[derive(Debug)]
+struct ShipmentDims {
+    shipment_id: Uuid,
+    weight_g:    u32,
+    length_cm:   Option<u32>,
+    width_cm:    Option<u32>,
+    height_cm:   Option<u32>,
+}
+
+/// Calls order-intake `GET /v1/internal/shipments/dims?shipment_ids=...`
+/// Returns a map of shipment_id → dims for enriching the manifest response.
+/// On any error (service unavailable, 404, timeout) returns an empty map so
+/// that the manifest still loads — boxes fall back to DIM-factor estimation.
+async fn fetch_shipment_dims(
+    order_intake_url: &str,
+    shipment_ids:     &[Uuid],
+) -> std::collections::HashMap<Uuid, ShipmentDims> {
+    if order_intake_url.is_empty() || shipment_ids.is_empty() {
+        return std::collections::HashMap::new();
+    }
+
+    let client = reqwest::Client::new();
+    let qs: String = shipment_ids.iter()
+        .map(|id| format!("shipment_ids={id}"))
+        .collect::<Vec<_>>()
+        .join("&");
+    let url = format!("{order_intake_url}/v1/internal/shipments/dims?{qs}");
+
+    let resp = match client.get(&url).send().await {
+        Ok(r)  => r,
+        Err(e) => {
+            tracing::warn!(err = %e, "fetch_shipment_dims: request failed — using DIM estimation");
+            return std::collections::HashMap::new();
+        }
+    };
+
+    if !resp.status().is_success() {
+        tracing::warn!(
+            status = %resp.status(),
+            "fetch_shipment_dims: non-2xx from order-intake — using DIM estimation"
+        );
+        return std::collections::HashMap::new();
+    }
+
+    let body: serde_json::Value = match resp.json().await {
+        Ok(v)  => v,
+        Err(e) => {
+            tracing::warn!(err = %e, "fetch_shipment_dims: parse error — using DIM estimation");
+            return std::collections::HashMap::new();
+        }
+    };
+
+    let mut map = std::collections::HashMap::new();
+    if let Some(arr) = body["dims"].as_array() {
+        for item in arr {
+            let sid: Uuid = match item["shipment_id"].as_str().and_then(|s| s.parse().ok()) {
+                Some(id) => id,
+                None     => continue,
+            };
+            let weight_g  = item["weight_g"].as_i64().unwrap_or(0).max(0) as u32;
+            let length_cm = item["length_cm"].as_i64().map(|v| v.max(0) as u32);
+            let width_cm  = item["width_cm"].as_i64().map(|v| v.max(0) as u32);
+            let height_cm = item["height_cm"].as_i64().map(|v| v.max(0) as u32);
+            map.insert(sid, ShipmentDims { shipment_id: sid, weight_g, length_cm, width_cm, height_cm });
+        }
+    }
+    map
+}
+
+// ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------
 
@@ -814,6 +888,7 @@ struct AppState {
     kafka:             Arc<KafkaProducer>,
     payments_url:      String,
     pod_url:           String,
+    order_intake_url:  String,
     /// Raw pool kept for ad-hoc analytical queries (e.g. throughput buckets)
     /// that don't fit neatly behind a domain repository trait.
     pool:              sqlx::PgPool,
@@ -1222,10 +1297,39 @@ async fn manifest(State(s): State<AppState>, claims: AuthClaims, Path(hub_id): P
     claims.require_permission(permissions::SHIPMENT_READ)?;
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let parcels = s.svc.hub_manifest(hub_id, &tenant_id).await?;
-    let count = parcels.len();
+
+    // Enrich parcels with real weight + dimensions from order-intake so that
+    // the 3D load planner can render accurate box sizes instead of using a
+    // 10 kg DIM-factor placeholder for every parcel.
+    let shipment_ids: Vec<Uuid> = parcels.iter().map(|p| p.shipment_id).collect();
+    let dims_map = fetch_shipment_dims(&s.order_intake_url, &shipment_ids).await;
+
+    let enriched: Vec<serde_json::Value> = parcels.iter().map(|p| {
+        let d = dims_map.get(&p.shipment_id);
+        serde_json::json!({
+            "id":              p.id,
+            "hub_id":          p.hub_id,
+            "shipment_id":     p.shipment_id,
+            "tracking_number": p.tracking_number,
+            "status":          p.status,
+            "zone":            p.zone,
+            "bay":             p.bay,
+            "inducted_by":     p.inducted_by,
+            "inducted_at":     p.inducted_at,
+            "sorted_at":       p.sorted_at,
+            "dispatched_at":   p.dispatched_at,
+            // Dims — null when order-intake is unreachable (frontend falls back to DIM estimation)
+            "weight_g":    d.map(|x| x.weight_g),
+            "length_cm":   d.and_then(|x| x.length_cm),
+            "width_cm":    d.and_then(|x| x.width_cm),
+            "height_cm":   d.and_then(|x| x.height_cm),
+        })
+    }).collect();
+
+    let count = enriched.len();
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({
         "hub_id":  hub_id,
-        "parcels": parcels,
+        "parcels": enriched,
         "count":   count,
     }))))
 }
@@ -1870,15 +1974,16 @@ pub async fn run() -> anyhow::Result<()> {
         kafka.clone(),
     ));
 
-    let payments_url = cfg.payments.url.clone();
-    let pod_url      = cfg.pod.url.clone();
+    let payments_url      = cfg.payments.url.clone();
+    let pod_url           = cfg.pod.url.clone();
+    let order_intake_url  = cfg.order_intake.url.clone();
     let state = AppState {
         svc, containers: container_repo,
         consolidation_svc, pallet_svc,
         hub_transfer_svc,
         hub_broadcaster,
         kafka,
-        payments_url, pod_url,
+        payments_url, pod_url, order_intake_url,
         pool: pool.clone(),
     };
 

@@ -58,11 +58,11 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Detect changed paths
         id: filter
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             rust_any:
@@ -162,7 +162,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust toolchain (stable + components)
         uses: dtolnay/rust-toolchain@stable
@@ -170,7 +170,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Restore Cargo registry cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry/index/
@@ -181,7 +181,7 @@ jobs:
             ${{ runner.os }}-cargo-registry-
 
       - name: Restore build cache (lint)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: target/
           key: ${{ runner.os }}-cargo-build-lint-${{ hashFiles('**/Cargo.lock') }}
@@ -304,7 +304,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -318,7 +318,7 @@ jobs:
             --quiet
 
       - name: Restore Cargo registry cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry/index/
@@ -329,7 +329,7 @@ jobs:
             ${{ runner.os }}-cargo-registry-
 
       - name: Restore build cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: target/
           key: ${{ runner.os }}-cargo-build-test-${{ matrix.service }}-${{ hashFiles('**/Cargo.lock') }}
@@ -396,7 +396,7 @@ jobs:
             --doc
 
       - name: Upload test logs on failure
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: failure()
         with:
           name: test-logs-${{ matrix.service }}-${{ github.sha }}
@@ -420,7 +420,7 @@ jobs:
           fi
 
       - name: Upload coverage
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         if: github.event_name == 'pull_request'
         with:
           files: coverage/cobertura.xml
@@ -443,13 +443,13 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Restore Cargo registry cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry/index/
@@ -572,7 +572,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust toolchain (stable)
         uses: dtolnay/rust-toolchain@stable
@@ -585,7 +585,7 @@ jobs:
             --locked --quiet
 
       - name: Restore Cargo registry cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry/index/
@@ -596,7 +596,7 @@ jobs:
             ${{ runner.os }}-cargo-registry-
 
       - name: Restore build cache (bench)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: target/
           key: ${{ runner.os }}-cargo-bench-${{ matrix.service }}-${{ hashFiles('**/Cargo.lock') }}
@@ -621,7 +621,7 @@ jobs:
             2>&1 | tee bench-results-${{ matrix.service }}.txt
 
       - name: Upload benchmark artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: bench-${{ matrix.service }}-${{ github.sha }}
           path: bench-results-${{ matrix.service }}.txt

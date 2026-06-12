@@ -40,6 +40,12 @@ export interface ParcelInduction {
   inducted_at:     string;
   sorted_at:       string | null;
   dispatched_at:   string | null;
+  // Enriched from order-intake — null when dims service is unreachable.
+  // When null the 3D planner falls back to server-side DIM-factor estimation.
+  weight_g:    number | null;
+  length_cm:   number | null;
+  width_cm:    number | null;
+  height_cm:   number | null;
 }
 
 export interface HubManifest {

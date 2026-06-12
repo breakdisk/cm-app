@@ -9,6 +9,7 @@ use axum::{
 };
 use serde::Deserialize;
 use uuid::Uuid;
+use sqlx::PgPool;
 
 use logisticos_auth::middleware::AuthClaims;
 use logisticos_auth::rbac::permissions;
@@ -29,6 +30,7 @@ pub struct AppState {
     pub svc:    Arc<ShipmentService>,
     pub query:  Arc<ShipmentQueryService>,
     pub jwt:    Arc<logisticos_auth::jwt::JwtService>,
+    pub pool:   PgPool,
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +215,7 @@ pub fn router(state: AppState) -> Router {
         // Internal service-to-service endpoints — no JWT auth required (Istio mTLS enforces caller identity).
         .nest("/v1/internal", Router::new()
             .route("/shipments",             post(internal_create_shipment))
+            .route("/shipments/dims",        get(batch_shipment_dims))
             .route("/shipments/:id/billing", get(get_shipment_billing))
             .route("/billing/shipments",     get(list_billing_shipments))
         )
@@ -325,4 +328,65 @@ async fn list_billing_shipments(
         "shipments": shipments,
         "count":     count,
     }))))
+}
+
+/// `GET /v1/internal/shipments/dims`
+///
+/// Internal endpoint — no JWT required (Istio mTLS enforces caller identity).
+/// Returns declared weight and dimensions for a batch of shipment IDs so that
+/// hub-ops can enrich the consolidation manifest with real box sizes.
+///
+/// Query params: `?shipment_ids=<uuid>&shipment_ids=<uuid>...` (up to 500)
+#[derive(Deserialize)]
+struct DimsQuery {
+    #[serde(default)]
+    shipment_ids: Vec<Uuid>,
+}
+
+#[derive(sqlx::FromRow)]
+struct DimsRow {
+    shipment_id: Uuid,
+    awb:         String,
+    weight_g:    i32,
+    length_cm:   Option<i32>,
+    width_cm:    Option<i32>,
+    height_cm:   Option<i32>,
+}
+
+async fn batch_shipment_dims(
+    State(s): State<AppState>,
+    Query(q): Query<DimsQuery>,
+) -> impl IntoResponse {
+    if q.shipment_ids.is_empty() {
+        return Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "dims": [] }))));
+    }
+
+    // Cap to 500 IDs per call — prevents accidental large queries.
+    let ids: Vec<Uuid> = q.shipment_ids.into_iter().take(500).collect();
+
+    let rows = sqlx::query_as::<_, DimsRow>(
+        r#"SELECT id          AS shipment_id,
+                  awb,
+                  weight_grams AS weight_g,
+                  length_cm,
+                  width_cm,
+                  height_cm
+             FROM order_intake.shipments
+            WHERE id = ANY($1)"#,
+    )
+    .bind(&ids)
+    .fetch_all(&s.pool)
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+
+    let dims: Vec<serde_json::Value> = rows.into_iter().map(|r| serde_json::json!({
+        "shipment_id": r.shipment_id,
+        "awb":         r.awb,
+        "weight_g":    r.weight_g,
+        "length_cm":   r.length_cm,
+        "width_cm":    r.width_cm,
+        "height_cm":   r.height_cm,
+    })).collect();
+
+    Ok((StatusCode::OK, Json(serde_json::json!({ "dims": dims }))))
 }

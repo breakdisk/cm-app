@@ -10,6 +10,8 @@ pub struct Config {
     pub payments: PaymentsConfig,
     #[serde(default)]
     pub pod: PodConfig,
+    #[serde(default)]
+    pub order_intake: OrderIntakeConfig,
 }
 
 /// Downstream payments service config for billing clearance checks.
@@ -26,6 +28,15 @@ pub struct PaymentsConfig {
 pub struct PodConfig {
     /// Base URL of the pod service (e.g. "http://pod:8080").
     /// When empty, POP status checks are skipped (container loading always passes).
+    #[serde(default)]
+    pub url: String,
+}
+
+/// Downstream order-intake service config for manifest dims enrichment.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct OrderIntakeConfig {
+    /// Base URL of the order-intake service (e.g. "http://order-intake:8080").
+    /// When empty, manifest dims enrichment is skipped (all boxes use DIM estimation).
     #[serde(default)]
     pub url: String,
 }

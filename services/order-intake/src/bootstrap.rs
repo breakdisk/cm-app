@@ -100,6 +100,7 @@ pub async fn run() -> anyhow::Result<()> {
         awb_generator,
     ));
     let query = Arc::new(ShipmentQueryService::new(repo.clone()));
+    let pool_for_dims = pool.clone();
 
     // Axum router
     use axum::http::{HeaderName, HeaderValue, Method};
@@ -135,7 +136,7 @@ pub async fn run() -> anyhow::Result<()> {
             HeaderName::from_static("x-logisticos-client"),
         ]);
 
-    let state = AppState { svc, query, jwt };
+    let state = AppState { svc, query, jwt, pool: pool_for_dims };
     let app = router(state)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(cors);
