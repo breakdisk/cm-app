@@ -9,24 +9,29 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.lifecycleScope
 import dagger.hilt.android.AndroidEntryPoint
 import io.logisticos.driver.core.common.AssignmentPayload
 import io.logisticos.driver.core.common.PendingAssignmentBus
 import io.logisticos.driver.core.database.worker.OutboundSyncWorker
 import io.logisticos.driver.core.network.auth.SessionManager
+import io.logisticos.driver.core.network.branding.BrandingStore
 import io.logisticos.driver.navigation.AppNavGraph
 import io.logisticos.driver.security.RootChecker
 import io.logisticos.driver.ui.theme.DriverAppTheme
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     @Inject lateinit var rootChecker: RootChecker
     @Inject lateinit var sessionManager: SessionManager
+    @Inject lateinit var brandingStore: BrandingStore
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -37,8 +42,14 @@ class MainActivity : ComponentActivity() {
         handleInviteDeepLink(intent)
         // Re-post assignment from notification intent when app is cold-started from tray.
         handleAssignmentIntent(intent)
+        // Refresh white-label branding for the logged-in tenant. The store emits
+        // the cached brand immediately; this updates it in the background.
+        if (sessionManager.isLoggedIn()) {
+            lifecycleScope.launch { brandingStore.refresh() }
+        }
         setContent {
-            DriverAppTheme {
+            val branding by brandingStore.state.collectAsState()
+            DriverAppTheme(branding = branding) {
                 AppNavGraph()
                 if (isRooted) {
                     var dismissed by rememberSaveable { mutableStateOf(false) }

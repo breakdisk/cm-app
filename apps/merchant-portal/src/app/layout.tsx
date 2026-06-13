@@ -6,6 +6,7 @@
  */
 import { Inter, Space_Grotesk, JetBrains_Mono } from "next/font/google";
 import { cn } from "@/lib/design-system/cn";
+import { BrandingBoot } from "@/components/BrandingBoot";
 import "./globals.css";
 
 const geist   = Inter({ subsets: ["latin"], variable: "--font-sans" });
@@ -26,7 +27,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           className="pointer-events-none fixed inset-0 z-0 bg-grid-pattern bg-grid-md opacity-[0.3]"
           aria-hidden
         />
-        {children}
+        <BrandingBoot>{children}</BrandingBoot>
       </body>
     </html>
   );

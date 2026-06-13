@@ -59,6 +59,21 @@ data class UserDto(
     @SerialName("phone_number") val phoneNumber: String? = null,
 )
 
+/**
+ * White-label branding from GET /v1/tenants/me/branding. Colours are nullable
+ * hex strings ("#00E5FF"); null means "use the default". Only the fields the
+ * driver app themes against are modelled here.
+ */
+@Serializable
+data class BrandingDto(
+    @SerialName("display_name")    val displayName: String = "LogisticOS",
+    @SerialName("app_tagline")     val appTagline: String? = null,
+    @SerialName("logo_url")        val logoUrl: String? = null,
+    @SerialName("primary_color")   val primaryColor: String? = null,
+    @SerialName("secondary_color") val secondaryColor: String? = null,
+    @SerialName("accent_color")    val accentColor: String? = null,
+)
+
 @Serializable
 data class RegisterPushTokenRequest(
     val token: String,
@@ -80,6 +95,10 @@ interface IdentityApiService {
     /** GET /v1/users/me — authenticated driver's own profile */
     @GET("v1/users/me")
     suspend fun getMe(): MeResponse
+
+    /** GET /v1/tenants/me/branding — white-label brand for the driver's tenant */
+    @GET("v1/tenants/me/branding")
+    suspend fun getBranding(): ApiResponse<BrandingDto>
 
     @POST("v1/push-tokens")
     suspend fun registerPushToken(@Body request: RegisterPushTokenRequest): retrofit2.Response<Unit>

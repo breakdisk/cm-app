@@ -11,6 +11,13 @@ const config: Config = {
     extend: {
       // ── Color palette ────────────────────────────────────────
       colors: {
+        // White-label brand accents — driven by CSS vars set at runtime by
+        // BrandingProvider. Default to the neon palette (see globals.css :root).
+        brand: {
+          primary:   "var(--brand-primary)",
+          secondary: "var(--brand-secondary)",
+          accent:    "var(--brand-accent)",
+        },
         // Base canvas — near-black with a very subtle blue tint
         canvas: {
           DEFAULT: "#050810",

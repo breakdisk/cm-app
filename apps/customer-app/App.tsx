@@ -19,6 +19,7 @@ import * as TaskManager from "expo-task-manager";
 import * as BackgroundFetch from "expo-background-fetch";
 import { store } from "./src/store";
 import { setCredentials } from "./src/store/slices/auth";
+import { hydrateBrandingFromCache, fetchBranding } from "./src/store/slices/branding";
 import { getStoredToken, getStoredCustomerId } from "./src/services/api/auth";
 import * as SecureStore from "expo-secure-store";
 import { AppNavigator } from "./src/navigation/AppNavigator";
@@ -77,6 +78,12 @@ function AppContent() {
     };
 
     restoreSession();
+
+    // ── White-label branding ───────────────────────────────────────────────
+    // Emit the cached brand immediately for instant theming, then refresh from
+    // the network (authed if signed in, else public by tenant slug).
+    store.dispatch(hydrateBrandingFromCache());
+    store.dispatch(fetchBranding());
 
     // ── Database init ──────────────────────────────────────────────────────
     const initDb = async () => {

@@ -8,6 +8,11 @@
 /* ── CSS variables (consumed by shadcn/ui) ──────────────────── */
 @layer base {
   :root {
+    /* White-label brand accents — overridden at runtime by BrandingProvider.
+       Defaults mirror the neon design-system palette. */
+    --brand-primary: #00E5FF;
+    --brand-secondary: #A855F7;
+    --brand-accent: #00FF88;
     --background: 222 47% 4%;
     --foreground: 210 40% 98%;
     --card: 222 47% 6%;

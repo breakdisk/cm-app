@@ -16,6 +16,7 @@ import { authActions } from "../../store";
 import type { AppDispatch } from "../../store";
 import { verifyOTP, verifyPhone, getStoredProviderSlug, DEFAULT_PROVIDER_SLUG } from "../../services/api/auth";
 import { registerForPushNotifications } from "../../services/notifications";
+import { useBranding } from "../../hooks/useBranding";
 
 const CANVAS = "#050810";
 const CYAN   = "#00E5FF";
@@ -65,6 +66,7 @@ const TZ_TO_DIAL: Record<string, string> = {
 
 export function PhoneScreen() {
   const dispatch = useDispatch<AppDispatch>();
+  const branding = useBranding();
 
   const [stage,        setStage]        = useState<"phone" | "otp">("phone");
   const [countryCode,  setCountryCode]  = useState(COUNTRY_CODES[0]); // default: +971
@@ -191,8 +193,8 @@ export function PhoneScreen() {
         <LinearGradient colors={["rgba(0,229,255,0.10)", "transparent"]} style={s.hero}>
           <FadeInView fromY={-16}>
             <View style={s.logoRow}>
-              <View style={s.logoDot} />
-              <Text style={s.logoText}>LogisticOS</Text>
+              <View style={[s.logoDot, { backgroundColor: branding.primary, shadowColor: branding.primary }]} />
+              <Text style={s.logoText}>{branding.displayName}</Text>
             </View>
             <Text style={s.heroTitle}>
               {stage === "phone" ? "Welcome" : "Verify Your Number"}

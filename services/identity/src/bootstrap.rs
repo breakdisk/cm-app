@@ -3,7 +3,7 @@ use sqlx::postgres::PgPoolOptions;
 use anyhow::Context;
 use crate::config::Config;
 use crate::application::services::{AuthService, TenantService, ApiKeyService};
-use crate::infrastructure::db::{PgTenantRepository, PgUserRepository, PgApiKeyRepository, PgPasswordResetTokenRepository, PgEmailVerificationTokenRepository, PgAuthIdentityRepository, PgAuditLogRepository, PgPickupAddressRepository, PgDriverInviteTokenRepository};
+use crate::infrastructure::db::{PgTenantRepository, PgBrandingRepository, PgUserRepository, PgApiKeyRepository, PgPasswordResetTokenRepository, PgEmailVerificationTokenRepository, PgAuthIdentityRepository, PgAuditLogRepository, PgPickupAddressRepository, PgDriverInviteTokenRepository};
 use crate::infrastructure::external::{SesEmailAdapter, LogEmailAdapter};
 use crate::api::http::{router, AppState};
 use logisticos_auth::jwt::JwtService;
@@ -72,6 +72,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     // 8. Repositories — injected as trait objects (hexagonal architecture)
     let tenant_repo = Arc::new(PgTenantRepository::new(pool.clone()));
+    let branding_repo = Arc::new(PgBrandingRepository::new(pool.clone()));
     let user_repo   = Arc::new(PgUserRepository::new(pool.clone()));
     let api_key_repo = Arc::new(PgApiKeyRepository::new(pool.clone()));
     let reset_token_repo = Arc::new(PgPasswordResetTokenRepository::new(pool.clone()));
@@ -132,6 +133,7 @@ pub async fn run() -> anyhow::Result<()> {
         push_token_repo,
         audit_log,
         address_repo: address_repo as _,
+        branding_repo: branding_repo as _,
     });
 
     use tower_http::cors::CorsLayer;

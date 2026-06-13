@@ -89,6 +89,13 @@ impl Claims {
     pub fn can_use_ai(&self) -> bool {
         matches!(self.subscription_tier.as_str(), "business" | "enterprise")
     }
+
+    /// Returns true if the subscription tier allows white-label branding.
+    /// Mirrors `logisticos_types::SubscriptionTier::allows_white_label`
+    /// (Enterprise-only) without depending on that crate from the JWT layer.
+    pub fn can_use_white_label(&self) -> bool {
+        self.subscription_tier.as_str() == "enterprise"
+    }
 }
 
 /// Minimal claims embedded in a refresh token (no permissions — must be exchanged for access token).

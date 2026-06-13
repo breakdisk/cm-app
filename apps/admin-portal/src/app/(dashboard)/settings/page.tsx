@@ -9,7 +9,7 @@
  *         Audit Log → identity /v1/audit-log (100 most recent mutations)
  *         Feature Flags → identity /v1/tenants/me + PUT /v1/tenants/:id/tier
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { motion } from "framer-motion";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
@@ -21,7 +21,9 @@ import {
 import {
   createIdentityApi, tenantIdOf,
   type TenantSnapshot, type TenantTier, type TenantUser,
+  type Branding, type UpdateBrandingPayload,
 } from "@/lib/api/identity";
+import { useBranding } from "@/lib/branding";
 import { authFetch } from "@/lib/auth/auth-fetch";
 import { usePermissions } from "@/hooks/usePermissions";
 
@@ -44,11 +46,12 @@ const ROLE_DESCRIPTIONS: Record<string, string> = {
 
 const ROLE_ORDER = ["admin", "dispatcher", "merchant", "driver", "finance", "readonly", "customer"];
 
-const ALL_TABS = ["General", "API Keys", "Webhooks", "Roles & Permissions", "Feature Flags", "Audit Log"] as const;
+const ALL_TABS = ["General", "Branding", "API Keys", "Webhooks", "Roles & Permissions", "Feature Flags", "Audit Log"] as const;
 type Tab = (typeof ALL_TABS)[number];
 
 const TAB_PERMISSIONS: Record<Tab, string> = {
   "General":              "users:manage",
+  "Branding":             "tenants:manage",
   "API Keys":             "api_keys:manage",
   "Webhooks":             "webhooks:manage",
   "Roles & Permissions":  "users:manage",
@@ -131,6 +134,9 @@ export default function SettingsPage() {
           <NotificationChannelsCard />
         </motion.div>
       )}
+
+      {/* Branding — white-label self-serve (Enterprise-gated). */}
+      {effectiveTab === "Branding" && tabs.includes("Branding") && <BrandingTab />}
 
       {/* API Keys — live */}
       {effectiveTab === "API Keys" && tabs.includes("API Keys") && <ApiKeysTab />}
@@ -448,6 +454,292 @@ function FeatureFlagsTab() {
         </div>
       )}
     </motion.div>
+  );
+}
+
+// ── Branding tab — white-label self-serve (Enterprise-gated) ─────────────────
+// Reads identity GET /v1/tenants/me/branding + GET /v1/tenants/me (for tier),
+// writes PUT /v1/tenants/me/branding. Non-Enterprise tenants see an upsell.
+// Changes apply on next session/app load (near-live), per the chosen model.
+
+const DEFAULT_COLORS = { primary: "#00E5FF", secondary: "#A855F7", accent: "#00FF88" };
+
+function BrandingTab() {
+  const { branding: liveBranding } = useBranding();
+  const [tenant,   setTenant]   = useState<TenantSnapshot | null>(null);
+  const [form,     setForm]     = useState<Branding | null>(null);
+  const [loading,  setLoading]  = useState(true);
+  const [saving,   setSaving]   = useState(false);
+  const [saved,    setSaved]    = useState(false);
+  const [error,    setError]    = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      const [t, b] = await Promise.all([identityApi.getTenant(), identityApi.getBranding()]);
+      setTenant(t);
+      setForm(b);
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Failed to load branding");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const isEnterprise = tenant?.subscription_tier === "enterprise";
+
+  function set<K extends keyof Branding>(key: K, value: Branding[K]) {
+    setForm((f) => (f ? { ...f, [key]: value } : f));
+  }
+
+  function setLegal(key: "terms" | "privacy" | "splash", value: string) {
+    setForm((f) => (f ? { ...f, legal_text: { ...(f.legal_text ?? {}), [key]: value } } : f));
+  }
+
+  async function handleSave() {
+    if (!form) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const payload: UpdateBrandingPayload = {
+        display_name:    form.display_name,
+        app_tagline:     form.app_tagline ?? undefined,
+        logo_url:        form.logo_url ?? undefined,
+        favicon_url:     form.favicon_url ?? undefined,
+        primary_color:   form.primary_color ?? undefined,
+        secondary_color: form.secondary_color ?? undefined,
+        accent_color:    form.accent_color ?? undefined,
+        support_email:   form.support_email ?? undefined,
+        support_phone:   form.support_phone ?? undefined,
+        legal_text:      form.legal_text,
+      };
+      const updated = await identityApi.updateBranding(payload);
+      setForm(updated);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) {
+    return <p className="text-xs text-white/40 font-mono py-6 text-center">loading branding…</p>;
+  }
+
+  if (!isEnterprise) {
+    return (
+      <motion.div variants={variants.fadeInUp}>
+        <GlassCard>
+          <div className="flex items-start gap-4">
+            <div
+              className="h-10 w-10 shrink-0 rounded-lg"
+              style={{ background: "linear-gradient(135deg, var(--brand-primary), var(--brand-secondary))" }}
+            />
+            <div className="space-y-2">
+              <h3 className="text-sm font-semibold text-white">White-label branding is an Enterprise feature</h3>
+              <p className="text-sm text-white/50">
+                Upgrade to the Enterprise plan to set your own logo, colours, and legal copy across
+                the merchant, admin, partner, and customer portals — plus the driver and customer apps.
+              </p>
+              <p className="text-2xs font-mono text-white/30">
+                Current plan: <span className="text-[#A855F7]">{tenant?.subscription_tier ?? "unknown"}</span> ·
+                change it in <span className="text-[#00E5FF]">Settings → Feature Flags</span>.
+              </p>
+            </div>
+          </div>
+        </GlassCard>
+      </motion.div>
+    );
+  }
+
+  if (!form) {
+    return <p className="text-xs text-red-signal font-mono">{error ?? "Branding unavailable"}</p>;
+  }
+
+  const legal = (form.legal_text ?? {}) as Record<string, string>;
+  const preview = {
+    primary:   form.primary_color   || DEFAULT_COLORS.primary,
+    secondary: form.secondary_color || DEFAULT_COLORS.secondary,
+    accent:    form.accent_color    || DEFAULT_COLORS.accent,
+  };
+
+  return (
+    <motion.div variants={variants.fadeInUp} className="grid grid-cols-1 lg:grid-cols-[3fr_2fr] gap-6">
+      {/* ── Editor ── */}
+      <GlassCard>
+        <h3 className="text-sm font-semibold text-white mb-4">Brand Identity</h3>
+        <div className="space-y-4">
+          <BrandField label="Display Name">
+            <input
+              value={form.display_name}
+              onChange={(e) => set("display_name", e.target.value)}
+              maxLength={100}
+              className="w-full rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-sm text-white focus:border-cyan-neon/50 focus:outline-none"
+            />
+          </BrandField>
+
+          <BrandField label="Tagline">
+            <input
+              value={form.app_tagline ?? ""}
+              onChange={(e) => set("app_tagline", e.target.value)}
+              className="w-full rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-sm text-white focus:border-cyan-neon/50 focus:outline-none"
+            />
+          </BrandField>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <BrandField label="Logo URL">
+              <input
+                value={form.logo_url ?? ""}
+                onChange={(e) => set("logo_url", e.target.value || null)}
+                placeholder="https://…/logo.png"
+                className="w-full rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-sm font-mono text-white placeholder-white/25 focus:border-cyan-neon/50 focus:outline-none"
+              />
+            </BrandField>
+            <BrandField label="Favicon URL">
+              <input
+                value={form.favicon_url ?? ""}
+                onChange={(e) => set("favicon_url", e.target.value || null)}
+                placeholder="https://…/favicon.ico"
+                className="w-full rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-sm font-mono text-white placeholder-white/25 focus:border-cyan-neon/50 focus:outline-none"
+              />
+            </BrandField>
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            <ColorField label="Primary"   value={preview.primary}   onChange={(v) => set("primary_color", v)} />
+            <ColorField label="Secondary" value={preview.secondary} onChange={(v) => set("secondary_color", v)} />
+            <ColorField label="Accent"    value={preview.accent}    onChange={(v) => set("accent_color", v)} />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <BrandField label="Support Email">
+              <input
+                type="email"
+                value={form.support_email ?? ""}
+                onChange={(e) => set("support_email", e.target.value || null)}
+                className="w-full rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-sm text-white focus:border-cyan-neon/50 focus:outline-none"
+              />
+            </BrandField>
+            <BrandField label="Support Phone">
+              <input
+                value={form.support_phone ?? ""}
+                onChange={(e) => set("support_phone", e.target.value || null)}
+                className="w-full rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-sm text-white focus:border-cyan-neon/50 focus:outline-none"
+              />
+            </BrandField>
+          </div>
+
+          <BrandField label="Splash / Welcome Copy">
+            <textarea
+              value={legal.splash ?? ""}
+              onChange={(e) => setLegal("splash", e.target.value)}
+              rows={2}
+              className="w-full rounded-md border border-white/10 bg-white/[0.03] px-3 py-1.5 text-sm text-white focus:border-cyan-neon/50 focus:outline-none resize-none"
+            />
+          </BrandField>
+
+          {error && <p className="text-xs text-red-signal font-mono">{error}</p>}
+
+          <div className="flex items-center justify-end gap-2 pt-1">
+            {saved && <span className="text-xs text-green-signal font-mono">✓ Saved — reloads on next sign-in</span>}
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="px-4 py-2 text-sm font-medium text-[#050810] bg-[#00FF88] rounded-lg hover:bg-[#00FF88]/90 transition-colors disabled:opacity-40"
+            >
+              {saving ? "Saving…" : "Save Branding"}
+            </button>
+          </div>
+        </div>
+      </GlassCard>
+
+      {/* ── Live preview ── */}
+      <GlassCard>
+        <h3 className="text-sm font-semibold text-white mb-4">Preview</h3>
+        <div
+          className="rounded-xl border border-white/10 p-4 space-y-4"
+          style={{ background: "#050810" }}
+        >
+          <div className="flex items-center gap-2.5">
+            {form.logo_url ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={form.logo_url} alt={form.display_name} className="h-8 w-8 rounded-lg object-contain" />
+            ) : (
+              <div
+                className="h-8 w-8 rounded-lg"
+                style={{ background: `linear-gradient(135deg, ${preview.primary}, ${preview.secondary})` }}
+              />
+            )}
+            <div>
+              <p className="text-sm font-bold text-white">{form.display_name}</p>
+              <p className="text-2xs font-mono uppercase tracking-widest text-white/30">
+                {form.app_tagline ?? ""}
+              </p>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button className="px-3 py-1.5 rounded-lg text-xs font-semibold" style={{ background: preview.primary, color: "#050810" }}>
+              Primary
+            </button>
+            <button className="px-3 py-1.5 rounded-lg text-xs font-semibold" style={{ background: preview.secondary, color: "#050810" }}>
+              Secondary
+            </button>
+            <button className="px-3 py-1.5 rounded-lg text-xs font-semibold" style={{ background: preview.accent, color: "#050810" }}>
+              Accent
+            </button>
+          </div>
+          <div className="flex gap-3">
+            {[preview.primary, preview.secondary, preview.accent].map((c) => (
+              <div key={c} className="flex-1">
+                <div className="h-10 rounded-lg" style={{ background: c, boxShadow: `0 0 18px ${c}55` }} />
+                <p className="mt-1 text-2xs font-mono text-white/40 text-center">{c}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+        <p className="text-2xs font-mono text-white/30 mt-3">
+          Currently applied: <span className="text-[#00E5FF]">{liveBranding.display_name}</span> ·
+          changes go live on next sign-in / app reload.
+        </p>
+      </GlassCard>
+    </motion.div>
+  );
+}
+
+function BrandField({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="block">
+      <span className="text-xs text-white/40 uppercase tracking-widest font-mono block mb-1">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function ColorField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <label className="block">
+      <span className="text-xs text-white/40 uppercase tracking-widest font-mono block mb-1">{label}</span>
+      <div className="flex items-center gap-2 rounded-md border border-white/10 bg-white/[0.03] px-2 py-1">
+        <input
+          type="color"
+          value={value}
+          onChange={(e) => onChange(e.target.value.toUpperCase())}
+          className="h-7 w-7 cursor-pointer rounded bg-transparent border-0"
+          aria-label={`${label} color`}
+        />
+        <input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="w-full bg-transparent text-xs font-mono text-white outline-none"
+        />
+      </div>
+    </label>
   );
 }
 

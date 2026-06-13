@@ -5,6 +5,7 @@ import trackingReducer, * as trackingActions from './slices/tracking';
 import prefsReducer, * as prefsActions from './slices/prefs';
 import addressesReducer from './slices/addresses';
 import invoicesReducer, * as invoicesActions from './slices/invoices';
+import brandingReducer from './slices/branding';
 
 export const store = configureStore({
   reducer: {
@@ -14,6 +15,7 @@ export const store = configureStore({
     prefs:     prefsReducer,
     addresses: addressesReducer,
     invoices:  invoicesReducer,
+    branding:  brandingReducer,
   },
 });
 
@@ -29,3 +31,5 @@ export * from './slices/prefs';
 // invoices slice — use named imports from the slice directly to avoid action name collisions
 export type { InvoicesState, InvoiceSummary, InvoiceDetail } from './slices/invoices';
 export { default as invoicesReducer } from './slices/invoices';
+export { hydrateBrandingFromCache, fetchBranding, resetBranding } from './slices/branding';
+export type { BrandingState } from './slices/branding';

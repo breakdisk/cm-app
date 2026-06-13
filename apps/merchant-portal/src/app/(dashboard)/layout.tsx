@@ -25,6 +25,7 @@ import {
   Users,
 } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
+import { useBranding } from "@/lib/branding";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -168,6 +169,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const pathname = usePathname();
   const router   = useRouter();
   const pageTitle = getPageTitle(pathname);
+  const { branding } = useBranding();
 
   // ⌘K / Ctrl+K → jump to shipments search
   useEffect(() => {
@@ -268,16 +270,26 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
           )}
         >
           <div className="flex items-center gap-2.5 min-w-0">
-            {/* Icon mark */}
-            <div
-              className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg"
-              style={{
-                background: "linear-gradient(135deg, #00E5FF 0%, #A855F7 100%)",
-                boxShadow: "0 0 14px rgba(0,229,255,0.35)",
-              }}
-            >
-              <Zap className="h-4 w-4 text-white" strokeWidth={2.5} />
-            </div>
+            {/* Icon mark — tenant logo when set, else brand-gradient bolt */}
+            {branding.logo_url ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={branding.logo_url}
+                alt={branding.display_name}
+                className="h-8 w-8 flex-shrink-0 rounded-lg object-contain"
+              />
+            ) : (
+              <div
+                className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg"
+                style={{
+                  background:
+                    "linear-gradient(135deg, var(--brand-primary) 0%, var(--brand-secondary) 100%)",
+                  boxShadow: "0 0 14px rgba(0,229,255,0.35)",
+                }}
+              >
+                <Zap className="h-4 w-4 text-white" strokeWidth={2.5} />
+              </div>
+            )}
 
             <AnimatePresence initial={false}>
               {!collapsed && (
@@ -289,7 +301,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                   className="overflow-hidden"
                 >
                   <span className="whitespace-nowrap font-heading text-sm font-bold tracking-tight text-white">
-                    LogisticOS
+                    {branding.display_name}
                   </span>
                   <p className="whitespace-nowrap text-2xs text-white/30 font-mono uppercase tracking-widest">
                     Merchant

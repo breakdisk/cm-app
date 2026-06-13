@@ -1,5 +1,6 @@
 pub mod addresses;
 pub mod auth;
+pub mod branding;
 pub mod tenants;
 pub mod users;
 pub mod api_keys;
@@ -22,6 +23,7 @@ pub struct AppState {
     pub push_token_repo: Arc<crate::infrastructure::db::push_token_repo::PgPushTokenRepository>,
     pub audit_log: Arc<crate::infrastructure::db::audit_log_repo::PgAuditLogRepository>,
     pub address_repo: Arc<dyn crate::domain::repositories::PickupAddressRepository>,
+    pub branding_repo: Arc<dyn crate::domain::repositories::BrandingRepository>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -51,6 +53,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/auth/otp/verify",               post(auth::verify_otp))
         // Tenant onboarding (public)
         .route("/v1/tenants", post(tenants::create_tenant))
+        // White-label brand resolution (public — pre-login screens, subdomain/host routing)
+        .route("/v1/public/branding", get(branding::get_public_branding))
         // Internal endpoints (protected by Docker network isolation, NOT exposed via api-gateway)
         .route("/internal/push-tokens", get(push_tokens::list_push_tokens_internal))
         .merge(internal_router(internal_secret))
@@ -90,6 +94,7 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/push-tokens",     post(push_tokens::register_push_token).delete(push_tokens::delete_push_token))
         // Tenant self-management
         .route("/tenants/me",          get(tenants::get_self))
+        .route("/tenants/me/branding", get(branding::get_self_branding).put(branding::put_self_branding))
         .route("/tenants/me/finalize", post(tenants::finalize_self))
         .route("/tenants/:id",         put(tenants::update_tenant))
         .route("/tenants/:id/tier",    put(tenants::upgrade_tier))

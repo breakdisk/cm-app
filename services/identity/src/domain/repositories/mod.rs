@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use logisticos_types::{TenantId, UserId};
-use crate::domain::entities::{Tenant, User, ApiKey, AuthIdentity, AuthProvider, PickupAddress};
+use crate::domain::entities::{Tenant, User, ApiKey, AuthIdentity, AuthProvider, PickupAddress, Branding};
 
 #[async_trait]
 pub trait TenantRepository: Send + Sync {
@@ -8,6 +8,20 @@ pub trait TenantRepository: Send + Sync {
     async fn find_by_slug(&self, slug: &str) -> anyhow::Result<Option<Tenant>>;
     async fn save(&self, tenant: &Tenant) -> anyhow::Result<()>;
     async fn slug_exists(&self, slug: &str) -> anyhow::Result<bool>;
+}
+
+#[async_trait]
+pub trait BrandingRepository: Send + Sync {
+    /// Load the persisted branding row for a tenant, if any.
+    async fn find_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Option<Branding>>;
+    /// Resolve branding by tenant slug (subdomain → tenant). Joins on
+    /// `identity.tenants.slug`. Returns `None` when the slug is unknown or the
+    /// tenant has no branding row.
+    async fn find_by_slug(&self, slug: &str) -> anyhow::Result<Option<Branding>>;
+    /// Resolve branding by a verified custom domain (custom-domain phase).
+    async fn find_by_custom_domain(&self, host: &str) -> anyhow::Result<Option<Branding>>;
+    /// Insert or update the tenant's branding row.
+    async fn upsert(&self, branding: &Branding) -> anyhow::Result<()>;
 }
 
 #[async_trait]

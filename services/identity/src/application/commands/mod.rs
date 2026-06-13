@@ -15,6 +15,31 @@ pub struct CreateTenantCommand {
     pub owner_last_name: String,
 }
 
+/// Partial update of a tenant's white-label branding. All fields optional —
+/// `None` leaves the existing value untouched (or default on first write).
+/// `display_name` is required on first creation; enforced in the service layer.
+/// Colour fields are validated as hex strings by the domain entity.
+#[derive(Debug, Default, Deserialize, Validate)]
+pub struct UpdateBrandingCommand {
+    #[validate(length(min = 1, max = 100))]
+    pub display_name:    Option<String>,
+    pub app_tagline:     Option<String>,
+    #[validate(url)]
+    pub logo_url:        Option<String>,
+    #[validate(url)]
+    pub logo_dark_url:   Option<String>,
+    #[validate(url)]
+    pub favicon_url:     Option<String>,
+    pub primary_color:   Option<String>,
+    pub secondary_color: Option<String>,
+    pub accent_color:    Option<String>,
+    #[validate(email)]
+    pub support_email:   Option<String>,
+    pub support_phone:   Option<String>,
+    /// Free-form legal copy object: `{ terms, privacy, splash }`.
+    pub legal_text:      Option<serde_json::Value>,
+}
+
 #[derive(Debug, Deserialize, Validate)]
 pub struct LoginCommand {
     pub tenant_slug: String,

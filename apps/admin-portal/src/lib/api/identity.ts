@@ -1,4 +1,22 @@
 import { createApiClient, ApiResponse, PaginatedApiResponse } from "./client";
+import type { Branding } from "@/lib/branding";
+
+export type { Branding };
+
+/** Partial branding update — mirrors UpdateBrandingCommand on the identity service. */
+export interface UpdateBrandingPayload {
+  display_name?: string;
+  app_tagline?: string;
+  logo_url?: string;
+  logo_dark_url?: string;
+  favicon_url?: string;
+  primary_color?: string;
+  secondary_color?: string;
+  accent_color?: string;
+  support_email?: string;
+  support_phone?: string;
+  legal_text?: Record<string, unknown>;
+}
 
 // ── User types ─────────────────────────────────────────────────────────────────
 
@@ -108,6 +126,20 @@ export function createIdentityApi() {
     upgradeTier: (id: string, tier: TenantTier) =>
       client
         .put<ApiResponse<{ subscription_tier: string }>>(`/v1/tenants/${id}/tier`, { tier })
+        .then((r) => r.data.data),
+
+    // ── White-label branding ─────────────────────────────────────────────────────
+
+    /** GET /v1/tenants/me/branding — current brand (falls back to default). */
+    getBranding: () =>
+      client
+        .get<ApiResponse<Branding>>("/v1/tenants/me/branding")
+        .then((r) => r.data.data),
+
+    /** PUT /v1/tenants/me/branding — upsert branding (Enterprise-gated). */
+    updateBranding: (payload: UpdateBrandingPayload) =>
+      client
+        .put<ApiResponse<Branding>>("/v1/tenants/me/branding", payload)
         .then((r) => r.data.data),
   };
 }
