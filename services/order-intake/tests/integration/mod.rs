@@ -260,7 +260,12 @@ impl ShipmentRepository for InMemoryShipmentRepository {
 
 // ── MockAwbGenerator ─────────────────────────────────────────────────────────
 
-pub struct MockAwbGenerator;
+#[derive(Default)]
+pub struct MockAwbGenerator {
+    // Monotonic counter so multiple shipments created within a single test get
+    // distinct, valid AWBs (mirrors the real per-tenant sequence allocator).
+    seq: std::sync::atomic::AtomicU32,
+}
 
 #[async_trait]
 impl AwbGenerator for MockAwbGenerator {
@@ -269,9 +274,8 @@ impl AwbGenerator for MockAwbGenerator {
         tenant_code: &TenantCode,
         service: AwbServiceCode,
     ) -> Result<Awb, AwbGeneratorError> {
-        // Return a deterministic but valid AWB for tests. Sequence is always
-        // 1 — this is fine because each test uses a fresh in-memory repo.
-        Ok(Awb::generate(tenant_code, service, 1))
+        let next = self.seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        Ok(Awb::generate(tenant_code, service, next))
     }
 }
 
@@ -299,7 +303,7 @@ const TEST_JWT_SECRET: &str = "order-intake-integration-test-secret";
 fn build_test_server(repo: Arc<InMemoryShipmentRepository>) -> (TestServer, JwtService) {
     let publisher    = Arc::new(NoOpEventPublisher);
     let normalizer   = Arc::new(PassthroughNormalizer);
-    let awb_gen      = Arc::new(MockAwbGenerator);
+    let awb_gen      = Arc::new(MockAwbGenerator::default());
 
     let svc = Arc::new(ShipmentService::new(
         Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
@@ -485,7 +489,7 @@ mod create_shipment {
         );
         assert_eq!(tracking.len(), 16, "CM-TST-S0000001X = 16 chars");
         assert!(body["id"].is_string(), "shipment id must be a UUID string");
-        assert_eq!(body["status"], "Pending");
+        assert_eq!(body["status"], "pending");
     }
 
     #[tokio::test]
@@ -673,7 +677,7 @@ mod get_shipment {
         let body: Value = resp.json();
         assert_eq!(body["id"], shipment_id.to_string().as_str());
         assert_eq!(body["awb"], tracking.as_str());
-        assert_eq!(body["status"], "Pending");
+        assert_eq!(body["status"], "pending");
         assert!(body["origin"].is_object(), "origin address must be present");
         assert!(body["destination"].is_object(), "destination address must be present");
     }
@@ -1190,7 +1194,7 @@ mod tracking_number_format {
                 .await;
 
             assert_eq!(resp.status_code(), 201);
-            let tn = resp.json::<Value>()["tracking_number"]
+            let tn = resp.json::<Value>()["awb"]
                 .as_str()
                 .unwrap()
                 .to_string();
@@ -1303,10 +1307,10 @@ mod e2e_flow {
         assert_eq!(resp.status_code(), 201, "shipment creation should succeed");
         let body: Value = resp.json();
         let shipment_id = body["id"].as_str().expect("id must be present").to_string();
-        let tracking = body["tracking_number"].as_str().expect("tracking_number must be present");
+        let tracking = body["awb"].as_str().expect("awb must be present");
 
-        assert!(tracking.starts_with("CMPH"), "tracking number must start with CMPH");
-        assert_eq!(body["status"], "Pending", "initial status must be Pending");
+        assert!(tracking.starts_with("CM-"), "tracking number must match CM-TTT-... format");
+        assert_eq!(body["status"], "pending", "initial status must be pending");
 
         let store = repo.shipments.lock().unwrap();
         let stored = store
@@ -1390,10 +1394,17 @@ mod e2e_flow {
         let created = body["created"].as_array().expect("created must be an array");
         assert_eq!(created.len(), 3, "all three shipments should be created");
 
+        // The bulk endpoint returns created shipment IDs (Vec<Uuid>), not full
+        // objects — resolve each to its AWB via the repository to verify uniqueness.
         let mut tracking_numbers = std::collections::HashSet::new();
-        for shipment in created {
-            let tn = shipment["tracking_number"].as_str().expect("tracking_number must be present");
-            tracking_numbers.insert(tn.to_string());
+        let store = repo.shipments.lock().unwrap();
+        for created_id in created {
+            let id = created_id.as_str().expect("created id must be a UUID string");
+            let shipment = store
+                .iter()
+                .find(|s| s.id.inner().to_string() == id)
+                .expect("created shipment must be persisted");
+            tracking_numbers.insert(shipment.awb.as_str().to_string());
         }
         assert_eq!(tracking_numbers.len(), 3, "all tracking numbers must be unique");
 

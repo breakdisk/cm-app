@@ -115,6 +115,22 @@ async fn bulk_create_shipments(
     claims.require_permission(permissions::SHIPMENT_CREATE)?;
     cmd.tenant_id   = claims.tenant_id;
     cmd.merchant_id = claims.user_id;
+    // Stamp tenant context onto each row. Bulk rows arrive carrying only shipment
+    // details — tenant_id, merchant_id, and the AWB tenant_code come from the JWT,
+    // mirroring the per-field injection the single-create handler performs.
+    let derived_tenant_code = claims.tenant_slug
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() && *c != 'O' && *c != 'I')
+        .take(3)
+        .collect::<String>()
+        .to_uppercase();
+    for row in cmd.rows.iter_mut() {
+        row.tenant_id   = claims.tenant_id;
+        row.merchant_id = claims.user_id;
+        if row.tenant_code.is_empty() {
+            row.tenant_code = derived_tenant_code.clone();
+        }
+    }
     let result = s.svc.bulk_create(cmd).await?;
     Ok::<_, AppError>((StatusCode::MULTI_STATUS, Json(result)))
 }

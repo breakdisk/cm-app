@@ -5,6 +5,8 @@
 //! appropriate RBAC permissions.  Prometheus metrics are served at `/metrics`;
 //! liveness and readiness probes at `/health` and `/ready`.
 
+pub mod webhook;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

@@ -94,6 +94,9 @@ pub const RECEIPT_EMAIL_REQUESTED:   &str = "logisticos.tracking.receipt.email.r
 pub const SUPPORT_TICKET_OPENED:     &str = "logisticos.support.ticket.opened";
 pub const SUPPORT_TICKET_CLOSED:     &str = "logisticos.support.ticket.closed";
 
+// Inbound channel messages (customer → platform)
+pub const WHATSAPP_INBOUND:          &str = "logisticos.engagement.whatsapp.inbound";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,6 +139,7 @@ mod tests {
             TASK_ASSIGNED,
             RECEIPT_EMAIL_REQUESTED,
             SUPPORT_TICKET_OPENED, SUPPORT_TICKET_CLOSED,
+            WHATSAPP_INBOUND,
         ];
         for t in topics {
             assert!(t.chars().all(|c: char| c.is_ascii_lowercase() || c == '.' || c == '_'),

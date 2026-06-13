@@ -122,6 +122,8 @@ pub struct InternalCreateShipmentCommand {
 
 #[derive(Debug, Deserialize)]
 pub struct RescheduleShipmentCommand {
+    // Populated from the URL path by the handler, not the request body.
+    #[serde(default)]
     pub shipment_id: uuid::Uuid,
     pub preferred_date: chrono::NaiveDate,
     pub preferred_time_slot: Option<String>, // "morning" | "afternoon" | "anytime"
@@ -130,13 +132,18 @@ pub struct RescheduleShipmentCommand {
 
 #[derive(Debug, Deserialize)]
 pub struct CancelShipmentCommand {
+    // Populated from the URL path by the handler, not the request body.
+    #[serde(default)]
     pub shipment_id: uuid::Uuid,
     pub reason: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct BulkCreateShipmentCommand {
+    // Populated from JWT claims by the handler, not the request body.
+    #[serde(default)]
     pub tenant_id: uuid::Uuid,
+    #[serde(default)]
     pub merchant_id: uuid::Uuid,
     pub rows: Vec<CreateShipmentCommand>,
 }

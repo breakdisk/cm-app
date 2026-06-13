@@ -17,7 +17,7 @@ use crate::{
             log_adapter::LogChannelAdapter,
             push::ExpoPushAdapter,
             sms::TwilioSmsAdapter,
-            whatsapp::TwilioWhatsAppAdapter,
+            whatsapp::MetaWhatsAppAdapter,
             ChannelAdapter,
         },
         db::NotificationDb,
@@ -67,15 +67,20 @@ pub async fn run() -> anyhow::Result<()> {
     let twilio_ready = twilio_sid.as_deref().is_some_and(is_real_cred)
         && twilio_token.as_deref().is_some_and(is_real_cred);
 
-    let whatsapp: Arc<dyn ChannelAdapter> = if twilio_ready {
-        tracing::info!("engagement: WhatsApp using Twilio adapter");
-        Arc::new(TwilioWhatsAppAdapter::new(
-            twilio_sid.clone().unwrap(),
-            twilio_token.clone().unwrap(),
-            std::env::var("TWILIO_WHATSAPP_FROM").unwrap_or_else(|_| "whatsapp:+15005550006".into()),
+    // WhatsApp — Meta Cloud API (direct-to-Meta)
+    let meta_token    = std::env::var("META_WHATSAPP_ACCESS_TOKEN").ok();
+    let meta_phone_id = std::env::var("META_WHATSAPP_PHONE_NUMBER_ID").ok();
+    let meta_ready    = meta_token.as_deref().is_some_and(is_real_cred)
+        && meta_phone_id.as_deref().is_some_and(is_real_cred);
+
+    let whatsapp: Arc<dyn ChannelAdapter> = if meta_ready {
+        tracing::info!("engagement: WhatsApp using Meta Cloud API adapter");
+        Arc::new(MetaWhatsAppAdapter::new(
+            meta_token.unwrap(),
+            meta_phone_id.unwrap(),
         ))
     } else {
-        tracing::warn!("engagement: WhatsApp using LogChannelAdapter (TWILIO_* not set) — receipts printed to stdout");
+        tracing::warn!("engagement: WhatsApp using LogChannelAdapter (META_WHATSAPP_* not set) — messages printed to stdout");
         Arc::new(LogChannelAdapter::new("whatsapp"))
     };
 
@@ -177,7 +182,7 @@ pub async fn run() -> anyhow::Result<()> {
     };
 
     use tower_http::cors::CorsLayer;
-    use axum::http::{HeaderName, HeaderValue, Method};
+    use axum::{http::{HeaderName, HeaderValue, Method}, Router};
     let cors = CorsLayer::new()
         .allow_origin([
             "http://localhost:3000".parse::<HeaderValue>().unwrap(),
@@ -195,11 +200,26 @@ pub async fn run() -> anyhow::Result<()> {
             HeaderName::from_static("x-logisticos-client"),
         ]);
 
-    let app = crate::api::http::router(http_state)
+    // Protected REST API — all routes require a valid JWT.
+    let protected = crate::api::http::router(http_state)
         .layer(axum::middleware::from_fn_with_state(
             jwt,
             logisticos_auth::middleware::require_auth,
-        ))
+        ));
+
+    // Inbound WhatsApp webhook — unauthenticated but Twilio-signature-verified.
+    // Twilio calls this URL when a customer sends a message; we publish a Kafka
+    // event for the AI layer to process.
+    let webhook_state = crate::api::http::webhook::WebhookState {
+        app_secret:   std::env::var("META_WHATSAPP_APP_SECRET").unwrap_or_default(),
+        verify_token: std::env::var("META_WHATSAPP_VERIFY_TOKEN").unwrap_or_default(),
+        publisher:    publisher.clone(),
+    };
+    let public_routes = crate::api::http::webhook::webhook_router(webhook_state);
+
+    let app = Router::new()
+        .merge(protected)
+        .merge(public_routes)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(cors);
 

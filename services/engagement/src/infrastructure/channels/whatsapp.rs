@@ -1,49 +1,61 @@
 use async_trait::async_trait;
 use super::ChannelAdapter;
 
-pub struct TwilioWhatsAppAdapter {
-    account_sid: String,
-    auth_token: String,
-    from_number: String,
-    client: reqwest::Client,
+/// Sends WhatsApp messages via the Meta Cloud API (direct-to-Meta).
+///
+/// Env vars required:
+///   META_WHATSAPP_ACCESS_TOKEN     — permanent system-user token from Meta Business Manager
+///   META_WHATSAPP_PHONE_NUMBER_ID  — the registered WhatsApp Business phone number ID
+pub struct MetaWhatsAppAdapter {
+    access_token:    String,
+    phone_number_id: String,
+    client:          reqwest::Client,
 }
 
-impl TwilioWhatsAppAdapter {
-    pub fn new(account_sid: String, auth_token: String, from_number: String) -> Self {
-        Self { account_sid, auth_token, from_number, client: reqwest::Client::new() }
+impl MetaWhatsAppAdapter {
+    pub fn new(access_token: String, phone_number_id: String) -> Self {
+        Self { access_token, phone_number_id, client: reqwest::Client::new() }
     }
 }
 
 #[async_trait]
-impl ChannelAdapter for TwilioWhatsAppAdapter {
-    async fn send(&self, recipient: &str, body: &str, _subject: Option<&str>, _data: Option<&serde_json::Value>) -> Result<String, String> {
+impl ChannelAdapter for MetaWhatsAppAdapter {
+    async fn send(
+        &self,
+        recipient: &str,
+        body: &str,
+        _subject: Option<&str>,
+        _data: Option<&serde_json::Value>,
+    ) -> Result<String, String> {
         let url = format!(
-            "https://api.twilio.com/2010-04-01/Accounts/{}/Messages.json",
-            self.account_sid
+            "https://graph.facebook.com/v20.0/{}/messages",
+            self.phone_number_id
         );
-        let whatsapp_to = if recipient.starts_with("whatsapp:") {
-            recipient.to_owned()
-        } else {
-            format!("whatsapp:{}", recipient)
-        };
 
-        let params = [
-            ("From", self.from_number.as_str()),
-            ("To", whatsapp_to.as_str()),
-            ("Body", body),
-        ];
+        // Meta expects E.164 format without the "whatsapp:" prefix.
+        let to = recipient.strip_prefix("whatsapp:").unwrap_or(recipient);
+
+        let payload = serde_json::json!({
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "text",
+            "text": { "body": body }
+        });
 
         let response = self.client
             .post(&url)
-            .basic_auth(&self.account_sid, Some(&self.auth_token))
-            .form(&params)
+            .bearer_auth(&self.access_token)
+            .json(&payload)
             .send().await
-            .map_err(|e| format!("Twilio request failed: {e}"))?;
+            .map_err(|e| format!("Meta WhatsApp request failed: {e}"))?;
 
         if !response.status().is_success() {
-            return Err(format!("Twilio error: {}", response.text().await.unwrap_or_default()));
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(format!("Meta WhatsApp error {status}: {text}"));
         }
+
         let json: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
-        Ok(json["sid"].as_str().unwrap_or("unknown").to_owned())
+        Ok(json["messages"][0]["id"].as_str().unwrap_or("unknown").to_owned())
     }
 }

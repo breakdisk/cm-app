@@ -39,3 +39,5 @@ async-trait.workspace = true
 reqwest.workspace    = true
 aws-sdk-sesv2.workspace = true
 aws-config.workspace    = true
+hmac.workspace  = true
+sha2.workspace  = true
