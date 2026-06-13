@@ -1,0 +1,65 @@
+# CargoMarket — robots.txt
+# https://cargomarket.net/robots.txt
+
+# Allow all well-behaved crawlers
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /login
+Disallow: /setup
+Disallow: /merchant/
+Disallow: /admin/
+Disallow: /partner/
+Disallow: /customer/
+
+# Meta / Facebook crawler — explicitly allowed to scan privacy policy and landing pages
+User-agent: facebookexternalhit/1.1
+Allow: /
+Allow: /privacy-policy
+Allow: /track
+Disallow: /api/
+Disallow: /merchant/
+Disallow: /admin/
+Disallow: /partner/
+Disallow: /customer/
+
+# Instagram crawler
+User-agent: Instagram
+Allow: /
+Allow: /privacy-policy
+Disallow: /api/
+Disallow: /merchant/
+Disallow: /admin/
+
+# Google
+User-agent: Googlebot
+Allow: /
+Disallow: /api/
+Disallow: /merchant/
+Disallow: /admin/
+Disallow: /partner/
+Disallow: /customer/
+
+# Bing
+User-agent: Bingbot
+Allow: /
+Disallow: /api/
+Disallow: /merchant/
+Disallow: /admin/
+Disallow: /partner/
+Disallow: /customer/
+
+# Twitter/X
+User-agent: Twitterbot
+Allow: /
+Allow: /privacy-policy
+Disallow: /api/
+
+# LinkedIn
+User-agent: LinkedInBot
+Allow: /
+Allow: /privacy-policy
+Disallow: /api/
+
+# Sitemap location
+Sitemap: https://cargomarket.net/sitemap.xml
