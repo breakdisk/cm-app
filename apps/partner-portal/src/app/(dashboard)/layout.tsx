@@ -27,6 +27,7 @@ import {
 import { cn } from "@/lib/design-system/cn";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { CarrierProvider, useCarrier } from "@/contexts/carrier-context";
+import { useBranding } from "@/lib/branding";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -235,6 +236,7 @@ function DashboardLayoutInner({ children }: DashboardLayoutProps) {
   const pageTitle = getPageTitle(pathname);
 
   const { carrier, loading: carrierLoading } = useCarrier();
+  const { branding } = useBranding();
 
   // Carrier-derived display values (fall back gracefully while loading).
   const carrierName = carrier?.name ?? "Partner Portal";
@@ -296,15 +298,25 @@ function DashboardLayoutInner({ children }: DashboardLayoutProps) {
           )}
         >
           <div className="flex items-center gap-2.5 min-w-0">
-            <div
-              className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg"
-              style={{
-                background: "linear-gradient(135deg, #00FF88 0%, #00B8D9 100%)",
-                boxShadow: "0 0 14px rgba(0,255,136,0.35)",
-              }}
-            >
-              <Zap className="h-4 w-4 text-canvas" strokeWidth={2.5} />
-            </div>
+            {branding.logo_url ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={branding.logo_url}
+                alt={branding.display_name}
+                className="h-8 w-8 flex-shrink-0 rounded-lg object-contain"
+              />
+            ) : (
+              <div
+                className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg"
+                style={{
+                  background:
+                    "linear-gradient(135deg, var(--brand-accent) 0%, var(--brand-primary) 100%)",
+                  boxShadow: "0 0 14px rgba(0,255,136,0.35)",
+                }}
+              >
+                <Zap className="h-4 w-4 text-canvas" strokeWidth={2.5} />
+              </div>
+            )}
 
             <AnimatePresence initial={false}>
               {!collapsed && (
@@ -364,7 +376,7 @@ function DashboardLayoutInner({ children }: DashboardLayoutProps) {
           >
             <div
               className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-xs font-bold text-canvas"
-              style={{ background: "linear-gradient(135deg, #00FF88, #00B8D9)" }}
+              style={{ background: "linear-gradient(135deg, var(--brand-accent), var(--brand-primary))" }}
             >
               {carrier?.code?.slice(0, 2).toUpperCase() ?? "—"}
             </div>
