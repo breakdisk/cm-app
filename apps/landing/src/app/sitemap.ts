@@ -17,6 +17,18 @@ export default function sitemap(): MetadataRoute.Sitemap {
       priority: 0.8,
     },
     {
+      url: `${BASE_URL}/terms-of-service`,
+      lastModified: new Date("2026-06-13"),
+      changeFrequency: "monthly",
+      priority: 0.8,
+    },
+    {
+      url: `${BASE_URL}/user-data-deletion`,
+      lastModified: new Date("2026-06-13"),
+      changeFrequency: "monthly",
+      priority: 0.7,
+    },
+    {
       url: `${BASE_URL}/track`,
       lastModified: new Date(),
       changeFrequency: "always",

@@ -34,11 +34,11 @@ const footerLinks: Record<string, Array<{ label: string; href: string }>> = {
   ],
   Legal: [
     { label: "Privacy Policy",    href: "/privacy-policy" },
-    { label: "Terms of Service",  href: LANDING_HOME },
+    { label: "Terms of Service",  href: "/terms-of-service" },
+    { label: "User Data Deletion", href: "/user-data-deletion" },
     { label: "Cookie Policy",     href: LANDING_HOME },
     { label: "GDPR",              href: LANDING_HOME },
     { label: "Security",          href: LANDING_HOME },
-    { label: "PCI-DSS",           href: LANDING_HOME },
   ],
 };
 
