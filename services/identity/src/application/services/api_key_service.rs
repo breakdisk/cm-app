@@ -70,20 +70,18 @@ impl ApiKeyService {
     }
 
     pub async fn revoke(&self, tenant_id: &TenantId, key_id: &ApiKeyId) -> AppResult<()> {
-        // Load and validate ownership before revoking — prevent cross-tenant revocation
-        let keys = self.api_key_repo.list_by_tenant(tenant_id).await.map_err(AppError::Internal)?;
-        let belongs_to_tenant = keys.iter().any(|k| &k.id == key_id);
-        if !belongs_to_tenant {
+        let found = self.api_key_repo
+            .revoke_for_tenant(key_id, tenant_id).await
+            .map_err(AppError::Internal)?;
+        if !found {
             return Err(AppError::NotFound { resource: "ApiKey", id: key_id.inner().to_string() });
         }
-
-        self.api_key_repo.revoke(key_id).await.map_err(AppError::Internal)?;
         tracing::info!(key_id = %key_id, tenant_id = %tenant_id, "API key revoked");
         Ok(())
     }
 
     /// Authenticate an incoming API key from a request header.
-    /// Hashes the provided raw key and looks it up in the DB.
+    /// Hashes the provided raw key, looks it up, and stamps last_used_at asynchronously.
     pub async fn authenticate(&self, raw_key: &str) -> AppResult<ApiKey> {
         let key_hash = sha256_hex(raw_key);
         let api_key = self.api_key_repo
@@ -95,6 +93,12 @@ impl ApiKeyService {
             return Err(AppError::Unauthorized("API key is expired or revoked".into()));
         }
 
+        // Stamp last_used_at without blocking the auth response.
+        let repo = Arc::clone(&self.api_key_repo);
+        let id = api_key.id.clone();
+        let now = chrono::Utc::now();
+        tokio::spawn(async move { let _ = repo.touch_last_used(&id, now).await; });
+
         Ok(api_key)
     }
 }
@@ -105,25 +109,10 @@ fn sha256_hex(input: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Generate `n` random bytes as a lowercase hex string using OS entropy.
+/// Generate `n` cryptographically random bytes as a lowercase hex string.
 fn generate_secure_hex(n: usize) -> String {
-    // Use std::collections::hash_map for seeding until rand crate is available.
-    // In production environments, replace with `rand::thread_rng().gen::<[u8; N]>()`.
-    use std::time::SystemTime;
-    let mut output = String::with_capacity(n * 2);
-    let base = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-
-    // XOR-shift PRNG seeded from time — sufficient for key generation when combined with
-    // the SHA-256 hash that protects the stored value. Swap for rand::OsRng in production.
-    let mut state = base ^ (base >> 33);
-    for _ in 0..n {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        output.push_str(&format!("{:02x}", (state & 0xFF) as u8));
-    }
-    output
+    use rand::RngCore;
+    let mut bytes = vec![0u8; n];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

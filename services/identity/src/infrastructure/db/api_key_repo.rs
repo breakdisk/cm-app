@@ -101,11 +101,21 @@ impl ApiKeyRepository for PgApiKeyRepository {
         Ok(rows.into_iter().map(ApiKey::from).collect())
     }
 
-    /// Hard revoke: set is_active = false immediately.
-    /// The key remains in the table for audit purposes.
-    async fn revoke(&self, id: &ApiKeyId) -> anyhow::Result<()> {
-        sqlx::query("UPDATE identity.api_keys SET is_active = false WHERE id = $1")
+    async fn revoke_for_tenant(&self, id: &ApiKeyId, tenant_id: &TenantId) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE identity.api_keys SET is_active = false WHERE id = $1 AND tenant_id = $2"
+        )
+        .bind(id.inner())
+        .bind(tenant_id.inner())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn touch_last_used(&self, id: &ApiKeyId, at: chrono::DateTime<chrono::Utc>) -> anyhow::Result<()> {
+        sqlx::query("UPDATE identity.api_keys SET last_used_at = $2 WHERE id = $1")
             .bind(id.inner())
+            .bind(at)
             .execute(&self.pool)
             .await?;
         Ok(())

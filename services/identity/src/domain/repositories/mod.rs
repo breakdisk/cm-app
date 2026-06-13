@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use logisticos_types::{TenantId, UserId};
+use logisticos_types::{ApiKeyId, TenantId, UserId};
 use crate::domain::entities::{Tenant, User, ApiKey, AuthIdentity, AuthProvider, PickupAddress};
 
 #[async_trait]
@@ -31,7 +31,12 @@ pub trait ApiKeyRepository: Send + Sync {
     async fn find_by_hash(&self, key_hash: &str) -> anyhow::Result<Option<ApiKey>>;
     async fn save(&self, key: &ApiKey) -> anyhow::Result<()>;
     async fn list_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<ApiKey>>;
-    async fn revoke(&self, id: &logisticos_types::ApiKeyId) -> anyhow::Result<()>;
+    /// Revoke a key only if it belongs to the given tenant. Returns `true` if a
+    /// row was actually updated, `false` if the key was not found or belongs to
+    /// a different tenant (cross-tenant revocation attempt).
+    async fn revoke_for_tenant(&self, id: &ApiKeyId, tenant_id: &TenantId) -> anyhow::Result<bool>;
+    /// Stamp `last_used_at` without a full entity round-trip. Fire-and-forget safe.
+    async fn touch_last_used(&self, id: &ApiKeyId, at: chrono::DateTime<chrono::Utc>) -> anyhow::Result<()>;
 }
 
 #[async_trait]
