@@ -11,7 +11,7 @@ use logisticos_types::{
 };
 
 use crate::{
-    application::services::shipment_service::{ShipmentListFilter, ShipmentRepository},
+    application::services::shipment_service::{NewShipmentEvent, ShipmentListFilter, ShipmentRepository},
     domain::{
         entities::{shipment::Shipment, piece::Piece},
         value_objects::{ServiceType, ShipmentDimensions, ShipmentWeight},
@@ -411,6 +411,30 @@ impl ShipmentRepository for PgShipmentRepository {
             .bind(s.external_order_id.as_deref())
             .bind(s.created_at)
             .bind(s.updated_at)
+            .execute(&self.pool)
+            .await?;
+            Ok(())
+        })
+    }
+
+    fn record_event<'a>(
+        &'a self,
+        event: NewShipmentEvent,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            sqlx::query(
+                r#"INSERT INTO order_intake.shipment_events
+                       (tenant_id, shipment_id, event_type, from_status, to_status, actor_type, metadata)
+                   VALUES ($1, $2, $3, $4, $5, $6,
+                           jsonb_build_object('location', $7::text))"#,
+            )
+            .bind(event.tenant_id)
+            .bind(event.shipment_id.inner())
+            .bind(&event.event_type)
+            .bind(event.from_status.as_deref())
+            .bind(&event.to_status)
+            .bind(&event.actor_type)
+            .bind(event.location.as_deref())
             .execute(&self.pool)
             .await?;
             Ok(())

@@ -9,7 +9,7 @@ use axum::{
 };
 use serde::Deserialize;
 use uuid::Uuid;
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 
 use logisticos_auth::middleware::AuthClaims;
 use logisticos_auth::rbac::permissions;
@@ -188,8 +188,123 @@ async fn admin_override_status(
         other => return Err(AppError::Validation(format!("Unknown status: {other}"))),
     };
     let actor = claims.user_id.to_string();
+
+    // Capture the prior status before the override so the timeline event records
+    // an accurate from → to transition. Best-effort: a lookup miss just yields a
+    // NULL from_status (manual override is authoritative regardless).
+    let from_status: Option<String> = sqlx::query_scalar(
+        "SELECT status FROM order_intake.shipments WHERE id = $1 AND tenant_id = $2",
+    )
+    .bind(id)
+    .bind(claims.tenant_id)
+    .fetch_optional(&s.pool)
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+
     s.svc.override_status(id, new_status, &actor).await?;
+
+    // Stamp the manual transition into the immutable timeline (date/time/location).
+    let _ = sqlx::query(
+        r#"INSERT INTO order_intake.shipment_events
+               (tenant_id, shipment_id, event_type, from_status, to_status, actor_id, actor_type, metadata)
+           SELECT $1, $2, 'status_changed', $3, $4, $5, 'user',
+                  jsonb_build_object(
+                      'location',
+                      CASE WHEN $4 IN ('pending','confirmed','pickup_assigned','picked_up')
+                           THEN s.origin_city ELSE s.dest_city END,
+                      'reason', $6::text,
+                      'override', true
+                  )
+           FROM order_intake.shipments s
+           WHERE s.id = $2"#,
+    )
+    .bind(claims.tenant_id)
+    .bind(id)
+    .bind(from_status)
+    .bind(body.status)
+    .bind(claims.user_id)
+    .bind(body.reason)
+    .execute(&s.pool)
+    .await
+    .map_err(|e| tracing::warn!(error = %e, shipment_id = %id, "override status event insert failed (status updated)"));
+
     Ok::<_, AppError>((StatusCode::NO_CONTENT, ()))
+}
+
+// ---------------------------------------------------------------------------
+// Timeline (shipment_events) — read side
+// ---------------------------------------------------------------------------
+
+/// Human-readable label for a destination status, derived at read time so it
+/// stays i18n-able and decoupled from the stored event rows.
+fn status_description(to_status: &str) -> &'static str {
+    match to_status {
+        "pending"            => "Shipment created",
+        "confirmed"          => "Shipment confirmed",
+        "pickup_assigned"    => "Pickup assigned to courier",
+        "picked_up"          => "Parcel picked up by courier",
+        "in_transit"         => "In transit",
+        "at_hub"             => "Arrived at sorting hub",
+        "out_for_delivery"   => "Out for delivery",
+        "delivery_attempted" => "Delivery attempted",
+        "delivered"          => "Delivered",
+        "partial_delivery"   => "Partially delivered",
+        "piece_exception"    => "Piece exception reported",
+        "customs_hold"       => "Held at customs",
+        "failed"             => "Delivery failed",
+        "cancelled"          => "Shipment cancelled",
+        "returned"           => "Returned to sender",
+        _                    => "Status updated",
+    }
+}
+
+/// Shape one `shipment_events` row into the timeline JSON consumed by both the
+/// admin detail panel and the public tracking page. `metadata.location` is the
+/// city-level label stamped at write time.
+fn event_row_to_json(r: &sqlx::postgres::PgRow) -> serde_json::Value {
+    let to_status: String = r.get("to_status");
+    let from_status: Option<String> = r.get("from_status");
+    let event_type: String = r.get("event_type");
+    let actor_type: Option<String> = r.get("actor_type");
+    let metadata: serde_json::Value = r.get("metadata");
+    let occurred_at: chrono::DateTime<chrono::Utc> = r.get("created_at");
+    let location = metadata.get("location").and_then(|v| v.as_str()).map(str::to_owned);
+
+    serde_json::json!({
+        "status":      to_status,
+        "from_status": from_status,
+        "to_status":   to_status,
+        "event_type":  event_type,
+        "actor_type":  actor_type,
+        "description": status_description(&to_status),
+        "location":    location,
+        "occurred_at": occurred_at,
+        "metadata":    metadata,
+    })
+}
+
+/// `GET /v1/shipments/:id/events` — authenticated timeline for the admin/ops
+/// shipment detail panel. Tenant-scoped.
+async fn list_shipment_events(
+    State(s): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::SHIPMENT_READ)?;
+    let rows = sqlx::query(
+        r#"SELECT event_type, from_status, to_status, actor_type, metadata, created_at
+             FROM order_intake.shipment_events
+            WHERE shipment_id = $1 AND tenant_id = $2
+            ORDER BY created_at ASC"#,
+    )
+    .bind(id)
+    .bind(claims.tenant_id)
+    .fetch_all(&s.pool)
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+
+    let events: Vec<serde_json::Value> = rows.iter().map(event_row_to_json).collect();
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "events": events }))))
 }
 
 // ---------------------------------------------------------------------------
@@ -201,17 +316,20 @@ pub fn router(state: AppState) -> Router {
         Arc::clone(&state.jwt),
         logisticos_auth::middleware::require_auth,
     );
+    // Authenticated /v1 routes (JWT required via auth_layer).
+    let authed = Router::new()
+        .route("/shipments",        post(create_shipment).get(list_shipments))
+        .route("/shipments/bulk",   post(bulk_create_shipments))
+        .route("/shipments/:id",    get(get_shipment))
+        .route("/shipments/:id/events",     get(list_shipment_events))
+        .route("/shipments/:id/cancel",     post(cancel_shipment))
+        .route("/shipments/:id/reschedule", post(reschedule_shipment))
+        .route("/shipments/:id/status",     put(admin_override_status))
+        .layer(auth_layer);
+
     Router::new()
         .route("/health", get(|| async { axum::Json(serde_json::json!({"status":"ok","service":"order-intake"})) }))
-        .nest("/v1", Router::new()
-            .route("/shipments",        post(create_shipment).get(list_shipments))
-            .route("/shipments/bulk",   post(bulk_create_shipments))
-            .route("/shipments/:id",    get(get_shipment))
-            .route("/shipments/:id/cancel",     post(cancel_shipment))
-            .route("/shipments/:id/reschedule", post(reschedule_shipment))
-            .route("/shipments/:id/status",     put(admin_override_status))
-            .layer(auth_layer)
-        )
+        .nest("/v1", authed)
         // Internal service-to-service endpoints — no JWT auth required (Istio mTLS enforces caller identity).
         .nest("/v1/internal", Router::new()
             .route("/shipments",             post(internal_create_shipment))

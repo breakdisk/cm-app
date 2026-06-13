@@ -38,6 +38,20 @@ pub struct ShipmentListFilter {
     pub offset:      i64,
 }
 
+/// An immutable timeline entry to append to `order_intake.shipment_events`.
+/// Created at lifecycle milestones (created, confirmed, …) so the admin and
+/// customer tracking timelines can show the date/time/location of each step.
+pub struct NewShipmentEvent {
+    pub shipment_id: ShipmentId,
+    pub tenant_id:   uuid::Uuid,
+    pub event_type:  String,
+    pub from_status: Option<String>,
+    pub to_status:   String,
+    pub actor_type:  String,
+    /// City-level location label stamped into the event metadata.
+    pub location:    Option<String>,
+}
+
 pub trait ShipmentRepository: Send + Sync {
     fn find_by_id<'a>(
         &'a self,
@@ -58,6 +72,15 @@ pub trait ShipmentRepository: Send + Sync {
         &'a self,
         filter: &'a ShipmentListFilter,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<(Vec<Shipment>, i64)>> + Send + 'a>>;
+
+    /// Append an immutable timeline event. Default no-op so non-DB test doubles
+    /// don't need to implement it; the Postgres repo overrides this.
+    fn record_event<'a>(
+        &'a self,
+        _event: NewShipmentEvent,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 pub trait EventPublisher: Send + Sync {
@@ -283,6 +306,38 @@ impl ShipmentService {
         })?;
         tracing::info!(step = "pieces_saved", "create");
 
+        // ── Stamp the opening timeline milestones ─────────────────────────────
+        // A successful booking is received (`created` → pending) and validated +
+        // AWB-issued (`confirmed`) synchronously. Both are stamped now so the
+        // admin and customer timelines show a date/time/location for the earliest
+        // steps. The stored status stays Pending (booking awaiting dispatch);
+        // `confirmed` is a timeline milestone, not a status change here.
+        // Best-effort: a timeline write must never fail shipment creation.
+        let actor_type = if shipment.booked_by_customer { "customer" } else { "merchant" };
+        let pickup_city = Some(shipment.origin.city.clone());
+        if let Err(e) = self.repo.record_event(NewShipmentEvent {
+            shipment_id: shipment.id.clone(),
+            tenant_id:   cmd.tenant_id,
+            event_type:  "created".into(),
+            from_status: None,
+            to_status:   "pending".into(),
+            actor_type:  actor_type.into(),
+            location:    pickup_city.clone(),
+        }).await {
+            tracing::warn!(error = %e, shipment_id = %shipment.id, "created timeline event failed (non-fatal)");
+        }
+        if let Err(e) = self.repo.record_event(NewShipmentEvent {
+            shipment_id: shipment.id.clone(),
+            tenant_id:   cmd.tenant_id,
+            event_type:  "confirmed".into(),
+            from_status: Some("pending".into()),
+            to_status:   "confirmed".into(),
+            actor_type:  "system".into(),
+            location:    pickup_city,
+        }).await {
+            tracing::warn!(error = %e, shipment_id = %shipment.id, "confirmed timeline event failed (non-fatal)");
+        }
+
         // ── Publish AwbIssued (fire-and-forget) ───────────────────────────────
         let awb_event = Event::new(
             "logisticos/order-intake",
@@ -351,6 +406,28 @@ impl ShipmentService {
             .await
         {
             tracing::warn!(error = %e, shipment_id = %shipment.id, "ShipmentCreated event publish failed (non-fatal)");
+        }
+
+        // ── Publish ShipmentConfirmed ─────────────────────────────────────────
+        // Booking is confirmed synchronously (validated + AWB issued). Advances
+        // the customer-facing tracking read-model (delivery-experience already
+        // consumes this topic) and fires merchant webhooks. order-intake's own
+        // status_consumer does NOT subscribe to this topic, so the canonical
+        // `shipments.status` stays Pending until dispatch — matching the
+        // "initial status must be Pending" invariant.
+        let confirmed_event = Event::new(
+            "logisticos/order-intake",
+            "shipment.confirmed",
+            cmd.tenant_id,
+            serde_json::json!({ "shipment_id": shipment.id.inner() }),
+        );
+        if let Ok(p) = serde_json::to_string(&confirmed_event) {
+            if let Err(e) = self.publisher
+                .publish(topics::SHIPMENT_CONFIRMED, &shipment.id.to_string(), &p)
+                .await
+            {
+                tracing::warn!(error = %e, shipment_id = %shipment.id, "ShipmentConfirmed event publish failed (non-fatal)");
+            }
         }
 
         tracing::info!(

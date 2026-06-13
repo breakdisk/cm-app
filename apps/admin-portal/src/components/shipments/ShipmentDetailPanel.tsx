@@ -94,6 +94,16 @@ interface PodData {
   captured_at?: string | null;
 }
 
+interface TimelineEvent {
+  status: string;        // to_status
+  from_status?: string | null;
+  event_type?: string;
+  actor_type?: string | null;
+  description?: string;
+  location?: string | null;
+  occurred_at: string;
+}
+
 interface PopData {
   pop_id: string;
   shipment_id: string;
@@ -208,6 +218,7 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
   const [pop,        setPop]        = useState<PopData | null>(null);
   const [popLoading, setPopLoading] = useState(false);
   const [popError,   setPopError]   = useState<string | null>(null);
+  const [events,     setEvents]     = useState<TimelineEvent[]>([]);
   const backdropRef = useRef<HTMLDivElement>(null);
 
   const { hasPermission } = usePermissions();
@@ -404,6 +415,32 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
     return () => { cancelled = true; };
   }, [shipment?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Fetch the stamped status timeline (date/time/location per transition).
+  useEffect(() => {
+    if (!shipment) {
+      setEvents([]);
+      return;
+    }
+    let cancelled = false;
+    async function fetchEvents() {
+      if (!shipment) return;
+      try {
+        const res = await authFetch(`${API_BASE}/v1/shipments/${shipment.id}/events`);
+        if (!res.ok) {
+          if (!cancelled) setEvents([]);
+          return;
+        }
+        const json = await res.json();
+        const list = Array.isArray(json?.events) ? (json.events as TimelineEvent[]) : [];
+        if (!cancelled) setEvents(list);
+      } catch {
+        if (!cancelled) setEvents([]);
+      }
+    }
+    fetchEvents();
+    return () => { cancelled = true; };
+  }, [shipment?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Close on Escape
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -413,8 +450,24 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  // Latest stamped event per status, so each timeline step can show when it
+  // happened and where (city-level location from the event metadata).
+  const eventByStatus = events.reduce<Record<string, TimelineEvent>>((acc, e) => {
+    acc[e.status] = e; // events come ASC; last write per status wins
+    return acc;
+  }, {});
+
   const statusVariant = shipment ? (STATUS_VARIANT[shipment.status] ?? "cyan") : "cyan";
-  const timelineIdx   = shipment ? resolveTimelineStepIndex(shipment.status) : -1;
+  const statusIdx     = shipment ? resolveTimelineStepIndex(shipment.status) : -1;
+  // Furthest step that has a stamped event. The canonical status column can lag
+  // a milestone (e.g. a booking is `confirmed` in the timeline while the status
+  // is still `pending` awaiting dispatch), so the timeline advances to whichever
+  // is further along.
+  const maxEventIdx = events.reduce((m, e) => {
+    const i = TIMELINE_STEPS.findIndex((s) => s.key === e.status);
+    return i > m ? i : m;
+  }, -1);
+  const timelineIdx = Math.max(statusIdx, maxEventIdx);
   const isTerminal    = shipment ? TERMINAL_STATUSES.has(shipment.status) : false;
   const isFailed      = shipment ? ["failed", "cancelled", "returned"].includes(shipment.status) : false;
 
@@ -635,17 +688,37 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
                                 />
                               )}
                             </div>
-                            {/* Label */}
-                            <p
-                              className={[
-                                "pb-2 pt-0.5 text-xs",
-                                isDone    && "text-white/50",
-                                isCurrent && "font-semibold text-green-signal",
-                                isFuture  && "text-white/20",
-                              ].filter(Boolean).join(" ")}
-                            >
-                              {step.label}
-                            </p>
+                            {/* Label + stamped date/time/location */}
+                            {(() => {
+                              const evt = eventByStatus[step.key];
+                              return (
+                                <div className="pb-2 pt-0.5 min-w-0">
+                                  <p
+                                    className={[
+                                      "text-xs",
+                                      isDone    && "text-white/50",
+                                      isCurrent && "font-semibold text-green-signal",
+                                      isFuture  && "text-white/20",
+                                    ].filter(Boolean).join(" ")}
+                                  >
+                                    {step.label}
+                                  </p>
+                                  {evt && (
+                                    <>
+                                      <p className="mt-0.5 text-2xs font-mono text-white/30">
+                                        {formatDate(evt.occurred_at)}
+                                      </p>
+                                      {evt.location && (
+                                        <p className="mt-0.5 flex items-center gap-1 text-2xs text-white/30">
+                                          <MapPin size={9} className="text-cyan-neon/50" />
+                                          {evt.location}
+                                        </p>
+                                      )}
+                                    </>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </li>
                         );
                       })}

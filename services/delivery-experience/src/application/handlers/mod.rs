@@ -5,7 +5,8 @@
 ///   logisticos.order.shipment.confirmed  → transition to Confirmed
 ///   logisticos.order.shipment.cancelled  → transition to Cancelled
 ///   logisticos.dispatch.driver.assigned  → assign driver, transition to AssignedToDriver
-///   logisticos.driver.pickup.completed   → transition to PickedUp
+///   logisticos.driver.pickup.completed    → transition to PickedUp (driver-ops task completion)
+///   logisticos.pod.pickup.captured        → transition to PickedUp (POP submission — authoritative)
 ///   logisticos.driver.delivery.completed → mark_delivered
 ///   logisticos.driver.delivery.failed    → mark_failed
 ///   logisticos.driver.location.updated   → update driver_position (no status transition)
@@ -72,6 +73,16 @@ struct PickupCompleted {
     driver_id:   Uuid,
 }
 
+/// POP submission from the pod service (`PickupCaptured`). This is the
+/// authoritative chain-of-custody open — it fires even when driver-ops
+/// `complete_task` is rejected (task not IN_PROGRESS) or the completeTask call
+/// is dropped on a flaky network, so it must also advance the tracking record
+/// to PickedUp. Only `shipment_id` is needed here.
+#[derive(Debug, Deserialize)]
+struct PickupCaptured {
+    shipment_id: Uuid,
+}
+
 /// DELIVERY_COMPLETED is published by driver-ops as TaskCompleted.
 /// Field aliases bridge the driver-ops naming to the tracking domain:
 ///   completed_at  → delivered_at
@@ -124,6 +135,7 @@ pub async fn run_consumer(consumer: Arc<StreamConsumer>, repo: Arc<dyn TrackingR
             topics::SHIPMENT_CANCELLED,
             topics::DRIVER_ASSIGNED,
             topics::PICKUP_COMPLETED,
+            topics::PICKUP_CAPTURED,
             topics::DELIVERY_COMPLETED,
             topics::DELIVERY_FAILED,
             topics::LOCATION_UPDATED,
@@ -226,7 +238,20 @@ async fn handle_message(
         topics::PICKUP_COMPLETED => {
             let evt: PickupCompleted = serde_json::from_value(data)?;
             let mut record = require_record(repo, evt.shipment_id).await?;
-            record.transition(TrackingStatus::PickedUp, "Package picked up by driver".into(), None);
+            // Stamp the pickup leg with the origin (collection point). `transition`
+            // dedupes if PICKUP_CAPTURED already advanced the record.
+            let location = Some(record.origin_address.clone());
+            record.transition(TrackingStatus::PickedUp, "Package picked up by driver".into(), location);
+            repo.save(&record).await?;
+        }
+
+        topics::PICKUP_CAPTURED => {
+            let evt: PickupCaptured = serde_json::from_value(data)?;
+            let mut record = require_record(repo, evt.shipment_id).await?;
+            // Authoritative custody-open. Idempotent with PICKUP_COMPLETED via the
+            // dedupe guard in `transition` — whichever arrives first wins.
+            let location = Some(record.origin_address.clone());
+            record.transition(TrackingStatus::PickedUp, "Package picked up by driver".into(), location);
             repo.save(&record).await?;
         }
 

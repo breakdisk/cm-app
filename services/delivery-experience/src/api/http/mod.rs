@@ -39,13 +39,88 @@ async fn public_track(
     State(state): State<AppState>,
     Path(tracking_number): Path<String>,
 ) -> impl IntoResponse {
+    use crate::domain::entities::TrackingStatus;
+
     match state.tracking_svc.get_public(&tracking_number).await {
         Ok(record) => {
-            // Strip internal fields not appropriate for public display.
-            let public = serde_json::json!({
+            // Optional POP/POD photos from the pod service. Best-effort: a miss
+            // degrades to absent evidence, never a 500.
+            let evidence = state.pod_client.get_evidence(record.shipment_id).await;
+
+            // Timeline: the customer tracking portal reads `events[]` with
+            // { status, description, location, occurred_at } — the StatusEvent
+            // shape maps 1:1.
+            let events: Vec<serde_json::Value> = record.status_history.iter().map(|e| {
+                serde_json::json!({
+                    "status":      e.status,
+                    "description": e.description,
+                    "location":    e.location,
+                    "occurred_at": e.occurred_at,
+                })
+            }).collect();
+
+            // Driver block — surfaced only while the parcel is in motion.
+            let show_driver = matches!(
+                record.current_status,
+                TrackingStatus::OutForDelivery
+                    | TrackingStatus::OutForPickup
+                    | TrackingStatus::AssignedToDriver
+            );
+            let driver = record.driver_name.as_ref().filter(|_| show_driver).map(|name| {
+                serde_json::json!({
+                    "name": name,
+                    "lat":  record.driver_position.as_ref().map(|p| p.lat),
+                    "lng":  record.driver_position.as_ref().map(|p| p.lng),
+                })
+            });
+
+            // Pickup evidence photo (if the pod service returned one).
+            let pop = evidence.as_ref()
+                .map(|ev| ev.get("pop").cloned().unwrap_or(serde_json::Value::Null))
+                .filter(|v| !v.is_null());
+
+            // Delivery evidence — only once delivered. delivered_at + recipient
+            // come from the authoritative tracking record; photos from pod.
+            let pod = if record.current_status == TrackingStatus::Delivered {
+                let photo_urls = evidence.as_ref()
+                    .and_then(|ev| ev.get("pod").and_then(|p| p.get("photo_urls")).cloned())
+                    .unwrap_or_else(|| serde_json::json!([]));
+                Some(serde_json::json!({
+                    "delivered_at":   record.delivered_at,
+                    "recipient_name": record.recipient_name,
+                    "photo_urls":     photo_urls,
+                }))
+            } else {
+                None
+            };
+
+            // Driver position block kept for the React-Native customer app
+            // (LiveDriverMap reads `driver_location`); same visibility rule.
+            let driver_location = if show_driver {
+                record.driver_position.as_ref().map(|p| serde_json::json!({"lat": p.lat, "lng": p.lng}))
+            } else {
+                None
+            };
+
+            // Backward-compatible superset. The customer **portal** (web) reads
+            // the new keys (`origin_city`, `destination_city`, `events`, `driver`,
+            // `eta`, `pop`, `pod`); the customer **app** (React Native) reads the
+            // legacy keys (`origin`, `destination`, `history`, `driver_location`).
+            // Both unwrap the `data` envelope. Emitting both keeps every client
+            // working without a coordinated deploy.
+            let data = serde_json::json!({
                 "tracking_number":    record.tracking_number,
                 "status":             record.current_status,
                 "status_label":       record.current_status.display_label(),
+                // New (web portal)
+                "origin_city":        record.origin_address,
+                "destination_city":   record.destination_address,
+                "eta":                record.estimated_delivery,
+                "events":             events,
+                "driver":             driver,
+                "pop":                pop,
+                "pod":                pod,
+                // Legacy (mobile app + previous response shape)
                 "origin":             record.origin_address,
                 "destination":        record.destination_address,
                 "estimated_delivery": record.estimated_delivery,
@@ -55,15 +130,9 @@ async fn public_track(
                 "reschedule_count":   record.reschedule_count,
                 "recipient_name":     record.recipient_name,
                 "history":            record.status_history,
-                // Show driver position only for active deliveries
-                "driver_location":    if record.current_status == crate::domain::entities::TrackingStatus::OutForDelivery
-                                         || record.current_status == crate::domain::entities::TrackingStatus::AssignedToDriver {
-                    record.driver_position.as_ref().map(|p| serde_json::json!({"lat": p.lat, "lng": p.lng}))
-                } else {
-                    None
-                },
+                "driver_location":    driver_location,
             });
-            (StatusCode::OK, Json(public)).into_response()
+            (StatusCode::OK, Json(serde_json::json!({ "data": data }))).into_response()
         }
         Err(AppError::NotFound { .. }) => (
             StatusCode::NOT_FOUND,

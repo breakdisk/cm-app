@@ -32,15 +32,26 @@ struct DriverAssignedEvt {
 #[derive(Serialize, Deserialize)]
 struct PickupCompletedEvt {
     shipment_id: Uuid,
+    /// Driver device/processing time the task was completed (ISO-8601).
+    /// Stamped into the timeline event metadata for SLA + audit.
+    #[serde(default)]
+    completed_at: Option<String>,
 }
 
-/// POP-submitted payload from the pod service. Only `shipment_id` is needed
-/// here; the full `PickupCaptured` event in libs/events carries far more
-/// (driver_id, photo_s3_key, weight, etc.) but those fields aren't relevant
-/// for the canonical shipment-status update.
+/// POP-submitted payload from the pod service. Beyond `shipment_id` we also
+/// capture the chain-of-custody timestamps and geofence verdict so the
+/// timeline event carries the same evidence the POP card shows. The full
+/// `PickupCaptured` event in libs/events carries more (driver_id,
+/// photo_s3_key, weight, etc.) but those aren't needed for the timeline.
 #[derive(Serialize, Deserialize)]
 struct PickupCapturedEvt {
     shipment_id: Uuid,
+    #[serde(default)]
+    captured_at: Option<String>,
+    #[serde(default)]
+    device_timestamp: Option<String>,
+    #[serde(default)]
+    geofence_verified: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -156,6 +167,9 @@ pub async fn start_status_consumer(
     }
 }
 
+/// Statuses past which a shipment can no longer be moved by a downstream event.
+const TERMINAL_STATUSES: &[&str] = &["delivered", "cancelled", "returned", "failed"];
+
 async fn handle(pool: &PgPool, topic: &str, payload: &[u8]) -> anyhow::Result<()> {
     // Cross-border hub transfer events share a uniform forward-only update path.
     if let Some((new_status, key)) = hub_status_mapping(topic) {
@@ -163,118 +177,189 @@ async fn handle(pool: &PgPool, topic: &str, payload: &[u8]) -> anyhow::Result<()
     }
     match topic {
         topics::DRIVER_ASSIGNED => {
-            let envelope: Event<DriverAssignedEvt> = serde_json::from_slice(payload)?;
-            let evt = envelope.data;
-            let result = sqlx::query(
-                "UPDATE order_intake.shipments SET status = 'pickup_assigned', updated_at = NOW()
-                 WHERE id = $1 AND status NOT IN ('delivered','cancelled','returned')",
-            )
-            .bind(evt.shipment_id)
-            .execute(pool)
-            .await?;
-            if result.rows_affected() == 0 {
-                tracing::warn!(
-                    shipment_id = %evt.shipment_id,
-                    "DRIVER_ASSIGNED: no shipment updated (unknown id or already in terminal status)"
-                );
-            }
+            let evt = serde_json::from_slice::<Event<DriverAssignedEvt>>(payload)?.data;
+            let n = apply_transition(
+                pool, evt.shipment_id, "pickup_assigned",
+                &[], &["delivered", "cancelled", "returned"],
+                "assigned", "system", serde_json::json!({}),
+            ).await?;
+            warn_if_no_op(n, topic, evt.shipment_id);
         }
         topics::PICKUP_COMPLETED => {
-            let envelope: Event<PickupCompletedEvt> = serde_json::from_slice(payload)?;
-            let evt = envelope.data;
-            // Forward-only: don't overwrite later states if an out-of-order event arrives.
-            let result = sqlx::query(
-                "UPDATE order_intake.shipments SET status = 'picked_up', updated_at = NOW()
-                 WHERE id = $1
-                   AND status IN ('pending','confirmed','pickup_assigned')",
-            )
-            .bind(evt.shipment_id)
-            .execute(pool)
-            .await?;
-            if result.rows_affected() == 0 {
-                tracing::warn!(
-                    shipment_id = %evt.shipment_id,
-                    "PICKUP_COMPLETED: no shipment updated (unknown id or already past pickup)"
-                );
-            }
+            let evt = serde_json::from_slice::<Event<PickupCompletedEvt>>(payload)?.data;
+            let n = apply_transition(
+                pool, evt.shipment_id, "picked_up",
+                &["pending", "confirmed", "pickup_assigned"], &[],
+                "status_changed", "driver",
+                serde_json::json!({ "device_timestamp": evt.completed_at }),
+            ).await?;
+            warn_if_no_op(n, topic, evt.shipment_id);
         }
         topics::PICKUP_CAPTURED => {
-            // POP submission — authoritative chain-of-custody open. Advances
+            // POP submission — authoritative chain-of-custody open. Advances the
             // shipment regardless of whether driver-ops also published
-            // PICKUP_COMPLETED (it may not if the task wasn't in IN_PROGRESS
-            // state, or if the network dropped the completeTask call).
-            let envelope: Event<PickupCapturedEvt> = serde_json::from_slice(payload)?;
-            let evt = envelope.data;
-            let result = sqlx::query(
-                "UPDATE order_intake.shipments SET status = 'picked_up', updated_at = NOW()
-                 WHERE id = $1
-                   AND status IN ('pending','confirmed','pickup_assigned')",
-            )
-            .bind(evt.shipment_id)
-            .execute(pool)
-            .await?;
-            if result.rows_affected() == 0 {
-                tracing::warn!(
-                    shipment_id = %evt.shipment_id,
-                    "PICKUP_CAPTURED: no shipment updated (unknown id or already past pickup)"
-                );
-            }
+            // PICKUP_COMPLETED (it may not if the task wasn't IN_PROGRESS, or the
+            // network dropped the completeTask call).
+            let evt = serde_json::from_slice::<Event<PickupCapturedEvt>>(payload)?.data;
+            let n = apply_transition(
+                pool, evt.shipment_id, "picked_up",
+                &["pending", "confirmed", "pickup_assigned"], &[],
+                "status_changed", "driver",
+                serde_json::json!({
+                    "captured_at":       evt.captured_at,
+                    "device_timestamp":  evt.device_timestamp,
+                    "geofence_verified": evt.geofence_verified,
+                    "via":               "pop",
+                }),
+            ).await?;
+            warn_if_no_op(n, topic, evt.shipment_id);
         }
         topics::DELIVERY_COMPLETED => {
-            let envelope: Event<DeliveryCompletedEvt> = serde_json::from_slice(payload)?;
-            let evt = envelope.data;
-            let result = sqlx::query(
-                "UPDATE order_intake.shipments SET status = 'delivered', updated_at = NOW()
-                 WHERE id = $1",
-            )
-            .bind(evt.shipment_id)
-            .execute(pool)
-            .await?;
-            if result.rows_affected() == 0 {
-                tracing::warn!(
-                    shipment_id = %evt.shipment_id,
-                    "DELIVERY_COMPLETED: no shipment updated (unknown id)"
-                );
-            }
+            let evt = serde_json::from_slice::<Event<DeliveryCompletedEvt>>(payload)?.data;
+            let n = apply_transition(
+                pool, evt.shipment_id, "delivered",
+                &[], &[],
+                "status_changed", "driver", serde_json::json!({}),
+            ).await?;
+            warn_if_no_op(n, topic, evt.shipment_id);
         }
         topics::DELIVERY_FAILED => {
-            let envelope: Event<DeliveryFailedEvt> = serde_json::from_slice(payload)?;
-            let evt = envelope.data;
-            let result = sqlx::query(
-                "UPDATE order_intake.shipments SET status = 'failed', updated_at = NOW()
-                 WHERE id = $1 AND status NOT IN ('delivered','cancelled')",
-            )
-            .bind(evt.shipment_id)
-            .execute(pool)
-            .await?;
-            if result.rows_affected() == 0 {
-                tracing::warn!(
-                    shipment_id = %evt.shipment_id,
-                    "DELIVERY_FAILED: no shipment updated (unknown id or already in terminal status)"
-                );
-            }
+            let evt = serde_json::from_slice::<Event<DeliveryFailedEvt>>(payload)?.data;
+            let n = apply_transition(
+                pool, evt.shipment_id, "failed",
+                &[], &["delivered", "cancelled"],
+                "status_changed", "driver", serde_json::json!({}),
+            ).await?;
+            warn_if_no_op(n, topic, evt.shipment_id);
         }
         topics::DELIVERY_ATTEMPTED => {
-            let envelope: Event<DeliveryAttemptedEvt> = serde_json::from_slice(payload)?;
-            let evt = envelope.data;
-            let result = sqlx::query(
-                "UPDATE order_intake.shipments SET status = 'delivery_attempted', updated_at = NOW()
-                 WHERE id = $1 AND status NOT IN ('delivered','cancelled','returned')",
-            )
-            .bind(evt.shipment_id)
-            .execute(pool)
-            .await?;
-            if result.rows_affected() == 0 {
-                tracing::warn!(
-                    shipment_id = %evt.shipment_id,
-                    "DELIVERY_ATTEMPTED: no shipment updated (unknown id or already in terminal status)"
-                );
-            }
+            let evt = serde_json::from_slice::<Event<DeliveryAttemptedEvt>>(payload)?.data;
+            let n = apply_transition(
+                pool, evt.shipment_id, "delivery_attempted",
+                &[], &["delivered", "cancelled", "returned"],
+                "status_changed", "driver", serde_json::json!({}),
+            ).await?;
+            warn_if_no_op(n, topic, evt.shipment_id);
         }
         _ => {}
     }
     Ok(())
 }
+
+fn warn_if_no_op(rows: u64, topic: &str, shipment_id: Uuid) {
+    if rows == 0 {
+        tracing::warn!(
+            topic, %shipment_id,
+            "status consumer: no shipment advanced (unknown id or already past this status)"
+        );
+    }
+}
+
+/// Atomically advance a single shipment's status **and** append an immutable
+/// `shipment_events` row stamped with the server time (`created_at`) and a
+/// city-level `location`. Forward-only: the event is written only when the
+/// UPDATE actually changes a row, so out-of-order Kafka events never produce
+/// phantom timeline entries.
+///
+/// * `allow` — if non-empty, the current status must be one of these.
+/// * `deny`  — the current status must not be one of these.
+///
+/// Returns the number of shipments advanced (0 or 1).
+async fn apply_transition(
+    pool: &PgPool,
+    shipment_id: Uuid,
+    new_status: &str,
+    allow: &[&str],
+    deny: &[&str],
+    event_type: &str,
+    actor_type: &str,
+    extra_metadata: serde_json::Value,
+) -> anyhow::Result<u64> {
+    let allow: Vec<String> = allow.iter().map(|s| s.to_string()).collect();
+    let deny: Vec<String> = deny.iter().map(|s| s.to_string()).collect();
+    let rows = sqlx::query(TRANSITION_BY_ID_SQL)
+        .bind(shipment_id)
+        .bind(new_status)
+        .bind(&allow)
+        .bind(&deny)
+        .bind(event_type)
+        .bind(actor_type)
+        .bind(&extra_metadata)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(rows)
+}
+
+/// `apply_transition` keyed by a set of master AWBs (cross-border container
+/// events that fan out to every shipment they carry). Advances all matching
+/// non-terminal shipments and writes one timeline event per shipment.
+async fn apply_transition_by_awbs(
+    pool: &PgPool,
+    awbs: &[String],
+    new_status: &str,
+    deny: &[&str],
+    event_type: &str,
+    extra_metadata: serde_json::Value,
+) -> anyhow::Result<u64> {
+    let deny: Vec<String> = deny.iter().map(|s| s.to_string()).collect();
+    let rows = sqlx::query(TRANSITION_BY_AWBS_SQL)
+        .bind(awbs)
+        .bind(new_status)
+        .bind(&deny)
+        .bind(event_type)
+        .bind(&extra_metadata)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    Ok(rows)
+}
+
+// City-level location label for a transition: origin city for the pickup leg,
+// destination city for the delivery leg. Precise GPS lives in the POP/POD
+// evidence records, surfaced separately on the detail/tracking pages.
+
+/// $1 id, $2 new_status, $3 allow[], $4 deny[], $5 event_type, $6 actor_type, $7 metadata
+const TRANSITION_BY_ID_SQL: &str = concat!(
+    "WITH cur AS (\
+        SELECT id, tenant_id, status AS from_status, origin_city, dest_city \
+        FROM order_intake.shipments WHERE id = $1 FOR UPDATE\
+     ), upd AS (\
+        UPDATE order_intake.shipments s SET status = $2, updated_at = NOW() \
+        FROM cur WHERE s.id = cur.id \
+          AND (cardinality($3::text[]) = 0 OR cur.from_status = ANY($3)) \
+          AND NOT (cur.from_status = ANY($4)) \
+        RETURNING s.id\
+     ) \
+     INSERT INTO order_intake.shipment_events \
+        (tenant_id, shipment_id, event_type, from_status, to_status, actor_type, metadata) \
+     SELECT cur.tenant_id, cur.id, $5, cur.from_status, $2, $6, \
+        jsonb_build_object('location', ",
+    "CASE WHEN $2 IN ('pending','confirmed','pickup_assigned','picked_up') \
+         THEN cur.origin_city ELSE cur.dest_city END",
+    ") || $7::jsonb \
+     FROM cur JOIN upd ON upd.id = cur.id",
+);
+
+/// $1 awbs[], $2 new_status, $3 deny[], $4 event_type, $5 metadata
+const TRANSITION_BY_AWBS_SQL: &str = concat!(
+    "WITH cur AS (\
+        SELECT id, tenant_id, status AS from_status, origin_city, dest_city \
+        FROM order_intake.shipments WHERE awb = ANY($1) FOR UPDATE\
+     ), upd AS (\
+        UPDATE order_intake.shipments s SET status = $2, updated_at = NOW() \
+        FROM cur WHERE s.id = cur.id AND NOT (cur.from_status = ANY($3)) \
+        RETURNING s.id\
+     ) \
+     INSERT INTO order_intake.shipment_events \
+        (tenant_id, shipment_id, event_type, from_status, to_status, actor_type, metadata) \
+     SELECT cur.tenant_id, cur.id, $4, cur.from_status, $2, 'system', \
+        jsonb_build_object('location', ",
+    "CASE WHEN $2 IN ('pending','confirmed','pickup_assigned','picked_up') \
+         THEN cur.origin_city ELSE cur.dest_city END",
+    ") || $5::jsonb \
+     FROM cur JOIN upd ON upd.id = cur.id",
+);
 
 /// Apply a cross-border hub status transition. Forward-only: never overwrites a
 /// terminal status. Container events match by `master_awbs`; shipment-scoped
@@ -286,19 +371,15 @@ async fn apply_hub_status(
     new_status: &str,
     key: MatchKey,
 ) -> anyhow::Result<()> {
-    const TERMINAL: &str = "('delivered','cancelled','returned','failed')";
+    let metadata = serde_json::json!({ "source": topic });
     let rows = match key {
         MatchKey::ShipmentId => {
             let envelope: Event<HubShipmentEvt> = serde_json::from_slice(payload)?;
-            sqlx::query(&format!(
-                "UPDATE order_intake.shipments SET status = $2, updated_at = NOW()
-                 WHERE id = $1 AND status NOT IN {TERMINAL}"
-            ))
-            .bind(envelope.data.shipment_id)
-            .bind(new_status)
-            .execute(pool)
-            .await?
-            .rows_affected()
+            apply_transition(
+                pool, envelope.data.shipment_id, new_status,
+                &[], TERMINAL_STATUSES,
+                "status_changed", "system", metadata,
+            ).await?
         }
         MatchKey::MasterAwbs => {
             let envelope: Event<HubAwbsEvt> = serde_json::from_slice(payload)?;
@@ -307,15 +388,10 @@ async fn apply_hub_status(
                 tracing::warn!(topic, "hub event carried no master_awbs — nothing to update");
                 return Ok(());
             }
-            sqlx::query(&format!(
-                "UPDATE order_intake.shipments SET status = $2, updated_at = NOW()
-                 WHERE awb = ANY($1) AND status NOT IN {TERMINAL}"
-            ))
-            .bind(&awbs)
-            .bind(new_status)
-            .execute(pool)
-            .await?
-            .rows_affected()
+            apply_transition_by_awbs(
+                pool, &awbs, new_status, TERMINAL_STATUSES,
+                "status_changed", metadata,
+            ).await?
         }
     };
     if rows == 0 {

@@ -378,7 +378,7 @@ export default function TrackingPage() {
 
       {/* Hint */}
       <p className="mt-2 text-center text-2xs font-mono text-white/20">
-        Tracking numbers start with LS- (e.g. LS-A1B2C3D4)
+        Tracking numbers start with CM- (e.g. CM-PH1-S0000001A)
       </p>
 
       {/* Result */}
