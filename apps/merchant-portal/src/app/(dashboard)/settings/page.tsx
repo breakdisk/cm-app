@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
@@ -10,7 +10,7 @@ import {
   type ApiKey, type CreateApiKeyResult,
 } from "@/lib/api/api-keys";
 import { identityApi, type Me, type Tenant } from "@/lib/api/identity";
-import { addressesApi, type PickupAddress, type CreatePickupAddressPayload } from "@/lib/api/addresses";
+import { addressesApi, addressLookupApi, type AddressCode, type PickupAddress, type CreatePickupAddressPayload } from "@/lib/api/addresses";
 
 const TABS = ["Profile", "Pickup Addresses", "Notifications", "API Access"] as const;
 type Tab = (typeof TABS)[number];
@@ -224,6 +224,28 @@ function PickupAddressesTab() {
   const [saving, setSaving]       = useState(false);
   const [form, setForm]           = useState<CreatePickupAddressPayload>({ label: "", address: "", city: "", province: "", postal_code: "", country: "PH" });
   const [busyId, setBusyId]       = useState<string | null>(null);
+  const [citySuggestions, setCitySuggestions] = useState<AddressCode[]>([]);
+  const cityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  async function handlePostalBlur() {
+    if (!form.postal_code || form.postal_code.length < 3) return;
+    const hits = await addressLookupApi.byPostalCode(form.country || "PH", form.postal_code);
+    if (hits[0]) {
+      setForm((f) => ({ ...f, city: hits[0].city, province: hits[0].state_province ?? f.province ?? "" }));
+      setCitySuggestions([]);
+    }
+  }
+
+  function handleCityChange(value: string) {
+    setForm((f) => ({ ...f, city: value }));
+    setCitySuggestions([]);
+    if (cityTimerRef.current) clearTimeout(cityTimerRef.current);
+    if (value.length >= 2) {
+      cityTimerRef.current = setTimeout(async () => {
+        setCitySuggestions(await addressLookupApi.byCity(form.country || "PH", value));
+      }, 400);
+    }
+  }
 
   const load = useCallback(async () => {
     setError(null);
@@ -314,10 +336,30 @@ function PickupAddressesTab() {
                 <label className="text-xs text-white/40 uppercase tracking-widest font-mono">{label}</label>
                 <input
                   value={(form[field] as string) ?? ""}
-                  onChange={(e) => setForm((f) => ({ ...f, [field]: e.target.value }))}
+                  onChange={(e) => {
+                    if (field === "city") handleCityChange(e.target.value);
+                    else setForm((f) => ({ ...f, [field]: e.target.value }));
+                  }}
+                  onBlur={field === "postal_code" ? handlePostalBlur : undefined}
                   placeholder={placeholder}
                   className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white placeholder-white/25 outline-none focus:border-cyan-neon/40"
                 />
+                {field === "city" && citySuggestions.length > 0 && (
+                  <div className="rounded-lg border border-white/10 bg-[#050810]/95 divide-y divide-white/[0.06] overflow-hidden shadow-lg">
+                    {citySuggestions.slice(0, 5).map((s) => (
+                      <button key={`${s.postal_code}-${s.city}`} type="button"
+                        onClick={() => {
+                          setForm((f) => ({ ...f, city: s.city, province: s.state_province ?? f.province ?? "", postal_code: s.postal_code }));
+                          setCitySuggestions([]);
+                        }}
+                        className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-white/[0.04] transition-colors">
+                        <span className="flex-1 font-mono text-sm text-white/80">{s.city}</span>
+                        {s.state_province && <span className="font-mono text-xs text-white/30">{s.state_province}</span>}
+                        <span className="font-mono text-xs text-cyan-neon/60">{s.postal_code}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
           </div>
