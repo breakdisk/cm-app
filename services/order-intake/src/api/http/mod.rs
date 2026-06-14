@@ -20,6 +20,7 @@ use crate::application::{
     queries::ShipmentQueryService,
     services::shipment_service::ShipmentService,
 };
+use crate::domain::entities::address_code::AddressCode;
 
 // ---------------------------------------------------------------------------
 // AppState
@@ -341,6 +342,7 @@ pub fn router(state: AppState) -> Router {
         .route("/shipments/:id/cancel",     post(cancel_shipment))
         .route("/shipments/:id/reschedule", post(reschedule_shipment))
         .route("/shipments/:id/status",     put(admin_override_status))
+        .route("/address/lookup",           get(lookup_address))
         .layer(auth_layer);
 
     Router::new()
@@ -352,9 +354,11 @@ pub fn router(state: AppState) -> Router {
             .route("/shipments/dims",        get(batch_shipment_dims))
             .route("/shipments/:id/billing", get(get_shipment_billing))
             .route("/billing/shipments",     get(list_billing_shipments))
+            .route("/address/lookup",        get(internal_lookup_address))
         )
         .with_state(state)
 }
+
 
 /// Internal endpoint called by the connectors service after verifying platform HMAC.
 /// No JWT required — Istio mTLS enforces that only internal services can reach this.
@@ -524,4 +528,135 @@ async fn batch_shipment_dims(
     })).collect();
 
     Ok((StatusCode::OK, Json(serde_json::json!({ "dims": dims }))))
+}
+
+// ---------------------------------------------------------------------------
+// Address reference lookup
+// ---------------------------------------------------------------------------
+
+/// Query parameters accepted by both the authenticated and internal endpoints.
+///
+/// At least one of `postal_code`, `city`, or `q` must be provided.
+/// - `postal_code` — exact match (fast; use for zip-to-city autofill)
+/// - `city`        — case-insensitive prefix match (use for type-ahead dropdowns)
+/// - `q`           — fuzzy contains match across city + state_province
+#[derive(Deserialize)]
+struct AddressLookupParams {
+    country_code: String,
+    postal_code:  Option<String>,
+    city:         Option<String>,
+    q:            Option<String>,
+    #[serde(default = "default_address_limit")]
+    limit:        i64,
+}
+
+fn default_address_limit() -> i64 { 20 }
+
+/// `GET /v1/address/lookup` — JWT-authenticated (any role).
+///
+/// Example requests:
+/// ```
+/// GET /v1/address/lookup?country_code=PH&postal_code=1600
+/// GET /v1/address/lookup?country_code=PH&city=Mak&limit=10
+/// GET /v1/address/lookup?country_code=PH&q=Makati
+/// GET /v1/address/lookup?country_code=US&postal_code=10001
+/// ```
+async fn lookup_address(
+    State(s): State<AppState>,
+    _claims: AuthClaims,
+    Query(params): Query<AddressLookupParams>,
+) -> impl IntoResponse {
+    run_address_lookup(&s.pool, params).await
+}
+
+/// `GET /v1/internal/address/lookup` — no JWT; mTLS only.
+///
+/// Used by other microservices (dispatch, engagement, hub-ops) to resolve
+/// addresses without requiring a tenant JWT.
+async fn internal_lookup_address(
+    State(s): State<AppState>,
+    Query(params): Query<AddressLookupParams>,
+) -> impl IntoResponse {
+    run_address_lookup(&s.pool, params).await
+}
+
+async fn run_address_lookup(
+    pool: &sqlx::PgPool,
+    p: AddressLookupParams,
+) -> Result<impl IntoResponse, AppError> {
+    if p.country_code.len() != 2 {
+        return Err(AppError::Validation(
+            "country_code must be a 2-letter ISO 3166-1 alpha-2 code (e.g. PH, US, SG)".into(),
+        ));
+    }
+    if p.postal_code.is_none() && p.city.is_none() && p.q.is_none() {
+        return Err(AppError::Validation(
+            "Provide at least one of: postal_code, city, q".into(),
+        ));
+    }
+
+    let limit = p.limit.clamp(1, 100);
+    let country = p.country_code.to_uppercase();
+
+    let rows: Vec<AddressCode> = if let Some(postal) = p.postal_code {
+        // Exact postal code match — fastest path; used for zip-to-city autofill.
+        sqlx::query_as::<_, AddressCode>(
+            r#"SELECT country_code, postal_code, city, state_province, region, time_zone
+                 FROM reference.address_codes
+                WHERE country_code = $1
+                  AND postal_code  = $2
+                ORDER BY city
+                LIMIT $3"#,
+        )
+        .bind(&country)
+        .bind(&postal)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
+
+    } else if let Some(city_prefix) = p.city {
+        // Case-insensitive prefix match — use for live type-ahead dropdowns.
+        // Backed by idx_addrref_city_prefix (text_pattern_ops) for fast LIKE 'x%'.
+        sqlx::query_as::<_, AddressCode>(
+            r#"SELECT country_code, postal_code, city, state_province, region, time_zone
+                 FROM reference.address_codes
+                WHERE country_code = $1
+                  AND lower(city)  LIKE lower($2) || '%'
+                ORDER BY city
+                LIMIT $3"#,
+        )
+        .bind(&country)
+        .bind(&city_prefix)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
+
+    } else {
+        // Fuzzy contains search across city + state_province — backed by pg_trgm GIN index.
+        // Used for broad "search anything" UX (e.g. merchant types "Metro" to find all NCR cities).
+        let term = p.q.unwrap_or_default();
+        sqlx::query_as::<_, AddressCode>(
+            r#"SELECT country_code, postal_code, city, state_province, region, time_zone
+                 FROM reference.address_codes
+                WHERE country_code = $1
+                  AND (lower(city)           LIKE '%' || lower($2) || '%'
+                    OR lower(state_province) LIKE '%' || lower($2) || '%')
+                ORDER BY city
+                LIMIT $3"#,
+        )
+        .bind(&country)
+        .bind(&term)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?
+    };
+
+    let total = rows.len();
+    Ok((StatusCode::OK, Json(serde_json::json!({
+        "data":  rows,
+        "total": total,
+    }))))
 }

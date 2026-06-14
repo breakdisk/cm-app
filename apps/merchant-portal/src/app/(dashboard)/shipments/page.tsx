@@ -18,6 +18,7 @@ import {
 import { cn } from "@/lib/design-system/cn";
 import { authFetch } from "@/lib/auth/auth-fetch";
 import QRCodeSVG from "react-qr-code";
+import { addressLookupApi, type AddressCode } from "@/lib/api/addresses";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -912,6 +913,46 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
   const [bookError,    setBookError]    = useState<string | null>(null);
   const [bookedResult, setBookedResult] = useState<BookedResult | null>(null);
 
+  // ── Address reference lookup ───────────────────────────────────────────────
+  const [senderCitySuggestions,   setSenderCitySuggestions]   = useState<AddressCode[]>([]);
+  const [receiverCitySuggestions, setReceiverCitySuggestions] = useState<AddressCode[]>([]);
+  const senderCityTimer   = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const receiverCityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  async function handleSenderZipBlur() {
+    if (senderZip.length < 3) return;
+    const hits = await addressLookupApi.byPostalCode(senderCountry, senderZip);
+    if (hits[0]) { setSenderCity(hits[0].city); setSenderCitySuggestions([]); }
+  }
+
+  async function handleReceiverZipBlur() {
+    if (receiverZip.length < 3) return;
+    const hits = await addressLookupApi.byPostalCode(receiverCountry, receiverZip);
+    if (hits[0]) { setReceiverCity(hits[0].city); setReceiverCitySuggestions([]); }
+  }
+
+  function onSenderCityChange(value: string) {
+    setSenderCity(value);
+    setSenderCitySuggestions([]);
+    if (senderCityTimer.current) clearTimeout(senderCityTimer.current);
+    if (value.length >= 2) {
+      senderCityTimer.current = setTimeout(async () => {
+        setSenderCitySuggestions(await addressLookupApi.byCity(senderCountry, value));
+      }, 400);
+    }
+  }
+
+  function onReceiverCityChange(value: string) {
+    setReceiverCity(value);
+    setReceiverCitySuggestions([]);
+    if (receiverCityTimer.current) clearTimeout(receiverCityTimer.current);
+    if (value.length >= 2) {
+      receiverCityTimer.current = setTimeout(async () => {
+        setReceiverCitySuggestions(await addressLookupApi.byCity(receiverCountry, value));
+      }, 400);
+    }
+  }
+
   // Auto-detect shipment type from countries
   const isIntl     = senderCountry !== receiverCountry;
   const totalSteps = isIntl ? 4 : 3;
@@ -1073,11 +1114,27 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
                 placeholder="Sender's Phone Number *" type="tel" className={inputCls("cyan")} />
               <input value={senderAddress} onChange={(e) => setSenderAddress(e.target.value)}
                 placeholder="Street Address *" className={inputCls("cyan")} />
-              <div className="grid grid-cols-2 gap-2">
-                <input value={senderCity} onChange={(e) => setSenderCity(e.target.value)}
-                  placeholder="City *" className={inputCls("cyan")} />
-                <input value={senderZip} onChange={(e) => setSenderZip(e.target.value)}
-                  placeholder="ZIP Code *" maxLength={10} className={inputCls("cyan")} />
+              <div className="space-y-1">
+                <div className="grid grid-cols-2 gap-2">
+                  <input value={senderCity} onChange={(e) => onSenderCityChange(e.target.value)}
+                    placeholder="City *" className={inputCls("cyan")} />
+                  <input value={senderZip} onChange={(e) => setSenderZip(e.target.value)}
+                    onBlur={handleSenderZipBlur}
+                    placeholder="ZIP Code *" maxLength={10} className={inputCls("cyan")} />
+                </div>
+                {senderCitySuggestions.length > 0 && (
+                  <div className="rounded-lg border border-glass-border bg-canvas/95 divide-y divide-glass-border overflow-hidden shadow-lg">
+                    {senderCitySuggestions.slice(0, 5).map((s) => (
+                      <button key={`${s.postal_code}-${s.city}`} type="button"
+                        onClick={() => { setSenderCity(s.city); setSenderZip(s.postal_code); setSenderCitySuggestions([]); }}
+                        className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-glass-200 transition-colors">
+                        <span className="flex-1 font-mono text-sm text-white/80">{s.city}</span>
+                        {s.state_province && <span className="font-mono text-xs text-white/30">{s.state_province}</span>}
+                        <span className="font-mono text-xs text-cyan-neon/60">{s.postal_code}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
               <div>
                 <label className="block text-2xs font-mono text-white/40 uppercase tracking-wider mb-1.5">Country</label>
@@ -1099,11 +1156,27 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
                 placeholder="Receiver's Phone Number *" type="tel" className={inputCls(isIntl ? "purple" : "green")} />
               <input value={receiverAddress} onChange={(e) => setReceiverAddress(e.target.value)}
                 placeholder="Street Address *" className={inputCls(isIntl ? "purple" : "green")} />
-              <div className="grid grid-cols-2 gap-2">
-                <input value={receiverCity} onChange={(e) => setReceiverCity(e.target.value)}
-                  placeholder="City *" className={inputCls(isIntl ? "purple" : "green")} />
-                <input value={receiverZip} onChange={(e) => setReceiverZip(e.target.value)}
-                  placeholder="ZIP Code *" maxLength={10} className={inputCls(isIntl ? "purple" : "green")} />
+              <div className="space-y-1">
+                <div className="grid grid-cols-2 gap-2">
+                  <input value={receiverCity} onChange={(e) => onReceiverCityChange(e.target.value)}
+                    placeholder="City *" className={inputCls(isIntl ? "purple" : "green")} />
+                  <input value={receiverZip} onChange={(e) => setReceiverZip(e.target.value)}
+                    onBlur={handleReceiverZipBlur}
+                    placeholder="ZIP Code *" maxLength={10} className={inputCls(isIntl ? "purple" : "green")} />
+                </div>
+                {receiverCitySuggestions.length > 0 && (
+                  <div className="rounded-lg border border-glass-border bg-canvas/95 divide-y divide-glass-border overflow-hidden shadow-lg">
+                    {receiverCitySuggestions.slice(0, 5).map((s) => (
+                      <button key={`${s.postal_code}-${s.city}`} type="button"
+                        onClick={() => { setReceiverCity(s.city); setReceiverZip(s.postal_code); setReceiverCitySuggestions([]); }}
+                        className="w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-glass-200 transition-colors">
+                        <span className="flex-1 font-mono text-sm text-white/80">{s.city}</span>
+                        {s.state_province && <span className="font-mono text-xs text-white/30">{s.state_province}</span>}
+                        <span className={cn("font-mono text-xs", isIntl ? "text-purple-plasma/60" : "text-green-signal/60")}>{s.postal_code}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
               <div>
                 <label className="block text-2xs font-mono text-white/40 uppercase tracking-wider mb-1.5">Country</label>

@@ -38,6 +38,7 @@ import type { AppDispatch, RootState } from "../../store";
 import { AwbQRCode } from "../../components/AwbQRCode";
 import Toast from "../../components/Toast";
 import * as shipmentsService from "../../services/api/shipments";
+import { lookupByPostalCode, lookupByCity, type AddressCode } from "../../services/api/addresses";
 import { getStoredCustomerId, getStoredToken, logout } from "../../services/api/auth";
 import { savePendingShipment } from "../../db/sync";
 
@@ -259,6 +260,46 @@ export function BookingScreen({ route }: { route?: any }) {
   const [receiverCity,    setReceiverCity]    = useState("");
   const [receiverZip,     setReceiverZip]     = useState("");
   const [receiverCountry, setReceiverCountry] = useState("PH");
+
+  // ── Address reference lookup (city/zip autofill + type-ahead) ────────────
+  const [senderCitySuggestions,   setSenderCitySuggestions]   = React.useState<AddressCode[]>([]);
+  const [receiverCitySuggestions, setReceiverCitySuggestions] = React.useState<AddressCode[]>([]);
+  const senderCityTimer   = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const receiverCityTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  async function handleSenderZipEnd() {
+    if (senderZip.length < 3) return;
+    const hits = await lookupByPostalCode(senderCountry, senderZip);
+    if (hits[0]) { setSenderCity(hits[0].city); setSenderCitySuggestions([]); }
+  }
+
+  async function handleReceiverZipEnd() {
+    if (receiverZip.length < 3) return;
+    const hits = await lookupByPostalCode(receiverCountry, receiverZip);
+    if (hits[0]) { setReceiverCity(hits[0].city); setReceiverCitySuggestions([]); }
+  }
+
+  function onSenderCityChange(text: string) {
+    setSenderCity(text);
+    setSenderCitySuggestions([]);
+    if (senderCityTimer.current) clearTimeout(senderCityTimer.current);
+    if (text.length >= 2) {
+      senderCityTimer.current = setTimeout(async () => {
+        setSenderCitySuggestions(await lookupByCity(senderCountry, text));
+      }, 400);
+    }
+  }
+
+  function onReceiverCityChange(text: string) {
+    setReceiverCity(text);
+    setReceiverCitySuggestions([]);
+    if (receiverCityTimer.current) clearTimeout(receiverCityTimer.current);
+    if (text.length >= 2) {
+      receiverCityTimer.current = setTimeout(async () => {
+        setReceiverCitySuggestions(await lookupByCity(receiverCountry, text));
+      }, 400);
+    }
+  }
 
   // ── Step 3 — Package
   const [weight,        setWeight]        = useState("");
@@ -636,13 +677,28 @@ export function BookingScreen({ route }: { route?: any }) {
               placeholder="Street Address *" placeholderTextColor="rgba(255,255,255,0.2)" style={s.fieldInput} />
 
             <View style={s.rowInputs}>
-              <TextInput value={senderCity} onChangeText={setSenderCity}
+              <TextInput value={senderCity} onChangeText={onSenderCityChange}
                 placeholder="City *" placeholderTextColor="rgba(255,255,255,0.2)"
                 style={[s.fieldInput, { flex: 1 }]} />
               <TextInput value={senderZip} onChangeText={setSenderZip}
+                onEndEditing={handleSenderZipEnd}
                 placeholder="ZIP *" placeholderTextColor="rgba(255,255,255,0.2)"
                 style={[s.fieldInput, { flex: 0.7 }]} keyboardType="number-pad" maxLength={10} />
             </View>
+            {senderCitySuggestions.length > 0 && (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}
+                style={{ marginTop: -4, marginBottom: 4 }} keyboardShouldPersistTaps="handled">
+                {senderCitySuggestions.map((item) => (
+                  <Pressable key={`${item.postal_code}-${item.city}`}
+                    onPress={() => { setSenderCity(item.city); setSenderZip(item.postal_code); setSenderCitySuggestions([]); }}
+                    style={{ backgroundColor: "rgba(0,229,255,0.08)", borderWidth: 1, borderColor: "rgba(0,229,255,0.2)", borderRadius: 20, paddingHorizontal: 12, paddingVertical: 6, marginRight: 6 }}>
+                    <Text style={{ color: "#00E5FF", fontSize: 12, fontFamily: "JetBrainsMono-Regular" }}>
+                      {item.city}  {item.postal_code}
+                    </Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            )}
 
             <Text style={s.label}>Country</Text>
             <CountryPickerRN value={senderCountry} onChange={setSenderCountry} accent={CYAN} />
@@ -676,13 +732,28 @@ export function BookingScreen({ route }: { route?: any }) {
               placeholder="Street Address *" placeholderTextColor="rgba(255,255,255,0.2)" style={s.fieldInput} />
 
             <View style={s.rowInputs}>
-              <TextInput value={receiverCity} onChangeText={setReceiverCity}
+              <TextInput value={receiverCity} onChangeText={onReceiverCityChange}
                 placeholder="City *" placeholderTextColor="rgba(255,255,255,0.2)"
                 style={[s.fieldInput, { flex: 1 }]} />
               <TextInput value={receiverZip} onChangeText={setReceiverZip}
+                onEndEditing={handleReceiverZipEnd}
                 placeholder="ZIP *" placeholderTextColor="rgba(255,255,255,0.2)"
                 style={[s.fieldInput, { flex: 0.7 }]} keyboardType="number-pad" maxLength={10} />
             </View>
+            {receiverCitySuggestions.length > 0 && (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}
+                style={{ marginTop: -4, marginBottom: 4 }} keyboardShouldPersistTaps="handled">
+                {receiverCitySuggestions.map((item) => (
+                  <Pressable key={`${item.postal_code}-${item.city}`}
+                    onPress={() => { setReceiverCity(item.city); setReceiverZip(item.postal_code); setReceiverCitySuggestions([]); }}
+                    style={{ backgroundColor: "rgba(168,85,247,0.08)", borderWidth: 1, borderColor: "rgba(168,85,247,0.2)", borderRadius: 20, paddingHorizontal: 12, paddingVertical: 6, marginRight: 6 }}>
+                    <Text style={{ color: "#A855F7", fontSize: 12, fontFamily: "JetBrainsMono-Regular" }}>
+                      {item.city}  {item.postal_code}
+                    </Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            )}
 
             <Text style={s.label}>Country</Text>
             <CountryPickerRN value={receiverCountry} onChange={setReceiverCountry} accent={accentAlt} />
