@@ -6,6 +6,14 @@ import { getOrderClient } from './client';
 
 // ── Request types (match order-intake CreateShipmentCommand) ──────────────────
 
+export interface PieceInput {
+  weight_grams: number;
+  length_cm?: number;
+  width_cm?: number;
+  height_cm?: number;
+  description?: string;
+}
+
 export interface AddressInput {
   line1: string;
   line2?: string;
@@ -33,6 +41,7 @@ export interface CreateShipmentRequest {
   special_instructions?: string;
   merchant_reference?: string;
   piece_count?: number;
+  pieces?: PieceInput[];
 }
 
 // ── Response types ─────────────────────────────────────────────────────────────

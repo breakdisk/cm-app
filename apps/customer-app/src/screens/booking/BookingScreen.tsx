@@ -51,6 +51,8 @@ const BORDER  = "rgba(255,255,255,0.08)";
 
 type FreightMode = "sea" | "air";
 
+interface PieceEntry { weight: string; l: string; w: string; h: string; description: string; }
+
 const SEA_DAYS = "30–45 days";
 const AIR_DAYS = "5–10 days";
 
@@ -217,12 +219,16 @@ export function BookingScreen({ route }: { route?: any }) {
   React.useEffect(() => {
     const prefill = route?.params?.prefill;
     if (!prefill) return;
-    if (prefill.length_cm)    setBoxLength(String(prefill.length_cm));
-    if (prefill.width_cm)     setBoxWidth(String(prefill.width_cm));
-    if (prefill.height_cm)    setBoxHeight(String(prefill.height_cm));
-    if (prefill.weight_kg)    setWeight(String(prefill.weight_kg));
+    if (prefill.weight_kg || prefill.length_cm || prefill.width_cm || prefill.height_cm) {
+      setPieces([{
+        weight: prefill.weight_kg ? String(prefill.weight_kg) : "",
+        l:      prefill.length_cm ? String(prefill.length_cm) : "",
+        w:      prefill.width_cm  ? String(prefill.width_cm)  : "",
+        h:      prefill.height_cm ? String(prefill.height_cm) : "",
+        description: "",
+      }]);
+    }
     if (prefill.freight_mode) setFreightMode(prefill.freight_mode as FreightMode);
-    // Balikbayan boxes are always destined for the Philippines
     setReceiverCountry('PH');
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -260,13 +266,11 @@ export function BookingScreen({ route }: { route?: any }) {
   const [isCOD,         setIsCOD]         = useState(false);
   const [codAmount,     setCodAmount]      = useState("");
   const [isFragile,     setIsFragile]      = useState(false);
-  // International extras
-  const [boxLength,     setBoxLength]     = useState("");
-  const [boxWidth,      setBoxWidth]      = useState("");
-  const [boxHeight,     setBoxHeight]     = useState("");
+  // International extras — per-piece declarations
+  const EMPTY_PIECE: PieceEntry = { weight: "", l: "", w: "", h: "", description: "" };
+  const [pieces,        setPieces]        = useState<PieceEntry[]>([{ ...EMPTY_PIECE }]);
   const [declaredValue, setDeclaredValue] = useState("");
   const [freightMode,   setFreightMode]   = useState<FreightMode>("sea");
-  const [contents,      setContents]      = useState("");
 
   // ── Step 4 — Passport (international only)
   const [passportUri, setPassportUri] = useState<string | null>(null);
@@ -337,12 +341,17 @@ export function BookingScreen({ route }: { route?: any }) {
   // ── Fee calculation ───────────────────────────────────────────────────────
 
   function calcBaseTotal(): number {
+    if (isIntl) {
+      const perPiece = pieces.reduce((sum, p) => {
+        const kg = parseFloat(p.weight || "0");
+        const surcharge = kg > 25 ? Math.ceil((kg - 25) / 0.5) * 10 : 0;
+        return sum + 500 + surcharge;
+      }, 0);
+      return perPiece + (freightMode === "air" ? 800 : 0);
+    }
     const w = parseFloat(weight || "0");
-    const base = isIntl ? BASE_RATE.international : BASE_RATE.local;
     const weightSurcharge = w > 1 ? Math.ceil((w - 1) / 0.5) * 10 : 0;
-    const fragileAdd = isFragile && !isIntl ? 30 : 0;
-    const airPremium = isIntl && freightMode === "air" ? 800 : 0;
-    return base + weightSurcharge + fragileAdd + airPremium;
+    return 85 + weightSurcharge + (isFragile ? 30 : 0);
   }
 
   function calcTotal(): number {
@@ -390,7 +399,9 @@ export function BookingScreen({ route }: { route?: any }) {
           origin, destination,
           recipientName: receiverName,
           recipientPhone: receiverPhone,
-          weight: parseFloat(weight) || 1,
+          weight: isIntl
+            ? pieces.reduce((s, p) => s + (parseFloat(p.weight || '0') || 0), 0) || 1
+            : parseFloat(weight) || 1,
           type: isIntl ? "international" : "local",
           fee: calcTotal(),
           currency: "PHP",
@@ -401,6 +412,11 @@ export function BookingScreen({ route }: { route?: any }) {
         showToast("Saved offline. Will sync when online.", "info");
         return;
       }
+
+      const intlTotalGrams = isIntl
+        ? Math.round(pieces.reduce((s, p) => s + parseFloat(p.weight || '0') * 1000, 0)) || 1000
+        : 0;
+      const intlDesc = pieces.map(p => p.description).filter(Boolean).join(', ') || 'Balikbayan Box';
 
       const response = await shipmentsService.createShipment({
         customer_name:  receiverName,
@@ -420,10 +436,17 @@ export function BookingScreen({ route }: { route?: any }) {
           postal_code:  receiverZip || '0000',
           country_code: receiverCountry || 'PH',
         },
-        service_type:      isIntl ? (freightMode === 'sea' ? 'balikbayan' : 'express') : 'standard',
-        weight_grams:      Math.round((parseFloat(weight) || 1) * 1000),
-        description:       isIntl ? (contents || 'Balikbayan Box') : (description || 'Parcel'),
-        cod_amount_cents:  isCOD && !isIntl ? Math.round(parseInt(codAmount || '0') * 100) : undefined,
+        service_type:  isIntl ? (freightMode === 'sea' ? 'balikbayan' : 'express') : 'standard',
+        weight_grams:  isIntl ? intlTotalGrams : Math.round((parseFloat(weight) || 1) * 1000),
+        pieces:        isIntl ? pieces.map(p => ({
+          weight_grams: Math.round(parseFloat(p.weight || '0') * 1000),
+          length_cm:    p.l ? Math.round(parseFloat(p.l)) : undefined,
+          width_cm:     p.w ? Math.round(parseFloat(p.w)) : undefined,
+          height_cm:    p.h ? Math.round(parseFloat(p.h)) : undefined,
+          description:  p.description || undefined,
+        })) : undefined,
+        description:   isIntl ? intlDesc : (description || 'Parcel'),
+        cod_amount_cents:     isCOD && !isIntl ? Math.round(parseInt(codAmount || '0') * 100) : undefined,
         declared_value_cents: Math.round(calcTotal() * 100),
       });
 
@@ -433,6 +456,10 @@ export function BookingScreen({ route }: { route?: any }) {
         ? (freightMode === "sea" ? "30–45 days" : "5–10 days")
         : now.toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric" });
 
+      const intlWeightStr = isIntl
+        ? pieces.reduce((s, p) => s + parseFloat(p.weight || '0'), 0).toFixed(1)
+        : undefined;
+      const intlDescStore = pieces.map(p => p.description).filter(Boolean).join(', ') || "Balikbayan Box";
       dispatch(shipmentsActions.addShipment({
         id: response.id,
         awb: response.awb ?? response.tracking_number,
@@ -440,8 +467,8 @@ export function BookingScreen({ route }: { route?: any }) {
         status: "confirmed",
         origin, destination,
         destCountry: isIntl ? receiverCountry : undefined,
-        description: isIntl ? (contents || "Balikbayan Box") : (description || "Parcel"),
-        weight: weight || undefined,
+        description: isIntl ? intlDescStore : (description || "Parcel"),
+        weight: isIntl ? intlWeightStr : (weight || undefined),
         isCOD: isCOD && !isIntl,
         codAmount: isCOD && !isIntl ? codAmount : undefined,
         freightMode: isIntl ? freightMode : undefined,
@@ -483,7 +510,7 @@ export function BookingScreen({ route }: { route?: any }) {
     setSenderName(""); setSenderPhone(""); setSenderAddress(""); setSenderCity(""); setSenderZip(""); setSenderCountry("PH"); setPickupCoords(null);
     setReceiverName(""); setReceiverPhone(""); setReceiverAddress(""); setReceiverCity(""); setReceiverZip(""); setReceiverCountry("PH");
     setWeight(""); setDescription(""); setIsCOD(false); setCodAmount(""); setIsFragile(false);
-    setBoxLength(""); setBoxWidth(""); setBoxHeight(""); setDeclaredValue(""); setContents(""); setFreightMode("sea");
+    setPieces([{ weight: "", l: "", w: "", h: "", description: "" }]); setDeclaredValue(""); setFreightMode("sea");
     setPassportUri(null); setRedeemPoints(false); setRedeemAmount(0);
   }
 
@@ -492,8 +519,8 @@ export function BookingScreen({ route }: { route?: any }) {
   const canStep1 = senderName.trim().length >= 1 && senderPhone.trim().length >= 7 && senderAddress.trim().length >= 5 && senderCity.trim().length >= 2 && senderZip.trim().length >= 1;
   const canStep2 = receiverName.trim().length >= 1 && receiverPhone.trim().length >= 7 && receiverAddress.trim().length >= 5 && receiverCity.trim().length >= 2 && receiverZip.trim().length >= 1;
   const canStep3 = isIntl
-    ? boxLength.trim() && boxWidth.trim() && boxHeight.trim() && weight.trim() && declaredValue.trim()
-    : weight.trim();
+    ? pieces.length > 0 && pieces.every(p => p.weight.trim() !== '') && declaredValue.trim() !== ''
+    : weight.trim() !== '';
   const canStep4 = !!passportUri; // international passport step
 
   // Step numbers for review
@@ -739,12 +766,21 @@ export function BookingScreen({ route }: { route?: any }) {
           </FadeInView>
         )}
 
-        {/* ── STEP 3 — Package (international) ─────────────────────────── */}
+        {/* ── STEP 3 — Package (international / Balikbayan) ────────────── */}
         {!confirmedAwb && step === 3 && isIntl && (
           <FadeInView fromY={16} style={s.card}>
             <Text style={s.cardTitle}>Box Details</Text>
 
-            {/* Pre-fill banner — shown when dimensions came from QuoteScreen */}
+            {/* Live fee estimate */}
+            <View style={s.feeSummaryRow}>
+              <Ionicons name="calculator-outline" size={14} color={PURPLE} />
+              <Text style={s.feeSummaryText}>
+                {pieces.length} box{pieces.length > 1 ? 'es' : ''} · Est. ₱{calcBaseTotal().toFixed(0)}
+                {freightMode === 'air' ? ' (incl. air premium)' : ''}
+              </Text>
+            </View>
+
+            {/* Pre-fill banner from QuoteScreen */}
             {route?.params?.prefill && (
               <FadeInView duration={250} style={[s.intlHint, { borderColor: "rgba(0,255,136,0.25)", backgroundColor: "rgba(0,255,136,0.06)" }]}>
                 <Ionicons name="checkmark-circle-outline" size={14} color={GREEN} />
@@ -754,35 +790,71 @@ export function BookingScreen({ route }: { route?: any }) {
               </FadeInView>
             )}
 
-            <Text style={s.label}>Box Dimensions (cm)</Text>
-            <View style={{ flexDirection: "row", gap: 8 }}>
-              {([
-                { val: boxLength, set: setBoxLength, ph: "Length" },
-                { val: boxWidth,  set: setBoxWidth,  ph: "Width"  },
-                { val: boxHeight, set: setBoxHeight,  ph: "Height" },
-              ] as const).map(({ val, set, ph }) => (
-                <View key={ph} style={[s.inputWrap, { flex: 1 }]}>
-                  <TextInput value={val} onChangeText={set} placeholder={ph}
-                    placeholderTextColor="rgba(255,255,255,0.2)"
-                    style={[s.input, { textAlign: "center" }]} keyboardType="decimal-pad" />
+            {/* Per-piece cards */}
+            {pieces.map((piece, idx) => (
+              <View key={idx} style={s.pieceCard}>
+                <View style={s.pieceCardHeader}>
+                  <Text style={s.pieceCardTitle}>Box {idx + 1} of {pieces.length}</Text>
+                  {pieces.length > 1 && (
+                    <Pressable onPress={() => setPieces(pieces.filter((_, i) => i !== idx))} hitSlop={8}>
+                      <Ionicons name="close-circle" size={18} color="rgba(255,255,255,0.3)" />
+                    </Pressable>
+                  )}
                 </View>
-              ))}
-            </View>
 
-            <Text style={s.label}>Actual Weight (kg)</Text>
-            <View style={s.inputWrap}>
-              <Ionicons name="scale-outline" size={16} color="rgba(255,255,255,0.3)" />
-              <TextInput value={weight} onChangeText={setWeight} placeholder="e.g. 20.5"
-                placeholderTextColor="rgba(255,255,255,0.2)" style={s.input} keyboardType="decimal-pad" />
-            </View>
+                <Text style={s.label}>Weight (kg) *</Text>
+                <View style={s.inputWrap}>
+                  <Ionicons name="scale-outline" size={16} color="rgba(255,255,255,0.3)" />
+                  <TextInput
+                    value={piece.weight}
+                    onChangeText={v => setPieces(pieces.map((p, i) => i === idx ? { ...p, weight: v } : p))}
+                    placeholder="e.g. 20.5"
+                    placeholderTextColor="rgba(255,255,255,0.2)"
+                    style={s.input}
+                    keyboardType="decimal-pad"
+                  />
+                </View>
 
-            <Text style={s.label}>Contents Description</Text>
-            <View style={s.inputWrap}>
-              <Ionicons name="cube-outline" size={16} color="rgba(255,255,255,0.3)" />
-              <TextInput value={contents} onChangeText={setContents}
-                placeholder="e.g. Clothes, canned goods, gadgets"
-                placeholderTextColor="rgba(255,255,255,0.2)" style={s.input} multiline />
-            </View>
+                <Text style={s.label}>Dimensions (cm) — Optional</Text>
+                <View style={{ flexDirection: "row", gap: 8 }}>
+                  {(["l", "w", "h"] as const).map((dim, di) => (
+                    <View key={dim} style={[s.inputWrap, { flex: 1 }]}>
+                      <TextInput
+                        value={piece[dim]}
+                        onChangeText={v => setPieces(pieces.map((p, i) => i === idx ? { ...p, [dim]: v } : p))}
+                        placeholder={["Length", "Width", "Height"][di]}
+                        placeholderTextColor="rgba(255,255,255,0.2)"
+                        style={[s.input, { textAlign: "center" }]}
+                        keyboardType="decimal-pad"
+                      />
+                    </View>
+                  ))}
+                </View>
+
+                <Text style={s.label}>Contents</Text>
+                <View style={s.inputWrap}>
+                  <Ionicons name="cube-outline" size={16} color="rgba(255,255,255,0.3)" />
+                  <TextInput
+                    value={piece.description}
+                    onChangeText={v => setPieces(pieces.map((p, i) => i === idx ? { ...p, description: v } : p))}
+                    placeholder="e.g. Clothes, canned goods, gadgets"
+                    placeholderTextColor="rgba(255,255,255,0.2)"
+                    style={s.input}
+                  />
+                </View>
+              </View>
+            ))}
+
+            {/* Add Box */}
+            {pieces.length < 10 && (
+              <Pressable
+                onPress={() => setPieces([...pieces, { weight: "", l: "", w: "", h: "", description: "" }])}
+                style={s.addPieceBtn}
+              >
+                <Ionicons name="add-circle-outline" size={18} color={PURPLE} />
+                <Text style={s.addPieceBtnText}>Add Box ({pieces.length}/10)</Text>
+              </Pressable>
+            )}
 
             <Text style={s.label}>Declared Value (PHP) — for Customs</Text>
             <View style={s.inputWrap}>
@@ -795,8 +867,8 @@ export function BookingScreen({ route }: { route?: any }) {
             <Text style={s.label}>Freight Mode</Text>
             <View style={{ flexDirection: "row", gap: 10 }}>
               {([
-                { val: "sea" as FreightMode, icon: "boat-outline",     label: "Sea Freight", sub: SEA_DAYS, color: CYAN,  note: "Most economical" },
-                { val: "air" as FreightMode, icon: "airplane-outline",  label: "Air Freight", sub: AIR_DAYS, color: AMBER, note: "+₱800 premium" },
+                { val: "sea" as FreightMode, icon: "boat-outline",    label: "Sea Freight", sub: SEA_DAYS, color: CYAN,  note: "Most economical" },
+                { val: "air" as FreightMode, icon: "airplane-outline", label: "Air Freight", sub: AIR_DAYS, color: AMBER, note: "+₱800 premium" },
               ] as const).map(opt => (
                 <Pressable key={opt.val} onPress={() => setFreightMode(opt.val)}
                   style={[s.freightOption, freightMode === opt.val && { borderColor: opt.color + "60", backgroundColor: opt.color + "0F" }]}>
@@ -933,9 +1005,9 @@ export function BookingScreen({ route }: { route?: any }) {
             ))}
 
             {isIntl && ([
-              { label: "Dimensions",     value: `${boxLength} × ${boxWidth} × ${boxHeight} cm` },
-              { label: "Weight",         value: `${weight} kg` },
-              { label: "Contents",       value: contents || "—" },
+              { label: "Boxes",          value: `${pieces.length} box${pieces.length > 1 ? 'es' : ''}` },
+              { label: "Total Weight",   value: `${pieces.reduce((s, p) => s + parseFloat(p.weight || '0'), 0).toFixed(1)} kg` },
+              { label: "Contents",       value: pieces.map(p => p.description).filter(Boolean).join(', ') || "—" },
               { label: "Declared Value", value: `₱${declaredValue}` },
               { label: "Freight Mode",   value: freightMode === "sea" ? `Sea Freight (${SEA_DAYS})` : `Air Freight (${AIR_DAYS})` },
               { label: "Receiver ID",    value: passportUri ? "✓ Passport uploaded" : "—" },
@@ -1184,6 +1256,13 @@ const s = StyleSheet.create({
   earnPtsText:       { fontSize: 12 },
   transitNote:       { flexDirection: "row", alignItems: "flex-start", gap: 8, backgroundColor: "rgba(168,85,247,0.04)", borderRadius: 8, padding: 10 },
   transitNoteText:   { flex: 1, fontSize: 11, color: "rgba(168,85,247,0.7)", lineHeight: 16 },
+  feeSummaryRow:     { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: "rgba(168,85,247,0.06)", borderWidth: 1, borderColor: "rgba(168,85,247,0.25)", borderRadius: 10, padding: 10 },
+  feeSummaryText:    { flex: 1, fontSize: 12, color: "#A855F7", lineHeight: 18 },
+  pieceCard:         { backgroundColor: "rgba(168,85,247,0.04)", borderWidth: 1, borderColor: "rgba(168,85,247,0.2)", borderRadius: 12, padding: 14, gap: 8 },
+  pieceCardHeader:   { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 2 },
+  pieceCardTitle:    { fontSize: 12, fontWeight: "700", color: "#A855F7", textTransform: "uppercase", letterSpacing: 0.8 },
+  addPieceBtn:       { flexDirection: "row", alignItems: "center", gap: 8, justifyContent: "center", paddingVertical: 13, borderWidth: 1, borderColor: "rgba(168,85,247,0.35)", borderRadius: 12 },
+  addPieceBtnText:   { fontSize: 13, fontWeight: "600", color: "#A855F7" },
 
   btn:               { borderRadius: 12, overflow: "hidden" },
   btnGradient:       { flexDirection: "row", gap: 8, paddingVertical: 14, alignItems: "center", justifyContent: "center", borderRadius: 12 },
