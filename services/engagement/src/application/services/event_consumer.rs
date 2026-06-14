@@ -16,6 +16,7 @@
 //!   payments.wallet.withdrawal_disbursed → "withdrawal_disbursed" → Email + Push    (carrier payout sent)
 //!   payments.wallet.withdrawal_rejected  → "withdrawal_rejected"  → Email + Push    (carrier payout declined)
 //!   tracking.receipt.email.requested → "shipment_confirmation" → Email   (customer-initiated re-send)
+//!   identity.tenant.finalized        → "merchant_welcome"      → Email              (new merchant onboarded)
 
 use tracing::{error, info, warn};
 use crate::application::services::notification_service::NotificationService;
@@ -98,6 +99,12 @@ fn get_mapping(event_type: &str) -> Option<EventNotificationMapping> {
             template_id: "__invoice__",   // sentinel — overridden below
             priority: NotificationPriority::Normal,
             channels: &[],               // sentinel — overridden below
+        }),
+        // Merchant onboarding — send a welcome email when a draft tenant finalizes.
+        topics::TENANT_FINALIZED => Some(EventNotificationMapping {
+            template_id: "merchant_welcome",
+            priority:    NotificationPriority::High,
+            channels:    &["email"],
         }),
         // Cross-border hub milestones — fanned out per recipient by
         // `handle_hub_milestone`, which synthesises a single-recipient payload and
@@ -188,10 +195,11 @@ pub async fn process_event(
 
     // Invoice events branch on recipient_type ("merchant" | "customer").
     // All other events address the delivery customer directly.
-    let is_invoice_event    = event_type == topics::INVOICE_GENERATED;
-    let is_cod_remitted     = event_type == topics::COD_REMITTED;
-    let is_withdrawal_event = event_type == topics::WALLET_WITHDRAWAL_DISBURSED
-                           || event_type == topics::WALLET_WITHDRAWAL_REJECTED;
+    let is_invoice_event      = event_type == topics::INVOICE_GENERATED;
+    let is_cod_remitted       = event_type == topics::COD_REMITTED;
+    let is_withdrawal_event   = event_type == topics::WALLET_WITHDRAWAL_DISBURSED
+                             || event_type == topics::WALLET_WITHDRAWAL_REJECTED;
+    let is_tenant_finalized   = event_type == topics::TENANT_FINALIZED;
 
     // For invoice events we resolve (template_id, channels) dynamically here
     // and override the sentinel values from get_mapping().
@@ -209,7 +217,25 @@ pub async fn process_event(
         (mapping.template_id, mapping.channels)
     };
 
-    let (customer_id, phone, email, vars) = if is_withdrawal_event {
+    let (customer_id, phone, email, vars) = if is_tenant_finalized {
+        // Welcome email to the merchant who just completed onboarding.
+        // The event carries owner_email and the finalized business name.
+        let owner_email   = data["owner_email"].as_str().unwrap_or("").to_owned();
+        let business_name = data["name"].as_str().unwrap_or("Merchant").to_owned();
+
+        if owner_email.is_empty() {
+            warn!(event_type, "TENANT_FINALIZED missing owner_email — skipping welcome email");
+            return;
+        }
+
+        let vars = serde_json::json!({
+            "business_name":       business_name,
+            "merchant_portal_url": "https://merchant.cargomarket.net",
+        });
+
+        // Use tenant_id as the notification audit UUID (no separate customer entity).
+        (tenant_id, String::new(), owner_email, vars)
+    } else if is_withdrawal_event {
         // Withdrawal disbursed/rejected — notify the carrier partner.
         // The event envelope carries tenant_id; email is not yet in the event
         // payload (TODO: add carrier_email to WithdrawalDisbursed/Rejected when
@@ -399,6 +425,16 @@ pub async fn process_event(
         // Build inline templates — these are the hardcoded receipt templates.
         // In production, templates come from the DB template registry.
         let (subject, body) = match resolved_template {
+            "merchant_welcome" => (
+                Some(format!("Welcome to CargoMarket, {}!", vars["business_name"].as_str().unwrap_or("Merchant"))),
+                "Hi there,\n\n\
+                 Your merchant account for {{business_name}} is now active on CargoMarket.\n\n\
+                 You can start booking shipments, managing customers, and running campaigns from the \
+                 Merchant Portal:\n\
+                 {{merchant_portal_url}}\n\n\
+                 If you have any questions, our support team is here to help.\n\n\
+                 — The CargoMarket Team".to_owned(),
+            ),
             "shipment_confirmation" => (
                 Some(format!("Shipment Confirmed — {}", vars["tracking_number"].as_str().unwrap_or(""))),
                 "Hi {{customer_name}},\n\n\

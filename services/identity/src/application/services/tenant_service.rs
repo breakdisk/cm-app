@@ -94,13 +94,9 @@ impl TenantService {
 
     /// Promote the caller's own tenant from `draft` to `active`. Called via
     /// `POST /v1/tenants/me/finalize` from the lazy-onboarding `/setup` flow.
-    /// Idempotent for already-active tenants — re-calling just updates the
-    /// business name. The caller's next refresh_token call will receive the
-    /// full role-based permission set in the refreshed access JWT.
-    ///
-    /// Currency and region arrive in the command but are only logged until
-    /// a follow-up migration extends the `identity.tenants` schema with
-    /// those columns; they are already validated (ISO 4217 / 3166-1 alpha-2).
+    /// Idempotent for already-active tenants — re-calling updates the business
+    /// name, currency, and region. The caller's next refresh_token call will
+    /// receive the full role-based permission set in the refreshed access JWT.
     pub async fn finalize_self(
         &self,
         tenant_id: &logisticos_types::TenantId,
@@ -118,7 +114,7 @@ impl TenantService {
             })?;
 
         let was_draft = tenant.is_draft();
-        tenant.finalize(cmd.business_name.clone())
+        tenant.finalize(cmd.business_name.clone(), cmd.currency.clone(), cmd.region.clone())
             .map_err(|e| AppError::BusinessRule(e.to_string()))?;
 
         self.tenant_repo.save(&tenant).await.map_err(AppError::Internal)?;
@@ -131,7 +127,7 @@ impl TenantService {
             "Tenant finalized"
         );
 
-        // Emit tenant.finalized — consumed by engagement (welcome flow) and
+        // Emit tenant.finalized — consumed by engagement (welcome email) and
         // billing (create billing account). Fire-and-forget; Kafka outages
         // must not block tenant activation.
         let fin_event = Event::new(
@@ -143,6 +139,8 @@ impl TenantService {
                 name:         tenant.name.clone(),
                 owner_email:  tenant.owner_email.clone(),
                 finalized_at: chrono::Utc::now().to_rfc3339(),
+                currency:     tenant.currency.clone().unwrap_or_default(),
+                region:       tenant.region.clone().unwrap_or_default(),
             },
         );
         if let Err(e) = self.kafka.publish_event(topics::TENANT_FINALIZED, &fin_event).await {

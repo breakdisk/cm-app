@@ -21,6 +21,8 @@ struct TenantRow {
     is_active:         bool,
     status:            String,
     owner_email:       String,
+    currency:          Option<String>,
+    region:            Option<String>,
     created_at:        chrono::DateTime<chrono::Utc>,
     updated_at:        chrono::DateTime<chrono::Utc>,
 }
@@ -40,6 +42,8 @@ impl From<TenantRow> for Tenant {
             is_active: r.is_active,
             status: TenantStatus::parse(&r.status).unwrap_or(TenantStatus::Active),
             owner_email: r.owner_email,
+            currency: r.currency,
+            region: r.region,
             created_at: r.created_at,
             updated_at: r.updated_at,
         }
@@ -50,7 +54,8 @@ impl From<TenantRow> for Tenant {
 impl TenantRepository for PgTenantRepository {
     async fn find_by_id(&self, id: &TenantId) -> anyhow::Result<Option<Tenant>> {
         let row = sqlx::query_as::<_, TenantRow>(
-            "SELECT id, name, slug, subscription_tier, is_active, status::text AS status, owner_email, created_at, updated_at
+            "SELECT id, name, slug, subscription_tier, is_active, status::text AS status,
+                    owner_email, currency, region, created_at, updated_at
              FROM identity.tenants WHERE id = $1"
         )
         .bind(id.inner())
@@ -61,7 +66,8 @@ impl TenantRepository for PgTenantRepository {
 
     async fn find_by_slug(&self, slug: &str) -> anyhow::Result<Option<Tenant>> {
         let row = sqlx::query_as::<_, TenantRow>(
-            "SELECT id, name, slug, subscription_tier, is_active, status::text AS status, owner_email, created_at, updated_at
+            "SELECT id, name, slug, subscription_tier, is_active, status::text AS status,
+                    owner_email, currency, region, created_at, updated_at
              FROM identity.tenants WHERE slug = $1"
         )
         .bind(slug)
@@ -74,14 +80,17 @@ impl TenantRepository for PgTenantRepository {
         let tier = format!("{:?}", tenant.subscription_tier).to_lowercase();
         sqlx::query(
             r#"INSERT INTO identity.tenants
-                   (id, name, slug, subscription_tier, is_active, status, owner_email, created_at, updated_at)
-               VALUES ($1, $2, $3, $4, $5, $6::identity.tenant_status, $7, $8, $9)
+                   (id, name, slug, subscription_tier, is_active, status, owner_email,
+                    currency, region, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, $6::identity.tenant_status, $7, $8, $9, $10, $11)
                ON CONFLICT (id) DO UPDATE SET
                    name              = EXCLUDED.name,
                    slug              = EXCLUDED.slug,
                    subscription_tier = EXCLUDED.subscription_tier,
                    is_active         = EXCLUDED.is_active,
                    status            = EXCLUDED.status,
+                   currency          = EXCLUDED.currency,
+                   region            = EXCLUDED.region,
                    updated_at        = EXCLUDED.updated_at"#
         )
         .bind(tenant.id.inner())
@@ -91,6 +100,8 @@ impl TenantRepository for PgTenantRepository {
         .bind(tenant.is_active)
         .bind(tenant.status.as_str())
         .bind(&tenant.owner_email)
+        .bind(&tenant.currency)
+        .bind(&tenant.region)
         .bind(tenant.created_at)
         .bind(tenant.updated_at)
         .execute(&self.pool)

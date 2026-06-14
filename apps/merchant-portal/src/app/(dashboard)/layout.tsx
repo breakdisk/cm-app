@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 import { useBranding } from "@/lib/branding";
+import { identityApi, type Me, type Tenant } from "@/lib/api/identity";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -165,6 +166,8 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const [signingOut, setSigningOut] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [readIds, setReadIds] = useState<Set<string>>(new Set());
+  const [me, setMe] = useState<Me | null>(null);
+  const [tenant, setTenant] = useState<Tenant | null>(null);
   const notifRef = useRef<HTMLDivElement>(null);
   const pathname = usePathname();
   const router   = useRouter();
@@ -182,6 +185,12 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [router]);
+
+  // Load authenticated user + tenant for sidebar identity chip
+  useEffect(() => {
+    identityApi.getMe().then(setMe).catch(() => {});
+    identityApi.getTenant().then(setTenant).catch(() => {});
+  }, []);
 
   // Close notification panel when clicking outside
   useEffect(() => {
@@ -341,12 +350,14 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
               "bg-glass-100 transition-colors hover:bg-glass-200"
             )}
           >
-            {/* Avatar */}
+            {/* Avatar — initials derived from authenticated user */}
             <div
               className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
               style={{ background: "linear-gradient(135deg, #00E5FF, #A855F7)" }}
             >
-              JD
+              {me
+                ? `${me.first_name.charAt(0)}${me.last_name.charAt(0)}`.toUpperCase()
+                : "·"}
             </div>
 
             <AnimatePresence initial={false}>
@@ -359,10 +370,10 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                   className="min-w-0 flex-1 overflow-hidden"
                 >
                   <p className="truncate whitespace-nowrap text-xs font-medium text-white/80">
-                    Juan Dela Cruz
+                    {me ? `${me.first_name} ${me.last_name}` : "—"}
                   </p>
                   <p className="truncate whitespace-nowrap text-2xs text-white/40 font-mono">
-                    Shopify PH
+                    {tenant?.name ?? "—"}
                   </p>
                 </motion.div>
               )}

@@ -41,6 +41,12 @@ pub struct Tenant {
     pub is_active: bool,
     pub status: TenantStatus,
     pub owner_email: String,
+    /// ISO 4217 currency code set during onboarding finalization (e.g. "PHP").
+    /// None for tenants created via the direct-API path before migration 0015.
+    pub currency: Option<String>,
+    /// ISO 3166-1 alpha-2 region code set during onboarding (e.g. "PH").
+    /// None for tenants created via the direct-API path before migration 0015.
+    pub region: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -56,6 +62,8 @@ impl Tenant {
             is_active: true,
             status: TenantStatus::Active,
             owner_email,
+            currency: None,
+            region: None,
             created_at: now,
             updated_at: now,
         }
@@ -74,6 +82,8 @@ impl Tenant {
             is_active: true,
             status: TenantStatus::Draft,
             owner_email,
+            currency: None,
+            region: None,
             created_at: now,
             updated_at: now,
         }
@@ -84,14 +94,15 @@ impl Tenant {
     }
 
     /// Promote a draft tenant to active. Called from the finalize endpoint
-    /// once the owner has supplied business name (and any additional
-    /// onboarding fields the product requires). No-op if already active;
-    /// rejects suspended tenants.
-    pub fn finalize(&mut self, business_name: String) -> Result<(), &'static str> {
+    /// once the owner has supplied business name, currency, and region.
+    /// No-op on status if already active; rejects suspended tenants.
+    pub fn finalize(&mut self, business_name: String, currency: String, region: String) -> Result<(), &'static str> {
         if self.status == TenantStatus::Suspended {
             return Err("Suspended tenant cannot be finalized");
         }
         self.name = business_name;
+        self.currency = Some(currency);
+        self.region = Some(region);
         self.status = TenantStatus::Active;
         self.updated_at = Utc::now();
         Ok(())

@@ -41,6 +41,10 @@ export interface Tenant {
   owner_email: string;
   is_active: boolean;
   subscription_tier: string;
+  /** ISO 4217 currency code set during onboarding (e.g. "PHP"). Null for legacy tenants. */
+  currency: string | null;
+  /** ISO 3166-1 alpha-2 region code set during onboarding (e.g. "PH"). Null for legacy tenants. */
+  region: string | null;
   created_at: string;
   updated_at: string;
 }

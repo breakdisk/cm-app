@@ -15,10 +15,16 @@ pub struct TenantCreated {
 /// Consumed by: engagement (send welcome email), billing (create billing account).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TenantFinalized {
-    pub tenant_id:     Uuid,
-    pub name:          String,
-    pub owner_email:   String,
-    pub finalized_at:  String,
+    pub tenant_id:    Uuid,
+    pub name:         String,
+    pub owner_email:  String,
+    pub finalized_at: String,
+    /// ISO 4217 currency code selected during onboarding (e.g. "PHP", "AED").
+    #[serde(default)]
+    pub currency:     String,
+    /// ISO 3166-1 alpha-2 region code selected during onboarding (e.g. "PH", "AE").
+    #[serde(default)]
+    pub region:       String,
 }
 
 // Enriched ShipmentCreated — consumed by dispatch, engagement, analytics, delivery-experience
