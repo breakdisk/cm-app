@@ -23,7 +23,7 @@ use tokio::sync::watch;
 use uuid::Uuid;
 
 use crate::application::commands::QuickDispatchCommand;
-use crate::application::services::DriverAssignmentService;
+use crate::application::services::{DriverAssignmentService, OfferService};
 use crate::infrastructure::db::dispatch_queue_repo::{DispatchQueueRepository, DispatchQueueRow, PgDispatchQueueRepository};
 
 pub async fn start_shipment_consumer(
@@ -31,6 +31,7 @@ pub async fn start_shipment_consumer(
     group_id: &str,
     pool: PgPool,
     dispatch_service: Arc<DriverAssignmentService>,
+    offer_service: Arc<OfferService>,
     ai_dispatch_enabled: bool,
     mut shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
@@ -56,7 +57,7 @@ pub async fn start_shipment_consumer(
                 match result {
                     Ok(msg) => {
                         if let Some(payload) = msg.payload() {
-                            if let Err(e) = handle_shipment_created(payload, &*repo, &dispatch_service, ai_dispatch_enabled).await {
+                            if let Err(e) = handle_shipment_created(payload, &*repo, &dispatch_service, &offer_service, ai_dispatch_enabled).await {
                                 tracing::warn!(err = %e, "shipment consumer: handler error (skipping)");
                             }
                         }
@@ -78,6 +79,7 @@ async fn handle_shipment_created(
     payload: &[u8],
     repo: &dyn DispatchQueueRepository,
     dispatch_service: &DriverAssignmentService,
+    offer_service: &OfferService,
     ai_dispatch_enabled: bool,
 ) -> anyhow::Result<()> {
     let event: Event<ShipmentCreated> = serde_json::from_slice(payload)?;
@@ -142,12 +144,37 @@ async fn handle_shipment_created(
                 "AI dispatch enabled — deferring assignment to DispatchAgent (Kafka-triggered)"
             );
         } else {
+            // Gig-first: try broadcasting to the nearby part-time pool so the
+            // fastest driver grabs it. broadcast() errors when there are no
+            // eligible gig drivers (or no coords) — in that case fall through
+            // to 1:1 quick_dispatch, which assigns the nearest available driver
+            // (full-time included). Unclaimed offers expire back to 'pending'
+            // and the dispatch sweep then 1:1-assigns them, so nothing is lost.
+            let tid = TenantId::from_uuid(tenant_id);
+            match offer_service.broadcast(tid.clone(), shipment_id).await {
+                Ok(offer) => {
+                    tracing::info!(
+                        shipment_id = %shipment_id,
+                        offer_id    = %offer.id,
+                        "Shipment auto-broadcast to gig pool (wave 1)"
+                    );
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::info!(
+                        shipment_id = %shipment_id,
+                        reason      = %e,
+                        "No gig broadcast — falling back to 1:1 auto-dispatch"
+                    );
+                }
+            }
+
             let cmd = QuickDispatchCommand {
                 shipment_id,
                 preferred_driver_id: None,
             };
             match dispatch_service
-                .quick_dispatch(TenantId::from_uuid(tenant_id), cmd)
+                .quick_dispatch(tid, cmd)
                 .await
             {
                 Ok(assignment) => {

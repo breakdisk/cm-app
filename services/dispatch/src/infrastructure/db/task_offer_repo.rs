@@ -137,6 +137,21 @@ impl PgTaskOfferRepository {
             .execute(&mut *tx)
             .await?;
         }
+
+        // Atomically take the queue row out of 'pending' while the offer is
+        // live. Without this, the 90 s dispatch sweep could 1:1-assign a
+        // shipment that gig drivers are mid-grab on (double assignment). On
+        // unclaimed expiry the sweeper resets it to 'pending' for 1:1 fallback;
+        // on a winning claim it stays 'dispatched'.
+        sqlx::query(
+            "UPDATE dispatch.dispatch_queue
+             SET status = 'dispatched', dispatched_at = NOW()
+             WHERE shipment_id = $1 AND status = 'pending'",
+        )
+        .bind(offer.shipment_id)
+        .execute(&mut *tx)
+        .await?;
+
         tx.commit().await?;
         Ok(())
     }

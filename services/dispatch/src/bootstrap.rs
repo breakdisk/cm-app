@@ -142,6 +142,7 @@ pub async fn run() -> anyhow::Result<()> {
     let brokers_shipment      = cfg.kafka.brokers.clone();
     let group_shipment        = cfg.kafka.group_id.clone();
     let dispatch_svc_shipment = Arc::clone(&dispatch_service);
+    let offer_svc_shipment    = Arc::clone(&offer_service);
     let shutdown_rx_shipment  = shutdown_tx.subscribe();
     tokio::spawn(async move {
         if let Err(e) = start_shipment_consumer(
@@ -149,6 +150,7 @@ pub async fn run() -> anyhow::Result<()> {
             &group_shipment,
             pool_for_shipment,
             dispatch_svc_shipment,
+            offer_svc_shipment,
             cfg.app.ai_dispatch_enabled,
             shutdown_rx_shipment,
         ).await {

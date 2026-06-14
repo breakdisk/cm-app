@@ -248,12 +248,11 @@ impl OfferService {
         }
 
         if let Some(candidate_ids) = self.offer_repo.expire(offer.id).await? {
-            // Surface on the ops console (attempt counter + reason) — the
-            // manual dispatch path is the backstop for unclaimed work.
-            let _ = self.queue_repo.record_failed_attempt(
-                offer.shipment_id,
-                &format!("gig broadcast expired unclaimed after wave {}", offer.wave),
-            ).await;
+            // Return the queue row to 'pending' so the standard dispatch sweep
+            // picks it up and 1:1-assigns it (the fallback for unclaimed gig
+            // work — full-time drivers, manual ops, etc). create_offer parked
+            // it as 'dispatched' to dodge the sweep race; expiry undoes that.
+            let _ = self.queue_repo.reset_to_pending(offer.shipment_id).await;
 
             let closed = Event::new("dispatch", "offer.closed", offer.tenant_id,
                 logisticos_events::payloads::TaskOfferClosed {
