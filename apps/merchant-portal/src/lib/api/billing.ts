@@ -33,12 +33,12 @@ export interface InvoiceLineItem {
 
 export interface CodBalance {
   merchant_id: string;
-  merchant_name: string;
   pending_php: number;
   remitted_php: number;
+  total_php: number;
+  shipments_pending_cod: number;
   last_remittance_at?: string;
   next_remittance_date?: string;
-  shipments_pending_cod: number;
 }
 
 export interface CodRemittance {
@@ -114,13 +114,32 @@ export const billingApi = {
       })
       .then((r) => r.data),
 
+  /** Re-send invoice email/SMS to the customer via the engagement engine */
+  resendInvoice: (invoiceId: string, token: string) =>
+    createApiClient(token)
+      .post<ApiResponse<{ sent: boolean }>>(`/v1/invoices/${invoiceId}/resend`)
+      .then((r) => r.data.data),
+
   // ── COD Management ────────────────────────────────────────────
 
   /** Get COD balance for a merchant */
   getCodBalance: (merchantId: string, token: string) =>
     createApiClient(token)
-      .get<ApiResponse<CodBalance>>(`/v1/cod/balance/${merchantId}`)
-      .then((r) => r.data.data),
+      .get<{
+        merchant_id: string;
+        pending_cents: number;
+        remitted_cents: number;
+        total_cents: number;
+        shipments_pending_cod: number;
+        currency: string;
+      }>(`/v1/cod/balance/${merchantId}`)
+      .then((r): CodBalance => ({
+        merchant_id:           r.data.merchant_id,
+        pending_php:           r.data.pending_cents  / 100,
+        remitted_php:          r.data.remitted_cents / 100,
+        total_php:             r.data.total_cents    / 100,
+        shipments_pending_cod: r.data.shipments_pending_cod ?? 0,
+      })),
 
   /** List COD remittance batches for a merchant */
   listCodRemittances: (

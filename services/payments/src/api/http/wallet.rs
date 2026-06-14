@@ -116,11 +116,12 @@ pub async fn get_cod_balance(
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let balance = state.cod_service.cod_balance(&tenant_id, merchant_id).await?;
     Ok(Json(serde_json::json!({
-        "merchant_id":     merchant_id,
-        "pending_cents":   balance.pending_cents,
-        "remitted_cents":  balance.remitted_cents,
-        "total_cents":     balance.total_cents,
-        "currency":        "PHP",
+        "merchant_id":          merchant_id,
+        "pending_cents":        balance.pending_cents,
+        "remitted_cents":       balance.remitted_cents,
+        "total_cents":          balance.total_cents,
+        "shipments_pending_cod": balance.pending_count,
+        "currency":             "PHP",
     })))
 }
 
@@ -148,10 +149,11 @@ pub async fn get_cod_balance_internal(
     let balance = state.cod_service.cod_balance(&tenant_id, merchant_id).await?;
 
     Ok(Json(serde_json::json!({
-        "merchant_id":     merchant_id,
-        "pending_cents":   balance.pending_cents,
-        "remitted_cents":  balance.remitted_cents,
-        "total_cents":     balance.total_cents,
-        "currency":        "PHP",
+        "merchant_id":           merchant_id,
+        "pending_cents":         balance.pending_cents,
+        "remitted_cents":        balance.remitted_cents,
+        "total_cents":           balance.total_cents,
+        "shipments_pending_cod": balance.pending_count,
+        "currency":              "PHP",
     })))
 }

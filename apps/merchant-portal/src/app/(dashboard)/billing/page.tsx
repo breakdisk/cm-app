@@ -10,7 +10,7 @@ import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
-import { Receipt, CreditCard, RefreshCw, X, Building2, Package } from "lucide-react";
+import { Receipt, CreditCard, RefreshCw, X, Building2, Package, Download, Send } from "lucide-react";
 import {
   billingApi,
   type Invoice,
@@ -101,8 +101,11 @@ function BankTransferModal({ outstanding, onClose }: { outstanding: number; onCl
 // ── Invoice detail modal ──────────────────────────────────────────────────────
 
 function InvoiceDetailModal({ invoice, onClose }: { invoice: Invoice; onClose: () => void }) {
-  const [detail,  setDetail]  = useState<Invoice | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [detail,      setDetail]      = useState<Invoice | null>(null);
+  const [loading,     setLoading]     = useState(true);
+  const [downloading, setDownloading] = useState(false);
+  const [resending,   setResending]   = useState(false);
+  const [resendDone,  setResendDone]  = useState(false);
 
   useEffect(() => {
     billingApi.getInvoice(invoice.id, "")
@@ -110,6 +113,37 @@ function InvoiceDetailModal({ invoice, onClose }: { invoice: Invoice; onClose: (
       .catch(() => setDetail(invoice))  // fallback to summary
       .finally(() => setLoading(false));
   }, [invoice]);
+
+  const handleDownload = async () => {
+    if (downloading) return;
+    setDownloading(true);
+    try {
+      const blob = await billingApi.downloadInvoicePdf(invoice.id, "");
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href     = url;
+      a.download = `invoice-${invoice.invoice_number}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      // non-fatal; PDF may not be generated yet
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const handleResend = async () => {
+    if (resending || resendDone) return;
+    setResending(true);
+    try {
+      await billingApi.resendInvoice(invoice.id, "");
+      setResendDone(true);
+    } catch {
+      // non-fatal
+    } finally {
+      setResending(false);
+    }
+  };
 
   const inv = detail ?? invoice;
 
@@ -185,6 +219,24 @@ function InvoiceDetailModal({ invoice, onClose }: { invoice: Invoice; onClose: (
               Due {new Date(inv.due_date).toLocaleDateString()}
             </p>
           )}
+          <div className="flex gap-2 pt-2">
+            <button
+              onClick={handleDownload}
+              disabled={downloading}
+              className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-2xs font-mono text-white/60 hover:text-white transition-colors disabled:opacity-40"
+            >
+              <Download size={11} />
+              {downloading ? "Downloading…" : "Download PDF"}
+            </button>
+            <button
+              onClick={handleResend}
+              disabled={resending || resendDone}
+              className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-2xs font-mono text-white/60 hover:text-white transition-colors disabled:opacity-40"
+            >
+              <Send size={11} />
+              {resendDone ? "Sent!" : resending ? "Sending…" : "Resend"}
+            </button>
+          </div>
         </div>
       </div>
     </div>

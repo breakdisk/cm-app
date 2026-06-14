@@ -239,13 +239,15 @@ impl CodRepository for PgCodRepository {
             pending_cents:  Option<i64>,
             remitted_cents: Option<i64>,
             total_cents:    Option<i64>,
+            pending_count:  Option<i64>,
         }
 
         let row = sqlx::query_as::<_, BalanceRow>(
             r#"SELECT
                    SUM(amount_cents) FILTER (WHERE status IN ('collected','in_batch')) AS pending_cents,
                    SUM(amount_cents) FILTER (WHERE status = 'remitted')                AS remitted_cents,
-                   SUM(amount_cents)                                                    AS total_cents
+                   SUM(amount_cents)                                                    AS total_cents,
+                   COUNT(*)          FILTER (WHERE status IN ('collected','in_batch')) AS pending_count
                FROM payments.cod_collections
                WHERE tenant_id = $1 AND merchant_id = $2"#
         )
@@ -258,6 +260,7 @@ impl CodRepository for PgCodRepository {
             pending_cents:  row.pending_cents.unwrap_or(0),
             remitted_cents: row.remitted_cents.unwrap_or(0),
             total_cents:    row.total_cents.unwrap_or(0),
+            pending_count:  row.pending_count.unwrap_or(0),
         })
     }
 }

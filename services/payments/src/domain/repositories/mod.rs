@@ -104,6 +104,8 @@ pub struct CodBalanceSummary {
     pub remitted_cents: i64,
     /// Grand total across all statuses.
     pub total_cents:    i64,
+    /// Count of individual COD shipments still pending remittance.
+    pub pending_count:  i64,
 }
 
 #[async_trait]
