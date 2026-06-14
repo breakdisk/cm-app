@@ -43,3 +43,21 @@ export async function lookupByCity(
     return [];
   }
 }
+
+/** Fuzzy search across city + province. Best for province/region type-ahead. */
+export async function lookupByQuery(
+  countryCode: string,
+  query:       string,
+  limit = 8,
+): Promise<AddressCode[]> {
+  if (query.length < 2) return [];
+  try {
+    const res = await getOrderClient().get<{ data: AddressCode[] }>(
+      '/v1/address/lookup',
+      { params: { country_code: countryCode, q: query, limit } },
+    );
+    return res.data.data ?? [];
+  } catch {
+    return [];
+  }
+}

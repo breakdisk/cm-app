@@ -132,7 +132,18 @@ class OutboundSyncWorker @AssistedInject constructor(
                     "COMPLETED"   -> {
                         val podId = payload["podId"]?.jsonPrimitive?.contentOrNull
                         val popId = payload["popId"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
-                        driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId, popId = popId))
+                        try {
+                            driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId, popId = popId))
+                        } catch (e: retrofit2.HttpException) {
+                            if (e.code() == 422 || e.code() == 409) {
+                                // Task already in a valid/terminal state — POD/POP event already
+                                // advanced tracking. Discard to stop the retry loop.
+                                android.util.Log.d("OutboundSyncWorker", "completeTask (COMPLETED) $taskId → ${e.code()} already done — discarding")
+                                syncQueueDao.remove(item.id)
+                                return
+                            }
+                            throw e
+                        }
                         TaskSyncBus.requestSync()  // backend now excludes this task — refresh Home
                     }
                     "FAILED"      -> {
@@ -428,7 +439,21 @@ class OutboundSyncWorker @AssistedInject constructor(
                     return
                 }
 
-                driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId, popId = popId))
+                try {
+                    driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId, popId = popId))
+                } catch (e: retrofit2.HttpException) {
+                    if (e.code() == 422 || e.code() == 409) {
+                        // Task is already in a valid/terminal state server-side.
+                        // POD/POP Kafka event already advanced the tracking record.
+                        // Mark locally synced and drop the item so it doesn't loop for 7 days.
+                        android.util.Log.d("OutboundSyncWorker", "TASK_COMPLETE $taskId → ${e.code()} already done — marking synced, discarding")
+                        taskDao.markSynced(taskId)
+                        TaskSyncBus.requestSync()
+                        syncQueueDao.remove(item.id)
+                        return
+                    }
+                    throw e
+                }
                 taskDao.markSynced(taskId)
                 TaskSyncBus.requestSync()  // offline completion confirmed — drop the Home card
                 val now = System.currentTimeMillis()

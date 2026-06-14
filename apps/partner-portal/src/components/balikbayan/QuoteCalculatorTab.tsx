@@ -1,5 +1,5 @@
 "use client";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useCallback } from "react";
 import { Calculator, Plus, Trash2, AlertTriangle } from "lucide-react";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
@@ -9,6 +9,7 @@ import type {
   PhProvinceZoneEntry,
   AddOnService,
 } from "@/lib/api/balikbayan-rates";
+import { addressLookupApi, type AddressCode } from "@/lib/api/addresses";
 
 interface Props {
   rates: BalikbayanRates;
@@ -216,6 +217,27 @@ export function QuoteCalculatorTab({ rates }: Props) {
   // Add-ons
   const [addonIds, setAddonIds] = useState<string[]>([]);
 
+  // Province type-ahead
+  const [provinceSuggestions, setProvinceSuggestions] = useState<AddressCode[]>([]);
+  const provinceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const onProvinceChange = useCallback((value: string) => {
+    setProvince(value);
+    if (provinceTimerRef.current) clearTimeout(provinceTimerRef.current);
+    if (value.length < 2) { setProvinceSuggestions([]); return; }
+    provinceTimerRef.current = setTimeout(async () => {
+      const hits = await addressLookupApi.byQuery("PH", value, 8);
+      const seen = new Set<string>();
+      const unique = hits.filter(h => {
+        const key = h.state_province ?? h.city;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      setProvinceSuggestions(unique.slice(0, 6));
+    }, 400);
+  }, []);
+
   // Derived: resolved zone
   const resolvedEntry = useMemo(
     () => resolveProvince(province, rates.province_zone_map),
@@ -255,6 +277,7 @@ export function QuoteCalculatorTab({ rates }: Props) {
     setWeightKg(20);
     setDimL(0); setDimW(0); setDimH(0);
     setProvince("");
+    setProvinceSuggestions([]);
     setAddonIds([]);
   }
 
@@ -419,17 +442,34 @@ export function QuoteCalculatorTab({ rates }: Props) {
             )}
 
             {/* Recipient province */}
-            <div>
+            <div className="relative">
               <label className="text-2xs font-mono text-white/40 uppercase tracking-wider block mb-1.5">
                 Recipient Province / City
               </label>
               <input
                 value={province}
-                onChange={(e) => setProvince(e.target.value)}
+                onChange={(e) => onProvinceChange(e.target.value)}
                 placeholder="e.g. Cebu City, Davao City, Bulacan…"
                 className={inputCls}
               />
-              {province.trim() && (
+              {provinceSuggestions.length > 0 && (
+                <ul className="absolute z-10 mt-1 w-full rounded-md border border-glass-border bg-[#0d1422] py-1 shadow-lg">
+                  {provinceSuggestions.map((s, i) => (
+                    <li key={i}>
+                      <button
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => { setProvince(s.state_province ?? s.city); setProvinceSuggestions([]); }}
+                        className="w-full px-3 py-1.5 text-left text-xs font-mono text-white/80 hover:bg-cyan-neon/10 hover:text-cyan-neon transition-colors"
+                      >
+                        {s.state_province ?? s.city}
+                        {s.state_province && <span className="ml-2 text-white/30">{s.city}</span>}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {province.trim() && provinceSuggestions.length === 0 && (
                 <p className={[
                   "text-2xs font-mono mt-1",
                   resolvedZone ? "text-green-signal" : "text-amber-signal",

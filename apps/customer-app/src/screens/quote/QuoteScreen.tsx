@@ -28,6 +28,7 @@ import {
   matchToStandardSize, resolveProvince, fmtAmount,
   type QuoteResult, type BoxSize,
 } from '../../lib/quote-engine';
+import { lookupByQuery, type AddressCode } from '../../services/api/addresses';
 
 // ── Design tokens ──────────────────────────────────────────────────────────────
 const CANVAS  = '#050810';
@@ -127,6 +128,8 @@ export function QuoteScreen({ navigation, route }: any) {
   const [arLoading, setArLoading]   = useState(false);
   const [arAvailable, setArAvailable] = useState(false);
   const [measuredDims, setMeasuredDims] = useState<BoxDimensions | null>(initDims);
+  const [provinceSuggestions, setProvinceSuggestions] = useState<AddressCode[]>([]);
+  const provinceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const fadeAnim = useRef(new Animated.Value(1)).current;
 
@@ -199,6 +202,23 @@ export function QuoteScreen({ navigation, route }: any) {
     } finally {
       setArLoading(false);
     }
+  }, []);
+
+  const onProvinceChange = useCallback((text: string) => {
+    setProvince(text);
+    if (provinceTimerRef.current) clearTimeout(provinceTimerRef.current);
+    if (text.length < 2) { setProvinceSuggestions([]); return; }
+    provinceTimerRef.current = setTimeout(async () => {
+      const hits = await lookupByQuery('PH', text, 8);
+      const seen = new Set<string>();
+      const unique = hits.filter(h => {
+        const key = h.state_province ?? h.city;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      setProvinceSuggestions(unique.slice(0, 6));
+    }, 400);
   }, []);
 
   const handleBookNow = useCallback(() => {
@@ -429,11 +449,40 @@ export function QuoteScreen({ navigation, route }: any) {
                   placeholder="e.g. Cebu, Davao, Metro Manila…"
                   placeholderTextColor={MUTED}
                   value={province}
-                  onChangeText={setProvince}
+                  onChangeText={onProvinceChange}
                   autoCapitalize="words"
                   returnKeyType="done"
                 />
               </View>
+
+              {provinceSuggestions.length > 0 && (
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
+                  style={{ marginTop: -8 }}
+                >
+                  {provinceSuggestions.map((s, i) => (
+                    <TouchableOpacity
+                      key={i}
+                      onPress={() => {
+                        const val = s.state_province ?? s.city;
+                        setProvince(val);
+                        setProvinceSuggestions([]);
+                      }}
+                      style={{
+                        marginRight: 8, paddingHorizontal: 12, paddingVertical: 5,
+                        borderRadius: 20, borderWidth: 1,
+                        borderColor: 'rgba(0,229,255,0.3)',
+                        backgroundColor: 'rgba(0,229,255,0.06)',
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={{ color: CYAN, fontSize: 12 }}>{s.state_province ?? s.city}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              )}
 
               {province.length > 0 && (
                 <View style={[styles.zoneCard, { borderColor: resolvedZone ? 'rgba(0,255,136,0.2)' : 'rgba(255,171,0,0.2)' }]}>
