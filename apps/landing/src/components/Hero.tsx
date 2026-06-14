@@ -102,17 +102,17 @@ export default function Hero({ onGetQuote }: HeroProps) {
           className="text-5xl sm:text-6xl lg:text-7xl xl:text-8xl font-bold tracking-tight leading-[0.95] mb-6"
           style={{ fontFamily: "'Space Grotesk', sans-serif" }}
         >
-          <span className="block text-white">One Platform.</span>
-          <span className="block text-shimmer mt-1">All Business Sizes.</span>
-          <span className="block text-white mt-1">AI Logistics.</span>
+          <span className="block text-white">AI-Powered Global Freight</span>
+          <span className="block text-shimmer mt-1">&amp; Delivery Booking</span>
+          <span className="block text-white mt-1">Marketplace</span>
         </h1>
 
         {/* Sub */}
         <p className="max-w-2xl mx-auto text-lg lg:text-xl text-slate-400 leading-relaxed mb-10">
-          CargoMarket integrates{" "}
-          <span className="text-white font-medium">small, medium & enterprise</span>{" "}
-          businesses through a single AI-powered logistics platform —
-          from first dispatch to last-mile delivery.
+          Connecting merchants and{" "}
+          <span className="text-white font-medium">freight forwarders worldwide</span>{" "}
+          through trusted partnerships, intelligent matching, transparent pricing,
+          and seamless booking delivery experiences.
         </p>
 
         {/* CTA row */}

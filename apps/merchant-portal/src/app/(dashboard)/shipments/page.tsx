@@ -380,7 +380,22 @@ function BulkUploadModal({ onClose, onDone }: { onClose: () => void; onDone?: ()
             </div>
 
             {/* Download template */}
-            <button className="mt-2 flex items-center gap-1.5 text-xs text-white/35 hover:text-cyan-neon transition-colors">
+            <button
+              onClick={() => {
+                const headers = "recipient_name,phone,address,city,zip_code,country_code,weight_kg,cod_amount_php,description";
+                const example1 = "Juan dela Cruz,+639171234567,123 Rizal St,Manila,1000,PH,1.5,500,Clothes";
+                const example2 = "Maria Santos,+639281234567,456 Mabini Ave,Cebu,6000,PH,2.0,,Electronics";
+                const csv = [headers, example1, example2].join("\n");
+                const blob = new Blob([csv], { type: "text/csv" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = "shipments-bulk-template.csv";
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+              className="mt-2 flex items-center gap-1.5 text-xs text-white/35 hover:text-cyan-neon transition-colors"
+            >
               <FileText size={12} /> Download CSV template
             </button>
 
