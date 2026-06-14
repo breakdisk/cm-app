@@ -918,38 +918,54 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
   const [receiverCitySuggestions, setReceiverCitySuggestions] = useState<AddressCode[]>([]);
   const senderCityTimer   = useRef<ReturnType<typeof setTimeout> | null>(null);
   const receiverCityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const senderZipTimer    = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const receiverZipTimer  = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  async function handleSenderZipBlur() {
-    if (senderZip.length < 3) return;
-    const hits = await addressLookupApi.byPostalCode(senderCountry, senderZip);
-    if (hits[0]) { setSenderCity(hits[0].city); setSenderCitySuggestions([]); }
+  function onSenderZipChange(value: string) {
+    setSenderZip(value);
+    if (senderZipTimer.current) clearTimeout(senderZipTimer.current);
+    if (value.length >= 3) {
+      const country = senderCountry;
+      senderZipTimer.current = setTimeout(async () => {
+        const hits = await addressLookupApi.byPostalCode(country, value);
+        if (hits[0]) { setSenderCity(hits[0].city); setSenderCitySuggestions([]); }
+      }, 500);
+    }
   }
 
-  async function handleReceiverZipBlur() {
-    if (receiverZip.length < 3) return;
-    const hits = await addressLookupApi.byPostalCode(receiverCountry, receiverZip);
-    if (hits[0]) { setReceiverCity(hits[0].city); setReceiverCitySuggestions([]); }
+  function onReceiverZipChange(value: string) {
+    setReceiverZip(value);
+    if (receiverZipTimer.current) clearTimeout(receiverZipTimer.current);
+    if (value.length >= 3) {
+      const country = receiverCountry;
+      receiverZipTimer.current = setTimeout(async () => {
+        const hits = await addressLookupApi.byPostalCode(country, value);
+        if (hits[0]) { setReceiverCity(hits[0].city); setReceiverCitySuggestions([]); }
+      }, 500);
+    }
   }
 
   function onSenderCityChange(value: string) {
     setSenderCity(value);
-    setSenderCitySuggestions([]);
     if (senderCityTimer.current) clearTimeout(senderCityTimer.current);
     if (value.length >= 2) {
       senderCityTimer.current = setTimeout(async () => {
         setSenderCitySuggestions(await addressLookupApi.byCity(senderCountry, value));
       }, 400);
+    } else {
+      setSenderCitySuggestions([]);
     }
   }
 
   function onReceiverCityChange(value: string) {
     setReceiverCity(value);
-    setReceiverCitySuggestions([]);
     if (receiverCityTimer.current) clearTimeout(receiverCityTimer.current);
     if (value.length >= 2) {
       receiverCityTimer.current = setTimeout(async () => {
         setReceiverCitySuggestions(await addressLookupApi.byCity(receiverCountry, value));
       }, 400);
+    } else {
+      setReceiverCitySuggestions([]);
     }
   }
 
@@ -1118,8 +1134,7 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
                 <div className="grid grid-cols-2 gap-2">
                   <input value={senderCity} onChange={(e) => onSenderCityChange(e.target.value)}
                     placeholder="City *" className={inputCls("cyan")} />
-                  <input value={senderZip} onChange={(e) => setSenderZip(e.target.value)}
-                    onBlur={handleSenderZipBlur}
+                  <input value={senderZip} onChange={(e) => onSenderZipChange(e.target.value)}
                     placeholder="ZIP Code *" maxLength={10} className={inputCls("cyan")} />
                 </div>
                 {senderCitySuggestions.length > 0 && (
@@ -1160,8 +1175,7 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
                 <div className="grid grid-cols-2 gap-2">
                   <input value={receiverCity} onChange={(e) => onReceiverCityChange(e.target.value)}
                     placeholder="City *" className={inputCls(isIntl ? "purple" : "green")} />
-                  <input value={receiverZip} onChange={(e) => setReceiverZip(e.target.value)}
-                    onBlur={handleReceiverZipBlur}
+                  <input value={receiverZip} onChange={(e) => onReceiverZipChange(e.target.value)}
                     placeholder="ZIP Code *" maxLength={10} className={inputCls(isIntl ? "purple" : "green")} />
                 </div>
                 {receiverCitySuggestions.length > 0 && (

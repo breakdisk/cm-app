@@ -266,38 +266,54 @@ export function BookingScreen({ route }: { route?: any }) {
   const [receiverCitySuggestions, setReceiverCitySuggestions] = React.useState<AddressCode[]>([]);
   const senderCityTimer   = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const receiverCityTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const senderZipTimer    = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const receiverZipTimer  = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  async function handleSenderZipEnd() {
-    if (senderZip.length < 3) return;
-    const hits = await lookupByPostalCode(senderCountry, senderZip);
-    if (hits[0]) { setSenderCity(hits[0].city); setSenderCitySuggestions([]); }
+  function onSenderZipChange(text: string) {
+    setSenderZip(text);
+    if (senderZipTimer.current) clearTimeout(senderZipTimer.current);
+    if (text.length >= 3) {
+      const country = senderCountry;
+      senderZipTimer.current = setTimeout(async () => {
+        const hits = await lookupByPostalCode(country, text);
+        if (hits[0]) { setSenderCity(hits[0].city); setSenderCitySuggestions([]); }
+      }, 500);
+    }
   }
 
-  async function handleReceiverZipEnd() {
-    if (receiverZip.length < 3) return;
-    const hits = await lookupByPostalCode(receiverCountry, receiverZip);
-    if (hits[0]) { setReceiverCity(hits[0].city); setReceiverCitySuggestions([]); }
+  function onReceiverZipChange(text: string) {
+    setReceiverZip(text);
+    if (receiverZipTimer.current) clearTimeout(receiverZipTimer.current);
+    if (text.length >= 3) {
+      const country = receiverCountry;
+      receiverZipTimer.current = setTimeout(async () => {
+        const hits = await lookupByPostalCode(country, text);
+        if (hits[0]) { setReceiverCity(hits[0].city); setReceiverCitySuggestions([]); }
+      }, 500);
+    }
   }
 
   function onSenderCityChange(text: string) {
     setSenderCity(text);
-    setSenderCitySuggestions([]);
     if (senderCityTimer.current) clearTimeout(senderCityTimer.current);
     if (text.length >= 2) {
       senderCityTimer.current = setTimeout(async () => {
         setSenderCitySuggestions(await lookupByCity(senderCountry, text));
       }, 400);
+    } else {
+      setSenderCitySuggestions([]);
     }
   }
 
   function onReceiverCityChange(text: string) {
     setReceiverCity(text);
-    setReceiverCitySuggestions([]);
     if (receiverCityTimer.current) clearTimeout(receiverCityTimer.current);
     if (text.length >= 2) {
       receiverCityTimer.current = setTimeout(async () => {
         setReceiverCitySuggestions(await lookupByCity(receiverCountry, text));
       }, 400);
+    } else {
+      setReceiverCitySuggestions([]);
     }
   }
 
@@ -680,8 +696,7 @@ export function BookingScreen({ route }: { route?: any }) {
               <TextInput value={senderCity} onChangeText={onSenderCityChange}
                 placeholder="City *" placeholderTextColor="rgba(255,255,255,0.2)"
                 style={[s.fieldInput, { flex: 1 }]} />
-              <TextInput value={senderZip} onChangeText={setSenderZip}
-                onEndEditing={handleSenderZipEnd}
+              <TextInput value={senderZip} onChangeText={onSenderZipChange}
                 placeholder="ZIP *" placeholderTextColor="rgba(255,255,255,0.2)"
                 style={[s.fieldInput, { flex: 0.7 }]} keyboardType="number-pad" maxLength={10} />
             </View>
@@ -735,8 +750,7 @@ export function BookingScreen({ route }: { route?: any }) {
               <TextInput value={receiverCity} onChangeText={onReceiverCityChange}
                 placeholder="City *" placeholderTextColor="rgba(255,255,255,0.2)"
                 style={[s.fieldInput, { flex: 1 }]} />
-              <TextInput value={receiverZip} onChangeText={setReceiverZip}
-                onEndEditing={handleReceiverZipEnd}
+              <TextInput value={receiverZip} onChangeText={onReceiverZipChange}
                 placeholder="ZIP *" placeholderTextColor="rgba(255,255,255,0.2)"
                 style={[s.fieldInput, { flex: 0.7 }]} keyboardType="number-pad" maxLength={10} />
             </View>

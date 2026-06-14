@@ -225,25 +225,33 @@ function PickupAddressesTab() {
   const [form, setForm]           = useState<CreatePickupAddressPayload>({ label: "", address: "", city: "", province: "", postal_code: "", country: "PH" });
   const [busyId, setBusyId]       = useState<string | null>(null);
   const [citySuggestions, setCitySuggestions] = useState<AddressCode[]>([]);
-  const cityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cityTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const postalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  async function handlePostalBlur() {
-    if (!form.postal_code || form.postal_code.length < 3) return;
-    const hits = await addressLookupApi.byPostalCode(form.country || "PH", form.postal_code);
-    if (hits[0]) {
-      setForm((f) => ({ ...f, city: hits[0].city, province: hits[0].state_province ?? f.province ?? "" }));
-      setCitySuggestions([]);
+  function handlePostalChange(value: string) {
+    setForm((f) => ({ ...f, postal_code: value }));
+    if (postalTimerRef.current) clearTimeout(postalTimerRef.current);
+    if (value.length >= 3) {
+      const country = form.country || "PH";
+      postalTimerRef.current = setTimeout(async () => {
+        const hits = await addressLookupApi.byPostalCode(country, value);
+        if (hits[0]) {
+          setForm((f) => ({ ...f, city: hits[0].city, province: hits[0].state_province ?? f.province ?? "" }));
+          setCitySuggestions([]);
+        }
+      }, 500);
     }
   }
 
   function handleCityChange(value: string) {
     setForm((f) => ({ ...f, city: value }));
-    setCitySuggestions([]);
     if (cityTimerRef.current) clearTimeout(cityTimerRef.current);
     if (value.length >= 2) {
       cityTimerRef.current = setTimeout(async () => {
         setCitySuggestions(await addressLookupApi.byCity(form.country || "PH", value));
       }, 400);
+    } else {
+      setCitySuggestions([]);
     }
   }
 
@@ -337,10 +345,10 @@ function PickupAddressesTab() {
                 <input
                   value={(form[field] as string) ?? ""}
                   onChange={(e) => {
-                    if (field === "city") handleCityChange(e.target.value);
+                    if (field === "city")        handleCityChange(e.target.value);
+                    else if (field === "postal_code") handlePostalChange(e.target.value);
                     else setForm((f) => ({ ...f, [field]: e.target.value }));
                   }}
-                  onBlur={field === "postal_code" ? handlePostalBlur : undefined}
                   placeholder={placeholder}
                   className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white placeholder-white/25 outline-none focus:border-cyan-neon/40"
                 />
