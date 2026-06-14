@@ -15,7 +15,7 @@ use rdkafka::{
 use serde::Deserialize;
 use uuid::Uuid;
 
-use logisticos_events::{topics, Event};
+use logisticos_events::topics;
 use logisticos_types::TenantId;
 
 use crate::application::services::{ProfileService, RecordEventCommand, UpsertProfileCommand};
@@ -111,12 +111,20 @@ async fn handle_message(
         None => return Ok(()), // tombstone / null payload — skip
     };
 
-    // Extract tenant_id from Kafka message header (set by all publishers).
-    let tenant_id = extract_tenant_header(msg)?;
+    // Parse the CloudEvents-style envelope: { id, source, event_type, time, tenant_id, data: T }.
+    // Publishers do NOT set rdkafka headers — tenant_id lives inside the JSON envelope.
+    let raw: serde_json::Value = serde_json::from_slice(payload)?;
+    let tenant_id = raw["tenant_id"]
+        .as_str()
+        .and_then(|s| s.parse::<Uuid>().ok())
+        .map(TenantId::from_uuid)
+        .ok_or_else(|| anyhow::anyhow!("Missing tenant_id in event envelope on topic {}", msg.topic()))?;
+    // Inner payload is always under the "data" key; fall back to root for legacy events.
+    let data_val = raw.get("data").unwrap_or(&raw);
 
     match msg.topic() {
         topics::SHIPMENT_CREATED => {
-            let data: ShipmentCreatedPayload = serde_json::from_slice(payload)?;
+            let data: ShipmentCreatedPayload = serde_json::from_value(data_val.clone())?;
 
             // 1. Upsert receiver profile (tagged as Receiver so it's excluded from
             //    the Senders-only view on the Customers page).
@@ -183,7 +191,7 @@ async fn handle_message(
             }
         }
         topics::DELIVERY_COMPLETED => {
-            let data: DeliveryCompletedPayload = serde_json::from_slice(payload)?;
+            let data: DeliveryCompletedPayload = serde_json::from_value(data_val.clone())?;
             let occurred_at = data
                 .delivered_at
                 .parse::<DateTime<Utc>>()
@@ -205,7 +213,7 @@ async fn handle_message(
             .await?;
         }
         topics::DELIVERY_FAILED => {
-            let data: DeliveryFailedPayload = serde_json::from_slice(payload)?;
+            let data: DeliveryFailedPayload = serde_json::from_value(data_val.clone())?;
             let occurred_at = data
                 .attempted_at
                 .parse::<DateTime<Utc>>()
@@ -224,7 +232,7 @@ async fn handle_message(
             .await?;
         }
         topics::COD_COLLECTED => {
-            let data: CodCollectedPayload = serde_json::from_slice(payload)?;
+            let data: CodCollectedPayload = serde_json::from_value(data_val.clone())?;
             let occurred_at = data
                 .collected_at
                 .parse::<DateTime<Utc>>()
@@ -249,20 +257,3 @@ async fn handle_message(
     Ok(())
 }
 
-fn extract_tenant_header(msg: &BorrowedMessage<'_>) -> anyhow::Result<TenantId> {
-    use rdkafka::message::Headers;
-    msg.headers()
-        .and_then(|headers| {
-            headers.iter().find_map(|h| {
-                if h.key == "tenant_id" {
-                    h.value
-                        .and_then(|v| std::str::from_utf8(v).ok())
-                        .and_then(|s| s.parse::<Uuid>().ok())
-                        .map(TenantId::from_uuid)
-                } else {
-                    None
-                }
-            })
-        })
-        .ok_or_else(|| anyhow::anyhow!("Missing tenant_id Kafka header on topic {}", msg.topic()))
-}
