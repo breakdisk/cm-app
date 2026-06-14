@@ -168,10 +168,29 @@ async fn activate_campaign(
                 .resolve_audience(claims.tenant_id, &campaign.targeting)
                 .await
                 .map_err(AppError::internal)?;
+
+            if recipients.is_empty() {
+                return Err(AppError::BusinessRule(
+                    "CDP resolved 0 recipients — broaden your targeting before activating".to_owned()
+                ));
+            }
+
             state.campaign_svc
                 .patch_recipients(id, recipients)
                 .await?;
         }
+    }
+
+    // Reject activation if the campaign has no recipients and no targeting rule
+    // that would produce recipients at send time.
+    let pre_activate = state.campaign_svc.get(id).await?;
+    if pre_activate.targeting.recipients.is_empty()
+        && pre_activate.targeting.customer_ids.is_empty()
+        && pre_activate.targeting.min_clv_score.is_none()
+    {
+        return Err(AppError::BusinessRule(
+            "Campaign has no recipients — add recipients before activating".to_owned()
+        ));
     }
 
     let campaign = state.campaign_svc.activate(id).await?;

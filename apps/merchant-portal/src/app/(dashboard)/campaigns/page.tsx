@@ -156,6 +156,9 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
   const [error,          setError]          = useState<string | null>(null);
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleFor,     setScheduleFor]     = useState("");
+  const [createdId,      setCreatedId]      = useState<string | null>(null);
+  const [activating,     setActivating]     = useState(false);
+  const [activated,      setActivated]      = useState(false);
 
   // Customer picker mode
   const [recipientMode,      setRecipientMode]      = useState<"manual" | "customers">("manual");
@@ -206,6 +209,23 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
         email:       p.email ?? null,
         name:        p.name  ?? null,
       }));
+  }
+
+  async function handleActivateNow() {
+    if (!createdId) return;
+    setActivating(true);
+    setError(null);
+    try {
+      const api = createCampaignsApi();
+      await api.activate(createdId);
+      setActivated(true);
+      onCreated?.();
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Failed to activate campaign");
+    } finally {
+      setActivating(false);
+    }
   }
 
   // SMS multi-part messages are valid — 1000 chars is ~6 segments, practical limit.
@@ -259,6 +279,7 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
       };
       const api = createCampaignsApi();
       const created = await api.create(payload);
+      setCreatedId(created.id);
       if (scheduleEnabled && scheduleFor) {
         await api.schedule(created.id, { scheduled_at: new Date(scheduleFor).toISOString() });
       }
@@ -634,24 +655,60 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
           </div>
         ) : (
           <div className="flex flex-col items-center gap-4 py-6 text-center">
-            <div className="flex h-14 w-14 items-center justify-center rounded-2xl" style={{ background: "rgba(168,85,247,0.12)" }}>
-              <CheckCircle2 className="h-7 w-7 text-purple-plasma" />
+            <div
+              className="flex h-14 w-14 items-center justify-center rounded-2xl"
+              style={{ background: activated ? "rgba(0,255,136,0.12)" : "rgba(168,85,247,0.12)" }}
+            >
+              <CheckCircle2 className={`h-7 w-7 ${activated ? "text-green-signal" : "text-purple-plasma"}`} />
             </div>
             <div>
-              <p className="font-heading text-lg font-bold text-white">Campaign Created</p>
+              <p className="font-heading text-lg font-bold text-white">
+                {activated ? "Campaign Sending!" : "Campaign Created"}
+              </p>
               <p className="text-sm text-white/40 mt-1">
-                {scheduleEnabled && scheduleFor
+                {activated
+                  ? `"${name}" is now sending to recipients.`
+                  : scheduleEnabled && scheduleFor
                   ? `"${name}" is scheduled for ${new Date(scheduleFor).toLocaleString()}.`
-                  : `"${name}" is now saved as a draft.`}
+                  : `"${name}" saved as draft — send it now or activate later from the list.`}
               </p>
             </div>
-            <button
-              onClick={onClose}
-              className="rounded-lg px-6 py-2 text-sm font-semibold text-white"
-              style={{ background: "linear-gradient(135deg, #A855F7, #00E5FF)" }}
-            >
-              Done
-            </button>
+            {error && (
+              <p className="rounded-lg border border-red-signal/30 bg-red-signal/10 px-3 py-2 text-xs text-red-signal w-full">
+                {error}
+              </p>
+            )}
+            {/* Send Now / Done buttons */}
+            {!scheduleEnabled && !activated ? (
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleActivateNow}
+                  disabled={activating}
+                  className="flex items-center gap-1.5 rounded-lg px-5 py-2 text-sm font-semibold text-white transition-all disabled:opacity-40"
+                  style={{ background: "linear-gradient(135deg, #00FF88, #00E5FF)" }}
+                >
+                  {activating ? (
+                    <><span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" /> Sending…</>
+                  ) : (
+                    <><Play size={13} /> Send Now</>
+                  )}
+                </button>
+                <button
+                  onClick={onClose}
+                  className="rounded-lg border border-glass-border px-4 py-2 text-sm text-white/50 hover:text-white transition-colors"
+                >
+                  Later
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={onClose}
+                className="rounded-lg px-6 py-2 text-sm font-semibold text-white"
+                style={{ background: "linear-gradient(135deg, #A855F7, #00E5FF)" }}
+              >
+                Done
+              </button>
+            )}
           </div>
         )}
       </motion.div>
