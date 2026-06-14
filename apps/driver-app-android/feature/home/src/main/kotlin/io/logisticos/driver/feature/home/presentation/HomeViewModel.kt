@@ -267,12 +267,12 @@ class HomeViewModel @Inject constructor(
                     val locallyDone = TaskSyncBus.locallyCompletedIds.value
                     // Filter: hide tasks we locally marked complete even if the
                     // server still returns them as IN_PROGRESS (race window).
-                    val visible = r.data.filter { it.id !in locallyDone }
+                    val visible = r.data.filter { it.taskId !in locallyDone }
                     _uiState.update { it.copy(tasks = visible) }
                     // Prune the local-complete set: if the server no longer
                     // returns a task ID at all, it's confirmed gone — safe to
                     // stop filtering it out.
-                    val serverIds = r.data.map { it.id }.toSet()
+                    val serverIds = r.data.map { it.taskId }.toSet()
                     locallyDone.forEach { id ->
                         if (id !in serverIds) TaskSyncBus.clearLocallyCompleted(id)
                     }
