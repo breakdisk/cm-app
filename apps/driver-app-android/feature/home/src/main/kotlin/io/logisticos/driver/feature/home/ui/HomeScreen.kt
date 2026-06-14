@@ -304,15 +304,18 @@ fun HomeScreen(
                 border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder)
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
-                    // \u2500\u2500 Header \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+                    // \u2500\u2500 Header row: [icon] [title]  [Retry?] [chevron] \u2500\u2500\u2500\u2500\u2500\u2500\u2500
+                    // Title + controls always on ONE line \u2014 subtitle is a
+                    // separate row below so it can wrap freely without pushing
+                    // the controls off-screen.
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        // Left: status icon + count label
                         Row(
-                            modifier = Modifier.weight(1f),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             if (syncDone) {
@@ -324,35 +327,30 @@ fun HomeScreen(
                                 )
                             } else {
                                 CircularProgressIndicator(
-                                    color = Cyan,
+                                    color = if (hasFailures) Color(0xFFFF3B5C) else Cyan,
                                     modifier = Modifier.size(14.dp),
                                     strokeWidth = 1.5.dp,
                                 )
                             }
-                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Text(
-                                    text = when {
-                                        syncDone            -> "All synced!"
-                                        syncItems.size == 1 -> "1 item syncing"
-                                        else                -> "${syncItems.size} items syncing"
-                                    },
-                                    color = accentColor,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                if (!syncDone) {
-                                    Text(
-                                        text = if (hasFailures) "Some items need attention \u2014 tap for details"
-                                               else "Will retry automatically when online",
-                                        color = Color.White.copy(alpha = 0.5f),
-                                        fontSize = 11.sp
-                                    )
-                                }
-                            }
+                            Text(
+                                text = when {
+                                    syncDone            -> "All synced!"
+                                    syncItems.size == 1 -> "1 item syncing"
+                                    else                -> "${syncItems.size} items syncing"
+                                },
+                                color = when {
+                                    syncDone     -> Green
+                                    hasFailures  -> Color(0xFFFF3B5C)
+                                    else         -> Cyan
+                                },
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
                         }
+                        // Right: Retry button (failures only) + chevron
                         if (syncItems.isNotEmpty()) {
                             Row(
-                                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                horizontalArrangement = Arrangement.spacedBy(0.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 if (hasFailures) {
@@ -380,6 +378,16 @@ fun HomeScreen(
                             }
                         }
                     }
+                    // \u2500\u2500 Subtitle row (separate so it never displaces controls) \u2500
+                    if (!syncDone) {
+                        Text(
+                            text = if (hasFailures) "Server unreachable \u2014 tap to expand, Retry to force sync"
+                                   else "Will sync automatically when online",
+                            color = Color.White.copy(alpha = 0.45f),
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(start = 22.dp, top = 2.dp)
+                        )
+                    }
 
                     // \u2500\u2500 Per-item detail rows (shown when expanded) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
                     AnimatedVisibility(visible = syncExpanded && syncItems.isNotEmpty()) {
@@ -390,10 +398,15 @@ fun HomeScreen(
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             syncItems.forEach { item ->
-                                val (itemColor, statusText) = when (item.status) {
-                                    SyncItemStatus.SYNCING  -> Cyan            to "Syncing"
-                                    SyncItemStatus.RETRYING -> Amber           to "Retrying (${item.retryCount}\u00d7)"
-                                    SyncItemStatus.FAILED   -> Color(0xFFFF3B5C) to "Needs attention"
+                                val itemColor = when (item.status) {
+                                    SyncItemStatus.SYNCING  -> Cyan
+                                    SyncItemStatus.RETRYING -> Amber
+                                    SyncItemStatus.FAILED   -> Color(0xFFFF3B5C)
+                                }
+                                val statusText = when (item.status) {
+                                    SyncItemStatus.SYNCING  -> "Syncing"
+                                    SyncItemStatus.RETRYING -> "Retry ${item.retryCount}\u00d7"
+                                    SyncItemStatus.FAILED   -> "Failed \u00b7 ${item.retryCount} tries"
                                 }
                                 Row(
                                     modifier = Modifier
@@ -407,14 +420,29 @@ fun HomeScreen(
                                         item.label,
                                         color = Color.White.copy(alpha = 0.80f),
                                         fontSize = 12.sp,
-                                        fontWeight = FontWeight.Medium
+                                        fontWeight = FontWeight.Medium,
+                                        modifier = Modifier.weight(1f)
                                     )
-                                    Text(
-                                        statusText,
-                                        color = itemColor,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Medium
-                                    )
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text(
+                                            statusText,
+                                            color = itemColor,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                        // Surface the last error message so ops/driver
+                                        // can tell "401 Unauthorized" from "timeout" etc.
+                                        if (item.status == SyncItemStatus.FAILED && !item.lastError.isNullOrBlank()) {
+                                            Text(
+                                                text = item.lastError
+                                                    .removePrefix("HTTP ")
+                                                    .take(36)
+                                                    .let { if (item.lastError.length > 36) "$it\u2026" else it },
+                                                color = Color(0xFFFF3B5C).copy(alpha = 0.55f),
+                                                fontSize = 9.sp,
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }

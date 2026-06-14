@@ -35,6 +35,7 @@ data class SyncItemUiModel(
     val label: String,
     val status: SyncItemStatus,
     val retryCount: Int,
+    val lastError: String?,
 )
 
 data class HomeUiState(
@@ -150,6 +151,7 @@ class HomeViewModel @Inject constructor(
                         label      = syncActionLabel(e.action),
                         status     = status,
                         retryCount = e.retryCount,
+                        lastError  = e.lastError,
                     )
                 }
                 val wasNonEmpty = _uiState.value.syncItems.isNotEmpty()
@@ -678,9 +680,18 @@ class HomeViewModel @Inject constructor(
         _uiState.update { it.copy(syncExpanded = !it.syncExpanded) }
     }
 
-    /** Kick a one-time sync worker so failed items are retried immediately. */
+    /** Reset all application-level backoff then kick the worker immediately.
+     *
+     * Without the reset, items at retryCount >= 8 sit in 5-min exponential
+     * backoff — getPendingItems(now) returns 0 rows and the worker exits
+     * silently, making the Retry button appear to do nothing. Clearing
+     * nextRetryAt = 0 forces every queued item back into the eligible window
+     * so the worker processes all of them on this run. */
     fun retrySyncNow() {
-        OutboundSyncWorker.kickOnce(context)
+        viewModelScope.launch {
+            syncQueueDao.resetAllBackoff()
+            OutboundSyncWorker.kickOnce(context)
+        }
     }
 
     override fun onCleared() {

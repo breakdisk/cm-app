@@ -23,4 +23,10 @@ interface SyncQueueDao {
 
     @Query("SELECT * FROM sync_queue ORDER BY createdAt ASC")
     fun observeItems(): Flow<List<SyncQueueEntity>>
+
+    /** Clear all application-level backoff so every queued item is eligible
+     *  on the next worker run. Called before a user-initiated retry so that
+     *  items at retryCount=8+ (5-min backoff) aren't silently skipped. */
+    @Query("UPDATE sync_queue SET nextRetryAt = 0")
+    suspend fun resetAllBackoff()
 }

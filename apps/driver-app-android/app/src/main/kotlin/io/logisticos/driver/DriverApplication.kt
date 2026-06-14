@@ -6,6 +6,7 @@ import androidx.work.Configuration
 import com.mapbox.common.MapboxOptions
 import dagger.hilt.android.HiltAndroidApp
 import io.logisticos.driver.core.database.worker.NetworkConnectivityObserver
+import io.logisticos.driver.core.database.worker.OutboundSyncWorker
 import javax.inject.Inject
 
 @HiltAndroidApp
@@ -27,5 +28,9 @@ class DriverApplication : Application(), Configuration.Provider {
         }
         connectivityObserver = NetworkConnectivityObserver(this)
         connectivityObserver.register()
+        // Periodic safety net: drains the outbound sync queue every 15 min
+        // even when no kickOnce fires (app backgrounded, doze, missed FCM).
+        // Must be called after WorkManager is initialized (post-super.onCreate).
+        OutboundSyncWorker.schedule(this)
     }
 }
