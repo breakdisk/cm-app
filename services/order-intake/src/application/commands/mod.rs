@@ -28,6 +28,15 @@ pub struct CreateShipmentCommand {
     pub customer_phone: String,
     pub customer_email: Option<String>,
 
+    /// Sender identity fields — the person handing parcels to the courier.
+    /// Optional; when present, the CDP upserts a Sender profile for marketing use.
+    #[serde(default)]
+    pub sender_name:  Option<String>,
+    #[serde(default)]
+    pub sender_phone: Option<String>,
+    #[serde(default)]
+    pub sender_email: Option<String>,
+
     pub origin: AddressInput,
     pub destination: AddressInput,
 

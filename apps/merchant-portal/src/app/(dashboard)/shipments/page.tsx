@@ -887,6 +887,7 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
   // Step 1 — Sender
   const [senderName,    setSenderName]    = useState("");
   const [senderPhone,   setSenderPhone]   = useState("");
+  const [senderEmail,   setSenderEmail]   = useState("");
   const [senderAddress, setSenderAddress] = useState("");
   const [senderCity,    setSenderCity]    = useState("");
   const [senderZip,     setSenderZip]     = useState("");
@@ -1009,6 +1010,9 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
       const body = {
         customer_name:  receiverName,
         customer_phone: receiverPhone,
+        sender_name:  senderName  || undefined,
+        sender_phone: senderPhone || undefined,
+        ...(senderEmail.trim() ? { sender_email: senderEmail.trim() } : {}),
         origin: {
           line1: senderAddress, city: senderCity,
           province: senderCity, postal_code: senderZip,
@@ -1128,6 +1132,8 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
                 placeholder="Sender's Full Name *" className={inputCls("cyan")} />
               <input value={senderPhone} onChange={(e) => setSenderPhone(e.target.value)}
                 placeholder="Sender's Phone Number *" type="tel" className={inputCls("cyan")} />
+              <input value={senderEmail} onChange={(e) => setSenderEmail(e.target.value)}
+                placeholder="Sender's Email (optional — for email campaigns)" type="email" className={inputCls("cyan")} />
               <input value={senderAddress} onChange={(e) => setSenderAddress(e.target.value)}
                 placeholder="Street Address *" className={inputCls("cyan")} />
               <div className="space-y-1">

@@ -15,6 +15,7 @@ use logisticos_errors::AppError;
 use logisticos_events::{envelope::Event, topics};
 
 use crate::application::services::{ProfileService, UpsertProfileCommand};
+use crate::domain::entities::ProfileType;
 use crate::domain::repositories::ProfileFilter;
 use crate::AppState;
 
@@ -36,12 +37,13 @@ pub fn router() -> Router<AppState> {
 
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
-    name:    Option<String>,
-    email:   Option<String>,
-    phone:   Option<String>,
-    min_clv: Option<f32>,
-    limit:   Option<i64>,
-    offset:  Option<i64>,
+    name:         Option<String>,
+    email:        Option<String>,
+    phone:        Option<String>,
+    min_clv:      Option<f32>,
+    profile_type: Option<String>,
+    limit:        Option<i64>,
+    offset:       Option<i64>,
 }
 
 async fn list_profiles(
@@ -57,6 +59,7 @@ async fn list_profiles(
         email:         q.email,
         phone:         q.phone,
         min_clv:       q.min_clv,
+        profile_type:  q.profile_type,
         limit:         q.limit.unwrap_or(50).clamp(1, 200),
         offset:        q.offset.unwrap_or(0).max(0),
     };
@@ -123,9 +126,10 @@ async fn get_profile(
 
 #[derive(Debug, Deserialize)]
 pub struct UpsertBody {
-    pub name:  Option<String>,
-    pub email: Option<String>,
-    pub phone: Option<String>,
+    pub name:         Option<String>,
+    pub email:        Option<String>,
+    pub phone:        Option<String>,
+    pub profile_type: Option<String>,
 }
 
 async fn upsert_profile(
@@ -138,6 +142,12 @@ async fn upsert_profile(
     claims.require_permission(permissions::CUSTOMERS_MANAGE)?;
 
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let profile_type = body.profile_type.as_deref().and_then(|s| match s {
+        "sender"   => Some(ProfileType::Sender),
+        "receiver" => Some(ProfileType::Receiver),
+        _          => None,
+    });
+
     let summary = state
         .profile_svc
         .upsert(
@@ -147,6 +157,7 @@ async fn upsert_profile(
                 name:                 body.name,
                 email:                body.email,
                 phone:                body.phone,
+                profile_type,
             },
         )
         .await?;

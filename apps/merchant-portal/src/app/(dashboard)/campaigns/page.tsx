@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import {
   Megaphone, Plus, Zap, MessageSquare, Mail, Smartphone, Play, X,
-  BarChart2, ChevronDown, CheckCircle2, RefreshCw,
+  BarChart2, ChevronDown, CheckCircle2, RefreshCw, Users, Search, Check,
 } from "lucide-react";
 import {
   createCampaignsApi,
@@ -33,6 +33,7 @@ import {
   type WeeklyStat,
   type CreateCampaignPayload,
 } from "@/lib/api/campaigns";
+import { createCdpApi, type CustomerProfile, profileIdOf } from "@/lib/api/cdp";
 
 const CHANNEL_ICON: Record<Channel, React.ReactNode> = {
   whatsapp: <MessageSquare size={12} className="text-green-signal" />,
@@ -156,6 +157,57 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleFor,     setScheduleFor]     = useState("");
 
+  // Customer picker mode
+  const [recipientMode,      setRecipientMode]      = useState<"manual" | "customers">("manual");
+  const [customerSearch,     setCustomerSearch]     = useState("");
+  const [customerList,       setCustomerList]       = useState<CustomerProfile[]>([]);
+  const [customersLoading,   setCustomersLoading]   = useState(false);
+  const [selectedCustomerIds, setSelectedCustomerIds] = useState<Set<string>>(new Set());
+
+  // Load sender-type customers whenever the picker opens or search changes.
+  useEffect(() => {
+    if (recipientMode !== "customers") return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setCustomersLoading(true);
+      try {
+        const cdp = createCdpApi();
+        const res = await cdp.list({
+          name: customerSearch || undefined,
+          profile_type: "sender",
+          limit: 50,
+        });
+        if (!cancelled) setCustomerList(res.profiles ?? []);
+      } catch {
+        // non-fatal; list stays stale
+      } finally {
+        if (!cancelled) setCustomersLoading(false);
+      }
+    }, 300);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [recipientMode, customerSearch]);
+
+  function toggleCustomer(profile: CustomerProfile) {
+    const id = profile.external_customer_id;
+    setSelectedCustomerIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  // Build CampaignRecipient[] from the selected sender profiles.
+  function buildCustomerRecipients(): CampaignRecipient[] {
+    return customerList
+      .filter((p) => selectedCustomerIds.has(p.external_customer_id))
+      .map((p) => ({
+        customer_id: profileIdOf(p) || null,
+        phone:       p.phone ?? null,
+        email:       p.email ?? null,
+        name:        p.name  ?? null,
+      }));
+  }
+
   // SMS multi-part messages are valid — 1000 chars is ~6 segments, practical limit.
   // The segment counter below the textarea handles billing transparency.
   const charMax = 1000;
@@ -182,11 +234,11 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
     setSaving(true);
     setError(null);
     try {
-      const parsedRecipients = parsedList;
-      // Marketing service's CreateCampaignCommand shape: name, description,
-      // channel, template{template_id, subject?, variables}, targeting.
-      // The `trigger` drop-down is a UX label and is stored as description
-      // until the engagement service exposes a distinct trigger catalog.
+      const finalRecipients: CampaignRecipient[] =
+        recipientMode === "customers"
+          ? buildCustomerRecipients()
+          : parsedList;
+
       const payload: CreateCampaignPayload = {
         name: name.trim(),
         description: trigger,
@@ -201,13 +253,12 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
         },
         targeting: {
           customer_ids: [],
-          recipients: parsedRecipients,
-          estimated_reach: parsedRecipients.length,
+          recipients: finalRecipients,
+          estimated_reach: finalRecipients.length,
         },
       };
       const api = createCampaignsApi();
       const created = await api.create(payload);
-      // If the merchant picked a future date/time, schedule the campaign immediately.
       if (scheduleEnabled && scheduleFor) {
         await api.schedule(created.id, { scheduled_at: new Date(scheduleFor).toISOString() });
       }
@@ -386,45 +437,128 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
               </p>
             </div>
 
-            {/* Recipients */}
+            {/* Recipients — mode toggle + panel */}
             <div>
-              <div className="mb-1.5 flex items-center justify-between">
+              <div className="mb-2 flex items-center justify-between">
                 <label className="text-xs font-medium text-white/50">Recipients</label>
-                {recipients.trim() && (
-                  <span className={`text-2xs font-mono ${hasInvalidPhones ? "text-red-signal" : "text-white/30"}`}>
-                    {parsedList.length} recipient{parsedList.length !== 1 ? "s" : ""}
-                    {hasInvalidPhones && ` · ${invalidPhones.length} invalid`}
-                  </span>
-                )}
+                {/* Mode tabs */}
+                <div className="flex rounded-lg border border-glass-border overflow-hidden">
+                  {(["manual", "customers"] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setRecipientMode(mode)}
+                      className={`flex items-center gap-1 px-2.5 py-1 text-2xs font-medium transition-colors ${
+                        recipientMode === mode
+                          ? "bg-cyan-neon/15 text-cyan-neon"
+                          : "text-white/40 hover:text-white/70"
+                      } border-r border-glass-border last:border-r-0`}
+                    >
+                      {mode === "customers" ? <Users size={10} /> : null}
+                      {mode === "manual" ? "Manual" : "From Customers"}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <textarea
-                value={recipients}
-                onChange={(e) => setRecipients(e.target.value)}
-                rows={3}
-                placeholder={recipientPlaceholder}
-                className={`w-full resize-none rounded-xl border bg-glass-100 px-3.5 py-2.5 text-sm text-white placeholder-white/15 outline-none transition-colors font-mono ${
-                  hasInvalidPhones
-                    ? "border-red-signal/40 focus:border-red-signal/70"
-                    : "border-glass-border focus:border-cyan-neon/50"
-                }`}
-              />
-              {/* Per-channel help text */}
-              <p className="mt-1 text-2xs text-white/25">
-                {channel === "email"
-                  ? "One email address per line (or comma-separated)."
-                  : channel === "push"
-                  ? "One customer UUID per line."
-                  : <>
-                      <span className="text-white/40">Name|+63phone</span> or just <span className="text-white/40">+63phone</span> per line —
-                      name powers <span className="font-mono">{"{{"}<span>customer_name</span>{"}}"}</span> in the message body.
-                    </>}
-              </p>
-              {/* Inline E.164 error */}
-              {hasInvalidPhones && (
-                <p className="mt-1.5 rounded-lg border border-red-signal/25 bg-red-signal/8 px-2.5 py-1.5 text-2xs text-red-signal font-mono">
-                  {invalidPhones.length} number{invalidPhones.length !== 1 ? "s" : ""} not in E.164 format —
-                  must start with + and country code (e.g. +63912345678).
-                </p>
+
+              {recipientMode === "manual" ? (
+                <>
+                  <div className="mb-1 flex items-center justify-end">
+                    {recipients.trim() && (
+                      <span className={`text-2xs font-mono ${hasInvalidPhones ? "text-red-signal" : "text-white/30"}`}>
+                        {parsedList.length} recipient{parsedList.length !== 1 ? "s" : ""}
+                        {hasInvalidPhones && ` · ${invalidPhones.length} invalid`}
+                      </span>
+                    )}
+                  </div>
+                  <textarea
+                    value={recipients}
+                    onChange={(e) => setRecipients(e.target.value)}
+                    rows={3}
+                    placeholder={recipientPlaceholder}
+                    className={`w-full resize-none rounded-xl border bg-glass-100 px-3.5 py-2.5 text-sm text-white placeholder-white/15 outline-none transition-colors font-mono ${
+                      hasInvalidPhones
+                        ? "border-red-signal/40 focus:border-red-signal/70"
+                        : "border-glass-border focus:border-cyan-neon/50"
+                    }`}
+                  />
+                  <p className="mt-1 text-2xs text-white/25">
+                    {channel === "email"
+                      ? "One email address per line (or comma-separated)."
+                      : channel === "push"
+                      ? "One customer UUID per line."
+                      : <><span className="text-white/40">Name|+63phone</span> or just <span className="text-white/40">+63phone</span> per line.</>}
+                  </p>
+                  {hasInvalidPhones && (
+                    <p className="mt-1.5 rounded-lg border border-red-signal/25 bg-red-signal/8 px-2.5 py-1.5 text-2xs text-red-signal font-mono">
+                      {invalidPhones.length} number{invalidPhones.length !== 1 ? "s" : ""} not in E.164 format — must start with + and country code.
+                    </p>
+                  )}
+                </>
+              ) : (
+                /* Customer picker panel */
+                <div className="rounded-xl border border-glass-border bg-glass-50/30 overflow-hidden">
+                  {/* Search */}
+                  <div className="relative border-b border-glass-border">
+                    <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
+                    <input
+                      value={customerSearch}
+                      onChange={(e) => setCustomerSearch(e.target.value)}
+                      placeholder="Search senders by name…"
+                      className="w-full bg-transparent pl-8 pr-3 py-2.5 text-xs text-white placeholder-white/25 outline-none"
+                    />
+                  </div>
+                  {/* List */}
+                  <div className="max-h-48 overflow-y-auto">
+                    {customersLoading ? (
+                      <p className="px-3 py-4 text-center text-2xs text-white/30 font-mono">loading…</p>
+                    ) : customerList.length === 0 ? (
+                      <p className="px-3 py-4 text-center text-2xs text-white/30 font-mono">
+                        No senders found. Book a shipment first to auto-create sender profiles.
+                      </p>
+                    ) : (
+                      customerList.map((p) => {
+                        const selected = selectedCustomerIds.has(p.external_customer_id);
+                        const contact  = p.phone ?? p.email ?? p.external_customer_id.slice(0, 8);
+                        return (
+                          <button
+                            key={p.external_customer_id}
+                            type="button"
+                            onClick={() => toggleCustomer(p)}
+                            className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-glass-100 transition-colors border-b border-glass-border/40 last:border-b-0"
+                          >
+                            <span className={`flex h-4 w-4 flex-shrink-0 items-center justify-center rounded border transition-colors ${
+                              selected
+                                ? "border-cyan-neon bg-cyan-neon/20 text-cyan-neon"
+                                : "border-glass-border text-transparent"
+                            }`}>
+                              <Check size={10} />
+                            </span>
+                            <span className="flex-1 min-w-0">
+                              <span className="block text-xs text-white truncate">{p.name ?? "Unnamed"}</span>
+                              <span className="block text-2xs font-mono text-white/30 truncate">{contact}</span>
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                  {/* Selection summary */}
+                  {selectedCustomerIds.size > 0 && (
+                    <div className="flex items-center justify-between border-t border-glass-border px-3 py-2">
+                      <span className="text-2xs font-mono text-cyan-neon">
+                        {selectedCustomerIds.size} selected
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedCustomerIds(new Set())}
+                        className="text-2xs text-white/30 hover:text-white/60 transition-colors"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
 
@@ -481,7 +615,12 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
               </button>
               <button
                 onClick={handleCreate}
-                disabled={!name.trim() || !message.trim() || message.length > charMax || saving || (scheduleEnabled && !scheduleFor) || (needsSubject && !subject.trim()) || hasInvalidPhones}
+                disabled={
+                  !name.trim() || !message.trim() || message.length > charMax || saving ||
+                  (scheduleEnabled && !scheduleFor) || (needsSubject && !subject.trim()) ||
+                  (recipientMode === "manual" && hasInvalidPhones) ||
+                  (recipientMode === "customers" && selectedCustomerIds.size === 0)
+                }
                 className="flex items-center gap-2 rounded-lg px-5 py-2 text-sm font-semibold text-white transition-all disabled:opacity-40"
                 style={{ background: "linear-gradient(135deg, #A855F7, #00E5FF)" }}
               >

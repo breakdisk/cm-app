@@ -18,8 +18,9 @@ use uuid::Uuid;
 use logisticos_events::{topics, Event};
 use logisticos_types::TenantId;
 
-use crate::application::services::{ProfileService, RecordEventCommand};
-use crate::domain::entities::EventType;
+use crate::application::services::{ProfileService, RecordEventCommand, UpsertProfileCommand};
+use crate::domain::entities::{EventType, ProfileType};
+use crate::domain::repositories::ProfileFilter;
 
 // ---------------------------------------------------------------------------
 // Inbound payload shapes (mirrors libs/events/src/payloads.rs)
@@ -29,7 +30,18 @@ use crate::domain::entities::EventType;
 struct ShipmentCreatedPayload {
     merchant_id:          Uuid,
     customer_id:          Uuid,
+    customer_name:        String,
+    customer_phone:       String,
+    #[serde(default)]
+    customer_email:       String,
     destination_address:  String,
+    // Sender identity — populated when the merchant portal sends sender fields.
+    #[serde(default)]
+    sender_name:          Option<String>,
+    #[serde(default)]
+    sender_phone:         Option<String>,
+    #[serde(default)]
+    sender_email:         Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,8 +117,24 @@ async fn handle_message(
     match msg.topic() {
         topics::SHIPMENT_CREATED => {
             let data: ShipmentCreatedPayload = serde_json::from_slice(payload)?;
+
+            // 1. Upsert receiver profile (tagged as Receiver so it's excluded from
+            //    the Senders-only view on the Customers page).
+            svc.upsert(
+                &tenant_id,
+                UpsertProfileCommand {
+                    external_customer_id: data.customer_id,
+                    name:  Some(data.customer_name.clone()).filter(|s| !s.is_empty()),
+                    email: Some(data.customer_email.clone()).filter(|s| !s.is_empty()),
+                    phone: Some(data.customer_phone.clone()).filter(|s| !s.is_empty()),
+                    profile_type: Some(ProfileType::Receiver),
+                },
+            )
+            .await?;
+
+            // 2. Record the shipment booking event on the receiver profile.
             svc.record_event(RecordEventCommand {
-                tenant_id,
+                tenant_id: tenant_id.clone(),
                 external_customer_id: data.customer_id,
                 event_type: EventType::ShipmentCreated,
                 shipment_id: None,
@@ -117,6 +145,42 @@ async fn handle_message(
                 occurred_at: Utc::now(),
             })
             .await?;
+
+            // 3. Upsert sender profile when sender identity is present.
+            //    Dedup by phone: reuse the existing Sender profile if one exists
+            //    with the same phone under this tenant, otherwise create a new one.
+            if let Some(ref sender_phone) = data.sender_phone {
+                if !sender_phone.is_empty() {
+                    let existing = svc
+                        .list(
+                            &tenant_id,
+                            ProfileFilter {
+                                phone: Some(sender_phone.clone()),
+                                profile_type: Some("sender".to_string()),
+                                limit: 1,
+                                ..Default::default()
+                            },
+                        )
+                        .await?;
+
+                    let sender_external_id = existing
+                        .first()
+                        .map(|s| s.external_customer_id)
+                        .unwrap_or_else(Uuid::new_v4);
+
+                    svc.upsert(
+                        &tenant_id,
+                        UpsertProfileCommand {
+                            external_customer_id: sender_external_id,
+                            name:  data.sender_name.clone().filter(|s| !s.is_empty()),
+                            email: data.sender_email.clone().filter(|s| !s.is_empty()),
+                            phone: Some(sender_phone.clone()),
+                            profile_type: Some(ProfileType::Sender),
+                        },
+                    )
+                    .await?;
+                }
+            }
         }
         topics::DELIVERY_COMPLETED => {
             let data: DeliveryCompletedPayload = serde_json::from_slice(payload)?;

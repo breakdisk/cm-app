@@ -5,7 +5,7 @@ use uuid::Uuid;
 use logisticos_types::TenantId;
 
 use crate::domain::{
-    entities::{CustomerProfile, CustomerId},
+    entities::{CustomerProfile, CustomerId, ProfileType},
     repositories::{CustomerProfileRepository, ProfileFilter},
 };
 
@@ -18,6 +18,7 @@ struct ProfileRow {
     id:                          Uuid,
     tenant_id:                   Uuid,
     external_customer_id:        Uuid,
+    profile_type:                String,
     name:                        Option<String>,
     email:                       Option<String>,
     phone:                       Option<String>,
@@ -42,10 +43,17 @@ impl TryFrom<ProfileRow> for CustomerProfile {
         let address_history = serde_json::from_value(r.address_history)?;
         let recent_events = serde_json::from_value(r.recent_events)?;
 
+        let profile_type = match r.profile_type.as_str() {
+            "sender"   => ProfileType::Sender,
+            "receiver" => ProfileType::Receiver,
+            _          => ProfileType::Unknown,
+        };
+
         Ok(CustomerProfile {
             id:                        CustomerId::from_uuid(r.id),
             tenant_id:                 TenantId::from_uuid(r.tenant_id),
             external_customer_id:      r.external_customer_id,
+            profile_type,
             name:                      r.name,
             email:                     r.email,
             phone:                     r.phone,
@@ -86,6 +94,7 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
             r#"
             SELECT
                 id, tenant_id, external_customer_id,
+                profile_type,
                 name, email, phone,
                 total_shipments, successful_deliveries, failed_deliveries,
                 first_shipment_at, last_shipment_at,
@@ -113,6 +122,7 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
             r#"
             SELECT
                 id, tenant_id, external_customer_id,
+                profile_type,
                 name, email, phone,
                 total_shipments, successful_deliveries, failed_deliveries,
                 first_shipment_at, last_shipment_at,
@@ -141,6 +151,7 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
             r#"
             SELECT
                 id, tenant_id, external_customer_id,
+                profile_type,
                 name, email, phone,
                 total_shipments, successful_deliveries, failed_deliveries,
                 first_shipment_at, last_shipment_at,
@@ -164,10 +175,17 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
         let address_json = serde_json::to_value(&p.address_history)?;
         let events_json  = serde_json::to_value(&p.recent_events)?;
 
+        let profile_type_str = match p.profile_type {
+            ProfileType::Sender   => "sender",
+            ProfileType::Receiver => "receiver",
+            ProfileType::Unknown  => "unknown",
+        };
+
         sqlx::query(
             r#"
             INSERT INTO cdp.customer_profiles (
                 id, tenant_id, external_customer_id,
+                profile_type,
                 name, email, phone,
                 total_shipments, successful_deliveries, failed_deliveries,
                 first_shipment_at, last_shipment_at,
@@ -177,14 +195,16 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
                 created_at, updated_at
             ) VALUES (
                 $1,  $2,  $3,
-                $4,  $5,  $6,
-                $7,  $8,  $9,
-                $10, $11, $12,
-                $13, $14,
-                $15, $16,
-                $17, $18
+                $4,
+                $5,  $6,  $7,
+                $8,  $9,  $10,
+                $11, $12, $13,
+                $14, $15,
+                $16, $17,
+                $18, $19
             )
             ON CONFLICT (id) DO UPDATE SET
+                profile_type              = EXCLUDED.profile_type,
                 name                      = EXCLUDED.name,
                 email                     = EXCLUDED.email,
                 phone                     = EXCLUDED.phone,
@@ -204,6 +224,7 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
         .bind(p.id.inner())
         .bind(p.tenant_id.inner())
         .bind(p.external_customer_id)
+        .bind(profile_type_str)
         .bind(&p.name)
         .bind(&p.email)
         .bind(&p.phone)
@@ -239,6 +260,7 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
             r#"
             SELECT
                 id, tenant_id, external_customer_id,
+                profile_type,
                 name, email, phone,
                 total_shipments, successful_deliveries, failed_deliveries,
                 first_shipment_at, last_shipment_at,
@@ -252,8 +274,9 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
               AND ($3::text IS NULL OR email = $3)
               AND ($4::text IS NULL OR phone = $4)
               AND ($5::float4 IS NULL OR clv_score >= $5)
+              AND ($6::text IS NULL OR profile_type = $6)
             ORDER BY last_shipment_at DESC NULLS LAST
-            LIMIT $6 OFFSET $7
+            LIMIT $7 OFFSET $8
             "#
         )
         .bind(tenant_id.inner())
@@ -261,6 +284,7 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
         .bind(&filter.email)
         .bind(&filter.phone)
         .bind(filter.min_clv)
+        .bind(&filter.profile_type)
         .bind(filter.limit)
         .bind(filter.offset)
         .fetch_all(&self.pool)
@@ -280,6 +304,7 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
             r#"
             SELECT
                 id, tenant_id, external_customer_id,
+                profile_type,
                 name, email, phone,
                 total_shipments, successful_deliveries, failed_deliveries,
                 first_shipment_at, last_shipment_at,

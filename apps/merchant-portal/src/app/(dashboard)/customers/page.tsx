@@ -22,6 +22,7 @@ import {
   deliverySuccessRate,
   type CustomerProfile,
   type ListProfilesQuery,
+  type ProfileType,
 } from "@/lib/api/cdp";
 
 function clvTier(score: number): { label: string; variant: "green" | "cyan" | "purple" | "amber" | "muted" } {
@@ -46,6 +47,9 @@ export default function CustomersPage() {
   const [top,      setTop]      = useState<CustomerProfile[]>([]);
   const [loading,  setLoading]  = useState(true);
   const [error,    setError]    = useState<string | null>(null);
+
+  // Profile type toggle — default to "sender" so merchants see their shipping clients.
+  const [profileTypeFilter, setProfileTypeFilter] = useState<ProfileType | undefined>("sender");
 
   // Raw filter inputs (update instantly on keystroke)
   const [nameInput,   setNameInput]   = useState("");
@@ -83,12 +87,13 @@ export default function CustomersPage() {
     setLoading(true);
     try {
       const query: ListProfilesQuery = {
-        name:    debouncedName   || undefined,
-        email:   debouncedEmail  || undefined,
-        phone:   debouncedPhone  || undefined,
-        min_clv: debouncedMinClv,
-        limit:   PAGE_SIZE,
-        offset:  0,
+        name:         debouncedName   || undefined,
+        email:        debouncedEmail  || undefined,
+        phone:        debouncedPhone  || undefined,
+        min_clv:      debouncedMinClv,
+        profile_type: profileTypeFilter,
+        limit:        PAGE_SIZE,
+        offset:       0,
       };
       const [list, topClv] = await Promise.all([
         api.list(query),
@@ -102,7 +107,7 @@ export default function CustomersPage() {
     } finally {
       setLoading(false);
     }
-  }, [api, debouncedName, debouncedEmail, debouncedPhone, debouncedMinClv]);
+  }, [api, debouncedName, debouncedEmail, debouncedPhone, debouncedMinClv, profileTypeFilter]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -112,13 +117,14 @@ export default function CustomersPage() {
       : profiles.reduce((n, p) => n + p.clv_score, 0) / profiles.length;
     const successRate = totalShipments === 0 ? 0
       : (profiles.reduce((n, p) => n + p.successful_deliveries, 0) / totalShipments) * 100;
+    const label = profileTypeFilter === "sender" ? "Senders" : profileTypeFilter === "receiver" ? "Receivers" : "All Profiles";
     return [
-      { label: "Total Customers", value: profiles.length, trend: 0, color: "cyan"   as const, format: "number"  as const },
+      { label: label, value: profiles.length, trend: 0, color: "cyan"   as const, format: "number"  as const },
       { label: "Avg CLV Score",   value: avgClv,          trend: 0, color: "purple" as const, format: "number"  as const },
       { label: "Total Shipments", value: totalShipments,  trend: 0, color: "amber"  as const, format: "number"  as const },
       { label: "Success Rate",    value: successRate,     trend: 0, color: "green"  as const, format: "percent" as const },
     ];
-  }, [profiles]);
+  }, [profiles, profileTypeFilter]);
 
   function clearFilters() {
     setNameInput("");
@@ -142,16 +148,38 @@ export default function CustomersPage() {
             Customers
           </h1>
           <p className="text-sm text-white/40 font-mono mt-0.5">
-            Customer Data Platform · {profiles.length} profiles loaded
+            Customer Data Platform · {profiles.length} {profileTypeFilter === "sender" ? "senders" : "profiles"} loaded
           </p>
         </div>
-        <button
-          onClick={load}
-          className="flex items-center gap-1.5 rounded-lg border border-glass-border px-3 py-2 text-xs text-white/60 hover:text-white transition-colors"
-          title="Refresh"
-        >
-          <RefreshCw size={13} />
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Sender / All toggle */}
+          <div className="flex rounded-lg border border-glass-border overflow-hidden">
+            {(["sender", undefined] as const).map((type) => {
+              const label = type === "sender" ? "Senders" : "All";
+              const active = profileTypeFilter === type;
+              return (
+                <button
+                  key={label}
+                  onClick={() => setProfileTypeFilter(type)}
+                  className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                    active
+                      ? "bg-cyan-neon/15 text-cyan-neon border-r border-glass-border last:border-r-0"
+                      : "text-white/40 hover:text-white/70 border-r border-glass-border last:border-r-0"
+                  }`}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          <button
+            onClick={load}
+            className="flex items-center gap-1.5 rounded-lg border border-glass-border px-3 py-2 text-xs text-white/60 hover:text-white transition-colors"
+            title="Refresh"
+          >
+            <RefreshCw size={13} />
+          </button>
+        </div>
       </motion.div>
 
       {error && (
@@ -177,7 +205,9 @@ export default function CustomersPage() {
         <GlassCard padding="none">
           {/* Toolbar */}
           <div className="flex items-center justify-between px-5 py-4 border-b border-glass-border gap-3 flex-wrap">
-            <h2 className="font-heading text-sm font-semibold text-white whitespace-nowrap">All Customers</h2>
+            <h2 className="font-heading text-sm font-semibold text-white whitespace-nowrap">
+              {profileTypeFilter === "sender" ? "Senders" : "All Customers"}
+            </h2>
             <div className="flex items-center gap-2 flex-1">
               {/* Name search */}
               <div className="relative flex-1 max-w-xs">
@@ -227,8 +257,8 @@ export default function CustomersPage() {
           )}
 
           {/* Column headers */}
-          <div className="grid grid-cols-[2fr_90px_90px_90px_1fr] gap-3 px-5 py-2.5 border-b border-glass-border">
-            {["Customer", "CLV", "Shipments", "Success", "Recent Address"].map((h) => (
+          <div className="grid grid-cols-[2fr_70px_90px_90px_90px_1fr] gap-3 px-5 py-2.5 border-b border-glass-border">
+            {["Customer", "Type", "CLV", "Shipments", "Success", "Recent Address"].map((h) => (
               <span key={h} className="text-2xs font-mono text-white/30 uppercase tracking-wider">{h}</span>
             ))}
           </div>
@@ -240,6 +270,8 @@ export default function CustomersPage() {
               <p className="text-xs text-white/40 font-mono">
                 {nameInput || emailInput || phoneInput || minClvInput
                   ? "No customers match the current filters"
+                  : profileTypeFilter === "sender"
+                  ? "No senders yet — book a shipment to auto-create sender profiles"
                   : "No customers yet"}
               </p>
             </div>
@@ -248,11 +280,13 @@ export default function CustomersPage() {
               const tier = clvTier(p.clv_score);
               const successRate = deliverySuccessRate(p);
               const topAddr = (p.address_history ?? [])[0]?.address ?? "—";
+              const ptVariant = p.profile_type === "sender" ? "cyan" : p.profile_type === "receiver" ? "purple" : "muted";
+              const ptLabel   = p.profile_type === "sender" ? "Sender" : p.profile_type === "receiver" ? "Receiver" : "—";
               return (
                 <div
                   key={p.external_customer_id}
                   onClick={() => router.push(`/customers/${p.external_customer_id}`)}
-                  className="grid grid-cols-[2fr_90px_90px_90px_1fr] gap-3 items-center px-5 py-3 border-b border-glass-border/50 hover:bg-glass-100 transition-colors cursor-pointer"
+                  className="grid grid-cols-[2fr_70px_90px_90px_90px_1fr] gap-3 items-center px-5 py-3 border-b border-glass-border/50 hover:bg-glass-100 transition-colors cursor-pointer"
                 >
                   <div className="min-w-0">
                     <p className="text-xs font-medium text-white truncate">{p.name ?? "Unnamed customer"}</p>
@@ -262,6 +296,7 @@ export default function CustomersPage() {
                       {!p.email && !p.phone && <span>{p.external_customer_id.slice(0, 8)}…</span>}
                     </p>
                   </div>
+                  <NeonBadge variant={ptVariant}>{ptLabel}</NeonBadge>
                   <NeonBadge variant={tier.variant} dot>{tier.label}</NeonBadge>
                   <span className="text-xs font-mono text-white/60">{p.total_shipments}</span>
                   <span className={`text-xs font-mono font-semibold ${

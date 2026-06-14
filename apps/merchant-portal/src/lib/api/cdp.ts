@@ -26,10 +26,14 @@ export interface AddressUsage {
   last_used: string;
 }
 
+export type ProfileType = "sender" | "receiver" | "unknown";
+
 export interface CustomerProfile {
   id: string | { 0: string };
   tenant_id: string | { 0: string };
   external_customer_id: string;
+
+  profile_type: ProfileType;
 
   name?: string | null;
   email?: string | null;
@@ -67,6 +71,7 @@ export interface ListProfilesQuery {
   email?: string;
   phone?: string;
   min_clv?: number;
+  profile_type?: ProfileType;
   limit?: number;
   offset?: number;
 }
@@ -75,6 +80,7 @@ export interface UpsertProfilePayload {
   name?: string;
   email?: string;
   phone?: string;
+  profile_type?: ProfileType;
 }
 
 export interface ChurnScore {
@@ -146,6 +152,7 @@ export function createCdpApi() {
           email: query.email,
           phone: query.phone,
           min_clv: query.min_clv,
+          profile_type: query.profile_type,
           limit: query.limit ?? 50,
           offset: query.offset ?? 0,
         },

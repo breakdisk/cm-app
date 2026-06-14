@@ -7,7 +7,7 @@ use logisticos_errors::{AppError, AppResult};
 use logisticos_types::TenantId;
 
 use crate::domain::{
-    entities::{BehavioralEvent, CustomerProfile, CustomerId, EventType},
+    entities::{BehavioralEvent, CustomerProfile, CustomerId, EventType, ProfileType},
     repositories::{CustomerProfileRepository, ProfileFilter},
 };
 
@@ -21,6 +21,7 @@ pub struct UpsertProfileCommand {
     pub name:                 Option<String>,
     pub email:                Option<String>,
     pub phone:                Option<String>,
+    pub profile_type:         Option<ProfileType>,
 }
 
 #[derive(Debug)]
@@ -41,6 +42,7 @@ pub struct RecordEventCommand {
 pub struct ProfileSummary {
     pub id:                      Uuid,
     pub external_customer_id:    Uuid,
+    pub profile_type:            ProfileType,
     pub name:                    Option<String>,
     pub email:                   Option<String>,
     pub phone:                   Option<String>,
@@ -60,6 +62,7 @@ impl From<&CustomerProfile> for ProfileSummary {
         Self {
             id:                         p.id.inner(),
             external_customer_id:       p.external_customer_id,
+            profile_type:               p.profile_type.clone(),
             name:                       p.name.clone(),
             email:                      p.email.clone(),
             phone:                      p.phone.clone(),
@@ -106,6 +109,9 @@ impl ProfileService {
         };
 
         profile.enrich_identity(cmd.name, cmd.email, cmd.phone);
+        if let Some(pt) = cmd.profile_type {
+            profile.profile_type = pt;
+        }
         self.repo.save(&profile).await.map_err(AppError::internal)?;
         Ok(ProfileSummary::from(&profile))
     }

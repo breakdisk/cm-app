@@ -86,6 +86,14 @@ pub struct ShipmentCreated {
     /// Passed through to the dispatch task and shown to the driver.
     #[serde(default)]
     pub special_instructions: Option<String>,
+    /// Sender identity — the person handing the parcel to the courier.
+    /// Populated when the merchant portal sends sender_name/phone in the booking form.
+    #[serde(default)]
+    pub sender_name:          Option<String>,
+    #[serde(default)]
+    pub sender_phone:         Option<String>,
+    #[serde(default)]
+    pub sender_email:         Option<String>,
     /// Merchant / sender display name. Event-time passthrough from the booking
     /// request — persisted downstream in dispatch_queue and driver_ops.tasks so
     /// the driver app can show who the pickup party is. Empty when unknown.

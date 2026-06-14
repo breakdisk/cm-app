@@ -4,6 +4,20 @@ use uuid::Uuid;
 
 use logisticos_types::{TenantId, UserId};
 
+// ---------------------------------------------------------------------------
+// ProfileType — distinguishes senders (merchant's shipping clients) from
+// receivers (end consignees) for marketing and filtering purposes.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileType {
+    Sender,
+    Receiver,
+    #[default]
+    Unknown,
+}
+
 /// Stable internal identifier for a CDP customer profile.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CustomerId(Uuid);
@@ -84,6 +98,9 @@ pub struct CustomerProfile {
     /// External ID — matches the customer_id used in the order-intake / shipments domain.
     pub external_customer_id:   Uuid,
 
+    // Profile classification
+    pub profile_type:           ProfileType,
+
     // Identity
     pub name:                   Option<String>,
     pub email:                  Option<String>,
@@ -120,6 +137,7 @@ impl CustomerProfile {
             id:                        CustomerId::new(),
             tenant_id,
             external_customer_id,
+            profile_type:              ProfileType::Unknown,
             name:                      None,
             email:                     None,
             phone:                     None,

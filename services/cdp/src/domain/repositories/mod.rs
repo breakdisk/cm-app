@@ -11,6 +11,8 @@ pub struct ProfileFilter {
     pub email:         Option<String>,
     pub phone:         Option<String>,
     pub min_clv:       Option<f32>,
+    /// Filter by profile classification: "sender", "receiver", or "unknown".
+    pub profile_type:  Option<String>,
     pub limit:         i64,
     pub offset:        i64,
 }
@@ -22,6 +24,7 @@ impl Default for ProfileFilter {
             email:         None,
             phone:         None,
             min_clv:       None,
+            profile_type:  None,
             limit:         50,
             offset:        0,
         }
