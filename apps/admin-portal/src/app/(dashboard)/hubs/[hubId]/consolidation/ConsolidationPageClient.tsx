@@ -212,6 +212,7 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
   const [optimizing,     setOptimizing]     = useState(false);
   const [loadingManifest, setLoadingManifest] = useState(false);
   const [manifestCount,  setManifestCount]  = useState<number | null>(null);
+  const [manifestDiff,   setManifestDiff]   = useState<number>(0);
   const [selectedAwb,    setSelectedAwb]    = useState<string | null>(null);
   const [wsConnected,    setWsConnected]    = useState(false);
   const [specsModalOpen, setSpecsModalOpen] = useState(false);
@@ -225,14 +226,18 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
   const [scanning,        setScanning]         = useState(false);
   const scanInputRef = useRef<HTMLInputElement>(null);
 
-  // Initialise — load specs and latest plan together.
+  // Initialise — load specs and latest plan together, then fetch the manifest
+  // to (a) populate the button count, (b) auto-compute a plan when none exists,
+  // and (c) detect new parcels inducted after the current draft plan was computed.
   // `retryKey` increments on manual retry to re-trigger this effect.
   useEffect(() => {
     let cancelled = false;
     async function init() {
       setLoading(true);
-      // Settle independently so a backend outage on either call still lets the
-      // 3D viewer render with whatever we have (and presets as a last resort).
+      setManifestDiff(0);
+
+      // Phase 1 — specs + existing plans (settle independently so a backend
+      // outage on either call still lets the 3D viewer render with presets).
       const [specsRes, plansRes] = await Promise.allSettled([
         consolidationApi.listSpecs(),
         consolidationApi.listPlans(hubId),
@@ -247,27 +252,69 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
 
       // Always end up with at least one spec selected so the canvas mounts.
       // Real tenant specs win; otherwise fall back to built-in presets.
-      if (specsData.length > 0) {
-        setSpecs(specsData);
-        setSelectedSpecId(specsData[0].id);
-        setUsingPresets(false);
-      } else {
-        setSpecs(DEFAULT_SPECS);
-        setSelectedSpecId(DEFAULT_SPECS[0].id);
-        setUsingPresets(true);
-      }
+      const usingPresetsNow = specsData.length === 0;
+      const activeSpecs     = usingPresetsNow ? DEFAULT_SPECS : specsData;
+      const firstSpecId     = activeSpecs[0].id;
+      setSpecs(activeSpecs);
+      setSelectedSpecId(firstSpecId);
+      setUsingPresets(usingPresetsNow);
       setOffline(!specsOk);
 
-      if (plans.length > 0) {
-        setCurrentPlan(plans[0]);
-        setPlacements(plans[0].placements as Placement[]);
+      const activePlan = plans[0] ?? null;
+      if (activePlan) {
+        setCurrentPlan(activePlan);
+        setPlacements(activePlan.placements as Placement[]);
+        if (activePlan.loaded_awbs.length > 0) {
+          setLoadedAwbs(new Set(activePlan.loaded_awbs));
+        }
       }
 
-      // Seed loadedAwbs from the plan if it was previously confirmed.
-      if (plans.length > 0 && plans[0].loaded_awbs.length > 0) {
-        setLoadedAwbs(new Set(plans[0].loaded_awbs));
+      // Phase 2 — manifest (non-blocking: failures here are silent and the
+      // operator can always use the "Load from Manifest" button manually).
+      try {
+        const manifest = await hubsApi.manifest(hubId);
+        if (cancelled) return;
+        setManifestCount(manifest.count);
+
+        if (!activePlan && manifest.parcels.length > 0 && !usingPresetsNow) {
+          // No plan yet + real spec available → auto-compute from manifest so the
+          // 3D canvas is populated immediately instead of showing an empty truck.
+          const items = manifest.parcels.map(p => ({
+            awb:       p.tracking_number,
+            weight_g:  p.weight_g   ?? 10_000,
+            length_cm: p.length_cm  ?? 0,
+            width_cm:  p.width_cm   ?? 0,
+            height_cm: p.height_cm  ?? 0,
+          }));
+          try {
+            const plan = await consolidationApi.computePlan({
+              hub_id:        hubId,
+              truck_spec_id: firstSpecId,
+              items,
+            });
+            if (!cancelled) {
+              setCurrentPlan(plan);
+              setPlacements(plan.placements as Placement[]);
+            }
+          } catch {
+            // auto-compute failed — operator can still use "Load from Manifest"
+          }
+        } else if (activePlan?.status === 'draft' && manifest.parcels.length > 0) {
+          // Plan exists but may be stale: count AWBs in the live manifest that
+          // are not in the plan's item list so we can surface a diff badge.
+          const planAwbs = new Set(
+            (activePlan.items as Array<{ awb: string }>).map(i => i.awb),
+          );
+          const diff = manifest.parcels.filter(
+            p => !planAwbs.has(p.tracking_number),
+          ).length;
+          if (!cancelled) setManifestDiff(diff);
+        }
+      } catch {
+        // manifest unavailable — non-fatal, UI degrades gracefully
       }
-      setLoading(false);
+
+      if (!cancelled) setLoading(false);
     }
     init();
 
@@ -403,6 +450,7 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
         });
         setCurrentPlan(plan);
         setPlacements(plan.placements as Placement[]);
+        setManifestDiff(0);
       } finally {
         setOptimizing(false);
       }
@@ -686,8 +734,10 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
               disabled={loadingManifest || optimizing || !selectedSpecId}
               className={cn(
                 'flex items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-semibold transition-all',
-                'border border-purple-500/40 bg-purple-500/10 text-purple-300',
-                'hover:bg-purple-500/20 disabled:opacity-40 disabled:cursor-not-allowed',
+                manifestDiff > 0
+                  ? 'border border-amber-500/50 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20'
+                  : 'border border-purple-500/40 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20',
+                'disabled:opacity-40 disabled:cursor-not-allowed',
               )}
             >
               <Download size={14} className={loadingManifest ? 'animate-bounce' : ''} />
@@ -695,6 +745,15 @@ export default function ConsolidationPageClient({ hubId, token, heightClass }: P
                 ? `Reload Manifest (${manifestCount})`
                 : 'Load from Manifest'}
             </button>
+
+            {manifestDiff > 0 && currentPlan?.status === 'draft' && (
+              <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-300">
+                <AlertTriangle size={11} className="shrink-0" />
+                <span>
+                  {manifestDiff} new item{manifestDiff !== 1 ? 's' : ''} inducted since last plan
+                </span>
+              </div>
+            )}
 
           {currentPlan?.status === 'draft' && placements.length > 0 && (
             <div className="flex flex-col gap-2">
