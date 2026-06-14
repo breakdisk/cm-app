@@ -111,7 +111,24 @@ class OutboundSyncWorker @AssistedInject constructor(
                 val reason = payload["reason"]?.jsonPrimitive?.contentOrNull
 
                 when (status.uppercase()) {
-                    "IN_PROGRESS" -> driverOpsApi.startTask(taskId)
+                    "IN_PROGRESS" -> {
+                        try {
+                            driverOpsApi.startTask(taskId)
+                        } catch (e: retrofit2.HttpException) {
+                            if (e.code() == 422 || e.code() == 409) {
+                                // Task already transitioned past IN_PROGRESS on the server
+                                // (a later COMPLETED or POP_SUBMIT was processed first).
+                                // This stale item is safe to discard — the task is in a valid state.
+                                android.util.Log.d(
+                                    "OutboundSyncWorker",
+                                    "startTask $taskId → ${e.code()} (already transitioned) — discarding stale IN_PROGRESS"
+                                )
+                                syncQueueDao.remove(item.id)
+                                return
+                            }
+                            throw e
+                        }
+                    }
                     "COMPLETED"   -> {
                         val podId = payload["podId"]?.jsonPrimitive?.contentOrNull
                         val popId = payload["popId"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }

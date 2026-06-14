@@ -44,10 +44,13 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/pops/:id/upload-url",           post(pod::get_pop_upload_url))
         .route("/pops/:id/submit",               put(pod::submit_pickup))
         .route("/pops/:id",                      get(pod::get_pop))
-        // Gateway-compat alias: old API gateway images route /v1/pod* → pod service
-        // but have no entry for /v1/pops. This alias starts with /v1/pod so the
-        // stale gateway forwards it here without needing a gateway redeploy.
-        .route("/pod/pops",                      get(pod::list_pops))
+        // Gateway-compat aliases: old API gateway images route /v1/pod* → pod service
+        // but have no entry for /v1/pops. These aliases start with /v1/pod so the
+        // stale gateway forwards them here without needing a gateway redeploy.
+        .route("/pod/pops",                      post(pod::initiate_pickup).get(pod::list_pops))
+        .route("/pod/pops/:id/upload-url",       post(pod::get_pop_upload_url))
+        .route("/pod/pops/:id/submit",           put(pod::submit_pickup))
+        .route("/pod/pops/:id",                  get(pod::get_pop))
         // OTP management
         .route("/otps/generate",                 post(pod::generate_otp))
         .route("/otps/verify",                   post(pod::verify_otp))

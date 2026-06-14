@@ -217,24 +217,28 @@ interface PodApiService {
     ): SubmitPodResponse
 
     // ── POP endpoints ──────────────────────────────────────────────────────
+    // NOTE: Paths use the /v1/pod/pops prefix (not /v1/pops) because the
+    // deployed API gateway only forwards requests matching /v1/pod* to the
+    // pod service. The pod service exposes /pod/pops gateway-compat aliases
+    // that map to the same handlers as /pops.
 
-    /** POST /v1/pops — initiate a Proof of Pickup, returns pop_id + geofence result */
-    @POST("v1/pops")
+    /** POST /v1/pod/pops — initiate a Proof of Pickup, returns pop_id + geofence result */
+    @POST("v1/pod/pops")
     suspend fun initiatePop(@Body body: InitiatePopRequest): InitiatePopResponse
 
     /**
-     * POST /v1/pops/{id}/upload-url — request a pre-signed R2 PUT URL for a pickup photo.
+     * POST /v1/pod/pops/{id}/upload-url — request a pre-signed R2 PUT URL for a pickup photo.
      * Upload photo bytes directly to the returned [GetUploadUrlData.uploadUrl], then pass
      * [GetUploadUrlData.s3Key] in [SubmitPopRequest.photoS3Key] on submit.
      */
-    @POST("v1/pops/{id}/upload-url")
+    @POST("v1/pod/pops/{id}/upload-url")
     suspend fun getPopUploadUrl(
         @Path("id") popId: String,
         @Body body: GetUploadUrlRequest
     ): GetUploadUrlResponse
 
-    /** PUT /v1/pops/{id}/submit — finalise POP; publishes pickup.captured Kafka event */
-    @PUT("v1/pops/{id}/submit")
+    /** PUT /v1/pod/pops/{id}/submit — finalise POP; publishes pickup.captured Kafka event */
+    @PUT("v1/pod/pops/{id}/submit")
     suspend fun submitPop(
         @Path("id") popId: String,
         @Body body: SubmitPopRequest
