@@ -1,10 +1,12 @@
 /// Kafka event handlers — consume domain events and project them into the CDP profile store.
 ///
 /// Subscriptions:
-///   logisticos.order.shipment.created   → ShipmentCreated  → upsert profile, record event
-///   logisticos.driver.delivery.completed → DeliveryCompleted → record event, update counters
-///   logisticos.driver.delivery.failed   → DeliveryFailed   → record event, update counters
-///   logisticos.payments.cod.collected   → CodCollected     → record event, update COD total
+///   logisticos.order.shipment.created       → ShipmentCreated      → upsert profile, record event
+///   logisticos.driver.delivery.completed    → DeliveryCompleted    → record event, update counters
+///   logisticos.driver.delivery.failed       → DeliveryFailed       → record event, update counters
+///   logisticos.payments.cod.collected       → CodCollected         → record event, update COD total
+///   logisticos.support.ticket.opened        → SupportTicketOpened  → record event on profile
+///   logisticos.support.ticket.closed        → SupportTicketClosed  → record event on profile
 use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use rdkafka::{
@@ -47,6 +49,8 @@ struct ShipmentCreatedPayload {
 #[derive(Debug, Deserialize)]
 struct DeliveryCompletedPayload {
     shipment_id:  Uuid,
+    #[serde(default)]
+    customer_id:  Option<Uuid>,
     driver_id:    Uuid,
     delivered_at: String,
 }
@@ -54,6 +58,8 @@ struct DeliveryCompletedPayload {
 #[derive(Debug, Deserialize)]
 struct DeliveryFailedPayload {
     shipment_id:    Uuid,
+    #[serde(default)]
+    customer_id:    Option<Uuid>,
     reason:         String,
     attempted_at:   String,
     attempt_number: u32,
@@ -62,8 +68,20 @@ struct DeliveryFailedPayload {
 #[derive(Debug, Deserialize)]
 struct CodCollectedPayload {
     shipment_id:    Uuid,
+    #[serde(default)]
+    customer_id:    Option<Uuid>,
     amount_cents:   i64,
     collected_at:   String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SupportTicketPayload {
+    ticket_id:   Uuid,
+    customer_id: Uuid,
+    #[serde(default)]
+    opened_at:   Option<String>,
+    #[serde(default)]
+    closed_at:   Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -77,6 +95,8 @@ pub async fn run_consumer(consumer: Arc<StreamConsumer>, svc: Arc<ProfileService
             topics::DELIVERY_COMPLETED,
             topics::DELIVERY_FAILED,
             topics::COD_COLLECTED,
+            topics::SUPPORT_TICKET_OPENED,
+            topics::SUPPORT_TICKET_CLOSED,
         ])
         .expect("CDP consumer subscription failed");
 
@@ -196,12 +216,10 @@ async fn handle_message(
                 .delivered_at
                 .parse::<DateTime<Utc>>()
                 .unwrap_or_else(|_| Utc::now());
-            // Delivery events carry shipment_id but not customer_id directly.
-            // We do a best-effort lookup; if no profile exists we skip (no external_customer_id).
-            // In production the event payload would include customer_id — noted for v2.
+            let external_customer_id = data.customer_id.unwrap_or(data.shipment_id);
             svc.record_event(RecordEventCommand {
                 tenant_id,
-                external_customer_id: data.shipment_id, // use shipment_id as proxy until customer_id added
+                external_customer_id,
                 event_type: EventType::DeliveryCompleted,
                 shipment_id: Some(data.shipment_id),
                 metadata: serde_json::json!({
@@ -218,9 +236,10 @@ async fn handle_message(
                 .attempted_at
                 .parse::<DateTime<Utc>>()
                 .unwrap_or_else(|_| Utc::now());
+            let external_customer_id = data.customer_id.unwrap_or(data.shipment_id);
             svc.record_event(RecordEventCommand {
                 tenant_id,
-                external_customer_id: data.shipment_id,
+                external_customer_id,
                 event_type: EventType::DeliveryFailed,
                 shipment_id: Some(data.shipment_id),
                 metadata: serde_json::json!({
@@ -237,14 +256,47 @@ async fn handle_message(
                 .collected_at
                 .parse::<DateTime<Utc>>()
                 .unwrap_or_else(|_| Utc::now());
+            let external_customer_id = data.customer_id.unwrap_or(data.shipment_id);
             svc.record_event(RecordEventCommand {
                 tenant_id,
-                external_customer_id: data.shipment_id,
+                external_customer_id,
                 event_type: EventType::CodPaid,
                 shipment_id: Some(data.shipment_id),
                 metadata: serde_json::json!({
                     "amount_cents": data.amount_cents,
                 }),
+                occurred_at,
+            })
+            .await?;
+        }
+        topics::SUPPORT_TICKET_OPENED => {
+            let data: SupportTicketPayload = serde_json::from_value(data_val.clone())?;
+            let occurred_at = data.opened_at
+                .as_deref()
+                .and_then(|s| s.parse::<DateTime<Utc>>().ok())
+                .unwrap_or_else(Utc::now);
+            svc.record_event(RecordEventCommand {
+                tenant_id,
+                external_customer_id: data.customer_id,
+                event_type: EventType::SupportTicketOpened,
+                shipment_id: None,
+                metadata: serde_json::json!({ "ticket_id": data.ticket_id }),
+                occurred_at,
+            })
+            .await?;
+        }
+        topics::SUPPORT_TICKET_CLOSED => {
+            let data: SupportTicketPayload = serde_json::from_value(data_val.clone())?;
+            let occurred_at = data.closed_at
+                .as_deref()
+                .and_then(|s| s.parse::<DateTime<Utc>>().ok())
+                .unwrap_or_else(Utc::now);
+            svc.record_event(RecordEventCommand {
+                tenant_id,
+                external_customer_id: data.customer_id,
+                event_type: EventType::SupportTicketClosed,
+                shipment_id: None,
+                metadata: serde_json::json!({ "ticket_id": data.ticket_id }),
                 occurred_at,
             })
             .await?;

@@ -46,6 +46,7 @@ pub enum EventType {
     DeliveryFailed,
     CodPaid,
     SupportTicketOpened,
+    SupportTicketClosed,
     NotificationRead,
 }
 

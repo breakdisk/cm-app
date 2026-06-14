@@ -17,10 +17,10 @@ use crate::domain::entities::{CampaignRecipient, TargetingRule};
 
 #[derive(Debug, Deserialize)]
 struct CdpProfile {
-    id:    Option<Uuid>,
-    name:  Option<String>,
-    email: Option<String>,
-    phone: Option<String>,
+    external_customer_id: Uuid,
+    name:                 Option<String>,
+    email:                Option<String>,
+    phone:                Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -98,7 +98,7 @@ impl CdpClient {
         );
 
         Ok(list.profiles.into_iter().map(|p| CampaignRecipient {
-            customer_id: p.id,
+            customer_id: Some(p.external_customer_id),
             name:        p.name,
             email:       p.email,
             phone:       p.phone,
