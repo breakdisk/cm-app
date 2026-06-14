@@ -15,6 +15,7 @@ import androidx.work.WorkerParameters
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import io.logisticos.driver.core.common.ImageCompressor
+import io.logisticos.driver.core.common.TaskSyncBus
 import io.logisticos.driver.core.database.dao.LocationBreadcrumbDao
 import io.logisticos.driver.core.database.dao.PodDao
 import io.logisticos.driver.core.database.dao.SyncQueueDao
@@ -115,6 +116,7 @@ class OutboundSyncWorker @AssistedInject constructor(
                         val podId = payload["podId"]?.jsonPrimitive?.contentOrNull
                         val popId = payload["popId"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
                         driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId, popId = popId))
+                        TaskSyncBus.requestSync()  // backend now excludes this task — refresh Home
                     }
                     "FAILED"      -> {
                         driverOpsApi.failTask(taskId, FailTaskRequest(reason = reason ?: "unknown"))
@@ -374,6 +376,7 @@ class OutboundSyncWorker @AssistedInject constructor(
                 try {
                     driverOpsApi.completeTask(taskId, CompleteTaskRequest(popId = popId))
                     taskDao.markSynced(taskId)
+                    TaskSyncBus.requestSync()  // refresh Home once the pickup completes server-side
                 } catch (e: Exception) {
                     android.util.Log.w("OutboundSyncWorker", "completeTask after POP_SUBMIT failed — queuing TASK_COMPLETE: ${e.message}")
                     syncQueueDao.enqueue(
@@ -410,6 +413,7 @@ class OutboundSyncWorker @AssistedInject constructor(
 
                 driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId, popId = popId))
                 taskDao.markSynced(taskId)
+                TaskSyncBus.requestSync()  // offline completion confirmed — drop the Home card
                 val now = System.currentTimeMillis()
                 if (podId != null) {
                     taskDao.setPodId(taskId, podId, now)

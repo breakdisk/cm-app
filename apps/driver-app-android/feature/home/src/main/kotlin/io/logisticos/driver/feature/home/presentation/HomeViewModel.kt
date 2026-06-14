@@ -96,6 +96,10 @@ data class HomeUiState(
 /** Declines at which a gig driver is automatically deactivated (backend rule). */
 const val DECLINE_BAN_LIMIT = 20
 
+/** Open-offer poll cadence. Must stay well under the backend 30 s offer TTL so
+ *  a broadcast grab card appears even when its FCM push is missed. */
+private const val OFFER_POLL_INTERVAL_MS = 6_000L
+
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -162,7 +166,7 @@ class HomeViewModel @Inject constructor(
                 }
             }
         }
-        restoreOpenOffers()
+        startOfferPolling()
         syncShift()
         loadTasks()
         startPolling()
@@ -327,11 +331,22 @@ class HomeViewModel @Inject constructor(
     }
 
     /**
-     * App-restart / missed-FCM recovery: pull live offers from the backend.
-     * Only posts when nothing is already on screen — a fresher FCM offer wins.
+     * Pull the driver's live broadcast offers from the backend and surface the
+     * freshest as a grab card. This is the resilience path: FCM `task_offer`
+     * pushes are primary, but they're best-effort (and unconfigured on some
+     * deployments), so without an active poll a broadcast offer would only ever
+     * appear if the app happened to cold-start during its 30 s life. Polled on
+     * a tight cadence (shorter than the offer TTL) so a grab card actually
+     * shows during normal testing even when no push arrives.
+     *
+     * Only posts when nothing is already on screen — a live FCM offer, an
+     * in-flight claim, or the brief "Taken" flash all take precedence. Posting
+     * the same offer id again is idempotent (StateFlow dedupes equal values),
+     * so the countdown never resets mid-tick.
      */
-    private fun restoreOpenOffers() {
+    private fun fetchAndPostOpenOffer() {
         viewModelScope.launch {
+            if (PendingAssignmentBus.pending.value != null) return@launch
             runCatching { api.listOpenOffers() }
                 .onSuccess { r ->
                     val offer = r.data.firstOrNull() ?: return@onSuccess
@@ -362,6 +377,23 @@ class HomeViewModel @Inject constructor(
                     )
                 }
             // Failure is silent — FCM remains the primary delivery path.
+        }
+    }
+
+    /**
+     * Poll open offers every [OFFER_POLL_INTERVAL_MS]. Granularity is well
+     * under the 30 s offer TTL so a broadcast surfaces as a grab card within a
+     * few seconds even if its FCM push never lands. Skips work while an offer
+     * is already on screen (the poll guard inside fetchAndPostOpenOffer).
+     */
+    private fun startOfferPolling() {
+        viewModelScope.launch {
+            while (true) {
+                // Only gig (part-time) drivers ever receive broadcast offers —
+                // skip the poll for full-timers so we don't add needless load.
+                if (_uiState.value.isGigWorker) fetchAndPostOpenOffer()
+                delay(OFFER_POLL_INTERVAL_MS)
+            }
         }
     }
 

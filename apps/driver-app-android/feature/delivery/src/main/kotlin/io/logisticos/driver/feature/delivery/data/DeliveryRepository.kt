@@ -5,6 +5,7 @@ import android.util.Base64
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import io.logisticos.driver.core.common.TaskSyncBus
 import io.logisticos.driver.core.database.dao.PodDao
 import io.logisticos.driver.core.database.dao.ShiftDao
 import io.logisticos.driver.core.database.dao.SyncQueueDao
@@ -227,6 +228,11 @@ class DeliveryRepository @Inject constructor(
                 // 5. Complete the task on the backend — links pod_id to the task.
                 driverOpsApi.completeTask(taskId, CompleteTaskRequest(podId = podId, codCollectedCents = codCollectedCents))
                 taskDao.markSynced(taskId)   // Backend confirmed — clear the pending badge.
+                // Backend now reports this task as completed, so the Home "My Tasks"
+                // list (sourced from GET /v1/tasks, pending+in-progress only) must
+                // re-fetch — otherwise the just-delivered card lingers until the
+                // 30s poll tick. Mirrors AssignmentViewModel's post-accept refresh.
+                TaskSyncBus.requestSync()
             } catch (e: Exception) {
                 // Only step 7 (task completion) failed. POD evidence is safe on the server.
                 // Enqueue just the task completion for retry; do NOT replay all 7 steps.

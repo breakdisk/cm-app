@@ -3,6 +3,7 @@ package io.logisticos.driver.feature.pickup.data
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.logisticos.driver.core.common.ImageCompressor
+import io.logisticos.driver.core.common.TaskSyncBus
 import io.logisticos.driver.core.database.dao.SyncQueueDao
 import io.logisticos.driver.core.database.dao.TaskDao
 import io.logisticos.driver.core.database.entity.SyncAction
@@ -255,6 +256,9 @@ class PickupRepository @Inject constructor(
         if (capturedPopId != null) {
             try {
                 driverOpsApi.completeTask(taskId, CompleteTaskRequest(popId = capturedPopId))
+                // Backend marked the pickup task complete — refresh Home's task
+                // list so the card drops immediately instead of after the 30s poll.
+                TaskSyncBus.requestSync()
             } catch (e: Exception) {
                 android.util.Log.w("PickupRepository", "completeTask failed, queuing TASK_COMPLETE: ${e.message}")
                 enqueueAndKick(
