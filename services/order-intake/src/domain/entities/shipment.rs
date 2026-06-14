@@ -75,15 +75,15 @@ impl Shipment {
         )
     }
 
-    /// Compute base delivery fee (simplified pricing logic)
+    /// Compute base delivery fee using aggregate shipment weight (Standard/Express/SameDay).
     pub fn compute_base_fee(&self) -> Money {
         use logisticos_types::Currency;
         let base = match self.service_type {
             ServiceType::Standard      => 8500,   // PHP 85.00
             ServiceType::Express       => 15000,  // PHP 150.00
             ServiceType::SameDay       => 20000,  // PHP 200.00
-            ServiceType::Balikbayan    => 50000,  // PHP 500.00
-            ServiceType::International => 75000,  // PHP 750.00
+            ServiceType::Balikbayan    => 50000,  // PHP 500.00 per box (fallback)
+            ServiceType::International => 75000,  // PHP 750.00 per box (fallback)
         };
         // Weight surcharge: +PHP 10 per 0.5kg over 1kg
         let weight_kg = self.weight.grams as f64 / 1000.0;
@@ -93,6 +93,28 @@ impl Shipment {
             0
         };
         Money::new(base + surcharge, Currency::PHP)
+    }
+
+    /// Compute fee with per-piece pricing for Balikbayan/International tracks.
+    /// Falls back to `compute_base_fee` for Standard/Express/SameDay.
+    pub fn compute_base_fee_with_pieces(&self, pieces: &[super::piece::Piece]) -> logisticos_types::Money {
+        use logisticos_types::Currency;
+        match self.service_type {
+            ServiceType::Balikbayan | ServiceType::International if !pieces.is_empty() => {
+                let total: i64 = pieces.iter().map(|p| {
+                    let kg = p.billable_weight_grams() as f64 / 1000.0;
+                    // PHP 500 base per box + PHP 10 per 0.5 kg over 25 kg
+                    let surcharge = if kg > 25.0 {
+                        ((kg - 25.0) / 0.5).ceil() as i64 * 1_000
+                    } else {
+                        0
+                    };
+                    50_000i64 + surcharge
+                }).sum();
+                logisticos_types::Money::new(total, Currency::PHP)
+            }
+            _ => self.compute_base_fee(),
+        }
     }
 }
 

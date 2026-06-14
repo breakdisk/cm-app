@@ -392,6 +392,7 @@ async fn internal_create_shipment(
         source_platform:   Some(cmd.source_platform),
         external_order_id: cmd.external_order_id,
         piece_count:       None,
+        pieces:            None,
         booked_by_customer: false,
         auto_dispatch:     Some(true),
         merchant_name:     None,

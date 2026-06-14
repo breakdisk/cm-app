@@ -37,6 +37,14 @@ export interface Address {
   coordinates?: { lat: number; lng: number };
 }
 
+export interface PieceInputPayload {
+  weight_grams: number;
+  length_cm?: number;
+  width_cm?: number;
+  height_cm?: number;
+  description?: string;
+}
+
 export interface CreateShipmentPayload {
   service_type: string;
   origin: Omit<Address, "coordinates">;
@@ -44,9 +52,14 @@ export interface CreateShipmentPayload {
   customer_name: string;
   customer_phone: string;
   customer_email?: string;
+  /** Total weight in grams. For multi-piece Balikbayan, derived from pieces sum. */
   weight_grams: number;
-  declared_value?: number;
-  cod_amount?: number;
+  /** Number of pieces — used for Standard/Express/SameDay. */
+  piece_count?: number;
+  /** Per-piece declarations — required for Balikbayan / International. */
+  pieces?: PieceInputPayload[];
+  declared_value_cents?: number;
+  cod_amount_cents?: number;
   special_instructions?: string;
 }
 

@@ -186,8 +186,14 @@ impl ShipmentService {
         }
 
         // ── Validate weight ──────────────────────────────────────────────────
+        // For Balikbayan/International with per-piece declarations the aggregate
+        // weight is derived from pieces; skip the single-parcel 70 kg cap.
+        let is_per_piece = matches!(service_type, ServiceType::Balikbayan | ServiceType::International)
+            && cmd.pieces.as_ref().map(|p| !p.is_empty()).unwrap_or(false);
         let weight = ShipmentWeight::from_grams(cmd.weight_grams);
-        weight.validate().map_err(|e| AppError::Validation(e.to_string()))?;
+        if !is_per_piece {
+            weight.validate().map_err(|e| AppError::Validation(e.to_string()))?;
+        }
 
         // ── Resolve delivery category (icon + vehicle matching downstream) ───
         let delivery_category = resolve_delivery_category(
@@ -205,22 +211,16 @@ impl ShipmentService {
             }
         }
 
-        // ── Piece count validation ───────────────────────────────────────────
-        let piece_count = cmd.piece_count.unwrap_or(1).max(1).min(999);
-
         // ── Normalize and geocode addresses ──────────────────────────────────
         let origin      = self.normalizer.normalize(&cmd.origin).await.map_err(AppError::Internal)?;
         let destination = self.normalizer.normalize(&cmd.destination).await.map_err(AppError::Internal)?;
         tracing::info!(step = "normalized", "create");
 
-        // ── Dimensions / billable weight ─────────────────────────────────────
+        // ── Dimensions (shipment-level, for Standard/Express/SameDay) ─────────
         let dimensions = match (cmd.length_cm, cmd.width_cm, cmd.height_cm) {
             (Some(l), Some(w), Some(h)) => Some(ShipmentDimensions { length_cm: l, width_cm: w, height_cm: h }),
             _ => None,
         };
-        let billable_grams = dimensions
-            .map(|d| d.volumetric_weight_grams().max(weight.grams))
-            .unwrap_or(weight.grams);
 
         // ── Generate master AWB ───────────────────────────────────────────────
         let tenant_code = logisticos_types::awb::TenantCode::new(&cmd.tenant_code)
@@ -233,37 +233,109 @@ impl ShipmentService {
             .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
         tracing::info!(step = "awb_generated", awb = %master_awb.as_str(), "create");
 
-        // ── Generate child AWBs (one per piece) ───────────────────────────────
-        let child_awbs = generate_child_awbs(&master_awb, piece_count)
-            .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
-
         let now = Utc::now();
-
-        // ── Build piece records ───────────────────────────────────────────────
-        let piece_weight = ShipmentWeight::from_grams(
-            // If individual piece weights not provided, distribute evenly
-            weight.grams / piece_count as u32
-        );
         let shipment_id = ShipmentId::new();
 
-        let pieces: Vec<Piece> = child_awbs
-            .iter()
-            .map(|child| Piece {
-                id: uuid::Uuid::new_v4(),
-                shipment_id: shipment_id.clone(),
-                piece_number: child.piece_number(),
-                piece_awb: child.clone(),
-                declared_weight: piece_weight,
-                actual_weight: None,
-                dimensions,
-                description: cmd.description.clone(),
-                status: logisticos_types::PieceStatus::Pending,
-                last_hub_id: None,
-                last_scanned_at: None,
-                created_at: now,
-                updated_at: now,
-            })
-            .collect();
+        // ── Build piece records (track-specific) ──────────────────────────────
+        let (piece_count, pieces, shipment_weight_grams) = match service_type {
+            ServiceType::Balikbayan | ServiceType::International => {
+                match cmd.pieces.as_ref().filter(|p| !p.is_empty()) {
+                    Some(piece_inputs) => {
+                        // Per-piece declaration path (Balikbayan standard flow).
+                        let count = piece_inputs.len() as u16;
+                        if count > 999 {
+                            return Err(AppError::Validation("Shipment cannot exceed 999 pieces.".into()));
+                        }
+                        let aggregate_grams: u32 = piece_inputs.iter().map(|p| p.weight_grams).sum();
+                        let child_awbs = generate_child_awbs(&master_awb, count)
+                            .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
+                        let piece_vec: Vec<Piece> = piece_inputs
+                            .iter()
+                            .zip(child_awbs.iter())
+                            .enumerate()
+                            .map(|(i, (input, child))| {
+                                let dims = match (input.length_cm, input.width_cm, input.height_cm) {
+                                    (Some(l), Some(w), Some(h)) => Some(ShipmentDimensions { length_cm: l, width_cm: w, height_cm: h }),
+                                    _ => None,
+                                };
+                                Piece {
+                                    id:               uuid::Uuid::new_v4(),
+                                    shipment_id:      shipment_id.clone(),
+                                    piece_number:     (i + 1) as u16,
+                                    piece_awb:        child.clone(),
+                                    declared_weight:  ShipmentWeight::from_grams(input.weight_grams),
+                                    actual_weight:    None,
+                                    dimensions:       dims,
+                                    description:      input.description.clone(),
+                                    status:           logisticos_types::PieceStatus::Pending,
+                                    last_hub_id:      None,
+                                    last_scanned_at:  None,
+                                    created_at:       now,
+                                    updated_at:       now,
+                                }
+                            })
+                            .collect();
+                        (count, piece_vec, aggregate_grams)
+                    }
+                    None => {
+                        // Fallback: uniform pieces from piece_count + aggregate weight.
+                        let count = cmd.piece_count.unwrap_or(1).max(1).min(999);
+                        let child_awbs = generate_child_awbs(&master_awb, count)
+                            .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
+                        let piece_weight = ShipmentWeight::from_grams(weight.grams / count as u32);
+                        let piece_vec: Vec<Piece> = child_awbs.iter().map(|child| Piece {
+                            id:              uuid::Uuid::new_v4(),
+                            shipment_id:     shipment_id.clone(),
+                            piece_number:    child.piece_number(),
+                            piece_awb:       child.clone(),
+                            declared_weight: piece_weight,
+                            actual_weight:   None,
+                            dimensions,
+                            description:     cmd.description.clone(),
+                            status:          logisticos_types::PieceStatus::Pending,
+                            last_hub_id:     None,
+                            last_scanned_at: None,
+                            created_at:      now,
+                            updated_at:      now,
+                        }).collect();
+                        (count, piece_vec, weight.grams)
+                    }
+                }
+            }
+            _ => {
+                // Standard / Express / SameDay — pieces array must not be provided.
+                if cmd.pieces.as_ref().map(|p| !p.is_empty()).unwrap_or(false) {
+                    return Err(AppError::Validation(
+                        "Per-piece declarations are only valid for Balikbayan and International shipments.".into()
+                    ));
+                }
+                let count = cmd.piece_count.unwrap_or(1).max(1).min(999);
+                let child_awbs = generate_child_awbs(&master_awb, count)
+                    .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
+                let piece_weight = ShipmentWeight::from_grams(weight.grams / count as u32);
+                let piece_vec: Vec<Piece> = child_awbs.iter().map(|child| Piece {
+                    id:              uuid::Uuid::new_v4(),
+                    shipment_id:     shipment_id.clone(),
+                    piece_number:    child.piece_number(),
+                    piece_awb:       child.clone(),
+                    declared_weight: piece_weight,
+                    actual_weight:   None,
+                    dimensions,
+                    description:     cmd.description.clone(),
+                    status:          logisticos_types::PieceStatus::Pending,
+                    last_hub_id:     None,
+                    last_scanned_at: None,
+                    created_at:      now,
+                    updated_at:      now,
+                }).collect();
+                (count, piece_vec, weight.grams)
+            }
+        };
+
+        // ── Billable weight at shipment level ─────────────────────────────────
+        let billable_grams = dimensions
+            .map(|d| d.volumetric_weight_grams().max(shipment_weight_grams))
+            .unwrap_or(shipment_weight_grams);
 
         // ── Build shipment record ─────────────────────────────────────────────
         let shipment = Shipment {
@@ -361,7 +433,7 @@ impl ShipmentService {
         }
 
         // ── Publish ShipmentCreated (consumed by dispatch, engagement, analytics) ─
-        let total_fee_cents = shipment.compute_base_fee().amount;
+        let total_fee_cents = shipment.compute_base_fee_with_pieces(&pieces).amount;
         let event = Event::new(
             "logisticos/order-intake",
             "shipment.created",

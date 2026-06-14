@@ -1,6 +1,20 @@
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
+/// Per-piece declaration for Balikbayan / International bookings.
+/// Standard/Express/SameDay bookings must NOT include this — they use `piece_count`.
+#[derive(Debug, Deserialize, Validate, Serialize, Clone)]
+pub struct PieceInput {
+    /// Declared weight of this individual piece in grams (100 g – 150 kg).
+    #[validate(range(min = 100, max = 150_000))]
+    pub weight_grams: u32,
+    pub length_cm:    Option<u32>,
+    pub width_cm:     Option<u32>,
+    pub height_cm:    Option<u32>,
+    /// Short content description, e.g. "Clothes", "Electronics".
+    pub description:  Option<String>,
+}
+
 #[derive(Debug, Deserialize, Validate)]
 pub struct CreateShipmentCommand {
     #[serde(default)]
@@ -37,9 +51,15 @@ pub struct CreateShipmentCommand {
     #[serde(default)]
     pub external_order_id: Option<String>,
 
-    /// Number of physical pieces in this shipment (1..=999). Defaults to 1.
-    /// For Balikbayan: number of boxes. For standard: usually 1.
+    /// Number of physical pieces (1..=999). Used for Standard/Express/SameDay.
+    /// Ignored when `pieces` is provided (Balikbayan/International).
     pub piece_count: Option<u16>,
+
+    /// Per-piece declarations for Balikbayan and International shipments.
+    /// Required when `service_type` is "balikbayan" or "international" and
+    /// individual box weights/dims differ. Omit for Standard/Express/SameDay.
+    #[serde(default)]
+    pub pieces: Option<Vec<PieceInput>>,
 
     /// 3-char tenant code for AWB generation (e.g. "PH1").
     /// Populated from JWT claims in the HTTP handler.

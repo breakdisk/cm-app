@@ -382,10 +382,11 @@ function BulkUploadModal({ onClose, onDone }: { onClose: () => void; onDone?: ()
             {/* Download template */}
             <button
               onClick={() => {
-                const headers = "recipient_name,phone,address,city,zip_code,country_code,weight_kg,cod_amount_php,description";
-                const example1 = "Juan dela Cruz,+639171234567,123 Rizal St,Manila,1000,PH,1.5,500,Clothes";
-                const example2 = "Maria Santos,+639281234567,456 Mabini Ave,Cebu,6000,PH,2.0,,Electronics";
-                const csv = [headers, example1, example2].join("\n");
+                const headers = "recipient_name,phone,address,city,zip_code,country_code,weight_kg,cod_amount_php,description,piece_count,piece_1_weight_kg,piece_1_dims_lxwxh_cm,piece_1_description,piece_2_weight_kg,piece_2_dims_lxwxh_cm,piece_2_description";
+                const example1 = "Juan dela Cruz,+639171234567,123 Rizal St,Manila,1000,PH,1.5,500,Clothes,1,,,,,, ";
+                const example2 = "Maria Santos,+639281234567,456 Mabini Ave,Cebu,6000,PH,2.0,,Electronics,1,,,,,, ";
+                const example3 = "OFW Sender,+639912345678,789 OFW St,Quezon City,1100,US,45.0,,Balikbayan,2,25.0,60x45x40,Clothes,20.0,50x40x35,Electronics";
+                const csv = [headers, example1, example2, example3].join("\n");
                 const blob = new Blob([csv], { type: "text/csv" });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement("a");
@@ -746,6 +747,14 @@ function DeliveryReceiptModal({ shipment, onClose }: { shipment: Shipment; onClo
 
 // ── Booking receipt types ─────────────────────────────────────────────────────
 
+interface PieceEntry {
+  weight:      string;
+  l:           string;
+  w:           string;
+  h:           string;
+  description: string;
+}
+
 interface BookedResult {
   awb:          string;
   serviceType:  string;
@@ -754,6 +763,7 @@ interface BookedResult {
   receiverCity: string;
   receiverName: string;
   fee:          number;
+  pieceCount:   number;
 }
 
 // ── Booking receipt view ──────────────────────────────────────────────────────
@@ -823,11 +833,14 @@ function BookingReceiptView({
         {[
           { label: "Service",   value: serviceLabel },
           { label: "Recipient", value: result.receiverName },
+          ...(result.pieceCount > 1
+            ? [{ label: "Pieces", value: `${result.pieceCount} boxes` }]
+            : []),
           { label: "Est. Fee",  value: `₱${result.fee.toLocaleString()}`, highlight: "text-amber-signal" },
         ].map(({ label, value, highlight }) => (
           <div key={label} className="flex items-center justify-between px-4 py-3">
             <span className="text-2xs font-mono text-white/35 uppercase tracking-wider">{label}</span>
-            <span className={`text-xs font-mono ${highlight ?? "text-white/80"}`}>{value}</span>
+            <span className={`text-xs font-mono ${(highlight as string | undefined) ?? "text-white/80"}`}>{value}</span>
           </div>
         ))}
       </div>
@@ -886,14 +899,13 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
   const [receiverZip,     setReceiverZip]     = useState("");
   const [receiverCountry, setReceiverCountry] = useState("PH");
 
-  // Step 3 — Package (shared)
-  const [weight,        setWeight]        = useState("");
-  const [description,   setDescription]   = useState("");
-  const [codAmount,     setCodAmount]      = useState("");
-  // International extras
-  const [boxL, setBoxL] = useState(""); const [boxW, setBoxW] = useState(""); const [boxH, setBoxH] = useState("");
+  // Step 3 — Package (shared / local)
+  const [weight,      setWeight]      = useState("");
+  const [description, setDescription] = useState("");
+  const [codAmount,   setCodAmount]   = useState("");
+  // International extras — multi-piece
+  const [pieces,        setPieces]        = useState<PieceEntry[]>([{ weight: "", l: "", w: "", h: "", description: "" }]);
   const [declaredValue, setDeclaredValue] = useState("");
-  const [contents,      setContents]      = useState("");
   const [freightMode,   setFreightMode]   = useState<FreightMode>("sea");
 
   const [booking,      setBooking]      = useState(false);
@@ -909,17 +921,34 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
   const receiverCountryInfo = DEST_COUNTRIES.find(c => c.code === receiverCountry);
 
   function calcTotal() {
+    if (isIntl) {
+      const perPiece = pieces.reduce((sum, p) => {
+        const kg = parseFloat(p.weight || "0");
+        const surcharge = kg > 25 ? Math.ceil((kg - 25) / 0.5) * 10 : 0;
+        return sum + 500 + surcharge;
+      }, 0);
+      return perPiece + (freightMode === "air" ? 800 : 0);
+    }
     const w = parseFloat(weight || "0");
-    const base = isIntl ? 500 : 85;
     const surcharge = w > 1 ? Math.ceil((w - 1) / 0.5) * 10 : 0;
-    const airPremium = isIntl && freightMode === "air" ? 800 : 0;
-    return base + surcharge + airPremium;
+    return 85 + surcharge;
   }
 
   async function handleBook() {
     setBooking(true); setBookError(null);
     try {
       const weightGrams = Math.round(parseFloat(weight || "0") * 1000);
+      const piecePayload = isIntl
+        ? pieces.map((p) => ({
+            weight_grams: Math.round(parseFloat(p.weight || "0") * 1000),
+            ...(p.l && p.w && p.h ? { length_cm: parseInt(p.l), width_cm: parseInt(p.w), height_cm: parseInt(p.h) } : {}),
+            ...(p.description ? { description: p.description } : {}),
+          }))
+        : undefined;
+      const aggregateGrams = isIntl
+        ? pieces.reduce((s, p) => s + Math.round(parseFloat(p.weight || "0") * 1000), 0) || 1000
+        : (weightGrams > 0 ? weightGrams : 500);
+
       const body = {
         customer_name:  receiverName,
         customer_phone: receiverPhone,
@@ -933,12 +962,12 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
           province: receiverCity, postal_code: receiverZip,
           country_code: receiverCountry,
         },
-        service_type: isIntl ? "international" : "standard",
-        weight_grams: weightGrams > 0 ? weightGrams : 500,
-        ...(isIntl && boxL ? { length_cm: parseInt(boxL), width_cm: parseInt(boxW), height_cm: parseInt(boxH) } : {}),
+        service_type:  isIntl ? "balikbayan" : "standard",
+        weight_grams:  aggregateGrams,
+        ...(isIntl ? { pieces: piecePayload } : {}),
         ...(declaredValue ? { declared_value_cents: Math.round(parseFloat(declaredValue) * 100) } : {}),
         ...(codAmount ? { cod_amount_cents: Math.round(parseFloat(codAmount) * 100) } : {}),
-        ...(description || contents ? { special_instructions: description || contents } : {}),
+        ...(description ? { special_instructions: description } : {}),
         ...(isIntl ? { freight_mode: freightMode } : {}),
       };
       const res = await authFetch(`${ORDER_INTAKE_URL}/v1/shipments`, {
@@ -950,12 +979,13 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
       const awb = json.awb ?? json.tracking_number ?? json.data?.awb ?? "";
       setBookedResult({
         awb,
-        serviceType:  isIntl ? "international" : "standard",
+        serviceType:  isIntl ? "balikbayan" : "standard",
         isIntl,
         senderCity,
         receiverCity,
         receiverName,
-        fee: calcTotal(),
+        fee:        calcTotal(),
+        pieceCount: isIntl ? pieces.length : 1,
       });
       onBooked?.();
     } catch (err: unknown) {
@@ -968,7 +998,7 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
   const canStep1 = senderName.trim() && senderPhone.trim() && senderAddress.trim() && senderCity.trim() && senderZip.trim();
   const canStep2 = receiverName.trim() && receiverPhone.trim() && receiverAddress.trim() && receiverCity.trim() && receiverZip.trim();
   const canStep3 = isIntl
-    ? boxL && boxW && boxH && weight && declaredValue
+    ? pieces.length > 0 && pieces.every((p) => p.weight.trim()) && declaredValue.trim()
     : weight.trim();
 
   const inputCls = (accent: "cyan" | "purple" | "green" = "cyan") => cn(
@@ -1117,35 +1147,90 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
             </div>
           )}
 
-          {/* ── Step 3 — Package (international) ── */}
+          {/* ── Step 3 — Package (international / Balikbayan multi-piece) ── */}
           {step === 3 && isIntl && (
             <div className="space-y-3">
-              <p className="text-xs font-semibold text-purple-plasma">Box Details</p>
-              <div>
-                <label className="block text-2xs font-mono text-white/40 uppercase tracking-wider mb-1.5">Box Dimensions (cm) — L × W × H</label>
-                <div className="grid grid-cols-3 gap-2">
-                  {([{v:boxL,s:setBoxL,p:"Length"},{v:boxW,s:setBoxW,p:"Width"},{v:boxH,s:setBoxH,p:"Height"}] as const).map(({v,s,p}) => (
-                    <input key={p} value={v} onChange={(e) => s(e.target.value)} type="number" min="0" placeholder={p}
-                      className="rounded-xl border border-glass-border bg-glass-100 px-3 py-2.5 text-sm text-center text-white placeholder-white/20 font-mono focus:outline-none focus:border-purple-plasma/40 transition-all" />
-                  ))}
-                </div>
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-semibold text-purple-plasma">Box Details</p>
+                <span className="text-2xs font-mono text-white/30">{pieces.length} box{pieces.length !== 1 ? "es" : ""}</span>
               </div>
-              <div>
-                <label className="block text-2xs font-mono text-white/40 uppercase tracking-wider mb-1.5">Actual Weight (kg)</label>
-                <input value={weight} onChange={(e) => setWeight(e.target.value)} type="number" min="0" step="0.5" placeholder="e.g. 20.5" className={inputCls("purple")} />
+
+              {/* Per-piece rows */}
+              <div className="space-y-3">
+                {pieces.map((piece, i) => (
+                  <div key={i} className="rounded-xl border border-glass-border bg-glass-100 p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-2xs font-mono text-purple-plasma/70 uppercase tracking-wider">Box {i + 1}</span>
+                      {pieces.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => setPieces((prev) => prev.filter((_, idx) => idx !== i))}
+                          className="flex h-5 w-5 items-center justify-center rounded text-white/30 hover:text-red-400 transition-colors"
+                        >
+                          <X size={12} />
+                        </button>
+                      )}
+                    </div>
+                    <div>
+                      <label className="block text-2xs font-mono text-white/40 uppercase tracking-wider mb-1">Weight (kg) *</label>
+                      <input
+                        value={piece.weight}
+                        onChange={(e) => setPieces((prev) => prev.map((p, idx) => idx === i ? { ...p, weight: e.target.value } : p))}
+                        type="number" min="0" step="0.5" placeholder="e.g. 20.5"
+                        className={inputCls("purple")}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-2xs font-mono text-white/40 uppercase tracking-wider mb-1">Dimensions (cm) L × W × H</label>
+                      <div className="grid grid-cols-3 gap-2">
+                        {(["l", "w", "h"] as const).map((dim, di) => (
+                          <input
+                            key={dim}
+                            value={piece[dim]}
+                            onChange={(e) => setPieces((prev) => prev.map((p, idx) => idx === i ? { ...p, [dim]: e.target.value } : p))}
+                            type="number" min="0"
+                            placeholder={["Length", "Width", "Height"][di]}
+                            className="rounded-xl border border-glass-border bg-glass-100 px-3 py-2 text-sm text-center text-white placeholder-white/20 font-mono focus:outline-none focus:border-purple-plasma/40 transition-all"
+                          />
+                        ))}
+                      </div>
+                    </div>
+                    <input
+                      value={piece.description}
+                      onChange={(e) => setPieces((prev) => prev.map((p, idx) => idx === i ? { ...p, description: e.target.value } : p))}
+                      placeholder="Contents (e.g. Clothes, Electronics)"
+                      className={inputCls("purple")}
+                    />
+                  </div>
+                ))}
               </div>
-              <div>
-                <label className="block text-2xs font-mono text-white/40 uppercase tracking-wider mb-1.5">Contents</label>
-                <input value={contents} onChange={(e) => setContents(e.target.value)} placeholder="e.g. Clothes, canned goods, electronics" className={inputCls("purple")} />
+
+              {/* Add box */}
+              {pieces.length < 10 && (
+                <button
+                  type="button"
+                  onClick={() => setPieces((prev) => [...prev, { weight: "", l: "", w: "", h: "", description: "" }])}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-purple-plasma/30 py-2.5 text-xs font-mono text-purple-plasma/60 hover:border-purple-plasma/60 hover:text-purple-plasma transition-colors"
+                >
+                  <Plus size={12} /> Add Box
+                </button>
+              )}
+
+              {/* Live fee estimate */}
+              <div className="flex items-center justify-between rounded-lg border border-glass-border bg-glass-100 px-3 py-2">
+                <span className="text-2xs font-mono text-white/40">Estimated Total</span>
+                <span className="text-sm font-bold font-mono text-purple-plasma">₱{calcTotal().toLocaleString()}</span>
               </div>
+
               <div>
-                <label className="block text-2xs font-mono text-white/40 uppercase tracking-wider mb-1.5">Declared Value (PHP) — for customs</label>
+                <label className="block text-2xs font-mono text-white/40 uppercase tracking-wider mb-1.5">Total Declared Value (PHP) — for customs *</label>
                 <div className="relative">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 font-mono text-sm text-amber-400/60">₱</span>
                   <input value={declaredValue} onChange={(e) => setDeclaredValue(e.target.value)} type="number" min="0" placeholder="e.g. 15000"
                     className="w-full rounded-xl border border-glass-border bg-glass-100 pl-7 pr-4 py-2.5 text-sm text-amber-400 placeholder-white/20 font-mono focus:outline-none focus:border-amber-400/40 transition-all" />
                 </div>
               </div>
+
               <div>
                 <label className="block text-2xs font-mono text-white/40 uppercase tracking-wider mb-1.5">Freight Mode</label>
                 <div className="grid grid-cols-2 gap-2">
@@ -1153,7 +1238,7 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
                     { val: "sea" as FreightMode, label: "Sea Freight", sub: "30–45 days · Most economical", icon: <Ship className="h-4 w-4" /> },
                     { val: "air" as FreightMode, label: "Air Freight",  sub: "5–10 days · +₱800 premium",   icon: <PlaneTakeoff className="h-4 w-4" /> },
                   ] as const).map((opt) => (
-                    <button key={opt.val} onClick={() => setFreightMode(opt.val)}
+                    <button key={opt.val} type="button" onClick={() => setFreightMode(opt.val)}
                       className={cn(
                         "flex items-center gap-3 rounded-xl border px-4 py-3 text-left transition-all",
                         freightMode === opt.val
@@ -1192,9 +1277,10 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
                 ["Receiver",        `${receiverName}`],
                 ["Receiver Phone",  receiverPhone],
                 ["Receiver Address",`${receiverAddress}, ${receiverCity} ${receiverZip}, ${receiverCountryInfo?.flag} ${receiverCountryInfo?.label ?? receiverCountry}`],
-                ["Box Dims",        `${boxL} × ${boxW} × ${boxH} cm`],
-                ["Weight",          `${weight} kg`],
-                ["Contents",        contents || "—"],
+                ...pieces.map((p, i) => [
+                  `Box ${i + 1}`,
+                  `${p.weight} kg${p.l ? ` · ${p.l}×${p.w}×${p.h} cm` : ""}${p.description ? ` · ${p.description}` : ""}`,
+                ] as [string, string]),
                 ["Declared Value",  `₱${declaredValue}`],
                 ["Freight",         freightMode === "sea" ? "Sea Freight (30-45 days)" : "Air Freight (5-10 days)"],
               ] : [
@@ -1255,7 +1341,7 @@ function NewShipmentModal({ onClose, onBooked }: { onClose: () => void; onBooked
                     ? "bg-gradient-to-r from-purple-plasma to-[#6B21D8] hover:opacity-90"
                     : "bg-gradient-to-r from-green-signal to-cyan-neon hover:opacity-90"
                 )}>
-                {booking ? "Booking…" : isIntl ? "Book Balikbayan Box" : "Confirm Booking"}
+                {booking ? "Booking…" : isIntl ? `Book ${pieces.length} Balikbayan Box${pieces.length > 1 ? "es" : ""}` : "Confirm Booking"}
               </button>
             )}
           </div>
