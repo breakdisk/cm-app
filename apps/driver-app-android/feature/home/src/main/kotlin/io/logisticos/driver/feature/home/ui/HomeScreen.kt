@@ -9,7 +9,11 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -24,6 +28,8 @@ import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import io.logisticos.driver.feature.home.presentation.DECLINE_BAN_LIMIT
 import io.logisticos.driver.feature.home.presentation.HomeViewModel
+import io.logisticos.driver.feature.home.presentation.SyncItemStatus
+import io.logisticos.driver.feature.home.presentation.SyncItemUiModel
 
 private val Canvas = Color(0xFF050810)
 private val Cyan = Color(0xFF00E5FF)
@@ -280,34 +286,138 @@ fun HomeScreen(
             }
         }
 
-        // Pending sync items \u2014 silent retries get a visible signal so the
-        // driver knows a POD/scan/COD entry hasn't yet hit the server.
-        if (state.pendingSyncCount > 0) {
+        // Pending sync items \u2014 interactive expandable card so the driver can
+        // see exactly what's queued and retry failed items manually.
+        val syncItems    = state.syncItems
+        val syncExpanded = state.syncExpanded
+        val syncDone     = state.syncJustCompleted
+        if (syncItems.isNotEmpty() || syncDone) {
+            val hasFailures  = syncItems.any { it.status == SyncItemStatus.FAILED }
+            val cardBg       = if (syncDone) Green.copy(alpha = 0.10f) else Cyan.copy(alpha = 0.10f)
+            val cardBorder   = if (syncDone) Green.copy(alpha = 0.35f) else Cyan.copy(alpha = 0.35f)
+            val accentColor  = if (syncDone) Green else Cyan
+
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = Cyan.copy(alpha = 0.10f)),
-                border = androidx.compose.foundation.BorderStroke(1.dp, Cyan.copy(alpha = 0.35f))
+                onClick = { if (syncItems.isNotEmpty()) viewModel.toggleSyncExpanded() },
+                colors = CardDefaults.cardColors(containerColor = cardBg),
+                border = androidx.compose.foundation.BorderStroke(1.dp, cardBorder)
             ) {
-                Row(
-                    modifier = Modifier.padding(12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CircularProgressIndicator(
-                        color = Cyan,
-                        modifier = Modifier.size(14.dp),
-                        strokeWidth = 1.5.dp,
-                    )
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(
-                            text = if (state.pendingSyncCount == 1) "1 item syncing"
-                                   else "${state.pendingSyncCount} items syncing",
-                            color = Cyan, fontSize = 13.sp, fontWeight = FontWeight.Medium
-                        )
-                        Text(
-                            "Will retry automatically when online",
-                            color = Color.White.copy(alpha = 0.5f), fontSize = 11.sp
-                        )
+                Column(modifier = Modifier.padding(12.dp)) {
+                    // \u2500\u2500 Header \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (syncDone) {
+                                Icon(
+                                    Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    tint = Green,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            } else {
+                                CircularProgressIndicator(
+                                    color = Cyan,
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 1.5.dp,
+                                )
+                            }
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    text = when {
+                                        syncDone            -> "All synced!"
+                                        syncItems.size == 1 -> "1 item syncing"
+                                        else                -> "${syncItems.size} items syncing"
+                                    },
+                                    color = accentColor,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                if (!syncDone) {
+                                    Text(
+                                        text = if (hasFailures) "Some items need attention \u2014 tap for details"
+                                               else "Will retry automatically when online",
+                                        color = Color.White.copy(alpha = 0.5f),
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                        }
+                        if (syncItems.isNotEmpty()) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (hasFailures) {
+                                    TextButton(
+                                        onClick = { viewModel.retrySyncNow() },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Refresh,
+                                            contentDescription = "Retry now",
+                                            tint = Cyan,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                        Spacer(Modifier.width(3.dp))
+                                        Text("Retry", color = Cyan, fontSize = 11.sp)
+                                    }
+                                }
+                                Icon(
+                                    imageVector = if (syncExpanded) Icons.Default.ExpandLess
+                                                  else Icons.Default.ExpandMore,
+                                    contentDescription = if (syncExpanded) "Collapse" else "Expand",
+                                    tint = Color.White.copy(alpha = 0.4f),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    // \u2500\u2500 Per-item detail rows (shown when expanded) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+                    AnimatedVisibility(visible = syncExpanded && syncItems.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            syncItems.forEach { item ->
+                                val (itemColor, statusText) = when (item.status) {
+                                    SyncItemStatus.SYNCING  -> Cyan            to "Syncing"
+                                    SyncItemStatus.RETRYING -> Amber           to "Retrying (${item.retryCount}\u00d7)"
+                                    SyncItemStatus.FAILED   -> Color(0xFFFF3B5C) to "Needs attention"
+                                }
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(Color.White.copy(alpha = 0.04f), RoundedCornerShape(8.dp))
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        item.label,
+                                        color = Color.White.copy(alpha = 0.80f),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    Text(
+                                        statusText,
+                                        color = itemColor,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }

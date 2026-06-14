@@ -123,6 +123,10 @@ class PickupRepository @Inject constructor(
         val task = taskDao.getById(taskId) ?: return
         if (!TaskStateMachine.canTransition(task.status, TaskStatus.COMPLETED)) return
         taskDao.updateStatus(taskId, TaskStatus.COMPLETED)
+        // Optimistic hide: drop the task card immediately on the home screen.
+        // HomeViewModel filters out IDs in TaskSyncBus.locallyCompletedIds so
+        // the card disappears without waiting for the next server poll.
+        TaskSyncBus.markLocallyCompleted(taskId)
 
         // ── 0. Compress pickup photo if captured ────────────────────────────
         // Compress before POP submission so the file is always ≤800 KB on disk.

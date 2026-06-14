@@ -27,6 +27,16 @@ import java.time.Instant
 import java.time.format.DateTimeFormatter
 import javax.inject.Inject
 
+enum class SyncItemStatus { SYNCING, RETRYING, FAILED }
+
+data class SyncItemUiModel(
+    val id: Long,
+    val action: SyncAction,
+    val label: String,
+    val status: SyncItemStatus,
+    val retryCount: Int,
+)
+
 data class HomeUiState(
     val shift: ShiftEntity? = null,
     val isLoading: Boolean = false,
@@ -34,10 +44,12 @@ data class HomeUiState(
     val isTogglingStatus: Boolean = false,
     val error: String? = null,
     val isOfflineMode: Boolean = false,
-    /** Number of items waiting in the local outbound sync queue. Surfaces
-     *  silent retry state to the driver — without this the screen lies
-     *  ("submitted ✓") while the actual server hand-off is still pending. */
-    val pendingSyncCount: Int = 0,
+    /** Items waiting in the outbound sync queue, mapped to display models. */
+    val syncItems: List<SyncItemUiModel> = emptyList(),
+    /** Whether the driver has expanded the sync card detail rows. */
+    val syncExpanded: Boolean = false,
+    /** True for 2.5 s after the last queued item drains — shows "All synced!" */
+    val syncJustCompleted: Boolean = false,
     /** True after the user has explicitly denied location permission at
      *  runtime (Android 11+ "Don't ask again" path). Drives the rationale
      *  card on the home screen. */
@@ -123,10 +135,33 @@ class HomeViewModel @Inject constructor(
                 _uiState.update { it.copy(shift = shift) }
             }
         }
-        // Reactive — Room emits a new value any time enqueue/remove run.
+        // Reactive — Room emits whenever enqueue/remove runs.
         viewModelScope.launch {
-            syncQueueDao.getPendingCount().collect { n ->
-                _uiState.update { it.copy(pendingSyncCount = n) }
+            syncQueueDao.observeItems().collect { items ->
+                val models = items.map { e ->
+                    val status = when {
+                        e.retryCount == 0 -> SyncItemStatus.SYNCING
+                        e.retryCount < 4  -> SyncItemStatus.RETRYING
+                        else              -> SyncItemStatus.FAILED
+                    }
+                    SyncItemUiModel(
+                        id         = e.id,
+                        action     = e.action,
+                        label      = syncActionLabel(e.action),
+                        status     = status,
+                        retryCount = e.retryCount,
+                    )
+                }
+                val wasNonEmpty = _uiState.value.syncItems.isNotEmpty()
+                val nowEmpty    = models.isEmpty()
+                _uiState.update { it.copy(syncItems = models) }
+                if (wasNonEmpty && nowEmpty) {
+                    _uiState.update { it.copy(syncJustCompleted = true) }
+                    viewModelScope.launch {
+                        delay(2_500L)
+                        _uiState.update { it.copy(syncJustCompleted = false) }
+                    }
+                }
             }
         }
         // Mirror the FCM-driven offer bus into UI state so the home screen can
@@ -228,7 +263,20 @@ class HomeViewModel @Inject constructor(
     private fun loadTasks() {
         viewModelScope.launch {
             runCatching { api.listMyTasks() }
-                .onSuccess { r -> _uiState.update { it.copy(tasks = r.data) } }
+                .onSuccess { r ->
+                    val locallyDone = TaskSyncBus.locallyCompletedIds.value
+                    // Filter: hide tasks we locally marked complete even if the
+                    // server still returns them as IN_PROGRESS (race window).
+                    val visible = r.data.filter { it.id !in locallyDone }
+                    _uiState.update { it.copy(tasks = visible) }
+                    // Prune the local-complete set: if the server no longer
+                    // returns a task ID at all, it's confirmed gone — safe to
+                    // stop filtering it out.
+                    val serverIds = r.data.map { it.id }.toSet()
+                    locallyDone.forEach { id ->
+                        if (id !in serverIds) TaskSyncBus.clearLocallyCompleted(id)
+                    }
+                }
             // On failure the previous list stays — offline banner covers connectivity.
         }
     }
@@ -626,8 +674,27 @@ class HomeViewModel @Inject constructor(
         heartbeatJob = null
     }
 
+    fun toggleSyncExpanded() {
+        _uiState.update { it.copy(syncExpanded = !it.syncExpanded) }
+    }
+
+    /** Kick a one-time sync worker so failed items are retried immediately. */
+    fun retrySyncNow() {
+        OutboundSyncWorker.kickOnce(context)
+    }
+
     override fun onCleared() {
         stopLocationHeartbeat()
         super.onCleared()
+    }
+
+    private fun syncActionLabel(action: SyncAction): String = when (action) {
+        SyncAction.TASK_STATUS_UPDATE -> "Task status update"
+        SyncAction.POD_SUBMIT         -> "Proof of delivery"
+        SyncAction.POP_SUBMIT         -> "Proof of pickup"
+        SyncAction.TASK_COMPLETE      -> "Task completion"
+        SyncAction.SHIFT_START        -> "Shift start"
+        SyncAction.SHIFT_END          -> "Shift end"
+        SyncAction.HUB_SCAN           -> "Hub scan"
     }
 }

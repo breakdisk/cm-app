@@ -20,4 +20,7 @@ interface SyncQueueDao {
 
     @Query("SELECT COUNT(*) FROM sync_queue")
     fun getPendingCount(): Flow<Int>
+
+    @Query("SELECT * FROM sync_queue ORDER BY createdAt ASC")
+    fun observeItems(): Flow<List<SyncQueueEntity>>
 }

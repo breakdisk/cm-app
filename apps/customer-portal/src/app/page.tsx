@@ -3,7 +3,7 @@
  * Customer Portal — Tracking Home
  * Public page: enter AWB / tracking number → see live status.
  */
-import { useState, useTransition } from "react";
+import { useState, useTransition, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Package, Search, MapPin, Clock, CheckCircle2, XCircle, AlertCircle, Truck } from "lucide-react";
 
@@ -306,11 +306,26 @@ function TrackingCard({ result }: { result: TrackingResult }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
+const TERMINAL_STATUSES = new Set(["delivered", "cancelled", "returned", "failed"]);
+
 export default function TrackingPage() {
   const [query, setQuery]     = useState("");
   const [result, setResult]   = useState<TrackingResult | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [isPending, startTransition] = useTransition();
+
+  // Auto-refresh every 30 s while the parcel is in motion. Stops once the
+  // shipment reaches a terminal state (delivered / cancelled / returned / failed)
+  // so we don't hammer the backend for statuses that will never change.
+  useEffect(() => {
+    if (!result || TERMINAL_STATUSES.has(result.status)) return;
+    const tn = result.tracking_number;
+    const id = setInterval(async () => {
+      const data = await fetchTracking(tn);
+      if (data) setResult(data);
+    }, 30_000);
+    return () => clearInterval(id);
+  }, [result?.tracking_number, result?.status]);
 
   function handleSearch(e: React.FormEvent) {
     e.preventDefault();
