@@ -120,6 +120,9 @@ fun ShiftScaffold(rootNavController: NavHostController) {
             composable(HOME_ROUTE) {
                 HomeScreen(
                     onNavigateToRoute = { shiftNavController.navigate(ROUTE_ROUTE) },
+                    onNavigateToTask  = { taskId ->
+                        shiftNavController.navigate(ARRIVAL_ROUTE.replace("{taskId}", taskId))
+                    },
                     onNavigateToCompliance = { shiftNavController.navigate(COMPLIANCE_ROUTE) },
                     onNavigateToBoxMeasure = { shiftNavController.navigate("box_measure/quote") },
                     onNavigateToHub = { shiftNavController.navigate(HUB_ROUTE) },

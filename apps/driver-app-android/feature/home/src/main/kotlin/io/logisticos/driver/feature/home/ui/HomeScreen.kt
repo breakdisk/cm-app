@@ -42,6 +42,7 @@ private val Border = Color(0x14FFFFFF)
 @Composable
 fun HomeScreen(
     onNavigateToRoute: () -> Unit,
+    onNavigateToTask: (taskId: String) -> Unit = {},
     onNavigateToCompliance: () -> Unit,
     onNavigateToBoxMeasure: () -> Unit = {},
     onNavigateToHub: () -> Unit = {},
@@ -578,7 +579,7 @@ fun HomeScreen(
                     task      = task,
                     driverLat = state.lastLat,
                     driverLng = state.lastLng,
-                    onClick   = onNavigateToRoute,
+                    onClick   = { onNavigateToTask(task.taskId) },
                 )
             }
         }
