@@ -102,6 +102,7 @@ impl CdpClient {
             name:        p.name,
             email:       p.email,
             phone:       p.phone,
+            platform_id: None,
         }).collect())
     }
 }

@@ -33,6 +33,9 @@ export interface CampaignRecipient {
   phone?: string | null;
   email?: string | null;
   name?: string | null;
+  /** Platform-specific user/chat ID for social channels
+   * (Facebook PSID, Telegram chat_id, Slack user_id, etc.) */
+  platform_id?: string | null;
 }
 
 /** CDP-driven recipient filter — resolved server-side at activation time. */

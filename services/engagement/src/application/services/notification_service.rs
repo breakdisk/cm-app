@@ -21,6 +21,10 @@ pub struct NotificationService {
     sms:      Arc<dyn ChannelAdapter>,
     email:    Arc<dyn ChannelAdapter>,
     push:     Arc<dyn ChannelAdapter>,
+    /// Shared stub adapter for all social/CRM channels (Messenger, Telegram, X,
+    /// Viber, WeChat, Line, Slack). Platform-specific connectors will replace this
+    /// per-channel once the connector integration layer is built.
+    social:   Arc<dyn ChannelAdapter>,
 }
 
 impl NotificationService {
@@ -29,8 +33,9 @@ impl NotificationService {
         sms:      Arc<dyn ChannelAdapter>,
         email:    Arc<dyn ChannelAdapter>,
         push:     Arc<dyn ChannelAdapter>,
+        social:   Arc<dyn ChannelAdapter>,
     ) -> Self {
-        Self { whatsapp, sms, email, push }
+        Self { whatsapp, sms, email, push, social }
     }
 
     pub async fn dispatch(&self, notification: &mut Notification) -> AppResult<()> {
@@ -39,6 +44,15 @@ impl NotificationService {
             NotificationChannel::Sms      => self.sms.as_ref(),
             NotificationChannel::Email    => self.email.as_ref(),
             NotificationChannel::Push     => self.push.as_ref(),
+            // Social channels route through the shared stub adapter until
+            // platform connectors (Meta Graph API, Telegram Bot API, etc.) are wired.
+            NotificationChannel::Messenger
+            | NotificationChannel::Telegram
+            | NotificationChannel::X
+            | NotificationChannel::Viber
+            | NotificationChannel::WeChat
+            | NotificationChannel::Line
+            | NotificationChannel::Slack => self.social.as_ref(),
         };
 
         match adapter.send(&notification.recipient, &notification.rendered_body, notification.subject.as_deref(), notification.extra_data.as_ref()).await {

@@ -286,6 +286,7 @@ async fn trigger_for_recipient(
             name:        None,
             email:       None,
             phone:       None,
+            platform_id: None,
         }
     };
 

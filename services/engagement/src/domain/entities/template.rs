@@ -33,6 +33,14 @@ pub enum NotificationChannel {
     Sms,
     Email,
     Push,
+    // Social / CRM integration channels
+    Messenger,
+    Telegram,
+    X,
+    Viber,
+    WeChat,
+    Line,
+    Slack,
 }
 
 impl NotificationChannel {
@@ -42,6 +50,13 @@ impl NotificationChannel {
             Self::Sms      => "sms",
             Self::Email    => "email",
             Self::Push     => "push",
+            Self::Messenger => "messenger",
+            Self::Telegram  => "telegram",
+            Self::X         => "x",
+            Self::Viber     => "viber",
+            Self::WeChat    => "wechat",
+            Self::Line      => "line",
+            Self::Slack     => "slack",
         }
     }
 }

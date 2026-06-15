@@ -691,10 +691,17 @@ pub async fn handle_campaign_triggered(
         }
     };
     let notif_channel = match channel_str {
-        "whatsapp" => NotificationChannel::WhatsApp,
-        "sms"      => NotificationChannel::Sms,
-        "email"    => NotificationChannel::Email,
-        "push"     => NotificationChannel::Push,
+        "whatsapp"  => NotificationChannel::WhatsApp,
+        "sms"       => NotificationChannel::Sms,
+        "email"     => NotificationChannel::Email,
+        "push"      => NotificationChannel::Push,
+        "messenger" => NotificationChannel::Messenger,
+        "telegram"  => NotificationChannel::Telegram,
+        "x"         => NotificationChannel::X,
+        "viber"     => NotificationChannel::Viber,
+        "wechat"    => NotificationChannel::WeChat,
+        "line"      => NotificationChannel::Line,
+        "slack"     => NotificationChannel::Slack,
         other => {
             warn!(campaign_id = %campaign_id, channel = other, "CAMPAIGN_TRIGGERED unknown channel");
             return;
@@ -825,7 +832,14 @@ pub async fn handle_campaign_triggered(
             "whatsapp" | "sms" => r["phone"].as_str().unwrap_or("").to_owned(),
             "email"            => r["email"].as_str().unwrap_or("").to_owned(),
             "push"             => customer_id.to_string(),
-            _                  => continue,
+            // Social channels use platform_id (Facebook PSID, Telegram chat_id,
+            // Slack user_id, etc.). Falls back to customer_id for stub dispatch.
+            "messenger" | "telegram" | "x" | "viber" | "wechat" | "line" | "slack" => {
+                r["platform_id"].as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| customer_id.to_string())
+            }
+            _ => continue,
         };
 
         if recipient.is_empty() && channel_str != "push" {

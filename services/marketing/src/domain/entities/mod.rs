@@ -27,6 +27,17 @@ pub enum Channel {
     Sms,
     Email,
     Push,
+    // Social / CRM integration channels — dispatched via LogChannelAdapter stub
+    // until platform-specific API connectors are wired per-tenant.
+    Messenger,
+    Telegram,
+    #[serde(rename = "x")]
+    X,
+    Viber,
+    #[serde(rename = "wechat")]
+    WeChat,
+    Line,
+    Slack,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,6 +63,10 @@ pub struct CampaignRecipient {
     pub email:       Option<String>,
     /// Display name used in template variables ({{customer_name}}).
     pub name:        Option<String>,
+    /// Platform-specific user/chat identifier for social channels
+    /// (Facebook PSID, Telegram chat_id, Slack user_id, Viber URI, etc.).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform_id: Option<String>,
 }
 
 /// Targeting rule: recipients are customers matching these CDP criteria.

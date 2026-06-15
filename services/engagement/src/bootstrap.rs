@@ -116,7 +116,14 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::new(ExpoPushAdapter::new(identity_base_url))
     };
 
-    let notification_svc = Arc::new(NotificationService::new(whatsapp, sms, email, push));
+    // Social / CRM channels — all stubbed via LogChannelAdapter until per-tenant
+    // platform connectors (Meta Graph API, Telegram Bot API, Slack Web API, etc.)
+    // are wired through the Connectors service. The log adapter succeeds and prints
+    // the rendered message to stdout so campaigns flow end-to-end during dev/staging.
+    let social: Arc<dyn ChannelAdapter> = Arc::new(LogChannelAdapter::new("social"));
+    tracing::info!("engagement: Social channels (Messenger/Telegram/X/Viber/WeChat/Line/Slack) using LogChannelAdapter stub");
+
+    let notification_svc = Arc::new(NotificationService::new(whatsapp, sms, email, push, social));
 
     // Database — used for campaign_sends tracking.
     let pool = PgPoolOptions::new()
@@ -261,11 +268,18 @@ fn build_router(svc: Arc<NotificationService>) -> axum::Router {
         .route("/v1/notifications", post(
             |State(svc): State<Arc<NotificationService>>, Json(req): Json<SendRequest>| async move {
                 let channel = match req.channel.as_str() {
-                    "whatsapp" => NotificationChannel::WhatsApp,
-                    "sms"      => NotificationChannel::Sms,
-                    "email"    => NotificationChannel::Email,
-                    "push"     => NotificationChannel::Push,
-                    _          => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid channel"}))),
+                    "whatsapp"  => NotificationChannel::WhatsApp,
+                    "sms"       => NotificationChannel::Sms,
+                    "email"     => NotificationChannel::Email,
+                    "push"      => NotificationChannel::Push,
+                    "messenger" => NotificationChannel::Messenger,
+                    "telegram"  => NotificationChannel::Telegram,
+                    "x"         => NotificationChannel::X,
+                    "viber"     => NotificationChannel::Viber,
+                    "wechat"    => NotificationChannel::WeChat,
+                    "line"      => NotificationChannel::Line,
+                    "slack"     => NotificationChannel::Slack,
+                    _           => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid channel"}))),
                 };
 
                 // Minimal template inline — production loads from DB template registry.
