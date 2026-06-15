@@ -242,6 +242,10 @@ impl CodRepository for PgCodRepository {
             pending_count:  Option<i64>,
         }
 
+        // cod_collections has no merchant_id column; tenant_id is sufficient for the
+        // merchant portal (1:1 merchant=tenant model). merchant_id param is kept in the
+        // trait signature for future multi-merchant support.
+        let _ = merchant_id;
         let row = sqlx::query_as::<_, BalanceRow>(
             r#"SELECT
                    SUM(amount_cents) FILTER (WHERE status IN ('collected','in_batch')) AS pending_cents,
@@ -249,10 +253,9 @@ impl CodRepository for PgCodRepository {
                    SUM(amount_cents)                                                    AS total_cents,
                    COUNT(*)          FILTER (WHERE status IN ('collected','in_batch')) AS pending_count
                FROM payments.cod_collections
-               WHERE tenant_id = $1 AND merchant_id = $2"#
+               WHERE tenant_id = $1"#
         )
         .bind(tenant_id.inner())
-        .bind(merchant_id)
         .fetch_one(&self.pool)
         .await?;
 

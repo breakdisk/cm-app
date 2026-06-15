@@ -94,16 +94,21 @@ impl From<TxRow> for WalletTransaction {
 #[async_trait]
 impl WalletRepository for PgWalletRepository {
     async fn find_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Option<Wallet>> {
+        // reserved_cents is the canonical column name (migration 0002); alias to match WalletRow.
+        // Filter to owner_type='merchant' since 0002 introduced a multi-owner wallet schema.
         let row = sqlx::query_as::<_, WalletRow>(
-            "SELECT id, tenant_id, balance_cents, currency, version, reserved_centavos, created_at, updated_at
-             FROM payments.wallets WHERE tenant_id = $1"
+            "SELECT id, tenant_id, balance_cents, currency, version,
+                    reserved_cents AS reserved_centavos, created_at, updated_at
+             FROM payments.wallets
+             WHERE tenant_id = $1 AND owner_type = 'merchant'"
         ).bind(tenant_id.inner()).fetch_optional(&self.pool).await?;
         Ok(row.map(Wallet::from))
     }
 
     async fn find_by_id(&self, id: uuid::Uuid) -> anyhow::Result<Option<Wallet>> {
         let row = sqlx::query_as::<_, WalletRow>(
-            "SELECT id, tenant_id, balance_cents, currency, version, reserved_centavos, created_at, updated_at
+            "SELECT id, tenant_id, balance_cents, currency, version,
+                    reserved_cents AS reserved_centavos, created_at, updated_at
              FROM payments.wallets WHERE id = $1"
         ).bind(id).fetch_optional(&self.pool).await?;
         Ok(row.map(Wallet::from))
@@ -111,18 +116,22 @@ impl WalletRepository for PgWalletRepository {
 
     async fn save_wallet(&self, w: &Wallet) -> anyhow::Result<()> {
         let currency = w.currency.to_string();
-        // Optimistic concurrency: the WHERE version check prevents double-credit
+        let tenant_uuid = w.tenant_id.inner();
+        // ON CONFLICT target matches the wallets_tenant_owner_unique constraint from migration 0002.
+        // owner_id = tenant_id for merchant wallets (1:1 in the merchant portal).
         let rows = sqlx::query(
-            r#"INSERT INTO payments.wallets (id, tenant_id, balance_cents, currency, version, reserved_centavos, created_at, updated_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-               ON CONFLICT (tenant_id) DO UPDATE SET
-                   balance_cents     = EXCLUDED.balance_cents,
-                   version           = EXCLUDED.version,
-                   reserved_centavos = EXCLUDED.reserved_centavos,
-                   updated_at        = EXCLUDED.updated_at
+            r#"INSERT INTO payments.wallets
+                   (id, tenant_id, owner_type, owner_id,
+                    balance_cents, currency, version, reserved_cents, created_at, updated_at)
+               VALUES ($1,$2,'merchant',$2,$3,$4,$5,$6,$7,$8)
+               ON CONFLICT (tenant_id, owner_type, owner_id) DO UPDATE SET
+                   balance_cents  = EXCLUDED.balance_cents,
+                   version        = EXCLUDED.version,
+                   reserved_cents = EXCLUDED.reserved_cents,
+                   updated_at     = EXCLUDED.updated_at
                WHERE payments.wallets.version = $5 - 1"#
         )
-        .bind(w.id).bind(w.tenant_id.inner()).bind(w.balance.amount).bind(currency)
+        .bind(w.id).bind(tenant_uuid).bind(w.balance.amount).bind(currency)
         .bind(w.version).bind(w.reserved_centavos).bind(w.created_at).bind(w.updated_at)
         .execute(&self.pool).await?;
 
