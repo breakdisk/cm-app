@@ -577,7 +577,11 @@ impl NotificationDb {
                 cs.queued_at,
                 cs.sent_at,
                 cs.delivered_at,
-                cs.failed_at
+                cs.read_at,
+                cs.failed_at,
+                cs.opened_at,
+                cs.clicked_at,
+                cs.clicked_url
             FROM engagement.campaign_sends cs
             LEFT JOIN engagement.campaigns ec
                    ON ec.id = cs.campaign_id AND ec.tenant_id = $2
@@ -607,7 +611,11 @@ impl NotificationDb {
                 "queued_at":               r.get::<chrono::DateTime<chrono::Utc>, _>("queued_at"),
                 "sent_at":                 r.get::<Option<chrono::DateTime<chrono::Utc>>, _>("sent_at"),
                 "delivered_at":            r.get::<Option<chrono::DateTime<chrono::Utc>>, _>("delivered_at"),
+                "read_at":                 r.get::<Option<chrono::DateTime<chrono::Utc>>, _>("read_at"),
                 "failed_at":               r.get::<Option<chrono::DateTime<chrono::Utc>>, _>("failed_at"),
+                "opened_at":               r.get::<Option<chrono::DateTime<chrono::Utc>>, _>("opened_at"),
+                "clicked_at":              r.get::<Option<chrono::DateTime<chrono::Utc>>, _>("clicked_at"),
+                "clicked_url":             r.get::<Option<String>, _>("clicked_url"),
             })
         }).collect())
     }
@@ -820,5 +828,102 @@ impl NotificationDb {
                 "created_at":      r.created_at,
             })
         }))
+    }
+
+    // -------------------------------------------------------------------------
+    // Provider receipt correlation
+    // -------------------------------------------------------------------------
+
+    /// Find a `campaign_sends` row by provider-assigned message ID.
+    /// Used to correlate delivery receipt webhooks back to the original send.
+    pub async fn find_send_id_by_provider_msg_id(
+        &self,
+        provider_message_id: &str,
+    ) -> anyhow::Result<Option<Uuid>> {
+        let row: Option<(Uuid,)> = sqlx::query_as(
+            r#"
+            SELECT id
+            FROM engagement.campaign_sends
+            WHERE provider_message_id = $1
+            LIMIT 1
+            "#,
+        )
+        .bind(provider_message_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(id,)| id))
+    }
+
+    /// Apply a provider delivery receipt event to a `campaign_sends` row.
+    ///
+    /// `event` is one of: `"delivered"`, `"read"`, `"bounced"`, `"failed"`,
+    /// `"opened"`, `"clicked"`.  Unknown events are silently ignored.
+    pub async fn apply_receipt(
+        &self,
+        send_id:     Uuid,
+        event:       &str,
+        clicked_url: Option<&str>,
+    ) -> anyhow::Result<()> {
+        match event {
+            "delivered" => {
+                sqlx::query(
+                    r#"UPDATE engagement.campaign_sends
+                          SET status = 'delivered', delivered_at = NOW()
+                        WHERE id = $1 AND status NOT IN ('read','bounced')"#,
+                )
+                .bind(send_id)
+                .execute(&self.pool)
+                .await?;
+            }
+            "read" => {
+                sqlx::query(
+                    r#"UPDATE engagement.campaign_sends
+                          SET status = 'read', read_at = NOW(),
+                              delivered_at = COALESCE(delivered_at, NOW())
+                        WHERE id = $1"#,
+                )
+                .bind(send_id)
+                .execute(&self.pool)
+                .await?;
+            }
+            "opened" => {
+                sqlx::query(
+                    r#"UPDATE engagement.campaign_sends
+                          SET opened_at = COALESCE(opened_at, NOW()),
+                              delivered_at = COALESCE(delivered_at, NOW())
+                        WHERE id = $1"#,
+                )
+                .bind(send_id)
+                .execute(&self.pool)
+                .await?;
+            }
+            "clicked" => {
+                sqlx::query(
+                    r#"UPDATE engagement.campaign_sends
+                          SET clicked_at  = COALESCE(clicked_at, NOW()),
+                              clicked_url = COALESCE(clicked_url, $2),
+                              opened_at   = COALESCE(opened_at, NOW()),
+                              delivered_at = COALESCE(delivered_at, NOW())
+                        WHERE id = $1"#,
+                )
+                .bind(send_id)
+                .bind(clicked_url)
+                .execute(&self.pool)
+                .await?;
+            }
+            "bounced" | "failed" => {
+                sqlx::query(
+                    r#"UPDATE engagement.campaign_sends
+                          SET status = $2, bounced_at = NOW()
+                        WHERE id = $1"#,
+                )
+                .bind(send_id)
+                .bind(event)
+                .execute(&self.pool)
+                .await?;
+            }
+            _ => {}
+        }
+        Ok(())
     }
 }

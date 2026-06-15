@@ -28,6 +28,7 @@ import {
   ArrowLeft, User, Mail, Phone, MapPin, Package, TrendingUp,
   CheckCircle2, AlertCircle, Clock, Star, Activity, Edit2, X,
   TicketCheck, MessageSquare, Zap, Wifi, WifiOff, Send, Bot,
+  Eye, MousePointerClick,
 } from "lucide-react";
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -72,12 +73,17 @@ interface CampaignSend {
   queued_at: string;
   sent_at: string | null;
   delivered_at: string | null;
+  read_at: string | null;
   failed_at: string | null;
+  opened_at: string | null;
+  clicked_at: string | null;
+  clicked_url: string | null;
 }
 
 const SEND_STATUS_COLOR: Record<string, string> = {
   sent:      "#00FF88",
   delivered: "#00FF88",
+  read:      "#00FF88",
   queued:    "#FFAB00",
   sending:   "#00E5FF",
   failed:    "#FF3B5C",
@@ -574,6 +580,23 @@ export default function CustomerDetailPage() {
                                 </>
                               )}
                             </div>
+                            {/* Engagement signals */}
+                            {(send.read_at || send.opened_at || send.clicked_at) && (
+                              <div className="mt-1.5 flex items-center gap-2">
+                                {(send.read_at || send.opened_at) && (
+                                  <span className="flex items-center gap-1 text-[10px] font-mono text-green-signal/70">
+                                    <Eye size={9} />
+                                    {send.read_at ? "Read" : "Opened"} {relativeTime(send.read_at ?? send.opened_at!)}
+                                  </span>
+                                )}
+                                {send.clicked_at && (
+                                  <span className="flex items-center gap-1 text-[10px] font-mono text-cyan-neon/70">
+                                    <MousePointerClick size={9} />
+                                    Clicked {relativeTime(send.clicked_at)}
+                                  </span>
+                                )}
+                              </div>
+                            )}
                           </div>
                         </div>
                       );

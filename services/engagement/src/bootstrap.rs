@@ -214,13 +214,15 @@ pub async fn run() -> anyhow::Result<()> {
             logisticos_auth::middleware::require_auth,
         ));
 
-    // Inbound WhatsApp webhook — unauthenticated but Twilio-signature-verified.
-    // Twilio calls this URL when a customer sends a message; we publish a Kafka
-    // event for the AI layer to process.
+    // Webhook routes — unauthenticated, verified by provider signatures.
+    // Handles inbound WhatsApp messages, WhatsApp delivery/read receipts,
+    // Twilio SMS status callbacks, and email open/click/bounce events.
     let webhook_state = crate::api::http::webhook::WebhookState {
         app_secret:   std::env::var("META_WHATSAPP_APP_SECRET").unwrap_or_default(),
         verify_token: std::env::var("META_WHATSAPP_VERIFY_TOKEN").unwrap_or_default(),
+        twilio_token: std::env::var("TWILIO_AUTH_TOKEN").unwrap_or_default(),
         publisher:    publisher.clone(),
+        db:           db.clone(),
     };
     let public_routes = crate::api::http::webhook::webhook_router(webhook_state);
 
