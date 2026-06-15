@@ -186,11 +186,16 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, [router]);
 
-  // Load authenticated user + tenant for sidebar identity chip
+  // Load authenticated user + tenant; redirect draft tenants to setup wizard.
   useEffect(() => {
     identityApi.getMe().then(setMe).catch(() => {});
-    identityApi.getTenant().then(setTenant).catch(() => {});
-  }, []);
+    identityApi.getTenant().then((t) => {
+      setTenant(t);
+      if (t.status === "draft") {
+        router.replace("/setup");
+      }
+    }).catch(() => {});
+  }, [router]);
 
   // Close notification panel when clicking outside
   useEffect(() => {

@@ -16,8 +16,11 @@ interface Step1Fields {
   phone: string;
 }
 
+// "gig" is a UI alias for part_time + non-zero rate — the backend stores "part_time".
+type DriverTypeUI = "full_time" | "part_time" | "gig";
+
 interface Step2Fields {
-  driver_type: "full_time" | "part_time";
+  driver_type: DriverTypeUI;
   vehicle_type: string;
   zone: string;
   per_delivery_rate: string;
@@ -25,10 +28,11 @@ interface Step2Fields {
 }
 
 interface OnboardResult {
-  user_id: string;
-  driver_id: string;
-  email: string;
+  user_id:     string;
+  driver_id:   string;
+  email:       string;
   temp_password: string;
+  is_gig:      boolean;
 }
 
 interface Props {
@@ -63,7 +67,7 @@ export function OnboardDriverModal({ open, onClose, onSuccess }: Props) {
   // Step 2 state — driver profile
   const [s2, setS2] = useState<Step2Fields>({
     driver_type: "full_time", vehicle_type: "Motorcycle",
-    zone: "", per_delivery_rate: "0", cod_commission_bps: "0",
+    zone: "", per_delivery_rate: "80", cod_commission_bps: "0",
   });
 
   // Result after both steps complete
@@ -139,6 +143,7 @@ export function OnboardDriverModal({ open, onClose, onSuccess }: Props) {
         driver_id:     "",
         email:         res.data.email,
         temp_password: res.data.temp_password,
+        is_gig:        false,
       });
       setStep(2);
     } catch (err: unknown) {
@@ -152,6 +157,16 @@ export function OnboardDriverModal({ open, onClose, onSuccess }: Props) {
   async function handleStep2Submit(e: React.FormEvent) {
     e.preventDefault();
     if (!result?.user_id) return;
+
+    const isGig = s2.driver_type === "gig";
+    const backendDriverType = isGig ? "part_time" : s2.driver_type;
+    const rate = parseFloat(s2.per_delivery_rate || "0");
+
+    if (isGig && rate <= 0) {
+      setError("Gig drivers require a per-delivery rate greater than ₱0.");
+      return;
+    }
+
     setError(null);
     setLoading(true);
     try {
@@ -164,16 +179,18 @@ export function OnboardDriverModal({ open, onClose, onSuccess }: Props) {
       });
       const driverId = reg.data.driver_id;
 
-      // Apply profile fields that aren't in RegisterDriverCommand via PATCH
+      // Apply profile fields that aren't in RegisterDriverCommand via PATCH.
+      // Gig → backend "part_time" with a non-zero per_delivery_rate — that's
+      // what dispatch uses to determine gig pool eligibility.
       await api.updateDriver(driverId, {
-        driver_type:             s2.driver_type,
+        driver_type:             backendDriverType as "full_time" | "part_time",
         vehicle_type:            s2.vehicle_type || undefined,
         zone:                    s2.zone || undefined,
-        per_delivery_rate_cents: Math.round(parseFloat(s2.per_delivery_rate || "0") * 100),
+        per_delivery_rate_cents: Math.round(rate * 100),
         cod_commission_rate_bps: parseInt(s2.cod_commission_bps || "0", 10),
       });
 
-      setResult((prev) => prev ? { ...prev, driver_id: driverId } : null);
+      setResult((prev) => prev ? { ...prev, driver_id: driverId, is_gig: isGig } : null);
       setStep(3);
       onSuccess();
     } catch (err: unknown) {
@@ -332,16 +349,24 @@ export function OnboardDriverModal({ open, onClose, onSuccess }: Props) {
                     <p className="text-2xs text-red-400 font-mono">{inviteLinkError}</p>
                   )}
 
+                  {s2.driver_type === "gig" && (
+                    <p className="rounded-lg border border-cyan-neon/20 bg-cyan-neon/5 px-3 py-2 text-2xs text-cyan-neon/80 font-mono">
+                      Gig drivers receive broadcast offers when shipments are created. They
+                      claim shipments via the Driver App and are paid per delivery. A
+                      compliance profile is auto-created — review it in the Compliance console.
+                    </p>
+                  )}
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className={labelCls}>Driver Type</label>
                       <select
                         className={inputCls}
                         value={s2.driver_type}
-                        onChange={(e) => setS2((p) => ({ ...p, driver_type: e.target.value as "full_time" | "part_time" }))}
+                        onChange={(e) => setS2((p) => ({ ...p, driver_type: e.target.value as DriverTypeUI }))}
                       >
                         <option value="full_time">Full Time</option>
                         <option value="part_time">Part Time</option>
+                        <option value="gig">Gig Worker</option>
                       </select>
                     </div>
                     <div>
@@ -458,6 +483,20 @@ export function OnboardDriverModal({ open, onClose, onSuccess }: Props) {
                   <p className="text-2xs text-white/30 text-center font-mono">
                     Share credentials securely. Driver must change password on first login.
                   </p>
+
+                  {/* Compliance reminder */}
+                  <div className="rounded-lg border border-amber-signal/20 bg-amber-signal/5 px-3 py-2.5 space-y-0.5">
+                    <p className="text-2xs font-semibold text-amber-signal">Compliance required</p>
+                    <p className="text-2xs text-white/40 font-mono">
+                      A compliance profile has been created for this driver. Ask them to
+                      submit required documents (license, insurance, vehicle registration)
+                      via the Driver App. Review and approve in{" "}
+                      <a href="/compliance" className="text-cyan-neon hover:underline" target="_blank" rel="noreferrer">
+                        Compliance Console
+                      </a>
+                      {result.is_gig && " before they can claim gig offers"}.
+                    </p>
+                  </div>
 
                   {/* Invite link — primary share action in v1 */}
                   <div className="space-y-1.5">

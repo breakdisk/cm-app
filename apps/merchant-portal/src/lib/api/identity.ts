@@ -40,6 +40,7 @@ export interface Tenant {
   slug: string;
   owner_email: string;
   is_active: boolean;
+  status: "draft" | "active" | "suspended";
   subscription_tier: string;
   /** ISO 4217 currency code set during onboarding (e.g. "PHP"). Null for legacy tenants. */
   currency: string | null;
@@ -53,6 +54,15 @@ export interface UpdateMePayload {
   first_name?: string;
   last_name?: string;
   phone_number?: string;
+}
+
+export interface FinalizeTenantPayload {
+  /** Legal business name (2–100 chars) */
+  business_name: string;
+  /** ISO 4217 currency code, e.g. "PHP", "AED", "USD" */
+  currency: string;
+  /** ISO 3166-1 alpha-2 region code, e.g. "PH", "AE" */
+  region: string;
 }
 
 export const identityApi = {
@@ -83,6 +93,12 @@ export const identityApi = {
   async updateBranding(payload: UpdateBrandingPayload): Promise<Branding> {
     const client = createApiClient();
     const res = await client.put<ApiResponse<Branding>>("/v1/tenants/me/branding", payload);
+    return res.data.data;
+  },
+
+  async finalizeTenant(payload: FinalizeTenantPayload): Promise<{ tenant_id: string; slug: string; name: string; status: string }> {
+    const client = createApiClient();
+    const res = await client.post<ApiResponse<{ tenant_id: string; slug: string; name: string; status: string }>>("/v1/tenants/me/finalize", payload);
     return res.data.data;
   },
 };

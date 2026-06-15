@@ -106,6 +106,12 @@ fn get_mapping(event_type: &str) -> Option<EventNotificationMapping> {
             priority:    NotificationPriority::High,
             channels:    &["email"],
         }),
+        // OTP delivery — send a one-time code via email for passwordless login.
+        topics::OTP_REQUESTED => Some(EventNotificationMapping {
+            template_id: "otp_code",
+            priority:    NotificationPriority::High,
+            channels:    &["email"],
+        }),
         // Cross-border hub milestones — fanned out per recipient by
         // `handle_hub_milestone`, which synthesises a single-recipient payload and
         // re-enters `process_event` for each shipment in the container.
@@ -200,10 +206,11 @@ pub async fn process_event(
     let is_withdrawal_event   = event_type == topics::WALLET_WITHDRAWAL_DISBURSED
                              || event_type == topics::WALLET_WITHDRAWAL_REJECTED;
     let is_tenant_finalized   = event_type == topics::TENANT_FINALIZED;
+    let is_otp_event          = event_type == topics::OTP_REQUESTED;
 
     // For invoice events we resolve (template_id, channels) dynamically here
     // and override the sentinel values from get_mapping().
-    let (resolved_template, resolved_channels): (&str, &[&str]) = if is_withdrawal_event {
+    let (resolved_template, resolved_channels): (&str, &[&str]) = if is_otp_event || is_withdrawal_event {
         // Template/channels already set correctly in get_mapping(); pass through.
         (mapping.template_id, mapping.channels)
     } else if is_invoice_event {
@@ -235,6 +242,20 @@ pub async fn process_event(
 
         // Use tenant_id as the notification audit UUID (no separate customer entity).
         (tenant_id, String::new(), owner_email, vars)
+    } else if is_otp_event {
+        // OTP email — deliver a one-time code to the requestor's email address.
+        // No customer entity exists yet (this fires before otp_verify creates/resolves the user).
+        let recipient_email = data["email"].as_str().unwrap_or("").to_owned();
+        let otp_code        = data["otp_code"].as_str().unwrap_or("").to_owned();
+
+        if recipient_email.is_empty() || otp_code.is_empty() {
+            warn!(event_type, "OTP_REQUESTED missing email or otp_code — skipping");
+            return;
+        }
+
+        let vars = serde_json::json!({ "otp_code": otp_code });
+        // Use nil UUID as customer_id — no user record exists at OTP-send time.
+        (uuid::Uuid::nil(), String::new(), recipient_email, vars)
     } else if is_withdrawal_event {
         // Withdrawal disbursed/rejected — notify the carrier partner.
         // The event envelope carries tenant_id; email is not yet in the event
@@ -425,6 +446,14 @@ pub async fn process_event(
         // Build inline templates — these are the hardcoded receipt templates.
         // In production, templates come from the DB template registry.
         let (subject, body) = match resolved_template {
+            "otp_code" => (
+                Some("Your CargoMarket verification code".to_owned()),
+                "Your one-time verification code is:\n\n\
+                 {{otp_code}}\n\n\
+                 This code expires in 5 minutes. Do not share it with anyone.\n\n\
+                 If you did not request this code, you can safely ignore this email.\n\n\
+                 — CargoMarket".to_owned(),
+            ),
             "merchant_welcome" => (
                 Some(format!("Welcome to CargoMarket, {}!", vars["business_name"].as_str().unwrap_or("Merchant"))),
                 "Hi there,\n\n\

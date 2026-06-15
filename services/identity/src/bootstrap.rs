@@ -109,6 +109,7 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::clone(&redis_cache),
         email,
         app_base_url,
+        Arc::clone(&kafka),
     ));
 
     let tenant_service = Arc::new(TenantService::new(

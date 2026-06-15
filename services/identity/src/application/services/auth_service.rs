@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::fmt::Write;
 use logisticos_auth::{jwt::JwtService, password::verify_password, claims::Claims, rbac::default_permissions_for_role};
 use logisticos_errors::{AppError, AppResult};
+use logisticos_events::{envelope::Event, topics, producer::KafkaProducer, payloads::OtpRequested};
 use crate::{
     application::commands::{
         LoginCommand, LoginResult, RefreshTokenCommand, OtpSendCommand, OtpVerifyCommand, OtpVerifyResult,
@@ -35,6 +36,7 @@ pub struct AuthService {
     redis_cache: Arc<RedisCache>,
     email: Arc<dyn EmailAdapter>,
     app_base_url: String,
+    kafka: Arc<KafkaProducer>,
 }
 
 impl AuthService {
@@ -49,8 +51,9 @@ impl AuthService {
         redis_cache: Arc<RedisCache>,
         email: Arc<dyn EmailAdapter>,
         app_base_url: String,
+        kafka: Arc<KafkaProducer>,
     ) -> Self {
-        Self { tenant_repo, user_repo, auth_identity_repo, jwt, reset_token_repo, email_verification_token_repo, redis_cache, email, app_base_url }
+        Self { tenant_repo, user_repo, auth_identity_repo, jwt, reset_token_repo, email_verification_token_repo, redis_cache, email, app_base_url, kafka }
     }
 
     pub async fn login(&self, cmd: LoginCommand) -> AppResult<LoginResult> {
@@ -343,14 +346,38 @@ impl AuthService {
         self.redis_cache.store_otp(identifier, &otp).await
             .map_err(|e| AppError::Internal(anyhow::anyhow!("Redis: {e}")))?;
 
-        // SMS/WhatsApp delivery not yet wired — always log OTP so operators can
-        // retrieve it from container logs until the engagement engine integration ships.
         let env = std::env::var("APP__ENV").unwrap_or_default();
         let is_prod = env == "production";
-        if is_prod {
-            // Warn once so ops know SMS isn't wired yet.
-            tracing::warn!(identifier = %identifier, otp = %otp, "OTP generated — SMS not wired, code logged here");
-        } else {
+
+        if cmd.email.is_some() {
+            // Email-based OTP — publish to engagement engine for delivery.
+            let event = Event::new(
+                "identity",
+                topics::OTP_REQUESTED,
+                uuid::Uuid::nil(), // tenant unknown before verify; engagement ignores this for OTP
+                OtpRequested { email: identifier.to_owned(), otp_code: otp.clone() },
+            );
+            match self.kafka.publish_event(topics::OTP_REQUESTED, &event).await {
+                Ok(_) => tracing::info!(identifier = %identifier, "OTP_REQUESTED published to engagement engine"),
+                Err(e) => {
+                    tracing::warn!(identifier = %identifier, error = %e,
+                        "Failed to publish OTP_REQUESTED — falling back to direct email");
+                    let html = format!(
+                        "<p>Your one-time verification code is: <strong>{otp}</strong></p>\
+                         <p>This code expires in 5 minutes. Do not share it with anyone.</p>",
+                    );
+                    if let Err(mail_err) = self.email.send(identifier, "Your CargoMarket verification code", &html).await {
+                        tracing::error!(identifier = %identifier, error = %mail_err,
+                            "Kafka and direct email both failed — OTP not delivered");
+                    }
+                }
+            }
+        } else if is_prod {
+            // Phone/WhatsApp delivery not yet wired — log without the OTP to avoid prod log exposure.
+            tracing::warn!(identifier = %identifier, "OTP generated — SMS/WhatsApp not wired");
+        }
+
+        if !is_prod {
             tracing::info!(identifier = %identifier, otp = %otp, "OTP generated (also accept 123456)");
         }
 

@@ -338,6 +338,8 @@ async fn run_kafka_consumer(
         topics::CONTAINER_ARRIVED_AT_PORT,
         topics::CONTAINER_CUSTOMS_HOLD,
         topics::CONTAINER_CUSTOMS_CLEARED,
+        topics::TENANT_FINALIZED,   // welcome email to new merchants
+        topics::OTP_REQUESTED,      // email OTP delivery for passwordless login
     ]).expect("Engagement consumer subscription failed");
 
     loop {

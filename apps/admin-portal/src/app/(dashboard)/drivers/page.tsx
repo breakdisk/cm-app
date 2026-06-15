@@ -8,6 +8,7 @@
  */
 import { useState, useEffect, useCallback } from "react";
 import { createDriversApi, Driver as ApiDriver } from "@/lib/api/drivers";
+import { fetchProfiles, type ComplianceProfile } from "@/lib/api/compliance";
 import { useDriverRoster } from "@/context/driver-roster-context";
 import { motion } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
@@ -15,7 +16,7 @@ import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
 import { OnboardDriverModal } from "@/components/drivers/OnboardDriverModal";
-import { Search, MapPin, Package, RefreshCw, Briefcase, UserPlus, Trash2 } from "lucide-react";
+import { Search, MapPin, Package, RefreshCw, Briefcase, UserPlus, Trash2, ShieldCheck, ShieldAlert, ShieldX } from "lucide-react";
 import { usePermissions } from "@/hooks/usePermissions";
 
 // ── Types & mock data ─────────────────────────────────────────────────────────
@@ -99,6 +100,8 @@ export default function DriversPage() {
   const [kpi, setKpi] = useState(KPI);
   const [loading, setLoading] = useState(false);
   const [onboardOpen, setOnboardOpen] = useState(false);
+  // entity_id (driver_id) → overall_status from the compliance service
+  const [complianceMap, setComplianceMap] = useState<Map<string, string>>(new Map());
 
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -127,10 +130,14 @@ export default function DriversPage() {
     setLoading(true);
     try {
       const api = createDriversApi();
-      const [listRes, summaryRes] = await Promise.all([
+      const [listRes, summaryRes, profiles] = await Promise.all([
         api.listDrivers({ per_page: 100 }),
         api.getSummary(),
+        fetchProfiles().catch(() => [] as ComplianceProfile[]),
       ]);
+
+      // Build entity_id → status map for O(1) badge lookups.
+      setComplianceMap(new Map(profiles.map((p) => [p.entity_id, p.overall_status])));
       setDrivers(listRes.data.map((d: ApiDriver) => ({
         id:            d.id,
         name:          d.name || `${d.first_name} ${d.last_name}`.trim(),
@@ -316,6 +323,7 @@ export default function DriversPage() {
         {filtered.map((driver) => {
           const cfg = STATUS_CONFIG[driver.status];
           const progress = driver.tasks_total > 0 ? (driver.tasks_done / driver.tasks_total) * 100 : 0;
+          const complianceStatus = complianceMap.get(driver.id);
           return (
             <GlassCard key={driver.id} className="hover:border-glass-border-bright transition-colors cursor-pointer">
               <div className="flex items-start justify-between mb-3">
@@ -329,7 +337,24 @@ export default function DriversPage() {
                     )}
                   </div>
                   <div>
-                    <p className="text-sm font-semibold text-white">{driver.name}</p>
+                    <div className="flex items-center gap-1.5">
+                      <p className="text-sm font-semibold text-white">{driver.name}</p>
+                      {complianceStatus === "compliant" && (
+                        <span aria-label="Compliance: Compliant">
+                          <ShieldCheck size={12} className="text-green-signal" />
+                        </span>
+                      )}
+                      {(complianceStatus === "under_review" || complianceStatus === "expiring_soon") && (
+                        <span aria-label={`Compliance: ${complianceStatus.replace("_", " ")}`}>
+                          <ShieldAlert size={12} className="text-amber-signal" />
+                        </span>
+                      )}
+                      {(complianceStatus === "pending_submission" || complianceStatus === "suspended") && (
+                        <span aria-label={`Compliance: ${complianceStatus.replace("_", " ")}`}>
+                          <ShieldX size={12} className="text-red-signal" />
+                        </span>
+                      )}
+                    </div>
                     <p className="text-2xs font-mono text-white/40">{driver.vehicle} · {driver.plate}</p>
                   </div>
                 </div>

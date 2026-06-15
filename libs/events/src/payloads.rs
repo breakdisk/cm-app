@@ -11,6 +11,17 @@ pub struct TenantCreated {
     pub subscription_tier: String,
 }
 
+/// Emitted by identity when an OTP is generated for email-based login.
+/// Consumed by: engagement (delivers the OTP via email).
+/// tenant_id is Uuid::nil() — OTP send happens before tenant resolution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OtpRequested {
+    /// The email address the OTP should be delivered to.
+    pub email: String,
+    /// The 6-digit OTP code.
+    pub otp_code: String,
+}
+
 /// Emitted by identity when a draft tenant completes onboarding setup.
 /// Consumed by: engagement (send welcome email), billing (create billing account).
 #[derive(Debug, Clone, Serialize, Deserialize)]

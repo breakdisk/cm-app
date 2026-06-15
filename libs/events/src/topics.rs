@@ -12,6 +12,8 @@ pub const TENANT_CREATED:            &str = "logisticos.identity.tenant.created"
 pub const TENANT_FINALIZED:          &str = "logisticos.identity.tenant.finalized";
 pub const USER_INVITED:              &str = "logisticos.identity.user.invited";
 pub const USER_CREATED:              &str = "logisticos.identity.user.created";
+/// Emitted when identity generates an OTP for email-based login. Consumed by engagement to send the code via email.
+pub const OTP_REQUESTED:             &str = "logisticos.identity.otp.requested";
 
 // Task
 pub const TASK_ASSIGNED:             &str = "logisticos.task.assigned";
@@ -119,7 +121,7 @@ mod tests {
         let topics: &[&str] = &[
             CARRIER_ONBOARDED, CARRIER_STATUS_CHANGED, CARRIER_ALLOCATED, CARRIER_TRACKING_EVENT,
             MARKETPLACE_BOOKING_ACCEPTED, MARKETPLACE_BOOKING_REJECTED, MARKETPLACE_PICKUP_RECORDED,
-            TENANT_CREATED, TENANT_FINALIZED, USER_CREATED, USER_INVITED,
+            TENANT_CREATED, TENANT_FINALIZED, USER_CREATED, USER_INVITED, OTP_REQUESTED,
             SHIPMENT_CREATED, SHIPMENT_CONFIRMED, SHIPMENT_CANCELLED, SHIPMENT_RESCHEDULED,
             AWB_ISSUED, PIECE_SCANNED, WEIGHT_DISCREPANCY_FOUND,
             PALLET_SEALED, CONTAINER_DEPARTED, CONTAINER_ARRIVED,
