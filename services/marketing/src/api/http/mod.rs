@@ -18,18 +18,25 @@ use crate::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/v1/campaigns",                  get(list_campaigns).post(create_campaign))
-        .route("/v1/campaigns/weekly-stats",     get(weekly_stats_handler))
-        .route("/v1/campaigns/:id",              get(get_campaign))
-        .route("/v1/campaigns/:id/schedule",     post(schedule_campaign))
-        .route("/v1/campaigns/:id/activate",     post(activate_campaign))
-        .route("/v1/campaigns/:id/cancel",       post(cancel_campaign))
+        .route("/v1/campaigns",                                        get(list_campaigns).post(create_campaign))
+        .route("/v1/campaigns/weekly-stats",                           get(weekly_stats_handler))
+        .route("/v1/campaigns/:id",                                    get(get_campaign))
+        .route("/v1/campaigns/:id/schedule",                           post(schedule_campaign))
+        .route("/v1/campaigns/:id/activate",                           post(activate_campaign))
+        .route("/v1/campaigns/:id/cancel",                             post(cancel_campaign))
+        // A/B Testing
+        .route("/v1/campaigns/:id/ab-test",                            get(get_ab_test).post(create_ab_test))
+        .route("/v1/campaigns/:id/ab-test/select-winner",             post(select_ab_winner))
+        // Journey Builder
+        .route("/v1/journeys",                                         get(list_journeys).post(create_journey))
+        .route("/v1/journeys/:id",                                     get(get_journey).put(update_journey).delete(delete_journey))
+        .route("/v1/journeys/:id/activate",                            post(activate_journey))
+        .route("/v1/journeys/:id/enroll",                              post(enroll_journey))
+        .route("/v1/journeys/:id/enrollments",                         get(list_journey_enrollments))
         // Internal endpoint — called by the business-logic rules engine (no user auth required).
-        // The caller provides tenant_id in the body; the service validates the campaign belongs
-        // to that tenant before publishing.
-        .route("/v1/internal/campaigns/:id/trigger-for-recipient", post(trigger_for_recipient))
+        .route("/v1/internal/campaigns/:id/trigger-for-recipient",     post(trigger_for_recipient))
         // MCP server endpoint — consumed by the AI layer and API gateway registry
-        .route("/mcp",                           post(mcp_handler))
+        .route("/mcp",                                                 post(mcp_handler))
 }
 
 // ---------------------------------------------------------------------------
@@ -341,4 +348,280 @@ async fn trigger_for_recipient(
         "customer_id": body.customer_id,
         "rule_id":     body.rule_id,
     }))))
+}
+
+// ---------------------------------------------------------------------------
+// A/B Testing handlers
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct CreateAbTestBody {
+    name:     String,
+    variants: Vec<crate::domain::entities::AbVariant>,
+}
+
+/// `POST /v1/campaigns/:id/ab-test` — create an A/B test for a campaign.
+async fn create_ab_test(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Path(campaign_id): Path<Uuid>,
+    Json(body): Json<CreateAbTestBody>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::CAMPAIGNS_CREATE)?;
+
+    let campaign = state.campaign_svc.get(campaign_id).await?;
+    if campaign.tenant_id != logisticos_types::TenantId::from_uuid(claims.tenant_id) {
+        return Err(AppError::Forbidden { resource: "campaign".to_owned() });
+    }
+    if body.variants.len() < 2 {
+        return Err(AppError::Validation("A/B test requires at least 2 variants".to_owned()));
+    }
+
+    use crate::domain::entities::AbTest;
+    let test = AbTest {
+        id:             Uuid::new_v4(),
+        tenant_id:      claims.tenant_id,
+        campaign_id,
+        name:           body.name,
+        variants:       body.variants,
+        winner_variant: None,
+        started_at:     chrono::Utc::now(),
+        concluded_at:   None,
+    };
+    state.ab_test_repo.create(&test).await.map_err(AppError::internal)?;
+    Ok::<_, AppError>((StatusCode::CREATED, Json(test)))
+}
+
+/// `GET /v1/campaigns/:id/ab-test` — get A/B test with variant performance stats.
+async fn get_ab_test(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Path(campaign_id): Path<Uuid>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::CAMPAIGNS_CREATE)?;
+    let campaign = state.campaign_svc.get(campaign_id).await?;
+    if campaign.tenant_id != logisticos_types::TenantId::from_uuid(claims.tenant_id) {
+        return Err(AppError::Forbidden { resource: "campaign".to_owned() });
+    }
+    let test = state.ab_test_repo.find_by_campaign(campaign_id).await.map_err(AppError::internal)?
+        .ok_or_else(|| AppError::NotFound { resource: "AbTest", id: campaign_id.to_string() })?;
+    let stats = state.ab_test_repo.get_stats(campaign_id).await.map_err(AppError::internal)?;
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "ab_test": test, "stats": stats }))))
+}
+
+#[derive(serde::Deserialize)]
+struct SelectWinnerBody { variant: String }
+
+/// `POST /v1/campaigns/:id/ab-test/select-winner` — mark the winning variant.
+async fn select_ab_winner(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Path(campaign_id): Path<Uuid>,
+    Json(body): Json<SelectWinnerBody>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::CAMPAIGNS_SEND)?;
+    let campaign = state.campaign_svc.get(campaign_id).await?;
+    if campaign.tenant_id != logisticos_types::TenantId::from_uuid(claims.tenant_id) {
+        return Err(AppError::Forbidden { resource: "campaign".to_owned() });
+    }
+    state.ab_test_repo.set_winner(campaign_id, &body.variant).await.map_err(AppError::internal)?;
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "winner_variant": body.variant }))))
+}
+
+// ---------------------------------------------------------------------------
+// Journey handlers
+// ---------------------------------------------------------------------------
+
+use crate::domain::entities::{Journey, JourneyEnrollment, JourneyStatus, JourneyStep};
+
+#[derive(serde::Deserialize)]
+struct CreateJourneyBody {
+    name:        String,
+    description: Option<String>,
+    trigger:     serde_json::Value,
+    steps:       Vec<CreateJourneyStepBody>,
+}
+
+#[derive(serde::Deserialize)]
+struct CreateJourneyStepBody {
+    step_order:            i32,
+    step_type:             String,
+    campaign_id:           Option<Uuid>,
+    wait_days:             Option<i32>,
+    condition_type:        Option<String>,
+    condition_campaign_id: Option<Uuid>,
+    yes_next_order:        Option<i32>,
+    no_next_order:         Option<i32>,
+}
+
+fn build_journey(tenant_id: Uuid, body: CreateJourneyBody, existing_id: Option<Uuid>) -> Journey {
+    let now = chrono::Utc::now();
+    let journey_id = existing_id.unwrap_or_else(Uuid::new_v4);
+    let steps = body.steps.into_iter().map(|s| JourneyStep {
+        id:                    Uuid::new_v4(),
+        journey_id,
+        step_order:            s.step_order,
+        step_type:             s.step_type,
+        campaign_id:           s.campaign_id,
+        wait_days:             s.wait_days,
+        condition_type:        s.condition_type,
+        condition_campaign_id: s.condition_campaign_id,
+        yes_next_order:        s.yes_next_order,
+        no_next_order:         s.no_next_order,
+    }).collect();
+    Journey {
+        id: journey_id, tenant_id,
+        name: body.name, description: body.description, trigger: body.trigger,
+        status: JourneyStatus::Draft, steps,
+        created_at: now, updated_at: now,
+    }
+}
+
+/// `GET /v1/journeys` — list all journeys for the tenant.
+async fn list_journeys(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::CAMPAIGNS_CREATE)?;
+    let journeys = state.journey_repo.list(claims.tenant_id).await.map_err(AppError::internal)?;
+    let count = journeys.len();
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "journeys": journeys, "count": count }))))
+}
+
+/// `POST /v1/journeys` — create a new journey.
+async fn create_journey(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Json(body): Json<CreateJourneyBody>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::CAMPAIGNS_CREATE)?;
+    let journey = build_journey(claims.tenant_id, body, None);
+    state.journey_repo.save(&journey).await.map_err(AppError::internal)?;
+    Ok::<_, AppError>((StatusCode::CREATED, Json(journey)))
+}
+
+/// `GET /v1/journeys/:id`
+async fn get_journey(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::CAMPAIGNS_CREATE)?;
+    let journey = state.journey_repo.find_by_id(id).await.map_err(AppError::internal)?
+        .ok_or_else(|| AppError::NotFound { resource: "Journey", id: id.to_string() })?;
+    if journey.tenant_id != claims.tenant_id {
+        return Err(AppError::Forbidden { resource: "journey".to_owned() });
+    }
+    Ok::<_, AppError>((StatusCode::OK, Json(journey)))
+}
+
+/// `PUT /v1/journeys/:id` — update journey name/description/trigger/steps.
+async fn update_journey(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+    Json(body): Json<CreateJourneyBody>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::CAMPAIGNS_CREATE)?;
+    let existing = state.journey_repo.find_by_id(id).await.map_err(AppError::internal)?
+        .ok_or_else(|| AppError::NotFound { resource: "Journey", id: id.to_string() })?;
+    if existing.tenant_id != claims.tenant_id {
+        return Err(AppError::Forbidden { resource: "journey".to_owned() });
+    }
+    if existing.status == JourneyStatus::Active {
+        return Err(AppError::BusinessRule("Cannot edit an active journey — pause it first".to_owned()));
+    }
+    let prior_status     = existing.status.clone();
+    let prior_created_at = existing.created_at;
+    let mut updated = build_journey(claims.tenant_id, body, Some(id));
+    updated.status     = prior_status;
+    updated.created_at = prior_created_at;
+    state.journey_repo.save(&updated).await.map_err(AppError::internal)?;
+    Ok::<_, AppError>((StatusCode::OK, Json(updated)))
+}
+
+/// `DELETE /v1/journeys/:id`
+async fn delete_journey(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::CAMPAIGNS_CREATE)?;
+    let journey = state.journey_repo.find_by_id(id).await.map_err(AppError::internal)?
+        .ok_or_else(|| AppError::NotFound { resource: "Journey", id: id.to_string() })?;
+    if journey.tenant_id != claims.tenant_id {
+        return Err(AppError::Forbidden { resource: "journey".to_owned() });
+    }
+    state.journey_repo.delete(id).await.map_err(AppError::internal)?;
+    Ok::<_, AppError>((StatusCode::NO_CONTENT, ""))
+}
+
+/// `POST /v1/journeys/:id/activate` — set status to Active.
+async fn activate_journey(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::CAMPAIGNS_SEND)?;
+    let mut journey = state.journey_repo.find_by_id(id).await.map_err(AppError::internal)?
+        .ok_or_else(|| AppError::NotFound { resource: "Journey", id: id.to_string() })?;
+    if journey.tenant_id != claims.tenant_id {
+        return Err(AppError::Forbidden { resource: "journey".to_owned() });
+    }
+    if journey.steps.is_empty() {
+        return Err(AppError::BusinessRule("Journey must have at least one step before activating".to_owned()));
+    }
+    journey.status     = JourneyStatus::Active;
+    journey.updated_at = chrono::Utc::now();
+    state.journey_repo.save(&journey).await.map_err(AppError::internal)?;
+    Ok::<_, AppError>((StatusCode::OK, Json(journey)))
+}
+
+#[derive(serde::Deserialize)]
+struct EnrollBody { customer_ids: Vec<Uuid> }
+
+/// `POST /v1/journeys/:id/enroll` — enroll customers in the journey.
+async fn enroll_journey(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Path(journey_id): Path<Uuid>,
+    Json(body): Json<EnrollBody>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::CAMPAIGNS_SEND)?;
+    let journey = state.journey_repo.find_by_id(journey_id).await.map_err(AppError::internal)?
+        .ok_or_else(|| AppError::NotFound { resource: "Journey", id: journey_id.to_string() })?;
+    if journey.tenant_id != claims.tenant_id {
+        return Err(AppError::Forbidden { resource: "journey".to_owned() });
+    }
+    if journey.status != JourneyStatus::Active {
+        return Err(AppError::BusinessRule("Journey must be Active to enroll customers".to_owned()));
+    }
+    let now = chrono::Utc::now();
+    let mut enrolled = 0usize;
+    for customer_id in body.customer_ids {
+        let enrollment = JourneyEnrollment {
+            id: Uuid::new_v4(), journey_id, tenant_id: claims.tenant_id, customer_id,
+            current_step_order: Some(1), status: "active".to_owned(),
+            next_action_at: Some(now), enrolled_at: now,
+        };
+        state.journey_repo.save_enrollment(&enrollment).await.map_err(AppError::internal)?;
+        enrolled += 1;
+    }
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "enrolled": enrolled }))))
+}
+
+/// `GET /v1/journeys/:id/enrollments`
+async fn list_journey_enrollments(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Path(journey_id): Path<Uuid>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::CAMPAIGNS_CREATE)?;
+    let journey = state.journey_repo.find_by_id(journey_id).await.map_err(AppError::internal)?
+        .ok_or_else(|| AppError::NotFound { resource: "Journey", id: journey_id.to_string() })?;
+    if journey.tenant_id != claims.tenant_id {
+        return Err(AppError::Forbidden { resource: "journey".to_owned() });
+    }
+    let enrollments = state.journey_repo.list_enrollments(journey_id).await.map_err(AppError::internal)?;
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "enrollments": enrollments }))))
 }

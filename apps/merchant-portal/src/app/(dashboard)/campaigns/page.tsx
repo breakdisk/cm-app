@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import {
   createCampaignsApi,
+  createAbTestApi,
   type Campaign,
   type Channel,
   type CampaignStatus,
@@ -317,8 +318,10 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
   const [saving,         setSaving]         = useState(false);
   const [done,           setDone]           = useState(false);
   const [error,          setError]          = useState<string | null>(null);
-  const [scheduleEnabled, setScheduleEnabled] = useState(false);
-  const [scheduleFor,     setScheduleFor]     = useState("");
+  const [scheduleEnabled,   setScheduleEnabled]   = useState(false);
+  const [scheduleFor,       setScheduleFor]       = useState("");
+  const [abTestEnabled,     setAbTestEnabled]     = useState(false);
+  const [variantBTemplateId, setVariantBTemplateId] = useState("");
   const [createdId,      setCreatedId]      = useState<string | null>(null);
   const [activating,     setActivating]     = useState(false);
   const [activated,      setActivated]      = useState(false);
@@ -458,6 +461,15 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
       setCreatedId(created.id);
       if (scheduleEnabled && scheduleFor) {
         await api.schedule(created.id, { scheduled_at: new Date(scheduleFor).toISOString() });
+      }
+      if (abTestEnabled && variantBTemplateId.trim()) {
+        await createAbTestApi().create(created.id, {
+          name: `${name.trim()} — A/B Test`,
+          variants: [
+            { name: "A", template_id: `inline_${created.id}`, weight_pct: 50 },
+            { name: "B", template_id: variantBTemplateId.trim(), weight_pct: 50 },
+          ],
+        }).catch(() => { /* non-fatal — campaign still created */ });
       }
       setDone(true);
       onCreated?.();
@@ -859,6 +871,46 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
                         Sends {new Date(scheduleFor).toLocaleString()}
                       </p>
                     )}
+                  </div>
+                )}
+              </div>
+
+              {/* A/B Test */}
+              <div className="rounded-xl border border-glass-border bg-glass-100 px-3.5 py-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-white/80">A/B Test</p>
+                    <p className="text-2xs text-white/30 mt-0.5">Split audience 50/50 between two templates</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAbTestEnabled((v) => !v)}
+                    className="relative h-5 w-9 rounded-full transition-colors duration-200 focus:outline-none"
+                    style={{ background: abTestEnabled ? "rgba(0,229,255,0.7)" : "rgba(255,255,255,0.12)" }}
+                    aria-checked={abTestEnabled}
+                    role="switch"
+                  >
+                    <span
+                      className="absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform duration-200"
+                      style={{ transform: abTestEnabled ? "translateX(16px)" : "translateX(0)" }}
+                    />
+                  </button>
+                </div>
+                {abTestEnabled && (
+                  <div className="mt-3">
+                    <label className="mb-1.5 block text-2xs font-medium text-white/45">
+                      Variant B — Template ID
+                    </label>
+                    <input
+                      value={variantBTemplateId}
+                      onChange={(e) => setVariantBTemplateId(e.target.value)}
+                      placeholder="engagement_template_uuid_or_key"
+                      className="w-full rounded-xl border border-glass-border bg-glass-50/40 px-3 py-2 text-xs text-white placeholder-white/20 outline-none focus:border-cyan-neon/50 transition-colors font-mono"
+                    />
+                    <p className="mt-1 text-2xs text-white/25">
+                      Variant A uses this campaign&apos;s template. Variant B uses the ID above.
+                      Results visible in campaign detail after activation.
+                    </p>
                   </div>
                 )}
               </div>

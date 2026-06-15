@@ -148,6 +148,86 @@ pub struct Campaign {
     pub updated_at:      DateTime<Utc>,
 }
 
+// ── A/B Testing ──────────────────────────────────────────────────────────────
+
+/// A single variant in an A/B test (e.g. different template or subject line).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AbVariant {
+    pub name:        String,   // "A" | "B" | "C"
+    pub template_id: String,
+    pub weight_pct:  u8,       // 0..100; variants in a test should sum to 100
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AbTest {
+    pub id:             Uuid,
+    pub tenant_id:      Uuid,
+    pub campaign_id:    Uuid,
+    pub name:           String,
+    pub variants:       Vec<AbVariant>,
+    pub winner_variant: Option<String>,
+    pub started_at:     DateTime<Utc>,
+    pub concluded_at:   Option<DateTime<Utc>>,
+}
+
+/// Per-variant send performance aggregated from `marketing.send_log`.
+#[derive(Debug, Clone, Serialize)]
+pub struct AbVariantStats {
+    pub variant:   String,
+    pub sent:      i64,
+    pub delivered: i64,
+    pub opened:    i64,
+    pub clicked:   i64,
+}
+
+// ── Journey Builder ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum JourneyStatus { Draft, Active, Paused, Archived }
+
+/// One step in a journey.
+/// `step_type` is "send_campaign" | "wait" | "condition".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JourneyStep {
+    pub id:                    Uuid,
+    pub journey_id:            Uuid,
+    pub step_order:            i32,
+    pub step_type:             String,
+    pub campaign_id:           Option<Uuid>,
+    pub wait_days:             Option<i32>,
+    pub condition_type:        Option<String>,
+    pub condition_campaign_id: Option<Uuid>,
+    pub yes_next_order:        Option<i32>,
+    pub no_next_order:         Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Journey {
+    pub id:          Uuid,
+    pub tenant_id:   Uuid,
+    pub name:        String,
+    pub description: Option<String>,
+    /// JSON object: `{ "type": "manual_enroll" | "campaign_opened" | "segment_entered", ... }`
+    pub trigger:     serde_json::Value,
+    pub status:      JourneyStatus,
+    pub steps:       Vec<JourneyStep>,
+    pub created_at:  DateTime<Utc>,
+    pub updated_at:  DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JourneyEnrollment {
+    pub id:                 Uuid,
+    pub journey_id:         Uuid,
+    pub tenant_id:          Uuid,
+    pub customer_id:        Uuid,
+    pub current_step_order: Option<i32>,
+    pub status:             String,
+    pub next_action_at:     Option<DateTime<Utc>>,
+    pub enrolled_at:        DateTime<Utc>,
+}
+
 impl Campaign {
     pub fn new(
         tenant_id: TenantId,

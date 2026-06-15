@@ -150,3 +150,59 @@ export function createCampaignsApi() {
 }
 
 export type CampaignsApi = ReturnType<typeof createCampaignsApi>;
+
+// ── A/B Testing ───────────────────────────────────────────────────────────────
+
+export interface AbVariant {
+  name:        string;   // "A" | "B"
+  template_id: string;
+  weight_pct:  number;   // 0-100
+}
+
+export interface AbTest {
+  id:             string;
+  tenant_id:      string;
+  campaign_id:    string;
+  name:           string;
+  variants:       AbVariant[];
+  winner_variant: string | null;
+  started_at:     string;
+  concluded_at:   string | null;
+}
+
+export interface AbVariantStats {
+  variant:   string;
+  sent:      number;
+  delivered: number;
+  opened:    number;
+  clicked:   number;
+}
+
+export interface AbTestWithStats {
+  ab_test: AbTest;
+  stats:   AbVariantStats[];
+}
+
+export interface CreateAbTestPayload {
+  name:     string;
+  variants: AbVariant[];
+}
+
+export function createAbTestApi() {
+  const http = createApiClient();
+  return {
+    async create(campaignId: string, payload: CreateAbTestPayload): Promise<AbTest> {
+      const { data } = await http.post<AbTest>(`/v1/campaigns/${campaignId}/ab-test`, payload);
+      return data;
+    },
+    async get(campaignId: string): Promise<AbTestWithStats> {
+      const { data } = await http.get<AbTestWithStats>(`/v1/campaigns/${campaignId}/ab-test`);
+      return data;
+    },
+    async selectWinner(campaignId: string, variant: string): Promise<void> {
+      await http.post(`/v1/campaigns/${campaignId}/ab-test/select-winner`, { variant });
+    },
+  };
+}
+
+export type AbTestApi = ReturnType<typeof createAbTestApi>;

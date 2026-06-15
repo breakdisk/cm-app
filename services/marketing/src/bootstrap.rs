@@ -9,7 +9,7 @@ use crate::{
     application::services::CampaignService,
     config::Config,
     infrastructure::{
-        db::PgCampaignRepository,
+        db::{PgAbTestRepository, PgCampaignRepository, PgJourneyRepository},
         external::CdpClient,
         messaging::KafkaEventPublisher,
     },
@@ -48,7 +48,9 @@ pub async fn run() -> anyhow::Result<()> {
         .set("message.timeout.ms", "5000")
         .create()?;
 
-    let campaign_repo = Arc::new(PgCampaignRepository::new(pool));
+    let campaign_repo = Arc::new(PgCampaignRepository::new(pool.clone()));
+    let ab_test_repo  = Arc::new(PgAbTestRepository::new(pool.clone()));
+    let journey_repo  = Arc::new(PgJourneyRepository::new(pool.clone()));
     let publisher     = Arc::new(KafkaEventPublisher::new(producer));
     let campaign_svc  = Arc::new(CampaignService::new(campaign_repo, publisher));
 
@@ -100,7 +102,15 @@ pub async fn run() -> anyhow::Result<()> {
         }
     };
 
-    let state = AppState { campaign_svc, jwt: Arc::clone(&jwt), cdp_client };
+    // Journey execution scheduler — runs every 5 minutes, advances due enrollments.
+    let journey_exec_repo = Arc::clone(&journey_repo);
+    let marketing_url_for_journeys = format!("http://{}:{}", cfg.app.host, cfg.app.port);
+    let (journey_shutdown_tx, journey_shutdown_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        run_journey_executor(journey_exec_repo, marketing_url_for_journeys, journey_shutdown_rx).await;
+    });
+
+    let state = AppState { campaign_svc, ab_test_repo, journey_repo, jwt: Arc::clone(&jwt), cdp_client };
 
     let app = http::router()
         .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth))
@@ -118,6 +128,7 @@ pub async fn run() -> anyhow::Result<()> {
     // Signal background tasks to stop after the HTTP server drains.
     completion_shutdown_tx.send(true).ok();
     poller_shutdown_tx.send(true).ok();
+    journey_shutdown_tx.send(true).ok();
 
     Ok(())
 }
@@ -235,6 +246,132 @@ async fn run_scheduled_poller(
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Journey execution scheduler
+//
+// Every 5 minutes: fetch enrollments whose next_action_at is due,
+// execute the current step (send campaign or check condition), then
+// advance to the next step or complete the enrollment.
+// ---------------------------------------------------------------------------
+
+async fn run_journey_executor(
+    repo:         Arc<PgJourneyRepository>,
+    self_url:     String,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    use tokio::time::{interval, Duration, MissedTickBehavior};
+    let mut ticker = interval(Duration::from_secs(300)); // 5 min
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let http = reqwest::Client::new();
+
+    loop {
+        tokio::select! {
+            _ = shutdown.changed() => {
+                if *shutdown.borrow_and_update() { break; }
+            }
+            _ = ticker.tick() => {
+                if let Err(e) = execute_due_journeys(&repo, &http, &self_url).await {
+                    tracing::warn!(err = %e, "Journey executor cycle error");
+                }
+            }
+        }
+    }
+    tracing::info!("Journey executor shut down");
+}
+
+async fn execute_due_journeys(
+    repo:     &PgJourneyRepository,
+    http:     &reqwest::Client,
+    self_url: &str,
+) -> anyhow::Result<()> {
+    use crate::domain::entities::JourneyStatus;
+
+    let enrollments = repo.find_due_enrollments(100).await?;
+    if enrollments.is_empty() { return Ok(()); }
+    tracing::info!(count = enrollments.len(), "Journey executor: processing due enrollments");
+
+    for enrollment in enrollments {
+        let Some(journey) = repo.find_by_id(enrollment.journey_id).await? else {
+            repo.complete_enrollment(enrollment.id).await?;
+            continue;
+        };
+        if journey.status != JourneyStatus::Active {
+            repo.complete_enrollment(enrollment.id).await?;
+            continue;
+        }
+
+        let current_order = enrollment.current_step_order.unwrap_or(1);
+        let Some(step) = journey.steps.iter().find(|s| s.step_order == current_order) else {
+            // No step found — journey complete.
+            repo.complete_enrollment(enrollment.id).await?;
+            continue;
+        };
+
+        match step.step_type.as_str() {
+            "send_campaign" => {
+                if let Some(campaign_id) = step.campaign_id {
+                    // Call our own internal trigger endpoint for this customer.
+                    let url = format!("{}/v1/internal/campaigns/{}/trigger-for-recipient", self_url, campaign_id);
+                    let body = serde_json::json!({
+                        "customer_id": enrollment.customer_id,
+                        "tenant_id":   enrollment.tenant_id,
+                        "rule_id":     uuid::Uuid::nil(),
+                        "rule_name":   format!("journey:{}", journey.name),
+                        "shipment_id": null,
+                    });
+                    if let Err(e) = http.post(&url).json(&body).send().await {
+                        tracing::warn!(err = %e, campaign_id = %campaign_id, "Journey send_campaign step failed");
+                    }
+                }
+                // Advance to next sequential step immediately
+                let next_order = current_order + 1;
+                let next_step  = journey.steps.iter().find(|s| s.step_order == next_order);
+                if next_step.is_some() {
+                    repo.advance_enrollment(enrollment.id, Some(next_order), Some(chrono::Utc::now())).await?;
+                } else {
+                    repo.complete_enrollment(enrollment.id).await?;
+                }
+            }
+            "wait" => {
+                let days = step.wait_days.unwrap_or(1) as i64;
+                let next_at = chrono::Utc::now() + chrono::Duration::days(days);
+                let next_order = current_order + 1;
+                let next_step  = journey.steps.iter().find(|s| s.step_order == next_order);
+                if next_step.is_some() {
+                    repo.advance_enrollment(enrollment.id, Some(next_order), Some(next_at)).await?;
+                } else {
+                    repo.complete_enrollment(enrollment.id).await?;
+                }
+            }
+            "condition" => {
+                // Simplified: always take the "yes" branch (open-check requires
+                // engagement service cross-query; deferred to future phase).
+                let yes_next = step.yes_next_order.or(Some(current_order + 1));
+                if let Some(next_order) = yes_next {
+                    let next_step = journey.steps.iter().find(|s| s.step_order == next_order);
+                    if next_step.is_some() {
+                        repo.advance_enrollment(enrollment.id, Some(next_order), Some(chrono::Utc::now())).await?;
+                    } else {
+                        repo.complete_enrollment(enrollment.id).await?;
+                    }
+                } else {
+                    repo.complete_enrollment(enrollment.id).await?;
+                }
+            }
+            _ => {
+                // Unknown step type — skip and advance
+                let next_order = current_order + 1;
+                if journey.steps.iter().any(|s| s.step_order == next_order) {
+                    repo.advance_enrollment(enrollment.id, Some(next_order), Some(chrono::Utc::now())).await?;
+                } else {
+                    repo.complete_enrollment(enrollment.id).await?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn shutdown_signal() {
