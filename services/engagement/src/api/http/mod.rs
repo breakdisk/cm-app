@@ -525,6 +525,44 @@ async fn list_campaign_sends(
 }
 
 // ---------------------------------------------------------------------------
+// Customer communication history
+// ---------------------------------------------------------------------------
+
+/// `GET /v1/customers/:customer_id/sends?page=&limit=`
+///
+/// Returns all campaign sends addressed to a specific customer across all campaigns.
+/// Powers the "Communication History" tab on the Merchant Portal customer detail page.
+async fn customer_send_history(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Path(customer_id): Path<Uuid>,
+    Query(q): Query<ListCampaignsQuery>,
+) -> impl IntoResponse {
+    claims.require_permission(PERM_READ)?;
+
+    let limit  = q.limit.clamp(1, 200) as i64;
+    let offset = ((q.page.saturating_sub(1)) * q.limit.clamp(1, 200)) as i64;
+
+    let db   = NotificationDb::new(state.db.clone());
+    let rows = db
+        .campaign_send_history_for_customer(customer_id, claims.tenant_id, limit, offset)
+        .await
+        .map_err(AppError::Internal)?;
+
+    let count = rows.len();
+    Ok::<_, AppError>((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "customer_id": customer_id,
+            "sends":       rows,
+            "page":        q.page,
+            "limit":       limit,
+            "count":       count,
+        })),
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // Observability handlers
 // ---------------------------------------------------------------------------
 
@@ -575,6 +613,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/campaigns",              get(list_campaigns))
         .route("/v1/campaigns/:id",          get(get_campaign))
         .route("/v1/campaigns/:id/sends",    get(list_campaign_sends))
+        // ── Customer communication history ──────────────────────────
+        .route("/v1/customers/:customer_id/sends", get(customer_send_history))
         // ── Observability ───────────────────────────────────────────
         .route("/health",                get(health))
         .route("/ready",                 get(ready))

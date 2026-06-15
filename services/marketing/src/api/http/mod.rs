@@ -24,6 +24,10 @@ pub fn router() -> Router<AppState> {
         .route("/v1/campaigns/:id/schedule",     post(schedule_campaign))
         .route("/v1/campaigns/:id/activate",     post(activate_campaign))
         .route("/v1/campaigns/:id/cancel",       post(cancel_campaign))
+        // Internal endpoint — called by the business-logic rules engine (no user auth required).
+        // The caller provides tenant_id in the body; the service validates the campaign belongs
+        // to that tenant before publishing.
+        .route("/v1/internal/campaigns/:id/trigger-for-recipient", post(trigger_for_recipient))
         // MCP server endpoint — consumed by the AI layer and API gateway registry
         .route("/mcp",                           post(mcp_handler))
 }
@@ -216,4 +220,108 @@ async fn weekly_stats_handler(
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
     let stats = state.campaign_svc.weekly_stats(&tenant_id).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "stats": stats }))))
+}
+
+// ---------------------------------------------------------------------------
+// Internal: trigger a campaign for a single recipient from the rules engine
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct TriggerForRecipientBody {
+    customer_id:  Uuid,
+    tenant_id:    Uuid,
+    rule_id:      Uuid,
+    rule_name:    String,
+    shipment_id:  Option<Uuid>,
+}
+
+/// `POST /v1/internal/campaigns/:id/trigger-for-recipient`
+///
+/// Called by the business-logic rules engine when a `TriggerCampaign` action
+/// fires.  Loads the campaign's channel + template, resolves the customer's
+/// contact details from the CDP, and publishes a single-recipient
+/// `CAMPAIGN_TRIGGERED` event so the engagement service handles delivery.
+///
+/// This endpoint is internal (no Bearer token required) — it is not exposed
+/// through the public API gateway.  Network-level isolation (K8s NetworkPolicy)
+/// restricts callers to the business-logic service.
+async fn trigger_for_recipient(
+    State(state): State<AppState>,
+    Path(campaign_id): Path<Uuid>,
+    Json(body): Json<TriggerForRecipientBody>,
+) -> impl IntoResponse {
+    use logisticos_types::TenantId;
+
+    let tenant_id = TenantId::from_uuid(body.tenant_id);
+    let campaign  = state.campaign_svc.get(campaign_id).await?;
+
+    if campaign.tenant_id != tenant_id {
+        return Err(AppError::Forbidden { resource: "campaign".to_owned() });
+    }
+
+    // Resolve the single customer's contact from CDP (if client is wired).
+    let recipient = if let Some(ref cdp) = state.cdp_client {
+        let targeting = crate::domain::entities::TargetingRule {
+            customer_ids:     vec![body.customer_id],
+            min_clv_score:    None,
+            last_active_days: None,
+            recipients:       vec![],
+            estimated_reach:  1,
+        };
+        let mut resolved = cdp
+            .resolve_audience(body.tenant_id, &targeting)
+            .await
+            .map_err(AppError::internal)?;
+        if resolved.is_empty() {
+            return Err(AppError::BusinessRule(format!(
+                "CDP could not resolve customer {} — skipping campaign trigger",
+                body.customer_id
+            )));
+        }
+        resolved.remove(0)
+    } else {
+        // No CDP client — send to customer_id only (push channel will still work).
+        crate::domain::entities::CampaignRecipient {
+            customer_id: Some(body.customer_id),
+            name:        None,
+            email:       None,
+            phone:       None,
+        }
+    };
+
+    // Build a single-recipient CAMPAIGN_TRIGGERED payload that mirrors the bulk
+    // path so the engagement consumer can handle it identically.
+    let payload = serde_json::json!({
+        "campaign_id":             campaign.id.inner(),
+        "tenant_id":               campaign.tenant_id.inner(),
+        "name":                    campaign.name,
+        "created_by":              campaign.created_by,
+        "channel":                 campaign.channel,
+        "template_id":             campaign.template.template_id,
+        "subject":                 campaign.template.subject,
+        "variables":               campaign.template.variables,
+        "triggered_by_rule_id":    body.rule_id,
+        "triggered_by_rule_name":  body.rule_name,
+        "recipients": [recipient],
+    });
+
+    state.campaign_svc
+        .publish_campaign_triggered(&payload)
+        .await
+        .map_err(AppError::internal)?;
+
+    tracing::info!(
+        campaign_id = %campaign_id,
+        customer_id = %body.customer_id,
+        rule_id     = %body.rule_id,
+        rule_name   = %body.rule_name,
+        "Campaign triggered by automation rule for single recipient"
+    );
+
+    Ok::<_, AppError>((StatusCode::ACCEPTED, Json(serde_json::json!({
+        "status":      "accepted",
+        "campaign_id": campaign_id,
+        "customer_id": body.customer_id,
+        "rule_id":     body.rule_id,
+    }))))
 }

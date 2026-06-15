@@ -37,6 +37,17 @@ pub trait ActionExecutor: Send + Sync {
 
     /// Publish a custom Kafka event.
     async fn emit_event(&self, topic: &str, key: &str, payload: &[u8]) -> anyhow::Result<()>;
+
+    /// Trigger a pre-built campaign from the marketing service for a single customer.
+    /// The campaign's channel + template are loaded by the marketing service; the
+    /// customer's contact details are resolved from the CDP.
+    async fn trigger_campaign(
+        &self,
+        rule_id:     Uuid,
+        rule_name:   &str,
+        campaign_id: Uuid,
+        ctx:         &RuleContext,
+    ) -> anyhow::Result<()>;
 }
 
 /// In-memory rule store — production loads from PostgreSQL.
@@ -163,6 +174,14 @@ pub async fn execute_actions(
                     ctx.tenant_id,
                     &format!("Escalation tier {} required for shipment {:?}", tier, ctx.shipment_id),
                     "high",
+                ).await?;
+            }
+            RuleAction::TriggerCampaign { campaign_id } => {
+                executor.trigger_campaign(
+                    rule.id,
+                    &rule.name,
+                    *campaign_id,
+                    ctx,
                 ).await?;
             }
             _ => {

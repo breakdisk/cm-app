@@ -23,10 +23,11 @@ import {
   type CustomerProfile, type BehavioralEvent,
   type ChurnScore, type CustomerPreferences,
 } from "@/lib/api/cdp";
+import { createApiClient } from "@/lib/api/client";
 import {
   ArrowLeft, User, Mail, Phone, MapPin, Package, TrendingUp,
   CheckCircle2, AlertCircle, Clock, Star, Activity, Edit2, X,
-  TicketCheck, MessageSquare, Zap, Wifi, WifiOff,
+  TicketCheck, MessageSquare, Zap, Wifi, WifiOff, Send, Bot,
 } from "lucide-react";
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -60,6 +61,30 @@ const CHANNEL_LABEL: Record<string, string> = {
   push: "Push",
 };
 
+interface CampaignSend {
+  id: string;
+  campaign_id: string;
+  campaign_name: string;
+  channel: string;
+  status: string;
+  triggered_by_rule_id: string | null;
+  triggered_by_rule_name: string | null;
+  queued_at: string;
+  sent_at: string | null;
+  delivered_at: string | null;
+  failed_at: string | null;
+}
+
+const SEND_STATUS_COLOR: Record<string, string> = {
+  sent:      "#00FF88",
+  delivered: "#00FF88",
+  queued:    "#FFAB00",
+  sending:   "#00E5FF",
+  failed:    "#FF3B5C",
+  bounced:   "#FF3B5C",
+  skipped:   "#A855F7",
+};
+
 const EVENT_CFG: Record<string, { label: string; color: string; Icon: React.ElementType }> = {
   booking_created:    { label: "Booking Created",   color: "#00E5FF", Icon: Package      },
   delivery_completed: { label: "Delivered",         color: "#00FF88", Icon: CheckCircle2 },
@@ -75,12 +100,14 @@ export default function CustomerDetailPage() {
   const router = useRouter();
   const api    = useMemo(() => createCdpApi(), []);
 
-  const [profile, setProfile] = useState<CustomerProfile | null>(null);
-  const [events,  setEvents]  = useState<BehavioralEvent[]>([]);
-  const [churn,   setChurn]   = useState<ChurnScore | null>(null);
-  const [prefs,   setPrefs]   = useState<CustomerPreferences | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error,   setError]   = useState<string | null>(null);
+  const [profile,    setProfile]    = useState<CustomerProfile | null>(null);
+  const [events,     setEvents]     = useState<BehavioralEvent[]>([]);
+  const [churn,      setChurn]      = useState<ChurnScore | null>(null);
+  const [prefs,      setPrefs]      = useState<CustomerPreferences | null>(null);
+  const [sends,      setSends]      = useState<CampaignSend[]>([]);
+  const [loading,    setLoading]    = useState(true);
+  const [error,      setError]      = useState<string | null>(null);
+  const [activeTab,  setActiveTab]  = useState<"timeline" | "comms">("timeline");
 
   // Edit profile
   const [editOpen,    setEditOpen]    = useState(false);
@@ -114,6 +141,11 @@ export default function CustomerDetailPage() {
         setEditPhone(p.phone ?? "");
         api.churnScore(id).then(setChurn).catch(() => {});
         api.preferences(id).then(setPrefs).catch(() => {});
+        // Load communication history from engagement service (non-critical).
+        const http = createApiClient();
+        http.get<{ sends: CampaignSend[] }>(`/v1/customers/${id}/sends`, {
+          params: { limit: 50 },
+        }).then((res) => setSends(res.data.sends ?? [])).catch(() => {});
       })
       .catch(e => setError(e?.response?.data?.message ?? e?.message ?? "Failed to load customer"))
       .finally(() => setLoading(false));
@@ -415,48 +447,140 @@ export default function CustomerDetailPage() {
           )}
         </motion.div>
 
-        {/* Activity timeline */}
+        {/* Activity timeline + Communication history (tabbed) */}
         <motion.div variants={variants.fadeInUp} className="lg:col-span-2">
           <GlassCard padding="none" className="p-5">
-            <div className="flex items-center gap-2 mb-4">
-              <TrendingUp size={14} className="text-cyan-neon" />
-              <p className="text-xs font-semibold text-white">Activity Timeline</p>
+            {/* Tab bar */}
+            <div className="flex items-center gap-1 mb-4 border-b border-glass-border pb-3">
+              <button
+                onClick={() => setActiveTab("timeline")}
+                className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-mono transition-all ${
+                  activeTab === "timeline"
+                    ? "bg-cyan-neon/10 text-cyan-neon border border-cyan-neon/30"
+                    : "text-white/40 hover:text-white/70"
+                }`}
+              >
+                <TrendingUp size={11} />
+                Activity
+              </button>
+              <button
+                onClick={() => setActiveTab("comms")}
+                className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-mono transition-all ${
+                  activeTab === "comms"
+                    ? "bg-cyan-neon/10 text-cyan-neon border border-cyan-neon/30"
+                    : "text-white/40 hover:text-white/70"
+                }`}
+              >
+                <Send size={11} />
+                Messages
+                {sends.length > 0 && (
+                  <span className="ml-1 rounded-full bg-cyan-neon/20 px-1.5 py-0 text-cyan-neon text-[9px]">
+                    {sends.length}
+                  </span>
+                )}
+              </button>
             </div>
-            {allEvents.length === 0 ? (
-              <p className="text-xs font-mono text-white/30 py-6 text-center">No events recorded yet</p>
-            ) : (
-              <div className="relative">
-                <div className="absolute left-3.5 top-0 bottom-0 w-px bg-glass-border" />
-                <div className="space-y-4">
-                  {allEvents.map((evt) => {
-                    const cfg = EVENT_CFG[evt.event_type] ?? { label: evt.event_type, color: "#A855F7", Icon: Activity };
-                    return (
-                      <div key={evt.id} className="flex items-start gap-4 pl-8 relative">
-                        <div
-                          className="absolute left-0 flex h-7 w-7 items-center justify-center rounded-full border border-glass-border bg-canvas-100"
-                          style={{ boxShadow: `0 0 8px ${cfg.color}40` }}
-                        >
-                          <cfg.Icon size={12} style={{ color: cfg.color }} />
-                        </div>
-                        <div className="min-w-0 flex-1 pb-2">
-                          <div className="flex items-baseline justify-between gap-2">
-                            <p className="text-xs font-medium text-white">{cfg.label}</p>
-                            <p className="text-2xs font-mono text-white/25 flex-shrink-0">{relativeTime(evt.occurred_at)}</p>
+
+            {activeTab === "timeline" && (
+              <>
+                {allEvents.length === 0 ? (
+                  <p className="text-xs font-mono text-white/30 py-6 text-center">No events recorded yet</p>
+                ) : (
+                  <div className="relative">
+                    <div className="absolute left-3.5 top-0 bottom-0 w-px bg-glass-border" />
+                    <div className="space-y-4">
+                      {allEvents.map((evt) => {
+                        const cfg = EVENT_CFG[evt.event_type] ?? { label: evt.event_type, color: "#A855F7", Icon: Activity };
+                        return (
+                          <div key={evt.id} className="flex items-start gap-4 pl-8 relative">
+                            <div
+                              className="absolute left-0 flex h-7 w-7 items-center justify-center rounded-full border border-glass-border bg-canvas-100"
+                              style={{ boxShadow: `0 0 8px ${cfg.color}40` }}
+                            >
+                              <cfg.Icon size={12} style={{ color: cfg.color }} />
+                            </div>
+                            <div className="min-w-0 flex-1 pb-2">
+                              <div className="flex items-baseline justify-between gap-2">
+                                <p className="text-xs font-medium text-white">{cfg.label}</p>
+                                <p className="text-2xs font-mono text-white/25 flex-shrink-0">{relativeTime(evt.occurred_at)}</p>
+                              </div>
+                              {evt.shipment_id && (
+                                <p className="mt-0.5 text-2xs font-mono text-white/40">{evt.shipment_id}</p>
+                              )}
+                              {Object.keys(evt.metadata ?? {}).length > 0 && (
+                                <p className="mt-0.5 text-2xs font-mono text-white/30 truncate">
+                                  {Object.entries(evt.metadata).map(([k, v]) => `${k}: ${v}`).join(" · ")}
+                                </p>
+                              )}
+                            </div>
                           </div>
-                          {evt.shipment_id && (
-                            <p className="mt-0.5 text-2xs font-mono text-white/40">{evt.shipment_id}</p>
-                          )}
-                          {Object.keys(evt.metadata ?? {}).length > 0 && (
-                            <p className="mt-0.5 text-2xs font-mono text-white/30 truncate">
-                              {Object.entries(evt.metadata).map(([k, v]) => `${k}: ${v}`).join(" · ")}
-                            </p>
-                          )}
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
+            {activeTab === "comms" && (
+              <>
+                {sends.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-8 gap-2">
+                    <Send size={20} className="text-white/20" />
+                    <p className="text-xs font-mono text-white/30">No messages sent yet</p>
+                    <p className="text-2xs font-mono text-white/20 text-center max-w-xs">
+                      Campaign sends and automation-triggered messages will appear here.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {sends.map((send) => {
+                      const color = SEND_STATUS_COLOR[send.status] ?? "#A855F7";
+                      const isAuto = !!send.triggered_by_rule_id;
+                      return (
+                        <div
+                          key={send.id}
+                          className="flex items-start gap-3 rounded-xl border border-glass-border bg-glass-100/30 p-3"
+                        >
+                          <div
+                            className="mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full"
+                            style={{ background: `${color}15`, border: `1px solid ${color}30` }}
+                          >
+                            {isAuto
+                              ? <Bot size={12} style={{ color }} />
+                              : <Send size={12} style={{ color }} />}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-start justify-between gap-2">
+                              <p className="text-xs font-medium text-white line-clamp-1">{send.campaign_name}</p>
+                              <span
+                                className="flex-shrink-0 rounded-full px-1.5 py-0 text-[9px] font-mono font-semibold"
+                                style={{ color, background: `${color}15` }}
+                              >
+                                {send.status}
+                              </span>
+                            </div>
+                            <div className="mt-1 flex flex-wrap items-center gap-1.5 text-2xs font-mono text-white/40">
+                              <span>{CHANNEL_LABEL[send.channel] ?? send.channel}</span>
+                              <span>·</span>
+                              <span>{relativeTime(send.queued_at)}</span>
+                              {isAuto && (
+                                <>
+                                  <span>·</span>
+                                  <span className="flex items-center gap-1 text-cyan-neon/70">
+                                    <Bot size={9} />
+                                    Auto: {send.triggered_by_rule_name ?? "rule"}
+                                  </span>
+                                </>
+                              )}
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
             )}
           </GlassCard>
         </motion.div>

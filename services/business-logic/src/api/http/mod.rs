@@ -45,6 +45,8 @@ pub fn router() -> Router<AppState> {
         .route("/v1/rules/:id",                get(get_rule).put(update_rule).delete(delete_rule))
         .route("/v1/rules/:id/toggle",         patch(toggle_rule))
         .route("/v1/rules/:id/executions",     get(list_executions))
+        // MCP endpoint — consumed by the AI layer for rule management
+        .route("/mcp",                         post(mcp_handler))
         .route("/health",                      get(health))
         .route("/ready",                       get(health))
 }
@@ -345,6 +347,170 @@ async fn validate_expression(
             StatusCode::OK,
             Json(serde_json::json!({ "valid": false, "error": e.to_string() })),
         )),
+    }
+}
+
+// ── POST /mcp ─────────────────────────────────────────────────────────────────
+// JSON-RPC style: { "method": "tools/list" | "tools/call", "params": {...} }
+// Consumed by the AI Intelligence Layer for rule management.
+
+async fn mcp_handler(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let method = body.get("method").and_then(|v| v.as_str()).unwrap_or("");
+
+    match method {
+        "tools/list" => {
+            let tools = serde_json::json!([
+                {
+                    "name": "list_automation_rules",
+                    "description": "List automation rules for the tenant. Returns active/inactive rules with triggers, conditions, and actions.",
+                    "inputSchema": { "type": "object", "properties": { "is_active": { "type": "boolean" } } }
+                },
+                {
+                    "name": "create_automation_rule",
+                    "description": "Create a new automation rule. Specify trigger (DeliveryFailed, DeliveryCompleted, ShipmentCreated, etc.), optional conditions, and one or more actions (NotifyCustomer, TriggerCampaign, RescheduleDelivery, etc.).",
+                    "inputSchema": {
+                        "type": "object",
+                        "required": ["name", "trigger", "actions"],
+                        "properties": {
+                            "name":        { "type": "string" },
+                            "description": { "type": "string" },
+                            "trigger":     { "description": "e.g. 'DeliveryFailed' or {\"CustomerInactive\":{\"days\":30}}" },
+                            "conditions":  { "type": "array" },
+                            "actions":     { "type": "array", "description": "e.g. [{\"TriggerCampaign\":{\"campaign_id\":\"<uuid>\"}}]" },
+                            "priority":    { "type": "integer" }
+                        }
+                    }
+                },
+                {
+                    "name": "toggle_automation_rule",
+                    "description": "Enable or disable an automation rule by ID.",
+                    "inputSchema": {
+                        "type": "object",
+                        "required": ["rule_id", "is_active"],
+                        "properties": {
+                            "rule_id":   { "type": "string", "format": "uuid" },
+                            "is_active": { "type": "boolean" }
+                        }
+                    }
+                },
+                {
+                    "name": "get_rule_executions",
+                    "description": "Retrieve recent execution history for an automation rule — outcome, topic, shipment, and any error.",
+                    "inputSchema": {
+                        "type": "object",
+                        "required": ["rule_id"],
+                        "properties": {
+                            "rule_id": { "type": "string", "format": "uuid" },
+                            "limit":   { "type": "integer", "default": 20 }
+                        }
+                    }
+                }
+            ]);
+            (StatusCode::OK, Json(serde_json::json!({"tools": tools}))).into_response()
+        }
+        "tools/call" => {
+            let params    = body.get("params").unwrap_or(&serde_json::Value::Null);
+            let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let args      = params.get("arguments").unwrap_or(&serde_json::Value::Null);
+
+            let result: Result<serde_json::Value, String> = async {
+                match tool_name {
+                    "list_automation_rules" => {
+                        let is_active = args["is_active"].as_bool();
+                        let mut rules = state.pg_repo
+                            .load_for_tenant(claims.tenant_id)
+                            .await
+                            .map_err(|e| format!("DB error: {e}"))?;
+                        if let Some(active) = is_active {
+                            rules.retain(|r| r.is_active == active);
+                        }
+                        serde_json::to_value(&rules).map_err(|e| e.to_string())
+                    }
+                    "create_automation_rule" => {
+                        let name = args["name"].as_str()
+                            .ok_or_else(|| "name required".to_owned())?
+                            .to_owned();
+                        let trigger: RuleTrigger = serde_json::from_value(args["trigger"].clone())
+                            .map_err(|e| format!("invalid trigger: {e}"))?;
+                        let actions: Vec<RuleAction> = serde_json::from_value(args["actions"].clone())
+                            .map_err(|e| format!("invalid actions: {e}"))?;
+                        if actions.is_empty() {
+                            return Err("actions must not be empty".to_owned());
+                        }
+                        let conditions: Vec<RuleCondition> = args["conditions"]
+                            .as_array()
+                            .map(|arr| serde_json::from_value(serde_json::Value::Array(arr.clone())).unwrap_or_default())
+                            .unwrap_or_default();
+                        let rule = AutomationRule {
+                            id:          Uuid::new_v4(),
+                            tenant_id:   claims.tenant_id,
+                            name,
+                            description: args["description"].as_str().unwrap_or("").to_owned(),
+                            is_active:   true,
+                            trigger,
+                            conditions,
+                            actions,
+                            priority:    args["priority"].as_u64().unwrap_or(100) as u32,
+                            created_at:  Utc::now(),
+                        };
+                        state.pg_repo.create(&rule).await.map_err(|e| format!("DB error: {e}"))?;
+                        reload_from_db(&state).await.map_err(|e| e.to_string())?;
+                        serde_json::to_value(&rule).map_err(|e| e.to_string())
+                    }
+                    "toggle_automation_rule" => {
+                        let rule_id = args["rule_id"].as_str()
+                            .ok_or_else(|| "rule_id required".to_owned())?
+                            .parse::<Uuid>()
+                            .map_err(|_| "invalid rule_id UUID".to_owned())?;
+                        let is_active = args["is_active"].as_bool()
+                            .ok_or_else(|| "is_active required".to_owned())?;
+                        let updated = state.pg_repo
+                            .set_active(rule_id, claims.tenant_id, is_active)
+                            .await
+                            .map_err(|e| format!("DB error: {e}"))?;
+                        if !updated {
+                            return Err(format!("rule {rule_id} not found"));
+                        }
+                        reload_from_db(&state).await.map_err(|e| e.to_string())?;
+                        Ok(serde_json::json!({"rule_id": rule_id, "is_active": is_active, "updated": true}))
+                    }
+                    "get_rule_executions" => {
+                        let rule_id = args["rule_id"].as_str()
+                            .ok_or_else(|| "rule_id required".to_owned())?
+                            .parse::<Uuid>()
+                            .map_err(|_| "invalid rule_id UUID".to_owned())?;
+                        let limit = args["limit"].as_i64().unwrap_or(20).clamp(1, 100);
+                        let rows = state.pg_repo
+                            .list_executions(rule_id, limit, None)
+                            .await
+                            .map_err(|e| format!("DB error: {e}"))?;
+                        serde_json::to_value(&rows).map_err(|e| e.to_string())
+                    }
+                    other => Err(format!("Unknown tool: {other}")),
+                }
+            }.await;
+
+            match result {
+                Ok(value) => (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "content": [{ "type": "text", "text": value.to_string() }]
+                    })),
+                ).into_response(),
+                Err(e) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({ "error": e })),
+                ).into_response(),
+            }
+        }
+        other => {
+            let payload = serde_json::json!({ "error": format!("Unknown method: {other}") });
+            (StatusCode::BAD_REQUEST, Json(payload)).into_response()
+        }
     }
 }
 

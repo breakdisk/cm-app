@@ -29,6 +29,7 @@ struct HttpActionExecutor {
     engagement_url: String,
     order_url:      String,
     dispatch_url:   String,
+    marketing_url:  String,
     producer:       FutureProducer,
 }
 
@@ -85,6 +86,38 @@ impl ActionExecutor for HttpActionExecutor {
             )
             .await
             .map_err(|(e, _)| anyhow::anyhow!("Kafka publish error: {}", e))?;
+        Ok(())
+    }
+
+    async fn trigger_campaign(
+        &self,
+        rule_id:     Uuid,
+        rule_name:   &str,
+        campaign_id: Uuid,
+        ctx:         &crate::domain::entities::rule::RuleContext,
+    ) -> anyhow::Result<()> {
+        let Some(customer_id) = ctx.customer_id else {
+            anyhow::bail!("TriggerCampaign: no customer_id in rule context — cannot resolve recipient");
+        };
+        let res = self.http
+            .post(format!(
+                "{}/v1/internal/campaigns/{}/trigger-for-recipient",
+                self.marketing_url, campaign_id
+            ))
+            .json(&serde_json::json!({
+                "customer_id":             customer_id,
+                "tenant_id":               ctx.tenant_id,
+                "rule_id":                 rule_id,
+                "rule_name":               rule_name,
+                "shipment_id":             ctx.shipment_id,
+            }))
+            .send()
+            .await?;
+        if !res.status().is_success() {
+            let status = res.status();
+            let body   = res.text().await.unwrap_or_default();
+            anyhow::bail!("Marketing trigger-for-recipient returned {status}: {body}");
+        }
         Ok(())
     }
 }
@@ -145,6 +178,7 @@ pub async fn run() -> anyhow::Result<()> {
         engagement_url: std::env::var("ENGAGEMENT_URL").unwrap_or_else(|_| "http://engagement:8010".into()),
         order_url:      std::env::var("ORDER_INTAKE_URL").unwrap_or_else(|_| "http://order-intake:8003".into()),
         dispatch_url:   std::env::var("DISPATCH_URL").unwrap_or_else(|_| "http://dispatch:8004".into()),
+        marketing_url:  std::env::var("MARKETING_URL").unwrap_or_else(|_| "http://marketing:8012".into()),
         producer,
     });
 

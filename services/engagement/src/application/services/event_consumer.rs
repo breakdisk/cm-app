@@ -758,6 +758,14 @@ pub async fn handle_campaign_triggered(
         ("Hi {{customer_name}}, we have an update for you!".to_owned(), None)
     };
 
+    // Optional automation rule context — present when triggered by rules engine.
+    let triggered_by_rule_id: Option<uuid::Uuid> = data["triggered_by_rule_id"]
+        .as_str()
+        .and_then(|s| s.parse().ok());
+    let triggered_by_rule_name: Option<String> = data["triggered_by_rule_name"]
+        .as_str()
+        .map(str::to_owned);
+
     let Some(recipients) = data["recipients"].as_array() else {
         warn!(campaign_id = %campaign_id, "CAMPAIGN_TRIGGERED has no recipients array — nothing to send");
         return;
@@ -830,7 +838,13 @@ pub async fn handle_campaign_triggered(
         }
 
         // Persist a campaign_sends row before dispatching.
-        let send_id = match db.insert_campaign_send(campaign_id, customer_id, channel_str).await {
+        let send_id = match db.insert_campaign_send(
+            campaign_id,
+            customer_id,
+            channel_str,
+            triggered_by_rule_id,
+            triggered_by_rule_name.as_deref(),
+        ).await {
             Ok(id) => id,
             Err(e) => {
                 error!(campaign_id = %campaign_id, err = %e, "Failed to insert campaign_send row");

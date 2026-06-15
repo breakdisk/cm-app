@@ -529,25 +529,87 @@ impl NotificationDb {
     /// Returns the newly created row UUID, used to update status after dispatch.
     pub async fn insert_campaign_send(
         &self,
-        campaign_id: Uuid,
-        customer_id: Uuid,
-        channel:     &str,
+        campaign_id:            Uuid,
+        customer_id:            Uuid,
+        channel:                &str,
+        triggered_by_rule_id:   Option<Uuid>,
+        triggered_by_rule_name: Option<&str>,
     ) -> anyhow::Result<Uuid> {
         let id = Uuid::new_v4();
         sqlx::query(
             r#"
             INSERT INTO engagement.campaign_sends
-                (id, campaign_id, customer_id, channel, status, queued_at)
-            VALUES ($1, $2, $3, $4, 'queued', NOW())
+                (id, campaign_id, customer_id, channel, status, queued_at,
+                 triggered_by_rule_id, triggered_by_rule_name)
+            VALUES ($1, $2, $3, $4, 'queued', NOW(), $5, $6)
             "#
         )
         .bind(id)
         .bind(campaign_id)
         .bind(customer_id)
         .bind(channel)
+        .bind(triggered_by_rule_id)
+        .bind(triggered_by_rule_name)
         .execute(&self.pool)
         .await?;
         Ok(id)
+    }
+
+    /// Return send history for a single customer across all campaigns.
+    /// Used by the communication history tab on the merchant portal customer detail page.
+    pub async fn campaign_send_history_for_customer(
+        &self,
+        customer_id: Uuid,
+        tenant_id:   Uuid,
+        limit:       i64,
+        offset:      i64,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                cs.id,
+                cs.campaign_id,
+                COALESCE(ec.name, 'Campaign') AS campaign_name,
+                cs.channel,
+                cs.status,
+                cs.triggered_by_rule_id,
+                cs.triggered_by_rule_name,
+                cs.queued_at,
+                cs.sent_at,
+                cs.delivered_at,
+                cs.failed_at
+            FROM engagement.campaign_sends cs
+            LEFT JOIN engagement.campaigns ec
+                   ON ec.id = cs.campaign_id AND ec.tenant_id = $2
+            WHERE cs.customer_id = $1
+            ORDER BY cs.queued_at DESC
+            LIMIT  $3
+            OFFSET $4
+            "#,
+        )
+        .bind(customer_id)
+        .bind(tenant_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        use sqlx::Row;
+        Ok(rows.into_iter().map(|r| {
+            serde_json::json!({
+                "id":                      r.get::<Uuid, _>("id"),
+                "campaign_id":             r.get::<Uuid, _>("campaign_id"),
+                "campaign_name":           r.get::<String, _>("campaign_name"),
+                "channel":                 r.get::<String, _>("channel"),
+                "status":                  r.get::<String, _>("status"),
+                "triggered_by_rule_id":    r.get::<Option<Uuid>, _>("triggered_by_rule_id"),
+                "triggered_by_rule_name":  r.get::<Option<String>, _>("triggered_by_rule_name"),
+                "queued_at":               r.get::<chrono::DateTime<chrono::Utc>, _>("queued_at"),
+                "sent_at":                 r.get::<Option<chrono::DateTime<chrono::Utc>>, _>("sent_at"),
+                "delivered_at":            r.get::<Option<chrono::DateTime<chrono::Utc>>, _>("delivered_at"),
+                "failed_at":               r.get::<Option<chrono::DateTime<chrono::Utc>>, _>("failed_at"),
+            })
+        }).collect())
     }
 
     /// Update the delivery status of a campaign_sends row after dispatch.

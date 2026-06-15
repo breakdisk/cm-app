@@ -200,6 +200,23 @@ impl CampaignService {
         self.repo.weekly_stats(tenant_id).await.map_err(AppError::internal)
     }
 
+    /// Publish a pre-built CAMPAIGN_TRIGGERED payload to Kafka.
+    ///
+    /// Called by the internal `trigger_for_recipient` endpoint when the
+    /// business-logic rules engine fires a TriggerCampaign action.
+    /// The payload is already fully assembled by the HTTP handler (campaign
+    /// metadata + single resolved recipient + rule attribution fields).
+    pub async fn publish_campaign_triggered(&self, payload: &serde_json::Value) -> anyhow::Result<()> {
+        let key = payload["campaign_id"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned();
+        let payload_bytes = serde_json::to_vec(payload)?;
+        self.publisher
+            .publish(topics::CAMPAIGN_TRIGGERED, &key, &payload_bytes)
+            .await
+    }
+
     /// Activate all scheduled campaigns whose `scheduled_at` has elapsed.
     /// Called every 60 s by the background poller in bootstrap.
     pub async fn activate_due_campaigns(&self) -> anyhow::Result<usize> {
