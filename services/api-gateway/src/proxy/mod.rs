@@ -76,14 +76,14 @@ impl ProxyClient {
         } else if path.starts_with("/v1/analytics") {
             Some(&self.services.analytics_url)
         // Marketing Automation
-        } else if path.starts_with("/v1/campaigns") || path.starts_with("/v1/segments") {
+        } else if path.starts_with("/v1/campaigns") {
             Some(&self.services.marketing_url)
         // Customer communication history — engagement service owns /sends
         // Must be checked before the generic /v1/customers → CDP rule.
         } else if path.starts_with("/v1/customers/") && path.ends_with("/sends") {
             Some(&self.services.engagement_url)
-        // Customer Data Platform
-        } else if path.starts_with("/v1/customers") || path.starts_with("/v1/profiles") {
+        // Customer Data Platform — customers + segment CRUD + segment membership
+        } else if path.starts_with("/v1/customers") || path.starts_with("/v1/segments") || path.starts_with("/v1/profiles") {
             Some(&self.services.cdp_url)
         // Engagement & Notifications (templates are managed by the engagement service)
         } else if path.starts_with("/v1/notifications") || path.starts_with("/v1/engagement") || path.starts_with("/v1/templates") {

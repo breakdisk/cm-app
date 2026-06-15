@@ -74,6 +74,10 @@ pub mod permissions {
     pub const CUSTOMERS_VIEW:    &str = "customers:read";
     pub const CUSTOMERS_MANAGE:  &str = "customers:manage";
 
+    // ── Segments ─────────────────────────────────────────────
+    pub const SEGMENTS_VIEW:     &str = "segments:read";
+    pub const SEGMENTS_MANAGE:   &str = "segments:manage";
+
     // ── Compliance ───────────────────────────────────────────
     pub const COMPLIANCE_REVIEW: &str = "compliance:review";
     pub const COMPLIANCE_ADMIN:  &str = "compliance:admin";
@@ -103,6 +107,7 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::API_KEYS_MANAGE,
             permissions::CARRIERS_MANAGE, permissions::CARRIERS_READ,
             permissions::CUSTOMERS_VIEW, permissions::CUSTOMERS_MANAGE,
+            permissions::SEGMENTS_VIEW, permissions::SEGMENTS_MANAGE,
             permissions::COMPLIANCE_REVIEW, permissions::COMPLIANCE_ADMIN,
             permissions::WEBHOOKS_READ, permissions::WEBHOOKS_MANAGE,
         ],
@@ -116,6 +121,7 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::SHIPMENT_CANCEL, permissions::SHIPMENT_BULK,
             permissions::ANALYTICS_VIEW,
             permissions::CUSTOMERS_VIEW,
+            permissions::SEGMENTS_VIEW,
         ],
         "driver" => vec![
             permissions::SHIPMENT_READ,
@@ -158,6 +164,7 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::API_KEYS_MANAGE,
             permissions::CARRIERS_MANAGE, permissions::CARRIERS_READ,
             permissions::CUSTOMERS_VIEW, permissions::CUSTOMERS_MANAGE,
+            permissions::SEGMENTS_VIEW, permissions::SEGMENTS_MANAGE,
             permissions::COMPLIANCE_REVIEW, permissions::COMPLIANCE_ADMIN,
             permissions::WEBHOOKS_READ, permissions::WEBHOOKS_MANAGE,
         ],

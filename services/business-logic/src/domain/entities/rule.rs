@@ -97,6 +97,9 @@ pub struct RuleContext {
     pub current_hour: u8,
     pub current_day: String,
     pub metadata: serde_json::Value,
+    /// Pre-resolved segment IDs for the customer — populated asynchronously before
+    /// `conditions_met()` is called so the synchronous `evaluate()` can check membership.
+    pub customer_segment_ids: Vec<Uuid>,
 }
 
 impl RuleCondition {
@@ -119,6 +122,9 @@ impl RuleCondition {
             }
             RuleCondition::AttemptCount { lte } => {
                 ctx.attempt_count.map_or(false, |a| a <= *lte)
+            }
+            RuleCondition::CustomerSegment { segment_id } => {
+                ctx.customer_segment_ids.contains(segment_id)
             }
             RuleCondition::Custom { expression } => evaluate_custom_expression(expression, ctx),
             _ => true,

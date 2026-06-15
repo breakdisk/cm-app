@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use logisticos_types::TenantId;
 
-use crate::domain::entities::{CustomerProfile, CustomerId};
+use crate::domain::entities::{CustomerProfile, CustomerId, Segment, SegmentFilter, SegmentMember};
 
 #[derive(Debug, Clone)]
 pub struct ProfileFilter {
@@ -69,4 +69,51 @@ pub trait CustomerProfileRepository: Send + Sync {
 
     /// Count profiles for a tenant.
     async fn count(&self, tenant_id: &TenantId) -> anyhow::Result<i64>;
+}
+
+// ---------------------------------------------------------------------------
+// SegmentRepository
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+pub trait SegmentRepository: Send + Sync {
+    async fn create(&self, segment: &Segment) -> anyhow::Result<()>;
+    async fn find_by_id(&self, tenant_id: &TenantId, id: Uuid) -> anyhow::Result<Option<Segment>>;
+    async fn list(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<Segment>>;
+    async fn update(&self, segment: &Segment) -> anyhow::Result<()>;
+    async fn delete(&self, tenant_id: &TenantId, id: Uuid) -> anyhow::Result<()>;
+
+    /// Live query: count + sample members matching filter_criteria at request time.
+    async fn query_members(
+        &self,
+        tenant_id: &TenantId,
+        filter: &SegmentFilter,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<SegmentMember>>;
+
+    /// Live count matching filter_criteria.
+    async fn count_members(
+        &self,
+        tenant_id: &TenantId,
+        filter: &SegmentFilter,
+    ) -> anyhow::Result<i64>;
+
+    /// Update cached customer_count + last_computed on the segment row.
+    async fn refresh_count(&self, id: Uuid, count: i64) -> anyhow::Result<()>;
+
+    /// Check whether a specific customer is in a segment (for rule evaluation).
+    async fn is_member(
+        &self,
+        tenant_id: &TenantId,
+        segment_id: Uuid,
+        customer_id: Uuid,
+    ) -> anyhow::Result<bool>;
+
+    /// Return all segment IDs the customer belongs to (for pre-populating RuleContext).
+    async fn segment_ids_for_customer(
+        &self,
+        tenant_id: &TenantId,
+        customer_id: Uuid,
+    ) -> anyhow::Result<Vec<Uuid>>;
 }

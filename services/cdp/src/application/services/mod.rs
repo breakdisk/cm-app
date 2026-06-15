@@ -7,8 +7,8 @@ use logisticos_errors::{AppError, AppResult};
 use logisticos_types::TenantId;
 
 use crate::domain::{
-    entities::{BehavioralEvent, CustomerProfile, CustomerId, EventType, ProfileType},
-    repositories::{CustomerProfileRepository, ProfileFilter},
+    entities::{BehavioralEvent, CustomerProfile, CustomerId, EventType, ProfileType, Segment, SegmentFilter, SegmentMember},
+    repositories::{CustomerProfileRepository, ProfileFilter, SegmentRepository},
 };
 
 // ---------------------------------------------------------------------------
@@ -188,5 +188,153 @@ impl ProfileService {
             .await
             .map_err(AppError::internal)?;
         Ok(profiles.iter().map(ProfileSummary::from).collect())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Commands for segments
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct CreateSegmentCommand {
+    pub name:        String,
+    pub description: Option<String>,
+    pub filter:      SegmentFilter,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateSegmentCommand {
+    pub name:        Option<String>,
+    pub description: Option<String>,
+    pub filter:      Option<SegmentFilter>,
+}
+
+// ---------------------------------------------------------------------------
+// SegmentPreview — returned by preview endpoint
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct SegmentPreview {
+    pub estimated_count: i64,
+    pub sample_members:  Vec<SegmentMember>,
+}
+
+// ---------------------------------------------------------------------------
+// SegmentService
+// ---------------------------------------------------------------------------
+
+pub struct SegmentService {
+    repo: Arc<dyn SegmentRepository>,
+}
+
+impl SegmentService {
+    pub fn new(repo: Arc<dyn SegmentRepository>) -> Self { Self { repo } }
+
+    pub async fn create(
+        &self,
+        tenant_id: &TenantId,
+        cmd: CreateSegmentCommand,
+    ) -> AppResult<Segment> {
+        let segment = Segment::new(
+            tenant_id.clone(),
+            cmd.name,
+            cmd.description.unwrap_or_default(),
+            cmd.filter,
+        );
+        self.repo.create(&segment).await.map_err(AppError::internal)?;
+        Ok(segment)
+    }
+
+    pub async fn get(&self, tenant_id: &TenantId, id: Uuid) -> AppResult<Segment> {
+        self.repo
+            .find_by_id(tenant_id, id)
+            .await
+            .map_err(AppError::internal)?
+            .ok_or_else(|| AppError::NotFound { resource: "Segment", id: id.to_string() })
+    }
+
+    pub async fn list(&self, tenant_id: &TenantId) -> AppResult<Vec<Segment>> {
+        self.repo.list(tenant_id).await.map_err(AppError::internal)
+    }
+
+    pub async fn update(
+        &self,
+        tenant_id: &TenantId,
+        id: Uuid,
+        cmd: UpdateSegmentCommand,
+    ) -> AppResult<Segment> {
+        let mut segment = self.get(tenant_id, id).await?;
+        if let Some(name) = cmd.name { segment.name = name; }
+        if let Some(desc) = cmd.description { segment.description = desc; }
+        if let Some(filter) = cmd.filter { segment.filter = filter; }
+        segment.updated_at = Utc::now();
+        self.repo.update(&segment).await.map_err(AppError::internal)?;
+        Ok(segment)
+    }
+
+    pub async fn delete(&self, tenant_id: &TenantId, id: Uuid) -> AppResult<()> {
+        self.repo.delete(tenant_id, id).await.map_err(AppError::internal)
+    }
+
+    /// Real-time preview: count + sample members (max 10).
+    pub async fn preview(&self, tenant_id: &TenantId, id: Uuid) -> AppResult<SegmentPreview> {
+        let segment = self.get(tenant_id, id).await?;
+        self.preview_filter(tenant_id, &segment.filter).await
+    }
+
+    /// Preview an ad-hoc filter (used in the builder before saving).
+    pub async fn preview_filter(
+        &self,
+        tenant_id: &TenantId,
+        filter: &SegmentFilter,
+    ) -> AppResult<SegmentPreview> {
+        let count = self.repo.count_members(tenant_id, filter).await.map_err(AppError::internal)?;
+        let sample = self.repo.query_members(tenant_id, filter, 10, 0).await.map_err(AppError::internal)?;
+        Ok(SegmentPreview { estimated_count: count, sample_members: sample })
+    }
+
+    /// Paginated member listing.
+    pub async fn members(
+        &self,
+        tenant_id: &TenantId,
+        id: Uuid,
+        limit: i64,
+        offset: i64,
+    ) -> AppResult<Vec<SegmentMember>> {
+        let segment = self.get(tenant_id, id).await?;
+        self.repo
+            .query_members(tenant_id, &segment.filter, limit, offset)
+            .await
+            .map_err(AppError::internal)
+    }
+
+    /// Check which segments a customer belongs to (for automation rule context).
+    pub async fn membership(
+        &self,
+        tenant_id: &TenantId,
+        customer_id: Uuid,
+    ) -> AppResult<Vec<Uuid>> {
+        self.repo
+            .segment_ids_for_customer(tenant_id, customer_id)
+            .await
+            .map_err(AppError::internal)
+    }
+
+    /// Seed default segments for a new tenant.
+    pub async fn seed_defaults(&self, tenant_id: &TenantId) -> AppResult<Vec<Segment>> {
+        let defaults: Vec<(&str, &str, SegmentFilter)> = vec![
+            ("High CLV", "Customers with CLV score ≥ 60", SegmentFilter { min_clv: Some(60.0), ..Default::default() }),
+            ("VIP",      "High CLV (≥80) and highly engaged (engagement ≥ 70)", SegmentFilter { min_clv: Some(80.0), min_engagement: Some(70.0), ..Default::default() }),
+            ("At Risk",  "Customers with high churn tier", SegmentFilter { churn_tier: Some("high".to_owned()), ..Default::default() }),
+            ("Inactive 30d", "No shipment in the last 30 days", SegmentFilter { inactive_days: Some(30), ..Default::default() }),
+        ];
+
+        let mut created = Vec::new();
+        for (name, desc, filter) in defaults {
+            let segment = Segment::new(tenant_id.clone(), name.to_owned(), desc.to_owned(), filter);
+            self.repo.create(&segment).await.map_err(AppError::internal)?;
+            created.push(segment);
+        }
+        Ok(created)
     }
 }

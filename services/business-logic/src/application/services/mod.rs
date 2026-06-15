@@ -104,6 +104,8 @@ fn topic_to_event_type(topic: &str) -> String {
 }
 
 /// Build a RuleContext from a Kafka message payload.
+/// `customer_segment_ids` is left empty here; callers should call
+/// `enrich_segments()` asynchronously before invoking `conditions_met()`.
 pub fn build_context(tenant_id: Uuid, topic: &str, payload: &Value) -> RuleContext {
     RuleContext {
         tenant_id,
@@ -119,6 +121,47 @@ pub fn build_context(tenant_id: Uuid, topic: &str, payload: &Value) -> RuleConte
         current_hour: chrono::Local::now().hour() as u8,
         current_day: chrono::Local::now().format("%A").to_string(),
         metadata: payload.clone(),
+        customer_segment_ids: Vec::new(),
+    }
+}
+
+/// Async segment resolver — implemented by bootstrap with an HTTP call to CDP.
+#[async_trait::async_trait]
+pub trait SegmentChecker: Send + Sync {
+    /// Return segment IDs the customer belongs to within the tenant.
+    async fn segment_ids_for_customer(
+        &self,
+        tenant_id: Uuid,
+        customer_id: Uuid,
+    ) -> anyhow::Result<Vec<Uuid>>;
+}
+
+/// Populate `ctx.customer_segment_ids` if any rule in the list uses `CustomerSegment`.
+/// Call once per event before `conditions_met()`.
+pub async fn enrich_segments(
+    ctx: &mut RuleContext,
+    rules: &[AutomationRule],
+    checker: &dyn SegmentChecker,
+) {
+    use crate::domain::entities::rule::RuleCondition;
+
+    let needs_segments = rules.iter().any(|r| {
+        r.conditions.iter().any(|c| matches!(c, RuleCondition::CustomerSegment { .. }))
+    });
+
+    if !needs_segments { return; }
+
+    let Some(customer_id) = ctx.customer_id else { return; };
+
+    match checker.segment_ids_for_customer(ctx.tenant_id, customer_id).await {
+        Ok(ids) => { ctx.customer_segment_ids = ids; }
+        Err(e)  => {
+            tracing::warn!(
+                customer_id = %customer_id,
+                err = %e,
+                "Failed to resolve segment IDs — CustomerSegment conditions will evaluate to false"
+            );
+        }
     }
 }
 

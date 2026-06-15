@@ -1,3 +1,6 @@
+pub mod segment;
+pub use segment::{Segment, SegmentFilter, SegmentMember};
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

@@ -6,13 +6,14 @@ pub mod domain;
 pub mod infrastructure;
 
 use std::sync::Arc;
-use application::services::ProfileService;
+use application::services::{ProfileService, SegmentService};
 use logisticos_auth::jwt::JwtService;
 use logisticos_events::producer::KafkaProducer;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub profile_svc: Arc<ProfileService>,
-    pub jwt:         Arc<JwtService>,
-    pub kafka:       Arc<KafkaProducer>,
+    pub profile_svc:  Arc<ProfileService>,
+    pub segment_svc:  Arc<SegmentService>,
+    pub jwt:          Arc<JwtService>,
+    pub kafka:        Arc<KafkaProducer>,
 }

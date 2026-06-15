@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::{
     api::http::{router, AppState},
     application::services::{
-        build_context, execute_actions, ActionExecutor, RuleRepository,
+        build_context, enrich_segments, execute_actions, ActionExecutor, RuleRepository, SegmentChecker,
     },
     config::Config,
     domain::entities::rule::failed_delivery_rule,
@@ -30,6 +30,7 @@ struct HttpActionExecutor {
     order_url:      String,
     dispatch_url:   String,
     marketing_url:  String,
+    cdp_url:        String,
     producer:       FutureProducer,
 }
 
@@ -96,6 +97,7 @@ impl ActionExecutor for HttpActionExecutor {
         campaign_id: Uuid,
         ctx:         &crate::domain::entities::rule::RuleContext,
     ) -> anyhow::Result<()> {
+        // Segment IDs were already resolved before conditions_met(); no action here.
         let Some(customer_id) = ctx.customer_id else {
             anyhow::bail!("TriggerCampaign: no customer_id in rule context — cannot resolve recipient");
         };
@@ -119,6 +121,34 @@ impl ActionExecutor for HttpActionExecutor {
             anyhow::bail!("Marketing trigger-for-recipient returned {status}: {body}");
         }
         Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl SegmentChecker for HttpActionExecutor {
+    async fn segment_ids_for_customer(
+        &self,
+        tenant_id: Uuid,
+        customer_id: Uuid,
+    ) -> anyhow::Result<Vec<Uuid>> {
+        // Uses the internal service token stored in env rather than a user JWT.
+        let token = std::env::var("SERVICES__CDP_TOKEN").unwrap_or_default();
+        let resp = self.http
+            .get(format!("{}/v1/segments/membership", self.cdp_url))
+            .bearer_auth(&token)
+            .header("X-Tenant-Id", tenant_id.to_string())
+            .query(&[("customer_id", customer_id.to_string())])
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            anyhow::bail!("CDP membership endpoint returned {}", resp.status());
+        }
+
+        #[derive(serde::Deserialize)]
+        struct Resp { segment_ids: Vec<Uuid> }
+        let body: Resp = resp.json().await?;
+        Ok(body.segment_ids)
     }
 }
 
@@ -179,6 +209,7 @@ pub async fn run() -> anyhow::Result<()> {
         order_url:      std::env::var("ORDER_INTAKE_URL").unwrap_or_else(|_| "http://order-intake:8003".into()),
         dispatch_url:   std::env::var("DISPATCH_URL").unwrap_or_else(|_| "http://dispatch:8004".into()),
         marketing_url:  std::env::var("MARKETING_URL").unwrap_or_else(|_| "http://marketing:8012".into()),
+        cdp_url:        std::env::var("CDP_URL").unwrap_or_else(|_| "http://cdp:8005".into()),
         producer,
     });
 
@@ -215,11 +246,12 @@ pub async fn run() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(addr = %addr, "business-logic rules engine + API listening");
 
+    let seg_checker: Arc<dyn SegmentChecker> = executor.clone();
     tokio::select! {
         result = axum::serve(listener, app) => {
             result?;
         }
-        _ = run_consumer(consumer, rule_repo, executor, pg_repo) => {}
+        _ = run_consumer(consumer, rule_repo, executor, pg_repo, seg_checker) => {}
     }
 
     Ok(())
@@ -230,6 +262,7 @@ async fn run_consumer(
     rules: Arc<RuleRepository>,
     executor: Arc<dyn ActionExecutor>,
     pg_repo: Arc<PgRuleRepository>,
+    seg_checker: Arc<dyn SegmentChecker>,
 ) {
     loop {
         match consumer.recv().await {
@@ -240,9 +273,10 @@ async fn run_consumer(
                 if let Some(payload) = msg.payload() {
                     if let Ok(json) = serde_json::from_slice::<Value>(payload) {
                         let matching_rules = rules.rules_for_topic(tenant_id, &topic).await;
-                        let ctx = build_context(tenant_id, &topic, &json);
+                        let mut ctx = build_context(tenant_id, &topic, &json);
+                        enrich_segments(&mut ctx, &matching_rules, seg_checker.as_ref()).await;
 
-                        for rule in matching_rules {
+                        for rule in &matching_rules {
                             if rule.conditions_met(&ctx) {
                                 tracing::info!(rule_id = %rule.id, rule_name = %rule.name, topic = %topic, "Rule fired");
 

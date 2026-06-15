@@ -14,13 +14,17 @@ use logisticos_auth::rbac::permissions;
 use logisticos_errors::AppError;
 use logisticos_events::{envelope::Event, topics};
 
-use crate::application::services::{ProfileService, UpsertProfileCommand};
-use crate::domain::entities::ProfileType;
+use crate::application::services::{
+    CreateSegmentCommand, ProfileService, SegmentService, UpdateSegmentCommand,
+    UpsertProfileCommand,
+};
+use crate::domain::entities::{ProfileType, SegmentFilter};
 use crate::domain::repositories::ProfileFilter;
 use crate::AppState;
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        // ── Customer / profile routes ─────────────────────────────────────
         .route("/v1/customers",                                                  get(list_profiles))
         .route("/v1/customers/top-clv",                                          get(top_by_clv))
         .route("/v1/customers/:external_id",                                     get(get_profile).put(upsert_profile))
@@ -29,6 +33,14 @@ pub fn router() -> Router<AppState> {
         .route("/v1/customers/:external_id/preferences",                         get(get_preferences))
         .route("/v1/customers/:external_id/support-tickets",                     post(open_support_ticket))
         .route("/v1/customers/:external_id/support-tickets/:ticket_id/close",    post(close_support_ticket))
+        // ── Segment routes ────────────────────────────────────────────────
+        .route("/v1/segments",                   get(list_segments).post(create_segment))
+        .route("/v1/segments/seed-defaults",     post(seed_default_segments))
+        .route("/v1/segments/preview",           post(preview_segment_filter))
+        .route("/v1/segments/membership",        get(get_membership))
+        .route("/v1/segments/:id",               get(get_segment).put(update_segment).delete(delete_segment))
+        .route("/v1/segments/:id/preview",       get(preview_segment))
+        .route("/v1/segments/:id/members",       get(list_segment_members))
 }
 
 // ---------------------------------------------------------------------------
@@ -382,4 +394,179 @@ async fn close_support_ticket(
             "status":      "closed",
         })),
     ))
+}
+
+// ===========================================================================
+// Segment handlers
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// GET /v1/segments
+// ---------------------------------------------------------------------------
+
+async fn list_segments(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+) -> impl IntoResponse {
+    use logisticos_types::TenantId;
+    claims.require_permission(permissions::SEGMENTS_VIEW)?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let segments = state.segment_svc.list(&tenant_id).await?;
+    let count = segments.len();
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "segments": segments, "count": count }))))
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/segments
+// ---------------------------------------------------------------------------
+
+async fn create_segment(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Json(cmd): Json<CreateSegmentCommand>,
+) -> impl IntoResponse {
+    use logisticos_types::TenantId;
+    claims.require_permission(permissions::SEGMENTS_MANAGE)?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let segment = state.segment_svc.create(&tenant_id, cmd).await?;
+    Ok::<_, AppError>((StatusCode::CREATED, Json(segment)))
+}
+
+// ---------------------------------------------------------------------------
+// GET /v1/segments/:id
+// ---------------------------------------------------------------------------
+
+async fn get_segment(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    use logisticos_types::TenantId;
+    claims.require_permission(permissions::SEGMENTS_VIEW)?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let segment = state.segment_svc.get(&tenant_id, id).await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(segment)))
+}
+
+// ---------------------------------------------------------------------------
+// PUT /v1/segments/:id
+// ---------------------------------------------------------------------------
+
+async fn update_segment(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+    Json(cmd): Json<UpdateSegmentCommand>,
+) -> impl IntoResponse {
+    use logisticos_types::TenantId;
+    claims.require_permission(permissions::SEGMENTS_MANAGE)?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let segment = state.segment_svc.update(&tenant_id, id, cmd).await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(segment)))
+}
+
+// ---------------------------------------------------------------------------
+// DELETE /v1/segments/:id
+// ---------------------------------------------------------------------------
+
+async fn delete_segment(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    use logisticos_types::TenantId;
+    claims.require_permission(permissions::SEGMENTS_MANAGE)?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    state.segment_svc.delete(&tenant_id, id).await?;
+    Ok::<_, AppError>(StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------------------
+// GET /v1/segments/:id/preview — live member count + sample
+// ---------------------------------------------------------------------------
+
+async fn preview_segment(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    use logisticos_types::TenantId;
+    claims.require_permission(permissions::SEGMENTS_VIEW)?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let preview = state.segment_svc.preview(&tenant_id, id).await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(preview)))
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/segments/preview — preview an ad-hoc filter (builder use-case)
+// ---------------------------------------------------------------------------
+
+async fn preview_segment_filter(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Json(filter): Json<SegmentFilter>,
+) -> impl IntoResponse {
+    use logisticos_types::TenantId;
+    claims.require_permission(permissions::SEGMENTS_VIEW)?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let preview = state.segment_svc.preview_filter(&tenant_id, &filter).await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(preview)))
+}
+
+// ---------------------------------------------------------------------------
+// GET /v1/segments/:id/members
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct MembersQuery { limit: Option<i64>, offset: Option<i64> }
+
+async fn list_segment_members(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+    Query(q): Query<MembersQuery>,
+) -> impl IntoResponse {
+    use logisticos_types::TenantId;
+    claims.require_permission(permissions::SEGMENTS_VIEW)?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let limit  = q.limit.unwrap_or(50).clamp(1, 200);
+    let offset = q.offset.unwrap_or(0).max(0);
+    let members = state.segment_svc.members(&tenant_id, id, limit, offset).await?;
+    let count = members.len();
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "members": members, "count": count }))))
+}
+
+// ---------------------------------------------------------------------------
+// GET /v1/segments/membership?customer_id=UUID — for rule engine
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct MembershipQuery { customer_id: Uuid }
+
+async fn get_membership(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Query(q): Query<MembershipQuery>,
+) -> impl IntoResponse {
+    use logisticos_types::TenantId;
+    claims.require_permission(permissions::SEGMENTS_VIEW)?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let segment_ids = state.segment_svc.membership(&tenant_id, q.customer_id).await?;
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({ "customer_id": q.customer_id, "segment_ids": segment_ids }))))
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/segments/seed-defaults — idempotent default segment seeder
+// ---------------------------------------------------------------------------
+
+async fn seed_default_segments(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+) -> impl IntoResponse {
+    use logisticos_types::TenantId;
+    claims.require_permission(permissions::SEGMENTS_MANAGE)?;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let created = state.segment_svc.seed_defaults(&tenant_id).await?;
+    let count = created.len();
+    Ok::<_, AppError>((StatusCode::CREATED, Json(serde_json::json!({ "created": created, "count": count }))))
 }

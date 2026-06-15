@@ -5,8 +5,8 @@ use uuid::Uuid;
 use logisticos_types::TenantId;
 
 use crate::domain::{
-    entities::{CustomerProfile, CustomerId, ProfileType},
-    repositories::{CustomerProfileRepository, ProfileFilter},
+    entities::{CustomerProfile, CustomerId, ProfileType, Segment, SegmentFilter, SegmentMember},
+    repositories::{CustomerProfileRepository, ProfileFilter, SegmentRepository},
 };
 
 // ---------------------------------------------------------------------------
@@ -336,5 +336,414 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
         .fetch_one(&self.pool)
         .await?;
         Ok(row.0)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PgSegmentRepository
+// ---------------------------------------------------------------------------
+
+pub struct PgSegmentRepository {
+    pool: PgPool,
+}
+
+impl PgSegmentRepository {
+    pub fn new(pool: PgPool) -> Self { Self { pool } }
+}
+
+#[derive(sqlx::FromRow)]
+struct SegmentRow {
+    id:              Uuid,
+    tenant_id:       Uuid,
+    name:            String,
+    description:     String,
+    filter_criteria: serde_json::Value,
+    customer_count:  i32,
+    is_dynamic:      bool,
+    last_computed:   Option<chrono::DateTime<chrono::Utc>>,
+    created_at:      chrono::DateTime<chrono::Utc>,
+    updated_at:      chrono::DateTime<chrono::Utc>,
+}
+
+impl TryFrom<SegmentRow> for Segment {
+    type Error = anyhow::Error;
+
+    fn try_from(r: SegmentRow) -> Result<Self, Self::Error> {
+        let filter: SegmentFilter = serde_json::from_value(r.filter_criteria)?;
+        Ok(Segment {
+            id:             r.id,
+            tenant_id:      TenantId::from_uuid(r.tenant_id),
+            name:           r.name,
+            description:    r.description,
+            filter,
+            customer_count: r.customer_count,
+            is_dynamic:     r.is_dynamic,
+            last_computed:  r.last_computed,
+            created_at:     r.created_at,
+            updated_at:     r.updated_at,
+        })
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct MemberRow {
+    external_customer_id: Uuid,
+    name:                 Option<String>,
+    email:                Option<String>,
+    phone:                Option<String>,
+    clv_score:            f32,
+    engagement_score:     f32,
+    last_shipment_at:     Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl From<MemberRow> for SegmentMember {
+    fn from(r: MemberRow) -> Self {
+        Self {
+            external_customer_id: r.external_customer_id,
+            name:                 r.name,
+            email:                r.email,
+            phone:                r.phone,
+            clv_score:            r.clv_score,
+            engagement_score:     r.engagement_score,
+            last_shipment_at:     r.last_shipment_at,
+        }
+    }
+}
+
+
+#[async_trait]
+impl SegmentRepository for PgSegmentRepository {
+    async fn create(&self, segment: &Segment) -> anyhow::Result<()> {
+        let filter_json = serde_json::to_value(&segment.filter)?;
+        sqlx::query(
+            r#"
+            INSERT INTO cdp.segments
+                (id, tenant_id, name, description, filter_criteria,
+                 customer_count, is_dynamic, last_computed, created_at, updated_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+            "#
+        )
+        .bind(segment.id)
+        .bind(segment.tenant_id.inner())
+        .bind(&segment.name)
+        .bind(&segment.description)
+        .bind(filter_json)
+        .bind(segment.customer_count)
+        .bind(segment.is_dynamic)
+        .bind(segment.last_computed)
+        .bind(segment.created_at)
+        .bind(segment.updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn find_by_id(&self, tenant_id: &TenantId, id: Uuid) -> anyhow::Result<Option<Segment>> {
+        let row = sqlx::query_as::<_, SegmentRow>(
+            r#"
+            SELECT id, tenant_id, name, description, filter_criteria,
+                   customer_count, is_dynamic, last_computed, created_at, updated_at
+            FROM cdp.segments
+            WHERE tenant_id = $1 AND id = $2
+            "#
+        )
+        .bind(tenant_id.inner())
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(Segment::try_from).transpose()
+    }
+
+    async fn list(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<Segment>> {
+        let rows = sqlx::query_as::<_, SegmentRow>(
+            r#"
+            SELECT id, tenant_id, name, description, filter_criteria,
+                   customer_count, is_dynamic, last_computed, created_at, updated_at
+            FROM cdp.segments
+            WHERE tenant_id = $1
+            ORDER BY name ASC
+            "#
+        )
+        .bind(tenant_id.inner())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(Segment::try_from).collect()
+    }
+
+    async fn update(&self, segment: &Segment) -> anyhow::Result<()> {
+        let filter_json = serde_json::to_value(&segment.filter)?;
+        sqlx::query(
+            r#"
+            UPDATE cdp.segments
+            SET name = $1, description = $2, filter_criteria = $3, updated_at = NOW()
+            WHERE tenant_id = $4 AND id = $5
+            "#
+        )
+        .bind(&segment.name)
+        .bind(&segment.description)
+        .bind(filter_json)
+        .bind(segment.tenant_id.inner())
+        .bind(segment.id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn delete(&self, tenant_id: &TenantId, id: Uuid) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM cdp.segments WHERE tenant_id = $1 AND id = $2")
+            .bind(tenant_id.inner())
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn query_members(
+        &self,
+        tenant_id: &TenantId,
+        filter: &SegmentFilter,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<SegmentMember>> {
+        // Churn-tier / max-churn-score require a lateral join; build conditionally.
+        let need_churn = filter.churn_tier.is_some() || filter.max_churn_score.is_some();
+
+        let churn_join = if need_churn {
+            r#"
+            LEFT JOIN LATERAL (
+                SELECT score, tier
+                FROM cdp.churn_scores cs
+                WHERE cs.customer_id = cp.external_customer_id
+                  AND cs.tenant_id   = cp.tenant_id
+                ORDER BY cs.computed_at DESC LIMIT 1
+            ) cs ON true
+            "#
+        } else {
+            ""
+        };
+
+        let mut churn_clauses = Vec::new();
+        if filter.churn_tier.is_some() { churn_clauses.push("cs.tier = $3"); }
+        if filter.max_churn_score.is_some() { churn_clauses.push("cs.score <= $4"); }
+        let churn_filter = if churn_clauses.is_empty() { String::new() }
+                           else { format!("AND {}", churn_clauses.join(" AND ")) };
+
+        let sql = format!(
+            r#"
+            SELECT
+                cp.external_customer_id, cp.name, cp.email, cp.phone,
+                cp.clv_score, cp.engagement_score, cp.last_shipment_at
+            FROM cdp.customer_profiles cp
+            {churn_join}
+            WHERE cp.tenant_id = $1
+              AND ($2::float4 IS NULL OR cp.clv_score >= $2)
+              {churn_filter}
+              AND ($5::float4 IS NULL OR cp.clv_score  <= $5)
+              AND ($6::float4 IS NULL OR cp.engagement_score >= $6)
+              AND ($7::int    IS NULL OR (cp.last_shipment_at IS NULL OR cp.last_shipment_at <= NOW() - ($7 * INTERVAL '1 day')))
+              AND ($8::text   IS NULL OR cp.profile_type = $8)
+              AND ($9::int    IS NULL OR cp.successful_deliveries >= $9)
+            ORDER BY cp.clv_score DESC
+            LIMIT $10 OFFSET $11
+            "#
+        );
+
+        let rows = sqlx::query_as::<_, MemberRow>(&sql)
+            .bind(tenant_id.inner())
+            .bind(filter.min_clv)
+            .bind(filter.churn_tier.as_deref())
+            .bind(filter.max_churn_score)
+            .bind(filter.max_clv)
+            .bind(filter.min_engagement)
+            .bind(filter.inactive_days)
+            .bind(filter.profile_type.as_deref())
+            .bind(filter.min_shipments)
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok(rows.into_iter().map(SegmentMember::from).collect())
+    }
+
+    async fn count_members(
+        &self,
+        tenant_id: &TenantId,
+        filter: &SegmentFilter,
+    ) -> anyhow::Result<i64> {
+        let need_churn = filter.churn_tier.is_some() || filter.max_churn_score.is_some();
+
+        let churn_join = if need_churn {
+            r#"
+            LEFT JOIN LATERAL (
+                SELECT score, tier
+                FROM cdp.churn_scores cs
+                WHERE cs.customer_id = cp.external_customer_id
+                  AND cs.tenant_id   = cp.tenant_id
+                ORDER BY cs.computed_at DESC LIMIT 1
+            ) cs ON true
+            "#
+        } else {
+            ""
+        };
+
+        let mut churn_clauses = Vec::new();
+        if filter.churn_tier.is_some()      { churn_clauses.push("cs.tier = $3"); }
+        if filter.max_churn_score.is_some() { churn_clauses.push("cs.score <= $4"); }
+        let churn_filter = if churn_clauses.is_empty() { String::new() }
+                           else { format!("AND {}", churn_clauses.join(" AND ")) };
+
+        let sql = format!(
+            r#"
+            SELECT COUNT(*)
+            FROM cdp.customer_profiles cp
+            {churn_join}
+            WHERE cp.tenant_id = $1
+              AND ($2::float4 IS NULL OR cp.clv_score >= $2)
+              {churn_filter}
+              AND ($5::float4 IS NULL OR cp.clv_score  <= $5)
+              AND ($6::float4 IS NULL OR cp.engagement_score >= $6)
+              AND ($7::int    IS NULL OR (cp.last_shipment_at IS NULL OR cp.last_shipment_at <= NOW() - ($7 * INTERVAL '1 day')))
+              AND ($8::text   IS NULL OR cp.profile_type = $8)
+              AND ($9::int    IS NULL OR cp.successful_deliveries >= $9)
+            "#
+        );
+
+        let row: (i64,) = sqlx::query_as(&sql)
+            .bind(tenant_id.inner())
+            .bind(filter.min_clv)
+            .bind(filter.churn_tier.as_deref())
+            .bind(filter.max_churn_score)
+            .bind(filter.max_clv)
+            .bind(filter.min_engagement)
+            .bind(filter.inactive_days)
+            .bind(filter.profile_type.as_deref())
+            .bind(filter.min_shipments)
+            .fetch_one(&self.pool)
+            .await?;
+
+        Ok(row.0)
+    }
+
+    async fn refresh_count(&self, id: Uuid, count: i64) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE cdp.segments SET customer_count = $1, last_computed = NOW() WHERE id = $2"
+        )
+        .bind(count as i32)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn is_member(
+        &self,
+        tenant_id: &TenantId,
+        segment_id: Uuid,
+        customer_id: Uuid,
+    ) -> anyhow::Result<bool> {
+        // Load the segment's filter criteria, then run the live query constrained to this customer.
+        let row = sqlx::query_as::<_, SegmentRow>(
+            r#"
+            SELECT id, tenant_id, name, description, filter_criteria,
+                   customer_count, is_dynamic, last_computed, created_at, updated_at
+            FROM cdp.segments
+            WHERE tenant_id = $1 AND id = $2
+            "#
+        )
+        .bind(tenant_id.inner())
+        .bind(segment_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let seg = match row.map(Segment::try_from).transpose()? {
+            Some(s) => s,
+            None    => return Ok(false),
+        };
+
+        // Check membership using single-customer variant of count query.
+        let need_churn = seg.filter.churn_tier.is_some() || seg.filter.max_churn_score.is_some();
+        let churn_join = if need_churn {
+            r#"
+            LEFT JOIN LATERAL (
+                SELECT score, tier
+                FROM cdp.churn_scores cs
+                WHERE cs.customer_id = cp.external_customer_id
+                  AND cs.tenant_id   = cp.tenant_id
+                ORDER BY cs.computed_at DESC LIMIT 1
+            ) cs ON true
+            "#
+        } else {
+            ""
+        };
+
+        let mut churn_clauses = Vec::new();
+        if seg.filter.churn_tier.is_some()      { churn_clauses.push("cs.tier = $3"); }
+        if seg.filter.max_churn_score.is_some() { churn_clauses.push("cs.score <= $4"); }
+        let churn_filter = if churn_clauses.is_empty() { String::new() }
+                           else { format!("AND {}", churn_clauses.join(" AND ")) };
+
+        let sql = format!(
+            r#"
+            SELECT COUNT(*)
+            FROM cdp.customer_profiles cp
+            {churn_join}
+            WHERE cp.tenant_id = $1
+              AND cp.external_customer_id = $10
+              AND ($2::float4 IS NULL OR cp.clv_score >= $2)
+              {churn_filter}
+              AND ($5::float4 IS NULL OR cp.clv_score  <= $5)
+              AND ($6::float4 IS NULL OR cp.engagement_score >= $6)
+              AND ($7::int    IS NULL OR (cp.last_shipment_at IS NULL OR cp.last_shipment_at <= NOW() - ($7 * INTERVAL '1 day')))
+              AND ($8::text   IS NULL OR cp.profile_type = $8)
+              AND ($9::int    IS NULL OR cp.successful_deliveries >= $9)
+            "#
+        );
+
+        let row: (i64,) = sqlx::query_as(&sql)
+            .bind(tenant_id.inner())
+            .bind(seg.filter.min_clv)
+            .bind(seg.filter.churn_tier.as_deref())
+            .bind(seg.filter.max_churn_score)
+            .bind(seg.filter.max_clv)
+            .bind(seg.filter.min_engagement)
+            .bind(seg.filter.inactive_days)
+            .bind(seg.filter.profile_type.as_deref())
+            .bind(seg.filter.min_shipments)
+            .bind(customer_id)
+            .fetch_one(&self.pool)
+            .await?;
+
+        Ok(row.0 > 0)
+    }
+
+    async fn segment_ids_for_customer(
+        &self,
+        tenant_id: &TenantId,
+        customer_id: Uuid,
+    ) -> anyhow::Result<Vec<Uuid>> {
+        // Load all segments for tenant, then check membership for each.
+        // For small-to-medium segment counts this is acceptable; at scale
+        // a materialised `cdp.segment_members` table with a nightly job is preferred.
+        let rows = sqlx::query_as::<_, SegmentRow>(
+            r#"
+            SELECT id, tenant_id, name, description, filter_criteria,
+                   customer_count, is_dynamic, last_computed, created_at, updated_at
+            FROM cdp.segments
+            WHERE tenant_id = $1
+            "#
+        )
+        .bind(tenant_id.inner())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut ids = Vec::new();
+        for seg_row in rows {
+            let seg = Segment::try_from(seg_row)?;
+            if self.is_member(tenant_id, seg.id, customer_id).await? {
+                ids.push(seg.id);
+            }
+        }
+        Ok(ids)
     }
 }

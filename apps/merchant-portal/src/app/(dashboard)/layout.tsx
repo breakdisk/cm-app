@@ -23,6 +23,7 @@ import {
   Menu,
   X,
   Users,
+  Users2,
 } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 import { useBranding } from "@/lib/branding";
@@ -48,6 +49,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Marketplace",  href: "/marketplace", icon: Store },
   { label: "Customers",    href: "/customers",   icon: Users },
   { label: "Campaigns",    href: "/campaigns",   icon: Megaphone },
+  { label: "Segments",     href: "/crm/segments",    icon: Users2 },
   { label: "Automations",  href: "/crm/automations", icon: Zap },
   { label: "Analytics",    href: "/analytics",   icon: BarChart3 },
   { label: "Billing",      href: "/billing",     icon: CreditCard },
@@ -66,6 +68,7 @@ const PAGE_TITLE_MAP: Record<string, string> = {
   "/customers":    "Customers",
   "/campaigns":    "Campaigns",
   "/crm":          "CRM",
+  "/crm/segments":    "Segments",
   "/crm/automations": "Automations",
   "/analytics":    "Analytics",
   "/billing":      "Billing",
