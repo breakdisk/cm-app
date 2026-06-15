@@ -84,6 +84,11 @@ pub struct TargetingRule {
     pub recipients:          Vec<CampaignRecipient>,
     /// Estimated recipient count (filled at campaign creation time via CDP query).
     pub estimated_reach:     u64,
+    /// CDP segment UUID. When set and `recipients` is empty, the marketing
+    /// service resolves the audience from the segment at activation time.
+    /// Stored in the JSONB `targeting` column — no migration required.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub segment_id:          Option<Uuid>,
 }
 
 impl Default for TargetingRule {
@@ -94,6 +99,7 @@ impl Default for TargetingRule {
             customer_ids:     Vec::new(),
             recipients:       Vec::new(),
             estimated_reach:  0,
+            segment_id:       None,
         }
     }
 }

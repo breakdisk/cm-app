@@ -46,6 +46,9 @@ export interface TargetingRule {
   /** Explicit recipient list with contact details — used for direct-address sends. */
   recipients?: CampaignRecipient[];
   estimated_reach: number;
+  /** CDP segment UUID — when set, the marketing service resolves the audience
+   *  from the segment at activation time via `GET /v1/segments/:id/members`. */
+  segment_id?: string | null;
 }
 
 /** Daily send-volume row returned by GET /v1/campaigns/weekly-stats */

@@ -160,28 +160,42 @@ async fn activate_campaign(
 ) -> impl IntoResponse {
     claims.require_permission(permissions::CAMPAIGNS_SEND)?;
 
-    // CDP audience resolution: if the campaign targets by CLV/customer_ids but
-    // has no explicit recipients, resolve them from the CDP before activating.
+    // CDP audience resolution — runs before activation so the fan-out Kafka
+    // event always carries a fully-resolved recipient list.
     if let Some(ref cdp) = state.cdp_client {
         let campaign = state.campaign_svc.get(id).await?;
-        if campaign.targeting.recipients.is_empty()
-            && (campaign.targeting.min_clv_score.is_some()
-                || !campaign.targeting.customer_ids.is_empty())
-        {
-            let recipients = cdp
-                .resolve_audience(claims.tenant_id, &campaign.targeting)
-                .await
-                .map_err(AppError::internal)?;
 
-            if recipients.is_empty() {
-                return Err(AppError::BusinessRule(
-                    "CDP resolved 0 recipients — broaden your targeting before activating".to_owned()
-                ));
+        if campaign.targeting.recipients.is_empty() {
+            // 1. Resolve CLV-filter or explicit customer_ids audience.
+            if campaign.targeting.min_clv_score.is_some()
+                || !campaign.targeting.customer_ids.is_empty()
+            {
+                let recipients = cdp
+                    .resolve_audience(claims.tenant_id, &campaign.targeting)
+                    .await
+                    .map_err(AppError::internal)?;
+
+                if recipients.is_empty() {
+                    return Err(AppError::BusinessRule(
+                        "CDP resolved 0 recipients — broaden your targeting before activating".to_owned()
+                    ));
+                }
+                state.campaign_svc.patch_recipients(id, recipients).await?;
+
+            // 2. Resolve segment-based audience.
+            } else if let Some(seg_id) = campaign.targeting.segment_id {
+                let recipients = cdp
+                    .resolve_segment_audience(claims.tenant_id, seg_id)
+                    .await
+                    .map_err(AppError::internal)?;
+
+                if recipients.is_empty() {
+                    return Err(AppError::BusinessRule(
+                        "Segment has 0 members — add customers to the segment before activating".to_owned()
+                    ));
+                }
+                state.campaign_svc.patch_recipients(id, recipients).await?;
             }
-
-            state.campaign_svc
-                .patch_recipients(id, recipients)
-                .await?;
         }
     }
 
@@ -191,9 +205,10 @@ async fn activate_campaign(
     if pre_activate.targeting.recipients.is_empty()
         && pre_activate.targeting.customer_ids.is_empty()
         && pre_activate.targeting.min_clv_score.is_none()
+        && pre_activate.targeting.segment_id.is_none()
     {
         return Err(AppError::BusinessRule(
-            "Campaign has no recipients — add recipients before activating".to_owned()
+            "Campaign has no recipients — add recipients or select a segment before activating".to_owned()
         ));
     }
 

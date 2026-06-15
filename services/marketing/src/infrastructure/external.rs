@@ -105,4 +105,57 @@ impl CdpClient {
             platform_id: None,
         }).collect())
     }
+
+    /// Resolve a CDP segment into a concrete recipient list.
+    ///
+    /// Calls `GET /v1/segments/{id}/members` on the CDP service.  Results are
+    /// capped at 2 000 per batch; callers handling larger segments should paginate.
+    pub async fn resolve_segment_audience(
+        &self,
+        tenant_id:  Uuid,
+        segment_id: Uuid,
+    ) -> anyhow::Result<Vec<CampaignRecipient>> {
+        #[derive(Deserialize)]
+        struct SegmentMember {
+            external_customer_id: Uuid,
+            name:  Option<String>,
+            email: Option<String>,
+            phone: Option<String>,
+        }
+        #[derive(Deserialize)]
+        struct MembersResponse {
+            members: Vec<SegmentMember>,
+        }
+
+        let url = format!("{}/v1/segments/{}/members", self.base_url, segment_id);
+        let resp = self.http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .header("X-Tenant-Id", tenant_id.to_string())
+            .query(&[("limit", "2000")])
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body   = resp.text().await.unwrap_or_default();
+            anyhow::bail!("CDP segment {segment_id} returned {status}: {body}");
+        }
+
+        let res: MembersResponse = resp.json().await?;
+        tracing::info!(
+            tenant_id  = %tenant_id,
+            segment_id = %segment_id,
+            resolved   = res.members.len(),
+            "CDP segment audience resolved"
+        );
+
+        Ok(res.members.into_iter().map(|m| CampaignRecipient {
+            customer_id: Some(m.external_customer_id),
+            name:        m.name,
+            email:       m.email,
+            phone:       m.phone,
+            platform_id: None,
+        }).collect())
+    }
 }

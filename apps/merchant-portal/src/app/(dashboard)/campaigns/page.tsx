@@ -26,6 +26,7 @@ import {
 import {
   Megaphone, Plus, Zap, MessageSquare, Mail, Smartphone, Play, X as XClose,
   BarChart2, ChevronDown, CheckCircle2, RefreshCw, Users, Search, Check, Link2,
+  Users2,
 } from "lucide-react";
 import {
   createCampaignsApi,
@@ -37,6 +38,7 @@ import {
   type CreateCampaignPayload,
 } from "@/lib/api/campaigns";
 import { createCdpApi, type CustomerProfile, profileIdOf } from "@/lib/api/cdp";
+import { createSegmentsApi, type Segment } from "@/lib/api/segments";
 
 // ── Social channel SVG icons ───────────────────────────────────────────────────
 
@@ -321,11 +323,23 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
   const [activating,     setActivating]     = useState(false);
   const [activated,      setActivated]      = useState(false);
 
-  const [recipientMode,       setRecipientMode]       = useState<"manual" | "customers">("manual");
+  const [recipientMode,       setRecipientMode]       = useState<"manual" | "customers" | "segment">("manual");
   const [customerSearch,      setCustomerSearch]      = useState("");
   const [customerList,        setCustomerList]        = useState<CustomerProfile[]>([]);
   const [customersLoading,    setCustomersLoading]    = useState(false);
   const [selectedCustomerIds, setSelectedCustomerIds] = useState<Set<string>>(new Set());
+  const [segments,            setSegments]            = useState<Segment[]>([]);
+  const [segmentsLoading,     setSegmentsLoading]     = useState(false);
+  const [selectedSegmentId,   setSelectedSegmentId]   = useState<string>("");
+
+  useEffect(() => {
+    if (recipientMode !== "segment") return;
+    setSegmentsLoading(true);
+    createSegmentsApi().list()
+      .then((res) => setSegments(res.segments))
+      .catch(() => {})
+      .finally(() => setSegmentsLoading(false));
+  }, [recipientMode]);
 
   useEffect(() => {
     if (recipientMode !== "customers") return;
@@ -416,7 +430,10 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
     setError(null);
     try {
       const finalRecipients: CampaignRecipient[] =
-        recipientMode === "customers" ? buildCustomerRecipients() : parsedList;
+        recipientMode === "customers" ? buildCustomerRecipients()
+        : recipientMode === "segment" ? []
+        : parsedList;
+      const selectedSeg = recipientMode === "segment" ? segments.find((s) => s.id === selectedSegmentId) : undefined;
       const payload: CreateCampaignPayload = {
         name: name.trim(),
         description: trigger,
@@ -432,7 +449,8 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
         targeting: {
           customer_ids: [],
           recipients: finalRecipients,
-          estimated_reach: finalRecipients.length,
+          estimated_reach: recipientMode === "segment" ? (selectedSeg?.customer_count ?? 0) : finalRecipients.length,
+          ...(recipientMode === "segment" && selectedSegmentId ? { segment_id: selectedSegmentId } : {}),
         },
       };
       const api = createCampaignsApi();
@@ -655,7 +673,7 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
                 <div className="mb-2 flex items-center justify-between">
                   <label className="text-xs font-medium text-white/50">Recipients</label>
                   <div className="flex rounded-lg border border-glass-border overflow-hidden">
-                    {(["manual", "customers"] as const).map((mode) => (
+                    {(["manual", "customers", "segment"] as const).map((mode) => (
                       <button
                         key={mode}
                         type="button"
@@ -665,7 +683,8 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
                         } border-r border-glass-border last:border-r-0`}
                       >
                         {mode === "customers" ? <Users size={10} /> : null}
-                        {mode === "manual" ? "Manual" : "From Customers"}
+                        {mode === "segment" ? <Users2 size={10} /> : null}
+                        {mode === "manual" ? "Manual" : mode === "customers" ? "From Customers" : "Segment"}
                       </button>
                     ))}
                   </div>
@@ -699,7 +718,7 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
                       </p>
                     )}
                   </>
-                ) : (
+                ) : recipientMode === "customers" ? (
                   <div className="rounded-xl border border-glass-border bg-glass-50/30 overflow-hidden">
                     <div className="relative border-b border-glass-border">
                       <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
@@ -750,6 +769,57 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
                         </button>
                       </div>
                     )}
+                  </div>
+                ) : (
+                  /* Segment picker */
+                  <div className="rounded-xl border border-glass-border bg-glass-50/30 overflow-hidden">
+                    {segmentsLoading ? (
+                      <p className="px-3 py-4 text-center text-2xs text-white/30 font-mono">loading segments…</p>
+                    ) : segments.length === 0 ? (
+                      <p className="px-3 py-4 text-center text-2xs text-white/30 font-mono">
+                        No segments yet. Create one in the CRM → Segments page.
+                      </p>
+                    ) : (
+                      <div className="max-h-48 overflow-y-auto">
+                        {segments.map((seg) => {
+                          const chosen = selectedSegmentId === seg.id;
+                          return (
+                            <button
+                              key={seg.id}
+                              type="button"
+                              onClick={() => setSelectedSegmentId(chosen ? "" : seg.id)}
+                              className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-glass-100 transition-colors border-b border-glass-border/40 last:border-b-0"
+                            >
+                              <span className={`flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full border transition-colors ${
+                                chosen ? "border-purple-plasma bg-purple-plasma/20 text-purple-plasma" : "border-glass-border text-transparent"
+                              }`}>
+                                <Check size={10} />
+                              </span>
+                              <span className="flex-1 min-w-0">
+                                <span className="block text-xs text-white truncate">{seg.name}</span>
+                                <span className="block text-2xs font-mono text-white/30">
+                                  {seg.customer_count != null ? `${seg.customer_count.toLocaleString()} members` : seg.description ?? ""}
+                                </span>
+                              </span>
+                              {chosen && <NeonBadge variant="purple">Selected</NeonBadge>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {selectedSegmentId && (() => {
+                      const seg = segments.find((s) => s.id === selectedSegmentId);
+                      return seg ? (
+                        <div className="flex items-center justify-between border-t border-glass-border px-3 py-2">
+                          <span className="text-2xs font-mono text-purple-plasma">
+                            {seg.name}{seg.customer_count != null ? ` · ${seg.customer_count.toLocaleString()} members` : ""}
+                          </span>
+                          <button type="button" onClick={() => setSelectedSegmentId("")} className="text-2xs text-white/30 hover:text-white/60 transition-colors">
+                            Clear
+                          </button>
+                        </div>
+                      ) : null;
+                    })()}
                   </div>
                 )}
               </div>
@@ -867,7 +937,8 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
                 !name.trim() || !message.trim() || message.length > charMax || saving ||
                 (scheduleEnabled && !scheduleFor) || (needsSubject && !subject.trim()) ||
                 (recipientMode === "manual" && hasInvalidPhones) ||
-                (recipientMode === "customers" && selectedCustomerIds.size === 0)
+                (recipientMode === "customers" && selectedCustomerIds.size === 0) ||
+                (recipientMode === "segment" && !selectedSegmentId)
               }
               className="flex items-center gap-2 rounded-lg px-5 py-2 text-sm font-semibold text-white transition-all disabled:opacity-40"
               style={{ background: "linear-gradient(135deg, #A855F7, #00E5FF)" }}
