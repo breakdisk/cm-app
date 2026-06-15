@@ -91,9 +91,13 @@ impl RuleRepository {
 fn trigger_matches_topic(trigger: &RuleTrigger, topic: &str) -> bool {
     matches!(
         (trigger, topic),
-        (RuleTrigger::DeliveryFailed, "logisticos.driver.delivery.failed")
-        | (RuleTrigger::DeliveryCompleted, "logisticos.driver.delivery.completed")
-        | (RuleTrigger::ShipmentCreated, "logisticos.order.shipment.created")
+        (RuleTrigger::DeliveryFailed,        "logisticos.driver.delivery.failed")
+        | (RuleTrigger::DeliveryCompleted,   "logisticos.driver.delivery.completed")
+        | (RuleTrigger::ShipmentCreated,     "logisticos.order.shipment.created")
+        | (RuleTrigger::ShipmentRescheduled, "logisticos.order.shipment.rescheduled")
+        | (RuleTrigger::PickupCompleted,     "logisticos.driver.pickup.completed")
+        | (RuleTrigger::CodCollected,        "logisticos.payments.cod.collected")
+        | (RuleTrigger::PaymentReceived,     "logisticos.payments.payment.received")
         | (RuleTrigger::DeliveryAttempted { .. }, "logisticos.driver.delivery.attempted")
         | (RuleTrigger::CampaignTriggered { .. }, "logisticos.marketing.campaign.triggered")
     )

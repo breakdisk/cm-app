@@ -203,13 +203,14 @@ pub async fn run() -> anyhow::Result<()> {
         .set("message.timeout.ms", "5000")
         .create()?;
 
+    let cdp_url = std::env::var("CDP_URL").unwrap_or_else(|_| "http://cdp:8005".into());
     let executor = Arc::new(HttpActionExecutor {
         http:           reqwest::Client::new(),
         engagement_url: std::env::var("ENGAGEMENT_URL").unwrap_or_else(|_| "http://engagement:8010".into()),
         order_url:      std::env::var("ORDER_INTAKE_URL").unwrap_or_else(|_| "http://order-intake:8003".into()),
         dispatch_url:   std::env::var("DISPATCH_URL").unwrap_or_else(|_| "http://dispatch:8004".into()),
         marketing_url:  std::env::var("MARKETING_URL").unwrap_or_else(|_| "http://marketing:8012".into()),
-        cdp_url:        std::env::var("CDP_URL").unwrap_or_else(|_| "http://cdp:8005".into()),
+        cdp_url:        cdp_url.clone(),
         producer,
     });
 
@@ -224,9 +225,13 @@ pub async fn run() -> anyhow::Result<()> {
 
     consumer.subscribe(&[
         "logisticos.order.shipment.created",
+        "logisticos.order.shipment.rescheduled",
         "logisticos.driver.delivery.failed",
         "logisticos.driver.delivery.completed",
         "logisticos.driver.delivery.attempted",
+        "logisticos.driver.pickup.completed",
+        "logisticos.payments.cod.collected",
+        "logisticos.payments.payment.received",
         "logisticos.marketing.campaign.triggered",
     ])?;
 
@@ -251,7 +256,8 @@ pub async fn run() -> anyhow::Result<()> {
         result = axum::serve(listener, app) => {
             result?;
         }
-        _ = run_consumer(consumer, rule_repo, executor, pg_repo, seg_checker) => {}
+        _ = run_consumer(Arc::clone(&consumer), Arc::clone(&rule_repo), Arc::clone(&executor), Arc::clone(&pg_repo), Arc::clone(&seg_checker)) => {}
+        _ = run_inactive_checker(Arc::clone(&pg_repo), executor as Arc<dyn ActionExecutor>, seg_checker, cdp_url) => {}
     }
 
     Ok(())
@@ -325,4 +331,122 @@ fn extract_tenant_id(msg: &rdkafka::message::BorrowedMessage<'_>) -> Option<Uuid
             }
         })
     })
+}
+
+// ---------------------------------------------------------------------------
+// CustomerInactive periodic scheduler
+//
+// Runs every hour. Loads active rules whose trigger is `CustomerInactive`,
+// queries the CDP for customers exceeding each configured inactivity threshold,
+// and executes matching rule actions — identical to the event-driven path but
+// time-driven rather than Kafka-driven.
+// ---------------------------------------------------------------------------
+
+async fn run_inactive_checker(
+    pg_repo:     Arc<PgRuleRepository>,
+    executor:    Arc<dyn ActionExecutor>,
+    seg_checker: Arc<dyn SegmentChecker>,
+    cdp_url:     String,
+) {
+    use tokio::time::{interval, Duration};
+    let mut ticker = interval(Duration::from_secs(3600));
+    let http = reqwest::Client::new();
+    loop {
+        ticker.tick().await;
+        if let Err(e) = check_inactive_customers(
+            pg_repo.as_ref(), executor.as_ref(), seg_checker.as_ref(), &http, &cdp_url,
+        ).await {
+            tracing::warn!(err = %e, "CustomerInactive checker: cycle error");
+        }
+    }
+}
+
+async fn check_inactive_customers(
+    pg_repo:     &PgRuleRepository,
+    executor:    &dyn ActionExecutor,
+    seg_checker: &dyn SegmentChecker,
+    http:        &reqwest::Client,
+    cdp_url:     &str,
+) -> anyhow::Result<()> {
+    use crate::domain::entities::rule::RuleTrigger;
+    use std::collections::HashMap;
+
+    let all_rules = pg_repo.load_all().await?;
+
+    // Build map of (tenant_id, days) → matching rules
+    let mut groups: HashMap<(Uuid, u32), Vec<crate::domain::entities::rule::AutomationRule>> = HashMap::new();
+    for rule in all_rules.into_iter().filter(|r| r.is_active) {
+        if let RuleTrigger::CustomerInactive { days } = &rule.trigger {
+            groups.entry((rule.tenant_id, *days)).or_default().push(rule);
+        }
+    }
+
+    if groups.is_empty() {
+        return Ok(());
+    }
+
+    let token = std::env::var("SERVICES__CDP_TOKEN").unwrap_or_default();
+
+    for ((tenant_id, days), rules) in &groups {
+        // CDP endpoint: GET /v1/customers?days_inactive=N
+        // Returns `{ "data": [ { "id": "...", ... } ] }` — gracefully skip if unsupported.
+        let result = http
+            .get(format!("{}/v1/customers", cdp_url))
+            .bearer_auth(&token)
+            .header("X-Tenant-Id", tenant_id.to_string())
+            .query(&[("days_inactive", days.to_string())])
+            .send()
+            .await;
+
+        let customers: Vec<serde_json::Value> = match result {
+            Ok(resp) if resp.status().is_success() => {
+                #[derive(serde::Deserialize)]
+                struct Page { data: Vec<serde_json::Value> }
+                resp.json::<Page>().await.map(|p| p.data).unwrap_or_default()
+            }
+            Ok(resp) => {
+                tracing::debug!(
+                    status = %resp.status(),
+                    days,
+                    "CDP inactive filter not supported — skipping CustomerInactive cycle"
+                );
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!(err = %e, days, "CDP call failed in CustomerInactive checker");
+                continue;
+            }
+        };
+
+        tracing::info!(count = customers.len(), days, %tenant_id, "CustomerInactive: evaluating customers");
+
+        for customer in customers {
+            let Some(customer_id): Option<Uuid> =
+                customer["id"].as_str().and_then(|s| s.parse().ok())
+            else { continue };
+
+            let event_payload = serde_json::json!({
+                "customer_id":   customer_id,
+                "tenant_id":     tenant_id,
+                "days_inactive": days,
+            });
+            let mut ctx = crate::application::services::build_context(
+                *tenant_id,
+                "logisticos.crm.customer.inactive",
+                &event_payload,
+            );
+            crate::application::services::enrich_segments(&mut ctx, rules, seg_checker).await;
+
+            for rule in rules {
+                if rule.conditions_met(&ctx) {
+                    tracing::info!(rule_id = %rule.id, %customer_id, "CustomerInactive rule fired");
+                    if let Err(e) = crate::application::services::execute_actions(rule, &ctx, executor).await {
+                        tracing::warn!(rule_id = %rule.id, err = %e, "CustomerInactive rule action failed");
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
 }

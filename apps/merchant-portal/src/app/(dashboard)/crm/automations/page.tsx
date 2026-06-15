@@ -35,9 +35,13 @@ import {
 // ── constants ──────────────────────────────────────────────────────────────────
 
 const TRIGGER_OPTIONS = [
-  { value: "DeliveryFailed",    label: "Delivery Failed" },
-  { value: "DeliveryCompleted", label: "Delivery Completed" },
-  { value: "ShipmentCreated",   label: "Shipment Created" },
+  { value: "DeliveryFailed",       label: "Delivery Failed" },
+  { value: "DeliveryCompleted",    label: "Delivery Completed" },
+  { value: "ShipmentCreated",      label: "Shipment Created" },
+  { value: "ShipmentRescheduled",  label: "Shipment Rescheduled" },
+  { value: "PickupCompleted",      label: "Pickup Completed" },
+  { value: "CodCollected",         label: "COD Collected" },
+  { value: "PaymentReceived",      label: "Payment Received" },
   { value: JSON.stringify({ DeliveryAttempted: { attempts: 3 } }), label: "Delivery Attempted (3×)" },
   { value: JSON.stringify({ CustomerInactive: { days: 30 } }),     label: "Customer Inactive 30d" },
   { value: JSON.stringify({ PaymentOverdue: { days: 7 } }),        label: "Payment Overdue 7d" },
