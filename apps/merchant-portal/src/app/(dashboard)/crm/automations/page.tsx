@@ -18,15 +18,18 @@ import { NeonBadge } from "@/components/ui/neon-badge";
 import {
   getAutomationsApi,
   type AutomationRule,
+  type RuleCondition,
   type CreateRulePayload,
   type RuleExecution,
   triggerLabel,
   actionLabel,
+  conditionLabel,
 } from "@/lib/api/automations";
+import { createSegmentsApi, type Segment } from "@/lib/api/segments";
 import {
   Zap, Plus, Trash2, Edit2, X, ChevronRight,
   CheckCircle2, AlertCircle, Clock, ToggleLeft, ToggleRight,
-  Activity, Code2, ChevronDown,
+  Activity, Code2, ChevronDown, Filter,
 } from "lucide-react";
 
 // ── constants ──────────────────────────────────────────────────────────────────
@@ -147,7 +150,9 @@ function RuleRow({
           {rule.conditions.length > 0 && (
             <>
               <span className="font-mono text-white/30">IF</span>
-              <NeonBadge variant="purple">{rule.conditions.length} condition{rule.conditions.length !== 1 ? "s" : ""}</NeonBadge>
+              {rule.conditions.map((c, i) => (
+                <NeonBadge key={i} variant="purple">{conditionLabel(c)}</NeonBadge>
+              ))}
             </>
           )}
           <span className="font-mono text-white/30">THEN</span>
@@ -216,6 +221,11 @@ function RuleBuilderModal({
   const [trigger,     setTrigger]     = useState<string>(
     initial ? JSON.stringify(initial.trigger) : "DeliveryFailed"
   );
+  const [conditions,  setConditions]  = useState<RuleCondition[]>(initial?.conditions ?? []);
+  const [pendingType, setPendingType] = useState<string>("");
+  const [pendingInput,setPendingInput]= useState<string>("");
+  const [segments,    setSegments]    = useState<Segment[]>([]);
+  const [loadingSegs, setLoadingSegs] = useState(false);
   const [actionRaws,  setActionRaws]  = useState<string[]>(
     initial ? initial.actions.map((a) => JSON.stringify(a)) : []
   );
@@ -227,6 +237,14 @@ function RuleBuilderModal({
   const [priority,    setPriority]    = useState<number>(initial?.priority ?? 100);
   const [saving,      setSaving]      = useState(false);
   const [error,       setError]       = useState<string | null>(null);
+
+  useEffect(() => {
+    setLoadingSegs(true);
+    createSegmentsApi().list()
+      .then((res) => setSegments(res.segments))
+      .catch(() => {})
+      .finally(() => setLoadingSegs(false));
+  }, []);
 
   const hasTriggerCampaign = actionRaws.includes(TRIGGER_CAMPAIGN_SENTINEL)
     || actionRaws.some((r) => r.includes("TriggerCampaign"));
@@ -255,6 +273,7 @@ function RuleBuilderModal({
         name: name.trim(),
         description: description.trim() || undefined,
         trigger: parseTrigger(trigger),
+        conditions: conditions.length > 0 ? conditions : undefined,
         actions: parseActions(resolvedRaws),
         priority,
       });
@@ -263,6 +282,37 @@ function RuleBuilderModal({
       setError(err?.message ?? "Failed to save rule");
       setSaving(false);
     }
+  }
+
+  function addCondition() {
+    if (!pendingType || !pendingInput.trim()) return;
+    let cond: RuleCondition | null = null;
+    switch (pendingType) {
+      case "CustomerSegment":
+        cond = { CustomerSegment: { segment_id: pendingInput } };
+        break;
+      case "ServiceType":
+        cond = { ServiceType: { equals: pendingInput.trim() } };
+        break;
+      case "ShipmentValue":
+        cond = { ShipmentValue: { greater_than: Number(pendingInput) } };
+        break;
+      case "AttemptCount":
+        cond = { AttemptCount: { lte: Number(pendingInput) } };
+        break;
+      case "Zone":
+        cond = { Zone: { in_zones: pendingInput.split(",").map((z) => z.trim()).filter(Boolean) } };
+        break;
+    }
+    if (cond) {
+      setConditions((prev) => [...prev, cond!]);
+      setPendingType("");
+      setPendingInput("");
+    }
+  }
+
+  function removeCondition(idx: number) {
+    setConditions((prev) => prev.filter((_, i) => i !== idx));
   }
 
   function addAction(value: string) {
@@ -331,6 +381,137 @@ function RuleBuilderModal({
                   ))}
                 </select>
                 <ChevronDown size={12} className="pointer-events-none absolute right-2.5 top-2.5 text-white/30" />
+              </div>
+            </div>
+
+            {/* Conditions */}
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <span className="text-2xs font-mono text-white/30 uppercase tracking-wider flex items-center gap-1.5">
+                  <Filter size={10} className="text-purple-400" />
+                  Conditions
+                  <span className="text-white/20 normal-case">— optional, all must be true</span>
+                </span>
+              </div>
+
+              {/* Added conditions list */}
+              {conditions.length > 0 && (
+                <div className="space-y-1.5">
+                  {conditions.map((cond, i) => {
+                    const segName = "CustomerSegment" in (cond as object)
+                      ? segments.find((s) => s.id === (cond as { CustomerSegment: { segment_id: string } }).CustomerSegment.segment_id)?.name
+                      : undefined;
+                    return (
+                      <div
+                        key={i}
+                        className="flex items-center justify-between rounded-lg border border-purple-500/20 bg-purple-500/5 px-3 py-2 text-xs"
+                      >
+                        <div className="flex items-center gap-2 text-white/70">
+                          <Filter size={11} className="text-purple-400 flex-shrink-0" />
+                          {segName
+                            ? `In segment: ${segName}`
+                            : conditionLabel(cond)}
+                        </div>
+                        <button
+                          onClick={() => removeCondition(i)}
+                          className="text-white/20 hover:text-red-signal transition-colors"
+                        >
+                          <X size={11} />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Condition builder */}
+              <div className="space-y-2 rounded-lg border border-dashed border-glass-border p-3">
+                <div className="relative">
+                  <select
+                    value={pendingType}
+                    onChange={(e) => { setPendingType(e.target.value); setPendingInput(""); }}
+                    className="w-full appearance-none rounded-lg border border-glass-border bg-glass-100 px-3 py-2 pr-8 text-xs text-white outline-none focus:border-purple-400/40 transition-colors"
+                  >
+                    <option value="" className="bg-canvas">+ Add condition…</option>
+                    <option value="CustomerSegment" className="bg-canvas text-white">Customer is in segment</option>
+                    <option value="ServiceType" className="bg-canvas text-white">Service type equals</option>
+                    <option value="ShipmentValue" className="bg-canvas text-white">Shipment value greater than</option>
+                    <option value="AttemptCount" className="bg-canvas text-white">Attempt count ≤</option>
+                    <option value="Zone" className="bg-canvas text-white">Delivery zone in list</option>
+                  </select>
+                  <ChevronDown size={12} className="pointer-events-none absolute right-2.5 top-2.5 text-white/30" />
+                </div>
+
+                {pendingType === "CustomerSegment" && (
+                  <div className="relative">
+                    <select
+                      value={pendingInput}
+                      onChange={(e) => setPendingInput(e.target.value)}
+                      className="w-full appearance-none rounded-lg border border-glass-border bg-glass-100 px-3 py-2 pr-8 text-xs text-white outline-none focus:border-purple-400/40 transition-colors"
+                    >
+                      <option value="" className="bg-canvas">
+                        {loadingSegs ? "Loading segments…" : "Select a segment…"}
+                      </option>
+                      {segments.map((s) => (
+                        <option key={s.id} value={s.id} className="bg-canvas text-white">
+                          {s.name} ({s.customer_count} customers)
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown size={12} className="pointer-events-none absolute right-2.5 top-2.5 text-white/30" />
+                  </div>
+                )}
+
+                {pendingType === "ServiceType" && (
+                  <input
+                    value={pendingInput}
+                    onChange={(e) => setPendingInput(e.target.value)}
+                    placeholder="e.g. balikbayan, standard, cod"
+                    className="w-full rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white placeholder-white/20 outline-none focus:border-purple-400/40 transition-colors"
+                  />
+                )}
+
+                {pendingType === "ShipmentValue" && (
+                  <input
+                    type="number"
+                    min={0}
+                    value={pendingInput}
+                    onChange={(e) => setPendingInput(e.target.value)}
+                    placeholder="e.g. 5000 (minimum value in pesos)"
+                    className="w-full rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white placeholder-white/20 outline-none focus:border-purple-400/40 transition-colors"
+                  />
+                )}
+
+                {pendingType === "AttemptCount" && (
+                  <input
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={pendingInput}
+                    onChange={(e) => setPendingInput(e.target.value)}
+                    placeholder="e.g. 3 (max attempts before triggering)"
+                    className="w-full rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white placeholder-white/20 outline-none focus:border-purple-400/40 transition-colors"
+                  />
+                )}
+
+                {pendingType === "Zone" && (
+                  <input
+                    value={pendingInput}
+                    onChange={(e) => setPendingInput(e.target.value)}
+                    placeholder="e.g. manila, cebu, davao (comma-separated)"
+                    className="w-full rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white placeholder-white/20 outline-none focus:border-purple-400/40 transition-colors"
+                  />
+                )}
+
+                {pendingType && (
+                  <button
+                    onClick={addCondition}
+                    disabled={!pendingInput.trim()}
+                    className="w-full rounded-lg border border-purple-400/30 bg-purple-400/10 py-1.5 text-xs text-purple-400 hover:bg-purple-400/20 transition-colors disabled:opacity-40"
+                  >
+                    Add Condition
+                  </button>
+                )}
               </div>
             </div>
 

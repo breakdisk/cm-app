@@ -135,6 +135,25 @@ export function actionLabel(action: RuleAction): string {
   return JSON.stringify(action);
 }
 
+export function conditionLabel(condition: RuleCondition): string {
+  if (typeof condition === "object") {
+    if ("CustomerSegment" in condition) return "Customer Segment";
+    if ("ServiceType" in condition) return `Service: ${condition.ServiceType.equals}`;
+    if ("ShipmentValue" in condition) return `Value > ${condition.ShipmentValue.greater_than}`;
+    if ("AttemptCount" in condition) return `Attempts ≤ ${condition.AttemptCount.lte}`;
+    if ("Zone" in condition) {
+      const zones = condition.Zone.in_zones;
+      return `Zone: ${zones.slice(0, 2).join(", ")}${zones.length > 2 ? "…" : ""}`;
+    }
+    if ("TimeOfDay" in condition) return `${condition.TimeOfDay.hour_from}h–${condition.TimeOfDay.hour_to}h`;
+    if ("DayOfWeek" in condition) return condition.DayOfWeek.days.slice(0, 3).join(", ");
+    if ("MerchantTier" in condition) return `Tier: ${condition.MerchantTier.tiers.join(", ")}`;
+    if ("WeatherCondition" in condition) return `Weather: ${condition.WeatherCondition.condition}`;
+    if ("Custom" in condition) return "Custom";
+  }
+  return JSON.stringify(condition).slice(0, 30);
+}
+
 // ── Client ───────────────────────────────────────────────────────────────────────
 
 export function createAutomationsApi() {

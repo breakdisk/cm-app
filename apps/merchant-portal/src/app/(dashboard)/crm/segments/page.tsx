@@ -103,7 +103,7 @@ function SegmentBuilderModal({ initial, onClose, onSaved }: BuilderProps) {
   };
 
   const setF = <K extends keyof SegmentFilter>(k: K, v: SegmentFilter[K]) =>
-    setFilter((f) => ({ ...f, [k]: v === "" || v === undefined ? null : v }));
+    setFilter((f) => ({ ...f, [k]: (v as unknown) === "" || v === undefined ? null : v }));
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
@@ -402,7 +402,7 @@ function SegmentCard({ segment, onEdit, onDelete, onViewMembers }: CardProps) {
   })();
 
   return (
-    <motion.div layout variants={variants.fadeUp} initial="hidden" animate="show">
+    <motion.div layout variants={variants.fadeInUp} initial="hidden" animate="visible">
       <GlassCard className="p-5 hover:border-white/15 transition-all group">
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-center gap-3 min-w-0">
@@ -418,7 +418,7 @@ function SegmentCard({ segment, onEdit, onDelete, onViewMembers }: CardProps) {
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            <NeonBadge color="cyan">
+            <NeonBadge variant="cyan">
               <span className="font-['JetBrains_Mono'] text-xs">{segment.customer_count.toLocaleString()}</span>
             </NeonBadge>
           </div>
