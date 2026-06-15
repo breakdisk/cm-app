@@ -280,6 +280,7 @@ async fn trigger_for_recipient(
             customer_ids:     vec![body.customer_id],
             min_clv_score:    None,
             last_active_days: None,
+            segment_id:       None,
             recipients:       vec![],
             estimated_reach:  1,
         };

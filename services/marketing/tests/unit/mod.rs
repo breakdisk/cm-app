@@ -327,10 +327,12 @@ mod targeting_rule {
         // filter fields are ignored by the CDP query layer.
         let ids = vec![Uuid::new_v4(), Uuid::new_v4()];
         let rule = TargetingRule {
-            min_clv_score: Some(80.0),
+            min_clv_score:    Some(80.0),
             last_active_days: Some(30),
-            customer_ids: ids.clone(),
-            estimated_reach: ids.len() as u64,
+            customer_ids:     ids.clone(),
+            segment_id:       None,
+            recipients:       vec![],
+            estimated_reach:  ids.len() as u64,
         };
         assert_eq!(rule.customer_ids.len(), 2);
         assert_eq!(rule.estimated_reach, 2);
