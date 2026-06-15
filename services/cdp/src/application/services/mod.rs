@@ -161,18 +161,13 @@ impl ProfileService {
             .ok_or_else(|| AppError::NotFound { resource: "CustomerProfile", id: external_id.to_string() })
     }
 
-    /// List profiles for a tenant.
+    /// List profiles for a tenant — returns full profiles so address_history is included.
     pub async fn list(
         &self,
         tenant_id: &TenantId,
         filter: ProfileFilter,
-    ) -> AppResult<Vec<ProfileSummary>> {
-        let profiles = self
-            .repo
-            .list(tenant_id, &filter)
-            .await
-            .map_err(AppError::internal)?;
-        Ok(profiles.iter().map(ProfileSummary::from).collect())
+    ) -> AppResult<Vec<CustomerProfile>> {
+        self.repo.list(tenant_id, &filter).await.map_err(AppError::internal)
     }
 
     /// Top customers by CLV — for merchant dashboard.
@@ -180,14 +175,9 @@ impl ProfileService {
         &self,
         tenant_id: &TenantId,
         limit: i64,
-    ) -> AppResult<Vec<ProfileSummary>> {
+    ) -> AppResult<Vec<CustomerProfile>> {
         let limit = limit.clamp(1, 100);
-        let profiles = self
-            .repo
-            .top_by_clv(tenant_id, limit)
-            .await
-            .map_err(AppError::internal)?;
-        Ok(profiles.iter().map(ProfileSummary::from).collect())
+        self.repo.top_by_clv(tenant_id, limit).await.map_err(AppError::internal)
     }
 }
 

@@ -148,14 +148,14 @@ export default function CustomersPage() {
             Customers
           </h1>
           <p className="text-sm text-white/40 font-mono mt-0.5">
-            Customer Data Platform · {profiles.length} {profileTypeFilter === "sender" ? "senders" : "profiles"} loaded
+            Customer Data Platform · {profiles.length} {profileTypeFilter === "sender" ? "senders" : profileTypeFilter === "receiver" ? "receivers" : "profiles"} loaded
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {/* Sender / All toggle */}
+          {/* Senders / Receivers / All toggle */}
           <div className="flex rounded-lg border border-glass-border overflow-hidden">
-            {(["sender", undefined] as const).map((type) => {
-              const label = type === "sender" ? "Senders" : "All";
+            {(["sender", "receiver", undefined] as const).map((type) => {
+              const label = type === "sender" ? "Senders" : type === "receiver" ? "Receivers" : "All";
               const active = profileTypeFilter === type;
               return (
                 <button
@@ -206,7 +206,7 @@ export default function CustomersPage() {
           {/* Toolbar */}
           <div className="flex items-center justify-between px-5 py-4 border-b border-glass-border gap-3 flex-wrap">
             <h2 className="font-heading text-sm font-semibold text-white whitespace-nowrap">
-              {profileTypeFilter === "sender" ? "Senders" : "All Customers"}
+              {profileTypeFilter === "sender" ? "Senders" : profileTypeFilter === "receiver" ? "Receivers" : "All Customers"}
             </h2>
             <div className="flex items-center gap-2 flex-1">
               {/* Name search */}
@@ -272,7 +272,9 @@ export default function CustomersPage() {
                   ? "No customers match the current filters"
                   : profileTypeFilter === "sender"
                   ? "No senders yet — book a shipment to auto-create sender profiles"
-                  : "No customers yet"}
+                  : profileTypeFilter === "receiver"
+                  ? "No receivers yet — profiles are created automatically when shipments are booked"
+                  : "No customers yet — book a shipment to get started"}
               </p>
             </div>
           ) : (

@@ -351,7 +351,7 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
       setCustomersLoading(true);
       try {
         const cdp = createCdpApi();
-        const res = await cdp.list({ name: customerSearch || undefined, profile_type: "sender", limit: 50 });
+        const res = await cdp.list({ name: customerSearch || undefined, limit: 50 });
         if (!cancelled) setCustomerList(res.profiles ?? []);
       } catch { /* non-fatal */ } finally {
         if (!cancelled) setCustomersLoading(false);
@@ -737,7 +737,7 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
                       <input
                         value={customerSearch}
                         onChange={(e) => setCustomerSearch(e.target.value)}
-                        placeholder="Search senders by name…"
+                        placeholder="Search customers by name…"
                         className="w-full bg-transparent pl-8 pr-3 py-2.5 text-xs text-white placeholder-white/25 outline-none"
                       />
                     </div>
@@ -746,12 +746,14 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
                         <p className="px-3 py-4 text-center text-2xs text-white/30 font-mono">loading…</p>
                       ) : customerList.length === 0 ? (
                         <p className="px-3 py-4 text-center text-2xs text-white/30 font-mono">
-                          No senders found. Book a shipment first to auto-create sender profiles.
+                          No customers found. Book a shipment first to auto-create customer profiles.
                         </p>
                       ) : (
                         customerList.map((p) => {
                           const selected = selectedCustomerIds.has(p.external_customer_id);
                           const contact  = p.phone ?? p.email ?? p.external_customer_id.slice(0, 8);
+                          const typeLabel = p.profile_type === "sender" ? "Sender" : p.profile_type === "receiver" ? "Receiver" : null;
+                          const typeColor = p.profile_type === "sender" ? "text-cyan-neon" : "text-purple-plasma";
                           return (
                             <button
                               key={p.external_customer_id}
@@ -768,6 +770,9 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
                                 <span className="block text-xs text-white truncate">{p.name ?? "Unnamed"}</span>
                                 <span className="block text-2xs font-mono text-white/30 truncate">{contact}</span>
                               </span>
+                              {typeLabel && (
+                                <span className={`text-2xs font-mono flex-shrink-0 ${typeColor}`}>{typeLabel}</span>
+                              )}
                             </button>
                           );
                         })

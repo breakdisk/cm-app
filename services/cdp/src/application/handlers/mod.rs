@@ -146,12 +146,34 @@ async fn handle_message(
         topics::SHIPMENT_CREATED => {
             let data: ShipmentCreatedPayload = serde_json::from_value(data_val.clone())?;
 
-            // 1. Upsert receiver profile (tagged as Receiver so it's excluded from
-            //    the Senders-only view on the Customers page).
+            // Dedup receiver by phone so the same consignee across multiple
+            // bookings converges to one profile rather than creating a new
+            // UUID-keyed profile per shipment.
+            let receiver_external_id = if !data.customer_phone.is_empty() {
+                let existing = svc
+                    .list(
+                        &tenant_id,
+                        ProfileFilter {
+                            phone: Some(data.customer_phone.clone()),
+                            profile_type: Some("receiver".to_string()),
+                            limit: 1,
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+                existing
+                    .first()
+                    .map(|p| p.external_customer_id)
+                    .unwrap_or(data.customer_id)
+            } else {
+                data.customer_id
+            };
+
+            // 1. Upsert receiver profile.
             svc.upsert(
                 &tenant_id,
                 UpsertProfileCommand {
-                    external_customer_id: data.customer_id,
+                    external_customer_id: receiver_external_id,
                     name:  Some(data.customer_name.clone()).filter(|s| !s.is_empty()),
                     email: Some(data.customer_email.clone()).filter(|s| !s.is_empty()),
                     phone: Some(data.customer_phone.clone()).filter(|s| !s.is_empty()),
@@ -160,10 +182,10 @@ async fn handle_message(
             )
             .await?;
 
-            // 2. Record the shipment booking event on the receiver profile.
+            // 2. Record the shipment booking event on the deduplicated receiver profile.
             svc.record_event(RecordEventCommand {
                 tenant_id: tenant_id.clone(),
-                external_customer_id: data.customer_id,
+                external_customer_id: receiver_external_id,
                 event_type: EventType::ShipmentCreated,
                 shipment_id: None,
                 metadata: serde_json::json!({
