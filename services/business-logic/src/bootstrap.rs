@@ -256,8 +256,8 @@ pub async fn run() -> anyhow::Result<()> {
         result = axum::serve(listener, app) => {
             result?;
         }
-        _ = run_consumer(Arc::clone(&consumer), Arc::clone(&rule_repo), Arc::clone(&executor), Arc::clone(&pg_repo), Arc::clone(&seg_checker)) => {}
-        _ = run_inactive_checker(Arc::clone(&pg_repo), executor as Arc<dyn ActionExecutor>, seg_checker, cdp_url) => {}
+        _ = run_consumer(Arc::clone(&consumer), Arc::clone(&rule_repo), executor.clone() as Arc<dyn ActionExecutor>, Arc::clone(&pg_repo), Arc::clone(&seg_checker)) => {}
+        _ = run_inactive_checker(Arc::clone(&pg_repo), executor.clone() as Arc<dyn ActionExecutor>, seg_checker, cdp_url) => {}
     }
 
     Ok(())
