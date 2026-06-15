@@ -19,7 +19,7 @@ import { NeonBadge } from "@/components/ui/neon-badge";
 import {
   ArrowLeft, Megaphone, MessageSquare, Mail, Smartphone, Zap,
   Play, X, RefreshCw, CheckCircle2, Clock, Send, AlertTriangle,
-  BarChart2, User, Calendar,
+  BarChart2, User, Calendar, Link2,
 } from "lucide-react";
 import {
   createCampaignsApi,
@@ -28,20 +28,94 @@ import {
   type CampaignStatus,
 } from "@/lib/api/campaigns";
 
+// ── Social channel SVG icons ───────────────────────────────────────────────────
+
+const MessengerIcon = ({ size = 14 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+    <path d="M12 2C6.477 2 2 6.145 2 11.243c0 2.928 1.373 5.55 3.528 7.3V22l3.375-1.85c1.267.35 2.602.35 3.097.35 5.523 0 10-4.145 10-9.257C22 6.145 17.523 2 12 2zm.012 14.47L9.56 13.8l-4.9 2.67 5.395-5.73 2.463 2.67 4.9-2.67-5.406 5.73z"/>
+  </svg>
+);
+
+const TelegramIcon = ({ size = 14 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+    <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.894 8.221-1.97 9.28c-.145.658-.537.818-1.084.508l-3-2.21-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12l-6.871 4.326-2.962-.924c-.643-.204-.657-.643.136-.953l11.57-4.463c.535-.194 1.003.131.833.943z"/>
+  </svg>
+);
+
+const XSocialIcon = ({ size = 14 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+    <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+  </svg>
+);
+
+const ViberIcon = ({ size = 14 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+    <path d="M11.4 0C5.3 0 .5 4.8.5 10.8c0 3.5 1.6 6.5 4.1 8.5v3.2l3-1.7c1.1.3 2.2.5 3.4.5 6.1 0 10.8-4.8 10.8-10.8.1-5.9-4.7-10.5-10.4-10.5zm.5 16.9c-1 0-1.9-.2-2.8-.5l-2.6 1.5v-2.6c-2-1.4-3.3-3.7-3.3-6.3 0-4.3 3.9-7.8 8.7-7.8s8.7 3.5 8.7 7.8c.1 4.4-3.8 7.9-8.7 7.9zm4-8.4c-.2-.1-1.5-.7-1.7-.8-.2-.1-.4-.1-.5.1-.2.2-.6.8-.8 1-.1.2-.3.2-.5.1-.7-.3-1.4-.7-2-1.2-.5-.5-.9-1-.8-1.5l.2-.5c-.2-.3-.5-1.6-.7-2.2-.2-.5-.4-.5-.5-.5h-.5c-.2 0-.5.1-.7.3-.2.2-.8.8-.8 1.9s.9 2.2 1 2.3c.1.1 1.7 2.6 4.2 3.5.6.2 1 .3 1.4.4.6.1 1.1.1 1.5.1.5-.1 1.4-.6 1.6-1.1.2-.5.2-1 .1-1.1-.1-.1-.3-.2-.4-.3z"/>
+  </svg>
+);
+
+const WeChatIcon = ({ size = 14 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+    <path d="M8.691 2.188C3.891 2.188 0 5.476 0 9.53c0 2.212 1.17 4.203 3.002 5.55a.59.59 0 0 1 .213.665l-.39 1.48c-.019.07-.048.141-.048.213 0 .163.13.295.29.295a.326.326 0 0 0 .167-.054l1.903-1.114a.864.864 0 0 1 .717-.098 10.16 10.16 0 0 0 2.837.403c.276 0 .543-.027.811-.05-.857-2.578.157-4.972 1.932-6.446 1.703-1.415 3.882-1.98 5.853-1.838-.576-3.583-3.898-6.348-7.596-6.348zM5.785 5.991c.642 0 1.162.529 1.162 1.18a1.17 1.17 0 0 1-1.162 1.178A1.17 1.17 0 0 1 4.623 7.17c0-.651.52-1.18 1.162-1.18zm5.813 0c.642 0 1.162.529 1.162 1.18a1.17 1.17 0 0 1-1.162 1.178 1.17 1.17 0 0 1-1.162-1.178c0-.651.52-1.18 1.162-1.18zm3.34 2.867c-1.797-.052-3.746.512-5.28 1.786-1.72 1.428-2.687 3.72-1.78 6.22.942 2.453 3.666 4.229 6.884 4.229.826 0 1.622-.12 2.361-.336a.722.722 0 0 1 .598.082l1.584.926a.272.272 0 0 0 .14.047c.134 0 .24-.11.24-.247 0-.06-.024-.12-.04-.177l-.327-1.233a.49.49 0 0 1 .176-.554 5.77 5.77 0 0 0 2.5-4.627c0-3.545-3.136-6.116-6.056-6.116zm-2.35 3.495c.535 0 .97.44.97.982 0 .542-.435.982-.97.982s-.97-.44-.97-.982c0-.542.435-.982.97-.982zm4.696 0c.535 0 .97.44.97.982 0 .542-.435.982-.97.982s-.97-.44-.97-.982c0-.542.435-.982.97-.982z"/>
+  </svg>
+);
+
+const LineIcon = ({ size = 14 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+    <path d="M19.365 9.863c.349 0 .63.285.63.631 0 .345-.281.63-.63.63H17.61v1.125h1.755c.349 0 .63.283.63.63 0 .344-.281.629-.63.629h-2.386c-.345 0-.627-.285-.627-.629V8.108c0-.345.282-.63.63-.63h2.386c.346 0 .627.285.627.63 0 .349-.281.63-.63.63H17.61v1.125h1.755zm-3.855 3.016c0 .27-.174.51-.432.596-.064.021-.133.031-.199.031-.211 0-.391-.09-.51-.25l-2.443-3.317v2.94c0 .344-.279.629-.631.629-.346 0-.626-.285-.626-.629V8.108c0-.27.173-.51.43-.595.06-.023.136-.033.194-.033.195 0 .375.104.495.254l2.462 3.33V8.108c0-.345.282-.63.63-.63.345 0 .63.285.63.63v4.771zm-5.741 0c0 .344-.282.629-.631.629-.345 0-.627-.285-.627-.629V8.108c0-.345.282-.63.63-.63.346 0 .628.285.628.63v4.771zm-2.466.629H4.917c-.345 0-.63-.285-.63-.629V8.108c0-.345.285-.63.63-.63.348 0 .63.285.63.63v4.141h1.756c.348 0 .629.283.629.63 0 .344-.281.629-.629.629M24 10.314C24 4.943 18.615.572 12 .572S0 4.943 0 10.314c0 4.811 4.27 8.842 10.035 9.608.391.082.923.258 1.058.59.12.301.079.766.038 1.08l-.164 1.02c-.045.301-.24 1.186 1.049.645 1.291-.539 6.916-4.078 9.436-6.975C23.176 14.393 24 12.458 24 10.314"/>
+  </svg>
+);
+
+const SlackIcon = ({ size = 14 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+    <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zM6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zM8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zM18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zM17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zM15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zM15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z"/>
+  </svg>
+);
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
+const SOCIAL_CHANNELS: Channel[] = ["messenger", "telegram", "x", "viber", "wechat", "line", "slack"];
+
+const CHANNEL_COLOR: Record<Channel, string> = {
+  whatsapp:  "#00FF88",
+  sms:       "#00E5FF",
+  email:     "#A855F7",
+  push:      "#FFAB00",
+  messenger: "#0099FF",
+  telegram:  "#26A5E4",
+  x:         "#E7E9EA",
+  viber:     "#7360F2",
+  wechat:    "#07C160",
+  line:      "#06C755",
+  slack:     "#E01E5A",
+};
+
 const CHANNEL_ICON: Record<Channel, React.ReactNode> = {
-  whatsapp: <MessageSquare size={14} className="text-green-signal" />,
-  sms:      <Smartphone    size={14} className="text-cyan-neon"    />,
-  email:    <Mail          size={14} className="text-purple-plasma" />,
-  push:     <Zap           size={14} className="text-amber-signal" />,
+  whatsapp:  <MessageSquare size={14} className="text-green-signal"  />,
+  sms:       <Smartphone    size={14} className="text-cyan-neon"     />,
+  email:     <Mail          size={14} className="text-purple-plasma" />,
+  push:      <Zap           size={14} className="text-amber-signal"  />,
+  messenger: <span className="text-[#0099FF]"><MessengerIcon size={14} /></span>,
+  telegram:  <span className="text-[#26A5E4]"><TelegramIcon  size={14} /></span>,
+  x:         <span className="text-[#E7E9EA]"><XSocialIcon   size={14} /></span>,
+  viber:     <span className="text-[#7360F2]"><ViberIcon     size={14} /></span>,
+  wechat:    <span className="text-[#07C160]"><WeChatIcon    size={14} /></span>,
+  line:      <span className="text-[#06C755]"><LineIcon      size={14} /></span>,
+  slack:     <span className="text-[#E01E5A]"><SlackIcon     size={14} /></span>,
 };
 
 const CHANNEL_LABEL: Record<Channel, string> = {
-  whatsapp: "WhatsApp",
-  sms:      "SMS",
-  email:    "Email",
-  push:     "Push",
+  whatsapp:  "WhatsApp",
+  sms:       "SMS",
+  email:     "Email",
+  push:      "Push",
+  messenger: "Messenger",
+  telegram:  "Telegram",
+  x:         "X",
+  viber:     "Viber",
+  wechat:    "WeChat",
+  line:      "Line",
+  slack:     "Slack",
 };
 
 const STATUS_VARIANT: Record<CampaignStatus, "green" | "amber" | "purple" | "red" | "cyan"> = {
@@ -242,7 +316,7 @@ export default function CampaignDetailPage() {
       {/* Error / action toast */}
       {error && (
         <motion.div variants={variants.fadeInUp}>
-          <GlassCard padding="sm">
+          <GlassCard>
             <p className="text-xs text-red-signal font-mono">{error}</p>
           </GlassCard>
         </motion.div>
@@ -296,7 +370,18 @@ export default function CampaignDetailPage() {
                   </div>
                   <div>
                     <p className="text-2xs font-mono text-white/30 uppercase tracking-wider mb-0.5">Channel</p>
-                    <p className="text-sm font-medium text-white">{CHANNEL_LABEL[campaign.channel]}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-medium text-white">{CHANNEL_LABEL[campaign.channel]}</p>
+                      {SOCIAL_CHANNELS.includes(campaign.channel) && (
+                        <span
+                          className="flex items-center gap-0.5 rounded px-1 py-0.5"
+                          style={{ fontSize: 9, fontFamily: "JetBrains Mono, monospace", background: `${CHANNEL_COLOR[campaign.channel]}12`, color: `${CHANNEL_COLOR[campaign.channel]}90`, border: `1px solid ${CHANNEL_COLOR[campaign.channel]}28` }}
+                        >
+                          <Link2 size={8} />
+                          CRM
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
 

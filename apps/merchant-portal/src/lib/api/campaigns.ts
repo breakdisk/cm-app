@@ -4,7 +4,9 @@ import { createApiClient } from "./client";
 // Shapes match services/marketing — Channel/CampaignStatus are snake_case on the
 // wire per `#[serde(rename_all = "snake_case")]` in domain/entities/mod.rs.
 
-export type Channel = "whatsapp" | "sms" | "email" | "push";
+export type Channel =
+  | "whatsapp" | "sms" | "email" | "push"
+  | "messenger" | "telegram" | "x" | "viber" | "wechat" | "line" | "slack";
 
 export type CampaignStatus =
   | "draft"      // not yet scheduled / activated
