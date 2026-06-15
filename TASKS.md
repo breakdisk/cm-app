@@ -1,5 +1,15 @@
 # LogisticOS — Active Tasks
 
+## Session: 2026-06-15 — Magic Email Link Signup Gap
+
+### Magic Email Link Signup
+- [x] 1. Handle cross-device magic link click-through in landing login page
+         (`needsEmailConfirm` state + `confirmEmailAndComplete` function)
+         When `localStorage` has no saved email (different device), show email prompt
+         instead of silently returning — `apps/landing/src/app/login/page.tsx`
+
+---
+
 ## Session: 2026-06-14 — Gig Worker Onboarding + Compliance + Merchant Setup
 
 ### Merchant Onboarding Finalization

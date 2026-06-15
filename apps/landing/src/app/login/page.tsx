@@ -87,13 +87,22 @@ function LoginPageInner() {
     null
   );
   const [showMagic, setShowMagic] = useState(false);
+  // Cross-device magic link: stored href when email is missing from localStorage.
+  const [needsEmailConfirm, setNeedsEmailConfirm] = useState(false);
+  const [pendingMagicLinkHref, setPendingMagicLinkHref] = useState<string | null>(null);
 
   const auth = getAuth(getFirebaseApp());
 
   useEffect(() => {
     if (isSignInWithEmailLink(auth, window.location.href)) {
       const savedEmail = window.localStorage.getItem("emailForSignIn");
-      if (!savedEmail) return;
+      if (!savedEmail) {
+        // Cross-device sign-in: the email was stored on a different browser.
+        // Stash the current URL (which carries the oobCode) and show a prompt.
+        setPendingMagicLinkHref(window.location.href);
+        setNeedsEmailConfirm(true);
+        return;
+      }
       setLoading(true);
       signInWithEmailLink(auth, savedEmail, window.location.href)
         .then((result) => result.user.getIdToken())
@@ -204,6 +213,22 @@ function LoginPageInner() {
     }
   }
 
+  async function confirmEmailAndComplete() {
+    if (!email || !pendingMagicLinkHref) return;
+    setLoading(true);
+    setError(null);
+    try {
+      window.localStorage.setItem("emailForSignIn", email);
+      const result  = await signInWithEmailLink(auth, email, pendingMagicLinkHref);
+      const idToken = await result.user.getIdToken();
+      await completeSignIn(idToken);
+    } catch {
+      setError("Sign-in failed. Make sure you entered the same email address the link was sent to.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-[#050810] flex items-center justify-center px-4">
       <div
@@ -233,9 +258,13 @@ function LoginPageInner() {
 
         <div className="rounded-2xl border border-white/[0.08] bg-white/[0.03] backdrop-blur-xl p-8 shadow-glass-lg">
           <h1 className="text-2xl font-bold text-white mb-1" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
-            Sign in
+            {needsEmailConfirm ? "Confirm your email" : "Sign in"}
           </h1>
-          <p className="text-sm text-white/40 mb-6">Select your portal to continue</p>
+          <p className="text-sm text-white/40 mb-6">
+            {needsEmailConfirm
+              ? "Enter the email address you used to request the sign-in link."
+              : "Select your portal to continue"}
+          </p>
 
           {error && (
             <div className="mb-4 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
@@ -243,92 +272,120 @@ function LoginPageInner() {
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-3 mb-6">
-            {ROLES.map((role) => {
-              const Icon     = role.icon;
-              const selected = selectedRole === role.id;
-              return (
+          {needsEmailConfirm ? (
+            <div className="flex flex-col gap-4">
+              <div className="rounded-xl border border-cyan-neon/20 bg-cyan-neon/5 px-4 py-3 text-sm text-white/60">
+                It looks like you opened this link on a different device. Enter your email to complete sign-in.
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") confirmEmailAndComplete(); }}
+                  placeholder="you@example.com"
+                  autoFocus
+                  className="flex-1 rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-3 text-sm text-white placeholder:text-white/20 outline-none focus:border-cyan-neon/40"
+                />
                 <button
-                  key={role.id}
-                  onClick={() => { setSelectedRole(role.id); setShowMagic(false); setEmailSent(false); }}
-                  className={`
-                    relative rounded-xl border p-4 text-left transition-all duration-200
-                    ${selected ? `${role.border} ${role.bg} ${role.glow}` : "border-white/[0.06] bg-white/[0.02] hover:border-white/[0.12] hover:bg-white/[0.04]"}
-                  `}
+                  onClick={confirmEmailAndComplete}
+                  disabled={loading || !email}
+                  className="rounded-xl bg-cyan-neon px-4 py-3 text-sm font-semibold text-[#050810] hover:shadow-glow-cyan transition-all duration-200 disabled:opacity-50"
                 >
-                  <Icon className="w-5 h-5 mb-2" style={{ color: role.accent }} />
-                  <div className="text-sm font-semibold text-white">{role.label}</div>
-                  <div className="text-xs text-white/40 mt-0.5">{role.description}</div>
-                  {selected && (
-                    <div className="absolute top-2 right-2 w-2 h-2 rounded-full" style={{ backgroundColor: role.accent }} />
-                  )}
+                  {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Continue"}
                 </button>
-              );
-            })}
-          </div>
-
-          <AnimatePresence>
-            {selectedRole && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: "auto" }}
-                exit={{ opacity: 0, height: 0 }}
-                transition={{ duration: 0.25 }}
-                className="overflow-hidden"
-              >
-                <div className="flex flex-col gap-3">
-                  <button
-                    onClick={signInWithGoogle}
-                    disabled={loading}
-                    className="flex items-center justify-center gap-3 rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-3 text-sm font-medium text-white/70 hover:bg-white/[0.08] hover:text-white transition-all duration-200 disabled:opacity-50"
-                  >
-                    {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <GoogleIcon />}
-                    Continue with Google
-                  </button>
-
-                  <button
-                    onClick={signInWithFacebook}
-                    disabled={loading}
-                    className="flex items-center justify-center gap-3 rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-3 text-sm font-medium text-white/70 hover:bg-white/[0.08] hover:text-white transition-all duration-200 disabled:opacity-50"
-                  >
-                    {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}
-                    Continue with Facebook
-                  </button>
-
-                  {!showMagic ? (
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-3 mb-6">
+                {ROLES.map((role) => {
+                  const Icon     = role.icon;
+                  const selected = selectedRole === role.id;
+                  return (
                     <button
-                      onClick={() => setShowMagic(true)}
-                      className="flex items-center justify-center gap-3 rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-3 text-sm font-medium text-white/70 hover:bg-white/[0.08] hover:text-white transition-all duration-200"
+                      key={role.id}
+                      onClick={() => { setSelectedRole(role.id); setShowMagic(false); setEmailSent(false); }}
+                      className={`
+                        relative rounded-xl border p-4 text-left transition-all duration-200
+                        ${selected ? `${role.border} ${role.bg} ${role.glow}` : "border-white/[0.06] bg-white/[0.02] hover:border-white/[0.12] hover:bg-white/[0.04]"}
+                      `}
                     >
-                      <Mail className="h-4 w-4" />
-                      Continue with Email Link
+                      <Icon className="w-5 h-5 mb-2" style={{ color: role.accent }} />
+                      <div className="text-sm font-semibold text-white">{role.label}</div>
+                      <div className="text-xs text-white/40 mt-0.5">{role.description}</div>
+                      {selected && (
+                        <div className="absolute top-2 right-2 w-2 h-2 rounded-full" style={{ backgroundColor: role.accent }} />
+                      )}
                     </button>
-                  ) : emailSent ? (
-                    <div className="rounded-xl border border-green-signal/20 bg-green-signal/5 px-4 py-3 text-sm text-green-signal text-center">
-                      Check your email for the sign-in link.
-                    </div>
-                  ) : (
-                    <div className="flex gap-2">
-                      <input
-                        type="email"
-                        value={email}
-                        onChange={(e) => setEmail(e.target.value)}
-                        placeholder="you@example.com"
-                        className="flex-1 rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-3 text-sm text-white placeholder:text-white/20 outline-none focus:border-cyan-neon/40"
-                      />
+                  );
+                })}
+              </div>
+
+              <AnimatePresence>
+                {selectedRole && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    transition={{ duration: 0.25 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="flex flex-col gap-3">
                       <button
-                        onClick={sendMagicLink}
-                        disabled={loading || !email}
-                        className="rounded-xl bg-cyan-neon px-4 py-3 text-sm font-semibold text-[#050810] hover:shadow-glow-cyan transition-all duration-200 disabled:opacity-50"
+                        onClick={signInWithGoogle}
+                        disabled={loading}
+                        className="flex items-center justify-center gap-3 rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-3 text-sm font-medium text-white/70 hover:bg-white/[0.08] hover:text-white transition-all duration-200 disabled:opacity-50"
                       >
-                        {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Send"}
+                        {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <GoogleIcon />}
+                        Continue with Google
                       </button>
+
+                      <button
+                        onClick={signInWithFacebook}
+                        disabled={loading}
+                        className="flex items-center justify-center gap-3 rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-3 text-sm font-medium text-white/70 hover:bg-white/[0.08] hover:text-white transition-all duration-200 disabled:opacity-50"
+                      >
+                        {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}
+                        Continue with Facebook
+                      </button>
+
+                      {!showMagic ? (
+                        <button
+                          onClick={() => setShowMagic(true)}
+                          className="flex items-center justify-center gap-3 rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-3 text-sm font-medium text-white/70 hover:bg-white/[0.08] hover:text-white transition-all duration-200"
+                        >
+                          <Mail className="h-4 w-4" />
+                          Continue with Email Link
+                        </button>
+                      ) : emailSent ? (
+                        <div className="rounded-xl border border-green-signal/20 bg-green-signal/5 px-4 py-3 text-sm text-green-signal text-center">
+                          Check your email for the sign-in link.
+                        </div>
+                      ) : (
+                        <div className="flex gap-2">
+                          <input
+                            type="email"
+                            value={email}
+                            onChange={(e) => setEmail(e.target.value)}
+                            placeholder="you@example.com"
+                            className="flex-1 rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-3 text-sm text-white placeholder:text-white/20 outline-none focus:border-cyan-neon/40"
+                          />
+                          <button
+                            onClick={sendMagicLink}
+                            disabled={loading || !email}
+                            className="rounded-xl bg-cyan-neon px-4 py-3 text-sm font-semibold text-[#050810] hover:shadow-glow-cyan transition-all duration-200 disabled:opacity-50"
+                          >
+                            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Send"}
+                          </button>
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </>
+          )}
 
           <div className="mt-6 text-center">
             <a href="/track" className="text-xs text-white/30 hover:text-white/60 transition-colors">
