@@ -4,9 +4,10 @@
  * Route: /crm/journeys
  *
  * Journey Builder — multi-step automated workflows:
- *  - List all journeys with status badges
- *  - Create journeys with send_campaign / wait / condition steps
+ *  - List all journeys with status badges and step pills
+ *  - Create / edit journeys with send_campaign / wait / condition steps
  *  - Activate / pause journeys
+ *  - Enroll customers into active journeys
  *  - View enrollments per journey
  *
  * API: /v1/journeys (marketing service)
@@ -21,12 +22,13 @@ import {
   type Journey,
   type JourneyStep,
   type JourneyStatus,
+  type JourneyEnrollment,
   type CreateJourneyStepPayload,
 } from "@/lib/api/journeys";
 import {
   GitBranch, Plus, Trash2, Play, Pause, X as XClose,
-  ChevronRight, Clock, Send, CheckCircle2, AlertCircle,
-  Users, BarChart2, RefreshCw, ArrowRight,
+  ChevronRight, Clock, Send, CheckCircle2,
+  Users, BarChart2, RefreshCw, ArrowRight, UserPlus,
 } from "lucide-react";
 
 // ── Step type metadata ─────────────────────────────────────────────────────────
@@ -38,8 +40,8 @@ const STEP_COLORS: Record<string, string> = {
 };
 
 const STEP_ICONS: Record<string, React.ReactNode> = {
-  send_campaign: <Send    size={12} />,
-  wait:          <Clock   size={12} />,
+  send_campaign: <Send      size={12} />,
+  wait:          <Clock     size={12} />,
   condition:     <GitBranch size={12} />,
 };
 
@@ -145,7 +147,7 @@ function StepRow({
   );
 }
 
-// ── New Journey Modal ──────────────────────────────────────────────────────────
+// ── New / Edit Journey Modal ───────────────────────────────────────────────────
 
 function NewJourneyModal({
   existing,
@@ -349,20 +351,280 @@ function NewJourneyModal({
   );
 }
 
+// ── Enroll Customers Modal ─────────────────────────────────────────────────────
+
+function EnrollModal({
+  journey,
+  onClose,
+  onEnrolled,
+}: {
+  journey:    Journey;
+  onClose:    () => void;
+  onEnrolled: (count: number) => void;
+}) {
+  const [rawIds,    setRawIds]    = useState("");
+  const [enrolling, setEnrolling] = useState(false);
+  const [error,     setError]     = useState<string | null>(null);
+  const [done,      setDone]      = useState(false);
+  const [enrolled,  setEnrolled]  = useState(0);
+
+  const api = useMemo(() => createJourneysApi(), []);
+
+  async function handleEnroll() {
+    const ids = rawIds.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
+    if (ids.length === 0) {
+      setError("Enter at least one customer UUID");
+      return;
+    }
+    setEnrolling(true);
+    setError(null);
+    try {
+      const res = await api.enroll(journey.id, ids);
+      setEnrolled(res.enrolled);
+      setDone(true);
+      onEnrolled(res.enrolled);
+    } catch (e) {
+      setError((e as { message?: string })?.message ?? "Enrollment failed");
+    } finally {
+      setEnrolling(false);
+    }
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.78)", backdropFilter: "blur(6px)" }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.96, y: 8 }}
+        transition={{ ease: [0.16, 1, 0.3, 1], duration: 0.3 }}
+        className="relative w-full max-w-md rounded-2xl border border-glass-border shadow-glass"
+        style={{ background: "rgba(8,12,28,0.98)" }}
+      >
+        <div className="flex items-center justify-between px-6 pt-6 pb-4 border-b border-glass-border/50">
+          <div>
+            <h2 className="font-heading text-base font-bold text-white flex items-center gap-2">
+              <UserPlus size={16} className="text-cyan-neon" />
+              Enroll Customers
+            </h2>
+            <p className="text-xs text-white/35 mt-0.5 font-mono truncate max-w-xs">{journey.name}</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="flex h-8 w-8 items-center justify-center rounded-lg border border-glass-border text-white/40 hover:text-white/80 transition-all"
+          >
+            <XClose size={15} />
+          </button>
+        </div>
+
+        <div className="px-6 py-4 flex flex-col gap-4">
+          {done ? (
+            <div className="flex flex-col items-center gap-3 py-4 text-center">
+              <CheckCircle2 size={28} className="text-green-signal" />
+              <p className="text-sm font-semibold text-white">{enrolled} customer{enrolled !== 1 ? "s" : ""} enrolled</p>
+              <p className="text-xs text-white/40 font-mono">They will start receiving journey steps immediately.</p>
+              <button
+                onClick={onClose}
+                className="mt-2 rounded-lg border border-glass-border px-5 py-2 text-sm text-white/60 hover:text-white transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          ) : (
+            <>
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-white/50">
+                  Customer UUIDs <span className="text-white/25">(one per line or comma-separated)</span>
+                </label>
+                <textarea
+                  value={rawIds}
+                  onChange={(e) => setRawIds(e.target.value)}
+                  placeholder={"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\nffffffff-1111-2222-3333-444444444444"}
+                  rows={5}
+                  className="w-full rounded-xl border border-glass-border bg-glass-100 px-3.5 py-2.5 text-xs text-white placeholder-white/20 outline-none focus:border-cyan-neon/50 font-mono resize-none transition-colors"
+                />
+              </div>
+              {error && (
+                <p className="rounded-lg border border-red-signal/30 bg-red-signal/10 px-3 py-2 text-xs text-red-signal">
+                  {error}
+                </p>
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={onClose}
+                  className="rounded-lg border border-glass-border px-4 py-2 text-sm text-white/50 hover:text-white transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleEnroll}
+                  disabled={enrolling || !rawIds.trim()}
+                  className="flex items-center gap-2 rounded-lg px-5 py-2 text-sm font-semibold text-white transition-all disabled:opacity-40"
+                  style={{ background: "linear-gradient(135deg, #00E5FF, #00FF88)" }}
+                >
+                  {enrolling
+                    ? <><span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" /> Enrolling…</>
+                    : <><UserPlus size={13} /> Enroll</>}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// ── Enrollments Panel ──────────────────────────────────────────────────────────
+
+function EnrollmentsPanel({
+  journeyId,
+  journeyName,
+  onClose,
+}: {
+  journeyId:   string;
+  journeyName: string;
+  onClose:     () => void;
+}) {
+  const [enrollments, setEnrollments] = useState<JourneyEnrollment[]>([]);
+  const [loading,     setLoading]     = useState(true);
+  const [error,       setError]       = useState<string | null>(null);
+
+  const api = useMemo(() => createJourneysApi(), []);
+
+  useEffect(() => {
+    api.listEnrollments(journeyId)
+      .then((r) => setEnrollments(r.enrollments ?? []))
+      .catch((e) => setError((e as { message?: string })?.message ?? "Failed to load enrollments"))
+      .finally(() => setLoading(false));
+  }, [api, journeyId]);
+
+  const STATUS_COLOR: Record<string, string> = {
+    active:    "#00E5FF",
+    completed: "#00FF88",
+    exited:    "#FFAB00",
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.78)", backdropFilter: "blur(6px)" }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.96, y: 8 }}
+        transition={{ ease: [0.16, 1, 0.3, 1], duration: 0.3 }}
+        className="relative w-full max-w-xl rounded-2xl border border-glass-border shadow-glass flex flex-col"
+        style={{ background: "rgba(8,12,28,0.98)", maxHeight: "80vh" }}
+      >
+        <div className="flex items-center justify-between px-6 pt-6 pb-4 shrink-0 border-b border-glass-border/50">
+          <div>
+            <h2 className="font-heading text-base font-bold text-white flex items-center gap-2">
+              <Users size={16} className="text-cyan-neon" />
+              Enrollments
+            </h2>
+            <p className="text-xs text-white/35 mt-0.5 font-mono truncate max-w-xs">{journeyName}</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="flex h-8 w-8 items-center justify-center rounded-lg border border-glass-border text-white/40 hover:text-white/80 transition-all"
+          >
+            <XClose size={15} />
+          </button>
+        </div>
+
+        <div className="overflow-y-auto flex-1 px-6 py-4">
+          {loading ? (
+            <div className="flex justify-center py-8">
+              <span className="h-5 w-5 animate-spin rounded-full border-2 border-white/10 border-t-cyan-neon" />
+            </div>
+          ) : error ? (
+            <p className="text-xs text-red-signal font-mono">{error}</p>
+          ) : enrollments.length === 0 ? (
+            <div className="flex flex-col items-center gap-2 py-10 text-center">
+              <Users size={24} className="text-white/15" />
+              <p className="text-sm text-white/40">No enrollments yet</p>
+              <p className="text-xs text-white/25 max-w-xs">Use the Enroll button to add customers to this journey.</p>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {enrollments.map((e) => {
+                const color = STATUS_COLOR[e.status] ?? "#A855F7";
+                return (
+                  <div
+                    key={e.id}
+                    className="flex items-center gap-3 rounded-xl border border-glass-border px-4 py-3"
+                    style={{ background: `${color}06` }}
+                  >
+                    <div
+                      className="h-2 w-2 rounded-full shrink-0"
+                      style={{ background: color, boxShadow: `0 0 6px ${color}80` }}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-mono text-white/70 truncate">{e.customer_id}</p>
+                      <p className="text-2xs font-mono text-white/30 mt-0.5">
+                        Step {e.current_step_order ?? "—"} · {e.status}
+                        {e.next_action_at && ` · next: ${new Date(e.next_action_at).toLocaleDateString()}`}
+                      </p>
+                    </div>
+                    <span
+                      className="rounded-full px-2 py-0.5 text-2xs font-mono shrink-0"
+                      style={{ background: `${color}12`, color: `${color}CC`, border: `1px solid ${color}25` }}
+                    >
+                      {e.status}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="shrink-0 border-t border-glass-border/50 px-6 py-3 flex items-center justify-between">
+          <p className="text-xs text-white/30 font-mono">{enrollments.length} total enrollment{enrollments.length !== 1 ? "s" : ""}</p>
+          <button
+            onClick={onClose}
+            className="rounded-lg border border-glass-border px-4 py-2 text-sm text-white/50 hover:text-white transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 // ── Journey Card ───────────────────────────────────────────────────────────────
 
 function JourneyCard({
   journey,
   onActivate,
+  onPause,
   onEdit,
   onDelete,
+  onEnroll,
+  onViewEnrollments,
   mutating,
 }: {
-  journey:    Journey;
-  onActivate: (j: Journey) => void;
-  onEdit:     (j: Journey) => void;
-  onDelete:   (id: string) => void;
-  mutating:   boolean;
+  journey:            Journey;
+  onActivate:         (j: Journey) => void;
+  onPause:            (j: Journey) => void;
+  onEdit:             (j: Journey) => void;
+  onDelete:           (id: string) => void;
+  onEnroll:           (j: Journey) => void;
+  onViewEnrollments:  (j: Journey) => void;
+  mutating:           boolean;
 }) {
   const badge = STATUS_BADGE[journey.status];
 
@@ -414,10 +676,22 @@ function JourneyCard({
             <span>{journey.steps.length} step{journey.steps.length !== 1 ? "s" : ""}</span>
             <span>·</span>
             <span>Updated {new Date(journey.updated_at).toLocaleDateString()}</span>
+            {journey.status === "active" && (
+              <>
+                <span>·</span>
+                <button
+                  onClick={() => onViewEnrollments(journey)}
+                  className="flex items-center gap-0.5 text-cyan-neon/50 hover:text-cyan-neon transition-colors"
+                >
+                  <Users size={10} /> Enrollments
+                </button>
+              </>
+            )}
           </div>
         </div>
 
         <div className="flex items-center gap-1 shrink-0">
+          {/* Activate: draft with steps */}
           {journey.status === "draft" && journey.steps.length > 0 && (
             <button
               onClick={() => onActivate(journey)}
@@ -428,6 +702,43 @@ function JourneyCard({
               <Play size={12} />
             </button>
           )}
+
+          {/* Pause: active */}
+          {journey.status === "active" && (
+            <button
+              onClick={() => onPause(journey)}
+              disabled={mutating}
+              title="Pause"
+              className="flex h-7 w-7 items-center justify-center rounded-lg border border-amber-signal/25 text-amber-signal/60 hover:text-amber-signal hover:bg-amber-signal/10 transition-all disabled:opacity-40"
+            >
+              <Pause size={12} />
+            </button>
+          )}
+
+          {/* Enroll: active */}
+          {journey.status === "active" && (
+            <button
+              onClick={() => onEnroll(journey)}
+              disabled={mutating}
+              title="Enroll Customers"
+              className="flex h-7 w-7 items-center justify-center rounded-lg border border-cyan-neon/25 text-cyan-neon/60 hover:text-cyan-neon hover:bg-cyan-neon/10 transition-all disabled:opacity-40"
+            >
+              <UserPlus size={12} />
+            </button>
+          )}
+
+          {/* Re-activate: paused */}
+          {journey.status === "paused" && (
+            <button
+              onClick={() => onActivate(journey)}
+              disabled={mutating}
+              title="Resume"
+              className="flex h-7 w-7 items-center justify-center rounded-lg border border-green-signal/25 text-green-signal/60 hover:text-green-signal hover:bg-green-signal/10 transition-all disabled:opacity-40"
+            >
+              <Play size={12} />
+            </button>
+          )}
+
           <button
             onClick={() => onEdit(journey)}
             title="Edit"
@@ -452,12 +763,14 @@ function JourneyCard({
 // ── Page ───────────────────────────────────────────────────────────────────────
 
 export default function JourneysPage() {
-  const [journeys,   setJourneys]   = useState<Journey[]>([]);
-  const [loading,    setLoading]    = useState(true);
-  const [error,      setError]      = useState<string | null>(null);
-  const [showNew,    setShowNew]    = useState(false);
-  const [editing,    setEditing]    = useState<Journey | null>(null);
-  const [mutatingId, setMutatingId] = useState<string | null>(null);
+  const [journeys,    setJourneys]    = useState<Journey[]>([]);
+  const [loading,     setLoading]     = useState(true);
+  const [error,       setError]       = useState<string | null>(null);
+  const [showNew,     setShowNew]     = useState(false);
+  const [editing,     setEditing]     = useState<Journey | null>(null);
+  const [enrolling,   setEnrolling]   = useState<Journey | null>(null);
+  const [viewingEnrollments, setViewingEnrollments] = useState<Journey | null>(null);
+  const [mutatingId,  setMutatingId]  = useState<string | null>(null);
 
   const api = useMemo(() => createJourneysApi(), []);
 
@@ -487,6 +800,18 @@ export default function JourneysPage() {
     }
   }
 
+  async function handlePause(journey: Journey) {
+    setMutatingId(journey.id);
+    try {
+      await api.pause(journey.id);
+      await load();
+    } catch (e) {
+      setError((e as { message?: string })?.message ?? "Failed to pause journey");
+    } finally {
+      setMutatingId(null);
+    }
+  }
+
   async function handleDelete(id: string) {
     setMutatingId(id);
     try {
@@ -499,8 +824,20 @@ export default function JourneysPage() {
     }
   }
 
+  // Fetch full journey (with steps) before opening the edit modal — the list
+  // response now includes steps, but fetch-on-edit ensures freshness.
+  async function handleEdit(journey: Journey) {
+    try {
+      const full = await api.get(journey.id);
+      setEditing(full);
+    } catch {
+      setEditing(journey);
+    }
+  }
+
   const active  = journeys.filter((j) => j.status === "active").length;
   const drafted = journeys.filter((j) => j.status === "draft").length;
+  const paused  = journeys.filter((j) => j.status === "paused").length;
 
   return (
     <>
@@ -518,7 +855,7 @@ export default function JourneysPage() {
               Journey Builder
             </h1>
             <p className="text-sm text-white/40 font-mono mt-0.5">
-              Multi-step automation · {active} active, {drafted} draft
+              Multi-step automation · {active} active{paused > 0 ? `, ${paused} paused` : ""}, {drafted} draft
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -547,11 +884,12 @@ export default function JourneysPage() {
         )}
 
         {/* KPI row */}
-        <motion.div variants={variants.fadeInUp} className="grid grid-cols-3 gap-3">
+        <motion.div variants={variants.fadeInUp} className="grid grid-cols-4 gap-3">
           {[
-            { label: "Total Journeys", value: journeys.length, color: "cyan"   as const },
-            { label: "Active",         value: active,          color: "green"  as const },
-            { label: "Draft",          value: drafted,         color: "purple" as const },
+            { label: "Total",   value: journeys.length, color: "cyan"   as const },
+            { label: "Active",  value: active,          color: "green"  as const },
+            { label: "Paused",  value: paused,          color: "amber"  as const },
+            { label: "Draft",   value: drafted,         color: "purple" as const },
           ].map((m) => (
             <GlassCard key={m.label} size="sm" glow={m.color} accent>
               <div className="flex flex-col gap-1">
@@ -592,8 +930,11 @@ export default function JourneysPage() {
                 <JourneyCard
                   journey={journey}
                   onActivate={handleActivate}
-                  onEdit={(j) => setEditing(j)}
+                  onPause={handlePause}
+                  onEdit={handleEdit}
                   onDelete={handleDelete}
+                  onEnroll={(j) => setEnrolling(j)}
+                  onViewEnrollments={(j) => setViewingEnrollments(j)}
                   mutating={mutatingId === journey.id}
                 />
               </motion.div>
@@ -608,6 +949,20 @@ export default function JourneysPage() {
             existing={editing ?? undefined}
             onClose={() => { setShowNew(false); setEditing(null); }}
             onSaved={load}
+          />
+        )}
+        {enrolling && (
+          <EnrollModal
+            journey={enrolling}
+            onClose={() => setEnrolling(null)}
+            onEnrolled={() => { setEnrolling(null); }}
+          />
+        )}
+        {viewingEnrollments && (
+          <EnrollmentsPanel
+            journeyId={viewingEnrollments.id}
+            journeyName={viewingEnrollments.name}
+            onClose={() => setViewingEnrollments(null)}
           />
         )}
       </AnimatePresence>

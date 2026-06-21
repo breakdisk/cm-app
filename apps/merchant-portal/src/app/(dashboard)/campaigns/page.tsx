@@ -463,13 +463,19 @@ function NewCampaignModal({ onClose, onCreated }: { onClose: () => void; onCreat
         await api.schedule(created.id, { scheduled_at: new Date(scheduleFor).toISOString() });
       }
       if (abTestEnabled && variantBTemplateId.trim()) {
-        await createAbTestApi().create(created.id, {
-          name: `${name.trim()} — A/B Test`,
-          variants: [
-            { name: "A", template_id: `inline_${created.id}`, weight_pct: 50 },
-            { name: "B", template_id: variantBTemplateId.trim(), weight_pct: 50 },
-          ],
-        }).catch(() => { /* non-fatal — campaign still created */ });
+        try {
+          await createAbTestApi().create(created.id, {
+            name: `${name.trim()} — A/B Test`,
+            variants: [
+              { name: "A", template_id: `inline_${created.id}`, weight_pct: 50 },
+              { name: "B", template_id: variantBTemplateId.trim(), weight_pct: 50 },
+            ],
+          });
+        } catch (abErr) {
+          const msg = (abErr as { message?: string })?.message ?? "A/B test setup failed";
+          setError(`Campaign created, but A/B test could not be saved: ${msg}`);
+          return;
+        }
       }
       setDone(true);
       onCreated?.();

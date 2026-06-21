@@ -441,17 +441,48 @@ impl PgJourneyRepository {
             created_at: chrono::DateTime<chrono::Utc>,
             updated_at: chrono::DateTime<chrono::Utc>,
         }
+        #[derive(sqlx::FromRow)]
+        struct SRow {
+            id: Uuid, journey_id: Uuid, step_order: i32, step_type: String,
+            campaign_id: Option<Uuid>, wait_days: Option<i32>,
+            condition_type: Option<String>, condition_campaign_id: Option<Uuid>,
+            yes_next_order: Option<i32>, no_next_order: Option<i32>,
+        }
+
         let rows = sqlx::query_as::<_, JRow>(
             "SELECT id, tenant_id, name, description, trigger, status, created_at, updated_at
              FROM marketing.journeys WHERE tenant_id = $1 ORDER BY created_at DESC"
         ).bind(tenant_id).fetch_all(&self.pool).await?;
 
+        if rows.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let journey_ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
+        let step_rows = sqlx::query_as::<_, SRow>(
+            "SELECT id, journey_id, step_order, step_type, campaign_id, wait_days,
+                    condition_type, condition_campaign_id, yes_next_order, no_next_order
+             FROM marketing.journey_steps WHERE journey_id = ANY($1) ORDER BY journey_id, step_order ASC"
+        ).bind(&journey_ids).fetch_all(&self.pool).await?;
+
+        use std::collections::HashMap;
+        let mut steps_by_journey: HashMap<Uuid, Vec<JourneyStep>> = HashMap::new();
+        for s in step_rows {
+            steps_by_journey.entry(s.journey_id).or_default().push(JourneyStep {
+                id: s.id, journey_id: s.journey_id, step_order: s.step_order,
+                step_type: s.step_type, campaign_id: s.campaign_id, wait_days: s.wait_days,
+                condition_type: s.condition_type, condition_campaign_id: s.condition_campaign_id,
+                yes_next_order: s.yes_next_order, no_next_order: s.no_next_order,
+            });
+        }
+
         let mut journeys = Vec::with_capacity(rows.len());
         for jr in rows {
             let status: JourneyStatus = serde_json::from_value(serde_json::Value::String(jr.status))?;
+            let steps = steps_by_journey.remove(&jr.id).unwrap_or_default();
             journeys.push(Journey {
                 id: jr.id, tenant_id: jr.tenant_id, name: jr.name, description: jr.description,
-                trigger: jr.trigger, status, steps: vec![],  // steps not loaded in list view
+                trigger: jr.trigger, status, steps,
                 created_at: jr.created_at, updated_at: jr.updated_at,
             });
         }

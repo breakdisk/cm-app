@@ -97,6 +97,11 @@ export function createJourneysApi() {
       return data;
     },
 
+    async pause(id: string): Promise<Journey> {
+      const { data } = await http.post<Journey>(`/v1/journeys/${id}/pause`);
+      return data;
+    },
+
     async enroll(id: string, customerIds: string[]): Promise<{ enrolled: number }> {
       const { data } = await http.post<{ enrolled: number }>(`/v1/journeys/${id}/enroll`, {
         customer_ids: customerIds,

@@ -16,6 +16,7 @@ use crate::application::services::{CreateCampaignCommand, ScheduleCampaignComman
 use crate::domain::entities::CampaignStatus;
 use crate::AppState;
 
+/// Auth-protected routes (mounted with `require_auth` middleware in bootstrap).
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/campaigns",                                        get(list_campaigns).post(create_campaign))
@@ -31,12 +32,19 @@ pub fn router() -> Router<AppState> {
         .route("/v1/journeys",                                         get(list_journeys).post(create_journey))
         .route("/v1/journeys/:id",                                     get(get_journey).put(update_journey).delete(delete_journey))
         .route("/v1/journeys/:id/activate",                            post(activate_journey))
+        .route("/v1/journeys/:id/pause",                               post(pause_journey))
         .route("/v1/journeys/:id/enroll",                              post(enroll_journey))
         .route("/v1/journeys/:id/enrollments",                         get(list_journey_enrollments))
-        // Internal endpoint — called by the business-logic rules engine (no user auth required).
-        .route("/v1/internal/campaigns/:id/trigger-for-recipient",     post(trigger_for_recipient))
         // MCP server endpoint — consumed by the AI layer and API gateway registry
         .route("/mcp",                                                 post(mcp_handler))
+}
+
+/// Internal routes — no user auth required. API gateway blocks /v1/internal/* from
+/// public traffic; network-level isolation (K8s NetworkPolicy) restricts callers to
+/// peer services within the cluster.
+pub fn internal_router() -> Router<AppState> {
+    Router::new()
+        .route("/v1/internal/campaigns/:id/trigger-for-recipient", post(trigger_for_recipient))
 }
 
 // ---------------------------------------------------------------------------
@@ -376,6 +384,12 @@ async fn create_ab_test(
     if body.variants.len() < 2 {
         return Err(AppError::Validation("A/B test requires at least 2 variants".to_owned()));
     }
+    let total_weight: u32 = body.variants.iter().map(|v| v.weight_pct as u32).sum();
+    if total_weight != 100 {
+        return Err(AppError::Validation(format!(
+            "A/B variant weights must sum to 100 (got {total_weight})"
+        )));
+    }
 
     use crate::domain::entities::AbTest;
     let test = AbTest {
@@ -572,6 +586,27 @@ async fn activate_journey(
         return Err(AppError::BusinessRule("Journey must have at least one step before activating".to_owned()));
     }
     journey.status     = JourneyStatus::Active;
+    journey.updated_at = chrono::Utc::now();
+    state.journey_repo.save(&journey).await.map_err(AppError::internal)?;
+    Ok::<_, AppError>((StatusCode::OK, Json(journey)))
+}
+
+/// `POST /v1/journeys/:id/pause` — set status to Paused (only from Active).
+async fn pause_journey(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::CAMPAIGNS_SEND)?;
+    let mut journey = state.journey_repo.find_by_id(id).await.map_err(AppError::internal)?
+        .ok_or_else(|| AppError::NotFound { resource: "Journey", id: id.to_string() })?;
+    if journey.tenant_id != claims.tenant_id {
+        return Err(AppError::Forbidden { resource: "journey".to_owned() });
+    }
+    if journey.status != JourneyStatus::Active {
+        return Err(AppError::BusinessRule("Only active journeys can be paused".to_owned()));
+    }
+    journey.status     = JourneyStatus::Paused;
     journey.updated_at = chrono::Utc::now();
     state.journey_repo.save(&journey).await.map_err(AppError::internal)?;
     Ok::<_, AppError>((StatusCode::OK, Json(journey)))

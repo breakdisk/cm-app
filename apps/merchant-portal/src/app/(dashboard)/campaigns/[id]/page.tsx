@@ -23,9 +23,11 @@ import {
 } from "lucide-react";
 import {
   createCampaignsApi,
+  createAbTestApi,
   type Campaign,
   type Channel,
   type CampaignStatus,
+  type AbTestWithStats,
 } from "@/lib/api/campaigns";
 
 // ── Social channel SVG icons ───────────────────────────────────────────────────
@@ -180,18 +182,28 @@ export default function CampaignDetailPage() {
   const router  = useRouter();
 
   const [campaign,   setCampaign]   = useState<Campaign | null>(null);
+  const [abData,     setAbData]     = useState<AbTestWithStats | null>(null);
   const [loading,    setLoading]    = useState(true);
   const [error,      setError]      = useState<string | null>(null);
   const [mutating,   setMutating]   = useState(false);
   const [actionDone, setActionDone] = useState<"activated" | "cancelled" | null>(null);
+  const [selectingWinner, setSelectingWinner] = useState(false);
 
-  const api = createCampaignsApi();
+  const api     = createCampaignsApi();
+  const abApi   = createAbTestApi();
 
   const load = useCallback(async () => {
     setError(null);
     try {
       const c = await api.get(id);
       setCampaign(c);
+      // Try loading A/B test data — not all campaigns have one
+      try {
+        const ab = await abApi.get(id);
+        setAbData(ab);
+      } catch {
+        setAbData(null);
+      }
     } catch (e) {
       const err = e as { message?: string };
       setError(err?.message ?? "Failed to load campaign");
@@ -215,6 +227,21 @@ export default function CampaignDetailPage() {
       setError(err?.message ?? "Failed to activate campaign");
     } finally {
       setMutating(false);
+    }
+  }
+
+  async function handleSelectWinner(variant: string) {
+    if (!campaign) return;
+    setSelectingWinner(true);
+    try {
+      await abApi.selectWinner(campaign.id, variant);
+      const ab = await abApi.get(campaign.id);
+      setAbData(ab);
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Failed to select winner");
+    } finally {
+      setSelectingWinner(false);
     }
   }
 
@@ -492,6 +519,93 @@ export default function CampaignDetailPage() {
               </div>
             </GlassCard>
           </motion.div>
+
+          {/* A/B Test panel — only shown when a test exists for this campaign */}
+          {abData && (
+            <motion.div variants={variants.fadeInUp}>
+              <GlassCard>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="font-heading text-sm font-semibold text-white flex items-center gap-2">
+                    <BarChart2 size={14} className="text-purple-plasma" />
+                    A/B Test — {abData.ab_test.name}
+                  </h2>
+                  {abData.ab_test.winner_variant && (
+                    <span className="flex items-center gap-1 rounded-full border border-green-signal/30 bg-green-signal/10 px-2 py-0.5 text-2xs font-mono text-green-signal">
+                      <CheckCircle2 size={10} />
+                      Winner: {abData.ab_test.winner_variant}
+                    </span>
+                  )}
+                </div>
+
+                {/* Variant performance table */}
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs font-mono">
+                    <thead>
+                      <tr className="text-left text-white/30 uppercase text-2xs tracking-wider">
+                        <th className="pb-2 pr-4">Variant</th>
+                        <th className="pb-2 pr-4">Sent</th>
+                        <th className="pb-2 pr-4">Delivered</th>
+                        <th className="pb-2 pr-4">Opened</th>
+                        <th className="pb-2 pr-4">Clicked</th>
+                        <th className="pb-2">Open Rate</th>
+                        {!abData.ab_test.winner_variant && <th className="pb-2 pl-4">Action</th>}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {abData.ab_test.variants.map((v) => {
+                        const stat = abData.stats.find((s) => s.variant === v.name);
+                        const openRate = stat && stat.sent > 0
+                          ? ((stat.opened / stat.sent) * 100).toFixed(1) + "%"
+                          : "—";
+                        const isWinner = abData.ab_test.winner_variant === v.name;
+                        return (
+                          <tr
+                            key={v.name}
+                            className="border-t border-glass-border/40"
+                            style={isWinner ? { background: "rgba(0,255,136,0.04)" } : undefined}
+                          >
+                            <td className="py-2.5 pr-4">
+                              <div className="flex items-center gap-1.5">
+                                <span
+                                  className="flex h-5 w-5 items-center justify-center rounded font-bold text-xs"
+                                  style={{ background: "rgba(168,85,247,0.15)", color: "#A855F7" }}
+                                >
+                                  {v.name}
+                                </span>
+                                {isWinner && <CheckCircle2 size={11} className="text-green-signal" />}
+                              </div>
+                            </td>
+                            <td className="py-2.5 pr-4 text-white/60">{stat?.sent?.toLocaleString() ?? "0"}</td>
+                            <td className="py-2.5 pr-4 text-white/60">{stat?.delivered?.toLocaleString() ?? "0"}</td>
+                            <td className="py-2.5 pr-4 text-white/60">{stat?.opened?.toLocaleString() ?? "0"}</td>
+                            <td className="py-2.5 pr-4 text-white/60">{stat?.clicked?.toLocaleString() ?? "0"}</td>
+                            <td className="py-2.5 text-cyan-neon/80">{openRate}</td>
+                            {!abData.ab_test.winner_variant && (
+                              <td className="py-2.5 pl-4">
+                                <button
+                                  onClick={() => handleSelectWinner(v.name)}
+                                  disabled={selectingWinner}
+                                  className="rounded-md border border-green-signal/25 bg-green-signal/10 px-2.5 py-1 text-2xs font-semibold text-green-signal hover:bg-green-signal/20 transition-colors disabled:opacity-40"
+                                >
+                                  Pick Winner
+                                </button>
+                              </td>
+                            )}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {abData.ab_test.concluded_at && (
+                  <p className="mt-3 text-2xs text-white/25 font-mono">
+                    Concluded {fmtDate(abData.ab_test.concluded_at)}
+                  </p>
+                )}
+              </GlassCard>
+            </motion.div>
+          )}
         </>
       )}
     </motion.div>
