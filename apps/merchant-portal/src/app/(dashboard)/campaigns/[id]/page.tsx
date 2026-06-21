@@ -12,14 +12,14 @@
  */
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import {
   ArrowLeft, Megaphone, MessageSquare, Mail, Smartphone, Zap,
   Play, X, RefreshCw, CheckCircle2, Clock, Send, AlertTriangle,
-  BarChart2, User, Calendar, Link2,
+  BarChart2, User, Calendar, Link2, Plus,
 } from "lucide-react";
 import {
   createCampaignsApi,
@@ -189,6 +189,20 @@ export default function CampaignDetailPage() {
   const [actionDone, setActionDone] = useState<"activated" | "cancelled" | null>(null);
   const [selectingWinner, setSelectingWinner] = useState(false);
 
+  // A/B test creation
+  const [showAbModal, setShowAbModal] = useState(false);
+  const [abCreating,  setAbCreating]  = useState(false);
+  const [abDraft, setAbDraft] = useState<{
+    name: string;
+    variants: { name: string; template_id: string; weight_pct: number }[];
+  }>({
+    name: "",
+    variants: [
+      { name: "A", template_id: "", weight_pct: 50 },
+      { name: "B", template_id: "", weight_pct: 50 },
+    ],
+  });
+
   const api     = createCampaignsApi();
   const abApi   = createAbTestApi();
 
@@ -228,6 +242,55 @@ export default function CampaignDetailPage() {
     } finally {
       setMutating(false);
     }
+  }
+
+  async function handleCreateAbTest() {
+    if (!campaign) return;
+    const totalWeight = abDraft.variants.reduce((s, v) => s + v.weight_pct, 0);
+    if (totalWeight !== 100) {
+      setError("Variant weights must sum to 100%");
+      return;
+    }
+    if (!abDraft.name.trim()) {
+      setError("Test name is required");
+      return;
+    }
+    if (abDraft.variants.some((v) => !v.template_id.trim())) {
+      setError("All variants need a template ID");
+      return;
+    }
+    setAbCreating(true);
+    setError(null);
+    try {
+      await abApi.create(campaign.id, {
+        name:     abDraft.name.trim(),
+        variants: abDraft.variants.map((v) => ({
+          name:        v.name,
+          template_id: v.template_id.trim(),
+          weight_pct:  v.weight_pct,
+        })),
+      });
+      setShowAbModal(false);
+      const ab = await abApi.get(campaign.id);
+      setAbData(ab);
+    } catch (e) {
+      const err = e as { message?: string };
+      setError(err?.message ?? "Failed to create A/B test");
+    } finally {
+      setAbCreating(false);
+    }
+  }
+
+  function openAbModal() {
+    setAbDraft({
+      name: `${campaign?.name ?? "Campaign"} — A/B Test`,
+      variants: [
+        { name: "A", template_id: campaign?.template?.template_id ?? "", weight_pct: 50 },
+        { name: "B", template_id: "", weight_pct: 50 },
+      ],
+    });
+    setError(null);
+    setShowAbModal(true);
   }
 
   async function handleSelectWinner(variant: string) {
@@ -316,6 +379,15 @@ export default function CampaignDetailPage() {
             </button>
             {(campaign.status === "draft" || campaign.status === "scheduled") && (
               <>
+                {!abData && (
+                  <button
+                    onClick={openAbModal}
+                    className="flex items-center gap-1.5 rounded-lg border border-purple-plasma/30 bg-purple-plasma/10 px-3 py-2 text-xs font-semibold text-purple-plasma hover:bg-purple-plasma/20 transition-colors"
+                  >
+                    <BarChart2 size={12} />
+                    A/B Test
+                  </button>
+                )}
                 <button
                   onClick={handleActivate}
                   disabled={mutating}
@@ -520,6 +592,24 @@ export default function CampaignDetailPage() {
             </GlassCard>
           </motion.div>
 
+          {/* A/B Test empty-state card — shown when campaign is eligible but no test yet */}
+          {!abData && (campaign?.status === "draft" || campaign?.status === "scheduled") && (
+            <motion.div variants={variants.fadeInUp}>
+              <button
+                onClick={openAbModal}
+                className="w-full rounded-2xl border border-dashed border-purple-plasma/25 bg-purple-plasma/5 px-6 py-8 text-center hover:bg-purple-plasma/10 transition-colors group"
+              >
+                <BarChart2 size={24} className="mx-auto mb-2 text-purple-plasma/50 group-hover:text-purple-plasma transition-colors" />
+                <p className="font-heading text-sm font-semibold text-white/60 group-hover:text-white/80 transition-colors">
+                  Setup A/B Test
+                </p>
+                <p className="mt-1 text-xs text-white/30">
+                  Split recipients between two message variants and pick the winner
+                </p>
+              </button>
+            </motion.div>
+          )}
+
           {/* A/B Test panel — only shown when a test exists for this campaign */}
           {abData && (
             <motion.div variants={variants.fadeInUp}>
@@ -608,6 +698,181 @@ export default function CampaignDetailPage() {
           )}
         </>
       )}
+      {/* A/B Test creation modal */}
+      <AnimatePresence>
+        {showAbModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            style={{ background: "rgba(5,8,16,0.85)", backdropFilter: "blur(8px)" }}
+            onClick={(e) => { if (e.target === e.currentTarget) setShowAbModal(false); }}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 12 }}
+              animate={{ opacity: 1, scale: 1,    y: 0  }}
+              exit={{   opacity: 0, scale: 0.95, y: 12 }}
+              transition={{ type: "spring", stiffness: 400, damping: 30 }}
+              className="w-full max-w-lg"
+            >
+              <GlassCard>
+                {/* Header */}
+                <div className="flex items-center justify-between mb-5">
+                  <h2 className="font-heading text-base font-bold text-white flex items-center gap-2">
+                    <BarChart2 size={16} className="text-purple-plasma" />
+                    Setup A/B Test
+                  </h2>
+                  <button
+                    onClick={() => setShowAbModal(false)}
+                    className="flex h-7 w-7 items-center justify-center rounded-lg border border-glass-border text-white/40 hover:text-white transition-colors"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+
+                {/* Test name */}
+                <div className="mb-5">
+                  <label className="block text-2xs font-mono text-white/40 uppercase tracking-wider mb-1.5">
+                    Test Name
+                  </label>
+                  <input
+                    type="text"
+                    value={abDraft.name}
+                    onChange={(e) => setAbDraft((d) => ({ ...d, name: e.target.value }))}
+                    placeholder="e.g. Subject line test"
+                    className="w-full rounded-xl border border-glass-border bg-glass-100 px-3 py-2 text-sm text-white placeholder:text-white/20 focus:outline-none focus:border-purple-plasma/50"
+                  />
+                </div>
+
+                {/* Variants */}
+                <div className="mb-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-2xs font-mono text-white/40 uppercase tracking-wider">
+                      Variants
+                    </label>
+                    <span
+                      className={`text-2xs font-mono ${
+                        abDraft.variants.reduce((s, v) => s + v.weight_pct, 0) === 100
+                          ? "text-green-signal"
+                          : "text-amber-signal"
+                      }`}
+                    >
+                      {abDraft.variants.reduce((s, v) => s + v.weight_pct, 0)}% / 100%
+                    </span>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    {abDraft.variants.map((v, idx) => (
+                      <div key={idx} className="flex items-center gap-2">
+                        {/* Label badge */}
+                        <span
+                          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg font-bold text-xs"
+                          style={{ background: "rgba(168,85,247,0.15)", color: "#A855F7" }}
+                        >
+                          {v.name}
+                        </span>
+
+                        {/* Template ID */}
+                        <input
+                          type="text"
+                          value={v.template_id}
+                          onChange={(e) => setAbDraft((d) => ({
+                            ...d,
+                            variants: d.variants.map((vv, i) =>
+                              i === idx ? { ...vv, template_id: e.target.value } : vv
+                            ),
+                          }))}
+                          placeholder="Template ID"
+                          className="flex-1 rounded-xl border border-glass-border bg-glass-100 px-3 py-2 text-xs font-mono text-white placeholder:text-white/20 focus:outline-none focus:border-purple-plasma/50"
+                        />
+
+                        {/* Weight */}
+                        <div className="flex items-center gap-1 shrink-0">
+                          <input
+                            type="number"
+                            min={1}
+                            max={99}
+                            value={v.weight_pct}
+                            onChange={(e) => setAbDraft((d) => ({
+                              ...d,
+                              variants: d.variants.map((vv, i) =>
+                                i === idx ? { ...vv, weight_pct: parseInt(e.target.value) || 0 } : vv
+                              ),
+                            }))}
+                            className="w-14 rounded-xl border border-glass-border bg-glass-100 px-2 py-2 text-xs font-mono text-white text-center focus:outline-none focus:border-purple-plasma/50"
+                          />
+                          <span className="text-2xs text-white/30">%</span>
+                        </div>
+
+                        {/* Remove (only if > 2 variants) */}
+                        {abDraft.variants.length > 2 && (
+                          <button
+                            onClick={() => setAbDraft((d) => ({
+                              ...d,
+                              variants: d.variants.filter((_, i) => i !== idx),
+                            }))}
+                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-glass-border text-white/30 hover:text-red-signal hover:border-red-signal/30 transition-colors"
+                          >
+                            <X size={11} />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Add variant */}
+                  {abDraft.variants.length < 4 && (
+                    <button
+                      onClick={() => {
+                        const names = ["A", "B", "C", "D"];
+                        const next = names[abDraft.variants.length] ?? String(abDraft.variants.length + 1);
+                        setAbDraft((d) => ({
+                          ...d,
+                          variants: [...d.variants, { name: next, template_id: "", weight_pct: 0 }],
+                        }));
+                      }}
+                      className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-glass-border py-2 text-xs text-white/30 hover:text-white/60 hover:border-white/20 transition-colors"
+                    >
+                      <Plus size={12} />
+                      Add variant
+                    </button>
+                  )}
+                </div>
+
+                <p className="mb-5 text-2xs text-white/25 font-mono leading-relaxed">
+                  Recipients are split by weight at activation time. A/B stats populate once the campaign sends.
+                </p>
+
+                {/* Error */}
+                {error && (
+                  <p className="mb-4 text-xs text-red-signal font-mono">{error}</p>
+                )}
+
+                {/* Footer */}
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    onClick={() => setShowAbModal(false)}
+                    className="rounded-xl border border-glass-border px-4 py-2 text-xs text-white/60 hover:text-white transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleCreateAbTest}
+                    disabled={abCreating || abDraft.variants.reduce((s, v) => s + v.weight_pct, 0) !== 100}
+                    className="flex items-center gap-1.5 rounded-xl border border-purple-plasma/30 bg-purple-plasma/20 px-4 py-2 text-xs font-semibold text-purple-plasma hover:bg-purple-plasma/30 transition-colors disabled:opacity-40"
+                  >
+                    {abCreating
+                      ? <span className="block h-3 w-3 animate-spin rounded-full border-2 border-purple-plasma/30 border-t-purple-plasma" />
+                      : <BarChart2 size={12} />}
+                    Create Test
+                  </button>
+                </div>
+              </GlassCard>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
