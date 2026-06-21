@@ -3,7 +3,7 @@ use sqlx::postgres::PgPoolOptions;
 use anyhow::Context;
 use crate::config::Config;
 use crate::application::services::{AuthService, TenantService, ApiKeyService};
-use crate::infrastructure::db::{PgTenantRepository, PgBrandingRepository, PgUserRepository, PgApiKeyRepository, PgPasswordResetTokenRepository, PgEmailVerificationTokenRepository, PgAuthIdentityRepository, PgAuditLogRepository, PgPickupAddressRepository, PgDriverInviteTokenRepository};
+use crate::infrastructure::db::{PgTenantRepository, PgBrandingRepository, PgUserRepository, PgApiKeyRepository, PgPasswordResetTokenRepository, PgEmailVerificationTokenRepository, PgAuthIdentityRepository, PgAuditLogRepository, PgPickupAddressRepository, PgDriverInviteTokenRepository, PgPricingFeatureRepository};
 use crate::infrastructure::external::{SesEmailAdapter, LogEmailAdapter};
 use crate::api::http::{router, AppState};
 use logisticos_auth::jwt::JwtService;
@@ -82,6 +82,7 @@ pub async fn run() -> anyhow::Result<()> {
     let audit_log = Arc::new(PgAuditLogRepository::new(pool.clone()));
     let address_repo = Arc::new(PgPickupAddressRepository::new(pool.clone()));
     let driver_invite_token_repo = Arc::new(PgDriverInviteTokenRepository::new(pool.clone()));
+    let pricing_feature_repo = Arc::new(PgPricingFeatureRepository::new(pool.clone()));
 
     // Email adapter — SES when from_address is configured, dev-log otherwise.
     let app_base_url = cfg.email.app_base_url.clone()
@@ -103,6 +104,7 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::clone(&tenant_repo) as _,
         Arc::clone(&user_repo) as _,
         Arc::clone(&auth_identity_repo) as _,
+        Arc::clone(&pricing_feature_repo) as _,
         Arc::clone(&jwt),
         Arc::clone(&reset_token_repo),
         Arc::clone(&email_verification_token_repo),
@@ -135,6 +137,7 @@ pub async fn run() -> anyhow::Result<()> {
         audit_log,
         address_repo: address_repo as _,
         branding_repo: branding_repo as _,
+        pricing_feature_repo: pricing_feature_repo as _,
     });
 
     use tower_http::cors::CorsLayer;

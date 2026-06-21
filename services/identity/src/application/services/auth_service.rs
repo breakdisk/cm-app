@@ -10,7 +10,7 @@ use crate::{
     },
     domain::{
         entities::{AuthIdentity, AuthProvider, Tenant},
-        repositories::{TenantRepository, UserRepository, AuthIdentityRepository},
+        repositories::{TenantRepository, UserRepository, AuthIdentityRepository, PricingFeatureRepository},
     },
     infrastructure::db::user_repo::{PgPasswordResetTokenRepository, PgEmailVerificationTokenRepository},
     infrastructure::cache::RedisCache,
@@ -30,6 +30,7 @@ pub struct AuthService {
     tenant_repo: Arc<dyn TenantRepository>,
     user_repo: Arc<dyn UserRepository>,
     auth_identity_repo: Arc<dyn AuthIdentityRepository>,
+    pricing_feature_repo: Arc<dyn PricingFeatureRepository>,
     jwt: Arc<JwtService>,
     reset_token_repo: Arc<PgPasswordResetTokenRepository>,
     email_verification_token_repo: Arc<PgEmailVerificationTokenRepository>,
@@ -45,6 +46,7 @@ impl AuthService {
         tenant_repo: Arc<dyn TenantRepository>,
         user_repo: Arc<dyn UserRepository>,
         auth_identity_repo: Arc<dyn AuthIdentityRepository>,
+        pricing_feature_repo: Arc<dyn PricingFeatureRepository>,
         jwt: Arc<JwtService>,
         reset_token_repo: Arc<PgPasswordResetTokenRepository>,
         email_verification_token_repo: Arc<PgEmailVerificationTokenRepository>,
@@ -53,7 +55,20 @@ impl AuthService {
         app_base_url: String,
         kafka: Arc<KafkaProducer>,
     ) -> Self {
-        Self { tenant_repo, user_repo, auth_identity_repo, jwt, reset_token_repo, email_verification_token_repo, redis_cache, email, app_base_url, kafka }
+        Self { tenant_repo, user_repo, auth_identity_repo, pricing_feature_repo, jwt, reset_token_repo, email_verification_token_repo, redis_cache, email, app_base_url, kafka }
+    }
+
+    /// Resolve feature keys enabled for the given tier from the pricing matrix.
+    /// Errors are logged and silently swallowed — a missing/failed DB lookup
+    /// should never break login; the JWT just won't carry `enabled_features`.
+    async fn features_for_tier(&self, tier: &str) -> Vec<String> {
+        match self.pricing_feature_repo.list_for_tier(tier).await {
+            Ok(features) => features.into_iter().map(|f| f.feature_key).collect(),
+            Err(e) => {
+                tracing::warn!(tier = %tier, error = %e, "Failed to load pricing features for tier; JWT will omit enabled_features");
+                Vec::new()
+            }
+        }
     }
 
     pub async fn login(&self, cmd: LoginCommand) -> AppResult<LoginResult> {
@@ -85,13 +100,15 @@ impl AuthService {
             .into_iter()
             .collect();
 
+        let tier_str = format!("{:?}", tenant.subscription_tier).to_lowercase();
+        let enabled_features = self.features_for_tier(&tier_str).await;
         let claims = Claims::new(
             user.id.inner(), tenant.id.inner(),
             tenant.slug.clone(),
-            format!("{:?}", tenant.subscription_tier).to_lowercase(),
+            tier_str,
             user.email.clone(), user.roles.clone(), permissions,
             self.jwt.access_expiry_seconds(),
-        );
+        ).with_features(enabled_features);
         let refresh_claims = logisticos_auth::claims::RefreshClaims::new(
             user.id.inner(), tenant.id.inner(), self.jwt.refresh_expiry_seconds(),
         );
@@ -140,10 +157,17 @@ impl AuthService {
                 .collect()
         };
 
+        let tier_str = format!("{:?}", tenant.subscription_tier).to_lowercase();
+        let enabled_features = if onboarding_required {
+            Vec::new()
+        } else {
+            self.features_for_tier(&tier_str).await
+        };
         let claims = Claims::new(user.id.inner(), tenant.id.inner(), tenant.slug.clone(),
-            format!("{:?}", tenant.subscription_tier).to_lowercase(),
+            tier_str,
             user.email.clone(), user.roles.clone(), permissions, self.jwt.access_expiry_seconds())
-            .with_onboarding(onboarding_required);
+            .with_onboarding(onboarding_required)
+            .with_features(enabled_features);
         let refresh_claims = logisticos_auth::claims::RefreshClaims::new(user.id.inner(), tenant.id.inner(), self.jwt.refresh_expiry_seconds());
 
         Ok(LoginResult {
@@ -510,13 +534,15 @@ impl AuthService {
             .into_iter()
             .collect();
 
+        let tier_str = format!("{:?}", tenant.subscription_tier).to_lowercase();
+        let enabled_features = self.features_for_tier(&tier_str).await;
         let claims = Claims::new(
             user.id.inner(), tenant.id.inner(),
             tenant.slug.clone(),
-            format!("{:?}", tenant.subscription_tier).to_lowercase(),
+            tier_str,
             user.email.clone(), user.roles.clone(), permissions,
             self.jwt.access_expiry_seconds(),
-        );
+        ).with_features(enabled_features);
         let refresh_claims = logisticos_auth::claims::RefreshClaims::new(
             user.id.inner(), tenant.id.inner(), self.jwt.refresh_expiry_seconds(),
         );
@@ -636,7 +662,7 @@ impl AuthService {
                 .collect()
         };
 
-        self.build_exchange_result(&tenant, &user, permissions, onboarding_required)
+        self.build_exchange_result(&tenant, &user, permissions, onboarding_required).await
     }
 
     async fn mint_for_existing_user(
@@ -677,7 +703,7 @@ impl AuthService {
                 .collect()
         };
 
-        self.build_exchange_result(&tenant, &user, permissions, onboarding_required)
+        self.build_exchange_result(&tenant, &user, permissions, onboarding_required).await
     }
 
     async fn provision_draft_merchant(
@@ -729,7 +755,7 @@ impl AuthService {
         );
 
         let permissions = ONBOARDING_PERMISSIONS.iter().map(|p| (*p).to_owned()).collect();
-        self.build_exchange_result(&tenant, &user, permissions, true)
+        self.build_exchange_result(&tenant, &user, permissions, true).await
     }
 
     async fn provision_partner_customer(
@@ -802,27 +828,34 @@ impl AuthService {
             .into_iter()
             .collect();
 
-        self.build_exchange_result(&tenant, &user, permissions, false)
+        self.build_exchange_result(&tenant, &user, permissions, false).await
     }
 
-    fn build_exchange_result(
+    async fn build_exchange_result(
         &self,
         tenant: &Tenant,
         user: &crate::domain::entities::User,
         permissions: Vec<String>,
         onboarding_required: bool,
     ) -> AppResult<ExchangeFirebaseResult> {
+        let tier_str = format!("{:?}", tenant.subscription_tier).to_lowercase();
+        let enabled_features = if onboarding_required {
+            Vec::new()
+        } else {
+            self.features_for_tier(&tier_str).await
+        };
         let claims = Claims::new(
             user.id.inner(),
             tenant.id.inner(),
             tenant.slug.clone(),
-            format!("{:?}", tenant.subscription_tier).to_lowercase(),
+            tier_str,
             user.email.clone(),
             user.roles.clone(),
             permissions,
             self.jwt.access_expiry_seconds(),
         )
-        .with_onboarding(onboarding_required);
+        .with_onboarding(onboarding_required)
+        .with_features(enabled_features);
         let refresh_claims = logisticos_auth::claims::RefreshClaims::new(
             user.id.inner(),
             tenant.id.inner(),

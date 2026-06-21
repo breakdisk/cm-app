@@ -6,6 +6,7 @@ pub mod push_token_repo;
 pub mod auth_identity_repo;
 pub mod audit_log_repo;
 pub mod pickup_address_repo;
+pub mod pricing_feature_repo;
 
 pub use tenant_repo::PgTenantRepository;
 pub use branding_repo::PgBrandingRepository;
@@ -18,3 +19,4 @@ pub use push_token_repo::PgPushTokenRepository;
 pub use auth_identity_repo::PgAuthIdentityRepository;
 pub use audit_log_repo::{PgAuditLogRepository, NewAuditEntry};
 pub use pickup_address_repo::PgPickupAddressRepository;
+pub use pricing_feature_repo::PgPricingFeatureRepository;

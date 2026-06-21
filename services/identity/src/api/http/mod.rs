@@ -1,6 +1,7 @@
 pub mod addresses;
 pub mod auth;
 pub mod branding;
+pub mod pricing_features;
 pub mod tenants;
 pub mod users;
 pub mod api_keys;
@@ -24,6 +25,7 @@ pub struct AppState {
     pub audit_log: Arc<crate::infrastructure::db::audit_log_repo::PgAuditLogRepository>,
     pub address_repo: Arc<dyn crate::domain::repositories::PickupAddressRepository>,
     pub branding_repo: Arc<dyn crate::domain::repositories::BrandingRepository>,
+    pub pricing_feature_repo: Arc<dyn crate::domain::repositories::PricingFeatureRepository>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -99,5 +101,9 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/tenants/:id",         put(tenants::update_tenant))
         .route("/tenants/:id/tier",    put(tenants::upgrade_tier))
         .route("/audit-log",           get(audit_log::list))
+        // Pricing feature matrix — read by any authenticated user, write by admin only
+        .route("/pricing/features",            get(pricing_features::list_features))
+        .route("/pricing/features/active",     get(pricing_features::list_active_features))
+        .route("/pricing/features/:key/tiers", put(pricing_features::set_feature_tiers))
         .layer(auth_layer)
 }

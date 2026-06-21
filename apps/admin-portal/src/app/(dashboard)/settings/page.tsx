@@ -21,7 +21,7 @@ import {
 import {
   createIdentityApi, tenantIdOf,
   type TenantSnapshot, type TenantTier, type TenantUser,
-  type Branding, type UpdateBrandingPayload,
+  type Branding, type UpdateBrandingPayload, type PricingFeature,
 } from "@/lib/api/identity";
 import { useBranding } from "@/lib/branding";
 import { authFetch } from "@/lib/auth/auth-fetch";
@@ -55,7 +55,7 @@ const TAB_PERMISSIONS: Record<Tab, string> = {
   "API Keys":             "api_keys:manage",
   "Webhooks":             "webhooks:manage",
   "Roles & Permissions":  "users:manage",
-  "Feature Flags":        "users:manage",
+  "Feature Flags":        "tenants:manage",
   "Audit Log":            "users:manage",
 };
 
@@ -71,16 +71,17 @@ interface AuditEntry {
 }
 
 const ACTION_COLOR: Record<string, string> = {
-  "api_key.created":          "cyan",
-  "api_key.revoked":          "red",
-  "webhook.created":          "cyan",
-  "webhook.disabled":         "amber",
-  "role.user_assigned":       "purple",
-  "billing.invoice_exported": "green",
-  "shipment.manual_override": "amber",
-  "tenant.updated":           "cyan",
-  "tenant.settings_updated":  "cyan",
-  "tenant.tier_updated":      "purple",
+  "api_key.created":                "cyan",
+  "api_key.revoked":                "red",
+  "webhook.created":                "cyan",
+  "webhook.disabled":               "amber",
+  "role.user_assigned":             "purple",
+  "billing.invoice_exported":       "green",
+  "shipment.manual_override":       "amber",
+  "tenant.updated":                 "cyan",
+  "tenant.settings_updated":        "cyan",
+  "tenant.tier_updated":            "purple",
+  "pricing_feature.tiers_updated":  "amber",
 };
 
 export default function SettingsPage() {
@@ -249,19 +250,10 @@ function NotificationChannelsCard() {
 }
 
 // ── Feature Flags tab ────────────────────────────────────────────────────────
-// Driven by tenant.subscription_tier — backend serialises as snake_case:
-// "starter" | "growth" | "business" | "enterprise".
-// Tier changes call PUT /v1/tenants/:id/tier (admin only, audited).
-
-interface TierFlag {
-  flag:    string;
-  /** Lowest tier that grants this feature. */
-  minTier: TenantTier;
-}
-
-const TIER_RANK: Record<TenantTier, number> = {
-  starter: 0, growth: 1, business: 2, enterprise: 3,
-};
+// Loads the feature matrix from GET /v1/pricing/features (DB-driven, not
+// hardcoded). Admins with tenants:manage can toggle which tiers include each
+// feature via PUT /v1/pricing/features/:key/tiers. Tier changes remain via
+// PUT /v1/tenants/:id/tier (audited).
 
 const TIER_LABELS: Record<TenantTier, string> = {
   starter:    "Starter",
@@ -270,43 +262,51 @@ const TIER_LABELS: Record<TenantTier, string> = {
   enterprise: "Enterprise",
 };
 
-// Thresholds aligned with libs/types/src/lib.rs::SubscriptionTier capability methods.
-// allows_ai_features() → Business+; allows_white_label() → Enterprise.
-const TIER_FLAGS: TierFlag[] = [
-  { flag: "Real-Time Driver Tracking", minTier: "starter"    },
-  { flag: "COD Auto-Reconciliation",   minTier: "starter"    },
-  { flag: "Balikbayan Box Service",    minTier: "starter"    },
-  { flag: "AI Dispatch Agent",         minTier: "growth"     },
-  { flag: "Same-Day Delivery",         minTier: "growth"     },
-  { flag: "AI Recovery Agent",         minTier: "business"   },
-  { flag: "Loyalty Program",           minTier: "business"   },
-  { flag: "Dynamic Pricing",           minTier: "business"   },
-  { flag: "Enterprise MCP Extension",  minTier: "enterprise" },
-];
-
 const ALL_TIERS: TenantTier[] = ["starter", "growth", "business", "enterprise"];
+
+const CATEGORY_LABELS: Record<string, string> = {
+  logistics:  "Logistics",
+  ai:         "AI",
+  engagement: "Engagement",
+  platform:   "Platform",
+};
+
+const CATEGORY_COLOR: Record<string, string> = {
+  logistics:  "text-[#00E5FF]",
+  ai:         "text-[#A855F7]",
+  engagement: "text-[#00FF88]",
+  platform:   "text-[#FFAB00]",
+};
 
 function FeatureFlagsTab() {
   const { hasPermission } = usePermissions();
-  const canManage = hasPermission("users:manage");
+  const canManage = hasPermission("tenants:manage");
 
-  const [tenant,        setTenant]        = useState<TenantSnapshot | null>(null);
-  const [error,         setError]         = useState<string | null>(null);
-  const [loading,       setLoading]       = useState(true);
-  const [showUpgrade,   setShowUpgrade]   = useState(false);
-  const [selectedTier,  setSelectedTier]  = useState<TenantTier>("starter");
-  const [upgrading,     setUpgrading]     = useState(false);
-  const [upgradeError,  setUpgradeError]  = useState<string | null>(null);
-  const [upgradeSaved,  setUpgradeSaved]  = useState(false);
+  const [tenant,       setTenant]      = useState<TenantSnapshot | null>(null);
+  const [features,     setFeatures]    = useState<PricingFeature[]>([]);
+  const [error,        setError]       = useState<string | null>(null);
+  const [loading,      setLoading]     = useState(true);
+  const [showUpgrade,  setShowUpgrade] = useState(false);
+  const [selectedTier, setSelectedTier] = useState<TenantTier>("starter");
+  const [upgrading,    setUpgrading]   = useState(false);
+  const [upgradeError, setUpgradeError] = useState<string | null>(null);
+  const [upgradeSaved, setUpgradeSaved] = useState(false);
+  // Track which feature keys are currently being saved
+  const [savingKeys,   setSavingKeys]  = useState<Set<string>>(new Set());
+  const [savedKeys,    setSavedKeys]   = useState<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     setError(null);
     try {
-      const t = await identityApi.getTenant();
+      const [t, f] = await Promise.all([
+        identityApi.getTenant(),
+        identityApi.listPricingFeatures(),
+      ]);
       setTenant(t);
+      setFeatures(f);
     } catch (e) {
       const err = e as { message?: string };
-      setError(err?.message ?? "Failed to load tenant tier");
+      setError(err?.message ?? "Failed to load feature matrix");
     } finally {
       setLoading(false);
     }
@@ -332,69 +332,194 @@ function FeatureFlagsTab() {
     }
   }
 
+  async function handleTierToggle(feature: PricingFeature, tier: TenantTier, checked: boolean) {
+    const next = checked
+      ? [...new Set([...feature.enabled_tiers, tier])]
+      : feature.enabled_tiers.filter((t) => t !== tier);
+
+    // Optimistic update
+    setFeatures((prev) =>
+      prev.map((f) => f.feature_key === feature.feature_key ? { ...f, enabled_tiers: next } : f)
+    );
+
+    setSavingKeys((s) => new Set(s).add(feature.feature_key));
+    try {
+      await identityApi.setFeatureTiers(feature.feature_key, next);
+      setSavedKeys((s) => { const n = new Set(s); n.add(feature.feature_key); return n; });
+      setTimeout(() => setSavedKeys((s) => { const n = new Set(s); n.delete(feature.feature_key); return n; }), 1500);
+    } catch (e) {
+      // Revert on failure
+      setFeatures((prev) =>
+        prev.map((f) => f.feature_key === feature.feature_key ? { ...f, enabled_tiers: feature.enabled_tiers } : f)
+      );
+      const err = e as { message?: string };
+      setError(err?.message ?? `Failed to update ${feature.feature_name}`);
+    } finally {
+      setSavingKeys((s) => { const n = new Set(s); n.delete(feature.feature_key); return n; });
+    }
+  }
+
   const tier = tenant?.subscription_tier ?? null;
 
+  // Group features by category, preserving sort_order within each group
+  const byCategory = useMemo(() => {
+    const groups: Record<string, PricingFeature[]> = {};
+    for (const f of features) {
+      (groups[f.feature_category] ??= []).push(f);
+    }
+    return groups;
+  }, [features]);
+
+  const categoryOrder = ["logistics", "ai", "engagement", "platform"];
+
   return (
-    <motion.div variants={variants.fadeInUp} className="space-y-4">
+    <motion.div variants={variants.fadeInUp} className="space-y-6">
       {/* Header row */}
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex items-start justify-between gap-4">
+        <div className="space-y-1">
           <p className="text-sm text-white/40">
-            Tier-derived feature entitlements for this tenant.
-            Admin plan changes are audited and take effect immediately.
+            Platform feature matrix — controls which capabilities are included in each
+            pricing tier. Toggle cells to change tier access; changes are audited and
+            take effect on next token refresh.
           </p>
+          {canManage && (
+            <p className="text-2xs font-mono text-[#A855F7]/70">
+              Admin: editing enabled — click tier checkboxes to change access
+            </p>
+          )}
         </div>
-        {canManage && !loading && (
-          <button
-            onClick={() => {
-              setSelectedTier(tier ?? "starter");
-              setUpgradeError(null);
-              setShowUpgrade(true);
-            }}
-            className="shrink-0 px-4 py-2 text-sm font-medium text-[#050810] bg-[#A855F7] rounded-lg hover:bg-[#A855F7]/90 transition-colors"
-          >
-            Change Plan
-          </button>
-        )}
+        <div className="flex items-center gap-2 shrink-0">
+          {tier && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-white/40">This tenant:</span>
+              <NeonBadge variant="purple">
+                {loading ? "…" : TIER_LABELS[tier]}
+              </NeonBadge>
+            </div>
+          )}
+          {canManage && !loading && (
+            <button
+              onClick={() => {
+                setSelectedTier(tier ?? "starter");
+                setUpgradeError(null);
+                setShowUpgrade(true);
+              }}
+              className="px-4 py-2 text-sm font-medium text-[#050810] bg-[#A855F7] rounded-lg hover:bg-[#A855F7]/90 transition-colors"
+            >
+              Change Plan
+            </button>
+          )}
+        </div>
       </div>
 
       {error && <p className="text-xs text-red-signal font-mono">{error}</p>}
-      {upgradeSaved && <p className="text-xs text-green-signal font-mono">✓ Plan updated</p>}
+      {upgradeSaved && <p className="text-xs text-green-signal font-mono">Plan updated</p>}
 
-      {/* Effective tier badge */}
-      <div className="flex items-center gap-2">
-        <span className="text-xs text-white/40">Effective tier:</span>
-        <NeonBadge variant="purple">
-          {loading ? "loading…" : (tier ? TIER_LABELS[tier] : "unknown")}
-        </NeonBadge>
-      </div>
-
-      {/* Flag grid */}
-      <GlassCard padding="none">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-          {TIER_FLAGS.map((f, i) => {
-            const enabled = tier !== null && TIER_RANK[tier] >= TIER_RANK[f.minTier];
-            return (
-              <div
-                key={f.flag}
-                className={`flex items-center justify-between px-5 py-4 border-white/[0.06] ${
-                  i % 3 !== 2 ? "border-r" : ""
-                } ${i < TIER_FLAGS.length - 3 ? "border-b" : ""}`}
-              >
-                <div className="flex flex-col">
-                  <span className="text-sm text-white/80 font-medium">{f.flag}</span>
-                  <span className="text-2xs font-mono text-white/30 mt-0.5">{TIER_LABELS[f.minTier]}+</span>
+      {loading ? (
+        <GlassCard>
+          <p className="text-sm text-white/30 font-mono">Loading feature matrix…</p>
+        </GlassCard>
+      ) : (
+        <div className="space-y-4">
+          {categoryOrder
+            .filter((cat) => byCategory[cat]?.length)
+            .map((cat) => (
+              <GlassCard key={cat} padding="none">
+                {/* Category header */}
+                <div className="flex items-center gap-2 px-5 py-3 border-b border-white/[0.06]">
+                  <span className={`text-xs font-mono font-semibold uppercase tracking-widest ${CATEGORY_COLOR[cat] ?? "text-white/60"}`}>
+                    {CATEGORY_LABELS[cat] ?? cat}
+                  </span>
+                  <span className="text-2xs text-white/20 font-mono">
+                    ({byCategory[cat].length} features)
+                  </span>
                 </div>
-                <NeonBadge variant={enabled ? "green" : "red"}>{enabled ? "ON" : "OFF"}</NeonBadge>
-              </div>
-            );
-          })}
+
+                {/* Tier matrix header */}
+                <div className="grid grid-cols-[1fr_repeat(4,56px)] gap-0 px-5 py-2 border-b border-white/[0.04]">
+                  <span className="text-2xs text-white/20 font-mono uppercase tracking-wider">Feature</span>
+                  {ALL_TIERS.map((t) => (
+                    <span key={t} className={`text-2xs font-mono text-center uppercase tracking-wide ${t === tier ? "text-[#A855F7]" : "text-white/30"}`}>
+                      {TIER_LABELS[t].slice(0, 3)}
+                    </span>
+                  ))}
+                </div>
+
+                {/* Feature rows */}
+                {byCategory[cat].map((feature, idx) => {
+                  const isSaving = savingKeys.has(feature.feature_key);
+                  const justSaved = savedKeys.has(feature.feature_key);
+                  return (
+                    <div
+                      key={feature.feature_key}
+                      className={`grid grid-cols-[1fr_repeat(4,56px)] gap-0 items-center px-5 py-3 transition-colors ${
+                        idx < byCategory[cat].length - 1 ? "border-b border-white/[0.04]" : ""
+                      } ${isSaving ? "opacity-60" : ""}`}
+                    >
+                      {/* Feature name + description */}
+                      <div className="flex flex-col min-w-0 pr-4">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm text-white/80 font-medium truncate">
+                            {feature.feature_name}
+                          </span>
+                          {feature.is_system && (
+                            <span className="text-2xs font-mono text-white/20 shrink-0">core</span>
+                          )}
+                          {justSaved && (
+                            <span className="text-2xs font-mono text-[#00FF88] shrink-0">saved</span>
+                          )}
+                        </div>
+                        {feature.description && (
+                          <span className="text-2xs text-white/30 mt-0.5 truncate">{feature.description}</span>
+                        )}
+                      </div>
+
+                      {/* Tier checkboxes */}
+                      {ALL_TIERS.map((t) => {
+                        const checked = feature.enabled_tiers.includes(t);
+                        return (
+                          <div key={t} className="flex items-center justify-center">
+                            {canManage ? (
+                              <button
+                                onClick={() => handleTierToggle(feature, t, !checked)}
+                                disabled={isSaving}
+                                title={`${checked ? "Remove" : "Add"} ${feature.feature_name} from ${TIER_LABELS[t]}`}
+                                className={`w-5 h-5 rounded border transition-all ${
+                                  checked
+                                    ? "bg-[#00E5FF]/20 border-[#00E5FF]/60 shadow-[0_0_6px_rgba(0,229,255,0.3)]"
+                                    : "bg-white/[0.03] border-white/10 hover:border-white/30"
+                                } disabled:cursor-not-allowed`}
+                              >
+                                {checked && (
+                                  <span className="block w-full text-center text-[10px] text-[#00E5FF] leading-5">✓</span>
+                                )}
+                              </button>
+                            ) : (
+                              <div className={`w-5 h-5 rounded border ${
+                                checked
+                                  ? "bg-[#00E5FF]/10 border-[#00E5FF]/40"
+                                  : "bg-transparent border-white/[0.08]"
+                              }`}>
+                                {checked && (
+                                  <span className="block w-full text-center text-[10px] text-[#00E5FF] leading-5">✓</span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+              </GlassCard>
+            ))}
         </div>
-      </GlassCard>
+      )}
 
       <p className="text-2xs font-mono text-white/30">
-        Source: identity <span className="text-[#00E5FF]">GET /v1/tenants/me</span> ·
-        changes via <span className="text-[#00E5FF]">PUT /v1/tenants/:id/tier</span>
+        Matrix: identity <span className="text-[#00E5FF]">GET /v1/pricing/features</span> ·
+        edit via <span className="text-[#00E5FF]">PUT /v1/pricing/features/:key/tiers</span> ·
+        tier via <span className="text-[#00E5FF]">PUT /v1/tenants/:id/tier</span>
       </p>
 
       {/* Change Plan modal */}
@@ -403,12 +528,7 @@ function FeatureFlagsTab() {
           <div className="bg-canvas border border-white/10 rounded-xl p-6 w-full max-w-sm space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-bold text-white">Change Plan</h3>
-              <button
-                onClick={() => setShowUpgrade(false)}
-                className="text-white/40 hover:text-white"
-              >
-                ✕
-              </button>
+              <button onClick={() => setShowUpgrade(false)} className="text-white/40 hover:text-white">✕</button>
             </div>
 
             <div className="space-y-2">
@@ -423,16 +543,17 @@ function FeatureFlagsTab() {
                   }`}
                 >
                   <span className="text-sm font-medium">{TIER_LABELS[t]}</span>
-                  {tier === t && (
-                    <span className="text-2xs font-mono text-white/40">current</span>
-                  )}
+                  <div className="flex items-center gap-2">
+                    <span className="text-2xs font-mono text-white/30">
+                      {features.filter((f) => f.enabled_tiers.includes(t)).length} features
+                    </span>
+                    {tier === t && <span className="text-2xs font-mono text-white/40">current</span>}
+                  </div>
                 </button>
               ))}
             </div>
 
-            {upgradeError && (
-              <p className="text-xs text-red-signal font-mono">{upgradeError}</p>
-            )}
+            {upgradeError && <p className="text-xs text-red-signal font-mono">{upgradeError}</p>}
 
             <div className="flex justify-end gap-2 pt-1">
               <button
