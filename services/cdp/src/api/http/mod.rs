@@ -49,13 +49,14 @@ pub fn router() -> Router<AppState> {
 
 #[derive(Debug, Deserialize)]
 pub struct ListQuery {
-    name:         Option<String>,
-    email:        Option<String>,
-    phone:        Option<String>,
-    min_clv:      Option<f32>,
-    profile_type: Option<String>,
-    limit:        Option<i64>,
-    offset:       Option<i64>,
+    name:          Option<String>,
+    email:         Option<String>,
+    phone:         Option<String>,
+    min_clv:       Option<f32>,
+    profile_type:  Option<String>,
+    days_inactive: Option<u32>,
+    limit:         Option<i64>,
+    offset:        Option<i64>,
 }
 
 async fn list_profiles(
@@ -72,6 +73,7 @@ async fn list_profiles(
         phone:         q.phone,
         min_clv:       q.min_clv,
         profile_type:  q.profile_type,
+        days_inactive: q.days_inactive,
         limit:         q.limit.unwrap_or(50).clamp(1, 200),
         offset:        q.offset.unwrap_or(0).max(0),
     };

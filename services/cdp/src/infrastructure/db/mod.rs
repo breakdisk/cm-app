@@ -256,6 +256,8 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
         let name_pattern = filter.name_contains.as_deref()
             .map(|n| format!("%{}%", n.replace('%', "\\%")));
 
+        let days_inactive = filter.days_inactive.map(|d| d as i64);
+
         let rows = sqlx::query_as::<_, ProfileRow>(
             r#"
             SELECT
@@ -275,6 +277,7 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
               AND ($4::text IS NULL OR phone = $4)
               AND ($5::float4 IS NULL OR clv_score >= $5)
               AND ($6::text IS NULL OR profile_type = $6)
+              AND ($9::bigint IS NULL OR last_shipment_at < NOW() - ($9 * INTERVAL '1 day'))
             ORDER BY last_shipment_at DESC NULLS LAST
             LIMIT $7 OFFSET $8
             "#
@@ -287,6 +290,7 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
         .bind(&filter.profile_type)
         .bind(filter.limit)
         .bind(filter.offset)
+        .bind(days_inactive)
         .fetch_all(&self.pool)
         .await?;
 

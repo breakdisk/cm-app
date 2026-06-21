@@ -75,8 +75,8 @@ impl ProxyClient {
         // Analytics
         } else if path.starts_with("/v1/analytics") {
             Some(&self.services.analytics_url)
-        // Marketing Automation
-        } else if path.starts_with("/v1/campaigns") {
+        // Marketing Automation + Journey Builder
+        } else if path.starts_with("/v1/campaigns") || path.starts_with("/v1/journeys") {
             Some(&self.services.marketing_url)
         // Customer communication history — engagement service owns /sends
         // Must be checked before the generic /v1/customers → CDP rule.

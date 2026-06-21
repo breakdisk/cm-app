@@ -112,8 +112,13 @@ pub async fn run() -> anyhow::Result<()> {
 
     let state = AppState { campaign_svc, ab_test_repo, journey_repo, jwt: Arc::clone(&jwt), cdp_client };
 
-    let app = http::router()
-        .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth))
+    // Public routes require a valid JWT; internal routes are network-isolated.
+    let app = axum::Router::new()
+        .merge(
+            http::router()
+                .route_layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth))
+        )
+        .merge(http::internal_router())
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state);
 

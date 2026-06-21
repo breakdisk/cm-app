@@ -44,6 +44,37 @@ impl ActionExecutor for HttpActionExecutor {
         template_id: &str,
         ctx: &crate::domain::entities::rule::RuleContext,
     ) -> anyhow::Result<()> {
+        // Resolve the customer's contact address from CDP before calling engagement.
+        // The engagement service requires a non-empty recipient (phone or email).
+        let token = std::env::var("SERVICES__CDP_TOKEN").unwrap_or_default();
+        let profile_resp = self.http
+            .get(format!("{}/v1/customers/{}", self.cdp_url, customer_id))
+            .bearer_auth(&token)
+            .header("X-Tenant-Id", ctx.tenant_id.to_string())
+            .send()
+            .await?;
+
+        let recipient = if profile_resp.status().is_success() {
+            let profile: serde_json::Value = profile_resp.json().await.unwrap_or_default();
+            match channel {
+                "email" => profile["email"].as_str().unwrap_or("").to_owned(),
+                "sms"   => profile["phone"].as_str().unwrap_or("").to_owned(),
+                _       => profile["phone"].as_str()
+                    .or_else(|| profile["email"].as_str())
+                    .unwrap_or("")
+                    .to_owned(),
+            }
+        } else {
+            String::new()
+        };
+
+        if recipient.is_empty() {
+            anyhow::bail!(
+                "notify_customer: no {} contact found for customer {} — skipping",
+                channel, customer_id
+            );
+        }
+
         self.http
             .post(format!("{}/v1/notifications", self.engagement_url))
             .json(&serde_json::json!({
@@ -51,7 +82,7 @@ impl ActionExecutor for HttpActionExecutor {
                 "tenant_id":    ctx.tenant_id,
                 "channel":      channel,
                 "template_id":  template_id,
-                "recipient":    "",
+                "recipient":    recipient,
                 "variables":    ctx.metadata,
             }))
             .send()
@@ -401,8 +432,8 @@ async fn check_inactive_customers(
         let customers: Vec<serde_json::Value> = match result {
             Ok(resp) if resp.status().is_success() => {
                 #[derive(serde::Deserialize)]
-                struct Page { data: Vec<serde_json::Value> }
-                resp.json::<Page>().await.map(|p| p.data).unwrap_or_default()
+                struct Page { profiles: Vec<serde_json::Value> }
+                resp.json::<Page>().await.map(|p| p.profiles).unwrap_or_default()
             }
             Ok(resp) => {
                 tracing::debug!(
@@ -421,8 +452,10 @@ async fn check_inactive_customers(
         tracing::info!(count = customers.len(), days, %tenant_id, "CustomerInactive: evaluating customers");
 
         for customer in customers {
+            // Use external_customer_id — this matches the customer_id used in
+            // order-intake/dispatch Kafka events and the CDP segment membership API.
             let Some(customer_id): Option<Uuid> =
-                customer["id"].as_str().and_then(|s| s.parse().ok())
+                customer["external_customer_id"].as_str().and_then(|s| s.parse().ok())
             else { continue };
 
             let event_payload = serde_json::json!({

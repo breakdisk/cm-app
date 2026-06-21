@@ -13,6 +13,9 @@ pub struct ProfileFilter {
     pub min_clv:       Option<f32>,
     /// Filter by profile classification: "sender", "receiver", or "unknown".
     pub profile_type:  Option<String>,
+    /// Return only customers whose last shipment was at least this many days ago.
+    /// Used by the CustomerInactive automation scheduler.
+    pub days_inactive: Option<u32>,
     pub limit:         i64,
     pub offset:        i64,
 }
@@ -25,6 +28,7 @@ impl Default for ProfileFilter {
             phone:         None,
             min_clv:       None,
             profile_type:  None,
+            days_inactive: None,
             limit:         50,
             offset:        0,
         }
