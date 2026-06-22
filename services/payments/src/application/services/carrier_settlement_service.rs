@@ -7,7 +7,7 @@
 //!   - Admin manual trigger: POST /v1/admin/carrier-settlements/run
 
 use std::sync::Arc;
-use chrono::{Datelike, Duration, NaiveDate, Utc};
+use chrono::{Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
