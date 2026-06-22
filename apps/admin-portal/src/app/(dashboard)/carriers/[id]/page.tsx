@@ -373,14 +373,16 @@ function CarrierDetailInner() {
       {/* KPI strip */}
       <motion.div variants={variants.fadeInUp} className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {[
-          { label: "Total Shipments", value: carrier.total_shipments.toLocaleString(), color: "text-cyan-neon"    },
-          { label: "On-Time",         value: carrier.on_time_count.toLocaleString(),   color: "text-green-signal" },
-          { label: "Failed",          value: carrier.failed_count.toLocaleString(),    color: "text-red-signal"   },
-          { label: "SLA Rate",        value: onTimeRate != null ? `${onTimeRate}%` : "—", color: onTimeRate != null && onTimeRate >= carrier.sla.on_time_target_pct ? "text-green-signal" : "text-red-signal" },
+          { label: "Total Shipments", value: carrier.total_shipments.toLocaleString(), color: "text-cyan-neon",    glow: "cyan"   as const },
+          { label: "On-Time",         value: carrier.on_time_count.toLocaleString(),   color: "text-green-signal", glow: "green"  as const },
+          { label: "Failed",          value: carrier.failed_count.toLocaleString(),    color: "text-red-signal",   glow: "red"    as const },
+          { label: "SLA Rate",        value: onTimeRate != null ? `${onTimeRate}%` : "—",
+            color: onTimeRate != null && onTimeRate >= carrier.sla.on_time_target_pct ? "text-green-signal" : "text-red-signal",
+            glow: onTimeRate != null && onTimeRate >= carrier.sla.on_time_target_pct ? "green" as const : "red" as const },
         ].map((m) => (
-          <GlassCard key={m.label} size="sm">
-            <p className="text-2xs font-mono text-white/30 uppercase tracking-wider">{m.label}</p>
-            <p className={`text-xl font-bold font-mono mt-1 ${m.color}`}>{m.value}</p>
+          <GlassCard key={m.label} size="sm" glow={m.glow} accent>
+            <p className="text-2xs font-mono text-white/40 uppercase tracking-widest">{m.label}</p>
+            <p className={`text-2xl font-bold font-mono mt-2 ${m.color}`}>{m.value}</p>
           </GlassCard>
         ))}
       </motion.div>
@@ -388,23 +390,54 @@ function CarrierDetailInner() {
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         {/* Profile */}
         <motion.div variants={variants.fadeInUp}>
-          <GlassCard title="Carrier Profile">
-            <div className="space-y-3">
-              {[
-                { icon: <Mail size={13} className="text-white/30" />,  label: "Contact Email",  value: carrier.contact_email },
-                { icon: <Phone size={13} className="text-white/30" />, label: "Contact Phone",  value: carrier.contact_phone ?? "—" },
-                { icon: <Globe size={13} className="text-white/30" />, label: "API Endpoint",   value: carrier.api_endpoint ?? "—" },
-                { icon: <Shield size={13} className="text-white/30" />,label: "Performance",    value: carrier.performance_grade, valueClass: gradeColor(carrier.performance_grade) },
-                { icon: <Calendar size={13} className="text-white/30" />, label: "Updated",     value: new Date(carrier.updated_at).toLocaleString("en-PH") },
-              ].map((row) => (
-                <div key={row.label} className="flex items-start gap-2.5 rounded-lg bg-glass-100/50 px-3 py-2.5">
-                  {row.icon}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-2xs font-mono text-white/30 uppercase tracking-wider">{row.label}</p>
-                    <p className={`text-xs font-mono mt-0.5 truncate ${row.valueClass ?? "text-white/70"}`}>{row.value}</p>
-                  </div>
+          <GlassCard padding="none">
+            {/* Card header */}
+            <div className="flex items-center gap-3 px-5 py-4 border-b border-glass-border">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-cyan-neon/10 border border-cyan-neon/20">
+                <Package size={14} className="text-cyan-neon" />
+              </div>
+              <div>
+                <h2 className="font-heading text-sm font-semibold text-white">Carrier Profile</h2>
+                <p className="text-2xs font-mono text-white/30 mt-0.5">Contact &amp; integration details</p>
+              </div>
+            </div>
+            {/* 2-col grid */}
+            <div className="grid grid-cols-2">
+              <div className="border-b border-r border-glass-border px-5 py-4">
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Mail size={11} className="text-cyan-neon/50" />
+                  <p className="text-2xs font-mono text-white/35 uppercase tracking-widest">Contact Email</p>
                 </div>
-              ))}
+                <p className="text-sm font-mono text-white break-all leading-snug">{carrier.contact_email}</p>
+              </div>
+              <div className="border-b border-glass-border px-5 py-4">
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Phone size={11} className="text-cyan-neon/50" />
+                  <p className="text-2xs font-mono text-white/35 uppercase tracking-widest">Contact Phone</p>
+                </div>
+                <p className="text-sm font-mono text-white/80">{carrier.contact_phone ?? <span className="text-white/25">—</span>}</p>
+              </div>
+              <div className="border-b border-r border-glass-border px-5 py-4">
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Globe size={11} className="text-cyan-neon/50" />
+                  <p className="text-2xs font-mono text-white/35 uppercase tracking-widest">API Endpoint</p>
+                </div>
+                <p className="text-xs font-mono text-white/60 break-all leading-snug">{carrier.api_endpoint ?? <span className="text-white/25">Not configured</span>}</p>
+              </div>
+              <div className="border-b border-glass-border px-5 py-4">
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Shield size={11} className="text-cyan-neon/50" />
+                  <p className="text-2xs font-mono text-white/35 uppercase tracking-widest">Performance</p>
+                </div>
+                <p className={`text-sm font-mono font-bold capitalize ${gradeColor(carrier.performance_grade)}`}>{carrier.performance_grade}</p>
+              </div>
+              <div className="col-span-2 px-5 py-4">
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Calendar size={11} className="text-cyan-neon/50" />
+                  <p className="text-2xs font-mono text-white/35 uppercase tracking-widest">Last Updated</p>
+                </div>
+                <p className="text-sm font-mono text-white/70">{new Date(carrier.updated_at).toLocaleString("en-PH", { dateStyle: "medium", timeStyle: "short" })}</p>
+              </div>
             </div>
           </GlassCard>
         </motion.div>
@@ -412,16 +445,29 @@ function CarrierDetailInner() {
         {/* SLA Commitment + Compliance */}
         <div className="flex flex-col gap-5">
           <motion.div variants={variants.fadeInUp}>
-            <GlassCard title="SLA Commitment">
-              <div className="space-y-2">
+            <GlassCard padding="none">
+              <div className="flex items-center gap-3 px-5 py-4 border-b border-glass-border">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-green-signal/10 border border-green-signal/20">
+                  <CheckCircle2 size={14} className="text-green-signal" />
+                </div>
+                <div>
+                  <h2 className="font-heading text-sm font-semibold text-white">SLA Commitment</h2>
+                  <p className="text-2xs font-mono text-white/30 mt-0.5">Service level agreement terms</p>
+                </div>
+              </div>
+              <div className="divide-y divide-glass-border">
                 {[
-                  { label: "On-Time Target",       value: `${carrier.sla.on_time_target_pct}%` },
-                  { label: "Max Delivery Days",    value: `${carrier.sla.max_delivery_days} days` },
-                  { label: "Penalty per Breach",   value: carrier.sla.penalty_per_breach > 0 ? `₱${(carrier.sla.penalty_per_breach / 100).toFixed(2)}` : "None" },
+                  { label: "On-Time Target",      value: `${carrier.sla.on_time_target_pct}%`,
+                    highlight: carrier.sla.on_time_target_pct >= 90 ? "text-green-signal" : "text-amber-signal" },
+                  { label: "Max Delivery Days",   value: `${carrier.sla.max_delivery_days} days`, highlight: "text-white" },
+                  { label: "Penalty per Breach",  value: carrier.sla.penalty_per_breach > 0
+                    ? `₱${(carrier.sla.penalty_per_breach / 100).toFixed(2)}`
+                    : "None",
+                    highlight: carrier.sla.penalty_per_breach > 0 ? "text-red-signal" : "text-white/40" },
                 ].map((row) => (
-                  <div key={row.label} className="flex items-center justify-between rounded-lg bg-glass-100/50 px-3 py-2.5">
-                    <span className="text-xs font-mono text-white/40">{row.label}</span>
-                    <span className="text-xs font-mono font-semibold text-white">{row.value}</span>
+                  <div key={row.label} className="flex items-center justify-between px-5 py-3.5">
+                    <span className="text-xs font-mono text-white/45">{row.label}</span>
+                    <span className={`text-sm font-mono font-bold ${row.highlight}`}>{row.value}</span>
                   </div>
                 ))}
               </div>
@@ -430,30 +476,47 @@ function CarrierDetailInner() {
 
           {/* Compliance */}
           <motion.div variants={variants.fadeInUp}>
-            <GlassCard title="Compliance / KYB">
-              <div className="space-y-3">
-                <div className="flex items-center justify-between rounded-lg bg-glass-100/50 px-3 py-2.5">
-                  <span className="text-xs font-mono text-white/40">Verification Status</span>
-                  <NeonBadge variant={complianceVariant(carrier.compliance_status)}>
-                    {complianceLabel(carrier.compliance_status)}
-                  </NeonBadge>
+            <GlassCard padding="none">
+              <div className="flex items-center justify-between px-5 py-4 border-b border-glass-border">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-purple-plasma/10 border border-purple-plasma/20">
+                    <Shield size={14} className="text-purple-plasma" />
+                  </div>
+                  <div>
+                    <h2 className="font-heading text-sm font-semibold text-white">Compliance / KYB</h2>
+                    <p className="text-2xs font-mono text-white/30 mt-0.5">Verification &amp; document status</p>
+                  </div>
                 </div>
+                {/* Live compliance badge */}
+                <span className={`text-2xs font-mono font-bold px-3 py-1.5 rounded-full border ${
+                  carrier.compliance_status === "compliant"
+                    ? "bg-green-signal/15 border-green-signal/30 text-green-signal"
+                    : carrier.compliance_status === "under_review"
+                    ? "bg-cyan-neon/15 border-cyan-neon/30 text-cyan-neon"
+                    : carrier.compliance_status === "expired" || carrier.compliance_status === "rejected" || carrier.compliance_status === "suspended"
+                    ? "bg-red-signal/15 border-red-signal/30 text-red-signal"
+                    : "bg-amber-signal/15 border-amber-signal/30 text-amber-signal"
+                }`}>
+                  {complianceLabel(carrier.compliance_status)}
+                </span>
+              </div>
 
+              <div className="px-5 py-4">
                 {canManageCompliance && (!complianceEdit ? (
                   <button
                     onClick={() => { setComplianceEdit(true); setPendingCompliance(carrier.compliance_status); }}
-                    className="w-full rounded-lg border border-glass-border py-2 text-xs text-white/50 hover:text-white hover:border-cyan-neon/30 transition-colors font-mono"
+                    className="w-full rounded-xl border border-glass-border py-2.5 text-xs font-semibold text-white/50 hover:text-white hover:border-cyan-neon/30 transition-colors font-mono"
                   >
                     Change Status
                   </button>
                 ) : (
-                  <div className="space-y-2">
-                    <div className="grid grid-cols-2 gap-1.5">
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-2">
                       {COMPLIANCE_OPTIONS.map((opt) => (
                         <button
                           key={opt.value}
                           onClick={() => setPendingCompliance(opt.value)}
-                          className={`rounded-lg border px-2 py-1.5 text-2xs font-mono transition-colors text-left ${
+                          className={`rounded-xl border px-3 py-2 text-2xs font-mono transition-colors text-left ${
                             pendingCompliance === opt.value
                               ? "border-cyan-neon/50 bg-cyan-surface text-cyan-neon"
                               : "border-glass-border text-white/40 hover:text-white"
@@ -466,7 +529,7 @@ function CarrierDetailInner() {
                     <div className="flex gap-2">
                       <button
                         onClick={() => { setComplianceEdit(false); setPendingCompliance(null); }}
-                        className="flex-1 rounded-lg border border-glass-border py-2 text-xs text-white/50 hover:text-white transition-colors"
+                        className="flex-1 rounded-xl border border-glass-border py-2.5 text-xs text-white/50 hover:text-white transition-colors"
                       >
                         Cancel
                       </button>
