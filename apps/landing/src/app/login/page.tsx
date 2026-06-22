@@ -126,7 +126,13 @@ function LoginPageInner() {
 
       if (status === 403) {
         if (role === "admin" || role === "partner") {
-          setError("This portal requires prior activation. Contact your LogisticOS administrator to get access.");
+          if (body.code === "USER_NOT_INVITED") {
+            setError("No account found for this email address. You need to be added as a user by your LogisticOS administrator.");
+          } else if (body.code === "ROLE_MISMATCH") {
+            setError("This email is registered under a different role and cannot access this portal. Sign in with the correct portal.");
+          } else {
+            setError("This portal requires prior activation. Contact your LogisticOS administrator to get access.");
+          }
         } else if (role === "customer") {
           setError("Customer accounts must sign in via your dedicated tracking link or the LogisticOS app.");
         } else {

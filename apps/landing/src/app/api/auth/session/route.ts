@@ -80,8 +80,15 @@ export async function POST(req: NextRequest) {
         err.status >= 500
           ? "Service temporarily unavailable. Please try again."
           : err.message;
+      // Derive a specific reason code from the identity error message so the
+      // login page can show an actionable error instead of a generic one.
+      let reasonCode = err.code;
+      if (err.status === 403) {
+        if (err.message.includes("user_not_invited")) reasonCode = "USER_NOT_INVITED";
+        else if (err.message.includes("role_mismatch")) reasonCode = "ROLE_MISMATCH";
+      }
       return NextResponse.json(
-        { error: clientMessage, code: err.code },
+        { error: clientMessage, code: reasonCode },
         { status: err.status === 500 ? 502 : err.status },
       );
     }
