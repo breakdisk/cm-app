@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.logisticos.driver.core.network.auth.SessionManager
+import io.logisticos.driver.core.network.service.DailyEarningItem
 import io.logisticos.driver.core.network.service.DriverOpsApiService
 import io.logisticos.driver.core.network.service.IdentityApiService
 import io.logisticos.driver.core.network.service.PaymentsApiService
@@ -34,6 +35,8 @@ data class ProfileUiState(
     val openBalanceCents: Long = 0L,
     /** Number of COD/pickup debits behind that balance — "from N deliveries". */
     val openDebitCount: Int = 0,
+    /** Last 7 calendar days of earnings — drives the sparkline on the Earnings card. */
+    val dailyEarnings: List<DailyEarningItem> = emptyList(),
 )
 
 @HiltViewModel
@@ -99,8 +102,9 @@ class ProfileViewModel @Inject constructor(
             runCatching { driverOpsApi.getMyEarnings(limit = 1) }
                 .onSuccess { r ->
                     _uiState.update { it.copy(
-                        todayCents = r.data.todayCents,
-                        weekCents  = r.data.weekCents,
+                        todayCents    = r.data.todayCents,
+                        weekCents     = r.data.weekCents,
+                        dailyEarnings = r.data.daily,
                     ) }
                 }
         }
