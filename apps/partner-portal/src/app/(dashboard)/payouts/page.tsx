@@ -5,7 +5,7 @@ import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
-import { CreditCard, Download, X } from "lucide-react";
+import { CreditCard, Download, X, TrendingUp, Users } from "lucide-react";
 import {
   paymentsApi,
   type Wallet,
@@ -14,6 +14,7 @@ import {
   type InvoiceStatus,
   type WithdrawalHistoryItem,
   type WithdrawalStatus,
+  type SettlementRun,
 } from "@/lib/api/payments";
 import { useRosterEvents } from "@/hooks/useRosterEvents";
 import { useCarrier } from "@/contexts/carrier-context";
@@ -158,25 +159,28 @@ export default function PayoutsPage() {
   const [wallet,      setWallet]      = useState<Wallet | null>(null);
   const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
   const [invoices,    setInvoices]    = useState<Invoice[]>([]);
-  const [withdrawals, setWithdrawals] = useState<WithdrawalHistoryItem[]>([]);
-  const [loading,     setLoading]     = useState(true);
-  const [error,       setError]       = useState<string | null>(null);
+  const [withdrawals,  setWithdrawals]  = useState<WithdrawalHistoryItem[]>([]);
+  const [settlements,  setSettlements]  = useState<SettlementRun[]>([]);
+  const [loading,      setLoading]      = useState(true);
+  const [error,        setError]        = useState<string | null>(null);
   const [showWithdraw, setShowWithdraw] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [w, txs, invs, withdrawalHistory] = await Promise.all([
+      const [w, txs, invs, withdrawalHistory, settlementHistory] = await Promise.all([
         paymentsApi.getWallet(),
         paymentsApi.getTransactions(),
         paymentsApi.getInvoices(),
         paymentsApi.getWithdrawalRequests(),
+        paymentsApi.getCarrierSettlements(),
       ]);
       setWallet(w);
       setTransactions(txs);
       setInvoices(invs);
       setWithdrawals(withdrawalHistory);
+      setSettlements(settlementHistory);
     } catch (e) {
       const err = e as { message?: string };
       setError(err?.message ?? "Failed to load payout data");
@@ -334,6 +338,89 @@ export default function PayoutsPage() {
                     </div>
                   );
                 })}
+              </>
+            )}
+          </GlassCard>
+        </motion.div>
+
+        {/* Gig-driver settlement runs */}
+        <motion.div variants={variants.fadeInUp}>
+          <GlassCard padding="none">
+            <div className="px-5 py-4 border-b border-glass-border flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Users size={14} className="text-purple-plasma" />
+                <h2 className="font-heading text-sm font-semibold text-white">Gig Driver Settlement Runs</h2>
+              </div>
+              <span className="text-2xs font-mono text-white/30">Weekly — every Saturday</span>
+            </div>
+            {loading ? (
+              <div className="py-6 text-center">
+                <p className="text-xs text-white/30 font-mono">loading…</p>
+              </div>
+            ) : settlements.length === 0 ? (
+              <div className="py-8 text-center space-y-1">
+                <TrendingUp size={20} className="mx-auto text-white/15 mb-2" />
+                <p className="text-xs text-white/30 font-mono">No settlement runs yet.</p>
+                <p className="text-2xs text-white/20 font-mono">
+                  Settlement runs are generated weekly once your gig drivers complete deliveries.
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-[1fr_110px_110px_80px_90px] gap-3 px-5 py-2.5 border-b border-glass-border">
+                  {["Period", "Margin", "COD Comm.", "Deliveries", "Status"].map((h) => (
+                    <span key={h} className="text-2xs font-mono text-white/30 uppercase tracking-wider">{h}</span>
+                  ))}
+                </div>
+                {settlements.map((run) => {
+                  const statusVariant =
+                    run.status === "settled" ? "green" :
+                    run.status === "failed"  ? "red"   : "amber";
+                  const marginPhp      = run.total_margin_cents / 100;
+                  const codCommPhp     = run.total_cod_commission_cents / 100;
+                  return (
+                    <div
+                      key={run.id}
+                      className="grid grid-cols-[1fr_110px_110px_80px_90px] gap-3 items-center px-5 py-3.5 border-b border-glass-border/50 hover:bg-glass-100 transition-colors"
+                    >
+                      <div>
+                        <p className="text-xs font-mono text-white/70">
+                          {new Date(run.period_start).toLocaleDateString()} –{" "}
+                          {new Date(run.period_end).toLocaleDateString()}
+                        </p>
+                        <p className="text-2xs font-mono text-white/30 mt-0.5">
+                          {new Date(run.created_at).toLocaleString()}
+                        </p>
+                      </div>
+                      <span className="text-sm font-bold font-mono text-purple-plasma">
+                        ₱{marginPhp.toLocaleString()}
+                      </span>
+                      <span className="text-sm font-bold font-mono text-amber-400">
+                        ₱{codCommPhp.toLocaleString()}
+                      </span>
+                      <span className="text-xs font-mono text-white/60 text-center">
+                        {run.delivery_count.toLocaleString()}
+                      </span>
+                      <NeonBadge variant={statusVariant}>
+                        {run.status === "settled" ? "Settled" : run.status === "failed" ? "Failed" : "Pending"}
+                      </NeonBadge>
+                    </div>
+                  );
+                })}
+                {/* Totals row */}
+                <div className="grid grid-cols-[1fr_110px_110px_80px_90px] gap-3 items-center px-5 py-3 bg-glass-100 border-t border-glass-border">
+                  <span className="text-2xs font-mono text-white/30 uppercase tracking-wider">Total earned</span>
+                  <span className="text-sm font-bold font-mono text-purple-plasma">
+                    ₱{(settlements.reduce((s, r) => s + r.total_margin_cents, 0) / 100).toLocaleString()}
+                  </span>
+                  <span className="text-sm font-bold font-mono text-amber-400">
+                    ₱{(settlements.reduce((s, r) => s + r.total_cod_commission_cents, 0) / 100).toLocaleString()}
+                  </span>
+                  <span className="text-xs font-mono text-white/40 text-center">
+                    {settlements.reduce((s, r) => s + r.delivery_count, 0).toLocaleString()}
+                  </span>
+                  <span />
+                </div>
               </>
             )}
           </GlassCard>

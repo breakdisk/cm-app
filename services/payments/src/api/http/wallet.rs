@@ -50,6 +50,8 @@ fn tx_direction(t: &TransactionType) -> &'static str {
         TransactionType::CodCredit
         | TransactionType::RefundCredit
         | TransactionType::AdjustmentCredit => "credit",
+        TransactionType::CarrierMargin
+        | TransactionType::CodCommission => "credit",
         TransactionType::InvoiceDebit
         | TransactionType::PlatformFeeDebit
         | TransactionType::Withdrawal

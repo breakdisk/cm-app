@@ -40,6 +40,18 @@ pub struct TaskCompleted {
     /// engagement falls back to shipment_id as the audit key.
     #[serde(default)]
     pub customer_id: Option<Uuid>,
+    /// Carrier this driver is linked to (from drivers.carrier_id).
+    /// Payments uses this to credit the carrier wallet with the delivery margin.
+    #[serde(default)]
+    pub carrier_id: Option<Uuid>,
+    /// Contractual payout snapshotted from task.payout_cents at completion.
+    /// Absent for full-time drivers. Payments credits carrier wallet with this.
+    #[serde(default)]
+    pub payout_cents: Option<i64>,
+    /// Driver's COD commission rate in basis points (from drivers.cod_commission_rate_bps).
+    /// Payments multiplies this against cod_amount_cents to calculate carrier COD commission.
+    #[serde(default)]
+    pub cod_commission_rate_bps: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

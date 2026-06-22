@@ -9,11 +9,13 @@ pub mod health;
 pub mod merchant_billing_accounts;
 pub mod partner_commission;
 pub mod withdrawal_requests;
+pub mod carrier_settlement;
 
 use axum::{Router, routing::{get, post}};
 use std::sync::Arc;
 use crate::application::services::{
-    BillingAggregationService, CodRemittanceService, CodService, InvoiceService, WalletService,
+    BillingAggregationService, CarrierSettlementService, CodRemittanceService,
+    CodService, InvoiceService, WalletService,
 };
 
 pub struct AppState {
@@ -22,6 +24,7 @@ pub struct AppState {
     pub cod_remittance_service:         Arc<CodRemittanceService>,
     pub wallet_service:                 Arc<WalletService>,
     pub billing_service:                Arc<BillingAggregationService>,
+    pub carrier_settlement_service:     Arc<CarrierSettlementService>,
     pub jwt:                            Arc<logisticos_auth::jwt::JwtService>,
     pub merchant_billing_account_repo:  Arc<dyn crate::domain::repositories::MerchantBillingAccountRepository>,
     pub commission_query:               Arc<crate::application::queries::CommissionBreakdownQuery>,
@@ -77,6 +80,9 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/admin/withdrawal-requests/:id/approve",  post(withdrawal_requests::approve_withdrawal))
         .route("/admin/withdrawal-requests/:id/disburse", post(withdrawal_requests::disburse_withdrawal))
         .route("/admin/withdrawal-requests/:id/reject",   post(withdrawal_requests::reject_withdrawal))
+        .route("/admin/carrier-settlements/run",          post(carrier_settlement::run_settlement))
+        .route("/admin/carrier-settlements",              get(carrier_settlement::list_settlements))
+        .route("/partner/carrier-settlements",            get(carrier_settlement::list_my_settlements))
         .layer(auth_layer)
 }
 

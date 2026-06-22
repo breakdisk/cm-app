@@ -127,6 +127,33 @@ pub trait WalletRepository: Send + Sync {
     async fn save_wallet(&self, wallet: &Wallet) -> anyhow::Result<()>;
     async fn record_transaction(&self, tx: &WalletTransaction) -> anyhow::Result<()>;
     async fn list_transactions(&self, wallet_id: Uuid, limit: u32) -> anyhow::Result<Vec<WalletTransaction>>;
+    /// Find the carrier wallet for a given carrier. Returns None if not yet provisioned.
+    async fn find_carrier_wallet(&self, tenant_id: &TenantId, carrier_id: Uuid) -> anyhow::Result<Option<Wallet>>;
+    /// Upsert (create-or-update) a carrier wallet. Uses optimistic locking same as save_wallet.
+    async fn save_carrier_wallet(&self, wallet: &Wallet, carrier_id: Uuid) -> anyhow::Result<()>;
+    /// Aggregate unsettled carrier_margin + cod_commission credits per (tenant, carrier).
+    /// Returns (carrier_id, total_margin_cents, total_cod_commission_cents, delivery_count).
+    async fn unsettled_carrier_earnings(
+        &self,
+        tenant_id: &TenantId,
+    ) -> anyhow::Result<Vec<UnsettledCarrierEarnings>>;
+    /// Mark a batch of wallet transactions as settled by a settlement run.
+    async fn mark_transactions_settled(
+        &self,
+        wallet_id:      Uuid,
+        settlement_id:  Uuid,
+        tx_types:       &[&str],
+    ) -> anyhow::Result<u64>;
+}
+
+/// Aggregated unsettled carrier earnings for one carrier within a tenant.
+#[derive(Debug, Clone)]
+pub struct UnsettledCarrierEarnings {
+    pub carrier_id:             Uuid,
+    pub wallet_id:              Uuid,
+    pub total_margin_cents:     i64,
+    pub total_cod_comm_cents:   i64,
+    pub delivery_count:         i64,
 }
 
 /// Pre-computed billing breakdown for a single shipment.

@@ -217,8 +217,17 @@ impl TaskService {
             TaskType::Delivery => ("delivery.completed",  topics::DELIVERY_COMPLETED),
         };
 
+        // Look up driver to enrich the event with carrier settlement fields.
+        // Best-effort: a lookup failure degrades to missing carrier_id (no settlement credit),
+        // never an error that would block task completion.
+        let maybe_driver = self.driver_repo
+            .find_by_user_id(driver_id.inner())
+            .await
+            .ok()
+            .flatten();
+
         // Publish event — engagement sends receipt/notification to customer,
-        // payments processes COD reconciliation if applicable.
+        // payments processes COD reconciliation and carrier settlement if applicable.
         let event = Event::new("driver-ops", event_type, tenant_id.inner(), TaskCompleted {
             task_id: task.id,
             driver_id: driver_id.inner(),
@@ -232,9 +241,12 @@ impl TaskService {
             customer_email: task.customer_email.clone().unwrap_or_default(),
             tracking_number: task.tracking_number.clone().unwrap_or_default(),
             cod_amount_cents: task.cod_amount_cents,
-            // customer_id not yet stored on DriverTask (requires TaskAssigned to carry it).
-            // Engagement service falls back to shipment_id as the audit key when absent.
             customer_id: task.customer_id,
+            carrier_id: maybe_driver.as_ref().and_then(|d| d.carrier_id),
+            payout_cents: task.payout_cents,
+            cod_commission_rate_bps: maybe_driver
+                .map(|d| d.cod_commission_rate_bps)
+                .unwrap_or(0),
         });
         self.kafka.publish_event(topic, &event).await
             .map_err(AppError::Internal)?;
