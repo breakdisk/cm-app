@@ -4,7 +4,7 @@ use logisticos_types::{Money, Currency, TenantId};
 use uuid::Uuid;
 use crate::domain::{
     entities::{Wallet, WalletTransaction, TransactionType},
-    repositories::WalletRepository,
+    repositories::{UnsettledCarrierEarnings, WalletRepository},
 };
 
 pub struct PgWalletRepository { pool: PgPool }
@@ -43,6 +43,8 @@ fn parse_tx_type(s: &str) -> TransactionType {
         "refund_credit"     => TransactionType::RefundCredit,
         "adjustment_credit" => TransactionType::AdjustmentCredit,
         "adjustment_debit"  => TransactionType::AdjustmentDebit,
+        "carrier_margin"    => TransactionType::CarrierMargin,
+        "cod_commission"    => TransactionType::CodCommission,
         _                   => TransactionType::CodCredit,
     }
 }
@@ -56,6 +58,8 @@ fn tx_type_str(t: TransactionType) -> &'static str {
         TransactionType::RefundCredit     => "refund_credit",
         TransactionType::AdjustmentCredit => "adjustment_credit",
         TransactionType::AdjustmentDebit  => "adjustment_debit",
+        TransactionType::CarrierMargin    => "carrier_margin",
+        TransactionType::CodCommission    => "cod_commission",
     }
 }
 
@@ -166,5 +170,107 @@ impl WalletRepository for PgWalletRepository {
              LIMIT $2"
         ).bind(wallet_id).bind(limit as i64).fetch_all(&self.pool).await?;
         Ok(rows.into_iter().map(WalletTransaction::from).collect())
+    }
+
+    async fn find_carrier_wallet(&self, tenant_id: &TenantId, carrier_id: Uuid) -> anyhow::Result<Option<Wallet>> {
+        let row = sqlx::query_as::<_, WalletRow>(
+            "SELECT id, tenant_id, balance_cents, currency, version,
+                    reserved_cents AS reserved_centavos, created_at, updated_at
+             FROM payments.wallets
+             WHERE tenant_id = $1 AND owner_type = 'carrier' AND owner_id = $2"
+        ).bind(tenant_id.inner()).bind(carrier_id).fetch_optional(&self.pool).await?;
+        Ok(row.map(Wallet::from))
+    }
+
+    async fn save_carrier_wallet(&self, w: &Wallet, carrier_id: Uuid) -> anyhow::Result<()> {
+        let currency = w.currency.to_string();
+        let tenant_uuid = w.tenant_id.inner();
+        let rows = sqlx::query(
+            r#"INSERT INTO payments.wallets
+                   (id, tenant_id, owner_type, owner_id,
+                    balance_cents, currency, version, reserved_cents, created_at, updated_at)
+               VALUES ($1,$2,'carrier',$3,$4,$5,$6,$7,$8,$9)
+               ON CONFLICT (tenant_id, owner_type, owner_id) DO UPDATE SET
+                   balance_cents  = EXCLUDED.balance_cents,
+                   version        = EXCLUDED.version,
+                   reserved_cents = EXCLUDED.reserved_cents,
+                   updated_at     = EXCLUDED.updated_at
+               WHERE payments.wallets.version = $6 - 1"#
+        )
+        .bind(w.id).bind(tenant_uuid).bind(carrier_id)
+        .bind(w.balance.amount).bind(currency)
+        .bind(w.version).bind(w.reserved_centavos).bind(w.created_at).bind(w.updated_at)
+        .execute(&self.pool).await?;
+
+        if rows.rows_affected() == 0 {
+            anyhow::bail!("Carrier wallet optimistic lock conflict");
+        }
+        Ok(())
+    }
+
+    async fn unsettled_carrier_earnings(
+        &self,
+        tenant_id: &TenantId,
+    ) -> anyhow::Result<Vec<UnsettledCarrierEarnings>> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            carrier_id:           Uuid,
+            wallet_id:            Uuid,
+            total_margin_cents:   i64,
+            total_cod_comm_cents: i64,
+            delivery_count:       i64,
+        }
+        let rows = sqlx::query_as::<_, Row>(
+            r#"SELECT
+                   w.owner_id                                              AS carrier_id,
+                   w.id                                                    AS wallet_id,
+                   COALESCE(SUM(t.amount_cents) FILTER (
+                       WHERE t.transaction_type = 'carrier_margin'), 0)   AS total_margin_cents,
+                   COALESCE(SUM(t.amount_cents) FILTER (
+                       WHERE t.transaction_type = 'cod_commission'), 0)   AS total_cod_comm_cents,
+                   COUNT(*) FILTER (
+                       WHERE t.transaction_type = 'carrier_margin')       AS delivery_count
+               FROM payments.wallets w
+               JOIN payments.wallet_transactions t ON t.wallet_id = w.id
+               WHERE w.tenant_id   = $1
+                 AND w.owner_type  = 'carrier'
+                 AND t.tenant_id   = $1
+                 AND t.transaction_type IN ('carrier_margin', 'cod_commission')
+                 AND t.carrier_settlement_id IS NULL
+               GROUP BY w.owner_id, w.id
+               HAVING SUM(t.amount_cents) > 0"#
+        ).bind(tenant_id.inner()).fetch_all(&self.pool).await?;
+
+        Ok(rows.into_iter().map(|r| UnsettledCarrierEarnings {
+            carrier_id:           r.carrier_id,
+            wallet_id:            r.wallet_id,
+            total_margin_cents:   r.total_margin_cents,
+            total_cod_comm_cents: r.total_cod_comm_cents,
+            delivery_count:       r.delivery_count,
+        }).collect())
+    }
+
+    async fn mark_transactions_settled(
+        &self,
+        wallet_id:     Uuid,
+        settlement_id: Uuid,
+        tx_types:      &[&str],
+    ) -> anyhow::Result<u64> {
+        let now = chrono::Utc::now();
+        let result = sqlx::query(
+            r#"UPDATE payments.wallet_transactions
+               SET carrier_settlement_id = $1,
+                   settled_at            = $2
+               WHERE wallet_id           = $3
+                 AND transaction_type    = ANY($4)
+                 AND carrier_settlement_id IS NULL"#
+        )
+        .bind(settlement_id)
+        .bind(now)
+        .bind(wallet_id)
+        .bind(tx_types)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 }

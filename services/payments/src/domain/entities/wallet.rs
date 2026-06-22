@@ -123,9 +123,37 @@ pub enum TransactionType {
     RefundCredit,       // Customer refund credited back
     AdjustmentCredit,   // Manual credit adjustment by support
     AdjustmentDebit,    // Manual debit adjustment by support
+    CarrierMargin,      // Partner earned per-delivery payout on gig driver completion
+    CodCommission,      // Partner COD commission earned on COD delivery
 }
 
 impl WalletTransaction {
+    pub fn carrier_margin(wallet_id: Uuid, tenant_id: TenantId, amount: Money, task_id: Uuid) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            wallet_id,
+            tenant_id,
+            transaction_type: TransactionType::CarrierMargin,
+            amount,
+            reference_id: task_id,
+            description: format!("Delivery margin: ₱{:.2}", amount.amount as f64 / 100.0),
+            created_at: Utc::now(),
+        }
+    }
+
+    pub fn cod_commission(wallet_id: Uuid, tenant_id: TenantId, amount: Money, task_id: Uuid) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            wallet_id,
+            tenant_id,
+            transaction_type: TransactionType::CodCommission,
+            amount,
+            reference_id: task_id,
+            description: format!("COD commission: ₱{:.2}", amount.amount as f64 / 100.0),
+            created_at: Utc::now(),
+        }
+    }
+
     pub fn cod_credit(wallet_id: Uuid, tenant_id: TenantId, amount: Money, cod_id: Uuid) -> Self {
         Self {
             id: Uuid::new_v4(),

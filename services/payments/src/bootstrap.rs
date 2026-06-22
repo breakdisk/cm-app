@@ -4,8 +4,8 @@ use anyhow::Context;
 use chrono::Datelike as _;
 use crate::config::Config;
 use crate::application::services::{
-    BillingAggregationService, CodRemittanceService, CodService, InvoiceService, WalletService,
-    WithdrawalService,
+    BillingAggregationService, CarrierSettlementService, CodRemittanceService, CodService,
+    InvoiceService, WalletService, WithdrawalService,
 };
 use crate::infrastructure::cache::RedisSequenceSource;
 use crate::infrastructure::db::{
@@ -15,7 +15,10 @@ use crate::infrastructure::db::{
 };
 use crate::infrastructure::http::OrderIntakeClient;
 use crate::api::http::{router, AppState};
-use crate::infrastructure::messaging::{PodConsumer, WeightDiscrepancyConsumer, PickupCapturedConsumer, CustomsDutyConsumer};
+use crate::infrastructure::messaging::{
+    PodConsumer, WeightDiscrepancyConsumer, PickupCapturedConsumer, CustomsDutyConsumer,
+    DeliveryCompletedConsumer,
+};
 use logisticos_auth::jwt::JwtService;
 use logisticos_events::producer::KafkaProducer;
 
@@ -109,6 +112,11 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::clone(&order_intake_client) as _,
         Arc::clone(&invoice_service),
     ));
+    let carrier_settlement_service = Arc::new(CarrierSettlementService::new(
+        pool.clone(),
+        Arc::clone(&wallet_repo) as _,
+        Arc::clone(&withdrawal_repo),
+    ));
 
     let templates_dir = std::env::var("PAYMENTS_TEMPLATES_DIR")
         .unwrap_or_else(|_| "./templates".into());
@@ -129,6 +137,7 @@ pub async fn run() -> anyhow::Result<()> {
         cod_remittance_service:            Arc::clone(&cod_remittance_service),
         wallet_service,
         billing_service:                   Arc::clone(&billing_service),
+        carrier_settlement_service:        Arc::clone(&carrier_settlement_service),
         jwt:                               Arc::clone(&jwt),
         merchant_billing_account_repo:     Arc::clone(&merchant_billing_account_repo) as _,
         commission_query:                  Arc::clone(&commission_query),
@@ -284,6 +293,76 @@ pub async fn run() -> anyhow::Result<()> {
     )
     .context("Failed to create CustomsDutyConsumer")?;
     tokio::spawn(async move { customs_duty_consumer.run(customs_duty_shutdown_rx).await });
+
+    // Spawn delivery-completed consumer — credits carrier wallets with delivery
+    // margin and COD commission for every gig-driver delivery that has a carrier_id.
+    let delivery_consumer = DeliveryCompletedConsumer::new(
+        &cfg.kafka.brokers,
+        &cfg.kafka.group_id,
+        Arc::clone(&wallet_repo) as _,
+    )
+    .context("Failed to create DeliveryCompletedConsumer")?;
+    tokio::spawn(async move { delivery_consumer.run().await });
+
+    // Weekly carrier settlement cron — every Saturday at midnight UTC.
+    // Sweeps all unsettled carrier wallet earnings (margin + COD commission)
+    // and creates settlement run records + withdrawal requests for disbursement.
+    let settlement_svc_for_cron = Arc::clone(&carrier_settlement_service);
+    tokio::spawn(async move {
+        // Poll every 30 minutes so we catch the Saturday window within half an hour.
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(30 * 60));
+        let mut last_run_week: Option<(i32, u32)> = None;
+        loop {
+            tick.tick().await;
+            let now = chrono::Utc::now();
+            // ISO weekday: Saturday = 6
+            if now.weekday().number_from_monday() != 6 { continue; }
+            // Only run once per calendar week (identified by ISO year + week number).
+            let iso_week = now.iso_week();
+            let week_key = (iso_week.year(), iso_week.week());
+            if last_run_week == Some(week_key) { continue; }
+
+            let tenant_ids_json = std::env::var("SETTLEMENT_TENANT_IDS").unwrap_or_default();
+            if tenant_ids_json.trim().is_empty() {
+                tracing::warn!("Weekly carrier settlement cron: SETTLEMENT_TENANT_IDS not set — skipping");
+                last_run_week = Some(week_key);
+                continue;
+            }
+
+            let tenant_ids: Vec<uuid::Uuid> = match serde_json::from_str(&tenant_ids_json) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!(err = %e, "Weekly carrier settlement: failed to parse SETTLEMENT_TENANT_IDS");
+                    last_run_week = Some(week_key);
+                    continue;
+                }
+            };
+
+            let period_end = (now - chrono::Duration::days(1)).date_naive();
+            tracing::info!(
+                tenants      = tenant_ids.len(),
+                period_end   = %period_end,
+                "Weekly carrier settlement cron: starting run",
+            );
+
+            for tenant_id in &tenant_ids {
+                let t = logisticos_types::TenantId::from_uuid(*tenant_id);
+                match settlement_svc_for_cron.run(&t, Some(period_end), uuid::Uuid::nil()).await {
+                    Ok(outcomes) => tracing::info!(
+                        tenant_id  = %tenant_id,
+                        carriers   = outcomes.len(),
+                        "Weekly carrier settlement: run complete",
+                    ),
+                    Err(e) => tracing::error!(
+                        err       = %e,
+                        tenant_id = %tenant_id,
+                        "Weekly carrier settlement: run failed",
+                    ),
+                }
+            }
+            last_run_week = Some(week_key);
+        }
+    });
 
     let addr = format!("{}:{}", cfg.app.host, cfg.app.port);
     let listener = tokio::net::TcpListener::bind(&addr)

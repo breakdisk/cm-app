@@ -23,7 +23,7 @@ const API_BASE       = process.env.NEXT_PUBLIC_API_URL        ?? "http://localho
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
-type DriverType = "full_time" | "part_time";
+type DriverType = "full_time" | "part_time" | "gig";
 
 interface Driver {
   id:                string;
@@ -58,7 +58,9 @@ function dtoToDriver(d: any): Driver {
     name:              `${d.first_name ?? ""} ${d.last_name ?? ""}`.trim() || "—",
     phone:             d.phone ?? "—",
     zone:              d.zone ?? "—",
-    driverType:        d.driver_type === "part_time" ? "part_time" : "full_time",
+    driverType:        d.driver_type === "part_time"
+      ? ((d.per_delivery_rate_cents ?? 0) > 0 ? "gig" : "part_time")
+      : "full_time",
     commissionRate:    (d.per_delivery_rate_cents ?? 0) / 100,
     codCommissionRate: (d.cod_commission_rate_bps ?? 0) / 10_000,
     deliveriesToday:   d.deliveries_today ?? 0,
@@ -112,11 +114,14 @@ interface RegisterResult {
 }
 
 async function registerDriverApi(input: {
-  email:      string;
-  firstName:  string;
-  lastName:   string;
-  phone:      string;
-  carrierId:  string | null;
+  email:                   string;
+  firstName:               string;
+  lastName:                string;
+  phone:                   string;
+  carrierId:               string | null;
+  driverType:              DriverType;
+  perDeliveryRateCents:    number;
+  codCommissionRateBps:    number;
 }): Promise<RegisterResult> {
   try {
     const inviteRes = await authFetch(`${API_BASE}/v1/users`, {
@@ -140,14 +145,18 @@ async function registerDriverApi(input: {
     const tempPassword = inviteJson?.data?.temp_password ?? null;
     if (!userId) return { driverId: "", tempPassword: null, error: "Identity did not return a user_id" };
 
+    const backendType = input.driverType === "gig" ? "part_time" : input.driverType;
     const regRes = await authFetch(`${DRIVER_OPS_URL}/v1/drivers`, {
       method: "POST",
       body: JSON.stringify({
-        user_id:    userId,
-        first_name: input.firstName,
-        last_name:  input.lastName,
-        phone:      input.phone,
-        carrier_id: input.carrierId ?? undefined,
+        user_id:                  userId,
+        first_name:               input.firstName,
+        last_name:                input.lastName,
+        phone:                    input.phone,
+        carrier_id:               input.carrierId ?? undefined,
+        driver_type:              backendType,
+        per_delivery_rate_cents:  input.perDeliveryRateCents,
+        cod_commission_rate_bps:  input.codCommissionRateBps,
       }),
     });
     if (!regRes.ok) {
@@ -185,11 +194,13 @@ function EditDrawer({
   const [commissionRate, setCommissionRate]        = useState(String(driver.commissionRate));
   const [codCommissionRate, setCodCommissionRate]  = useState(String((driver.codCommissionRate * 100).toFixed(1)));
 
+  const hasCommission = driverType === "part_time" || driverType === "gig";
+
   function handleSave() {
     onSave({
       driverType,
-      commissionRate:    driverType === "part_time" ? parseFloat(commissionRate) || 0 : 0,
-      codCommissionRate: driverType === "part_time" ? (parseFloat(codCommissionRate) || 0) / 100 : 0,
+      commissionRate:    hasCommission ? parseFloat(commissionRate) || 0 : 0,
+      codCommissionRate: hasCommission ? (parseFloat(codCommissionRate) || 0) / 100 : 0,
     });
   }
 
@@ -226,30 +237,37 @@ function EditDrawer({
         {/* Driver type toggle */}
         <div className="mb-5">
           <label className="block text-xs font-mono text-white/40 uppercase tracking-wider mb-2">Driver Type</label>
-          <div className="grid grid-cols-2 gap-2">
-            {(["full_time", "part_time"] as DriverType[]).map((type) => (
+          <div className="grid grid-cols-3 gap-2">
+            {([
+              { type: "full_time" as DriverType, label: "Full-Time",   icon: <Briefcase className="h-4 w-4" />, activeClass: "border-cyan-signal/40 bg-cyan-signal/10 text-cyan-signal" },
+              { type: "part_time" as DriverType, label: "Part-Time",   icon: <Clock className="h-4 w-4" />,     activeClass: "border-amber-400/40 bg-amber-400/10 text-amber-400" },
+              { type: "gig"       as DriverType, label: "Gig Worker",  icon: <Users className="h-4 w-4" />,     activeClass: "border-purple-plasma/40 bg-purple-plasma/10 text-purple-plasma" },
+            ]).map(({ type, label, icon, activeClass }) => (
               <button
                 key={type}
                 onClick={() => setDriverType(type)}
                 className={cn(
-                  "flex items-center gap-2.5 rounded-xl border px-4 py-3 text-sm font-medium transition-all",
+                  "flex flex-col items-center gap-1.5 rounded-xl border px-2 py-3 text-xs font-medium transition-all",
                   driverType === type
-                    ? type === "part_time"
-                      ? "border-amber-400/40 bg-amber-400/10 text-amber-400"
-                      : "border-cyan-signal/40 bg-cyan-signal/10 text-cyan-signal"
+                    ? activeClass
                     : "border-glass-border bg-glass-100 text-white/40 hover:text-white/60 hover:bg-glass-200"
                 )}
               >
-                {type === "part_time" ? <Clock className="h-4 w-4" /> : <Briefcase className="h-4 w-4" />}
-                {type === "part_time" ? "Part-Time" : "Full-Time"}
-                {driverType === type && <Check className="h-3.5 w-3.5 ml-auto" />}
+                {icon}
+                {label}
+                {driverType === type && <Check className="h-3 w-3" />}
               </button>
             ))}
           </div>
+          {driverType === "gig" && (
+            <p className="mt-2 text-xs text-purple-plasma/60 font-mono">
+              Gig workers earn per delivery + COD commission. Settled weekly.
+            </p>
+          )}
         </div>
 
-        {/* Commission fields — only for part-time */}
-        {driverType === "part_time" && (
+        {/* Commission fields — for part-time and gig */}
+        {hasCommission && (
           <motion.div
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: "auto" }}
@@ -304,7 +322,7 @@ function EditDrawer({
           </motion.div>
         )}
 
-        {driverType === "full_time" && (
+        {!hasCommission && (
           <div className="mb-6 rounded-xl border border-cyan-signal/15 bg-cyan-signal/5 px-4 py-3">
             <p className="text-xs text-cyan-signal/70">
               Full-time drivers receive a fixed salary. Commission settings are not applicable.
@@ -339,7 +357,8 @@ function EditDrawer({
 // ── Driver row ─────────────────────────────────────────────────────────────────
 
 function DriverRow({ driver, onEdit, onAssign, onLink }: { driver: Driver; onEdit: () => void; onAssign: () => void; onLink: () => void }) {
-  const isPartTime  = driver.driverType === "part_time";
+  const isGig       = driver.driverType === "gig";
+  const isPartTime  = driver.driverType === "part_time" || isGig;
   const statusCfg   = STATUS_CONFIG[driver.status];
 
   return (
@@ -367,13 +386,15 @@ function DriverRow({ driver, onEdit, onAssign, onLink }: { driver: Driver; onEdi
         <span
           className={cn(
             "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium",
-            isPartTime
+            isGig
+              ? "border-purple-plasma/30 bg-purple-plasma/10 text-purple-plasma"
+              : driver.driverType === "part_time"
               ? "border-amber-400/30 bg-amber-400/10 text-amber-400"
               : "border-cyan-signal/30 bg-cyan-signal/10 text-cyan-signal"
           )}
         >
-          {isPartTime ? <Clock className="h-3 w-3" /> : <Briefcase className="h-3 w-3" />}
-          {isPartTime ? "Part-Time" : "Full-Time"}
+          {isGig ? <Users className="h-3 w-3" /> : isPartTime ? <Clock className="h-3 w-3" /> : <Briefcase className="h-3 w-3" />}
+          {isGig ? "Gig Worker" : isPartTime ? "Part-Time" : "Full-Time"}
         </span>
       </td>
       <td className="py-3.5 px-3">
@@ -471,19 +492,32 @@ function DriverRow({ driver, onEdit, onAssign, onLink }: { driver: Driver; onEdi
 // ── Register-driver modal ──────────────────────────────────────────────────────
 
 function RegisterModal({ onClose, onRegistered, carrierId }: { onClose: () => void; onRegistered: () => void; carrierId: string | null }) {
-  const [firstName, setFirstName] = useState("");
-  const [lastName,  setLastName]  = useState("");
-  const [email,     setEmail]     = useState("");
-  const [phone,     setPhone]     = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [result,    setResult]    = useState<RegisterResult | null>(null);
+  const [firstName,          setFirstName]         = useState("");
+  const [lastName,           setLastName]          = useState("");
+  const [email,              setEmail]             = useState("");
+  const [phone,              setPhone]             = useState("");
+  const [driverType,         setDriverType]        = useState<DriverType>("gig");
+  const [perDeliveryRate,    setPerDeliveryRate]   = useState("50");
+  const [codCommissionRate,  setCodCommissionRate] = useState("2.0");
+  const [submitting,         setSubmitting]        = useState(false);
+  const [result,             setResult]            = useState<RegisterResult | null>(null);
 
+  const isGig = driverType === "gig" || driverType === "part_time";
   const canSubmit = firstName.trim() && lastName.trim() && email.trim() && phone.trim() && !submitting;
 
   async function handleSubmit() {
     if (!canSubmit) return;
     setSubmitting(true);
-    const res = await registerDriverApi({ firstName, lastName, email, phone, carrierId });
+    const res = await registerDriverApi({
+      firstName,
+      lastName,
+      email,
+      phone,
+      carrierId,
+      driverType,
+      perDeliveryRateCents: isGig ? Math.round((parseFloat(perDeliveryRate) || 0) * 100) : 0,
+      codCommissionRateBps: isGig ? Math.round((parseFloat(codCommissionRate) || 0) * 100) : 0,
+    });
     setSubmitting(false);
     setResult(res);
     if (!res.error) onRegistered();
@@ -524,8 +558,77 @@ function RegisterModal({ onClose, onRegistered, carrierId }: { onClose: () => vo
               <LabeledInput label="First Name"  value={firstName} onChange={setFirstName} placeholder="Juan" />
               <LabeledInput label="Last Name"   value={lastName}  onChange={setLastName}  placeholder="dela Cruz" />
             </div>
-            <LabeledInput label="Email"          value={email} onChange={setEmail} placeholder="driver@example.com" type="email" />
-            <LabeledInput label="Phone"          value={phone} onChange={setPhone} placeholder="+63 917 123 4567" />
+            <LabeledInput label="Email" value={email} onChange={setEmail} placeholder="driver@example.com" type="email" />
+            <LabeledInput label="Phone" value={phone} onChange={setPhone} placeholder="+63 917 123 4567" />
+
+            {/* Driver type */}
+            <div>
+              <label className="block text-xs font-mono text-white/40 uppercase tracking-wider mb-2">Driver Type</label>
+              <div className="grid grid-cols-3 gap-2">
+                {([
+                  { type: "gig"       as DriverType, label: "Gig Worker",  icon: <Users className="h-3.5 w-3.5" />,     activeClass: "border-purple-plasma/40 bg-purple-plasma/10 text-purple-plasma" },
+                  { type: "part_time" as DriverType, label: "Part-Time",   icon: <Clock className="h-3.5 w-3.5" />,     activeClass: "border-amber-400/40 bg-amber-400/10 text-amber-400" },
+                  { type: "full_time" as DriverType, label: "Full-Time",   icon: <Briefcase className="h-3.5 w-3.5" />, activeClass: "border-cyan-signal/40 bg-cyan-signal/10 text-cyan-signal" },
+                ]).map(({ type, label, icon, activeClass }) => (
+                  <button
+                    key={type}
+                    type="button"
+                    onClick={() => setDriverType(type)}
+                    className={cn(
+                      "flex flex-col items-center gap-1 rounded-xl border px-2 py-2.5 text-xs font-medium transition-all",
+                      driverType === type ? activeClass : "border-glass-border bg-glass-100 text-white/40 hover:text-white/60 hover:bg-glass-200"
+                    )}
+                  >
+                    {icon}{label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Per-delivery rate — shown for gig and part_time */}
+            {isGig && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.2 }}
+                className="grid grid-cols-2 gap-3"
+              >
+                <div>
+                  <label className="block text-xs font-mono text-white/40 uppercase tracking-wider mb-2">Rate / Delivery (PHP)</label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 font-mono text-sm text-white/40">₱</span>
+                    <input
+                      type="number" min="0" step="5" value={perDeliveryRate}
+                      onChange={(e) => setPerDeliveryRate(e.target.value)}
+                      className={cn(
+                        "w-full rounded-xl border border-glass-border bg-glass-100 pl-7 pr-4 py-2.5",
+                        "font-mono text-sm text-white placeholder-white/20",
+                        "focus:outline-none focus:border-purple-plasma/50 focus:bg-glass-200 transition-all"
+                      )}
+                      placeholder="50"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-mono text-white/40 uppercase tracking-wider mb-2">COD Commission (%)</label>
+                  <div className="relative">
+                    <input
+                      type="number" min="0" max="10" step="0.5" value={codCommissionRate}
+                      onChange={(e) => setCodCommissionRate(e.target.value)}
+                      className={cn(
+                        "w-full rounded-xl border border-glass-border bg-glass-100 px-4 py-2.5 pr-8",
+                        "font-mono text-sm text-white placeholder-white/20",
+                        "focus:outline-none focus:border-purple-plasma/50 focus:bg-glass-200 transition-all"
+                      )}
+                      placeholder="2.0"
+                    />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 font-mono text-sm text-white/40">%</span>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
             {result?.error && (
               <p className="text-xs text-red-400 font-mono">{result.error}</p>
             )}
@@ -680,6 +783,7 @@ function DriversPageInner() {
     }
   }
 
+  const gigCount      = drivers.filter((d) => d.driverType === "gig").length;
   const partTimeCount = drivers.filter((d) => d.driverType === "part_time").length;
   const fullTimeCount = drivers.filter((d) => d.driverType === "full_time").length;
   const activeCount   = drivers.filter((d) => d.status !== "offline").length;
@@ -695,7 +799,7 @@ function DriversPageInner() {
   async function handleSave(updates: Partial<Driver>) {
     if (!editingDriver) return;
     const patch: Record<string, unknown> = {};
-    if (updates.driverType       !== undefined) patch.driver_type             = updates.driverType;
+    if (updates.driverType !== undefined) patch.driver_type = updates.driverType === "gig" ? "part_time" : updates.driverType;
     if (updates.commissionRate    !== undefined) patch.per_delivery_rate_cents = Math.round(updates.commissionRate * 100);
     if (updates.codCommissionRate !== undefined) patch.cod_commission_rate_bps = Math.round(updates.codCommissionRate * 10_000);
     if (updates.zone              !== undefined) patch.zone                    = updates.zone;
@@ -720,10 +824,10 @@ function DriversPageInner() {
         className="grid grid-cols-2 gap-3 sm:grid-cols-4"
       >
         {[
-          { label: "Total Drivers",   value: drivers.length, color: "cyan",   icon: <Users className="h-4 w-4" /> },
-          { label: "Active Now",      value: activeCount,    color: "green",  icon: <div className="h-2 w-2 rounded-full bg-green-signal animate-pulse" /> },
-          { label: "Full-Time",       value: fullTimeCount,  color: "cyan",   icon: <Briefcase className="h-4 w-4" /> },
-          { label: "Part-Time",       value: partTimeCount,  color: "amber",  icon: <Clock className="h-4 w-4" /> },
+          { label: "Total Drivers",   value: drivers.length, color: "cyan",    icon: <Users className="h-4 w-4" /> },
+          { label: "Active Now",      value: activeCount,    color: "green",   icon: <div className="h-2 w-2 rounded-full bg-green-signal animate-pulse" /> },
+          { label: "Gig Workers",     value: gigCount,       color: "purple",  icon: <Users className="h-4 w-4" /> },
+          { label: "Part / Full-Time",value: partTimeCount + fullTimeCount, color: "amber", icon: <Clock className="h-4 w-4" /> },
         ].map(({ label, value, color, icon }, i) => (
           <motion.div key={label} variants={variants.fadeInUp}>
             <GlassCard
@@ -732,8 +836,9 @@ function DriversPageInner() {
               <div
                 className={cn(
                   "flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl",
-                  color === "green" ? "bg-green-signal/10 text-green-signal" :
-                  color === "amber" ? "bg-amber-400/10 text-amber-400" :
+                  color === "green"  ? "bg-green-signal/10 text-green-signal" :
+                  color === "amber"  ? "bg-amber-400/10 text-amber-400" :
+                  color === "purple" ? "bg-purple-plasma/10 text-purple-plasma" :
                   "bg-cyan-signal/10 text-cyan-signal"
                 )}
               >
@@ -778,7 +883,7 @@ function DriversPageInner() {
               </div>
               {/* Filter */}
               <div className="flex rounded-lg border border-glass-border overflow-hidden">
-                {(["all", "full_time", "part_time"] as const).map((f) => (
+                {(["all", "gig", "part_time", "full_time"] as const).map((f) => (
                   <button
                     key={f}
                     onClick={() => setFilter(f)}
@@ -789,7 +894,7 @@ function DriversPageInner() {
                         : "text-white/40 hover:text-white/60 hover:bg-glass-200"
                     )}
                   >
-                    {f === "all" ? "All" : f === "full_time" ? "Full-Time" : "Part-Time"}
+                    {f === "all" ? "All" : f === "gig" ? "Gig" : f === "full_time" ? "Full-Time" : "Part-Time"}
                   </button>
                 ))}
               </div>
