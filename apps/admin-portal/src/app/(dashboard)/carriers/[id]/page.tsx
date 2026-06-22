@@ -16,9 +16,10 @@ import { NeonBadge } from "@/components/ui/neon-badge";
 import {
   ArrowLeft, RefreshCw, Power, PauseCircle, Key, Copy, Check,
   AlertTriangle, CheckCircle2, Clock, Package, Mail, Phone,
-  Globe, Shield, Calendar, ChevronRight, X,
+  Globe, Shield, Calendar, ChevronRight, X, UserPlus,
 } from "lucide-react";
 import { createCarriersApi, type Carrier, type ZoneSlaRow, type ComplianceStatus } from "@/lib/api/carriers";
+import { createIdentityApi, type InviteUserResult } from "@/lib/api/identity";
 import { usePermissions } from "@/hooks/usePermissions";
 
 const COMPLIANCE_OPTIONS: { value: ComplianceStatus; label: string; variant: "green" | "cyan" | "amber" | "red" | "muted" }[] = [
@@ -89,6 +90,15 @@ function CarrierDetailInner() {
   const [savingCompliance,  setSavingCompliance]  = useState(false);
 
   const [actionMsg, setActionMsg] = useState<string | null>(null);
+
+  // Partner portal invite
+  const [inviteOpen,      setInviteOpen]      = useState(false);
+  const [inviteEmail,     setInviteEmail]     = useState("");
+  const [inviteFirstName, setInviteFirstName] = useState("");
+  const [inviteLastName,  setInviteLastName]  = useState("");
+  const [inviting,        setInviting]        = useState(false);
+  const [inviteResult,    setInviteResult]    = useState<InviteUserResult | null>(null);
+  const [inviteCopied,    setInviteCopied]    = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -178,6 +188,35 @@ function CarrierDetailInner() {
     } finally {
       setSavingCompliance(false);
     }
+  };
+
+  const identityApi = createIdentityApi();
+
+  const handleInvite = async () => {
+    if (!inviteEmail.trim() || !inviteFirstName.trim() || !inviteLastName.trim()) return;
+    setInviting(true);
+    try {
+      const result = await identityApi.inviteUser({
+        email:      inviteEmail.trim().toLowerCase(),
+        first_name: inviteFirstName.trim(),
+        last_name:  inviteLastName.trim(),
+        roles:      ["partner"],
+      });
+      setInviteResult(result);
+      setInviteOpen(false);
+      setActionMsg(`Partner user ${result.email} created — share the temporary password.`);
+    } catch (e) {
+      setActionMsg(`Invite failed: ${e instanceof Error ? e.message : "unknown error"}`);
+    } finally {
+      setInviting(false);
+    }
+  };
+
+  const handleCopyInvite = () => {
+    if (!inviteResult) return;
+    navigator.clipboard.writeText(inviteResult.temp_password);
+    setInviteCopied(true);
+    setTimeout(() => setInviteCopied(false), 2500);
   };
 
   if (loading) {
@@ -451,6 +490,125 @@ function CarrierDetailInner() {
                     className="w-full text-2xs font-mono text-white/30 hover:text-white/60 transition-colors"
                   >
                     I have copied the key — dismiss
+                  </button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </GlassCard>
+      </motion.div>
+
+      {/* Partner Portal Access */}
+      <motion.div variants={variants.fadeInUp}>
+        <GlassCard title="Partner Portal Access">
+          <div className="flex items-start justify-between gap-4">
+            <p className="text-xs text-white/40 leading-relaxed">
+              {inviteResult
+                ? `Portal user created. Share the temporary password with ${inviteResult.email} — it will not be shown again.`
+                : "Grant this carrier's staff access to the Partner Portal to view SLA reports, payouts, and compliance documents."}
+            </p>
+            {!inviteOpen && !inviteResult && canManageCarriers && (
+              <button
+                onClick={() => { setInviteEmail(carrier.contact_email); setInviteOpen(true); }}
+                className="flex-shrink-0 flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs font-semibold text-white/70 hover:text-white hover:border-cyan-neon/30 transition-colors"
+              >
+                <UserPlus size={11} />
+                Invite Portal User
+              </button>
+            )}
+          </div>
+
+          {/* Inline invite form */}
+          <AnimatePresence>
+            {inviteOpen && !inviteResult && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                className="overflow-hidden"
+              >
+                <div className="mt-4 space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="block">
+                      <span className="text-2xs font-mono text-white/40 uppercase tracking-wider">First Name</span>
+                      <input
+                        type="text"
+                        value={inviteFirstName}
+                        onChange={(e) => setInviteFirstName(e.target.value)}
+                        placeholder="Jane"
+                        className="mt-1 w-full rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white placeholder:text-white/20 outline-none focus:border-cyan-neon/50 font-mono"
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-2xs font-mono text-white/40 uppercase tracking-wider">Last Name</span>
+                      <input
+                        type="text"
+                        value={inviteLastName}
+                        onChange={(e) => setInviteLastName(e.target.value)}
+                        placeholder="Reyes"
+                        className="mt-1 w-full rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white placeholder:text-white/20 outline-none focus:border-cyan-neon/50 font-mono"
+                      />
+                    </label>
+                  </div>
+                  <label className="block">
+                    <span className="text-2xs font-mono text-white/40 uppercase tracking-wider">Email</span>
+                    <input
+                      type="email"
+                      value={inviteEmail}
+                      onChange={(e) => setInviteEmail(e.target.value)}
+                      placeholder="partner@carrier.com"
+                      className="mt-1 w-full rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white placeholder:text-white/20 outline-none focus:border-cyan-neon/50 font-mono"
+                    />
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => { setInviteOpen(false); setInviteFirstName(""); setInviteLastName(""); setInviteEmail(""); }}
+                      className="flex-1 rounded-lg border border-glass-border py-2 text-xs text-white/50 hover:text-white transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleInvite}
+                      disabled={inviting || !inviteEmail.trim() || !inviteFirstName.trim() || !inviteLastName.trim()}
+                      className="flex-1 rounded-lg border border-cyan-neon/40 bg-cyan-surface py-2 text-xs font-semibold text-cyan-neon hover:bg-cyan-neon/20 disabled:opacity-40 transition-colors"
+                    >
+                      {inviting ? "Sending invite…" : "Send Invite"}
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Temp password reveal */}
+          <AnimatePresence>
+            {inviteResult && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                className="overflow-hidden"
+              >
+                <div className="mt-4 rounded-lg border border-amber-signal/30 bg-amber-signal/5 p-4 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle size={13} className="text-amber-signal flex-shrink-0" />
+                    <p className="text-2xs font-mono text-amber-signal">
+                      Temporary password for <span className="text-white/80">{inviteResult.email}</span> — copy now, not shown again.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 rounded-lg bg-black/40 border border-glass-border px-3 py-2.5">
+                    <code className="flex-1 text-2xs font-mono text-cyan-neon break-all select-all">
+                      {inviteResult.temp_password}
+                    </code>
+                    <button onClick={handleCopyInvite} className="flex-shrink-0 text-white/40 hover:text-white transition-colors">
+                      {inviteCopied ? <Check size={14} className="text-green-signal" /> : <Copy size={14} />}
+                    </button>
+                  </div>
+                  <button
+                    onClick={() => setInviteResult(null)}
+                    className="w-full text-2xs font-mono text-white/30 hover:text-white/60 transition-colors"
+                  >
+                    I have copied the password — dismiss
                   </button>
                 </div>
               </motion.div>
