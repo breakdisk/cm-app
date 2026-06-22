@@ -1,12 +1,15 @@
 package io.logisticos.driver.feature.profile.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size as GeoSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.VerifiedUser
@@ -21,6 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import io.logisticos.driver.core.network.service.DailyEarningItem
 import io.logisticos.driver.feature.profile.presentation.ProfileViewModel
 
 private val ProfileCanvas = Color(0xFF050810)
@@ -32,6 +36,25 @@ private val ProfileCyan   = Color(0xFF00E5FF)
 private val ProfileGreen  = Color(0xFF00FF88)
 
 private fun pesoLabel(cents: Long): String = "₱${"%,.2f".format(cents / 100.0)}"
+
+/** 7-day bar sparkline — renders bars proportional to daily payout totals. */
+@Composable
+private fun EarningsSparkline(daily: List<DailyEarningItem>, modifier: Modifier = Modifier) {
+    val bars = daily.takeLast(7)
+    val maxCents = bars.maxOfOrNull { it.totalCents }?.coerceAtLeast(1L) ?: 1L
+    Canvas(modifier = modifier) {
+        val barWidth = size.width / 7f
+        bars.forEachIndexed { i, item ->
+            val fraction = (item.totalCents.toFloat() / maxCents.toFloat()).coerceIn(0f, 1f)
+            val barH = (size.height * fraction).coerceAtLeast(2f)
+            drawRect(
+                color = ProfileGreen.copy(alpha = 0.65f),
+                topLeft = Offset(i * barWidth + 2f, size.height - barH),
+                size = GeoSize(barWidth - 4f, barH),
+            )
+        }
+    }
+}
 
 @Composable
 fun ProfileScreen(
@@ -200,6 +223,15 @@ fun ProfileScreen(
                         contentDescription = null,
                         tint = Color.White.copy(alpha = 0.4f),
                         modifier = Modifier.size(20.dp)
+                    )
+                }
+                if (state.dailyEarnings.isNotEmpty()) {
+                    EarningsSparkline(
+                        daily = state.dailyEarnings,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(28.dp)
+                            .padding(start = 20.dp, end = 20.dp, bottom = 12.dp),
                     )
                 }
             }
