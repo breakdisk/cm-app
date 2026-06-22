@@ -16,7 +16,7 @@ import { NeonBadge } from "@/components/ui/neon-badge";
 import {
   ArrowLeft, RefreshCw, Power, PauseCircle, Key, Copy, Check,
   AlertTriangle, CheckCircle2, Clock, Package, Mail, Phone,
-  Globe, Shield, Calendar, ChevronRight, X, UserPlus,
+  Globe, Shield, Calendar, ChevronRight, X, UserPlus, Users,
 } from "lucide-react";
 import { createCarriersApi, type Carrier, type ZoneSlaRow, type ComplianceStatus } from "@/lib/api/carriers";
 import { createIdentityApi, type InviteUserResult } from "@/lib/api/identity";
@@ -500,25 +500,50 @@ function CarrierDetailInner() {
 
       {/* Partner Portal Access */}
       <motion.div variants={variants.fadeInUp}>
-        <GlassCard title="Partner Portal Access">
-          <div className="flex items-start justify-between gap-4">
-            <p className="text-xs text-white/40 leading-relaxed">
-              {inviteResult
-                ? `Portal user created. Share the temporary password with ${inviteResult.email} — it will not be shown again.`
-                : "Grant this carrier's staff access to the Partner Portal to view SLA reports, payouts, and compliance documents."}
-            </p>
-            {!inviteOpen && !inviteResult && canManageCarriers && (
-              <button
-                onClick={() => { setInviteEmail(carrier.contact_email); setInviteOpen(true); }}
-                className="flex-shrink-0 flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs font-semibold text-white/70 hover:text-white hover:border-cyan-neon/30 transition-colors"
-              >
-                <UserPlus size={11} />
-                Invite Portal User
-              </button>
-            )}
+        <GlassCard padding="none">
+          {/* Section header */}
+          <div className="flex items-center justify-between px-5 py-4 border-b border-glass-border">
+            <div className="flex items-center gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-purple-plasma/10 border border-purple-plasma/20">
+                <Users size={15} className="text-purple-plasma" />
+              </div>
+              <div>
+                <h2 className="font-heading text-sm font-semibold text-white">Partner Portal Access</h2>
+                <p className="text-2xs font-mono text-white/30 mt-0.5">
+                  SLA dashboard · Payout statements · Compliance docs
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {inviteResult && <NeonBadge variant="green" dot>User Created</NeonBadge>}
+              {!inviteOpen && !inviteResult && canManageCarriers && (
+                <button
+                  onClick={() => { setInviteEmail(carrier.contact_email); setInviteOpen(true); }}
+                  className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-purple-plasma to-cyan-neon px-4 py-2 text-xs font-bold text-canvas hover:opacity-90 transition-opacity"
+                >
+                  <UserPlus size={12} />
+                  Invite Portal User
+                </button>
+              )}
+            </div>
           </div>
 
-          {/* Inline invite form */}
+          {/* Idle state */}
+          {!inviteOpen && !inviteResult && (
+            <div className="px-5 py-4">
+              <div className="flex items-start gap-3 rounded-xl border border-glass-border bg-glass-100/40 px-4 py-3.5">
+                <Shield size={14} className="text-white/20 mt-0.5 flex-shrink-0" />
+                <p className="text-xs text-white/40 leading-relaxed">
+                  No Partner Portal users are set up for this carrier yet.
+                  Inviting a user creates a{" "}
+                  <span className="text-purple-plasma/80 font-medium">partner role</span>{" "}
+                  account — they sign in to view their SLA reports, payout summaries, and compliance status.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Invite form */}
           <AnimatePresence>
             {inviteOpen && !inviteResult && (
               <motion.div
@@ -527,52 +552,84 @@ function CarrierDetailInner() {
                 exit={{ opacity: 0, height: 0 }}
                 className="overflow-hidden"
               >
-                <div className="mt-4 space-y-3">
+                <div className="px-5 py-5 space-y-4">
+                  {/* Info banner */}
+                  <div className="flex items-start gap-3 rounded-xl border border-cyan-neon/15 bg-cyan-neon/5 px-4 py-3">
+                    <Shield size={13} className="text-cyan-neon/60 flex-shrink-0 mt-0.5" />
+                    <p className="text-2xs font-mono text-white/40 leading-relaxed">
+                      A temporary password will be generated. Share it with the user — they must sign in via the{" "}
+                      <span className="text-cyan-neon/70">Partner Portal</span> and update it on first login.
+                      Access is scoped to this tenant only.
+                    </p>
+                  </div>
+
+                  {/* Name row */}
                   <div className="grid grid-cols-2 gap-3">
-                    <label className="block">
-                      <span className="text-2xs font-mono text-white/40 uppercase tracking-wider">First Name</span>
+                    <div>
+                      <p className="text-2xs font-mono text-white/40 uppercase tracking-widest mb-1.5">First Name</p>
                       <input
                         type="text"
                         value={inviteFirstName}
                         onChange={(e) => setInviteFirstName(e.target.value)}
                         placeholder="Jane"
-                        className="mt-1 w-full rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white placeholder:text-white/20 outline-none focus:border-cyan-neon/50 font-mono"
+                        autoComplete="given-name"
+                        className="w-full rounded-xl border border-glass-border bg-glass-200/50 px-3.5 py-2.5 text-sm text-white placeholder:text-white/20 outline-none focus:border-purple-plasma/50 focus:ring-1 focus:ring-purple-plasma/20 transition-all font-mono"
                       />
-                    </label>
-                    <label className="block">
-                      <span className="text-2xs font-mono text-white/40 uppercase tracking-wider">Last Name</span>
+                    </div>
+                    <div>
+                      <p className="text-2xs font-mono text-white/40 uppercase tracking-widest mb-1.5">Last Name</p>
                       <input
                         type="text"
                         value={inviteLastName}
                         onChange={(e) => setInviteLastName(e.target.value)}
                         placeholder="Reyes"
-                        className="mt-1 w-full rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white placeholder:text-white/20 outline-none focus:border-cyan-neon/50 font-mono"
+                        autoComplete="family-name"
+                        className="w-full rounded-xl border border-glass-border bg-glass-200/50 px-3.5 py-2.5 text-sm text-white placeholder:text-white/20 outline-none focus:border-purple-plasma/50 focus:ring-1 focus:ring-purple-plasma/20 transition-all font-mono"
                       />
-                    </label>
+                    </div>
                   </div>
-                  <label className="block">
-                    <span className="text-2xs font-mono text-white/40 uppercase tracking-wider">Email</span>
-                    <input
-                      type="email"
-                      value={inviteEmail}
-                      onChange={(e) => setInviteEmail(e.target.value)}
-                      placeholder="partner@carrier.com"
-                      className="mt-1 w-full rounded-lg border border-glass-border bg-glass-100 px-3 py-2 text-xs text-white placeholder:text-white/20 outline-none focus:border-cyan-neon/50 font-mono"
-                    />
-                  </label>
-                  <div className="flex items-center gap-2">
+
+                  {/* Email */}
+                  <div>
+                    <p className="text-2xs font-mono text-white/40 uppercase tracking-widest mb-1.5">Work Email</p>
+                    <div className="relative">
+                      <Mail size={13} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-white/25 pointer-events-none" />
+                      <input
+                        type="email"
+                        value={inviteEmail}
+                        onChange={(e) => setInviteEmail(e.target.value)}
+                        placeholder="partner@carrier.com"
+                        autoComplete="email"
+                        className="w-full rounded-xl border border-glass-border bg-glass-200/50 pl-9 pr-4 py-2.5 text-sm text-white placeholder:text-white/20 outline-none focus:border-purple-plasma/50 focus:ring-1 focus:ring-purple-plasma/20 transition-all font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Role pill */}
+                  <div className="flex items-center gap-3 rounded-xl border border-glass-border bg-glass-100/40 px-4 py-3">
+                    <span className="text-2xs font-mono text-white/30 uppercase tracking-widest">Role Assigned</span>
+                    <NeonBadge variant="purple">partner</NeonBadge>
+                    <span className="ml-auto text-2xs font-mono text-white/20">SLA · Payouts · Compliance</span>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex items-center gap-3 pt-1">
                     <button
                       onClick={() => { setInviteOpen(false); setInviteFirstName(""); setInviteLastName(""); setInviteEmail(""); }}
-                      className="flex-1 rounded-lg border border-glass-border py-2 text-xs text-white/50 hover:text-white transition-colors"
+                      className="rounded-xl border border-glass-border px-5 py-2.5 text-xs font-semibold text-white/50 hover:text-white hover:border-white/20 transition-colors"
                     >
                       Cancel
                     </button>
                     <button
                       onClick={handleInvite}
                       disabled={inviting || !inviteEmail.trim() || !inviteFirstName.trim() || !inviteLastName.trim()}
-                      className="flex-1 rounded-lg border border-cyan-neon/40 bg-cyan-surface py-2 text-xs font-semibold text-cyan-neon hover:bg-cyan-neon/20 disabled:opacity-40 transition-colors"
+                      className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-purple-plasma to-cyan-neon py-2.5 text-xs font-bold text-canvas hover:opacity-90 disabled:opacity-40 transition-opacity"
                     >
-                      {inviting ? "Sending invite…" : "Send Invite"}
+                      {inviting ? (
+                        <><RefreshCw size={12} className="animate-spin" /> Creating account…</>
+                      ) : (
+                        <><UserPlus size={12} /> Send Invite &amp; Create Account</>
+                      )}
                     </button>
                   </div>
                 </div>
@@ -589,27 +646,40 @@ function CarrierDetailInner() {
                 exit={{ opacity: 0, height: 0 }}
                 className="overflow-hidden"
               >
-                <div className="mt-4 rounded-lg border border-amber-signal/30 bg-amber-signal/5 p-4 space-y-3">
-                  <div className="flex items-center gap-2">
-                    <AlertTriangle size={13} className="text-amber-signal flex-shrink-0" />
-                    <p className="text-2xs font-mono text-amber-signal">
-                      Temporary password for <span className="text-white/80">{inviteResult.email}</span> — copy now, not shown again.
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2 rounded-lg bg-black/40 border border-glass-border px-3 py-2.5">
-                    <code className="flex-1 text-2xs font-mono text-cyan-neon break-all select-all">
-                      {inviteResult.temp_password}
-                    </code>
-                    <button onClick={handleCopyInvite} className="flex-shrink-0 text-white/40 hover:text-white transition-colors">
-                      {inviteCopied ? <Check size={14} className="text-green-signal" /> : <Copy size={14} />}
+                <div className="px-5 py-4">
+                  <div className="rounded-xl border border-amber-signal/30 bg-amber-signal/5 p-5 space-y-4">
+                    <div className="flex items-start gap-3">
+                      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-signal/10 flex-shrink-0">
+                        <AlertTriangle size={14} className="text-amber-signal" />
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold text-amber-signal">Copy this password now</p>
+                        <p className="text-2xs font-mono text-white/40 mt-0.5">
+                          Share with <span className="text-white/70">{inviteResult.email}</span> — it is not stored and cannot be recovered after you dismiss this.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 rounded-xl bg-black/50 border border-white/10 px-4 py-3.5">
+                      <code className="flex-1 text-base font-mono font-bold text-cyan-neon break-all select-all tracking-wider">
+                        {inviteResult.temp_password}
+                      </code>
+                      <button
+                        onClick={handleCopyInvite}
+                        title="Copy password"
+                        className="flex-shrink-0 flex items-center gap-1.5 rounded-lg border border-glass-border px-3 py-1.5 text-2xs font-mono text-white/40 hover:text-white hover:border-cyan-neon/30 transition-colors"
+                      >
+                        {inviteCopied
+                          ? <><Check size={12} className="text-green-signal" /> Copied</>
+                          : <><Copy size={12} /> Copy</>}
+                      </button>
+                    </div>
+                    <button
+                      onClick={() => setInviteResult(null)}
+                      className="w-full rounded-xl border border-glass-border py-2.5 text-2xs font-mono text-white/30 hover:text-white/60 hover:border-white/20 transition-colors"
+                    >
+                      I have copied the password — dismiss
                     </button>
                   </div>
-                  <button
-                    onClick={() => setInviteResult(null)}
-                    className="w-full text-2xs font-mono text-white/30 hover:text-white/60 transition-colors"
-                  >
-                    I have copied the password — dismiss
-                  </button>
                 </div>
               </motion.div>
             )}
