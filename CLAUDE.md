@@ -560,6 +560,7 @@ Work completed in this session — all committed and pushed:
 | Carrier detail: **Partner Portal Access** card with Invite Portal User form | `apps/admin-portal/src/app/(dashboard)/carriers/[id]/page.tsx` |
 | Carrier detail: **Review & Approve** flow for pending_verification carriers | `apps/admin-portal/src/app/(dashboard)/carriers/[id]/page.tsx` |
 | Fix: `inviteUser` result extraction bug (was using `ApiResponse` envelope, now correctly uses `.data`) | same |
+| Carrier detail: **full UI readability redesign** — KPI strip (2xl values, accent glow), Carrier Profile (GlassCard padding=none, icon header, 2-col border-grid, text-sm values), SLA (divide-y rows, font-bold color-coded values), Compliance (inline colored pill badge replacing invisible NeonBadge) | `apps/admin-portal/src/app/(dashboard)/carriers/[id]/page.tsx` |
 
 ### Auth / Identity Notes
 - `exchangeFirebaseToken` → `link_invited_user` → `find_by_email_global` uses **case-sensitive exact SQL match**. Identity service stores emails as-entered; Firebase returns lowercase. Always normalize emails to lowercase when creating users via `inviteUser` (already done in the invite handlers).
