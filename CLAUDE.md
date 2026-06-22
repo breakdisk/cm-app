@@ -546,6 +546,31 @@ logisticos/
 
 ---
 
+## Session Continuity Notes (PR #126 — branch `claude/quirky-wright-3apidc`)
+
+Work completed in this session — all committed and pushed:
+
+| Change | File |
+|--------|------|
+| Magic link `returnTo` propagation end-to-end | `apps/landing/src/app/login/page.tsx` |
+| `/verify-email` page (was 404) | `apps/landing/src/app/verify-email/page.tsx` |
+| `/reset-password` page (was 404) | `apps/landing/src/app/reset-password/page.tsx` |
+| Session route: extract `USER_NOT_INVITED` / `ROLE_MISMATCH` reason codes | `apps/landing/src/app/api/auth/session/route.ts` |
+| Login page: actionable 403 error messages for admin/partner | `apps/landing/src/app/login/page.tsx` |
+| Carrier detail: **Partner Portal Access** card with Invite Portal User form | `apps/admin-portal/src/app/(dashboard)/carriers/[id]/page.tsx` |
+| Carrier detail: **Review & Approve** flow for pending_verification carriers | `apps/admin-portal/src/app/(dashboard)/carriers/[id]/page.tsx` |
+| Fix: `inviteUser` result extraction bug (was using `ApiResponse` envelope, now correctly uses `.data`) | same |
+
+### Auth / Identity Notes
+- `exchangeFirebaseToken` → `link_invited_user` → `find_by_email_global` uses **case-sensitive exact SQL match**. Identity service stores emails as-entered; Firebase returns lowercase. Always normalize emails to lowercase when creating users via `inviteUser` (already done in the invite handlers).
+- Partner portal carrier lookup: `GET /v1/carriers/me` matches authenticated user's email against `carrier.contact_email`. Carrier must be created with the same lowercase email the partner uses to sign in.
+- Dev seed users: `admin@demo.com`, `merchant@demo.com`, `driver@demo.com` (password: `LogisticOS1!`). Real tenant: `demo` / `00000000-0000-0000-0000-000000000001`.
+
+### How to Invite a Partner User for an Existing Carrier
+Admin Portal → Carriers → click carrier row → scroll to **Partner Portal Access** card → **Invite Portal User** button.
+
+---
+
 ## Development Environment & Gotchas
 
 ### Git
