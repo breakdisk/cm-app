@@ -140,13 +140,14 @@ function LoginPageInner() {
       return;
     }
     // Draft merchants are redirected to the onboarding wizard; everyone else
-    // lands on their portal home.
+    // lands on their portal home (or the returnTo path set by portal middleware).
     const body = (await res.json().catch(() => ({}))) as { onboarding_required?: boolean };
     if (body.onboarding_required) {
       router.push(`/setup?role=${role}`);
       return;
     }
-    router.push(`/${role}`);
+    const returnTo = searchParams.get("returnTo");
+    router.push(returnTo ?? `/${role}`);
   }
 
   async function signInWithGoogle() {
@@ -201,8 +202,12 @@ function LoginPageInner() {
     setError(null);
     try {
       window.localStorage.setItem("emailForSignIn", email);
+      const callbackUrl = new URL("/login", window.location.origin);
+      callbackUrl.searchParams.set("role", selectedRole);
+      const returnTo = searchParams.get("returnTo");
+      if (returnTo) callbackUrl.searchParams.set("returnTo", returnTo);
       await sendSignInLinkToEmail(auth, email, {
-        url:             `${window.location.origin}/login?role=${selectedRole}`,
+        url:             callbackUrl.toString(),
         handleCodeInApp: true,
       });
       setEmailSent(true);
