@@ -216,7 +216,7 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
   const [podLoading, setPodLoading] = useState(false);
   const [podError,   setPodError]   = useState<string | null>(null);
   const [pop,        setPop]        = useState<PopData | null>(null);
-  const [popLoading, setPopLoading] = useState(false);
+  const [popLoading, setPopLoading] = useState(true);
   const [popError,   setPopError]   = useState<string | null>(null);
   const [events,     setEvents]     = useState<TimelineEvent[]>([]);
   const backdropRef = useRef<HTMLDivElement>(null);
@@ -376,10 +376,10 @@ export function ShipmentDetailPanel({ shipment, onClose, onActionComplete }: Shi
           const proxyRes = await authFetch(
             `${basePathPrefix()}/api/pops?shipment_id=${shipment.id}`
           );
-          // 503 from the proxy means every upstream is genuinely missing the
-          // POP route (pod image truly outdated) — treat as "no POP yet" empty
-          // state rather than a hard error, mirroring POD's 404 handling.
-          if (proxyRes.status === 404 || proxyRes.status === 503) {
+          // 502: all upstream paths had network errors (pod unreachable).
+          // 503: every reachable upstream returned 404 (pod image pre-dates the POP route).
+          // Both treated as "no POP yet" — graceful empty state, not a hard error.
+          if (proxyRes.status === 404 || proxyRes.status === 502 || proxyRes.status === 503) {
             if (!cancelled) setPop(null);
             return;
           }
@@ -955,6 +955,7 @@ function NoPopPlaceholder() {
 }
 
 function PopCard({ pop }: { pop: PopData }) {
+  const [photoFailed, setPhotoFailed] = useState(false);
   return (
     <GlassCard size="sm" className="space-y-4">
       {/* Status row */}
@@ -980,7 +981,7 @@ function PopCard({ pop }: { pop: PopData }) {
         <p className="mb-1.5 text-2xs font-mono uppercase tracking-widest text-white/30">
           Pickup Photo
         </p>
-        {pop.photo_url ? (
+        {pop.photo_url && !photoFailed ? (
           <div className="overflow-hidden rounded-lg border border-glass-border">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
@@ -988,6 +989,7 @@ function PopCard({ pop }: { pop: PopData }) {
               alt="Proof of pickup photo"
               className="w-full object-cover"
               style={{ maxHeight: 260 }}
+              onError={() => setPhotoFailed(true)}
             />
           </div>
         ) : (
