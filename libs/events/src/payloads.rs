@@ -11,15 +11,21 @@ pub struct TenantCreated {
     pub subscription_tier: String,
 }
 
-/// Emitted by identity when an OTP is generated for email-based login.
-/// Consumed by: engagement (delivers the OTP via email).
+/// Emitted by identity when an OTP is generated for passwordless login.
+/// Consumed by: engagement (delivers the code via email or SMS).
 /// tenant_id is Uuid::nil() — OTP send happens before tenant resolution.
+/// Exactly one of `email` / `phone_number` is non-empty.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OtpRequested {
     /// The email address the OTP should be delivered to.
+    /// Empty when phone_number is set.
     pub email: String,
     /// The 6-digit OTP code.
     pub otp_code: String,
+    /// E.164 phone number for SMS OTP delivery (e.g. "+639171234567").
+    /// Empty when email is set.
+    #[serde(default)]
+    pub phone_number: String,
 }
 
 /// Emitted by identity when a draft tenant completes onboarding setup.

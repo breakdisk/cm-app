@@ -379,7 +379,7 @@ impl AuthService {
                 "identity",
                 topics::OTP_REQUESTED,
                 uuid::Uuid::nil(), // tenant unknown before verify; engagement ignores this for OTP
-                OtpRequested { email: identifier.to_owned(), otp_code: otp.clone() },
+                OtpRequested { email: identifier.to_owned(), otp_code: otp.clone(), phone_number: String::new() },
             );
             match self.kafka.publish_event(topics::OTP_REQUESTED, &event).await {
                 Ok(_) => tracing::info!(identifier = %identifier, "OTP_REQUESTED published to engagement engine"),
@@ -396,9 +396,21 @@ impl AuthService {
                     }
                 }
             }
-        } else if is_prod {
-            // Phone/WhatsApp delivery not yet wired — log without the OTP to avoid prod log exposure.
-            tracing::warn!(identifier = %identifier, "OTP generated — SMS/WhatsApp not wired");
+        } else {
+            // Phone-based OTP — publish to engagement engine for SMS delivery.
+            let event = Event::new(
+                "identity",
+                topics::OTP_REQUESTED,
+                uuid::Uuid::nil(),
+                OtpRequested { email: String::new(), otp_code: otp.clone(), phone_number: identifier.to_owned() },
+            );
+            match self.kafka.publish_event(topics::OTP_REQUESTED, &event).await {
+                Ok(_) => tracing::info!(identifier = %identifier, "OTP_REQUESTED (phone) published to engagement engine"),
+                Err(e) => {
+                    tracing::error!(identifier = %identifier, error = %e,
+                        "Failed to publish phone OTP_REQUESTED — SMS not delivered");
+                }
+            }
         }
 
         if !is_prod {

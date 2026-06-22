@@ -17,6 +17,8 @@
 //!   payments.wallet.withdrawal_rejected  → "withdrawal_rejected"  → Email + Push    (carrier payout declined)
 //!   tracking.receipt.email.requested → "shipment_confirmation" → Email   (customer-initiated re-send)
 //!   identity.tenant.finalized        → "merchant_welcome"      → Email              (new merchant onboarded)
+//!   identity.otp_requested (email)   → "otp_code"             → Email
+//!   identity.otp_requested (phone)   → "otp_code"             → SMS
 
 use tracing::{error, info, warn};
 use crate::application::services::notification_service::NotificationService;
@@ -106,11 +108,12 @@ fn get_mapping(event_type: &str) -> Option<EventNotificationMapping> {
             priority:    NotificationPriority::High,
             channels:    &["email"],
         }),
-        // OTP delivery — send a one-time code via email for passwordless login.
+        // OTP delivery — email or SMS depending on which identifier was provided.
+        // Dispatch loop skips whichever recipient field is empty.
         topics::OTP_REQUESTED => Some(EventNotificationMapping {
             template_id: "otp_code",
             priority:    NotificationPriority::High,
-            channels:    &["email"],
+            channels:    &["email", "sms"],
         }),
         // Cross-border hub milestones — fanned out per recipient by
         // `handle_hub_milestone`, which synthesises a single-recipient payload and
@@ -243,25 +246,27 @@ pub async fn process_event(
         // Use tenant_id as the notification audit UUID (no separate customer entity).
         (tenant_id, String::new(), owner_email, vars)
     } else if is_otp_event {
-        // OTP email — deliver a one-time code to the requestor's email address.
+        // OTP delivery — email or SMS based on which identifier was provided.
         // No customer entity exists yet (this fires before otp_verify creates/resolves the user).
         let recipient_email = data["email"].as_str().unwrap_or("").to_owned();
+        let phone_number    = data["phone_number"].as_str().unwrap_or("").to_owned();
         let otp_code        = data["otp_code"].as_str().unwrap_or("").to_owned();
 
-        if recipient_email.is_empty() || otp_code.is_empty() {
-            warn!(event_type, "OTP_REQUESTED missing email or otp_code — skipping");
+        if otp_code.is_empty() || (recipient_email.is_empty() && phone_number.is_empty()) {
+            warn!(event_type, "OTP_REQUESTED missing otp_code or both email and phone_number — skipping");
             return;
         }
 
         let vars = serde_json::json!({ "otp_code": otp_code });
         // Use nil UUID as customer_id — no user record exists at OTP-send time.
-        (uuid::Uuid::nil(), String::new(), recipient_email, vars)
+        // phone routes to SMS channel; email routes to Email channel.
+        // The dispatch loop below skips whichever recipient is empty.
+        (uuid::Uuid::nil(), phone_number, recipient_email, vars)
     } else if is_withdrawal_event {
         // Withdrawal disbursed/rejected — notify the carrier partner.
-        // The event envelope carries tenant_id; email is not yet in the event
-        // payload (TODO: add carrier_email to WithdrawalDisbursed/Rejected when
-        // the payments service gains identity-service lookup). Push fires via
-        // tenant_id; email channel gracefully no-ops when address is empty.
+        // carrier_email is stored on the WithdrawalRequest (migration 0013) and forwarded
+        // in the event payload. Push fires via tenant_id; email channel gracefully
+        // no-ops when carrier_email is empty (carrier did not supply one at request time).
         let amount_cents   = data["amount_centavos"].as_i64().unwrap_or(0);
         let amount_php     = format!("{:.2}", amount_cents as f64 / 100.0);
         let review_note    = data["review_note"].as_str().unwrap_or("").to_owned();
@@ -451,7 +456,6 @@ pub async fn process_event(
                 "Your one-time verification code is:\n\n\
                  {{otp_code}}\n\n\
                  This code expires in 5 minutes. Do not share it with anyone.\n\n\
-                 If you did not request this code, you can safely ignore this email.\n\n\
                  — CargoMarket".to_owned(),
             ),
             "merchant_welcome" => (
