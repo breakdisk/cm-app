@@ -100,6 +100,11 @@ function CarrierDetailInner() {
   const [inviteResult,    setInviteResult]    = useState<InviteUserResult | null>(null);
   const [inviteCopied,    setInviteCopied]    = useState(false);
 
+  // Carrier approval
+  const [approveOpen,  setApproveOpen]  = useState(false);
+  const [approveNotes, setApproveNotes] = useState("");
+  const [approving,    setApproving]    = useState(false);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -202,9 +207,9 @@ function CarrierDetailInner() {
         last_name:  inviteLastName.trim(),
         roles:      ["partner"],
       });
-      setInviteResult(result);
+      setInviteResult(result.data);
       setInviteOpen(false);
-      setActionMsg(`Partner user ${result.email} created — share the temporary password.`);
+      setActionMsg(`Partner user ${result.data.email} created — share the temporary password.`);
     } catch (e) {
       setActionMsg(`Invite failed: ${e instanceof Error ? e.message : "unknown error"}`);
     } finally {
@@ -217,6 +222,21 @@ function CarrierDetailInner() {
     navigator.clipboard.writeText(inviteResult.temp_password);
     setInviteCopied(true);
     setTimeout(() => setInviteCopied(false), 2500);
+  };
+
+  const handleApprove = async () => {
+    setApproving(true);
+    try {
+      await api.activateCarrier(carrierId);
+      setApproveOpen(false);
+      setApproveNotes("");
+      setActionMsg("Carrier approved and activated — now eligible for dispatch allocation.");
+      await load();
+    } catch (e) {
+      setActionMsg(`Approval failed: ${e instanceof Error ? e.message : "unknown error"}`);
+    } finally {
+      setApproving(false);
+    }
   };
 
   if (loading) {
@@ -281,12 +301,20 @@ function CarrierDetailInner() {
           >
             <RefreshCw size={12} />
           </button>
-          {canManageCarriers && (isSuspended || isPending) && (
+          {canManageCarriers && isSuspended && (
             <button
               onClick={handleActivate}
               className="flex items-center gap-1.5 rounded-lg border border-green-signal/40 bg-green-signal/10 px-3 py-2 text-xs font-semibold text-green-signal hover:bg-green-signal/20 transition-colors"
             >
-              <Power size={12} /> Activate
+              <Power size={12} /> Re-activate
+            </button>
+          )}
+          {canManageCarriers && isPending && (
+            <button
+              onClick={() => { setApproveOpen(true); setApproveNotes(""); }}
+              className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-amber-signal/80 to-green-signal/80 px-3 py-2 text-xs font-bold text-canvas hover:opacity-90 transition-opacity"
+            >
+              <CheckCircle2 size={12} /> Review &amp; Approve
             </button>
           )}
           {canManageCarriers && isActive && (
@@ -316,6 +344,31 @@ function CarrierDetailInner() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Awaiting Approval banner — only for pending_verification carriers */}
+      {isPending && (
+        <motion.div variants={variants.fadeInUp}>
+          <div className="flex items-center gap-4 rounded-xl border border-amber-signal/30 bg-amber-signal/5 px-5 py-4">
+            <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl bg-amber-signal/15 border border-amber-signal/25">
+              <Clock size={16} className="text-amber-signal" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-amber-signal">Awaiting Ops Approval</p>
+              <p className="text-xs text-white/40 mt-0.5">
+                This carrier is registered but not yet live. Review the profile below, then approve to enable dispatch allocation.
+              </p>
+            </div>
+            {canManageCarriers && (
+              <button
+                onClick={() => { setApproveOpen(true); setApproveNotes(""); }}
+                className="flex-shrink-0 flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-amber-signal to-green-signal px-5 py-2.5 text-xs font-bold text-canvas hover:opacity-90 transition-opacity"
+              >
+                <CheckCircle2 size={13} /> Review &amp; Approve
+              </button>
+            )}
+          </div>
+        </motion.div>
+      )}
 
       {/* KPI strip */}
       <motion.div variants={variants.fadeInUp} className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -772,6 +825,96 @@ function CarrierDetailInner() {
           )}
         </GlassCard>
       </motion.div>
+
+      {/* Approve modal */}
+      <AnimatePresence>
+        {canManageCarriers && approveOpen && isPending && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 12 }}
+              transition={{ type: "spring", duration: 0.35 }}
+              className="w-full max-w-lg"
+            >
+              <GlassCard glow="cyan">
+                <div className="flex items-start justify-between mb-5">
+                  <div>
+                    <h3 className="font-heading text-lg font-bold text-white">Review &amp; Approve Carrier</h3>
+                    <p className="text-xs font-mono text-white/40 mt-0.5">{carrier.name} · {carrier.code}</p>
+                  </div>
+                  <button onClick={() => setApproveOpen(false)} className="text-white/40 hover:text-white transition-colors">
+                    <X size={16} />
+                  </button>
+                </div>
+
+                {/* Summary row */}
+                <div className="rounded-xl border border-glass-border bg-glass-100/50 divide-y divide-glass-border mb-4">
+                  {[
+                    { label: "Contact Email",    value: carrier.contact_email },
+                    { label: "On-Time Target",   value: `${carrier.sla.on_time_target_pct}%` },
+                    { label: "Max Delivery Days",value: `${carrier.sla.max_delivery_days} days` },
+                    { label: "Compliance",       value: carrier.compliance_status.replace(/_/g, " ") },
+                  ].map((row) => (
+                    <div key={row.label} className="flex items-center justify-between px-4 py-2.5">
+                      <span className="text-xs font-mono text-white/40">{row.label}</span>
+                      <span className="text-xs font-mono font-semibold text-white/80">{row.value}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Verification checklist (visual) */}
+                <div className="mb-4 space-y-1.5">
+                  <p className="text-2xs font-mono text-white/30 uppercase tracking-widest mb-2">Pre-Approval Checklist</p>
+                  {[
+                    "Business registration / KYB documents received",
+                    "Contact details confirmed with carrier ops team",
+                    "SLA commitment reviewed and agreed",
+                    "Partner portal access set up (optional)",
+                  ].map((item) => (
+                    <div key={item} className="flex items-center gap-2.5 rounded-lg border border-glass-border bg-glass-100/30 px-3 py-2">
+                      <div className="h-4 w-4 flex-shrink-0 rounded border border-green-signal/40 bg-green-signal/10 flex items-center justify-center">
+                        <Check size={10} className="text-green-signal" />
+                      </div>
+                      <span className="text-xs font-mono text-white/50">{item}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Notes */}
+                <div className="mb-5">
+                  <p className="text-2xs font-mono text-white/30 uppercase tracking-widest mb-1.5">Approval Notes <span className="normal-case text-white/20">(optional — logged in audit trail)</span></p>
+                  <textarea
+                    value={approveNotes}
+                    onChange={(e) => setApproveNotes(e.target.value)}
+                    rows={2}
+                    placeholder="KYB verified via document upload dated 22 Jun 2026…"
+                    className="w-full rounded-xl border border-glass-border bg-glass-100 px-3.5 py-2.5 text-xs text-white placeholder:text-white/20 outline-none focus:border-cyan-neon/40 focus:ring-1 focus:ring-cyan-neon/15 resize-none font-mono transition-all"
+                  />
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setApproveOpen(false)}
+                    className="rounded-xl border border-glass-border px-5 py-2.5 text-xs font-semibold text-white/50 hover:text-white transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleApprove}
+                    disabled={approving}
+                    className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-amber-signal to-green-signal py-2.5 text-xs font-bold text-canvas hover:opacity-90 disabled:opacity-40 transition-opacity"
+                  >
+                    {approving
+                      ? <><RefreshCw size={12} className="animate-spin" /> Approving…</>
+                      : <><CheckCircle2 size={12} /> Approve &amp; Activate Carrier</>}
+                  </button>
+                </div>
+              </GlassCard>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Suspend modal */}
       <AnimatePresence>
