@@ -47,6 +47,20 @@ export interface InviteUserResult {
   temp_password: string;
 }
 
+// ── Pricing feature types ───────────────────────────────────────────────────────
+
+export type FeatureCategory = "logistics" | "ai" | "engagement" | "platform";
+
+export interface PricingFeature {
+  feature_key:      string;
+  feature_name:     string;
+  feature_category: FeatureCategory;
+  description:      string | null;
+  enabled_tiers:    TenantTier[];
+  is_system:        boolean;
+  sort_order:       number;
+}
+
 // ── Tenant types ───────────────────────────────────────────────────────────────
 // Mirrors services/identity/src/domain/entities/tenant.rs.
 // subscription_tier is snake_case since SubscriptionTier now has
@@ -140,6 +154,29 @@ export function createIdentityApi() {
     updateBranding: (payload: UpdateBrandingPayload) =>
       client
         .put<ApiResponse<Branding>>("/v1/tenants/me/branding", payload)
+        .then((r) => r.data.data),
+
+    // ── Pricing feature matrix ──────────────────────────────────────────────────
+
+    /** GET /v1/pricing/features — full feature matrix (any authenticated user). */
+    listPricingFeatures: () =>
+      client
+        .get<ApiResponse<PricingFeature[]>>("/v1/pricing/features")
+        .then((r) => r.data.data),
+
+    /** GET /v1/pricing/features/active — feature keys enabled for caller's tier. */
+    getActiveFeatures: () =>
+      client
+        .get<ApiResponse<{ tier: string; enabled_features: string[] }>>("/v1/pricing/features/active")
+        .then((r) => r.data.data),
+
+    /** PUT /v1/pricing/features/:key/tiers — set which tiers include a feature (admin only). */
+    setFeatureTiers: (featureKey: string, enabledTiers: TenantTier[]) =>
+      client
+        .put<ApiResponse<{ feature_key: string; enabled_tiers: TenantTier[] }>>(
+          `/v1/pricing/features/${featureKey}/tiers`,
+          { enabled_tiers: enabledTiers }
+        )
         .then((r) => r.data.data),
   };
 }

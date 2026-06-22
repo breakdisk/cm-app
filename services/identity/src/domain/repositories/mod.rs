@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use logisticos_types::{TenantId, UserId};
-use crate::domain::entities::{Tenant, User, ApiKey, AuthIdentity, AuthProvider, PickupAddress, Branding};
+use crate::domain::entities::{Tenant, User, ApiKey, AuthIdentity, AuthProvider, PickupAddress, Branding, PricingFeature};
 
 #[async_trait]
 pub trait TenantRepository: Send + Sync {
@@ -56,6 +56,16 @@ pub trait PickupAddressRepository: Send + Sync {
     async fn delete(&self, id: uuid::Uuid, user_id: &UserId) -> anyhow::Result<()>;
     /// Atomically sets one address as default and clears all others for the user.
     async fn set_default(&self, id: uuid::Uuid, user_id: &UserId) -> anyhow::Result<()>;
+}
+
+#[async_trait]
+pub trait PricingFeatureRepository: Send + Sync {
+    /// All features, ordered by sort_order.
+    async fn list_all(&self) -> anyhow::Result<Vec<PricingFeature>>;
+    /// Only features whose enabled_tiers array contains the given tier slug.
+    async fn list_for_tier(&self, tier: &str) -> anyhow::Result<Vec<PricingFeature>>;
+    /// Replace the enabled_tiers for a specific feature key.
+    async fn set_enabled_tiers(&self, feature_key: &str, tiers: &[String]) -> anyhow::Result<()>;
 }
 
 #[async_trait]
