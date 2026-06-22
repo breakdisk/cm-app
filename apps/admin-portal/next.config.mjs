@@ -7,6 +7,7 @@ const nextConfig = {
   images: {
     remotePatterns: [
       { protocol: "https", hostname: "**.amazonaws.com" },
+      { protocol: "https", hostname: "**.r2.cloudflarestorage.com" },
     ],
   },
   typescript: { ignoreBuildErrors: true },
