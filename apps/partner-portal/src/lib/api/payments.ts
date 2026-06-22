@@ -57,6 +57,23 @@ export interface WithdrawalHistoryItem {
   updated_at:  string;
 }
 
+export type SettlementStatus = "pending" | "settled" | "failed";
+
+export interface SettlementRun {
+  id:                         string;
+  carrier_id:                 string;
+  period_start:               string;  // YYYY-MM-DD
+  period_end:                 string;  // YYYY-MM-DD
+  total_margin_cents:         number;
+  total_cod_commission_cents: number;
+  total_cents:                number;
+  delivery_count:             number;
+  status:                     SettlementStatus;
+  withdrawal_request_id:      string | null;
+  created_at:                 string;
+  settled_at:                 string | null;
+}
+
 // ── API ───────────────────────────────────────────────────────────────────────
 
 export const paymentsApi = {
@@ -103,6 +120,14 @@ export const paymentsApi = {
   async getWithdrawalRequests(): Promise<WithdrawalHistoryItem[]> {
     const { data } = await createApiClient().get<{ data: WithdrawalHistoryItem[] }>(
       "/v1/wallet/withdrawal-requests"
+    );
+    return data.data ?? [];
+  },
+
+  /** List carrier settlement runs for this partner (gig-driver weekly payouts). */
+  async getCarrierSettlements(): Promise<SettlementRun[]> {
+    const { data } = await createApiClient().get<{ data: SettlementRun[] }>(
+      "/v1/partner/carrier-settlements"
     );
     return data.data ?? [];
   },
