@@ -29,6 +29,10 @@ import {
 import { cn } from "@/lib/design-system/cn";
 import { useBranding } from "@/lib/branding";
 import { identityApi, type Me, type Tenant } from "@/lib/api/identity";
+import {
+  createEngagementApi,
+  type Notification as EngagementNotification,
+} from "@/lib/api/engagement";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -161,13 +165,33 @@ function NavLink({
 
 // ─── Layout ───────────────────────────────────────────────────────────────────
 
-// ── Static notification seed (replaced by real API when notification service is ready) ──
-const NOTIF_SEED = [
-  { id: "n1", title: "Delivery failed",       body: "CM-PH1-S0000845C — Ana Garcia, Taguig BGC",  time: "35m ago",  color: "#FF3B5C" },
-  { id: "n2", title: "New booking",            body: "CM-PH1-B0000848F — Ahmad Hassan, Dubai → PH", time: "1h ago",   color: "#00E5FF" },
-  { id: "n3", title: "Payment received",       body: "₱12,400 COD remitted for March batch",        time: "2h ago",   color: "#00FF88" },
-  { id: "n4", title: "SLA breach risk",        body: "3 shipments at risk — ETA exceeded by 2h",    time: "3h ago",   color: "#FFAB00" },
-];
+// ── Notification helpers ──────────────────────────────────────────────────────
+
+function notifColor(status: EngagementNotification["status"]): string {
+  switch (status) {
+    case "Failed":
+    case "Bounced":  return "#FF3B5C";
+    case "Delivered": return "#00FF88";
+    case "Sent":      return "#A855F7";
+    default:          return "#00E5FF"; // Queued / Sending
+  }
+}
+
+function notifTitle(n: EngagementNotification): string {
+  if (n.subject) return n.subject;
+  const ch = n.channel.toLowerCase();
+  return `${ch.charAt(0).toUpperCase()}${ch.slice(1)} — ${n.status.toLowerCase()}`;
+}
+
+function relativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 1)  return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24)  return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
 
 export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
@@ -175,6 +199,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const [signingOut, setSigningOut] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [readIds, setReadIds] = useState<Set<string>>(new Set());
+  const [notifications, setNotifications] = useState<EngagementNotification[]>([]);
   const [me, setMe] = useState<Me | null>(null);
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const notifRef = useRef<HTMLDivElement>(null);
@@ -217,7 +242,16 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, [showNotifications]);
 
-  const unreadCount = NOTIF_SEED.filter(n => !readIds.has(n.id)).length;
+  // Fetch latest notifications from engagement service each time the panel opens.
+  useEffect(() => {
+    if (!showNotifications) return;
+    createEngagementApi()
+      .listNotifications({ page: 1, limit: 20 })
+      .then((r) => setNotifications(r.notifications))
+      .catch(() => {/* keep previous list on error */});
+  }, [showNotifications]);
+
+  const unreadCount = notifications.filter((n) => !readIds.has(n.id)).length;
 
   async function handleSignOut() {
     setSigningOut(true);
@@ -526,27 +560,46 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
                   >
                     <div className="flex items-center justify-between border-b border-glass-border px-4 py-3">
                       <p className="text-xs font-semibold text-white">Notifications</p>
-                      <button
-                        onClick={() => setReadIds(new Set(NOTIF_SEED.map(n => n.id)))}
-                        className="text-2xs text-white/40 hover:text-cyan-neon transition-colors"
-                      >
-                        Mark all read
-                      </button>
+                      {notifications.length > 0 && (
+                        <button
+                          onClick={() => setReadIds(new Set(notifications.map((n) => n.id)))}
+                          className="text-2xs text-white/40 hover:text-cyan-neon transition-colors"
+                        >
+                          Mark all read
+                        </button>
+                      )}
                     </div>
                     <div className="flex flex-col divide-y divide-glass-border/50">
-                      {NOTIF_SEED.map(n => {
+                      {notifications.length === 0 ? (
+                        <p className="px-4 py-6 text-center text-2xs text-white/30">
+                          No notifications
+                        </p>
+                      ) : notifications.map((n) => {
                         const isRead = readIds.has(n.id);
+                        const color  = notifColor(n.status);
                         return (
                           <button
                             key={n.id}
-                            onClick={() => setReadIds(prev => new Set([...prev, n.id]))}
+                            onClick={() => setReadIds((prev) => new Set([...prev, n.id]))}
                             className="flex items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-glass-100"
                           >
-                            <span className="mt-1 h-2 w-2 flex-shrink-0 rounded-full" style={{ background: isRead ? "transparent" : n.color, boxShadow: isRead ? "none" : `0 0 6px ${n.color}` }} />
+                            <span
+                              className="mt-1 h-2 w-2 flex-shrink-0 rounded-full"
+                              style={{
+                                background: isRead ? "transparent" : color,
+                                boxShadow:  isRead ? "none" : `0 0 6px ${color}`,
+                              }}
+                            />
                             <div className="min-w-0">
-                              <p className={`text-xs font-medium ${isRead ? "text-white/40" : "text-white"}`}>{n.title}</p>
-                              <p className="mt-0.5 text-2xs font-mono text-white/30 truncate">{n.body}</p>
-                              <p className="mt-1 text-2xs text-white/20">{n.time}</p>
+                              <p className={`text-xs font-medium ${isRead ? "text-white/40" : "text-white"}`}>
+                                {notifTitle(n)}
+                              </p>
+                              <p className="mt-0.5 text-2xs font-mono text-white/30 truncate">
+                                {n.rendered_body}
+                              </p>
+                              <p className="mt-1 text-2xs text-white/20">
+                                {relativeTime(n.queued_at)}
+                              </p>
                             </div>
                           </button>
                         );
