@@ -572,6 +572,22 @@ logisticos/
 - **Cannot run Gradle locally** — Android changes follow the existing feature-module pattern and are validated by the GitHub Actions Android CI workflow; use `cargo check` / `tsc --noEmit` for backend/portal verification within sessions
 - **`device_timestamp` discipline** — capture `System.currentTimeMillis()` at the physical event (scan callback, shutter click) and convert immediately with `HubRepository.isoFromMillis()`; never re-sample at coroutine launch or network-send time
 
+### POP photo storage (R2/S3)
+- **POP presigns against its own bucket** — `POP_S3_BUCKET` (`logisticos-pop-photos`), separate from POD's `S3_BUCKET`. Presigning is pure local signature computation and never validates the bucket, so a missing/unauthorized bucket surfaces only as rejected PUTs on the driver phone — which the app used to treat as non-fatal, silently submitting the POP without its photo
+- **Pod bootstrap self-heals** — `S3StorageAdapter::ensure_bucket()` (HEAD → CreateBucket → zero-byte probe write; the probe rescues bucket-scoped R2 tokens that deny HEAD/Create) runs at boot; on failure `pop_storage` falls back to the POD bucket. `pop/` vs `pod/` key prefixes keep objects distinct and `pop_to_view` already reads cross-bucket
+- **New buckets need BOTH Terraform modules** — `modules/s3` (bucket) AND `modules/iam` (Allow statement + `DenyNonPODS3.not_resources`); the pod IAM role explicitly denies any bucket not listed in the deny exclusion
+- **POPs submitted without a photo key cannot be backfilled** — the bytes never left the device, and `get_pop_upload_url` rejects already-submitted POPs
+- **Dedicated bucket on R2 deployments** — run `scripts/create-r2-buckets.sh` (or use an admin-scope R2 token so bootstrap auto-creates); until then pod stores POP photos in the POD bucket, fully functional either way
+
+### Remote (cloud) session container
+- **`cargo check` fails in rdkafka-sys until curl headers are installed** — run `sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev libssl-dev libsasl2-dev zlib1g-dev` first (the apt index is stale; installing without `update` 404s). Pod crate: `cargo check -p logisticos-pod`
+- **No Terraform CLI in the container** — `.tf` changes are review/CI-validated only
+
+### Session handoff — 2026-07-07 (POP photo pipeline)
+- **Merged:** PR #121 — admin-portal POP display fixes (`popLoading` initial state, `<img>` onError fallback for expired presigned URLs, BFF-proxy 502 handled as empty state, R2 hostname in `next.config.mjs` remotePatterns)
+- **Open:** PR #127 — POP photo storage root-cause fix (pod `ensure_bucket()` + POD-bucket fallback in bootstrap, driver-app upload failure now throws into the `POP_SUBMIT` sync-queue retry instead of orphaning the photo, Terraform pop-photos bucket + IAM grant)
+- **Next session:** verify PR #127 CI/merge state, then confirm end-to-end after a pod redeploy — driver pickup with photo → object lands at `pop/...` in R2 (check pod boot logs for the bucket-probe line) → photo renders in Admin Portal → Shipments → Shipment Details; `scripts/pop-photo-smoke.sh` should pass
+
 ---
 
 ## Proof of Pickup (POP) & Real-Time Telemetry — Implementation Directive
