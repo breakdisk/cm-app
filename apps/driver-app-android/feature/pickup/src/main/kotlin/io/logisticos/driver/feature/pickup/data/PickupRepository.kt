@@ -166,35 +166,36 @@ class PickupRepository @Inject constructor(
 
             // ── Upload pickup photo to R2 if captured ───────────────────────
             // Uses the same presigned-URL flow as delivery POD photos.
-            // Failure is non-fatal for the POP record (photo is optional) but
-            // we log it so ops can investigate missing pickup evidence.
+            // Any failure (upload-url fetch, network, non-2xx PUT) throws into
+            // the outer catch, which enqueues POP_SUBMIT with the photo path —
+            // the sync worker replays initiate (idempotent, same pop_id) +
+            // upload + submit, so a transient blip no longer silently orphans
+            // the pickup evidence. The worker's own upload failure stays
+            // non-fatal there, so the POP still terminally submits without a
+            // photo rather than poisoning the queue.
             var photoS3Key: String? = null
             var photoSizeBytes: Long? = null
             val photoFile = compressedPhotoPath?.let { File(it).takeIf { f -> f.exists() } }
             if (photoFile != null) {
-                try {
-                    val contentType = "image/jpeg"
-                    val uploadResp = podApi.getPopUploadUrl(popId, GetUploadUrlRequest(contentType))
-                    withContext(Dispatchers.IO) {
-                        val photoBytes = photoFile.readBytes()
-                        val reqBuilder = Request.Builder()
-                            .url(uploadResp.data.uploadUrl)
-                            .put(photoBytes.toRequestBody(contentType.toMediaType()))
-                        uploadResp.data.uploadHeaders.forEach { (k, v) -> reqBuilder.addHeader(k, v) }
-                        val putResponse = r2HttpClient.newCall(reqBuilder.build()).execute()
+                val contentType = "image/jpeg"
+                val uploadResp = podApi.getPopUploadUrl(popId, GetUploadUrlRequest(contentType))
+                withContext(Dispatchers.IO) {
+                    val photoBytes = photoFile.readBytes()
+                    val reqBuilder = Request.Builder()
+                        .url(uploadResp.data.uploadUrl)
+                        .put(photoBytes.toRequestBody(contentType.toMediaType()))
+                    uploadResp.data.uploadHeaders.forEach { (k, v) -> reqBuilder.addHeader(k, v) }
+                    r2HttpClient.newCall(reqBuilder.build()).execute().use { putResponse ->
                         if (!putResponse.isSuccessful) {
                             val body = try { putResponse.body?.string() ?: "empty" } catch (e: Exception) { "unreadable" }
                             android.util.Log.e("PickupRepository", "R2 POP photo PUT ${putResponse.code}: $body")
-                        } else {
-                            putResponse.close()
-                            photoS3Key = uploadResp.data.s3Key
-                            photoSizeBytes = photoFile.length()
-                            android.util.Log.d("PickupRepository", "POP photo uploaded: ${uploadResp.data.s3Key}")
+                            throw java.io.IOException("R2 POP photo PUT failed: ${putResponse.code}")
                         }
                     }
-                } catch (e: Exception) {
-                    android.util.Log.w("PickupRepository", "POP photo upload failed — non-fatal: ${e.message}")
+                    photoS3Key = uploadResp.data.s3Key
+                    photoSizeBytes = photoFile.length()
                 }
+                android.util.Log.d("PickupRepository", "POP photo uploaded: ${uploadResp.data.s3Key}")
             }
 
             podApi.submitPop(

@@ -92,6 +92,7 @@ locals {
   # Bucket names — centralised so other modules can reference them via outputs
   bucket_names = {
     pod_photos        = "logisticos-pod-photos-${var.environment}"
+    pop_photos        = "logisticos-pop-photos-${var.environment}"
     exports           = "logisticos-exports-${var.environment}"
     model_artifacts   = "logisticos-model-artifacts-${var.environment}"
     backups           = "logisticos-backups-${var.environment}"
@@ -204,6 +205,123 @@ resource "aws_s3_bucket_cors_configuration" "pod_photos" {
 resource "aws_s3_bucket_intelligent_tiering_configuration" "pod_photos" {
   bucket = aws_s3_bucket.pod_photos.id
   name   = "pod-photos-tiering"
+  status = "Enabled"
+
+  tiering {
+    access_tier = "ARCHIVE_ACCESS"
+    days        = 90
+  }
+
+  tiering {
+    access_tier = "DEEP_ARCHIVE_ACCESS"
+    days        = 180
+  }
+}
+
+###############################################################################
+# POP Photos Bucket
+# Stores driver-captured pickup evidence: parcel photos taken at collection.
+# The chain-of-custody bookend symmetric to POD photos — same data class,
+# same encryption key (both owned by the pod service), same retention.
+# Without this bucket the pod service presigns POP upload URLs that R2/S3
+# reject, and pickup photos silently never get stored.
+###############################################################################
+
+resource "aws_s3_bucket" "pop_photos" {
+  bucket        = local.bucket_names.pop_photos
+  force_destroy = var.force_destroy
+
+  tags = merge(local.common_tags, {
+    Purpose      = "proof-of-pickup-photos"
+    DataClass    = "sensitive"
+    GDPRScope    = "true"
+  })
+}
+
+resource "aws_s3_bucket_versioning" "pop_photos" {
+  bucket = aws_s3_bucket.pop_photos.id
+
+  versioning_configuration {
+    status = var.enable_versioning ? "Enabled" : "Suspended"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "pop_photos" {
+  bucket = aws_s3_bucket.pop_photos.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = "alias/logisticos-pod-${var.environment}"
+    }
+    bucket_key_enabled = true
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "pop_photos" {
+  bucket = aws_s3_bucket.pop_photos.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "pop_photos" {
+  bucket = aws_s3_bucket.pop_photos.id
+
+  rule {
+    id     = "transition-to-intelligent-tiering"
+    status = "Enabled"
+
+    transition {
+      days          = 30
+      storage_class = "INTELLIGENT_TIERING"
+    }
+
+    expiration {
+      days = var.lifecycle_expire_days
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+
+  rule {
+    id     = "expire-delete-markers"
+    status = "Enabled"
+
+    expiration {
+      expired_object_delete_marker = true
+    }
+  }
+}
+
+resource "aws_s3_bucket_cors_configuration" "pop_photos" {
+  bucket = aws_s3_bucket.pop_photos.id
+
+  cors_rule {
+    allowed_headers = ["Content-Type", "Content-Length", "Authorization", "x-amz-date", "x-amz-content-sha256"]
+    allowed_methods = ["GET", "PUT"]
+    allowed_origins = var.pod_photos_cors_origins
+    expose_headers  = ["ETag", "x-amz-request-id"]
+    max_age_seconds = 3600
+  }
+
+  # Read-only access for the merchant portal (view POP evidence)
+  cors_rule {
+    allowed_headers = ["*"]
+    allowed_methods = ["GET"]
+    allowed_origins = ["https://merchant.logisticos.io", "https://admin.logisticos.io"]
+    expose_headers  = ["ETag"]
+    max_age_seconds = 86400
+  }
+}
+
+resource "aws_s3_bucket_intelligent_tiering_configuration" "pop_photos" {
+  bucket = aws_s3_bucket.pop_photos.id
+  name   = "pop-photos-tiering"
   status = "Enabled"
 
   tiering {
@@ -567,6 +685,7 @@ output "bucket_names" {
   value = merge(
     {
       pod_photos      = aws_s3_bucket.pod_photos.id
+      pop_photos      = aws_s3_bucket.pop_photos.id
       exports         = aws_s3_bucket.exports.id
       model_artifacts = aws_s3_bucket.model_artifacts.id
       backups         = aws_s3_bucket.backups.id
@@ -580,6 +699,7 @@ output "bucket_arns" {
   value = merge(
     {
       pod_photos      = aws_s3_bucket.pod_photos.arn
+      pop_photos      = aws_s3_bucket.pop_photos.arn
       exports         = aws_s3_bucket.exports.arn
       model_artifacts = aws_s3_bucket.model_artifacts.arn
       backups         = aws_s3_bucket.backups.arn
@@ -596,6 +716,16 @@ output "pod_photos_bucket_name" {
 output "pod_photos_bucket_arn" {
   description = "POD photos bucket ARN."
   value       = aws_s3_bucket.pod_photos.arn
+}
+
+output "pop_photos_bucket_name" {
+  description = "POP photos bucket name — convenience output for IAM and application modules."
+  value       = aws_s3_bucket.pop_photos.id
+}
+
+output "pop_photos_bucket_arn" {
+  description = "POP photos bucket ARN."
+  value       = aws_s3_bucket.pop_photos.arn
 }
 
 output "model_artifacts_bucket_name" {
