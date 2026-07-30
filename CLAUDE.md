@@ -572,6 +572,41 @@ Admin Portal → Carriers → click carrier row → scroll to **Partner Portal A
 
 ---
 
+## Session Continuity Notes — Remote MCP Server (`ai-layer` `/mcp`)
+
+**Status: implemented, `cargo check` clean, NOT committed, NOT deployed/tested end-to-end.**
+
+Built out the "Expose a LogisticOS service as a remote MCP server" direction of ADR-0004's Enterprise Extension — wraps the AI Layer's existing `ToolRegistry` (`services/ai-layer/src/infrastructure/tools/mod.rs`, 21 tools) behind a real MCP-protocol transport, rather than the old bespoke `/internal/tools/execute` contract the Python sidecar uses (that internal route is untouched — both surfaces now share the one tool registry).
+
+| Change | File |
+|---|---|
+| Added `rmcp = "3.0.1"` (features `server`, `transport-streamable-http-server`) to workspace deps | [Cargo.toml](Cargo.toml) |
+| Wired `rmcp.workspace = true` | [services/ai-layer/Cargo.toml](services/ai-layer/Cargo.toml) |
+| New `LogisticOsMcpServer` implementing `rmcp::ServerHandler` (`list_tools`/`call_tool`) over the existing `ToolRegistry` | [services/ai-layer/src/api/mcp/mod.rs](services/ai-layer/src/api/mcp/mod.rs) (new file) |
+| `pub mod mcp;` added | [services/ai-layer/src/api/mod.rs](services/ai-layer/src/api/mod.rs) |
+| `.nest_service("/mcp", mcp::streamable_http_service(tools.clone()))` mounted **before** the `require_auth` middleware layer, so JWT auth covers it for free | [services/ai-layer/src/bootstrap.rs](services/ai-layer/src/bootstrap.rs) |
+| `/mcp` path added to `resolve_upstream()` → `ai_layer_url` | [services/api-gateway/src/proxy/mod.rs](services/api-gateway/src/proxy/mod.rs) |
+
+**Key design decisions:**
+- **Access gate:** `Claims::has_feature("enterprise_mcp")`. This pricing-feature-matrix key already existed (`identity` migration `0016_pricing_feature_matrix.sql` + `libs/auth/src/claims.rs`) but had **zero consumers anywhere in the codebase** before this — this is its first real use.
+- **Tenant scoping:** `tenant_id` is always overwritten server-side from the validated JWT inside `call_tool`, never trusted from the MCP client's arguments — prevents a remote caller from passing an arbitrary `tenant_id` to read/act on another tenant's data.
+- **Auth plumbing:** no new auth code written. `RequestContext::extensions` (rmcp) carries the raw `axum::http::request::Parts` for every call; the pre-existing `require_auth` middleware already inserts `Claims` into request extensions before the request reaches the nested MCP service, so the handler just reads them back out.
+- **Transport:** stateless Streamable HTTP (no session pinning) — matches the platform's Istio rolling-deploy requirement.
+
+**Audit trail — wired (was a gap, now closed):** `LogisticOsMcpServer::record_audit` (in `mcp/mod.rs`) persists every remote MCP tool call as an `AgentAction` on a single-action `AgentSession` (`AgentType::OnDemand`, `trigger: {"source": "remote_mcp", "user_id", "email"}`), saved via the same `SessionRepository` the internal LangGraph agent path uses. This means remote MCP calls now show up in the existing AI Agents dashboard / session history (`GET /v1/agents/sessions`) alongside autonomous agent runs — no new table, no new admin UI needed. `LogisticOsMcpServer::new()` and `mcp::streamable_http_service()` both now take `session_repo: Arc<dyn SessionRepository>` in addition to `tools`; `bootstrap.rs` passes `session_repo.clone()` before it's moved into `AppState`.
+Captured: actor (`user_id`/`email` in `trigger` JSON), tenant (`session.tenant_id`), timestamp (`executed_at`/`started_at`/`completed_at`). **Not captured: client IP** — the gateway doesn't forward an `X-Forwarded-For` header and ai-layer isn't wired with axum `ConnectInfo`; would need both sides touched, left as follow-up.
+
+**Known gaps — do not treat as production-ready without addressing:**
+- **No per-tool RBAC.** ADR-0004's "Support Agent can't call `assign_driver`" is not enforced — every tool is reachable to any caller that clears the `enterprise_mcp` gate.
+- **No client-IP capture in the audit record** (see above).
+- **No OAuth 2.1 discovery metadata.** A caller needs an existing LogisticOS Bearer JWT already; Claude Desktop's automatic remote-MCP OAuth connector won't self-provision a session. A merchant's own agent framework configured with a static token works today.
+
+**Environment note:** C: drive was at **~1.6 GB free** after this build (down from the usual state) — clear `C:\cargo-target-logisticos\debug\incremental` before the next full build/link session.
+
+**Next steps:** decide on per-tool RBAC model, decide whether OAuth 2.1 discovery is worth the lift vs. the static-token bridge, optionally wire XFF + `ConnectInfo` for IP capture, then commit + test against a running ai-layer instance with an `enterprise_mcp`-enabled tenant JWT.
+
+---
+
 ## Development Environment & Gotchas
 
 ### Git

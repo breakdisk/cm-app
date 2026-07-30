@@ -37,6 +37,7 @@ rdkafka.workspace    = true
 tracing.workspace    = true
 reqwest.workspace    = true
 async-trait.workspace = true
+rmcp.workspace       = true
 
 [dev-dependencies]
 tower        = { version = "0.4", features = ["util"] }

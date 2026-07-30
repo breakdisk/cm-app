@@ -60,6 +60,9 @@ tonic        = { version = "0.11" }
 tonic-build  = { version = "0.11" }
 prost        = { version = "0.12" }
 
+# Model Context Protocol — remote MCP server transport (ai-layer)
+rmcp         = { version = "3.0.1", features = ["server", "transport-streamable-http-server"] }
+
 # Database
 sqlx         = { version = "0.7", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "migrate"] }
 redis        = { version = "0.25", features = ["tokio-comp", "connection-manager"] }

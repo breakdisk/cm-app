@@ -6,7 +6,7 @@ use sqlx::postgres::PgPoolOptions;
 use anyhow::Context;
 use logisticos_auth::jwt::JwtService;
 use crate::{
-    api::http,
+    api::{http, mcp},
     application::{agent::AgentRunner, triggers::run_trigger_consumer},
     config::Config,
     infrastructure::{
@@ -84,9 +84,17 @@ pub async fn run() -> anyhow::Result<()> {
         .context("AUTH__JWT_SECRET env var not set")?;
     let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
 
+    // Remote MCP transport — built from the same tool registry the internal
+    // Python-sidecar bridge uses, so both surfaces stay a single source of truth.
+    // Tool calls are persisted through session_repo as AgentAction audit records.
+    let mcp_service = mcp::streamable_http_service(tools.clone(), session_repo.clone());
+
     let state = AppState { runner, session_repo, tools, jwt: Arc::clone(&jwt) };
 
     let app = http::router()
+        // Mounted before the auth layer below so `require_auth` also guards
+        // /mcp — Claims land in the request extensions the MCP handler reads.
+        .nest_service("/mcp", mcp_service)
         .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state);

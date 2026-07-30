@@ -88,8 +88,9 @@ impl ProxyClient {
         // Engagement & Notifications (templates are managed by the engagement service)
         } else if path.starts_with("/v1/notifications") || path.starts_with("/v1/engagement") || path.starts_with("/v1/templates") {
             Some(&self.services.engagement_url)
-        // AI Intelligence Layer
-        } else if path.starts_with("/v1/ai") || path.starts_with("/v1/agents") {
+        // AI Intelligence Layer (including the remote MCP transport at /mcp —
+        // Enterprise Extension per ADR-0004)
+        } else if path.starts_with("/v1/ai") || path.starts_with("/v1/agents") || path.starts_with("/mcp") {
             Some(&self.services.ai_layer_url)
         // Business Logic / Automation Rules
         } else if path.starts_with("/v1/rules") {
