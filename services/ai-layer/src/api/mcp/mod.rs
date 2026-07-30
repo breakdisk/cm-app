@@ -64,17 +64,24 @@ impl LogisticOsMcpServer {
     /// same AI Agents dashboard / session history as everything else,
     /// instead of only a tracing log line.
     ///
-    /// Client IP is not captured yet — the gateway doesn't currently forward
-    /// an X-Forwarded-For header, and this service isn't wired with
-    /// `ConnectInfo`. actor (user_id/email), tenant, and timestamp are.
-    async fn record_audit(&self, claims: &Claims, tool_name: &str, input: &Value, result: &ToolResult) {
+    /// Captures actor (user_id/email), tenant, timestamp, and client IP —
+    /// the four fields CLAUDE.md's audit-logging non-negotiable requires.
+    async fn record_audit(
+        &self,
+        claims: &Claims,
+        client_ip: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+        result: &ToolResult,
+    ) {
         let mut session = AgentSession::new(
             TenantId::from_uuid(claims.tenant_id),
             AgentType::OnDemand,
             json!({
-                "source":  "remote_mcp",
-                "user_id": claims.user_id,
-                "email":   claims.email,
+                "source":    "remote_mcp",
+                "user_id":   claims.user_id,
+                "email":     claims.email,
+                "client_ip": client_ip,
             }),
         );
 
@@ -99,6 +106,20 @@ impl LogisticOsMcpServer {
             .get::<axum::http::request::Parts>()
             .and_then(|parts| parts.extensions.get::<Claims>())
             .cloned()
+    }
+
+    /// Read the caller's IP from `X-Forwarded-For`, which the API Gateway now
+    /// stamps with the connecting peer's address (appending to any existing
+    /// value rather than overwriting). Takes the first hop — the original
+    /// client, per standard XFF ordering — trimming whitespace.
+    fn client_ip_from(context: &RequestContext<RoleServer>) -> Option<String> {
+        context
+            .extensions
+            .get::<axum::http::request::Parts>()
+            .and_then(|parts| parts.headers.get("x-forwarded-for"))
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split(',').next())
+            .map(|ip| ip.trim().to_string())
     }
 
     fn require_enterprise_mcp(context: &RequestContext<RoleServer>) -> Result<Claims, McpError> {
@@ -159,6 +180,7 @@ impl ServerHandler for LogisticOsMcpServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
         let claims = Self::require_enterprise_mcp(&context)?;
+        let client_ip = Self::client_ip_from(&context);
 
         // Tenant scoping always comes from the validated JWT, never from
         // caller-supplied arguments — a remote MCP client must not be able to
@@ -180,7 +202,8 @@ impl ServerHandler for LogisticOsMcpServer {
             .execute(&request.name, input.clone(), tool_use_id.clone())
             .await;
 
-        self.record_audit(&claims, &request.name, &input, &result).await;
+        self.record_audit(&claims, client_ip.as_deref(), &request.name, &input, &result)
+            .await;
 
         let response = if result.is_error {
             CallToolResult::structured_error(result.content)

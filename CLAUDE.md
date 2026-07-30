@@ -574,7 +574,7 @@ Admin Portal → Carriers → click carrier row → scroll to **Partner Portal A
 
 ## Session Continuity Notes — Remote MCP Server (`ai-layer` `/mcp`)
 
-**Status: implemented, `cargo check` clean, NOT committed, NOT deployed/tested end-to-end.**
+**Status: implemented, `cargo check` clean, committed (`95725f60` + follow-up client-IP commit), pushed to `origin/master`, deploy to VPS `75.119.138.135` (Dokploy, compose app `oscargomarketnet-logisticosbackend-pqfh0u`) in progress via GHCR rebuild. Not yet tested end-to-end with a live MCP client.**
 
 Built out the "Expose a LogisticOS service as a remote MCP server" direction of ADR-0004's Enterprise Extension — wraps the AI Layer's existing `ToolRegistry` (`services/ai-layer/src/infrastructure/tools/mod.rs`, 21 tools) behind a real MCP-protocol transport, rather than the old bespoke `/internal/tools/execute` contract the Python sidecar uses (that internal route is untouched — both surfaces now share the one tool registry).
 
@@ -594,11 +594,14 @@ Built out the "Expose a LogisticOS service as a remote MCP server" direction of 
 - **Transport:** stateless Streamable HTTP (no session pinning) — matches the platform's Istio rolling-deploy requirement.
 
 **Audit trail — wired (was a gap, now closed):** `LogisticOsMcpServer::record_audit` (in `mcp/mod.rs`) persists every remote MCP tool call as an `AgentAction` on a single-action `AgentSession` (`AgentType::OnDemand`, `trigger: {"source": "remote_mcp", "user_id", "email"}`), saved via the same `SessionRepository` the internal LangGraph agent path uses. This means remote MCP calls now show up in the existing AI Agents dashboard / session history (`GET /v1/agents/sessions`) alongside autonomous agent runs — no new table, no new admin UI needed. `LogisticOsMcpServer::new()` and `mcp::streamable_http_service()` both now take `session_repo: Arc<dyn SessionRepository>` in addition to `tools`; `bootstrap.rs` passes `session_repo.clone()` before it's moved into `AppState`.
-Captured: actor (`user_id`/`email` in `trigger` JSON), tenant (`session.tenant_id`), timestamp (`executed_at`/`started_at`/`completed_at`). **Not captured: client IP** — the gateway doesn't forward an `X-Forwarded-For` header and ai-layer isn't wired with axum `ConnectInfo`; would need both sides touched, left as follow-up.
+Captured: actor (`user_id`/`email`), tenant (`session.tenant_id`), timestamp (`executed_at`/`started_at`/`completed_at`).
+
+**Client IP — wired (was a gap, now closed):** api-gateway's `proxy_handler` is now served via `into_make_service_with_connect_info::<SocketAddr>()` ([bootstrap.rs](services/api-gateway/src/bootstrap.rs)), appends the connecting peer to `X-Forwarded-For` (preserving any upstream value rather than overwriting), and explicitly skips forwarding the original `x-forwarded-for` header as-is in the generic header-copy loop so there's exactly one, correctly-appended header. `mcp/mod.rs::client_ip_from` reads it back out of `RequestContext::extensions` and stores it in `AgentSession.trigger.client_ip`. Caveat: this is the gateway's own peer address — if a CDN/LB sits in front of the gateway in a given environment, that hop's address is what lands here unless it already stamped its own XFF (in which case we append, not overwrite).
+
+**Deploy in progress:** pushed to `origin/master` (had to merge a divergent remote first — PR #124 "wire pending state for Gig Workers" had landed upstream; clean merge, no conflicts). `Cargo.lock`/`Cargo.toml` changed → `build-images.yml` rebuilds **all** 20 services + 5 portals, not just ai-layer/api-gateway. Confirmed SSH access to the VPS and that Dokploy's compose app pulls `ghcr.io/breakdisk/logisticos-service-<name>:latest` — **once the GHCR build finishes, still need to run `docker compose pull && docker compose up -d` (at least for `api-gateway` and `ai-layer`) inside `/etc/dokploy/compose/oscargomarketnet-logisticosbackend-pqfh0u/code/` on the VPS** to actually pick up the new images; pushing to GHCR alone does not redeploy the running containers.
 
 **Known gaps — do not treat as production-ready without addressing:**
-- **No per-tool RBAC.** ADR-0004's "Support Agent can't call `assign_driver`" is not enforced — every tool is reachable to any caller that clears the `enterprise_mcp` gate.
-- **No client-IP capture in the audit record** (see above).
+- **No per-tool RBAC.** ADR-0004's "Support Agent can't call `assign_driver`" is not enforced — every tool is reachable to any caller that clears the `enterprise_mcp` gate. This is the significant one: any caller who clears the Enterprise-tier gate can invoke financial/destructive tools (`assign_driver`, `cancel_shipment`, `generate_invoice`, `reconcile_cod`) with no further authorization check.
 - **No OAuth 2.1 discovery metadata.** A caller needs an existing LogisticOS Bearer JWT already; Claude Desktop's automatic remote-MCP OAuth connector won't self-provision a session. A merchant's own agent framework configured with a static token works today.
 
 **Environment note:** C: drive was at **~1.6 GB free** after this build (down from the usual state) — clear `C:\cargo-target-logisticos\debug\incremental` before the next full build/link session.

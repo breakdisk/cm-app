@@ -2,7 +2,7 @@ use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
     body::Body,
-    extract::{Request, State},
+    extract::{ConnectInfo, Request, State},
     http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Json, Response},
     routing::get,
@@ -78,9 +78,12 @@ pub async fn run() -> anyhow::Result<()> {
     tracing::info!(addr = %addr, "api-gateway listening");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     Ok(())
 }
@@ -89,7 +92,11 @@ pub async fn run() -> anyhow::Result<()> {
 // Proxy handler — JWT auth + rate limiting + forwarding
 // ---------------------------------------------------------------------------
 
-async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) -> Response {
+async fn proxy_handler(
+    State(state): State<AppState>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    req: Request<Body>,
+) -> Response {
     // CORS preflight — OPTIONS must never hit auth or proxy logic.
     // CorsLayer adds the Access-Control-* headers; we just need to
     // short-circuit here so the handler doesn't return 401.
@@ -206,8 +213,10 @@ async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) -> Res
         .body(body_bytes);
 
     // Forward safe headers; inject X-Tenant-Id for downstream services.
+    // x-forwarded-for is skipped here and rebuilt explicitly below (appending
+    // the connecting peer) rather than passed through as-is.
     for (name, value) in headers.iter() {
-        if is_hop_by_hop(name) {
+        if is_hop_by_hop(name) || name.as_str() == "x-forwarded-for" {
             continue;
         }
         if let Ok(v) = value.to_str() {
@@ -215,6 +224,19 @@ async fn proxy_handler(State(state): State<AppState>, req: Request<Body>) -> Res
         }
     }
     upstream_req = upstream_req.header("X-Tenant-Id", &tenant_id);
+
+    // Append the connecting peer to X-Forwarded-For (standard proxy chain
+    // semantics) so downstream services — e.g. the remote MCP audit trail
+    // in ai-layer — can attribute a request to a real client IP. Note this
+    // is the gateway's own peer address; if a CDN/LB sits in front of the
+    // gateway in a given environment, that hop's address is what lands here
+    // unless it already stamped its own X-Forwarded-For (in which case we
+    // append rather than overwrite).
+    let forwarded_for = match headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+        Some(existing) => format!("{existing}, {}", peer_addr.ip()),
+        None => peer_addr.ip().to_string(),
+    };
+    upstream_req = upstream_req.header("X-Forwarded-For", forwarded_for);
 
     let upstream_resp = match upstream_req.send().await {
         Ok(r) => r,
