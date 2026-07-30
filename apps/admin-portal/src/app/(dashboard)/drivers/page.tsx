@@ -16,7 +16,7 @@ import { GlassCard } from "@/components/ui/glass-card";
 import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
 import { OnboardDriverModal } from "@/components/drivers/OnboardDriverModal";
-import { Search, MapPin, Package, RefreshCw, Briefcase, UserPlus, Trash2, ShieldCheck, ShieldAlert, ShieldX } from "lucide-react";
+import { Search, MapPin, Package, RefreshCw, Briefcase, UserPlus, Trash2, ShieldCheck, ShieldAlert, ShieldX, AlertCircle, Zap } from "lucide-react";
 import { usePermissions } from "@/hooks/usePermissions";
 
 // ── Types & mock data ─────────────────────────────────────────────────────────
@@ -42,6 +42,8 @@ interface Driver {
   last_seen: string;
   grade: "A" | "B" | "C" | "D";
   cod_collected: number;
+  driver_type: string;
+  per_delivery_rate_cents: number;
 }
 
 // Empty initial state. Previously this file shipped a 10-row hardcoded
@@ -67,6 +69,11 @@ const GRADE_COLOR: Record<Driver["grade"], string> = {
   C: "text-amber-signal",
   D: "text-red-signal",
 };
+
+// part_time + non-zero per-delivery rate = gig worker (dispatch broadcasts offers to this pool).
+function isGigWorker(d: Driver): boolean {
+  return d.driver_type === "part_time" && d.per_delivery_rate_cents > 0;
+}
 
 // Zeroed initial KPI strip. Real values come from /v1/drivers/summary —
 // rendering 7 / 172 / 113 / 83600 before the API responds was lying to ops.
@@ -96,6 +103,7 @@ function normalizeStatus(s: string): DriverStatus {
 export default function DriversPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<DriverStatus | "all" | "online">("all");
+  const [typeFilter, setTypeFilter]     = useState<"all" | "gig">("all");
   const [drivers, setDrivers] = useState<Driver[]>(DRIVERS);
   const [kpi, setKpi] = useState(KPI);
   const [loading, setLoading] = useState(false);
@@ -150,6 +158,8 @@ export default function DriversPage() {
         last_seen:     d.last_seen_at ? new Date(d.last_seen_at).toLocaleTimeString() : "—",
         grade:         d.performance_grade,
         cod_collected: d.cod_collected,
+        driver_type:              d.driver_type ?? "full_time",
+        per_delivery_rate_cents:  d.per_delivery_rate_cents ?? 0,
       })));
       const s = summaryRes.data;
       setKpi([
@@ -196,11 +206,18 @@ export default function DriversPage() {
       statusFilter === "all" ||
       (statusFilter === "online" && cfg.isActive) ||
       d.status === statusFilter;
+    const matchType   = typeFilter === "all" || (typeFilter === "gig" && isGigWorker(d));
     const matchSearch = !search || d.name.toLowerCase().includes(search.toLowerCase()) || d.plate.toLowerCase().includes(search.toLowerCase());
-    return matchStatus && matchSearch;
+    return matchStatus && matchType && matchSearch;
   });
 
-  const onlineCount = drivers.filter((d) => STATUS_CONFIG[d.status].isActive).length;
+  const onlineCount      = drivers.filter((d) => STATUS_CONFIG[d.status].isActive).length;
+  const gigCount         = drivers.filter(isGigWorker).length;
+  const pendingGigCount  = drivers.filter((d) => {
+    if (!isGigWorker(d)) return false;
+    const cs = complianceMap.get(d.id);
+    return !cs || cs === "pending_submission";
+  }).length;
 
   return (
     <motion.div
@@ -213,7 +230,18 @@ export default function DriversPage() {
       <motion.div variants={variants.fadeInUp} className="flex items-center justify-between">
         <div>
           <h1 className="font-heading text-2xl font-bold text-white">Drivers</h1>
-          <p className="text-sm text-white/40 font-mono mt-0.5">{onlineCount} online · {drivers.length} total roster</p>
+          <div className="flex flex-wrap items-center gap-2 mt-0.5">
+            <p className="text-sm text-white/40 font-mono">{onlineCount} online · {drivers.length} total roster</p>
+            {pendingGigCount > 0 && (
+              <button
+                onClick={() => setTypeFilter("gig")}
+                className="inline-flex items-center gap-1 rounded-full border border-amber-signal/30 bg-amber-signal/10 px-2 py-0.5 text-2xs font-mono text-amber-signal hover:bg-amber-signal/20 transition-colors"
+              >
+                <AlertCircle size={10} />
+                {pendingGigCount} gig pending
+              </button>
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-2">
           {!connected && (
@@ -248,11 +276,32 @@ export default function DriversPage() {
         ))}
       </motion.div>
 
+      {/* Pending gig workers banner */}
+      {pendingGigCount > 0 && (
+        <motion.div variants={variants.fadeInUp}>
+          <button
+            onClick={() => setTypeFilter("gig")}
+            className="w-full flex items-center gap-3 rounded-lg border border-amber-signal/25 bg-amber-signal/5 px-4 py-3 text-left transition-colors hover:bg-amber-signal/10"
+          >
+            <AlertCircle size={14} className="flex-shrink-0 text-amber-signal" />
+            <p className="text-xs text-white/70">
+              <span className="font-semibold text-amber-signal">
+                {pendingGigCount} gig worker{pendingGigCount !== 1 ? "s" : ""}
+              </span>{" "}
+              pending compliance approval — cannot claim broadcast offers until documents are reviewed.{" "}
+              <span className="font-medium text-amber-signal underline-offset-2 hover:underline">
+                View gig workers →
+              </span>
+            </p>
+          </button>
+        </motion.div>
+      )}
+
       {/* Filters */}
       <motion.div variants={variants.fadeInUp}>
         <GlassCard>
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-4">
+            <div className="flex flex-wrap items-center gap-1.5">
               {(["all", "online", "available", "en_route", "delivering", "on_break", "offline"] as const).map((s) => (
                 <button
                   key={s}
@@ -267,6 +316,37 @@ export default function DriversPage() {
                 </button>
               ))}
             </div>
+            {/* Driver type filter — gig workers are part_time with a non-zero per-delivery rate */}
+            {gigCount > 0 && (
+              <div className="flex items-center gap-1.5 border-l border-glass-border/50 pl-4">
+                <button
+                  onClick={() => setTypeFilter("all")}
+                  className={`rounded-full px-3 py-1 text-xs font-medium transition-all ${
+                    typeFilter === "all"
+                      ? "bg-glass-200 text-white border border-glass-border-bright"
+                      : "text-white/40 border border-transparent hover:text-white"
+                  }`}
+                >
+                  All types
+                </button>
+                <button
+                  onClick={() => setTypeFilter("gig")}
+                  className={`relative inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-all ${
+                    typeFilter === "gig"
+                      ? "bg-purple-surface text-purple-plasma border border-purple-plasma/30"
+                      : "text-white/40 border border-glass-border hover:text-white"
+                  }`}
+                >
+                  <Zap size={10} />
+                  Gig Workers ({gigCount})
+                  {pendingGigCount > 0 && (
+                    <span className="ml-0.5 inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-amber-signal px-1 font-mono text-2xs text-canvas leading-none">
+                      {pendingGigCount}
+                    </span>
+                  )}
+                </button>
+              </div>
+            )}
             <div className="ml-auto flex items-center gap-2 rounded-lg border border-glass-border bg-glass-100 px-3 py-2">
               <Search size={13} className="text-white/30" />
               <input
@@ -356,9 +436,27 @@ export default function DriversPage() {
                       )}
                     </div>
                     <p className="text-2xs font-mono text-white/40">{driver.vehicle} · {driver.plate}</p>
+                    {isGigWorker(driver) && (
+                      <p className="text-2xs font-mono">
+                        {(!complianceStatus || complianceStatus === "pending_submission") ? (
+                          <span className="text-amber-signal">Pending — awaiting compliance docs</span>
+                        ) : complianceStatus === "under_review" ? (
+                          <span className="text-amber-signal">Under review — offer claim blocked</span>
+                        ) : (
+                          <span className="text-green-signal">
+                            ₱{(driver.per_delivery_rate_cents / 100).toFixed(0)}/delivery · eligible for offers
+                          </span>
+                        )}
+                      </p>
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
+                  {isGigWorker(driver) && (
+                    <NeonBadge variant="purple">
+                      <Zap size={9} className="mr-0.5 inline" />Gig
+                    </NeonBadge>
+                  )}
                   <span className={`text-lg font-bold font-heading ${GRADE_COLOR[driver.grade]}`}>{driver.grade}</span>
                   <NeonBadge variant={cfg.variant} dot={cfg.dot}>{cfg.label}</NeonBadge>
                 </div>
