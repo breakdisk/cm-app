@@ -47,7 +47,7 @@ pub async fn handle(args: &Value, ctx: &McpContext, state: &Arc<AppState>) -> Re
     }
 
     let campaign = state.campaign_svc
-        .activate(id)
+        .activate(id, None)
         .await
         .map_err(|e| format!("Failed to activate campaign: {e}"))?;
 

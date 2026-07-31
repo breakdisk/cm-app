@@ -160,6 +160,9 @@ function NewJourneyModal({
 }) {
   const [name,        setName]        = useState(existing?.name ?? "");
   const [description, setDescription] = useState(existing?.description ?? "");
+  const [triggerType, setTriggerType] = useState<string>(
+    (existing?.trigger?.type as string | undefined) ?? "manual_enroll"
+  );
   const [steps,       setSteps]       = useState<CreateJourneyStepPayload[]>(
     existing?.steps.map((s) => ({
       step_order:             s.step_order,
@@ -207,7 +210,7 @@ function NewJourneyModal({
       const payload = {
         name: name.trim(),
         description: description.trim() || undefined,
-        trigger: { type: "manual_enroll" },
+        trigger: { type: triggerType },
         steps,
       };
       if (existing) {
@@ -275,6 +278,25 @@ function NewJourneyModal({
               placeholder="Describe when this journey runs"
               className="w-full rounded-xl border border-glass-border bg-glass-100 px-3.5 py-2.5 text-sm text-white placeholder-white/20 outline-none focus:border-cyan-neon/50 transition-colors"
             />
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-white/50">Enrollment Trigger</label>
+            <select
+              value={triggerType}
+              onChange={(e) => setTriggerType(e.target.value)}
+              className="w-full appearance-none rounded-xl border border-glass-border bg-glass-100 px-3.5 py-2.5 text-sm text-white outline-none focus:border-cyan-neon/50 transition-colors"
+              style={{ background: "#0d1422" }}
+            >
+              <option value="manual_enroll">Manual — enroll customers yourself</option>
+              <option value="campaign_opened">Automatic — when a customer opens a campaign email</option>
+              <option value="campaign_clicked">Automatic — when a customer clicks a campaign link</option>
+            </select>
+            <p className="mt-1 text-2xs text-white/25 font-mono">
+              {triggerType === "manual_enroll"
+                ? "Use the Enroll Customers button on the journey card."
+                : "New customers are enrolled automatically as the event occurs."}
+            </p>
           </div>
 
           <div>

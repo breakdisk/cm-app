@@ -620,6 +620,32 @@ impl NotificationDb {
         }).collect())
     }
 
+    /// Whether a customer has opened/clicked a specific campaign's send — used by
+    /// the marketing service's journey "condition" step to branch yes/no. A
+    /// customer can have multiple sends for the same campaign (multi-channel);
+    /// any row with a receipt counts as engaged.
+    pub async fn campaign_engagement_for_customer(
+        &self,
+        campaign_id: Uuid,
+        customer_id: Uuid,
+    ) -> anyhow::Result<Option<(bool, bool)>> {
+        let row: Option<(bool, bool)> = sqlx::query_as(
+            r#"
+            SELECT
+                bool_or(opened_at  IS NOT NULL) AS opened,
+                bool_or(clicked_at IS NOT NULL) AS clicked
+            FROM engagement.campaign_sends
+            WHERE campaign_id = $1 AND customer_id = $2
+            HAVING COUNT(*) > 0
+            "#,
+        )
+        .bind(campaign_id)
+        .bind(customer_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
     /// Update the delivery status of a campaign_sends row after dispatch.
     /// Sets the appropriate lifecycle timestamp (sent_at / failed_at) automatically.
     pub async fn update_campaign_send_status(
@@ -858,7 +884,51 @@ impl NotificationDb {
     ///
     /// `event` is one of: `"delivered"`, `"read"`, `"bounced"`, `"failed"`,
     /// `"opened"`, `"clicked"`.  Unknown events are silently ignored.
+    ///
+    /// For `"opened"`/`"clicked"`, returns `Some(ReceiptTransition)` describing
+    /// whether this is the *first* time the row transitioned to opened/clicked
+    /// (repeat receipts are idempotent no-ops) — callers use this to publish a
+    /// `CAMPAIGN_OPENED`/`CAMPAIGN_CLICKED` Kafka event exactly once per customer
+    /// per campaign, which drives journey auto-enrollment. Other events return `None`.
     pub async fn apply_receipt(
+        &self,
+        send_id:     Uuid,
+        event:       &str,
+        clicked_url: Option<&str>,
+    ) -> anyhow::Result<Option<ReceiptTransition>> {
+        if matches!(event, "opened" | "clicked") {
+            let prior: Option<(Uuid, Uuid, Option<Uuid>, Option<chrono::DateTime<chrono::Utc>>, Option<chrono::DateTime<chrono::Utc>>)> =
+                sqlx::query_as(
+                    r#"SELECT cs.campaign_id, cs.customer_id, ec.tenant_id, cs.opened_at, cs.clicked_at
+                         FROM engagement.campaign_sends cs
+                         LEFT JOIN engagement.campaigns ec ON ec.id = cs.campaign_id
+                        WHERE cs.id = $1"#,
+                )
+                .bind(send_id)
+                .fetch_optional(&self.pool)
+                .await?;
+
+            let Some((campaign_id, customer_id, tenant_id, prior_opened, prior_clicked)) = prior else {
+                return Ok(None);
+            };
+            let Some(tenant_id) = tenant_id else {
+                return Ok(None);
+            };
+            let fresh_open  = prior_opened.is_none();
+            let fresh_click = event == "clicked" && prior_clicked.is_none();
+
+            self.apply_receipt_write(send_id, event, clicked_url).await?;
+
+            return Ok(Some(ReceiptTransition {
+                campaign_id, customer_id, tenant_id, fresh_open, fresh_click,
+            }));
+        }
+
+        self.apply_receipt_write(send_id, event, clicked_url).await?;
+        Ok(None)
+    }
+
+    async fn apply_receipt_write(
         &self,
         send_id:     Uuid,
         event:       &str,
@@ -926,4 +996,15 @@ impl NotificationDb {
         }
         Ok(())
     }
+}
+
+/// Describes a fresh open/click transition on a `campaign_sends` row —
+/// returned by `NotificationDb::apply_receipt` so callers can publish
+/// `CAMPAIGN_OPENED`/`CAMPAIGN_CLICKED` exactly once per customer per campaign.
+pub struct ReceiptTransition {
+    pub campaign_id: Uuid,
+    pub customer_id: Uuid,
+    pub tenant_id:   Uuid,
+    pub fresh_open:  bool,
+    pub fresh_click: bool,
 }

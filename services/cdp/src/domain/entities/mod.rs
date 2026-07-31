@@ -53,6 +53,20 @@ pub enum EventType {
     NotificationRead,
 }
 
+// ---------------------------------------------------------------------------
+// ConsentRecord — persisted opt-in/opt-out decision for one communication
+// channel. Backed by cdp.consent_records (migration 0002).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConsentRecord {
+    pub consent_type: String,
+    pub granted:       bool,
+    pub channel:        Option<String>,
+    pub granted_at:     DateTime<Utc>,
+    pub revoked_at:     Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BehavioralEvent {
     pub id:          Uuid,

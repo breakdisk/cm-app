@@ -158,4 +158,30 @@ impl CdpClient {
             platform_id: None,
         }).collect())
     }
+
+    /// Fetch a single customer's CLV score — used by journey "condition" steps
+    /// that branch on CLV threshold (e.g. `clv_above_60`).
+    pub async fn get_clv_score(&self, tenant_id: Uuid, customer_id: Uuid) -> anyhow::Result<f32> {
+        #[derive(Deserialize)]
+        struct ProfileClv {
+            clv_score: f32,
+        }
+
+        let url = format!("{}/v1/customers/{}", self.base_url, customer_id);
+        let resp = self.http
+            .get(&url)
+            .bearer_auth(&self.token)
+            .header("X-Tenant-Id", tenant_id.to_string())
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body   = resp.text().await.unwrap_or_default();
+            anyhow::bail!("CDP customer {customer_id} returned {status}: {body}");
+        }
+
+        let profile: ProfileClv = resp.json().await?;
+        Ok(profile.clv_score)
+    }
 }

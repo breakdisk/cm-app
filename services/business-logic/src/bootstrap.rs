@@ -153,6 +153,60 @@ impl ActionExecutor for HttpActionExecutor {
         }
         Ok(())
     }
+
+    async fn assign_new_driver(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<()> {
+        let res = self.http
+            .post(format!("{}/v1/internal/shipments/{}/assign", self.dispatch_url, shipment_id))
+            .json(&serde_json::json!({ "tenant_id": tenant_id }))
+            .send()
+            .await?;
+        if !res.status().is_success() {
+            let status = res.status();
+            let body   = res.text().await.unwrap_or_default();
+            anyhow::bail!("dispatch internal assign returned {status}: {body}");
+        }
+        Ok(())
+    }
+
+    async fn update_shipment_status(&self, tenant_id: Uuid, shipment_id: Uuid, status: &str) -> anyhow::Result<()> {
+        let res = self.http
+            .put(format!("{}/v1/internal/shipments/{}/status", self.order_url, shipment_id))
+            .json(&serde_json::json!({
+                "tenant_id": tenant_id,
+                "status":    status,
+                "reason":    "automation rule",
+            }))
+            .send()
+            .await?;
+        if !res.status().is_success() && res.status().as_u16() != 204 {
+            let status_code = res.status();
+            let body        = res.text().await.unwrap_or_default();
+            anyhow::bail!("order-intake internal status update returned {status_code}: {body}");
+        }
+        Ok(())
+    }
+
+    async fn webhook_call(&self, url: &str, method: &str, ctx: &crate::domain::entities::rule::RuleContext) -> anyhow::Result<()> {
+        let http_method = reqwest::Method::from_bytes(method.to_uppercase().as_bytes())
+            .map_err(|_| anyhow::anyhow!("WebhookCall: invalid HTTP method '{}'", method))?;
+        let res = self.http
+            .request(http_method, url)
+            .json(&serde_json::json!({
+                "tenant_id":    ctx.tenant_id,
+                "event_type":   ctx.event_type,
+                "shipment_id":  ctx.shipment_id,
+                "customer_id":  ctx.customer_id,
+                "metadata":     ctx.metadata,
+            }))
+            .send()
+            .await?;
+        if !res.status().is_success() {
+            let status = res.status();
+            let body   = res.text().await.unwrap_or_default();
+            anyhow::bail!("WebhookCall to {} returned {status}: {body}", url);
+        }
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]

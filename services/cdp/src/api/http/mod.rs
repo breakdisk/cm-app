@@ -15,8 +15,8 @@ use logisticos_errors::AppError;
 use logisticos_events::{envelope::Event, topics};
 
 use crate::application::services::{
-    CreateSegmentCommand, ProfileService, SegmentService, UpdateSegmentCommand,
-    UpsertProfileCommand,
+    CreateSegmentCommand, ProfileService, SegmentService, UpdatePreferencesCommand,
+    UpdateSegmentCommand, UpsertProfileCommand,
 };
 use crate::domain::entities::{ProfileType, SegmentFilter};
 use crate::domain::repositories::ProfileFilter;
@@ -30,7 +30,7 @@ pub fn router() -> Router<AppState> {
         .route("/v1/customers/:external_id",                                     get(get_profile).put(upsert_profile))
         .route("/v1/customers/:external_id/events",                              get(get_events))
         .route("/v1/customers/:external_id/churn-score",                         get(get_churn_score))
-        .route("/v1/customers/:external_id/preferences",                         get(get_preferences))
+        .route("/v1/customers/:external_id/preferences",                         get(get_preferences).put(update_preferences))
         .route("/v1/customers/:external_id/support-tickets",                     post(open_support_ticket))
         .route("/v1/customers/:external_id/support-tickets/:ticket_id/close",    post(close_support_ticket))
         // ── Segment routes ────────────────────────────────────────────────
@@ -263,7 +263,9 @@ async fn get_churn_score(
 
 // ---------------------------------------------------------------------------
 // GET /v1/customers/:external_id/preferences
-// Returns communication channel preferences inferred from profile data.
+// Returns communication channel preferences: explicit stored consent takes
+// precedence per-channel; channels with no stored decision fall back to an
+// inference from available contact data.
 // ---------------------------------------------------------------------------
 
 async fn get_preferences(
@@ -279,6 +281,9 @@ async fn get_preferences(
         .profile_svc
         .get_by_external_id(&tenant_id, external_id)
         .await?;
+    let consent = state.consent_svc.list(&tenant_id, external_id).await?;
+    let stored: std::collections::HashMap<_, _> =
+        consent.iter().map(|c| (c.consent_type.as_str(), c.granted)).collect();
 
     // Infer preferred channel from available contact data.
     let preferred_channel = if profile.phone.is_some() {
@@ -289,22 +294,61 @@ async fn get_preferences(
         "push"
     };
 
+    let opt_in = |channel: &str, inferred: bool| stored.get(channel).copied().unwrap_or(inferred);
+
     Ok::<_, AppError>((
         StatusCode::OK,
         Json(serde_json::json!({
             "external_customer_id": external_id,
             "preferred_channel": preferred_channel,
             "opt_in": {
-                "whatsapp": profile.phone.is_some(),
-                "sms":      profile.phone.is_some(),
-                "email":    profile.email.is_some(),
-                "push":     true,
+                "whatsapp": opt_in("whatsapp", profile.phone.is_some()),
+                "sms":      opt_in("sms", profile.phone.is_some()),
+                "email":    opt_in("email", profile.email.is_some()),
+                "push":     opt_in("push", true),
             },
             "language": "en",
             "delivery_time_window": {
                 "preferred_from_hour": 9,
                 "preferred_to_hour":   18,
             }
+        })),
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// PUT /v1/customers/:external_id/preferences
+// Persists per-channel opt-in/opt-out consent decisions (cdp.consent_records).
+// ---------------------------------------------------------------------------
+
+async fn update_preferences(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Path(external_id): Path<Uuid>,
+    headers: axum::http::HeaderMap,
+    Json(cmd): Json<UpdatePreferencesCommand>,
+) -> impl IntoResponse {
+    use logisticos_types::TenantId;
+    claims.require_permission(permissions::CUSTOMERS_MANAGE)?;
+
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    let ip_address = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.split(',').next().unwrap_or(v).trim().to_owned());
+
+    let consent = state
+        .consent_svc
+        .update(&tenant_id, external_id, cmd, ip_address.as_deref())
+        .await?;
+
+    Ok::<_, AppError>((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "external_customer_id": external_id,
+            "opt_in": consent.into_iter()
+                .map(|c| (c.consent_type, c.granted))
+                .collect::<std::collections::HashMap<_, _>>(),
         })),
     ))
 }

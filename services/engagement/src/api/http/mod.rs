@@ -125,12 +125,19 @@ pub struct ListCampaignsQuery {
 
 fn parse_channel(s: &str) -> Result<NotificationChannel, AppError> {
     match s {
-        "whatsapp" => Ok(NotificationChannel::WhatsApp),
-        "sms"      => Ok(NotificationChannel::Sms),
-        "email"    => Ok(NotificationChannel::Email),
-        "push"     => Ok(NotificationChannel::Push),
+        "whatsapp"  => Ok(NotificationChannel::WhatsApp),
+        "sms"       => Ok(NotificationChannel::Sms),
+        "email"     => Ok(NotificationChannel::Email),
+        "push"      => Ok(NotificationChannel::Push),
+        "messenger" => Ok(NotificationChannel::Messenger),
+        "telegram"  => Ok(NotificationChannel::Telegram),
+        "x"         => Ok(NotificationChannel::X),
+        "viber"     => Ok(NotificationChannel::Viber),
+        "wechat"    => Ok(NotificationChannel::WeChat),
+        "line"      => Ok(NotificationChannel::Line),
+        "slack"     => Ok(NotificationChannel::Slack),
         other => Err(AppError::Validation(format!(
-            "Unknown channel '{}': must be whatsapp, sms, email, or push", other
+            "Unknown channel '{}': must be one of whatsapp, sms, email, push, messenger, telegram, x, viber, wechat, line, slack", other
         ))),
     }
 }
@@ -620,4 +627,40 @@ pub fn router(state: AppState) -> Router {
         .route("/ready",                 get(ready))
         .route("/metrics",               get(metrics))
         .with_state(state)
+}
+
+/// Internal service-to-service routes — no JWT auth required (Istio mTLS enforces
+/// caller identity), mirroring the `/v1/internal/*` convention used by other services.
+pub fn internal_router(state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/v1/internal/campaign-sends/:campaign_id/:customer_id",
+            get(internal_campaign_engagement),
+        )
+        .with_state(state)
+}
+
+/// `GET /v1/internal/campaign-sends/:campaign_id/:customer_id`
+/// Used by the marketing service's journey executor to evaluate "condition"
+/// steps (has this customer opened/clicked a given campaign send?).
+async fn internal_campaign_engagement(
+    State(state): State<AppState>,
+    Path((campaign_id, customer_id)): Path<(Uuid, Uuid)>,
+) -> impl IntoResponse {
+    let db = NotificationDb::new(state.db.clone());
+    let (opened, clicked) = db
+        .campaign_engagement_for_customer(campaign_id, customer_id)
+        .await
+        .map_err(AppError::Internal)?
+        .unwrap_or((false, false));
+
+    Ok::<_, AppError>((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "campaign_id": campaign_id,
+            "customer_id": customer_id,
+            "opened":      opened,
+            "clicked":     clicked,
+        })),
+    ))
 }

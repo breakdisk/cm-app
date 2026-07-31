@@ -208,7 +208,7 @@ pub async fn run() -> anyhow::Result<()> {
         ]);
 
     // Protected REST API — all routes require a valid JWT.
-    let protected = crate::api::http::router(http_state)
+    let protected = crate::api::http::router(http_state.clone())
         .layer(axum::middleware::from_fn_with_state(
             jwt,
             logisticos_auth::middleware::require_auth,
@@ -225,10 +225,12 @@ pub async fn run() -> anyhow::Result<()> {
         db:           db.clone(),
     };
     let public_routes = crate::api::http::webhook::webhook_router(webhook_state);
+    let internal_routes = crate::api::http::internal_router(http_state.clone());
 
     let app = Router::new()
         .merge(protected)
         .merge(public_routes)
+        .merge(internal_routes)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(cors);
 

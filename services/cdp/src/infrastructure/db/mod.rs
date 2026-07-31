@@ -5,8 +5,8 @@ use uuid::Uuid;
 use logisticos_types::TenantId;
 
 use crate::domain::{
-    entities::{CustomerProfile, CustomerId, ProfileType, Segment, SegmentFilter, SegmentMember},
-    repositories::{CustomerProfileRepository, ProfileFilter, SegmentRepository},
+    entities::{ConsentRecord, CustomerProfile, CustomerId, ProfileType, Segment, SegmentFilter, SegmentMember},
+    repositories::{ConsentRepository, CustomerProfileRepository, ProfileFilter, SegmentRepository},
 };
 
 // ---------------------------------------------------------------------------
@@ -340,6 +340,97 @@ impl CustomerProfileRepository for PgCustomerProfileRepository {
         .fetch_one(&self.pool)
         .await?;
         Ok(row.0)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PgConsentRepository
+// ---------------------------------------------------------------------------
+
+pub struct PgConsentRepository {
+    pool: PgPool,
+}
+
+impl PgConsentRepository {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct ConsentRow {
+    consent_type: String,
+    granted:      bool,
+    channel:      Option<String>,
+    granted_at:   chrono::DateTime<chrono::Utc>,
+    revoked_at:   Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl From<ConsentRow> for ConsentRecord {
+    fn from(r: ConsentRow) -> Self {
+        Self {
+            consent_type: r.consent_type,
+            granted:      r.granted,
+            channel:      r.channel,
+            granted_at:   r.granted_at,
+            revoked_at:   r.revoked_at,
+        }
+    }
+}
+
+#[async_trait]
+impl ConsentRepository for PgConsentRepository {
+    async fn upsert(
+        &self,
+        tenant_id: &TenantId,
+        customer_id: Uuid,
+        consent_type: &str,
+        granted: bool,
+        channel: Option<&str>,
+        ip_address: Option<&str>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO cdp.consent_records
+                (tenant_id, customer_id, consent_type, granted, channel, ip_address, granted_at, revoked_at)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW(), NULL)
+            ON CONFLICT (tenant_id, customer_id, consent_type)
+            DO UPDATE SET
+                granted    = EXCLUDED.granted,
+                channel    = EXCLUDED.channel,
+                ip_address = EXCLUDED.ip_address,
+                granted_at = CASE WHEN EXCLUDED.granted THEN NOW() ELSE cdp.consent_records.granted_at END,
+                revoked_at = CASE WHEN EXCLUDED.granted THEN NULL ELSE NOW() END
+            "#,
+        )
+        .bind(tenant_id.inner())
+        .bind(customer_id)
+        .bind(consent_type)
+        .bind(granted)
+        .bind(channel)
+        .bind(ip_address)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn list_for_customer(
+        &self,
+        tenant_id: &TenantId,
+        customer_id: Uuid,
+    ) -> anyhow::Result<Vec<ConsentRecord>> {
+        let rows = sqlx::query_as::<_, ConsentRow>(
+            r#"
+            SELECT consent_type, granted, channel, granted_at, revoked_at
+            FROM cdp.consent_records
+            WHERE tenant_id = $1 AND customer_id = $2
+            "#,
+        )
+        .bind(tenant_id.inner())
+        .bind(customer_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(ConsentRecord::from).collect())
     }
 }
 

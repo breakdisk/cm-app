@@ -495,6 +495,38 @@ impl PgJourneyRepository {
         Ok(())
     }
 
+    /// Active journeys for a tenant whose `trigger.type` matches — used by the
+    /// Kafka auto-enrollment consumer (CAMPAIGN_OPENED/CAMPAIGN_CLICKED).
+    /// Steps are not loaded — auto-enrollment only needs `id`.
+    pub async fn find_active_by_trigger_type(
+        &self,
+        tenant_id:    Uuid,
+        trigger_type: &str,
+    ) -> anyhow::Result<Vec<Uuid>> {
+        let ids: Vec<(Uuid,)> = sqlx::query_as(
+            r#"SELECT id FROM marketing.journeys
+                WHERE tenant_id = $1 AND status = 'active' AND trigger->>'type' = $2"#,
+        )
+        .bind(tenant_id)
+        .bind(trigger_type)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(ids.into_iter().map(|(id,)| id).collect())
+    }
+
+    /// Whether a customer is already enrolled in a journey — auto-enrollment
+    /// skips re-enrollment so a repeat open/click doesn't reset progress.
+    pub async fn enrollment_exists(&self, journey_id: Uuid, customer_id: Uuid) -> anyhow::Result<bool> {
+        let row: Option<(i32,)> = sqlx::query_as(
+            "SELECT 1 FROM marketing.journey_enrollments WHERE journey_id = $1 AND customer_id = $2",
+        )
+        .bind(journey_id)
+        .bind(customer_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.is_some())
+    }
+
     pub async fn save_enrollment(&self, e: &JourneyEnrollment) -> anyhow::Result<()> {
         sqlx::query(
             r#"

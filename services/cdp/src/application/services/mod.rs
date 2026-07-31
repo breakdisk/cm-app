@@ -7,8 +7,8 @@ use logisticos_errors::{AppError, AppResult};
 use logisticos_types::TenantId;
 
 use crate::domain::{
-    entities::{BehavioralEvent, CustomerProfile, CustomerId, EventType, ProfileType, Segment, SegmentFilter, SegmentMember},
-    repositories::{CustomerProfileRepository, ProfileFilter, SegmentRepository},
+    entities::{BehavioralEvent, ConsentRecord, CustomerProfile, CustomerId, EventType, ProfileType, Segment, SegmentFilter, SegmentMember},
+    repositories::{ConsentRepository, CustomerProfileRepository, ProfileFilter, SegmentRepository},
 };
 
 // ---------------------------------------------------------------------------
@@ -326,5 +326,50 @@ impl SegmentService {
             created.push(segment);
         }
         Ok(created)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ConsentService — persists per-channel communication opt-in/opt-out choices.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct UpdatePreferencesCommand {
+    /// Channel -> granted. Only channels present in the map are changed;
+    /// omitted channels keep their prior stored decision (or the inferred default).
+    pub opt_in: std::collections::HashMap<String, bool>,
+}
+
+pub struct ConsentService {
+    repo: Arc<dyn ConsentRepository>,
+}
+
+impl ConsentService {
+    pub fn new(repo: Arc<dyn ConsentRepository>) -> Self { Self { repo } }
+
+    pub async fn update(
+        &self,
+        tenant_id: &TenantId,
+        customer_id: Uuid,
+        cmd: UpdatePreferencesCommand,
+        ip_address: Option<&str>,
+    ) -> AppResult<Vec<ConsentRecord>> {
+        for (channel, granted) in &cmd.opt_in {
+            self.repo
+                .upsert(tenant_id, customer_id, channel, *granted, Some(channel), ip_address)
+                .await
+                .map_err(AppError::internal)?;
+        }
+        self.repo
+            .list_for_customer(tenant_id, customer_id)
+            .await
+            .map_err(AppError::internal)
+    }
+
+    pub async fn list(&self, tenant_id: &TenantId, customer_id: Uuid) -> AppResult<Vec<ConsentRecord>> {
+        self.repo
+            .list_for_customer(tenant_id, customer_id)
+            .await
+            .map_err(AppError::internal)
     }
 }

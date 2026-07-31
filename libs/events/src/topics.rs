@@ -87,6 +87,8 @@ pub const WALLET_WITHDRAWAL_REJECTED:     &str = "logisticos.payments.wallet.wit
 pub const NOTIFICATION_QUEUED:       &str = "logisticos.engagement.notification.queued";
 pub const CAMPAIGN_TRIGGERED:        &str = "logisticos.marketing.campaign.triggered";
 pub const CAMPAIGN_COMPLETED:        &str = "logisticos.marketing.campaign.completed";
+pub const CAMPAIGN_OPENED:           &str = "logisticos.engagement.campaign.opened";
+pub const CAMPAIGN_CLICKED:          &str = "logisticos.engagement.campaign.clicked";
 pub const CUSTOMER_SEGMENT_UPDATED:  &str = "logisticos.cdp.segment.updated";
 
 // Tracking / customer-facing

@@ -127,12 +127,22 @@ impl CampaignService {
     }
 
     /// Activate campaign — queues notification sends via Kafka → engagement service.
-    pub async fn activate(&self, id: Uuid) -> AppResult<Campaign> {
+    ///
+    /// `variant_plan`, when present, splits the audience into per-variant slices and
+    /// publishes one CAMPAIGN_TRIGGERED event per slice carrying that variant's own
+    /// `template_id`, instead of a single event where every recipient gets the base
+    /// campaign template — this is what makes A/B tests actually deliver different
+    /// content per variant rather than just recording variant assignment for stats.
+    pub async fn activate(
+        &self,
+        id: Uuid,
+        variant_plan: Option<Vec<(String, Vec<CampaignRecipient>)>>,
+    ) -> AppResult<Campaign> {
         let mut campaign = self.get(id).await?;
         campaign.activate().map_err(|e| AppError::BusinessRule(e.to_string()))?;
         self.repo.save(&campaign).await.map_err(AppError::internal)?;
 
-        // Publish CAMPAIGN_TRIGGERED event so the engagement service starts sending.
+        // Publish CAMPAIGN_TRIGGERED event(s) so the engagement service starts sending.
         // Embed recipients with full contact details so the engagement consumer can
         // fan-out without a CDP lookup.  Also include `name` and `created_by` so the
         // engagement service can upsert an engagement.campaigns row before fan-out.
@@ -140,27 +150,55 @@ impl CampaignService {
         // `data["recipients"]` without unwrapping a nested targeting object.
         // `targeting` is omitted from the payload — recipients is the canonical
         // fan-out list after CDP resolution has already run.
-        let payload = serde_json::json!({
+        let base_payload = serde_json::json!({
             "campaign_id":  campaign.id.inner(),
             "tenant_id":    campaign.tenant_id.inner(),
             "name":         campaign.name,
             "created_by":   campaign.created_by,
             "channel":      campaign.channel,
-            "template_id":  campaign.template.template_id,
             "subject":      campaign.template.subject,
             "variables":    campaign.template.variables,
-            "recipients":   campaign.targeting.recipients,
         });
-        let payload_bytes = serde_json::to_vec(&payload)
-            .map_err(|e| AppError::internal(anyhow::anyhow!("Failed to serialize CAMPAIGN_TRIGGERED: {}", e)))?;
-        self.publisher
-            .publish(
-                topics::CAMPAIGN_TRIGGERED,
-                &campaign.id.inner().to_string(),
-                &payload_bytes,
-            )
-            .await
-            .map_err(AppError::internal)?;
+
+        match variant_plan {
+            Some(plan) => {
+                for (template_id, recipients) in plan {
+                    if recipients.is_empty() {
+                        continue;
+                    }
+                    let mut payload = base_payload.clone();
+                    payload["template_id"] = serde_json::Value::String(template_id);
+                    payload["recipients"]  = serde_json::to_value(&recipients)
+                        .map_err(|e| AppError::internal(anyhow::anyhow!("Failed to serialize recipients: {}", e)))?;
+                    let payload_bytes = serde_json::to_vec(&payload)
+                        .map_err(|e| AppError::internal(anyhow::anyhow!("Failed to serialize CAMPAIGN_TRIGGERED: {}", e)))?;
+                    self.publisher
+                        .publish(
+                            topics::CAMPAIGN_TRIGGERED,
+                            &campaign.id.inner().to_string(),
+                            &payload_bytes,
+                        )
+                        .await
+                        .map_err(AppError::internal)?;
+                }
+            }
+            None => {
+                let mut payload = base_payload;
+                payload["template_id"] = serde_json::Value::String(campaign.template.template_id.clone());
+                payload["recipients"]  = serde_json::to_value(&campaign.targeting.recipients)
+                    .map_err(|e| AppError::internal(anyhow::anyhow!("Failed to serialize recipients: {}", e)))?;
+                let payload_bytes = serde_json::to_vec(&payload)
+                    .map_err(|e| AppError::internal(anyhow::anyhow!("Failed to serialize CAMPAIGN_TRIGGERED: {}", e)))?;
+                self.publisher
+                    .publish(
+                        topics::CAMPAIGN_TRIGGERED,
+                        &campaign.id.inner().to_string(),
+                        &payload_bytes,
+                    )
+                    .await
+                    .map_err(AppError::internal)?;
+            }
+        }
 
         tracing::info!(
             campaign_id = %campaign.id.inner(),
@@ -224,7 +262,7 @@ impl CampaignService {
         let count = due.len();
         for campaign in due {
             let id = campaign.id.inner();
-            if let Err(e) = self.activate(id).await {
+            if let Err(e) = self.activate(id, None).await {
                 tracing::warn!(campaign_id = %id, err = %e, "Failed to auto-activate due campaign");
             } else {
                 tracing::info!(campaign_id = %id, "Scheduled campaign auto-activated");

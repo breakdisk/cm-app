@@ -9,9 +9,9 @@ use logisticos_auth::jwt::JwtService;
 use logisticos_events::producer::KafkaProducer;
 use crate::{
     api::http,
-    application::{handlers, services::{ProfileService, SegmentService}},
+    application::{handlers, services::{ConsentService, ProfileService, SegmentService}},
     config::Config,
-    infrastructure::db::{PgCustomerProfileRepository, PgSegmentRepository},
+    infrastructure::db::{PgConsentRepository, PgCustomerProfileRepository, PgSegmentRepository},
     AppState,
 };
 
@@ -44,6 +44,8 @@ pub async fn run() -> anyhow::Result<()> {
     let profile_svc   = Arc::new(ProfileService::new(profile_repo));
     let segment_repo  = Arc::new(PgSegmentRepository::new(pool.clone()));
     let segment_svc   = Arc::new(SegmentService::new(segment_repo));
+    let consent_repo  = Arc::new(PgConsentRepository::new(pool.clone()));
+    let consent_svc   = Arc::new(ConsentService::new(consent_repo));
 
     // Kafka consumer for behavioral events
     let consumer: Arc<StreamConsumer> = Arc::new(
@@ -67,7 +69,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     let kafka = Arc::new(KafkaProducer::new(&cfg.kafka.brokers)?);
 
-    let state = AppState { profile_svc, segment_svc, jwt: Arc::clone(&jwt), kafka };
+    let state = AppState { profile_svc, segment_svc, consent_svc, jwt: Arc::clone(&jwt), kafka };
 
     let app = http::router()
         .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth))

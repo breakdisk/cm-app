@@ -248,6 +248,79 @@ async fn admin_override_status(
     Ok::<_, AppError>((StatusCode::NO_CONTENT, ()))
 }
 
+#[derive(serde::Deserialize)]
+struct InternalOverrideStatusBody {
+    tenant_id: Uuid,
+    status:    String,
+    reason:    Option<String>,
+}
+
+/// `PUT /v1/internal/shipments/:id/status` — status override for service-to-service
+/// callers that have no user JWT (e.g. business-logic's automation rules engine
+/// applying `UpdateShipmentStatus`). No auth — Istio mTLS enforces caller identity,
+/// matching the other `/v1/internal/*` routes in this router.
+async fn internal_override_status(
+    State(s): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<InternalOverrideStatusBody>,
+) -> impl IntoResponse {
+    use logisticos_types::ShipmentStatus;
+    let new_status = match body.status.as_str() {
+        "pending"            => ShipmentStatus::Pending,
+        "confirmed"          => ShipmentStatus::Confirmed,
+        "pickup_assigned"    => ShipmentStatus::PickupAssigned,
+        "picked_up"          => ShipmentStatus::PickedUp,
+        "in_transit"         => ShipmentStatus::InTransit,
+        "at_hub"             => ShipmentStatus::AtHub,
+        "out_for_delivery"   => ShipmentStatus::OutForDelivery,
+        "delivery_attempted" => ShipmentStatus::DeliveryAttempted,
+        "delivered"          => ShipmentStatus::Delivered,
+        "partial_delivery"   => ShipmentStatus::PartialDelivery,
+        "piece_exception"    => ShipmentStatus::PieceException,
+        "customs_hold"       => ShipmentStatus::CustomsHold,
+        "failed"             => ShipmentStatus::Failed,
+        "cancelled"          => ShipmentStatus::Cancelled,
+        "returned"           => ShipmentStatus::Returned,
+        other => return Err(AppError::Validation(format!("Unknown status: {other}"))),
+    };
+
+    let from_status: Option<String> = sqlx::query_scalar(
+        "SELECT status FROM order_intake.shipments WHERE id = $1 AND tenant_id = $2",
+    )
+    .bind(id)
+    .bind(body.tenant_id)
+    .fetch_optional(&s.pool)
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+
+    s.svc.override_status(id, new_status, "automation_rule").await?;
+
+    let _ = sqlx::query(
+        r#"INSERT INTO order_intake.shipment_events
+               (tenant_id, shipment_id, event_type, from_status, to_status, actor_id, actor_type, metadata)
+           SELECT $1, $2, 'status_changed', $3, $4, NULL, 'system',
+                  jsonb_build_object(
+                      'location',
+                      CASE WHEN $4 IN ('pending','confirmed','pickup_assigned','picked_up')
+                           THEN s.origin_city ELSE s.dest_city END,
+                      'reason', $5::text,
+                      'override', true
+                  )
+           FROM order_intake.shipments s
+           WHERE s.id = $2"#,
+    )
+    .bind(body.tenant_id)
+    .bind(id)
+    .bind(from_status)
+    .bind(&body.status)
+    .bind(body.reason)
+    .execute(&s.pool)
+    .await
+    .map_err(|e| tracing::warn!(error = %e, shipment_id = %id, "internal override status event insert failed (status updated)"));
+
+    Ok::<_, AppError>((StatusCode::NO_CONTENT, ()))
+}
+
 // ---------------------------------------------------------------------------
 // Timeline (shipment_events) — read side
 // ---------------------------------------------------------------------------
@@ -353,6 +426,7 @@ pub fn router(state: AppState) -> Router {
             .route("/shipments",             post(internal_create_shipment))
             .route("/shipments/dims",        get(batch_shipment_dims))
             .route("/shipments/:id/billing", get(get_shipment_billing))
+            .route("/shipments/:id/status",  put(internal_override_status))
             .route("/billing/shipments",     get(list_billing_shipments))
             .route("/address/lookup",        get(internal_lookup_address))
         )

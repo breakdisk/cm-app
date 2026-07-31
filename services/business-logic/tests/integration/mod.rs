@@ -57,6 +57,24 @@ impl ActionExecutor for MockExecutor {
         self.events.lock().unwrap().push((topic.into(), key.into()));
         Ok(())
     }
+
+    async fn trigger_campaign(
+        &self, _rule_id: Uuid, _rule_name: &str, _campaign_id: Uuid, _ctx: &RuleContext,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn assign_new_driver(&self, _tenant_id: Uuid, _shipment_id: Uuid) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn update_shipment_status(&self, _tenant_id: Uuid, _shipment_id: Uuid, _status: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn webhook_call(&self, _url: &str, _method: &str, _ctx: &RuleContext) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -227,43 +227,54 @@ async fn activate_campaign(
         ));
     }
 
-    let campaign = state.campaign_svc.activate(id).await?;
+    // A/B test fan-out: split the resolved audience by variant weight *before*
+    // activating, so each variant's slice is published to Kafka under its own
+    // template_id instead of everyone silently receiving the base template.
+    let ab_test = state.ab_test_repo.find_by_campaign(id).await.ok().flatten();
+    let recipients = pre_activate.targeting.recipients.clone();
 
-    // A/B test fan-out: record each recipient's variant assignment in send_log.
-    // This populates the stats queried by GET /v1/campaigns/:id/ab-test.
-    if let Ok(Some(ab_test)) = state.ab_test_repo.find_by_campaign(id).await {
-        let customer_ids: Vec<Uuid> = campaign
-            .targeting
-            .recipients
-            .iter()
-            .filter_map(|r| r.customer_id)
-            .collect();
+    let variant_plan = ab_test.as_ref().and_then(|ab_test| {
+        if recipients.is_empty() {
+            return None;
+        }
+        let total = recipients.len();
+        let mut offset = 0usize;
+        let mut plan: Vec<(String, Vec<crate::domain::entities::CampaignRecipient>)> = Vec::new();
+        for variant in &ab_test.variants {
+            let count = ((variant.weight_pct as usize * total + 99) / 100).min(total - offset);
+            if count == 0 { continue; }
+            let slice = recipients[offset..offset + count].to_vec();
+            offset += count;
+            plan.push((variant.template_id.clone(), slice));
+            if offset >= total { break; }
+        }
+        Some(plan)
+    });
 
-        if !customer_ids.is_empty() {
-            let total    = customer_ids.len();
-            let tenant   = campaign.tenant_id.inner();
-            let channel  = serde_json::to_value(&campaign.channel)
+    let campaign = state.campaign_svc.activate(id, variant_plan.clone()).await?;
+
+    // Record each recipient's variant assignment in send_log — populates the
+    // stats queried by GET /v1/campaigns/:id/ab-test.
+    if let Some(ab_test) = ab_test {
+        if let Some(plan) = variant_plan {
+            let tenant  = campaign.tenant_id.inner();
+            let channel = serde_json::to_value(&campaign.channel)
                 .ok()
                 .and_then(|v| v.as_str().map(str::to_owned))
                 .unwrap_or_else(|| "whatsapp".to_owned());
 
-            let mut offset = 0usize;
-            for variant in &ab_test.variants {
-                let count = ((variant.weight_pct as usize * total + 99) / 100).min(total - offset);
-                if count == 0 { continue; }
-                let slice = &customer_ids[offset..offset + count];
-                offset += count;
+            for (variant, (template_id, slice)) in ab_test.variants.iter().zip(plan.iter()) {
+                let customer_ids: Vec<Uuid> = slice.iter().filter_map(|r| r.customer_id).collect();
+                if customer_ids.is_empty() { continue; }
 
                 if let Err(e) = state.ab_test_repo.log_variant_sends(
-                    id, tenant, &channel, &variant.template_id, &variant.name, slice,
+                    id, tenant, &channel, template_id, &variant.name, &customer_ids,
                 ).await {
                     tracing::warn!(
                         err = %e, campaign_id = %id, variant = %variant.name,
                         "A/B fan-out: failed to log variant sends — stats will be incomplete"
                     );
                 }
-
-                if offset >= total { break; }
             }
         }
     }

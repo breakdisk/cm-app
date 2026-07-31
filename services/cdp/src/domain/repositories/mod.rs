@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use logisticos_types::TenantId;
 
-use crate::domain::entities::{CustomerProfile, CustomerId, Segment, SegmentFilter, SegmentMember};
+use crate::domain::entities::{ConsentRecord, CustomerProfile, CustomerId, Segment, SegmentFilter, SegmentMember};
 
 #[derive(Debug, Clone)]
 pub struct ProfileFilter {
@@ -120,4 +120,30 @@ pub trait SegmentRepository: Send + Sync {
         tenant_id: &TenantId,
         customer_id: Uuid,
     ) -> anyhow::Result<Vec<Uuid>>;
+}
+
+// ---------------------------------------------------------------------------
+// ConsentRepository
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+pub trait ConsentRepository: Send + Sync {
+    /// Insert or update a single channel's consent decision.
+    async fn upsert(
+        &self,
+        tenant_id: &TenantId,
+        customer_id: Uuid,
+        consent_type: &str,
+        granted: bool,
+        channel: Option<&str>,
+        ip_address: Option<&str>,
+    ) -> anyhow::Result<()>;
+
+    /// All stored consent decisions for a customer (explicit opt-in/opt-out only —
+    /// channels with no row here have never had a decision recorded).
+    async fn list_for_customer(
+        &self,
+        tenant_id: &TenantId,
+        customer_id: Uuid,
+    ) -> anyhow::Result<Vec<ConsentRecord>>;
 }

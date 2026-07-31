@@ -20,6 +20,11 @@ pub struct ServicesConfig {
     /// Long-lived internal service token used for service-to-service CDP calls.
     /// Must carry the `customers:view` permission.
     pub cdp_token: Option<String>,
+    /// Base URL of the engagement service, e.g. "http://engagement-svc:8080".
+    /// Used by the journey executor to check campaign open/click state for
+    /// "condition" steps via `/v1/internal/campaign-sends/:campaign_id/:customer_id`.
+    /// When absent, condition steps that check campaign engagement take the "no" branch.
+    pub engagement_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

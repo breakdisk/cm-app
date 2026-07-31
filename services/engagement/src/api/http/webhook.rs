@@ -31,7 +31,7 @@ use sha2::Sha256;
 use serde::Deserialize;
 
 use crate::application::services::event_consumer::EngagementPublisher;
-use crate::infrastructure::db::NotificationDb;
+use crate::infrastructure::db::{NotificationDb, ReceiptTransition};
 use logisticos_events::topics;
 
 // ---------------------------------------------------------------------------
@@ -268,6 +268,38 @@ async fn publish_inbound_event(
     }
 }
 
+/// Publishes `CAMPAIGN_OPENED`/`CAMPAIGN_CLICKED` for a fresh receipt transition.
+/// Drives journey auto-enrollment in the marketing service (journeys whose
+/// `trigger.type` is `campaign_opened`).
+async fn publish_engagement_transition(t: &ReceiptTransition, publisher: &Arc<dyn EngagementPublisher>) {
+    let payload = |event_type: &str| serde_json::json!({
+        "campaign_id": t.campaign_id,
+        "customer_id": t.customer_id,
+        "tenant_id":   t.tenant_id,
+        "occurred_at": chrono::Utc::now().to_rfc3339(),
+        "event_type":  event_type,
+    });
+
+    if t.fresh_open {
+        let event = payload("campaign_opened");
+        if let Err(e) = publisher.publish(
+            topics::CAMPAIGN_OPENED, &t.customer_id.to_string(),
+            &serde_json::to_vec(&event).unwrap_or_default(),
+        ).await {
+            tracing::warn!(campaign_id = %t.campaign_id, customer_id = %t.customer_id, err = %e, "Failed to publish CAMPAIGN_OPENED");
+        }
+    }
+    if t.fresh_click {
+        let event = payload("campaign_clicked");
+        if let Err(e) = publisher.publish(
+            topics::CAMPAIGN_CLICKED, &t.customer_id.to_string(),
+            &serde_json::to_vec(&event).unwrap_or_default(),
+        ).await {
+            tracing::warn!(campaign_id = %t.campaign_id, customer_id = %t.customer_id, err = %e, "Failed to publish CAMPAIGN_CLICKED");
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // POST /v1/webhooks/sms/status — Twilio delivery status callback
 //
@@ -382,10 +414,14 @@ async fn handle_email_delivery(
         match state.db.find_send_id_by_provider_msg_id(&ev.message_id).await {
             Ok(Some(send_id)) => {
                 let url_ref = ev.url.as_deref();
-                if let Err(e) = state.db.apply_receipt(send_id, event_name, url_ref).await {
-                    tracing::warn!(msg_id = %ev.message_id, err = %e, "email: failed to apply receipt");
-                } else {
-                    tracing::info!(msg_id = %ev.message_id, event = event_name, "email delivery receipt applied");
+                match state.db.apply_receipt(send_id, event_name, url_ref).await {
+                    Ok(transition) => {
+                        tracing::info!(msg_id = %ev.message_id, event = event_name, "email delivery receipt applied");
+                        if let Some(t) = transition {
+                            publish_engagement_transition(&t, &state.publisher).await;
+                        }
+                    }
+                    Err(e) => tracing::warn!(msg_id = %ev.message_id, err = %e, "email: failed to apply receipt"),
                 }
             }
             Ok(None) => {

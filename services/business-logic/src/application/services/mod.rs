@@ -48,6 +48,17 @@ pub trait ActionExecutor: Send + Sync {
         campaign_id: Uuid,
         ctx:         &RuleContext,
     ) -> anyhow::Result<()>;
+
+    /// Assign (or reassign) a driver to a shipment via the dispatch service's
+    /// heuristic quick-dispatch — no explicit driver_id, dispatch picks the best
+    /// available one.
+    async fn assign_new_driver(&self, tenant_id: Uuid, shipment_id: Uuid) -> anyhow::Result<()>;
+
+    /// Update a shipment's status directly (order-intake).
+    async fn update_shipment_status(&self, tenant_id: Uuid, shipment_id: Uuid, status: &str) -> anyhow::Result<()>;
+
+    /// Generic outbound webhook call — user-configured URL/method on the rule.
+    async fn webhook_call(&self, url: &str, method: &str, ctx: &RuleContext) -> anyhow::Result<()>;
 }
 
 /// In-memory rule store — production loads from PostgreSQL.
@@ -231,8 +242,24 @@ pub async fn execute_actions(
                     ctx,
                 ).await?;
             }
-            _ => {
-                tracing::debug!(action = ?action, "Rule action not yet implemented — logged only");
+            RuleAction::AssignNewDriver => {
+                if let Some(shipment_id) = ctx.shipment_id {
+                    executor.assign_new_driver(ctx.tenant_id, shipment_id).await?;
+                }
+            }
+            RuleAction::UpdateShipmentStatus { status } => {
+                if let Some(shipment_id) = ctx.shipment_id {
+                    executor.update_shipment_status(ctx.tenant_id, shipment_id, status).await?;
+                }
+            }
+            RuleAction::WebhookCall { url, method } => {
+                executor.webhook_call(url, method, ctx).await?;
+            }
+            RuleAction::NotifyMerchant { .. } | RuleAction::ApplyDiscount { .. } | RuleAction::CreateRefund { .. } => {
+                tracing::warn!(
+                    rule_id = %rule.id, action = ?action,
+                    "Rule action has no downstream integration yet — logged only, no side effect taken"
+                );
             }
         }
     }
