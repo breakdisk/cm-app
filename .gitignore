@@ -96,3 +96,12 @@ driver-app-*-debug-*/
 
 # Keystore files (signing keys must never enter source control)
 *.jks
+*.keystore
+# Signing credentials — CI supplies these via GitHub Secrets
+# (KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD),
+# so they must never be committed. See app/build.gradle.kts signingConfigs.
+android_key_alias.txt
+android_key_password.txt
+android_keystore_password.txt
+# Local crash dumps can contain tokens and PII
+crash.txt
