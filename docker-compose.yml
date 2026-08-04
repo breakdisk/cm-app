@@ -9,6 +9,14 @@ volumes:
   postgres_data: null
   redis_data: null
   kafka_data: null
+  # ZooKeeper's data holds the cluster ID that Kafka pins in its own
+  # meta.properties. Without a *named* volume the cp-zookeeper image falls back
+  # to anonymous volumes, which any `down -v` or volume prune discards — ZK then
+  # generates a fresh cluster ID, Kafka refuses to join with
+  # InconsistentClusterIdException, and the broker crashloops indefinitely.
+  # That took the event bus down for ~4 days (2026-07-31 → 2026-08-04).
+  zookeeper_data: null
+  zookeeper_log: null
   clickhouse_data: null
   grafana_data: null
 services:
@@ -51,11 +59,25 @@ services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.0
     container_name: logisticos-zookeeper
+    restart: unless-stopped
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_log:/var/lib/zookeeper/log
     networks:
       - logisticos
+    healthcheck:
+      # `ruok` is not in this image's 4lw whitelist, so a port check is the
+      # portable option here.
+      test:
+        - CMD-SHELL
+        - nc -z localhost 2181
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
   kafka:
     image: confluentinc/cp-kafka:7.6.0
     container_name: logisticos-kafka
@@ -74,6 +96,20 @@ services:
       - kafka_data:/var/lib/kafka/data
     networks:
       - logisticos
+    healthcheck:
+      # Without this the broker can crashloop for days while `docker ps` still
+      # reports "Up N seconds": dependent services connect lazily and only log
+      # BrokerTransportFailure in a loop, so every one of them stays "healthy"
+      # with a dead consumer. Verifies the broker actually serves, not just that
+      # the process is alive.
+      test:
+        - CMD-SHELL
+        - kafka-broker-api-versions --bootstrap-server localhost:29092 >/dev/null 2>&1
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      # Kafka needs a while to come up; don't flap during normal startup.
+      start_period: 90s
   clickhouse:
     image: clickhouse/clickhouse-server:24.3
     container_name: logisticos-clickhouse
