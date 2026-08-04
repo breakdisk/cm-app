@@ -30,7 +30,7 @@
         "android.permission.CAMERA",
         "android.permission.READ_MEDIA_IMAGES"
       ],
-      "versionCode": 7
+      "versionCode": 8
     },
     "web": {
       "bundler": "metro",

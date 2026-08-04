@@ -89,7 +89,18 @@ pub async fn run() -> anyhow::Result<()> {
     // Tool calls are persisted through session_repo as AgentAction audit records.
     let mcp_service = mcp::streamable_http_service(tools.clone(), session_repo.clone());
 
-    let state = AppState { runner, session_repo, tools, jwt: Arc::clone(&jwt) };
+    // Producer for outbound domain events (currently: escalation resolutions
+    // routed to the customer via engagement). Non-fatal if it can't be built —
+    // the agent runtime is useful without it.
+    let kafka = match logisticos_events::producer::KafkaProducer::new(&cfg.kafka.brokers) {
+        Ok(p) => Some(Arc::new(p)),
+        Err(e) => {
+            tracing::error!(err = %e, "Kafka producer unavailable — escalation-resolved notifications disabled");
+            None
+        }
+    };
+
+    let state = AppState { runner, session_repo, tools, jwt: Arc::clone(&jwt), kafka };
 
     let app = http::router()
         // Mounted before the auth layer below so `require_auth` also guards

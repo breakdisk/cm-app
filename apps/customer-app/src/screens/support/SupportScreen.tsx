@@ -1,8 +1,16 @@
 /**
  * Customer App — Support Screen
- * FAQ accordion + simulated AI chat widget.
+ *
+ * FAQ accordion + AI chat backed by the AI Intelligence Layer
+ * (`POST /v1/agents/chat`). The agent runs Claude with a restricted
+ * CustomerSupport tool allowlist and can look up the customer's shipments,
+ * reschedule a delivery, and hand over to a human operator.
+ *
+ * The keyword-matching replies below are no longer the chat — they are the
+ * offline/plan-gated fallback, used when the tenant's plan has no AI tier
+ * (403) or the network call fails.
  */
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useCallback, useMemo } from "react";
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FadeInView } from '../../components/FadeInView';
 import {
@@ -12,7 +20,16 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useSelector } from "react-redux";
+import { useNavigation, useFocusEffect } from "@react-navigation/native";
 import type { RootState } from "../../store";
+import {
+  aiApi,
+  AiUnavailableError,
+  getStoredChatSession,
+  storeChatSession,
+  clearChatSession,
+  type ChatShipmentContext,
+} from "../../services/api/ai";
 
 const CANVAS  = "#050810";
 const CYAN    = "#00E5FF";
@@ -83,7 +100,8 @@ const FAQS: FaqItem[] = [
   },
 ];
 
-// ── Simulated AI responses ────────────────────────────────────────────────────
+// ── Offline fallback replies ──────────────────────────────────────────────────
+// Used only when the live agent is unreachable or not included in the plan.
 
 const AI_RESPONSES: Record<string, string> = {
   track:       "To track your shipment, tap the **Track** tab and enter your AWB number (e.g. LS-A1B2C3D4). You'll see a full timeline with driver details and ETA.",
@@ -128,13 +146,24 @@ function FaqCard({ item }: { item: FaqItem }) {
   );
 }
 
-interface ChatMsg { role: "user" | "ai"; text: string; }
+interface ChatMsg {
+  role: "user" | "ai";
+  text: string;
+  /** Rendered from the offline fallback rather than the live agent. */
+  offline?: boolean;
+  /** The agent handed this conversation to a human operator. */
+  escalated?: boolean;
+  /** Written by a human operator resolving the escalation, not by the agent. */
+  fromOperator?: boolean;
+}
 
 // ── Main screen ───────────────────────────────────────────────────────────────
 
 export function SupportScreen() {
-  const insets = useSafeAreaInsets();
-  const name = useSelector((s: RootState) => s.auth.name);
+  const insets     = useSafeAreaInsets();
+  const navigation = useNavigation<any>();
+  const name       = useSelector((s: RootState) => s.auth.name);
+  const shipments  = useSelector((s: RootState) => s.shipments.list);
 
   const [tab,     setTab]     = useState<"faq" | "chat">("faq");
   const [input,   setInput]   = useState("");
@@ -142,27 +171,151 @@ export function SupportScreen() {
   const [msgs,    setMsgs]    = useState<ChatMsg[]>([
     { role: "ai", text: `Hi ${name?.split(" ")[0] ?? "there"}! 👋 I'm the LogisticOS AI Support agent. How can I help you today?` },
   ]);
+  /** Server-side conversation id — echoed back so the agent keeps context. */
+  const [sessionId, setSessionId] = useState<string | undefined>(undefined);
+  /** Sticky once the plan turns out not to include AI, so we stop retrying. */
+  const [aiDisabled, setAiDisabled] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
 
-  function sendMessage() {
-    const text = input.trim();
-    if (!text) return;
-    const updated: ChatMsg[] = [...msgs, { role: "user", text }];
-    setMsgs(updated);
+  /**
+   * Shipment index passed with each turn. These all came from this user's own
+   * authenticated session; the agent's tool calls are still executed under the
+   * user's token, so this narrows what the agent talks about — it does not
+   * widen what it can reach.
+   */
+  const shipmentContext: ChatShipmentContext[] = useMemo(
+    () => shipments.slice(0, 20).map((s) => ({ id: s.id, awb: s.awb, status: s.status })),
+    [shipments],
+  );
+
+  const send = useCallback(async (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed || typing) return;
+
+    setMsgs(prev => [...prev, { role: "user", text: trimmed }]);
     setInput("");
     setTyping(true);
-    setTimeout(() => {
-      setMsgs(prev => [...prev, { role: "ai", text: getAiReply(text) }]);
+
+    // Plan has no AI tier — answer locally without a round-trip.
+    if (aiDisabled) {
+      setMsgs(prev => [...prev, { role: "ai", text: getAiReply(trimmed), offline: true }]);
+      setTyping(false);
+      return;
+    }
+
+    try {
+      const res = await aiApi.chat({
+        sessionId,
+        message: trimmed,
+        shipments: shipmentContext,
+      });
+      setSessionId(res.session_id);
+      void storeChatSession(res.session_id);
+      setMsgs(prev => [...prev, { role: "ai", text: res.reply, escalated: res.escalated }]);
+    } catch (e: unknown) {
+      if (e instanceof AiUnavailableError) {
+        setAiDisabled(true);
+        setMsgs(prev => [...prev, { role: "ai", text: getAiReply(trimmed), offline: true }]);
+      } else {
+        const err = e as { message?: string };
+        setMsgs(prev => [...prev, {
+          role: "ai",
+          offline: true,
+          text: `I couldn't reach support just now (${err?.message ?? "network error"}). Here's what I can tell you offline:\n\n${getAiReply(trimmed)}`,
+        }]);
+      }
+    } finally {
       setTyping(false);
       setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 100);
-    }, 900);
+    }
+  }, [aiDisabled, sessionId, shipmentContext, typing]);
+
+  /**
+   * Pick up an operator's reply to an escalated conversation.
+   *
+   * The hand-off is asynchronous — ops answers via the admin portal minutes or
+   * days later, and engagement pushes a notification. On every focus we check
+   * the stored conversation: if a human has since resolved it, drop their reply
+   * into the thread and retire the session so the next question starts fresh.
+   */
+  const syncEscalatedSession = useCallback(async () => {
+    const stored = await getStoredChatSession();
+    if (!stored) return;
+
+    let state;
+    try {
+      state = await aiApi.getChat(stored);
+    } catch {
+      // Offline, or the session is gone//forbidden — leave the thread as-is.
+      return;
+    }
+
+    if (state.resolved_by_human && state.latest_reply) {
+      const answer = state.latest_reply;
+      setMsgs(prev => {
+        // The push can be delivered more than once — don't double-post.
+        if (prev.some(m => m.role === "ai" && m.text === answer)) return prev;
+        return [...prev, { role: "ai", text: answer, fromOperator: true }];
+      });
+      setTab("chat");
+      setSessionId(undefined);
+      void clearChatSession();
+      return;
+    }
+
+    if (state.escalated) {
+      // Still with a human — keep writing follow-ups onto the same case.
+      setSessionId(prev => prev ?? stored);
+      return;
+    }
+
+    // An ordinary finished conversation. Don't silently resume it on a fresh
+    // launch: the agent would have context the customer can no longer see.
+    if (!sessionId) void clearChatSession();
+  }, [sessionId]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void syncEscalatedSession();
+    }, [syncEscalatedSession]),
+  );
+
+  function sendMessage() {
+    void send(input);
+  }
+
+  /** Jump to the chat tab and ask the agent something in one tap. */
+  function askAgent(msg: string) {
+    setTab("chat");
+    void send(msg);
+  }
+
+  /**
+   * Dial the tenant's support line. The number is deployment configuration, not
+   * a constant — there is no platform-wide hotline, so with nothing configured
+   * we route the customer to the agent instead of showing a dead button.
+   */
+  async function callSupport() {
+    const phone = process.env.EXPO_PUBLIC_SUPPORT_PHONE;
+    if (!phone) {
+      askAgent("I'd like to speak to a human agent.");
+      return;
+    }
+    const url = `tel:${phone}`;
+    try {
+      const can = await Linking.canOpenURL(url);
+      if (can) await Linking.openURL(url);
+      else throw new Error("No dialer available");
+    } catch {
+      Alert.alert("Call support", `Reach us on ${phone}, or use AI Chat for an instant answer.`);
+    }
   }
 
   const QUICK_PROMPTS = [
-    { label: "Track my parcel",    msg: "How do I track my shipment?" },
-    { label: "Balikbayan Box",     msg: "Tell me about Balikbayan Box" },
-    { label: "COD explained",      msg: "How does COD work?" },
-    { label: "Loyalty points",     msg: "How do I earn loyalty points?" },
+    { label: "Where is my parcel?", msg: "Where is my parcel right now?" },
+    { label: "Reschedule delivery", msg: "I need to reschedule my delivery." },
+    { label: "Balikbayan Box",      msg: "Tell me about Balikbayan Box" },
+    { label: "Talk to a human",     msg: "I'd like to speak to a human agent." },
   ];
 
   return (
@@ -198,12 +351,28 @@ export function SupportScreen() {
           {/* Quick links */}
           <FadeInView delay={80} fromY={16} style={s.quickLinks}>
             {[
-              { icon: "cube-outline",      label: "Track Parcel",      color: CYAN   },
-              { icon: "alert-circle-outline", label: "Report Issue",   color: RED    },
-              { icon: "refresh-circle-outline", label: "Reschedule",   color: GREEN  },
-              { icon: "call-outline",       label: "Call Us",          color: AMBER  },
+              {
+                icon: "cube-outline", label: "Track Parcel", color: CYAN,
+                onPress: () => navigation.navigate("Track"),
+              },
+              {
+                icon: "alert-circle-outline", label: "Report Issue", color: RED,
+                onPress: () => askAgent("I want to report a problem with my delivery."),
+              },
+              {
+                icon: "refresh-circle-outline", label: "Reschedule", color: GREEN,
+                onPress: () => askAgent("I need to reschedule my delivery."),
+              },
+              {
+                icon: "call-outline", label: "Call Us", color: AMBER,
+                onPress: () => { void callSupport(); },
+              },
             ].map((q) => (
-              <Pressable key={q.label} style={({ pressed }) => [s.quickLink, { opacity: pressed ? 0.7 : 1 }]}>
+              <Pressable
+                key={q.label}
+                onPress={q.onPress}
+                style={({ pressed }) => [s.quickLink, { opacity: pressed ? 0.7 : 1 }]}
+              >
                 <View style={[s.quickLinkIcon, { backgroundColor: q.color + "18" }]}>
                   <Ionicons name={q.icon as any} size={18} color={q.color} />
                 </View>
@@ -266,8 +435,12 @@ export function SupportScreen() {
             {msgs.map((m, i) => (
               <FadeInView key={i} style={[s.msgRow, m.role === "user" ? s.msgRowUser : s.msgRowAi]}>
                 {m.role === "ai" && (
-                  <View style={s.aiBubbleIcon}>
-                    <Ionicons name="logo-electron" size={14} color={CYAN} />
+                  <View style={[s.aiBubbleIcon, m.fromOperator && { backgroundColor: GREEN + "18" }]}>
+                    <Ionicons
+                      name={m.fromOperator ? "person" : "logo-electron"}
+                      size={14}
+                      color={m.fromOperator ? GREEN : CYAN}
+                    />
                   </View>
                 )}
                 {m.role === "user" ? (
@@ -275,8 +448,28 @@ export function SupportScreen() {
                     <Text style={[s.bubbleText, { color: CANVAS }]}>{m.text}</Text>
                   </LinearGradient>
                 ) : (
-                  <View style={[s.bubble, s.bubbleAi]}>
+                  <View style={[
+                    s.bubble,
+                    s.bubbleAi,
+                    m.escalated && s.bubbleEscalated,
+                    m.fromOperator && s.bubbleOperator,
+                  ]}>
+                    {m.fromOperator && (
+                      <Text style={s.operatorLabel}>Support team</Text>
+                    )}
                     <Text style={s.bubbleText}>{m.text}</Text>
+                    {m.escalated && (
+                      <View style={s.bubbleTag}>
+                        <Ionicons name="person-outline" size={10} color={AMBER} />
+                        <Text style={[s.bubbleTagText, { color: AMBER }]}>Handed to a human agent</Text>
+                      </View>
+                    )}
+                    {m.offline && (
+                      <View style={s.bubbleTag}>
+                        <Ionicons name="cloud-offline-outline" size={10} color="rgba(255,255,255,0.3)" />
+                        <Text style={s.bubbleTagText}>Offline answer</Text>
+                      </View>
+                    )}
                   </View>
                 )}
               </FadeInView>
@@ -298,8 +491,9 @@ export function SupportScreen() {
             {QUICK_PROMPTS.map((p) => (
               <Pressable
                 key={p.label}
-                onPress={() => { setInput(p.msg); }}
-                style={({ pressed }) => [s.promptChip, { opacity: pressed ? 0.7 : 1 }]}
+                onPress={() => { void send(p.msg); }}
+                disabled={typing}
+                style={({ pressed }) => [s.promptChip, { opacity: pressed || typing ? 0.5 : 1 }]}
               >
                 <Text style={s.promptChipText}>{p.label}</Text>
               </Pressable>
@@ -374,7 +568,12 @@ const s = StyleSheet.create({
   bubble:         { maxWidth: "78%", borderRadius: 16, paddingHorizontal: 14, paddingVertical: 10 },
   bubbleAi:       { backgroundColor: GLASS, borderWidth: 1, borderColor: BORDER, borderBottomLeftRadius: 4 },
   bubbleUser:     { borderBottomRightRadius: 4 },
+  bubbleEscalated:{ borderColor: "rgba(255,171,0,0.35)", backgroundColor: "rgba(255,171,0,0.06)" },
+  bubbleOperator: { borderColor: "rgba(0,255,136,0.30)", backgroundColor: "rgba(0,255,136,0.05)" },
+  operatorLabel:  { fontSize: 9, fontFamily: "JetBrainsMono-Regular", color: GREEN, letterSpacing: 0.5, marginBottom: 4, textTransform: "uppercase" },
   bubbleText:     { fontSize: 13, color: "rgba(255,255,255,0.8)", lineHeight: 19 },
+  bubbleTag:      { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 8, paddingTop: 6, borderTopWidth: 1, borderTopColor: BORDER },
+  bubbleTagText:  { fontSize: 9, fontFamily: "JetBrainsMono-Regular", color: "rgba(255,255,255,0.3)", letterSpacing: 0.3 },
   typingDots:     { fontSize: 18, color: CYAN, letterSpacing: 3 },
 
   promptChips:    { paddingHorizontal: 16, paddingVertical: 8, gap: 8 },

@@ -102,6 +102,13 @@ fn get_mapping(event_type: &str) -> Option<EventNotificationMapping> {
             priority: NotificationPriority::Normal,
             channels: &[],               // sentinel — overridden below
         }),
+        // A human operator answered an escalated AI support chat. Push only —
+        // the full answer lives in the chat thread the notification opens.
+        topics::AGENT_ESCALATION_RESOLVED => Some(EventNotificationMapping {
+            template_id: "support_resolution",
+            priority:    NotificationPriority::High,
+            channels:    &["push"],
+        }),
         // Merchant onboarding — send a welcome email when a draft tenant finalizes.
         topics::TENANT_FINALIZED => Some(EventNotificationMapping {
             template_id: "merchant_welcome",
@@ -210,6 +217,7 @@ pub async fn process_event(
                              || event_type == topics::WALLET_WITHDRAWAL_REJECTED;
     let is_tenant_finalized   = event_type == topics::TENANT_FINALIZED;
     let is_otp_event          = event_type == topics::OTP_REQUESTED;
+    let is_support_resolution = event_type == topics::AGENT_ESCALATION_RESOLVED;
 
     // For invoice events we resolve (template_id, channels) dynamically here
     // and override the sentinel values from get_mapping().
@@ -227,7 +235,33 @@ pub async fn process_event(
         (mapping.template_id, mapping.channels)
     };
 
-    let (customer_id, phone, email, vars) = if is_tenant_finalized {
+    let (customer_id, phone, email, vars) = if is_support_resolution {
+        // Escalated AI chat answered by a human. `customer_id` here is the
+        // identity user_id of whoever was chatting — the same key the push
+        // channel uses for its device-token lookup.
+        let Some(customer_id) = data["customer_id"].as_str()
+            .and_then(|s| s.parse::<uuid::Uuid>().ok())
+        else {
+            warn!(event_type, "AGENT_ESCALATION_RESOLVED missing customer_id — skipping notification");
+            return;
+        };
+
+        let vars = serde_json::json!({
+            "resolution_notes": data["resolution_notes"].as_str().unwrap_or(""),
+            // Opens the Support tab, where the app fetches the full thread.
+            "deep_link": format!(
+                "logisticos://support/{}",
+                data["session_id"].as_str().unwrap_or("")
+            ),
+        });
+
+        (
+            customer_id,
+            String::new(),
+            data["customer_email"].as_str().unwrap_or("").to_owned(),
+            vars,
+        )
+    } else if is_tenant_finalized {
         // Welcome email to the merchant who just completed onboarding.
         // The event carries owner_email and the finalized business name.
         let owner_email   = data["owner_email"].as_str().unwrap_or("").to_owned();
@@ -457,6 +491,13 @@ pub async fn process_event(
                  {{otp_code}}\n\n\
                  This code expires in 5 minutes. Do not share it with anyone.\n\n\
                  — CargoMarket".to_owned(),
+            ),
+            "support_resolution" => (
+                Some("Your support request has an answer".to_owned()),
+                "A member of our support team has replied to your request:\n\n\
+                 {{resolution_notes}}\n\n\
+                 Open the app to see the full conversation.\n\n\
+                 — CargoMarket Support".to_owned(),
             ),
             "merchant_welcome" => (
                 Some(format!("Welcome to CargoMarket, {}!", vars["business_name"].as_str().unwrap_or("Merchant"))),

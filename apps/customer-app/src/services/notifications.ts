@@ -44,6 +44,18 @@ if (!isExpoGo) {
           params: { id: invoiceId },
         });
       }
+      return;
+    }
+
+    // A human operator answered an escalated AI support chat. The engagement
+    // service sets data.deep_link = "logisticos://support/{session_id}" on
+    // AGENT_ESCALATION_RESOLVED. The Support screen re-reads the stored session
+    // on focus, so we only need to land the user on the tab.
+    if (/^logisticos:\/\/support(\/|$)/.test(deepLink)) {
+      if (navigationRef.isReady()) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (navigationRef as any).navigate('Main', { screen: 'Support' });
+      }
     }
   });
 }
