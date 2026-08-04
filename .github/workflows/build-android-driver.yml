@@ -83,9 +83,14 @@ jobs:
       # library modules have no flavors and theirs is testDebugUnitTest. Naming
       # only the flavored task silently runs :app alone and skips every library
       # module — a green build that executed 2 of ~90 tests.
+      #
+      # --continue so one module's failures don't abort the build before the rest
+      # have run. Without it Gradle stops at the first failing module and the
+      # uploaded report covers only the modules that happened to run first, which
+      # hides how much is actually broken. The step still fails the build.
       - name: Run unit tests
         working-directory: apps/driver-app-android
-        run: ./gradlew testDebugUnitTest testStagingDebugUnitTest --no-daemon
+        run: ./gradlew testDebugUnitTest testStagingDebugUnitTest --continue --no-daemon
 
       - name: Upload test reports
         if: always()

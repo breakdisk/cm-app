@@ -7,18 +7,28 @@ import javax.inject.Singleton
 class SessionManager @Inject constructor(
     private val tokenStorage: TokenStorage
 ) {
-    // In-memory cache to avoid repeated EncryptedSharedPreferences decryption on hot paths
-    @Volatile private var cachedJwt: String? = tokenStorage.getJwt()
+    // In-memory cache to avoid repeated EncryptedSharedPreferences decryption on
+    // hot paths. Read once here, then kept write-through by saveTokens/clearSession.
+    // Note this means storage is never re-read for the lifetime of the singleton.
+    @Volatile private var cachedJwt: String? = tokenStorage.getJwt()?.takeIf { it.isNotBlank() }
 
-    fun isLoggedIn(): Boolean = cachedJwt != null
+    /**
+     * A blank token is treated as no session, not as a credential.
+     *
+     * A `!= null` check would report a live session for an empty string, which a
+     * corrupted preference write can produce. That would let OutboundSyncWorker
+     * fire unauthenticated requests past its logged-in guard and would suppress
+     * offline-mode detection, since [isOfflineModeActive] keys off the same value.
+     */
+    fun isLoggedIn(): Boolean = !cachedJwt.isNullOrBlank()
 
     fun isOfflineModeActive(): Boolean =
-        cachedJwt == null && tokenStorage.getRefreshToken() != null
+        cachedJwt.isNullOrBlank() && tokenStorage.getRefreshToken() != null
 
     fun saveTokens(jwt: String, refreshToken: String) {
         tokenStorage.saveJwt(jwt)
         tokenStorage.saveRefreshToken(refreshToken)
-        cachedJwt = jwt
+        cachedJwt = jwt.takeIf { it.isNotBlank() }
     }
 
     fun getJwt(): String? = cachedJwt
