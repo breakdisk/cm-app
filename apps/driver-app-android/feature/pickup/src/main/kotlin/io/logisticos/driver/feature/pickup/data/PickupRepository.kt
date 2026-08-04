@@ -2,6 +2,7 @@ package io.logisticos.driver.feature.pickup.data
 
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
+import io.logisticos.driver.core.common.AwbServiceCode
 import io.logisticos.driver.core.common.ImageCompressor
 import io.logisticos.driver.core.common.TaskSyncBus
 import io.logisticos.driver.core.database.dao.SyncQueueDao
@@ -144,6 +145,11 @@ class PickupRepository @Inject constructor(
         // The server requires `scanned_barcode` — use the task AWB when no
         // real scan happened (auto-confirmed UUID AWBs).
         val effectiveBarcode = scannedAwb.ifBlank { task.awb }
+        // Billing track classification, read off the AWB the driver is holding.
+        // Always derived from the task AWB rather than the scanned value: a
+        // mis-scan must not be able to reclassify a Balikbayan box as standard
+        // parcel. Falls back to "standard" for legacy/foreign tracking numbers.
+        val serviceCode = AwbServiceCode.wireValueFor(task.awb)
         // Hoisted so that the pop_id is available to completeTask even when
         // submitPop fails but initiatePop succeeded. The server's idempotent
         // initiatePop returns the same pop_id on replay, so this is the
@@ -159,6 +165,7 @@ class PickupRepository @Inject constructor(
                     pickupLat       = pickupLat,
                     pickupLng       = pickupLng,
                     deviceTimestamp = deviceTimestamp,
+                    serviceCode     = serviceCode,
                 )
             )
             capturedPopId = popResp.data.popId
@@ -236,6 +243,9 @@ class PickupRepository @Inject constructor(
                             "pickupLng"       to pickupLng.toString(),
                             "photoPath"       to (compressedPhotoPath ?: ""),
                             "deviceTimestamp" to deviceTimestamp,
+                            // Carried through the offline path so a queued Balikbayan
+                            // pickup still bills as Track A when it finally ships.
+                            "serviceCode"     to serviceCode,
                             // AR dimensioning carried through the offline replay path.
                             "verifiedLengthCm"   to (verifiedLengthCm?.toString() ?: ""),
                             "verifiedWidthCm"    to (verifiedWidthCm?.toString() ?: ""),

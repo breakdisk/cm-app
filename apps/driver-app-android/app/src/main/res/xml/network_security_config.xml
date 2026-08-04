@@ -1,9 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    Release network security config.
+
+    No cleartext is permitted anywhere: base-config denies it globally, so a
+    plain-HTTP request fails outright rather than silently downgrading.
+    Certificate pinning for *.cargomarket.net is enforced in code (NetworkModule)
+    rather than declared here, so that debug builds pointed at a local server
+    aren't broken by pins.
+
+    The developer cleartext exemption for the VPS IP now lives in
+    app/src/debug/res/xml/network_security_config.xml, which resource merging
+    substitutes for this file in debug builds only. It previously lived here —
+    the only copy, applied to every flavor and build type — which shipped an
+    unpinned plaintext channel to a host outside the pinning scope in each
+    release APK.
+-->
 <network-security-config>
-    <!-- Allow cleartext to VPS IP in dev/debug builds only -->
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">75.119.138.135</domain>
-    </domain-config>
+    <base-config cleartextTrafficPermitted="false" />
     <!-- Production domain: HTTPS only; cert pinning is enforced in code (NetworkModule)
          for release builds, so no XML pin-set here — avoids breaking debug builds. -->
     <domain-config cleartextTrafficPermitted="false">

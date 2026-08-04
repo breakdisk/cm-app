@@ -11,12 +11,22 @@ data class InitiatePodRequest(
     @SerialName("shipment_id")      val shipmentId: String,
     @SerialName("task_id")          val taskId: String,
     @SerialName("recipient_name")   val recipientName: String,
+    /** Driver's actual GPS at the moment of capture. MUST NOT be the delivery
+     *  address — the server derives the geofence result from the distance
+     *  between this and [deliveryLat]/[deliveryLng]. Passing the same point for
+     *  both makes the 200 m gate and the 50 m OUT_OF_BOUNDS_HANDOVER flag
+     *  unreachable. */
     @SerialName("capture_lat")      val captureLat: Double,
     @SerialName("capture_lng")      val captureLng: Double,
+    /** Registered delivery address coordinates — the geofence anchor. */
     @SerialName("delivery_lat")     val deliveryLat: Double,
     @SerialName("delivery_lng")     val deliveryLng: Double,
     @SerialName("requires_photo")   val requiresPhoto: Boolean = true,
     @SerialName("requires_signature") val requiresSignature: Boolean = true,
+    /** ISO-8601 UTC hardware-clock timestamp captured at the physical POD event.
+     *  Primary time basis for SLA calculations — the server falls back to its own
+     *  clock only when this is absent. */
+    @SerialName("device_timestamp") val deviceTimestamp: String? = null,
 )
 
 @Serializable
@@ -39,7 +49,11 @@ data class AttachSignatureRequest(
 @Serializable
 data class SubmitPodRequest(
     @SerialName("cod_collected_cents") val codCollectedCents: Long? = null,
-    @SerialName("otp_code")            val otpCode: String? = null
+    @SerialName("otp_code")            val otpCode: String? = null,
+    /** ISO-8601 UTC hardware-clock timestamp from the physical POD event.
+     *  Sent on submit as well as initiate because the pod service treats the
+     *  submit-time value as authoritative when both are present. */
+    @SerialName("device_timestamp")    val deviceTimestamp: String? = null,
 )
 
 @Serializable

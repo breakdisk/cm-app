@@ -14,6 +14,8 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.format.DateTimeFormatter
 import javax.inject.Inject
 
 enum class FailureReason(val displayName: String) {
@@ -197,14 +199,37 @@ class PodViewModel @Inject constructor(
     fun submit(taskId: String) {
         val state = _uiState.value
         if (!state.canSubmit) return
+
+        // Sample the hardware clock here — at the physical confirmation tap —
+        // rather than inside the coroutine. Reading it after the launch would
+        // re-sample at dispatch time, and on the offline path it would drift by
+        // however long the sync queue held the item. Mirrors PickupViewModel.
+        val deviceTimestamp = DateTimeFormatter.ISO_INSTANT.format(Instant.now())
+
         viewModelScope.launch {
             _uiState.update { it.copy(isSubmitting = true, error = null) }
             val loc = locationRepo.getLastKnownLocation()
-            // Use live GPS when available; fall back to the task's stored delivery
-            // coordinates when the device has no fix (cold start, GPS blocked indoors).
-            // The backend geofence check is the authoritative gate for location accuracy.
-            val captureLat = loc?.lat?.takeIf { it != 0.0 } ?: state.taskLat
-            val captureLng = loc?.lng?.takeIf { it != 0.0 } ?: state.taskLng
+            // Live GPS is the capture position. The task coordinates are the
+            // geofence anchor and are passed separately below — they are NOT a
+            // substitute for the driver's position, because sending the address
+            // as the capture point makes the server's distance check compare a
+            // point against itself and pass unconditionally.
+            //
+            // The no-fix fallback below does exactly that, and is a deliberate
+            // trade-off: the geofence result is advisory (never blocks the
+            // driver), so degrading it is preferable to blocking a delivery when
+            // GPS is unavailable indoors. It is logged so ops can tell a real
+            // 0 m reading from an absent one.
+            val hasFix = loc != null && (loc.lat != 0.0 || loc.lng != 0.0)
+            if (!hasFix) {
+                android.util.Log.w(
+                    "PodViewModel",
+                    "No GPS fix at POD capture for task ${state.taskId} — " +
+                    "falling back to delivery coords; geofence result is not meaningful"
+                )
+            }
+            val captureLat = if (hasFix) loc!!.lat else state.taskLat
+            val captureLng = if (hasFix) loc!!.lng else state.taskLng
             runCatching {
                 repo.submitPod(
                     taskId = state.taskId,
@@ -212,9 +237,12 @@ class PodViewModel @Inject constructor(
                     recipientName = state.recipientName,
                     captureLat = captureLat,
                     captureLng = captureLng,
+                    deliveryLat = state.taskLat,
+                    deliveryLng = state.taskLng,
                     photoPath = state.photoPath,
                     signaturePath = state.signaturePath,
                     otpCode = state.otpToken,
+                    deviceTimestamp = deviceTimestamp,
                     codCollectedCents = if (state.isCod && state.codCollected) {
                         val partial = state.partialCodAmountInput.toDoubleOrNull()
                         if (partial != null && partial > 0.0) (partial * 100).toLong()

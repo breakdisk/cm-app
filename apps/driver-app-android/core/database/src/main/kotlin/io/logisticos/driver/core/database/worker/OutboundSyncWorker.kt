@@ -14,6 +14,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import io.logisticos.driver.core.common.AwbServiceCode
 import io.logisticos.driver.core.common.ImageCompressor
 import io.logisticos.driver.core.common.TaskSyncBus
 import io.logisticos.driver.core.database.dao.LocationBreadcrumbDao
@@ -84,17 +85,45 @@ class OutboundSyncWorker @AssistedInject constructor(
             return Result.success()
         }
         val pending = syncQueueDao.getPendingItems(System.currentTimeMillis())
+        var failed = 0
         pending.forEach { item ->
             try {
                 processItem(item)
                 syncQueueDao.remove(item.id)
             } catch (e: Exception) {
+                failed++
                 val backoffMs = minOf(1000L shl minOf(item.retryCount, 8), 300_000L)
                 syncQueueDao.markFailed(item.id, e.message ?: "unknown", System.currentTimeMillis() + backoffMs)
             }
         }
-        return Result.success()
+
+        // Report failure to WorkManager so the one-shot request's exponential
+        // backoff (kickOnce) actually engages. Returning success unconditionally
+        // meant a failed item was never retried by WorkManager at all — recovery
+        // fell through to the 15-minute periodic tick, which made the per-item
+        // backoff computed above meaningless for anything under 15 minutes and
+        // defeated the "ships within seconds of network return" design.
+        return if (failed > 0) {
+            android.util.Log.d(
+                "OutboundSyncWorker",
+                "$failed/${pending.size} queue items failed — requesting WorkManager retry"
+            )
+            Result.retry()
+        } else {
+            Result.success()
+        }
     }
+
+    /**
+     * Age after which a queue item is abandoned.
+     *
+     * An item this old has outlived any realistic connectivity gap; the backend
+     * has almost certainly auto-cancelled the task, and continuing to replay it
+     * every 5 minutes forever just burns battery and hides the failure from the
+     * driver. Matches the existing TASK_COMPLETE cap.
+     */
+    private fun isExpired(item: SyncQueueEntity): Boolean =
+        item.createdAt < System.currentTimeMillis() - EXPIRY_MS
 
     private suspend fun processItem(item: SyncQueueEntity) {
         val payload = runCatching { Json.parseToJsonElement(item.payloadJson).jsonObject }.getOrNull()
@@ -156,6 +185,18 @@ class OutboundSyncWorker @AssistedInject constructor(
             SyncAction.POD_SUBMIT -> {
                 val taskId = payload["taskId"]?.jsonPrimitive?.contentOrNull
                     ?: run { syncQueueDao.remove(item.id); return }
+                // Stop replaying evidence the backend will no longer accept, and
+                // surface it locally so the driver knows to contact support rather
+                // than assuming the delivery synced.
+                if (isExpired(item)) {
+                    android.util.Log.w(
+                        "OutboundSyncWorker",
+                        "POD_SUBMIT for $taskId exceeded the ${EXPIRY_MS / 86_400_000}-day retry window — abandoning"
+                    )
+                    taskDao.markSyncFailed(taskId)
+                    syncQueueDao.remove(item.id)
+                    return
+                }
                 val pod = podDao.getForTask(taskId) ?: run {
                     syncQueueDao.remove(item.id); return
                 }
@@ -169,17 +210,35 @@ class OutboundSyncWorker @AssistedInject constructor(
                 // 1. Initiate — requires_* flags reflect what evidence is actually on disk.
                 //    Pickup tasks have no signature; photos are optional on both task types.
                 //    Setting these correctly prevents "POD incomplete" on submit.
+                //
+                //    Capture position comes from the stored POD row (the driver's GPS at
+                //    the original capture moment), NOT from the task. Only rows written
+                //    before the capture columns existed fall back to the task coordinates,
+                //    and that fallback makes the geofence a self-comparison — logged below
+                //    so those legacy replays are distinguishable from genuine 0 m readings.
+                val hasStoredFix = pod.captureLat != null && pod.captureLng != null
+                if (!hasStoredFix) {
+                    android.util.Log.w(
+                        "OutboundSyncWorker",
+                        "POD $taskId has no stored capture position (pre-migration row) — " +
+                        "replaying with delivery coords; geofence result is not meaningful"
+                    )
+                }
                 val initiateResp = podApi.initiate(
                     InitiatePodRequest(
                         shipmentId        = task.shipmentId,
                         taskId            = taskId,
                         recipientName     = task.recipientName,
-                        captureLat        = task.lat,
-                        captureLng        = task.lng,
+                        captureLat        = pod.captureLat ?: task.lat,
+                        captureLng        = pod.captureLng ?: task.lng,
                         deliveryLat       = task.lat,
                         deliveryLng       = task.lng,
                         requiresPhoto     = photoFile != null,
                         requiresSignature = sigFile != null,
+                        // Preserved from the original capture moment. Without this the
+                        // server would stamp the POD with sync time, putting the SLA off
+                        // by the entire length of the offline gap.
+                        deviceTimestamp   = pod.deviceTimestamp,
                     )
                 )
                 val podId = initiateResp.data.podId
@@ -242,7 +301,13 @@ class OutboundSyncWorker @AssistedInject constructor(
                 }
 
                 // 4. Submit POD
-                podApi.submit(podId, SubmitPodRequest(otpCode = pod.otpToken))
+                podApi.submit(
+                    podId,
+                    SubmitPodRequest(
+                        otpCode         = pod.otpToken,
+                        deviceTimestamp = pod.deviceTimestamp,
+                    )
+                )
 
                 // 4c. Flush offline GPS breadcrumbs accumulated since last sync.
                 //     Runs right after POD submit so chain-of-custody telemetry
@@ -305,6 +370,15 @@ class OutboundSyncWorker @AssistedInject constructor(
             SyncAction.POP_SUBMIT -> {
                 val taskId     = payload["taskId"]?.jsonPrimitive?.contentOrNull
                     ?: run { syncQueueDao.remove(item.id); return }
+                if (isExpired(item)) {
+                    android.util.Log.w(
+                        "OutboundSyncWorker",
+                        "POP_SUBMIT for $taskId exceeded the ${EXPIRY_MS / 86_400_000}-day retry window — abandoning"
+                    )
+                    taskDao.markSyncFailed(taskId)
+                    syncQueueDao.remove(item.id)
+                    return
+                }
                 val shipmentId = payload["shipmentId"]?.jsonPrimitive?.contentOrNull
                     ?: run { syncQueueDao.remove(item.id); return }
                 val scannedBarcode = payload["scannedBarcode"]?.jsonPrimitive?.contentOrNull ?: ""
@@ -314,6 +388,12 @@ class OutboundSyncWorker @AssistedInject constructor(
                 val pickupLng  = payload["pickupLng"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()  ?: captureLng
                 val deviceTs   = payload["deviceTimestamp"]?.jsonPrimitive?.contentOrNull
                 val photoPath  = payload["photoPath"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                // Billing track. Items queued by an older build have no serviceCode
+                // key; "standard" matches both the server default and the behaviour
+                // those items were enqueued under.
+                val serviceCode = payload["serviceCode"]?.jsonPrimitive?.contentOrNull
+                    ?.takeIf { it.isNotBlank() }
+                    ?: AwbServiceCode.DEFAULT_WIRE_VALUE
                 // AR dimensioning carried through the offline replay (blank → null).
                 fun dimD(k: String) = payload[k]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.toDoubleOrNull()
                 val verifiedLengthCm   = dimD("verifiedLengthCm")
@@ -333,6 +413,7 @@ class OutboundSyncWorker @AssistedInject constructor(
                         pickupLat       = pickupLat,
                         pickupLng       = pickupLng,
                         deviceTimestamp = deviceTs,
+                        serviceCode     = serviceCode,
                     )
                 )
                 val popId = popResp.data.popId
@@ -432,8 +513,7 @@ class OutboundSyncWorker @AssistedInject constructor(
 
                 // After 7 days with no success, the backend may have auto-cancelled the task.
                 // Mark locally as permanently failed so the driver knows to contact support.
-                val sevenDaysMs = 7L * 24 * 60 * 60 * 1_000
-                if (item.createdAt < System.currentTimeMillis() - sevenDaysMs) {
+                if (isExpired(item)) {
                     taskDao.markSyncFailed(taskId)
                     syncQueueDao.remove(item.id)
                     return
@@ -521,6 +601,9 @@ class OutboundSyncWorker @AssistedInject constructor(
     companion object {
         const val WORK_NAME           = "outbound_sync"
         const val ONE_SHOT_WORK_NAME  = "outbound_sync_one_shot"
+
+        /** Retry window for queued items before they are abandoned — 7 days. */
+        const val EXPIRY_MS = 7L * 24 * 60 * 60 * 1_000
 
         private fun networkConstraints() = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)

@@ -13,7 +13,19 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <!--
+        USE_BIOMETRIC removed: nothing in the app calls BiometricPrompt, so it was
+        an unused permission declaration. Re-add it alongside the code that needs it.
+    -->
+
+    <!--
+        RECEIVE_BOOT_COMPLETED is consumed by WorkManager's own boot receiver, which
+        reschedules the periodic OutboundSyncWorker after a restart. The app declares
+        no boot receiver of its own; the location foreground service is deliberately
+        started from the Home screen once location permission is confirmed, because
+        startForeground(FOREGROUND_SERVICE_TYPE_LOCATION) throws on Android 14+ if
+        the runtime grant isn't already held.
+    -->
 
     <queries>
         <package android:name="com.symbol.datawedge" />

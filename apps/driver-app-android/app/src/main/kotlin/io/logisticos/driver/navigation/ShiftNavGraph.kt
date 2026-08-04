@@ -187,7 +187,10 @@ fun ShiftScaffold(rootNavController: NavHostController) {
                         vm.logout()
                         // 2. Stop the location foreground service so it doesn't continue
                         //    publishing GPS fixes (or restart via START_STICKY) while the
-                        //    driver is logged out.
+                        //    driver is logged out. Clearing the persisted shift id first
+                        //    stops a later restart from resuming breadcrumb recording
+                        //    against the logged-out driver's shift.
+                        LocationForegroundService.clearPersistedShiftId(context)
                         context.stopService(Intent(context, LocationForegroundService::class.java))
                         // 3. Restart the Activity with CLEAR_TASK so the NavController's
                         //    saved back-stack Bundle is discarded. recreate() preserves the

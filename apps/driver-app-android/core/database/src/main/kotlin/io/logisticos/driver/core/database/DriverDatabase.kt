@@ -46,6 +46,23 @@ val MIGRATION_6_7 = object : Migration(6, 7) {
     }
 }
 
+/**
+ * Adds the capture GPS and device-clock columns to `pod`.
+ *
+ * All three are nullable with no default: rows written before this migration
+ * genuinely have no capture position or device timestamp, and inventing one
+ * (e.g. defaulting to 0.0) would be worse than sending nothing — the server
+ * treats absent values as "older client" and falls back to its own clock,
+ * whereas 0.0/0.0 is a real coordinate in the Gulf of Guinea.
+ */
+val MIGRATION_7_8 = object : Migration(7, 8) {
+    override fun migrate(database: SupportSQLiteDatabase) {
+        database.execSQL("ALTER TABLE pod ADD COLUMN capture_lat REAL")
+        database.execSQL("ALTER TABLE pod ADD COLUMN capture_lng REAL")
+        database.execSQL("ALTER TABLE pod ADD COLUMN device_timestamp TEXT")
+    }
+}
+
 @TypeConverters(Converters::class)
 @Database(
     entities = [
@@ -58,7 +75,7 @@ val MIGRATION_6_7 = object : Migration(6, 7) {
         SyncQueueEntity::class,
         NotificationEntity::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = true
 )
 abstract class DriverDatabase : RoomDatabase() {

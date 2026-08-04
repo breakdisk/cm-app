@@ -61,6 +61,11 @@ class LocationRepository @Inject constructor(
     }
 
     fun stopShiftTracking() {
+        // Clear the persisted shift id first. The service restores it on a
+        // START_STICKY restart that arrives without an intent; leaving a stale id
+        // behind would let a later restart attribute breadcrumbs to a shift the
+        // driver has already ended.
+        LocationForegroundService.clearPersistedShiftId(context)
         context.stopService(Intent(context, LocationForegroundService::class.java))
     }
 
