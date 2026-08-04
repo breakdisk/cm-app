@@ -15,7 +15,17 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+    sourceSets {
+        // Exported schemas double as test fixtures for MigrationTestHelper.
+        named("test") { assets.srcDir(files("$projectDir/schemas")) }
+    }
 }
+
+// DriverDatabase declares exportSchema = true, but without this argument Room
+// has nowhere to write the JSON and silently emits nothing — which is why no
+// schemas/ directory existed and migrations could not be tested. Committing the
+// generated JSON is what lets MigrationTestHelper verify each upgrade path.
+ksp { arg("room.schemaLocation", "$projectDir/schemas") }
 
 dependencies {
     implementation(project(":core:common"))

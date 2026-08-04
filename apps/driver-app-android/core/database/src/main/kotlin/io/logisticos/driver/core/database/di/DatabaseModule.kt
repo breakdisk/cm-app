@@ -12,6 +12,7 @@ import io.logisticos.driver.core.database.MIGRATION_3_4
 import io.logisticos.driver.core.database.MIGRATION_4_5
 import io.logisticos.driver.core.database.MIGRATION_5_6
 import io.logisticos.driver.core.database.MIGRATION_6_7
+import io.logisticos.driver.core.database.MIGRATION_7_8
 import io.logisticos.driver.core.database.dao.*
 import javax.inject.Singleton
 
@@ -19,11 +20,27 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object DatabaseModule {
 
+    /**
+     * Note on the destructive-fallback policy.
+     *
+     * This database is the durable buffer for offline chain-of-custody evidence —
+     * the sync queue, unsent PODs and their photo paths, POP records. A blanket
+     * `fallbackToDestructiveMigration()` means any future version bump shipped
+     * without a matching migration silently deletes that evidence on the driver's
+     * phone, with no error and no way to recover it.
+     *
+     * So the fallback is scoped to versions 1 and 2 only — the legacy schemas that
+     * predate `MIGRATION_3_4` and genuinely have no upgrade path. Every version
+     * from 3 onward must have a real migration; a missing one now fails loudly at
+     * open time (and in the migration tests) instead of quietly wiping data.
+     */
     @Provides @Singleton
     fun provideDatabase(@ApplicationContext context: Context): DriverDatabase =
         Room.databaseBuilder(context, DriverDatabase::class.java, "driver_app.db")
-            .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
-            .fallbackToDestructiveMigration()
+            .addMigrations(
+                MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
+            )
+            .fallbackToDestructiveMigrationFrom(1, 2)
             .build()
 
     @Provides fun provideShiftDao(db: DriverDatabase): ShiftDao = db.shiftDao()

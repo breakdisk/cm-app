@@ -13,6 +13,8 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.format.DateTimeFormatter
 import javax.inject.Inject
 
 data class ArrivalUiState(
@@ -73,12 +75,18 @@ class ArrivalViewModel @Inject constructor(
         recipientName: String,
         captureLat: Double,
         captureLng: Double,
+        /** Registered delivery address — the geofence anchor, kept distinct from
+         *  the capture position so the server can measure a real distance. */
+        deliveryLat: Double,
+        deliveryLng: Double,
         photoPath: String? = null,
         signaturePath: String? = null,
         otpCode: String? = null,
         codCollectedCents: Long? = null,
         onDone: (podId: String?) -> Unit
     ) {
+        // Hardware clock at the confirmation tap, before the coroutine dispatches.
+        val deviceTimestamp = DateTimeFormatter.ISO_INSTANT.format(Instant.now())
         viewModelScope.launch {
             _uiState.update { it.copy(isSubmittingPod = true, error = null) }
             val podId = repo.submitPod(
@@ -87,10 +95,13 @@ class ArrivalViewModel @Inject constructor(
                 recipientName = recipientName,
                 captureLat = captureLat,
                 captureLng = captureLng,
+                deliveryLat = deliveryLat,
+                deliveryLng = deliveryLng,
                 photoPath = photoPath,
                 signaturePath = signaturePath,
                 otpCode = otpCode,
-                codCollectedCents = codCollectedCents
+                codCollectedCents = codCollectedCents,
+                deviceTimestamp = deviceTimestamp,
             )
             _uiState.update { it.copy(isSubmittingPod = false, podSubmitted = true, podId = podId) }
             onDone(podId)

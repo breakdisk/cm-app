@@ -506,15 +506,61 @@ class HomeViewModel @Inject constructor(
     }
 
     fun syncShift() {
-        viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true, error = null) }
-            runCatching { repo.syncShift() }
-                .onFailure { e -> _uiState.update { it.copy(error = e.message, isOfflineMode = true) } }
-                .onSuccess { _uiState.update { it.copy(isOfflineMode = false) } }
-            _uiState.update { it.copy(isLoading = false) }
-            loadComplianceStatus()
-            refreshHubProfile()
-            loadTasks()
+        viewModelScope.launch { performShiftSync() }
+    }
+
+    /**
+     * Body of [syncShift], exposed as a suspend function so callers already
+     * inside a coroutine can await it.
+     *
+     * [toggleOnlineStatus] needs that: it has to re-scope location tracking to
+     * the shift *after* the sync has created it. Calling the fire-and-forget
+     * [syncShift] and then binding would race — the bind would usually resolve a
+     * null shift id and leave the tracker in availability mode, which is exactly
+     * the state that suppresses breadcrumb recording.
+     */
+    private suspend fun performShiftSync() {
+        _uiState.update { it.copy(isLoading = true, error = null) }
+        runCatching { repo.syncShift() }
+            .onFailure { e -> _uiState.update { it.copy(error = e.message, isOfflineMode = true) } }
+            .onSuccess { _uiState.update { it.copy(isOfflineMode = false) } }
+        _uiState.update { it.copy(isLoading = false) }
+        // A sync may have created today's shift. Re-scope the tracker so
+        // breadcrumbs start recording against it. Only meaningful while online —
+        // the service is not running otherwise, and starting it here would put
+        // the driver back on the map after they went offline.
+        if (_uiState.value.isOnline) bindTrackingToActiveShift()
+        loadComplianceStatus()
+        refreshHubProfile()
+        loadTasks()
+    }
+
+    /**
+     * (Re)starts the location foreground service scoped to the active shift.
+     *
+     * Breadcrumb recording is gated on the service holding a non-empty shift id
+     * — with an empty one it publishes positions for dispatch but writes nothing
+     * to `location_breadcrumbs`, which leaves no GPS trail between POP and POD.
+     * Calling this after the shift is known is what closes that gap.
+     *
+     * Safe to call repeatedly: `LocationForegroundService.onStartCommand` updates
+     * its shift id in place and its `updatesStarted` guard prevents a second
+     * FusedLocationProvider callback being registered.
+     */
+    private suspend fun bindTrackingToActiveShift() {
+        val shiftId = runCatching { repo.getActiveShiftId() }.getOrNull()
+        startTracking(shiftId)
+    }
+
+    private fun startTracking(shiftId: String?) {
+        locationRepo.startShiftTracking(shiftId.orEmpty())
+        if (shiftId.isNullOrBlank()) {
+            android.util.Log.d(
+                "HomeViewModel",
+                "Location tracking in availability mode — no active shift, breadcrumbs not recorded"
+            )
+        } else {
+            android.util.Log.d("HomeViewModel", "Location tracking bound to shift $shiftId")
         }
     }
 
@@ -527,13 +573,20 @@ class HomeViewModel @Inject constructor(
                     api.goOnline()
                     // Start the foreground service immediately so FusedLocation-
                     // Provider begins requesting continuous GPS/network fixes.
-                    // Empty shiftId = availability mode: publishes to the
-                    // locationUpdates SharedFlow without recording breadcrumbs.
                     // This is what populates driver_ops.driver_locations so
                     // dispatch's proximity query can find the driver.
-                    locationRepo.startShiftTracking("")
+                    //
+                    // No shift exists yet at this point (the sync below is what
+                    // creates it), so this necessarily starts in availability
+                    // mode. The bind after the sync re-issues the start with the
+                    // resolved shift id — that is what switches breadcrumb
+                    // recording on.
+                    startTracking(shiftId = null)
                     pushFreshLocation()
-                    syncShift()
+                    // Awaited, not fire-and-forget, so the shift exists before we
+                    // try to bind tracking to it.
+                    performShiftSync()
+                    bindTrackingToActiveShift()
                 } else {
                     api.goOffline()
                     locationRepo.stopShiftTracking()
@@ -655,7 +708,9 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             runCatching {
                 // Start the foreground service now that location permission is confirmed.
-                locationRepo.startShiftTracking("")   // availability mode — no breadcrumbs
+                // Scoped to the active shift when there is one so breadcrumbs record;
+                // availability mode only when the driver has no shift yet.
+                bindTrackingToActiveShift()
                 pushFreshLocation()
             }
         }

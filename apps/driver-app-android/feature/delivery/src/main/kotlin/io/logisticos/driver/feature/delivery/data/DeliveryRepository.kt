@@ -110,6 +110,18 @@ class DeliveryRepository @Inject constructor(
      * Persists locally first so data isn't lost if network fails mid-flow.
      * On error, enqueues POD_SUBMIT for retry via OutboundSyncWorker.
      *
+     * @param captureLat      Driver's live GPS latitude at the moment of capture.
+     * @param captureLng      Driver's live GPS longitude at the moment of capture.
+     * @param deliveryLat     Registered delivery address latitude (task.lat) — the
+     *                        geofence anchor. Must be distinct from [captureLat];
+     *                        passing the capture point for both reduces the
+     *                        server-side distance check to a self-comparison that
+     *                        always reads 0 m and can never fail.
+     * @param deliveryLng     Registered delivery address longitude (task.lng).
+     * @param deviceTimestamp ISO-8601 UTC hardware-clock reading taken at the
+     *                        physical POD event — not at network-send time. This is
+     *                        the primary time basis for SLA calculations.
+     *
      * @return pod_id on success, null on failure (error is enqueued for retry)
      */
     suspend fun submitPod(
@@ -118,21 +130,29 @@ class DeliveryRepository @Inject constructor(
         recipientName: String,
         captureLat: Double,
         captureLng: Double,
+        deliveryLat: Double,
+        deliveryLng: Double,
         photoPath: String?,
         signaturePath: String?,
         otpCode: String?,
         codCollectedCents: Long?,
+        deviceTimestamp: String,
         requiresPhoto: Boolean = true,
         requiresSignature: Boolean = true,
     ): String? {
-        // Persist locally first
+        // Persist locally first — including the capture position and device clock,
+        // so an offline replay hours later reconstructs the original event rather
+        // than re-deriving it from wherever the driver happens to be by then.
         podDao.insert(
             PodEntity(
                 taskId = taskId,
                 photoPath = photoPath,
                 signaturePath = signaturePath,
                 otpToken = otpCode,
-                capturedAt = System.currentTimeMillis()
+                capturedAt = System.currentTimeMillis(),
+                captureLat = captureLat,
+                captureLng = captureLng,
+                deviceTimestamp = deviceTimestamp,
             )
         )
 
@@ -145,10 +165,11 @@ class DeliveryRepository @Inject constructor(
                     recipientName = recipientName,
                     captureLat = captureLat,
                     captureLng = captureLng,
-                    deliveryLat = captureLat,
-                    deliveryLng = captureLng,
+                    deliveryLat = deliveryLat,
+                    deliveryLng = deliveryLng,
                     requiresPhoto = requiresPhoto,
                     requiresSignature = requiresSignature,
+                    deviceTimestamp = deviceTimestamp,
                 )
             )
             val podId = initiateResp.data.podId
@@ -213,7 +234,14 @@ class DeliveryRepository @Inject constructor(
             }
 
             // 4. Submit POD
-            podApi.submit(podId, SubmitPodRequest(codCollectedCents = codCollectedCents, otpCode = otpCode))
+            podApi.submit(
+                podId,
+                SubmitPodRequest(
+                    codCollectedCents = codCollectedCents,
+                    otpCode           = otpCode,
+                    deviceTimestamp   = deviceTimestamp,
+                )
+            )
 
             // POD is on the server. Mark it synced before attempting step 7
             // so a subsequent failure doesn't re-upload the same photo.

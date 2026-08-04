@@ -20,6 +20,17 @@ class ShiftRepository @Inject constructor(
     fun observeActiveShift(): Flow<ShiftEntity?> = shiftDao.getActiveShift()
 
     /**
+     * Id of the currently active shift, or null when the driver is online but has
+     * no shift yet (availability mode).
+     *
+     * Used to scope GPS breadcrumb recording: [io.logisticos.driver.core.location.LocationForegroundService]
+     * only writes breadcrumbs when it has a real shift id, so this is what
+     * upgrades the tracker from "publish position for dispatch" to "record the
+     * chain-of-custody trail".
+     */
+    suspend fun getActiveShiftId(): String? = shiftDao.getActiveShiftOnce()?.id
+
+    /**
      * Fetches tasks from GET /v1/tasks and reconciles the local DB against
      * the authoritative server payload.
      *

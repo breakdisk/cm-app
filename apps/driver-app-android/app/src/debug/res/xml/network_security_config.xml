@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    DEBUG-ONLY network security config.
+
+    Android resource merging gives the debug source set priority over main, so
+    this file replaces the release config for debug builds only. The cleartext
+    exemption below therefore never reaches a release APK.
+
+    The exemption exists so developers can point API_BASE_URL straight at the
+    VPS over plain HTTP while testing. That IP is outside the *.cargomarket.net
+    certificate-pinning scope enforced in NetworkModule, so it must not be
+    reachable in a shipped build.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">75.119.138.135</domain>
+        <!-- Emulator loopback host for a locally-run backend. -->
+        <domain includeSubdomains="false">10.0.2.2</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">os-api.cargomarket.net</domain>
+    </domain-config>
+</network-security-config>

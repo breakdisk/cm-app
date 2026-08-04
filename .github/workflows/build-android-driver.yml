@@ -73,6 +73,26 @@ jobs:
         run: |
           sed -i "s/versionCode = [0-9]\+/versionCode = ${{ github.run_number }}/" app/build.gradle.kts
 
+      # ── Unit tests ────────────────────────────────────────────────────────────
+      # This pipeline previously only ran assemble*, so the JVM unit tests never
+      # executed in CI and were free to rot against the code they cover. They now
+      # gate the build. Runs before assemble so a logic regression fails fast
+      # rather than after producing three APKs.
+      - name: Run unit tests
+        working-directory: apps/driver-app-android
+        run: ./gradlew testStagingDebugUnitTest --no-daemon
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: driver-app-unit-test-reports-${{ github.run_number }}
+          path: |
+            apps/driver-app-android/**/build/reports/tests/
+            apps/driver-app-android/**/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
       # ── Debug build (always runs — no keystore needed, instant testable APK) ──
       - name: Build stagingDebug APK
         working-directory: apps/driver-app-android

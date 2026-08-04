@@ -60,7 +60,28 @@ class LocationForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        currentShiftId = intent?.getStringExtra(EXTRA_SHIFT_ID) ?: ""
+        // START_STICKY re-delivers a NULL intent when the system restarts the
+        // service after a kill. Reading the extra unconditionally would reset the
+        // shift id to "" on every such restart and silently stop breadcrumb
+        // recording for the remainder of the shift — the service would look
+        // healthy while writing nothing. Only overwrite when an intent actually
+        // carries the extra; otherwise keep what we already had.
+        //
+        // The id is also persisted so it survives full process death, where the
+        // in-memory field is gone but the shift is still running.
+        val deliveredShiftId = intent?.getStringExtra(EXTRA_SHIFT_ID)
+        if (deliveredShiftId != null) {
+            currentShiftId = deliveredShiftId
+            persistShiftId(deliveredShiftId)
+        } else if (currentShiftId.isEmpty()) {
+            currentShiftId = restoreShiftId()
+            if (currentShiftId.isNotEmpty()) {
+                android.util.Log.d(
+                    "LocationFgService",
+                    "Restarted without intent — restored shift $currentShiftId"
+                )
+            }
+        }
         // Empty shiftId = availability-tracking mode: GPS runs and publishes to
         // the SharedFlow (keeping dispatch's driver_locations populated) but no
         // breadcrumbs are recorded (they require a real shift context).
@@ -160,6 +181,19 @@ class LocationForegroundService : Service() {
         super.onDestroy()
     }
 
+    // ── Shift-id persistence ──────────────────────────────────────────────────
+    // Plain SharedPreferences: a shift id is not a secret, and this must be
+    // readable synchronously from onStartCommand before any coroutine runs.
+
+    private fun persistShiftId(shiftId: String) {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putString(KEY_SHIFT_ID, shiftId)
+            .apply()
+    }
+
+    private fun restoreShiftId(): String =
+        getSharedPreferences(PREFS, MODE_PRIVATE).getString(KEY_SHIFT_ID, "").orEmpty()
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun createNotificationChannel() {
@@ -183,5 +217,17 @@ class LocationForegroundService : Service() {
         const val CHANNEL_ID = "location_service"
         const val NOTIFICATION_ID = 1001
         const val EXTRA_SHIFT_ID = "shift_id"
+
+        private const val PREFS = "location_service_state"
+        private const val KEY_SHIFT_ID = "active_shift_id"
+
+        /** Drop the remembered shift id so a later restart cannot resume tracking
+         *  against a shift the driver has ended. Called from
+         *  [LocationRepository.stopShiftTracking]. */
+        fun clearPersistedShiftId(context: android.content.Context) {
+            context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE).edit()
+                .remove(KEY_SHIFT_ID)
+                .apply()
+        }
     }
 }
