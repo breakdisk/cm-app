@@ -12,6 +12,20 @@ pub struct Config {
     // A field named `storage` would require STORAGE__* vars instead.
     #[serde(default)]
     pub s3: StorageConfig,
+    /// Sibling service base URLs. Maps SERVICES__ORDER_INTAKE_URL →
+    /// config.services.order_intake_url (already present on every service
+    /// container in docker-compose.yml).
+    #[serde(default)]
+    pub services: ServicesConfig,
+}
+
+/// Base URLs of sibling services POD calls over the internal mesh.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ServicesConfig {
+    /// e.g. http://order-intake:8004 — source of truth for a shipment's billing
+    /// track and declared value at POP initiation. Optional: when absent, POP
+    /// falls back to the driver device's own classification.
+    pub order_intake_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

@@ -13,7 +13,10 @@ use crate::{
     domain::{
         entities::{ProofOfDelivery, PodPhoto, OtpCode, ProofOfPickup},
         events::{PodCaptured, PickupCaptured},
-        repositories::{PodRepository, OtpRepository, PickupRepository, TelemetryRepository, TelemetryEntry},
+        repositories::{
+            PodRepository, OtpRepository, PickupRepository, TelemetryRepository, TelemetryEntry,
+            ShipmentBillingContextSource,
+        },
         value_objects::{
             POD_GEOFENCE_METERS, OUT_OF_BOUNDS_HANDOVER_METERS,
             MAX_PHOTOS_PER_POD, MAX_PHOTO_SIZE_BYTES,
@@ -36,9 +39,14 @@ pub struct PodService {
     pop_storage:  Arc<dyn StorageAdapter>,
     sms:          Arc<dyn SmsAdapter>,
     kafka:        Arc<KafkaProducer>,
+    /// Resolves the shipment's billing track + declared value from order-intake
+    /// at POP initiation. `None` when `ORDER_INTAKE_URL` is unset, in which case
+    /// POP falls back to the client-supplied classification.
+    shipment_ctx: Option<Arc<dyn ShipmentBillingContextSource>>,
 }
 
 impl PodService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         pod_repo:    Arc<dyn PodRepository>,
         otp_repo:    Arc<dyn OtpRepository>,
@@ -48,8 +56,9 @@ impl PodService {
         pop_storage: Arc<dyn StorageAdapter>,
         sms:         Arc<dyn SmsAdapter>,
         kafka:       Arc<KafkaProducer>,
+        shipment_ctx: Option<Arc<dyn ShipmentBillingContextSource>>,
     ) -> Self {
-        Self { pod_repo, otp_repo, pickup_repo, telemetry, pod_storage, pop_storage, sms, kafka }
+        Self { pod_repo, otp_repo, pickup_repo, telemetry, pod_storage, pop_storage, sms, kafka, shipment_ctx }
     }
 
     /// Step 1: Driver initiates POD capture at delivery location.
@@ -386,6 +395,17 @@ impl PodService {
             );
         }
 
+        // The handset is not authoritative for the billing track, nor for the
+        // amount that debits that same driver's ledger. Resolve both from the
+        // booking record before the POP is written.
+        let (service_code, declared_value_cents) = self
+            .resolve_billing_context(
+                cmd.shipment_id,
+                &cmd.service_code,
+                cmd.declared_value_cents,
+            )
+            .await;
+
         let pop = ProofOfPickup::new(
             tenant_id.inner(),
             cmd.shipment_id,
@@ -396,13 +416,71 @@ impl PodService {
             geofence_verified,
             out_of_bounds_handover,
             cmd.declared_weight_g,
-            cmd.service_code,
-            cmd.declared_value_cents,
+            service_code,
+            declared_value_cents,
             cmd.device_timestamp,
         );
 
         self.pickup_repo.save(&pop).await.map_err(AppError::Internal)?;
         Ok(pop)
+    }
+
+    /// Resolve the shipment's billing track and declared value from order-intake,
+    /// falling back to the device-supplied values when the lookup is unavailable.
+    ///
+    /// Track A (Balikbayan) debits `declared_value_cents` to the driver's ledger at
+    /// pickup, so a wrong or missing value here is a financial control failure, not
+    /// a cosmetic one. It is still non-blocking: a driver standing at the merchant's
+    /// counter must never be stopped by a transient internal HTTP failure, so every
+    /// degraded path logs loudly rather than returning an error.
+    async fn resolve_billing_context(
+        &self,
+        shipment_id:                 Uuid,
+        client_service_code:         &str,
+        client_declared_value_cents: Option<i64>,
+    ) -> (String, Option<i64>) {
+        let Some(source) = self.shipment_ctx.as_ref() else {
+            tracing::warn!(
+                shipment_id = %shipment_id,
+                "ORDER_INTAKE_URL not configured — POP billing track taken from the \
+                 driver device. Track A ledger debits may be missed or misvalued."
+            );
+            return (client_service_code.to_string(), client_declared_value_cents);
+        };
+
+        match source.fetch(shipment_id).await {
+            Ok(ctx) => {
+                if !ctx.service_code.eq_ignore_ascii_case(client_service_code) {
+                    tracing::warn!(
+                        shipment_id  = %shipment_id,
+                        device_value = %client_service_code,
+                        booking_value = %ctx.service_code,
+                        "POP service_code from device disagrees with the booking — \
+                         using the booking value"
+                    );
+                }
+                if ctx.service_code.eq_ignore_ascii_case("balikbayan")
+                    && ctx.declared_value_cents.unwrap_or(0) <= 0
+                {
+                    tracing::warn!(
+                        shipment_id = %shipment_id,
+                        "Track A (Balikbayan) shipment carries no declared value on the \
+                         booking — the driver ledger debit will not fire for this pickup"
+                    );
+                }
+                (ctx.service_code, ctx.declared_value_cents)
+            }
+            Err(e) => {
+                tracing::error!(
+                    error       = %e,
+                    shipment_id = %shipment_id,
+                    "Failed to resolve shipment billing context from order-intake — \
+                     falling back to device-supplied values. A Balikbayan pickup may \
+                     not debit the driver ledger."
+                );
+                (client_service_code.to_string(), client_declared_value_cents)
+            }
+        }
     }
 
     /// Step P2: Driver submits a completed Proof of Pickup.

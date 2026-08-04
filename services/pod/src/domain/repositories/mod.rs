@@ -67,3 +67,26 @@ pub trait TelemetryRepository: Send + Sync {
         limit:       u32,
     ) -> anyhow::Result<Vec<TelemetryEntry>>;
 }
+
+// ── Shipment billing context (driven port → order-intake) ──────────────────────
+
+/// Booking-time billing classification for a shipment, owned by order-intake.
+///
+/// POP reads this at `initiate_pickup` so the billing track and the debited
+/// amount come from the booking record rather than from the driver's handset.
+#[derive(Debug, Clone)]
+pub struct ShipmentBillingContext {
+    /// `ServiceType::as_str()` — "standard" | "express" | "same_day" |
+    /// "balikbayan" | "international". Payments gates the Track A driver-ledger
+    /// debit on exactly "balikbayan".
+    pub service_code:         String,
+    /// Declared value in cents; `None` when the merchant booked without one.
+    pub declared_value_cents: Option<i64>,
+}
+
+/// Driven port — resolves a shipment's billing classification from order-intake.
+/// Implemented in `infrastructure/external/order_intake.rs`.
+#[async_trait]
+pub trait ShipmentBillingContextSource: Send + Sync {
+    async fn fetch(&self, shipment_id: Uuid) -> anyhow::Result<ShipmentBillingContext>;
+}

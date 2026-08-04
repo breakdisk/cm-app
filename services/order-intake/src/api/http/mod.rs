@@ -496,6 +496,14 @@ async fn internal_create_shipment(
     }
 }
 
+/// `GET /v1/internal/shipments/:id/billing`
+///
+/// Billing facts for one shipment. Consumed by payments (invoice/receipt
+/// amounts) and by pod, which uses `service_code` + `declared_value_cents` as
+/// the server-side authority for Track A/B classification when a driver opens
+/// a Proof of Pickup. Those two fields are booking data, not computed fees —
+/// a driver's device must never be authoritative for the amount that debits
+/// that same driver's ledger.
 async fn get_shipment_billing(
     State(s): State<AppState>,
     Path(id): Path<Uuid>,
@@ -518,6 +526,10 @@ async fn get_shipment_billing(
         "fuel_surcharge":       fuel_surcharge,
         "insurance":            insurance,
         "total":                total,
+        // Booking-time classification — "balikbayan" is the exact string the
+        // payments pickup consumer gates the Track A ledger debit on.
+        "service_code":         shipment.service_type.as_str(),
+        "declared_value_cents": shipment.declared_value.map(|v| v.amount),
     }))))
 }
 

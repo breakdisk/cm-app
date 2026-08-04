@@ -154,6 +154,27 @@ pub async fn run() -> anyhow::Result<()> {
     let pickup_repo   = Arc::new(PgPickupRepository::new(pool.clone()));
     let telemetry     = Arc::new(PgTelemetryRepository::new(pool.clone()));
 
+    // Server-side authority for the POP billing track and declared value.
+    // Without it, POP trusts whatever the driver's handset sends — which is how
+    // Track A ledger debits silently never fired.
+    let shipment_ctx: Option<Arc<dyn crate::domain::repositories::ShipmentBillingContextSource>> =
+        match cfg.services.order_intake_url.as_deref().map(str::trim) {
+            Some(url) if !url.is_empty() => {
+                tracing::info!(order_intake_url = %url, "POP billing context: resolving from order-intake");
+                Some(Arc::new(
+                    crate::infrastructure::external::order_intake::OrderIntakeClient::new(url),
+                ))
+            }
+            _ => {
+                tracing::warn!(
+                    "SERVICES__ORDER_INTAKE_URL not set — POP will trust the driver device \
+                     for service_code and declared_value_cents. Track A (Balikbayan) driver \
+                     ledger debits will not fire reliably. Set it in production."
+                );
+                None
+            }
+        };
+
     let pod_service = Arc::new(PodService::new(
         Arc::clone(&pod_repo)     as _,
         Arc::clone(&otp_repo)     as _,
@@ -163,6 +184,7 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::clone(&pop_storage)  as _,
         Arc::clone(&sms)          as _,
         Arc::clone(&kafka),
+        shipment_ctx,
     ));
 
     let state = Arc::new(AppState { pod_service, jwt: Arc::clone(&jwt) });
