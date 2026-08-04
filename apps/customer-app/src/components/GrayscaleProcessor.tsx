@@ -29,7 +29,7 @@ import React, {
 } from 'react';
 import { View } from 'react-native';
 import WebView, { WebViewMessageEvent } from 'react-native-webview';
-import * as FileSystem from 'expo-file-system';
+import { File } from 'expo-file-system';
 
 export interface GrayscaleProcessorRef {
   /**
@@ -95,12 +95,11 @@ const GrayscaleProcessor = forwardRef<GrayscaleProcessorRef>((_, ref) => {
 
   useImperativeHandle(ref, () => ({
     async process(uri: string): Promise<string> {
-      const ext = uri.split('.').pop()?.toLowerCase() ?? '';
-      const mime = ext === 'png' ? 'image/png' : 'image/jpeg';
+      const file = new File(uri);
+      // `extension` includes the leading dot, e.g. '.png'
+      const mime = file.extension.toLowerCase() === '.png' ? 'image/png' : 'image/jpeg';
 
-      const b64 = await FileSystem.readAsStringAsync(uri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
+      const b64 = await file.base64();
 
       return new Promise<string>((resolve, reject) => {
         const timer = setTimeout(() => {

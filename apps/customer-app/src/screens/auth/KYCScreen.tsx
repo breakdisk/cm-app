@@ -25,7 +25,8 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
-import * as FileSystem from "expo-file-system";
+import { File, Paths } from "expo-file-system";
+import { fetch as expoFetch } from "expo/fetch";
 import { useDispatch, useSelector } from "react-redux";
 import { authActions } from "../../store";
 import type { RootState, AppDispatch, IdType } from "../../store";
@@ -68,6 +69,20 @@ const ID_OPTIONS: Array<{
   },
 ];
 
+/**
+ * Best-effort cleanup for an intermediate cache file.
+ * `File.delete()` throws when the file was never written, so a missing file
+ * must never surface as an error to the caller.
+ */
+function discardTempFile(file: File | null) {
+  if (!file) return;
+  try {
+    if (file.exists) file.delete();
+  } catch {
+    // Non-fatal: the OS reclaims the cache directory anyway.
+  }
+}
+
 export function KYCScreen() {
   const dispatch = useDispatch<AppDispatch>();
   const name     = useSelector((s: RootState) => s.auth.name);
@@ -102,18 +117,16 @@ export function KYCScreen() {
     setImageBase64(null);   // clear until pipeline finishes
 
     let processedUri = rawUri;
-    let tmpPath: string | null = null;
+    let tmpFile: File | null = null;
 
     try {
       // ── Step 1: grayscale + pre-scale to ≤ 1280 px (WebView canvas) ────────
       if (grayscaleRef.current) {
         try {
           const grayB64 = await grayscaleRef.current.process(rawUri);
-          tmpPath = `${FileSystem.cacheDirectory}kyc_gray_${Date.now()}.jpg`;
-          await FileSystem.writeAsStringAsync(tmpPath, grayB64, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
-          processedUri = tmpPath;
+          tmpFile = new File(Paths.cache, `kyc_gray_${Date.now()}.jpg`);
+          tmpFile.write(grayB64, { encoding: 'base64' });
+          processedUri = tmpFile.uri;
         } catch (e) {
           // Non-fatal: proceed without grayscale
           console.warn('[KYC] Grayscale step failed, using original:', e);
@@ -130,9 +143,7 @@ export function KYCScreen() {
       setImageUri(null);
     } finally {
       // Clean up the intermediate grayscale temp file
-      if (tmpPath) {
-        FileSystem.deleteAsync(tmpPath, { idempotent: true }).catch(() => {});
-      }
+      discardTempFile(tmpFile);
       setIsProcessing(false);
     }
   }
@@ -218,7 +229,7 @@ export function KYCScreen() {
     if (!selectedId || !imageUri || !imageBase64 || isProcessing || docNumber.trim().length === 0) return;
 
     setSubmitting(true);
-    let tempUploadUri: string | null = null;
+    let tempUpload: File | null = null;
     try {
       const token = await getStoredToken();
       if (!token) {
@@ -236,21 +247,23 @@ export function KYCScreen() {
       // Step 1 — get a presigned R2 PUT URL from the compliance service
       const { upload_url, s3_key, upload_headers } = await complianceApi.getUploadUrl(imageMime);
 
-      // Step 2 — write the processed base64 image to a temp file and upload
-      // the raw bytes directly to Cloudflare R2 (no base64 body through the
-      // backend, no 33% bandwidth overhead)
-      const ext = imageMime === 'image/webp' ? 'webp' : imageMime === 'image/png' ? 'png' : 'jpg';
-      tempUploadUri = `${FileSystem.cacheDirectory}kyc_r2_${Date.now()}.${ext}`;
-      await FileSystem.writeAsStringAsync(tempUploadUri, imageBase64, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
+      // Step 2 — write the processed base64 image to a temp file so the native
+      // layer does the base64 decode, then upload the raw bytes directly to
+      // Cloudflare R2 (no base64 body through the backend, no 33% bandwidth
+      // overhead). `processKycImage` only ever emits WebP or JPEG.
+      const ext = imageMime === 'image/webp' ? 'webp' : 'jpg';
+      tempUpload = new File(Paths.cache, `kyc_r2_${Date.now()}.${ext}`);
+      tempUpload.write(imageBase64, { encoding: 'base64' });
 
-      // BINARY_CONTENT is required: without it Expo wraps the body in
-      // multipart/form-data, which mismatches the Content-Type signed into the
-      // presigned URL and causes R2 to return SignatureDoesNotMatch.
-      const uploadResult = await FileSystem.uploadAsync(upload_url, tempUploadUri, {
-        httpMethod: 'PUT',
-        uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+      // The body must be the raw bytes: anything that makes the request go out
+      // as multipart/form-data mismatches the Content-Type signed into the
+      // presigned URL and causes R2 to return SignatureDoesNotMatch. A
+      // Uint8Array body is passed through verbatim — handing `expoFetch` the
+      // File as a Blob would let it overwrite Content-Type with the file's own
+      // sniffed mime type.
+      const uploadResult = await expoFetch(upload_url, {
+        method: 'PUT',
+        body: await tempUpload.bytes(),
         headers: { 'Content-Type': imageMime, ...upload_headers },
       });
 
@@ -286,9 +299,7 @@ export function KYCScreen() {
       const msg = (err as { message?: string })?.message ?? "Please check your connection and try again.";
       Alert.alert("Upload failed", msg);
     } finally {
-      if (tempUploadUri) {
-        FileSystem.deleteAsync(tempUploadUri, { idempotent: true }).catch(() => {});
-      }
+      discardTempFile(tempUpload);
       setSubmitting(false);
     }
   }
