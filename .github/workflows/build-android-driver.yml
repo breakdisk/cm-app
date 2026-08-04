@@ -78,9 +78,14 @@ jobs:
       # executed in CI and were free to rot against the code they cover. They now
       # gate the build. Runs before assemble so a logic regression fails fast
       # rather than after producing three APKs.
+      # Two task names are required. Only :app declares product flavors, so its
+      # unit-test task is testStagingDebugUnitTest; the core:* and feature:*
+      # library modules have no flavors and theirs is testDebugUnitTest. Naming
+      # only the flavored task silently runs :app alone and skips every library
+      # module — a green build that executed 2 of ~90 tests.
       - name: Run unit tests
         working-directory: apps/driver-app-android
-        run: ./gradlew testStagingDebugUnitTest --no-daemon
+        run: ./gradlew testDebugUnitTest testStagingDebugUnitTest --no-daemon
 
       - name: Upload test reports
         if: always()
