@@ -18,7 +18,14 @@ ALTER TABLE engagement.campaign_sends
     ADD COLUMN IF NOT EXISTS bounced_at  TIMESTAMPTZ;  -- hard-bounce timestamp
 
 -- Index for provider-message-id lookups (receipt correlation).
--- Already created in 0002 but may be partial — recreate as full index.
+--
+-- NOTE: this originally read `(provider_message_id, tenant_id)`, but
+-- `engagement.campaign_sends` has no `tenant_id` column and never has — it is
+-- scoped through `campaign_id -> engagement.campaigns`. Postgres rejected the
+-- whole migration with `column "tenant_id" does not exist`, so 0007 had never
+-- applied on any database and every engagement image built since it landed
+-- crashlooped on startup. Matches the only query that uses this index,
+-- `WHERE provider_message_id = $1` (infrastructure/db/mod.rs).
 CREATE INDEX IF NOT EXISTS idx_campaign_sends_provider_lookup
-    ON engagement.campaign_sends (provider_message_id, tenant_id)
+    ON engagement.campaign_sends (provider_message_id)
     WHERE provider_message_id IS NOT NULL;
