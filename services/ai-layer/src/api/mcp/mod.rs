@@ -37,7 +37,7 @@ use crate::{
     domain::entities::{AgentAction, AgentSession, AgentType},
     infrastructure::{
         db::SessionRepository,
-        tools::{ToolRegistry, ToolResult},
+        tools::{ToolContext, ToolRegistry, ToolResult},
     },
 };
 
@@ -106,6 +106,19 @@ impl LogisticOsMcpServer {
             .get::<axum::http::request::Parts>()
             .and_then(|parts| parts.extensions.get::<Claims>())
             .cloned()
+    }
+
+    /// Read the caller's raw bearer token back off the request so tool calls can
+    /// be made on their behalf. Same source as `claims_from` — the token has
+    /// already been validated by `require_auth` before reaching this point.
+    fn bearer_from(context: &RequestContext<RoleServer>) -> Option<String> {
+        context
+            .extensions
+            .get::<axum::http::request::Parts>()
+            .and_then(|parts| parts.headers.get(axum::http::header::AUTHORIZATION))
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .map(str::to_owned)
     }
 
     /// Read the caller's IP from `X-Forwarded-For`, which the API Gateway now
@@ -196,10 +209,17 @@ impl ServerHandler for LogisticOsMcpServer {
             );
         }
 
+        // Remote MCP callers arrive with their own LogisticOS bearer token —
+        // propagate it so tools that hit JWT-protected service endpoints act
+        // under that caller's authority rather than anonymously.
+        let ctx = Self::bearer_from(&context)
+            .map(ToolContext::with_bearer)
+            .unwrap_or_default();
+
         let tool_use_id = uuid::Uuid::new_v4().to_string();
         let result = self
             .tools
-            .execute(&request.name, input.clone(), tool_use_id.clone())
+            .execute(&request.name, input.clone(), tool_use_id.clone(), ctx)
             .await;
 
         self.record_audit(&claims, client_ip.as_deref(), &request.name, &input, &result)

@@ -98,6 +98,11 @@ pub const RECEIPT_EMAIL_REQUESTED:   &str = "logisticos.tracking.receipt.email.r
 pub const SUPPORT_TICKET_OPENED:     &str = "logisticos.support.ticket.opened";
 pub const SUPPORT_TICKET_CLOSED:     &str = "logisticos.support.ticket.closed";
 
+// AI agent escalations. Distinct from the SUPPORT_TICKET_* pair above, which
+// drives campaign suppression in engagement — this one carries the operator's
+// written resolution back to the customer who was chatting with the agent.
+pub const AGENT_ESCALATION_RESOLVED: &str = "logisticos.ai.escalation.resolved";
+
 // Inbound channel messages (customer → platform)
 pub const WHATSAPP_INBOUND:          &str = "logisticos.engagement.whatsapp.inbound";
 
@@ -142,7 +147,7 @@ mod tests {
             NOTIFICATION_QUEUED, CAMPAIGN_TRIGGERED, CAMPAIGN_COMPLETED, CUSTOMER_SEGMENT_UPDATED,
             TASK_ASSIGNED,
             RECEIPT_EMAIL_REQUESTED,
-            SUPPORT_TICKET_OPENED, SUPPORT_TICKET_CLOSED,
+            SUPPORT_TICKET_OPENED, SUPPORT_TICKET_CLOSED, AGENT_ESCALATION_RESOLVED,
             WHATSAPP_INBOUND,
         ];
         for t in topics {

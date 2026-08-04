@@ -19,8 +19,34 @@ pub struct ToolResult {
     pub is_error:    bool,
 }
 
+/// Per-call context handed to a tool at execution time.
+///
+/// `bearer` carries the *originating caller's* access token so a tool can call a
+/// JWT-protected downstream endpoint as that user rather than as an anonymous
+/// internal caller. Autonomous (Kafka-triggered) agents have no human caller and
+/// therefore no bearer — those runs can only reach `/v1/internal/*` endpoints,
+/// which is the correct blast radius for an unattended agent.
+#[derive(Debug, Clone, Default)]
+pub struct ToolContext {
+    pub bearer: Option<String>,
+}
+
+impl ToolContext {
+    pub fn with_bearer(bearer: impl Into<String>) -> Self {
+        Self { bearer: Some(bearer.into()) }
+    }
+}
+
+/// Attach the caller's bearer token to an outbound request when one is present.
+fn authed(req: reqwest::RequestBuilder, ctx: &ToolContext) -> reqwest::RequestBuilder {
+    match &ctx.bearer {
+        Some(token) => req.bearer_auth(token),
+        None => req,
+    }
+}
+
 /// Registered tool with its handler.
-type ToolHandler = Arc<dyn Fn(Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Value>> + Send>> + Send + Sync>;
+type ToolHandler = Arc<dyn Fn(Value, ToolContext) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Value>> + Send>> + Send + Sync>;
 
 pub struct ToolRegistry {
     definitions: Vec<ToolDefinition>,
@@ -62,10 +88,25 @@ impl ToolRegistry {
         &self.definitions
     }
 
-    pub async fn execute(&self, tool_name: &str, input: Value, tool_use_id: String) -> ToolResult {
+    /// Definitions filtered to an allowlist. `None` means "no restriction" and
+    /// returns every registered tool. Used to give each agent type only the
+    /// tools its role is authorised to reach (see `AgentType::allowed_tools`).
+    pub fn definitions_allowed(&self, allowed: Option<&[&str]>) -> Vec<ToolDefinition> {
+        match allowed {
+            None => self.definitions.clone(),
+            Some(names) => self
+                .definitions
+                .iter()
+                .filter(|d| names.contains(&d.name.as_str()))
+                .cloned()
+                .collect(),
+        }
+    }
+
+    pub async fn execute(&self, tool_name: &str, input: Value, tool_use_id: String, ctx: ToolContext) -> ToolResult {
         match self.handlers.get(tool_name) {
             Some(handler) => {
-                match handler(input).await {
+                match handler(input, ctx).await {
                     Ok(result) => ToolResult { tool_use_id, content: result, is_error: false },
                     Err(e) => ToolResult {
                         tool_use_id,
@@ -164,7 +205,11 @@ impl ToolRegistry {
         );
 
         // ── get_shipment ──────────────────────────────────────────────
-        self.register(
+        // `/v1/shipments/:id` is JWT-protected (SHIPMENT_READ), so this tool
+        // presents the caller's own token. An unattended agent with no bearer
+        // gets a 401 from order-intake rather than silently reading data it has
+        // no authority for.
+        self.register_ctx(
             ToolDefinition {
                 name: "get_shipment".into(),
                 description: "Retrieve full shipment details including current status, history, and driver information.".into(),
@@ -179,13 +224,12 @@ impl ToolRegistry {
             {
                 let http = http.clone();
                 let url = urls.order_intake.clone();
-                move |input: Value| {
+                move |input: Value, ctx: ToolContext| {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
                         let id = input["shipment_id"].as_str().unwrap_or("");
-                        let resp = http
-                            .get(format!("{}/v1/shipments/{}", url, id))
+                        let resp = authed(http.get(format!("{}/v1/shipments/{}", url, id)), &ctx)
                             .send().await?
                             .json::<Value>().await?;
                         Ok(resp)
@@ -195,7 +239,9 @@ impl ToolRegistry {
         );
 
         // ── reschedule_delivery ───────────────────────────────────────
-        self.register(
+        // Mutating and JWT-protected (SHIPMENT_UPDATE) — same reasoning as
+        // get_shipment above.
+        self.register_ctx(
             ToolDefinition {
                 name: "reschedule_delivery".into(),
                 description: "Reschedule a failed delivery to the next available time slot.".into(),
@@ -211,14 +257,15 @@ impl ToolRegistry {
             {
                 let http = http.clone();
                 let url = urls.order_intake.clone();
-                move |input: Value| {
+                move |input: Value, ctx: ToolContext| {
                     let http = http.clone();
                     let url = url.clone();
                     Box::pin(async move {
                         let id = input["shipment_id"].as_str().unwrap_or("");
-                        let resp = http
-                            .post(format!("{}/v1/shipments/{}/reschedule", url, id))
-                            .json(&input)
+                        let resp = authed(
+                            http.post(format!("{}/v1/shipments/{}/reschedule", url, id)).json(&input),
+                            &ctx,
+                        )
                             .send().await?
                             .json::<Value>().await?;
                         Ok(resp)
@@ -800,6 +847,7 @@ impl ToolRegistry {
         );
     }
 
+    /// Register a tool whose handler does not need caller context.
     fn register<F, Fut>(&mut self, def: ToolDefinition, handler: F)
     where
         F: Fn(Value) -> Fut + Send + Sync + 'static,
@@ -809,7 +857,23 @@ impl ToolRegistry {
         self.definitions.push(def);
         self.handlers.insert(
             name,
-            Arc::new(move |input| Box::pin(handler(input))),
+            Arc::new(move |input, _ctx| Box::pin(handler(input))),
+        );
+    }
+
+    /// Register a tool whose handler needs the caller's `ToolContext` — i.e. it
+    /// calls a JWT-protected downstream endpoint and must present the caller's
+    /// own token so that service's authz and tenant isolation apply.
+    fn register_ctx<F, Fut>(&mut self, def: ToolDefinition, handler: F)
+    where
+        F: Fn(Value, ToolContext) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = anyhow::Result<Value>> + Send + 'static,
+    {
+        let name = def.name.clone();
+        self.definitions.push(def);
+        self.handlers.insert(
+            name,
+            Arc::new(move |input, ctx| Box::pin(handler(input, ctx))),
         );
     }
 }
