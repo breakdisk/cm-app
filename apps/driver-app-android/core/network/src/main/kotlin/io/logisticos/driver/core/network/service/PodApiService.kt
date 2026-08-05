@@ -54,6 +54,16 @@ data class SubmitPodRequest(
      *  Sent on submit as well as initiate because the pod service treats the
      *  submit-time value as authoritative when both are present. */
     @SerialName("device_timestamp")    val deviceTimestamp: String? = null,
+    /**
+     * Recipient's phone, denormalised from the driver's task record.
+     *
+     * Carried into `PodCaptured` and on into `ReconcileCodCommand`, where it is
+     * what lets engagement send the `cod_receipt` WhatsApp without a
+     * cross-service customer lookup. Sending it empty silently costs the
+     * customer their COD receipt, and nothing errors — the consumer just has no
+     * number to route to.
+     */
+    @SerialName("customer_phone")      val customerPhone: String = "",
 )
 
 @Serializable

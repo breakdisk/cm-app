@@ -137,6 +137,8 @@ class DeliveryRepository @Inject constructor(
         otpCode: String?,
         codCollectedCents: Long?,
         deviceTimestamp: String,
+        /** Recipient phone from the task record — routes the COD receipt WhatsApp. */
+        customerPhone: String = "",
         requiresPhoto: Boolean = true,
         requiresSignature: Boolean = true,
     ): String? {
@@ -240,6 +242,7 @@ class DeliveryRepository @Inject constructor(
                     codCollectedCents = codCollectedCents,
                     otpCode           = otpCode,
                     deviceTimestamp   = deviceTimestamp,
+                    customerPhone     = customerPhone,
                 )
             )
 

@@ -13,6 +13,7 @@ import io.logisticos.driver.core.database.MIGRATION_4_5
 import io.logisticos.driver.core.database.MIGRATION_5_6
 import io.logisticos.driver.core.database.MIGRATION_6_7
 import io.logisticos.driver.core.database.MIGRATION_7_8
+import io.logisticos.driver.core.database.MIGRATION_8_9
 import io.logisticos.driver.core.database.dao.*
 import javax.inject.Singleton
 
@@ -39,6 +40,7 @@ object DatabaseModule {
         Room.databaseBuilder(context, DriverDatabase::class.java, "driver_app.db")
             .addMigrations(
                 MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
+                MIGRATION_8_9,
             )
             .fallbackToDestructiveMigrationFrom(1, 2)
             .build()

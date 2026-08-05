@@ -217,11 +217,23 @@ class BoxMeasureViewModel @Inject constructor() : ViewModel() {
 
     fun onMeasurementComplete(l: Double, w: Double, h: Double, confidence: Double) {
         val matched = matchToStandardSize(l, w, h)
-        val integrity = if (confidence >= AR_CONFIDENCE_FLOOR)
-            MeasurementIntegrity.VERIFIED else MeasurementIntegrity.REVIEW
-        val reason = if (confidence < AR_CONFIDENCE_FLOOR)
-            "Low AR tracking confidence (${(confidence * 100).toInt()}%) — re-scan in brighter light against a flatter surface, or enter manually."
-        else null
+        // A measurement outside every standard box's tolerance is a real outcome,
+        // not a match failure to paper over. Flagging it for review keeps the POP
+        // dimensioning record honest — carrying the previous size forward would
+        // record a non-standard parcel as a verified standard one.
+        val nonStandard = matched == null
+        val integrity = when {
+            nonStandard -> MeasurementIntegrity.REVIEW
+            confidence >= AR_CONFIDENCE_FLOOR -> MeasurementIntegrity.VERIFIED
+            else -> MeasurementIntegrity.REVIEW
+        }
+        val reason = when {
+            nonStandard ->
+                "Measured ${"%.0f".format(l)}x${"%.0f".format(w)}x${"%.0f".format(h)} cm does not match a standard box size — confirm the dimensions or handle as non-standard."
+            confidence < AR_CONFIDENCE_FLOOR ->
+                "Low AR tracking confidence (${(confidence * 100).toInt()}%) — re-scan in brighter light against a flatter surface, or enter manually."
+            else -> null
+        }
         _uiState.update { it.copy(
             measuredL          = l,
             measuredW          = w,
@@ -230,6 +242,12 @@ class BoxMeasureViewModel @Inject constructor() : ViewModel() {
             arScanW            = w,
             arScanH            = h,
             arConfidence       = confidence,
+            // Retained on a non-match because matchedSizeId is non-nullable and
+            // feeds BoxSizeSelector and computeQuote, both of which require a
+            // value. The stale-size risk is covered by the REVIEW integrity flag
+            // and its reason above, so the condition is no longer silent — but
+            // modelling "no standard size" properly needs this to become
+            // nullable, which is a wider change than this fix.
             matchedSizeId      = matched?.id ?: it.matchedSizeId,
             tapCount           = 4,
             measureError       = null,

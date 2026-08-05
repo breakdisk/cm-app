@@ -9,7 +9,11 @@ plugins {
 android {
     namespace = "io.logisticos.driver.core.database"
     compileSdk = 35
-    defaultConfig { minSdk = 26 }
+    defaultConfig {
+        minSdk = 26
+        // Required for the Room DAO instrumented tests in src/androidTest.
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -46,4 +50,13 @@ dependencies {
     testImplementation(libs.room.testing)
     testImplementation(libs.robolectric)
     testImplementation(libs.workmanager.test)
+
+    // Room DAO tests run against a real SQLite engine, so they live in
+    // src/androidTest and use JUnit 4 + AndroidJUnitRunner rather than the
+    // JUnit 5 platform the JVM unit tests use.
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.room.runtime)
+    androidTestImplementation(libs.coroutines.test)
 }

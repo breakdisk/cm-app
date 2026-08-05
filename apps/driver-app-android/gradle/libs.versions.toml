@@ -22,6 +22,9 @@ turbine = "1.1.0"
 mockk = "1.13.12"
 junit5 = "5.10.3"
 robolectric = "4.13"
+androidx-test-core = "1.6.1"
+androidx-test-junit = "1.2.1"
+androidx-test-runner = "1.6.2"
 activity-compose = "1.9.3"
 lifecycle = "2.8.6"
 hilt-androidx = "1.2.0"
@@ -108,6 +111,10 @@ mockk-android = { group = "io.mockk", name = "mockk-android", version.ref = "moc
 turbine = { group = "app.cash.turbine", name = "turbine", version.ref = "turbine" }
 okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "okhttp" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
+# Instrumented-test support (androidTest source sets only)
+androidx-test-core = { group = "androidx.test", name = "core", version.ref = "androidx-test-core" }
+androidx-test-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidx-test-junit" }
+androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidx-test-runner" }
 room-testing = { group = "androidx.room", name = "room-testing", version.ref = "room" }
 compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
 compose-ui-test = { group = "androidx.compose.ui", name = "ui-test-junit4" }

@@ -115,6 +115,7 @@ class PodViewModelTest {
                 deliveryLat = capture(delLat), deliveryLng = capture(delLng),
                 photoPath = any(), signaturePath = any(), otpCode = any(),
                 codCollectedCents = any(), deviceTimestamp = any(),
+                customerPhone = any(),
                 requiresPhoto = any(), requiresSignature = any(),
             )
         } returns "pod-1"
@@ -143,6 +144,7 @@ class PodViewModelTest {
                 deliveryLat = any(), deliveryLng = any(),
                 photoPath = any(), signaturePath = any(), otpCode = any(),
                 codCollectedCents = any(), deviceTimestamp = capture(deviceTs),
+                customerPhone = any(),
                 requiresPhoto = any(), requiresSignature = any(),
             )
         } returns "pod-1"
@@ -168,6 +170,7 @@ class PodViewModelTest {
                 deliveryLat = any(), deliveryLng = any(),
                 photoPath = any(), signaturePath = any(), otpCode = any(),
                 codCollectedCents = any(), deviceTimestamp = any(),
+                customerPhone = any(),
                 requiresPhoto = any(), requiresSignature = any(),
             )
         } returns "pod-1"
@@ -182,6 +185,33 @@ class PodViewModelTest {
     }
 
     @Test
+    fun `submit forwards the recipient phone for COD receipt routing`() = runTest {
+        // Empty here means payments has no number to send the cod_receipt WhatsApp
+        // to, and nothing errors — the receipt is just silently never delivered.
+        vm.loadTaskMeta("t1")
+        coEvery { locationRepo.getLastKnownLocation() } returns LatLng(driverLat, driverLng)
+
+        val phone = slot<String>()
+        coEvery {
+            repo.submitPod(
+                taskId = any(), shipmentId = any(), recipientName = any(),
+                captureLat = any(), captureLng = any(),
+                deliveryLat = any(), deliveryLng = any(),
+                photoPath = any(), signaturePath = any(), otpCode = any(),
+                codCollectedCents = any(), deviceTimestamp = any(),
+                customerPhone = capture(phone),
+                requiresPhoto = any(), requiresSignature = any(),
+            )
+        } returns "pod-1"
+
+        vm.onPhotoCaptured("/path/photo.jpg")
+        vm.onSignatureSaved("/path/sig.png")
+        vm.submit("t1")
+
+        assertEquals("+639170000000", phone.captured)
+    }
+
+    @Test
     fun `submit is a no-op until required evidence is captured`() = runTest {
         vm.submit("t1")
         coVerify(exactly = 0) {
@@ -191,6 +221,7 @@ class PodViewModelTest {
                 deliveryLat = any(), deliveryLng = any(),
                 photoPath = any(), signaturePath = any(), otpCode = any(),
                 codCollectedCents = any(), deviceTimestamp = any(),
+                customerPhone = any(),
                 requiresPhoto = any(), requiresSignature = any(),
             )
         }

@@ -306,6 +306,9 @@ class OutboundSyncWorker @AssistedInject constructor(
                     SubmitPodRequest(
                         otpCode         = pod.otpToken,
                         deviceTimestamp = pod.deviceTimestamp,
+                        // Read back off the task rather than the POD row — it is
+                        // already there, so the offline replay needs no extra column.
+                        customerPhone   = task.recipientPhone,
                     )
                 )
 
