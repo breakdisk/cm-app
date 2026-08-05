@@ -102,7 +102,7 @@ class PodViewModelTest {
         // pairs, which reduced the server-side geofence to a self-comparison that
         // always measured 0 m and could never fail.
         vm.loadTaskMeta("t1")
-        coEvery { locationRepo.getLastKnownLocation() } returns LatLng(driverLat, driverLng)
+        coEvery { locationRepo.getCurrentOrLastKnownLocation() } returns LatLng(driverLat, driverLng)
 
         val capLat = slot<Double>()
         val capLng = slot<Double>()
@@ -134,7 +134,7 @@ class PodViewModelTest {
     @Test
     fun `submit sends an ISO-8601 device timestamp`() = runTest {
         vm.loadTaskMeta("t1")
-        coEvery { locationRepo.getLastKnownLocation() } returns LatLng(driverLat, driverLng)
+        coEvery { locationRepo.getCurrentOrLastKnownLocation() } returns LatLng(driverLat, driverLng)
 
         val deviceTs = slot<String>()
         coEvery {
@@ -160,7 +160,7 @@ class PodViewModelTest {
     @Test
     fun `submit falls back to the delivery address when there is no GPS fix`() = runTest {
         vm.loadTaskMeta("t1")
-        coEvery { locationRepo.getLastKnownLocation() } returns null
+        coEvery { locationRepo.getCurrentOrLastKnownLocation() } returns null
 
         val capLat = slot<Double>()
         coEvery {
@@ -189,7 +189,7 @@ class PodViewModelTest {
         // Empty here means payments has no number to send the cod_receipt WhatsApp
         // to, and nothing errors — the receipt is just silently never delivered.
         vm.loadTaskMeta("t1")
-        coEvery { locationRepo.getLastKnownLocation() } returns LatLng(driverLat, driverLng)
+        coEvery { locationRepo.getCurrentOrLastKnownLocation() } returns LatLng(driverLat, driverLng)
 
         val phone = slot<String>()
         coEvery {

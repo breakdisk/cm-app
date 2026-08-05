@@ -208,7 +208,15 @@ class PodViewModel @Inject constructor(
 
         viewModelScope.launch {
             _uiState.update { it.copy(isSubmitting = true, error = null) }
-            val loc = locationRepo.getLastKnownLocation()
+            // Requests a fresh fix (balanced-power, works indoors, ~1-2 s) before
+            // falling back to the cached one. getLastKnownLocation alone returns
+            // whatever is in the cache — often stale or absent right after the
+            // driver walks inside — and that matters more here than anywhere else:
+            // PodService.initiate is idempotent per shipment, so the geofence and
+            // OUT_OF_BOUNDS_HANDOVER verdicts are computed once, from this call,
+            // and every later retry returns the stored result. A bad fix at this
+            // moment is therefore permanent, not merely a bad first attempt.
+            val loc = locationRepo.getCurrentOrLastKnownLocation()
             // Live GPS is the capture position. The task coordinates are the
             // geofence anchor and are passed separately below — they are NOT a
             // substitute for the driver's position, because sending the address

@@ -117,7 +117,10 @@ class PickupViewModel @Inject constructor(
             // Use real GPS when available; fall back to task coordinates when device
             // has no fix (cold start, GPS blocked indoors). The backend geofence gate
             // is the authoritative accuracy check — we just provide the best fix we have.
-            val loc = locationRepo.getLastKnownLocation()
+            // Fresh fix first — same reasoning as PodViewModel: initiatePop is
+            // idempotent, so this call's position is what the POP's geofence and
+            // OUT_OF_BOUNDS_HANDOVER flags are computed from, permanently.
+            val loc = locationRepo.getCurrentOrLastKnownLocation()
             val captureLat = loc?.lat?.takeIf { it != 0.0 } ?: task.lat
             val captureLng = loc?.lng?.takeIf { it != 0.0 } ?: task.lng
             runCatching {

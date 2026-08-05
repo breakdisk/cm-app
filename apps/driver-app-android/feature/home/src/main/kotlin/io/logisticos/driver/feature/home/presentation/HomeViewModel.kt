@@ -481,7 +481,7 @@ class HomeViewModel @Inject constructor(
      * driver_ops.driver_locations up-to-date while a shift is running.
      *
      * The foreground service emits on every location callback (adaptive
-     * interval: ~5 s moving, ~60 s stationary).  The ViewModel's own 60 s
+     * interval: 5 s moving, 15 s slow, 30 s stationary).  The ViewModel's own 60 s
      * heartbeat remains as a fallback for when the service isn't running.
      */
     private fun collectLocationUpdates() {
