@@ -13,6 +13,7 @@ import io.logisticos.driver.core.database.entity.ShiftEntity
 import io.logisticos.driver.core.database.entity.SyncAction
 import io.logisticos.driver.core.database.entity.SyncQueueEntity
 import io.logisticos.driver.core.database.worker.OutboundSyncWorker
+import io.logisticos.driver.core.database.worker.SyncRecovery
 import io.logisticos.driver.core.location.LocationRepository
 import io.logisticos.driver.core.network.service.ComplianceApiService
 import io.logisticos.driver.core.network.service.DriverOpsApiService
@@ -122,6 +123,8 @@ class HomeViewModel @Inject constructor(
     private val identityApi:   io.logisticos.driver.core.network.service.IdentityApiService,
     private val locationRepo:  LocationRepository,
     private val syncQueueDao:  SyncQueueDao,
+    /** Recovers tasks the sync worker abandoned — see [retrySyncNow]. */
+    private val syncRecovery:  SyncRecovery,
     private val sessionManager: io.logisticos.driver.core.network.auth.SessionManager,
 ) : ViewModel() {
 
@@ -745,9 +748,14 @@ class HomeViewModel @Inject constructor(
     fun retrySyncNow() {
         viewModelScope.launch {
             syncQueueDao.resetAllBackoff()
+            // Backoff reset alone cannot reach tasks the worker gave up on — their
+            // queue items were removed. SyncRecovery re-enqueues those.
+            runCatching { syncRecovery.requeueAbandonedTasks() }
+                .onFailure { android.util.Log.w("HomeViewModel", "Re-queue failed: ${it.message}") }
             OutboundSyncWorker.kickOnce(context)
         }
     }
+
 
     override fun onCleared() {
         stopLocationHeartbeat()

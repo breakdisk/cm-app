@@ -6,18 +6,25 @@ import androidx.test.core.app.ApplicationProvider
 import io.logisticos.driver.core.database.DriverDatabase
 import io.logisticos.driver.core.database.entity.TaskEntity
 import io.logisticos.driver.core.database.entity.TaskStatus
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
-import org.junit.jupiter.api.AfterEach
-import org.junit.jupiter.api.BeforeEach
-import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.Assertions.*
+import org.junit.After
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.junit.Assert.*
 
+/**
+ * Instrumented test — see [SyncQueueDaoTest] for why this lives in androidTest
+ * and how to run it.
+ */
+@RunWith(AndroidJUnit4::class)
 class TaskDaoTest {
     private lateinit var db: DriverDatabase
     private lateinit var dao: TaskDao
 
-    @BeforeEach fun setUp() {
+    @Before fun setUp() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         db = Room.inMemoryDatabaseBuilder(context, DriverDatabase::class.java)
             .allowMainThreadQueries()
@@ -25,7 +32,7 @@ class TaskDaoTest {
         dao = db.taskDao()
     }
 
-    @AfterEach fun tearDown() { db.close() }
+    @After fun tearDown() { db.close() }
 
     @Test
     fun `insert and retrieve task by id`() = runTest {

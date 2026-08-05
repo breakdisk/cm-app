@@ -83,6 +83,9 @@ class ArrivalViewModel @Inject constructor(
         signaturePath: String? = null,
         otpCode: String? = null,
         codCollectedCents: Long? = null,
+        /** Recipient phone from the task — routes the COD receipt WhatsApp.
+         *  Kept in step with PodViewModel so the two POD paths stay equivalent. */
+        customerPhone: String = "",
         onDone: (podId: String?) -> Unit
     ) {
         // Hardware clock at the confirmation tap, before the coroutine dispatches.
@@ -102,6 +105,7 @@ class ArrivalViewModel @Inject constructor(
                 otpCode = otpCode,
                 codCollectedCents = codCollectedCents,
                 deviceTimestamp = deviceTimestamp,
+                customerPhone = customerPhone,
             )
             _uiState.update { it.copy(isSubmittingPod = false, podSubmitted = true, podId = podId) }
             onDone(podId)

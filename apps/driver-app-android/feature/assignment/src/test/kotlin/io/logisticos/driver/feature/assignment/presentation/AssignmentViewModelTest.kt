@@ -6,12 +6,30 @@ import io.logisticos.driver.feature.assignment.data.AssignmentRepository
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.*
 import org.junit.jupiter.api.*
 import org.junit.jupiter.api.Assertions.*
 
+/**
+ * Note on why these tests do not assert on the transient `isAccepting` /
+ * `isRejecting` state by simply calling `awaitItem()` twice.
+ *
+ * `Dispatchers.Main` is an `UnconfinedTestDispatcher`, so `accept()`'s coroutine
+ * runs eagerly and, when the repository mock returns immediately, completes
+ * before the call returns. `_uiState` is a `MutableStateFlow`, which conflates:
+ * by the time the test resumes, the loading value has already been overwritten
+ * by the terminal one and was never emitted to a collector. The previous version
+ * of this file awaited it anyway, so it read the terminal state as if it were
+ * the loading state ("expected true but was false") and then blocked forever
+ * waiting for an item that had already been superseded.
+ *
+ * Where the in-flight state genuinely matters it is tested by suspending the
+ * repository on a [CompletableDeferred], which holds the coroutine open so the
+ * intermediate state is actually observable.
+ */
 @OptIn(ExperimentalCoroutinesApi::class)
 class AssignmentViewModelTest {
 
@@ -36,83 +54,99 @@ class AssignmentViewModelTest {
     @AfterEach fun tearDown() { Dispatchers.resetMain() }
 
     @Test
-    fun `initial state populates from payload`() = runTest {
-        vm.uiState.test {
-            val state = awaitItem()
-            assertEquals("asgn-1", state.assignmentId)
-            assertEquals("Juan dela Cruz", state.customerName)
-            assertEquals("delivery", state.taskType)
-            assertEquals(50_000L, state.codAmountCents)
-            assertFalse(state.isAccepting)
-            assertFalse(state.isRejecting)
-            assertNull(state.error)
-            assertFalse(state.isDone)
-        }
+    fun `initial state populates from payload`() = runTest(testDispatcher.scheduler) {
+        val state = vm.uiState.value
+        assertEquals("asgn-1", state.assignmentId)
+        assertEquals("ship-1", state.shipmentId)
+        assertEquals("Juan dela Cruz", state.customerName)
+        assertEquals("delivery", state.taskType)
+        assertEquals(50_000L, state.codAmountCents)
+        assertFalse(state.isAccepting)
+        assertFalse(state.isRejecting)
+        assertNull(state.error)
+        assertFalse(state.isDone)
     }
 
     @Test
-    fun `accept sets isDone on success`() = runTest {
+    fun `accept sets isDone on success`() = runTest(testDispatcher.scheduler) {
         coEvery { repo.accept("asgn-1") } returns Result.success(Unit)
 
+        vm.accept()
+
+        val state = vm.uiState.value
+        assertTrue(state.isDone)
+        assertFalse(state.isAccepting)
+        assertNull(state.error)
+    }
+
+    @Test
+    fun `accept sets error on failure and does not mark done`() = runTest(testDispatcher.scheduler) {
+        coEvery { repo.accept("asgn-1") } returns Result.failure(RuntimeException("network error"))
+
+        vm.accept()
+
+        val state = vm.uiState.value
+        assertEquals("network error", state.error)
+        assertFalse(state.isAccepting)
+        // The offer must stay actionable so the driver can retry rather than
+        // having the screen dismiss itself on a failed accept.
+        assertFalse(state.isDone)
+    }
+
+    @Test
+    fun `accept exposes isAccepting while the call is in flight`() = runTest(testDispatcher.scheduler) {
+        val gate = CompletableDeferred<Result<Unit>>()
+        coEvery { repo.accept("asgn-1") } coAnswers { gate.await() }
+
         vm.uiState.test {
-            awaitItem() // initial
+            assertFalse(awaitItem().isAccepting)   // initial
+
             vm.accept()
-            val loading = awaitItem()
-            assertTrue(loading.isAccepting)
+            assertTrue(awaitItem().isAccepting)    // held open by the gate
+
+            gate.complete(Result.success(Unit))
             val done = awaitItem()
             assertTrue(done.isDone)
             assertFalse(done.isAccepting)
+            cancelAndIgnoreRemainingEvents()
         }
     }
 
     @Test
-    fun `accept sets error on failure`() = runTest {
-        coEvery { repo.accept("asgn-1") } returns Result.failure(RuntimeException("network error"))
-
-        vm.uiState.test {
-            awaitItem()
-            vm.accept()
-            awaitItem() // loading
-            val error = awaitItem()
-            assertFalse(error.isAccepting)
-            assertEquals("network error", error.error)
-            assertFalse(error.isDone)
-        }
-    }
-
-    @Test
-    fun `reject sets isDone on success`() = runTest {
+    fun `reject sets isDone on success`() = runTest(testDispatcher.scheduler) {
         coEvery { repo.reject("asgn-1", any()) } returns Result.success(Unit)
 
-        vm.uiState.test {
-            awaitItem()
-            vm.reject("CUSTOMER_ABSENT")
-            val loading = awaitItem()
-            assertTrue(loading.isRejecting)
-            val done = awaitItem()
-            assertTrue(done.isDone)
-            assertFalse(done.isRejecting)
-        }
+        vm.reject("CUSTOMER_ABSENT")
+
+        val state = vm.uiState.value
+        assertTrue(state.isDone)
+        assertFalse(state.isRejecting)
     }
 
     @Test
-    fun `reject sets error on failure`() = runTest {
+    fun `reject sets error on failure`() = runTest(testDispatcher.scheduler) {
         coEvery { repo.reject("asgn-1", any()) } returns Result.failure(RuntimeException("timeout"))
 
-        vm.uiState.test {
-            awaitItem()
-            vm.reject("OTHER")
-            awaitItem() // loading
-            val error = awaitItem()
-            assertEquals("timeout", error.error)
-            assertFalse(error.isDone)
-        }
+        vm.reject("OTHER")
+
+        val state = vm.uiState.value
+        assertEquals("timeout", state.error)
+        assertFalse(state.isDone)
     }
 
     @Test
-    fun `accept calls repo with correct assignmentId`() = runTest {
+    fun `reject forwards the selected reason`() = runTest(testDispatcher.scheduler) {
+        coEvery { repo.reject("asgn-1", "CUSTOMER_ABSENT") } returns Result.success(Unit)
+
+        vm.reject("CUSTOMER_ABSENT")
+
+        coVerify(exactly = 1) { repo.reject("asgn-1", "CUSTOMER_ABSENT") }
+    }
+
+    @Test
+    fun `accept calls repo with correct assignmentId`() = runTest(testDispatcher.scheduler) {
         coEvery { repo.accept("asgn-1") } returns Result.success(Unit)
         vm.accept()
-        coVerify { repo.accept("asgn-1") }
+        coVerify(exactly = 1) { repo.accept("asgn-1") }
     }
 }

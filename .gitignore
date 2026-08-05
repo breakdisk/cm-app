@@ -105,3 +105,5 @@ android_key_password.txt
 android_keystore_password.txt
 # Local crash dumps can contain tokens and PII
 crash.txt
+# Kotlin compiler daemon session files (build noise)
+.kotlin/

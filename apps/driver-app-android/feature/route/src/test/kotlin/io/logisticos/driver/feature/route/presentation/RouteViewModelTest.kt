@@ -1,8 +1,10 @@
 package io.logisticos.driver.feature.route.presentation
 
 import app.cash.turbine.test
+import io.logisticos.driver.core.database.dao.ShiftDao
 import io.logisticos.driver.core.database.entity.TaskEntity
 import io.logisticos.driver.core.database.entity.TaskStatus
+import io.logisticos.driver.core.network.service.PodApiService
 import io.logisticos.driver.feature.route.data.RouteRepository
 import io.mockk.every
 import io.mockk.mockk
@@ -17,6 +19,8 @@ import org.junit.jupiter.api.Assertions.*
 class RouteViewModelTest {
     private val testDispatcher = UnconfinedTestDispatcher()
     private val repo: RouteRepository = mockk(relaxed = true)
+    private val shiftDao: ShiftDao = mockk(relaxed = true)
+    private val podApi: PodApiService = mockk(relaxed = true)
     private lateinit var vm: RouteViewModel
 
     private fun makeTask(id: String, order: Int, status: TaskStatus = TaskStatus.ASSIGNED) =
@@ -51,7 +55,15 @@ class RouteViewModelTest {
                 makeTask("t3", 3, TaskStatus.COMPLETED)
             )
         )
-        vm = RouteViewModel(repo, "s1")
+        // RouteViewModel gained shiftDao and podApi; shiftId is the @Assisted arg
+        // and stays last. Neither new collaborator is exercised by these tests, so
+        // relaxed mocks are enough.
+        vm = RouteViewModel(
+            repo = repo,
+            shiftDao = shiftDao,
+            podApi = podApi,
+            shiftId = "s1",
+        )
     }
 
     @AfterEach

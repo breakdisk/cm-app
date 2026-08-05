@@ -63,6 +63,27 @@ val MIGRATION_7_8 = object : Migration(7, 8) {
     }
 }
 
+/**
+ * Splits sync failure out of `status` into its own column.
+ *
+ * `markSyncFailed` used to write `status = 'FAILED_SYNC'`, which overwrote the
+ * lifecycle value — destroying the record that the task had reached COMPLETED —
+ * and, because the state machine treats FAILED_SYNC as terminal, left the task
+ * permanently inert with no route back.
+ *
+ * Existing rows are rewritten to COMPLETED with the flag set: every caller of
+ * `markSyncFailed` runs after the task has already been completed locally, so
+ * COMPLETED is the state those rows were in before the status was clobbered.
+ */
+val MIGRATION_8_9 = object : Migration(8, 9) {
+    override fun migrate(database: SupportSQLiteDatabase) {
+        database.execSQL("ALTER TABLE tasks ADD COLUMN sync_failed INTEGER NOT NULL DEFAULT 0")
+        database.execSQL(
+            "UPDATE tasks SET sync_failed = 1, status = 'COMPLETED' WHERE status = 'FAILED_SYNC'"
+        )
+    }
+}
+
 @TypeConverters(Converters::class)
 @Database(
     entities = [
@@ -75,7 +96,7 @@ val MIGRATION_7_8 = object : Migration(7, 8) {
         SyncQueueEntity::class,
         NotificationEntity::class,
     ],
-    version = 8,
+    version = 9,
     exportSchema = true
 )
 abstract class DriverDatabase : RoomDatabase() {

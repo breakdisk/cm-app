@@ -3,6 +3,7 @@ package io.logisticos.driver.feature.home.presentation
 import android.content.Context
 import app.cash.turbine.test
 import io.logisticos.driver.core.database.dao.SyncQueueDao
+import io.logisticos.driver.core.database.worker.SyncRecovery
 import io.logisticos.driver.core.database.entity.ShiftEntity
 import io.logisticos.driver.core.location.LocationRepository
 import io.logisticos.driver.core.network.auth.SessionManager
@@ -15,6 +16,7 @@ import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.*
@@ -31,6 +33,7 @@ class HomeViewModelTest {
     private val identityApi:   IdentityApiService   = mockk(relaxed = true)
     private val locationRepo:  LocationRepository   = mockk(relaxed = true)
     private val syncQueueDao:  SyncQueueDao         = mockk(relaxed = true)
+    private val syncRecovery:  SyncRecovery         = mockk(relaxed = true)
     private val sessionManager: SessionManager      = mockk(relaxed = true)
     private val context:       Context              = mockk(relaxed = true)
 
@@ -44,6 +47,16 @@ class HomeViewModelTest {
         every { syncQueueDao.getPendingCount() } returns flowOf(0)
         every { sessionManager.isHubScanner() } returns false
         every { sessionManager.getHubId() } returns null
+        // Must be a real SharedFlow, not the relaxed default. HomeViewModel's init
+        // collects this, and SharedFlow.collect is declared to return `Nothing`;
+        // a relaxed mock returns normally, so the compiler-inserted check fires
+        // KotlinNothingValueException inside init. That escapes as an uncaught
+        // coroutine exception and every test then dies with
+        // UncaughtExceptionsBeforeTest, which names neither the cause nor the site.
+        // An empty MutableSharedFlow suspends forever, which is what the real one does.
+        every { locationRepo.locationUpdates } returns MutableSharedFlow()
+        // Availability-mode default: no active shift unless a test says otherwise.
+        coEvery { repo.getActiveShiftId() } returns null
         vm = HomeViewModel(
             context      = context,
             repo         = repo,
@@ -52,6 +65,7 @@ class HomeViewModelTest {
             identityApi  = identityApi,
             locationRepo = locationRepo,
             syncQueueDao = syncQueueDao,
+            syncRecovery = syncRecovery,
             sessionManager = sessionManager,
         )
     }
@@ -78,6 +92,7 @@ class HomeViewModelTest {
             identityApi  = identityApi,
             locationRepo = locationRepo,
             syncQueueDao = syncQueueDao,
+            syncRecovery = syncRecovery,
             sessionManager = sessionManager,
         )
         failVm.uiState.test {
@@ -98,6 +113,7 @@ class HomeViewModelTest {
             identityApi  = identityApi,
             locationRepo = locationRepo,
             syncQueueDao = syncQueueDao,
+            syncRecovery = syncRecovery,
             sessionManager = sessionManager,
         )
         hubVm.uiState.test {

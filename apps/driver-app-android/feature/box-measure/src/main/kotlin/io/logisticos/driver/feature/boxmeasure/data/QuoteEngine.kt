@@ -63,11 +63,52 @@ private fun phpToOrigin(phpAmount: Double, currency: String): Double {
 
 data class ProvinceEntry(val province: String, val zoneCode: String)
 
+/**
+ * Shortest prefix accepted for a fuzzy province match.
+ *
+ * Below this, prefixes are not discriminating: "b" alone is a prefix of
+ * batangas, baguio, benguet, bulacan and bacolod, which span four different
+ * delivery zones. Requiring a few characters means a partial entry either
+ * resolves to something defensible or resolves to nothing.
+ */
+private const val MIN_PREFIX_LEN = 4
+
+/**
+ * Resolves free-text province input to a delivery zone.
+ *
+ * Returns null rather than guessing when the input is short or ambiguous. The
+ * previous implementation fell back to `it.province.startsWith(q)` with no length
+ * floor and took the first list hit, so a partially-typed province silently
+ * priced a different zone: "ba" on the way to *Bacolod* (Zone 5C) matched
+ * **Batangas** (Zone 2B) — roughly a 31 % error on a small box, shown to the user
+ * as a settled figure with nothing to indicate it was a guess.
+ *
+ * Matching order:
+ *  1. exact name
+ *  2. the query starting with a full province name ("davao del sur" -> davao),
+ *     longest name first so "cebu city" cannot be captured by "cebu"
+ *  3. a query of at least [MIN_PREFIX_LEN] chars prefixing exactly one province
+ */
 fun resolveProvince(input: String): ProvinceEntry? {
     val q = input.lowercase().trim()
     if (q.isEmpty()) return null
-    return PROVINCE_MAP.find { it.province.lowercase() == q }
-        ?: PROVINCE_MAP.find { q.startsWith(it.province.lowercase()) || it.province.lowercase().startsWith(q) }
+
+    PROVINCE_MAP.find { it.province.lowercase() == q }?.let { return it }
+
+    // Longest-first so a more specific entry wins over a shorter one it contains.
+    PROVINCE_MAP
+        .filter { q.startsWith(it.province.lowercase()) }
+        .maxByOrNull { it.province.length }
+        ?.let { return it }
+
+    if (q.length < MIN_PREFIX_LEN) return null
+
+    // Ambiguous prefixes resolve to nothing: silently picking one zone over
+    // another is worse than declining to price, because the caller cannot tell
+    // a guess from a match.
+    val prefixHits = PROVINCE_MAP.filter { it.province.lowercase().startsWith(q) }
+    val zones = prefixHits.map { it.zoneCode }.distinct()
+    return if (prefixHits.isNotEmpty() && zones.size == 1) prefixHits.first() else null
 }
 
 // ── CBM helpers ────────────────────────────────────────────────────────────────
@@ -90,10 +131,31 @@ fun computeVolumetricWeight(l: Double, w: Double, h: Double, divisor: Double = V
     return ((l * w * h) / divisor * 10).roundToInt() / 10.0
 }
 
+/**
+ * How far a measurement may sit from a standard box's CBM and still be called
+ * that box. 0.5 means "within 50 % of the nominal volume".
+ *
+ * A tolerance is required because [BOX_SIZES] is bounded: nearest-match alone
+ * maps *any* volume, however large, onto Jumbo. That matters beyond the quote —
+ * the matched size is carried into the POP dimensioning record, so an unbounded
+ * match records a 2 m crate as a verified Jumbo and the anti-fraud check it
+ * feeds becomes decorative.
+ */
+private const val SIZE_MATCH_TOLERANCE = 0.5
+
+/**
+ * Nearest standard box for a measurement, or null when nothing is close enough.
+ *
+ * Null means "non-standard, needs manual handling" — which is a real outcome the
+ * caller must be able to distinguish from a confident match.
+ */
 fun matchToStandardSize(l: Double, w: Double, h: Double): BoxSize? {
     val measured = computeCbm(l, w, h)
-    if (measured == 0.0) return null
-    return BOX_SIZES.minByOrNull { kotlin.math.abs(it.cbm - measured) }
+    if (measured <= 0.0) return null
+    val nearest = BOX_SIZES.minByOrNull { kotlin.math.abs(it.cbm - measured) } ?: return null
+    if (nearest.cbm <= 0.0) return null
+    val deviation = kotlin.math.abs(nearest.cbm - measured) / nearest.cbm
+    return if (deviation <= SIZE_MATCH_TOLERANCE) nearest else null
 }
 
 // ── Main compute function ──────────────────────────────────────────────────────

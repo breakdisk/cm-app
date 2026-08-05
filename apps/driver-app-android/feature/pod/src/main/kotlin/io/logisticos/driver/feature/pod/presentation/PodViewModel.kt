@@ -243,6 +243,9 @@ class PodViewModel @Inject constructor(
                     signaturePath = state.signaturePath,
                     otpCode = state.otpToken,
                     deviceTimestamp = deviceTimestamp,
+                    // Already loaded for the OTP send; forwarding it here is what
+                    // gives payments a number to send the COD receipt to.
+                    customerPhone = state.recipientPhone,
                     codCollectedCents = if (state.isCod && state.codCollected) {
                         val partial = state.partialCodAmountInput.toDoubleOrNull()
                         if (partial != null && partial > 0.0) (partial * 100).toLong()

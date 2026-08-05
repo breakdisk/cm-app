@@ -305,9 +305,13 @@ private fun TaskStopCardBody(
             val syncBadgeColor: Color?
             val syncBadgeLabel: String?
             when {
-                task.status == TaskStatus.FAILED_SYNC -> {
+                // Reads the dedicated flag, not status — status now stays truthful
+                // about the task's own lifecycle. Wording points at Retry because
+                // that path can actually recover these now: it re-enqueues the
+                // abandoned sync item instead of only resetting queue backoff.
+                task.syncFailed -> {
                     syncBadgeColor = Red
-                    syncBadgeLabel = "Sync failed — contact support"
+                    syncBadgeLabel = "Sync failed — tap Retry on Home"
                 }
                 task.status == TaskStatus.COMPLETED && !task.isSynced -> {
                     syncBadgeColor = Amber

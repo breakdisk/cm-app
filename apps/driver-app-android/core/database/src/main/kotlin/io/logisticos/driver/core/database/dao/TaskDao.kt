@@ -49,11 +49,26 @@ interface TaskDao {
     @Query("SELECT * FROM tasks WHERE id = :taskId LIMIT 1")
     fun getByIdAsFlow(taskId: String): Flow<TaskEntity?>
 
-    @Query("UPDATE tasks SET isSynced = 1 WHERE id = :taskId")
+    @Query("UPDATE tasks SET isSynced = 1, sync_failed = 0 WHERE id = :taskId")
     suspend fun markSynced(taskId: String)
 
-    @Query("UPDATE tasks SET isSynced = 0, status = 'FAILED_SYNC' WHERE id = :taskId")
+    /**
+     * Flag that the task's evidence exhausted its sync retry window.
+     *
+     * Deliberately leaves `status` alone. The previous version wrote
+     * `status = 'FAILED_SYNC'`, which erased the fact that the task had reached
+     * COMPLETED and — because the state machine treats that value as terminal —
+     * made the task permanently un-actionable with no recovery path.
+     */
+    @Query("UPDATE tasks SET isSynced = 0, sync_failed = 1 WHERE id = :taskId")
     suspend fun markSyncFailed(taskId: String)
+
+    /** Tasks abandoned by the sync worker — the driver-facing Retry re-enqueues these. */
+    @Query("SELECT * FROM tasks WHERE sync_failed = 1")
+    suspend fun getSyncFailed(): List<TaskEntity>
+
+    @Query("UPDATE tasks SET sync_failed = 0 WHERE id = :taskId")
+    suspend fun clearSyncFailed(taskId: String)
 
     @Query("UPDATE tasks SET status = :status, isSynced = :isSynced WHERE id = :taskId")
     suspend fun updateStatusWithSync(taskId: String, status: TaskStatus, isSynced: Boolean)

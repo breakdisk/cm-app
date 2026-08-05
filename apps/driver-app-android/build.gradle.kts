@@ -29,12 +29,26 @@ subprojects {
     tasks.withType<Test>().configureEach {
         useJUnitPlatform()
     }
-    // The engine is a runtime-only dependency, which a version-catalog bundle
-    // cannot express — hence adding it here rather than in `testing-unit`.
     plugins.withId("com.android.base") {
+        // The engine is a runtime-only dependency, which a version-catalog bundle
+        // cannot express — hence adding it here rather than in `testing-unit`.
         dependencies.add(
             "testRuntimeOnly",
             "org.junit.jupiter:junit-jupiter-engine:$junit5Version",
         )
+        extensions.configure<com.android.build.gradle.BaseExtension>("android") {
+            testOptions.unitTests.apply {
+                // Unit tests compile against a stub android.jar whose methods throw
+                // RuntimeException("Stub!"). android.util.Log is the one that bites:
+                // any production code path logging on its way through a test blows up
+                // the calling coroutine, surfacing as UncaughtExceptionsBeforeTest or
+                // a silently skipped call rather than anything pointing at logging.
+                // Returning defaults makes Log a no-op, which is what these tests want.
+                isReturnDefaultValues = true
+                // Surface failures in the Gradle console instead of only in the
+                // HTML report, so CI logs are diagnosable without downloading it.
+                all { it.testLogging { events("failed", "skipped") } }
+            }
+        }
     }
 }
