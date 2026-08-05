@@ -148,6 +148,42 @@ impl TenantCode {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Derives the 3-char AWB/invoice tenant code from a tenant slug.
+    ///
+    /// Takes the first three characters that are valid in the AWB charset —
+    /// alphanumeric excluding `O` and `I`, which are excluded platform-wide to
+    /// prevent transcription errors against `0` and `1`.
+    ///
+    /// Returns `None` when the slug yields fewer than three usable characters,
+    /// so callers must decide what to do rather than silently shipping a
+    /// malformed code.
+    ///
+    /// This exists because the same derivation was open-coded in three places in
+    /// order-intake and needed by the pod service too; a tenant code that differs
+    /// between the service issuing an AWB and the service numbering the invoice
+    /// silently splits one tenant's records across two sequences.
+    ///
+    /// # Examples
+    /// ```
+    /// use logisticos_types::awb::TenantCode;
+    ///
+    /// assert_eq!(TenantCode::from_slug("ph1-manila").unwrap().as_str(), "PH1");
+    /// // O and I are skipped in either case, not transliterated.
+    /// assert_eq!(TenantCode::from_slug("oslo-sg1").unwrap().as_str(), "SLS");
+    /// // Fewer than three usable characters yields None rather than a short code.
+    /// assert!(TenantCode::from_slug("ab").is_none());
+    /// ```
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        let code: String = slug
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() && *c != 'O' && *c != 'I'
+                && *c != 'o' && *c != 'i')
+            .take(3)
+            .collect::<String>()
+            .to_uppercase();
+        Self::new(&code).ok()
+    }
 }
 
 impl fmt::Display for TenantCode {

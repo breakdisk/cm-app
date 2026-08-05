@@ -4,6 +4,7 @@ use uuid::Uuid;
 use logisticos_auth::middleware::AuthClaims;
 use logisticos_errors::AppError;
 use logisticos_types::{DriverId, TenantId};
+use logisticos_types::awb::TenantCode;
 use crate::{
     api::http::AppState,
     application::commands::*,
@@ -99,7 +100,25 @@ pub async fn submit(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let driver_id = DriverId::from_uuid(claims.user_id);
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
-    let cmd = SubmitPodCommand { pod_id, ..cmd };
+    // Derive the invoice tenant code from the JWT when the client omits it.
+    //
+    // The driver app cannot supply this: it holds a tenant UUID and slug, never
+    // the 3-char code. It therefore always arrived empty, and payments'
+    // pod_consumer fell back to a hardcoded "PH1" — numbering every tenant's
+    // customer-booked receipts under PH1's sequence. Deriving it here from the
+    // same slug order-intake uses for the AWB keeps a tenant's tracking numbers
+    // and its invoice numbers on the same code.
+    let cmd = SubmitPodCommand {
+        pod_id,
+        tenant_code: if cmd.tenant_code.is_empty() {
+            TenantCode::from_slug(&claims.tenant_slug)
+                .map(|c| c.to_string())
+                .unwrap_or_default()
+        } else {
+            cmd.tenant_code
+        },
+        ..cmd
+    };
     let pod_id = state.pod_service.submit(&driver_id, &tenant_id, cmd).await?;
     Ok(Json(serde_json::json!({ "data": { "pod_id": pod_id, "status": "submitted" } })))
 }
@@ -193,8 +212,17 @@ pub async fn submit_pickup(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let driver_id   = DriverId::from_uuid(claims.user_id);
     let tenant_id   = TenantId::from_uuid(claims.tenant_id);
-    let tenant_code = cmd.tenant_code.clone();
-    let cmd = SubmitPickupCommand { pop_id, ..cmd };
+    // Same derivation as `submit` — the driver app has no 3-char code to send, so
+    // without this the Track A/B invoice raised from PickupCaptured is numbered
+    // under whatever fallback the payments consumer applies.
+    let tenant_code = if cmd.tenant_code.is_empty() {
+        TenantCode::from_slug(&claims.tenant_slug)
+            .map(|c| c.to_string())
+            .unwrap_or_default()
+    } else {
+        cmd.tenant_code.clone()
+    };
+    let cmd = SubmitPickupCommand { pop_id, tenant_code: tenant_code.clone(), ..cmd };
 
     let pop_id = state.pod_service
         .submit_pickup(&driver_id, &tenant_id, cmd, tenant_code)
