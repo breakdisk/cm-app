@@ -12,6 +12,7 @@ members = [
     "libs/events",
     "libs/geo",
     "libs/ai-client",
+    "libs/agent-runtime",
 
     # Microservices
     "services/identity",

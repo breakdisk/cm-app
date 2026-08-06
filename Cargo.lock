@@ -2792,6 +2792,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "logisticos-agent-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "logisticos-errors",
+ "logisticos-types",
+ "reqwest 0.11.27",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "logisticos-ai-client"
 version = "0.1.0"
 dependencies = [
