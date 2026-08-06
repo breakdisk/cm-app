@@ -6,7 +6,7 @@
 
 // Modules are declared as each is written, so every task's tests can run
 // before its siblings exist. All six are live by the end of Task 7.
-// pub mod claude;
+pub mod claude;
 pub mod role;
 // pub mod runner;
 pub mod session;
