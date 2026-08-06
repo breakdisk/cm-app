@@ -9,7 +9,7 @@
 // pub mod claude;
 pub mod role;
 // pub mod runner;
-// pub mod session;
+pub mod session;
 // pub mod store;
 // pub mod tools;
 
