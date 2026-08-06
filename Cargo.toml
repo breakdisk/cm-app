@@ -19,6 +19,7 @@ members = [
     "services/cdp",
     "services/engagement",
     "services/order-intake",
+    "services/omnideliv",
     "services/dispatch",
     "services/driver-ops",
     "services/compliance",

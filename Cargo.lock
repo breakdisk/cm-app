@@ -3456,6 +3456,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "logisticos-omnideliv"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum 0.7.9",
+ "chrono",
+ "config",
+ "dotenvy",
+ "logisticos-auth",
+ "logisticos-common",
+ "logisticos-errors",
+ "logisticos-events",
+ "logisticos-tracing",
+ "logisticos-types",
+ "rdkafka",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 1.0.69",
+ "tokio",
+ "tower-http 0.5.2",
+ "tracing",
+ "uuid",
+ "validator",
+]
+
+[[package]]
 name = "logisticos-order-intake"
 version = "0.1.0"
 dependencies = [
