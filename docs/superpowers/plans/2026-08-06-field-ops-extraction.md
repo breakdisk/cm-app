@@ -52,8 +52,8 @@ Actual tenant isolation across this platform is application-layer: an explicit `
 |---|---|
 | `Cargo.toml` | Manifest; workspace member |
 | `migrations/0001_create_couriers.sql` | Schema + `couriers` |
-| `migrations/0002_create_assignments.sql` | `courier_assignments` + claim index |
-| `migrations/0003_create_locations.sql` | `courier_locations` (GPS breadcrumbs) |
+| `migrations/0002_create_assignments.sql` | `products` registry + `courier_assignments` + claim index |
+| `migrations/0003_create_locations.sql` | `courier_locations` + PostGIS GiST + `courier_latest_locations` view |
 | `src/main.rs`, `src/lib.rs`, `src/bootstrap.rs`, `src/config.rs` | Wiring |
 | `src/domain/entities/courier.rs` | `Courier`, `CourierStatus` |
 | `src/domain/entities/assignment.rs` | `CourierAssignment`, `AssignmentStatus` |
@@ -69,99 +69,21 @@ Actual tenant isolation across this platform is application-layer: an explicit `
 
 ---
 
-## Task 1: Write ADR-0015
+## Task 1: ADR-0015 — DONE, accepted
 
-The spec makes this a hard blocker: no implementation starts until the decision is recorded and accepted. It is a decision record, not documentation of work already done.
+**Status: complete.** [docs/adr/0015-field-ops-platform-tier.md](../../adr/0015-field-ops-platform-tier.md) is written and its status is **Accepted**. The gate this task guarded is open; Task 2 may proceed.
 
-**Files:**
-- Create: `docs/adr/0015-field-ops-platform-tier.md`
+This task previously carried the full ADR text inline. That copy has been deleted rather than updated, because it had already drifted from the accepted decision in three places and a stale duplicate of a decision record is worse than no duplicate — the next reader cannot tell which one is authoritative. Read the file.
 
-- [ ] **Step 1: Write the ADR**
+**What changed between the draft embedded here and the accepted version** — these are the amendments this plan now implements, so they are worth knowing before writing any of it:
 
-Follow the house format (see `docs/adr/0014-marketplace-backend-service.md`): `# ADR-NNNN: Title`, then **Status** / **Date** / **Deciders**, a load-bearing invariant blockquote, then Context → Decision → Consequences → Alternatives Considered.
+1. **The two-quarter migration commitment is gone**, replaced by a prerequisite. The blocker was named instead of scheduled around: `driver_ops` carries a `drivers.id` / `user_id` split-brain, and collapsing it is now unblocked work in `driver_ops`, justified on its own merits as a latent correctness bug and decoupled from OmniDeliv's timeline. With one unambiguous courier identity, convergence becomes a repository swap rather than a data-model programme.
 
-```markdown
-# ADR-0015: Field-Ops Platform Tier — Minimal Extraction
+2. **`field_ops` inherits the stronger location model.** Not `last_lat`/`last_lng` with a btree — a `courier_locations` history table, a PostGIS GiST index, and a `courier_latest_locations` view, mirroring `driver_ops`. Tasks 3, 5 and 7 below reflect this.
 
-**Status:** Proposed
-**Date:** 2026-08-06
-**Deciders:** Principal Architect, Senior Rust Engineer — Driver Operations, Engineering Manager — Logistics Domain, Product Manager — Platform
+3. **`product` is a foreign key to a registry table, not a `CHECK` enumeration**, and the Rust side is an opaque `ProductKey`, not an enum. Admitting a third consumer is an `INSERT`. Task 6 reflects this.
 
-> **Load-bearing invariant.** A courier is claimed by exactly one assignment at a time. Two products racing to dispatch the same courier must resolve to one winner and one explicit loser — never two accepted assignments.
-
----
-
-## Context
-
-ADR-0009 established two rules that now collide:
-
-1. **Boundary rule 2:** product services may not call other products' services directly.
-2. **"Watch the field-ops cluster":** LogisticOS, Ride-Hailing and Food Delivery share courier identity, GPS ingest, geospatial dispatch, ETA and earnings. *"When the second of these products goes live, extract these into a `field-ops` platform tier rather than copying them."*
-
-OmniDeliv AI is that second product. It needs couriers; every courier capability today lives inside LogisticOS's product tier (`services/driver-ops`, `services/dispatch`). Three options, and only one honours both rules.
-
-## Decision
-
-Extract a **minimal** field-ops platform tier — only what a second field-ops product needs to operate a courier:
-
-| Extracted to `services/field-ops` | Stays in LogisticOS |
-|---|---|
-| Courier identity (the human in the field) | POD / POP capture |
-| Assignment + atomic claim | Hub operations, cross-dock |
-| GPS ingest and breadcrumbs | Carrier and sub-carrier contracts |
-| Earnings ledger (deferred — see below) | Parcel-specific routing and manifests |
-
-Deliberately **not** extracted: ETA prediction, geospatial route optimisation, in-app navigation. Those are still single-consumer; ADR-0009 rule 3 says a service earns platform status only when a second product needs it, and premature platformisation is the second-worst trap after the mega-gateway.
-
-**The earnings ledger is extracted in a later phase**, once OmniDeliv's three-leg settlement model exists. Building it before the order model would mean guessing at the shape.
-
-## Consequences
-
-### Positive
-- OmniDeliv gets couriers without breaching boundary rule 2.
-- The extraction the ADR-0009 authors predicted happens at the moment they specified, at minimum scope.
-- Courier claim becomes atomic and cross-product, which `driver_ops` never needed and therefore never had.
-
-### Negative — stated plainly, not hidden
-- **Two courier tables coexist** (`driver_ops.drivers` and `field_ops.couriers`) until LogisticOS migrates. This is precisely the duplication ADR-0009 rule 4 warns against, and it is only acceptable as a *dated* transitional state.
-- **Commitment:** LogisticOS migrates onto `field-ops` within two quarters of OmniDeliv slice one reaching production. If that date passes with both live, this ADR has failed and should be revisited — not silently extended.
-
-### Neutral
-- Tenant isolation in the new service is application-layer (`WHERE tenant_id = $n`), matching how every other service in this repo actually behaves. See the RLS note in the implementation plan; making RLS genuinely enforce needs its own ADR.
-
-## Alternatives Considered
-
-### Alternative 1: Temporary documented exception — OmniDeliv calls LogisticOS directly
-**Rejected.** Fastest to the hero flow and zero risk to production dispatch, but it is a known boundary breach with no forcing function to remove it. Boundary exceptions of this kind historically become permanent; the ADR-0009 authors wrote rule 2 specifically to prevent this shape.
-
-### Alternative 2: OmniDeliv builds its own thin courier module
-**Rejected.** No boundary violation and full independence, but it produces two courier systems, two driver-facing apps (or one confused one), and duplicated earnings logic — exactly the copy rule 4 forbids. It also makes the eventual convergence strictly harder than doing it now.
-
-### Alternative 3: Full field-ops extraction (dispatch, ETA, navigation, earnings)
-**Rejected for now.** Architecturally the endgame, but it is a multi-quarter programme touching production dispatch, and it would block OmniDeliv slice one entirely. Rule 3 also argues against extracting single-consumer capabilities. Revisit when a third field-ops product appears.
-
-## References
-- ADR-0009: Multi-Product Platform Gateway Topology
-- ADR-0012: Schema-Isolated SQLx Migrations
-- `docs/superpowers/specs/2026-08-06-omnideliv-ai-design.md` §3.1
-```
-
-- [ ] **Step 2: Verify the ADR number is free**
-
-```bash
-ls docs/adr/ | grep -c '^0015' || echo "0015 is free"
-```
-
-Expected: `0015 is free`
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add docs/adr/0015-field-ops-platform-tier.md
-git commit -m "docs(adr): ADR-0015 minimal field-ops platform tier extraction"
-```
-
-**Gate:** do not proceed to Task 2 until this ADR is reviewed and its status moves to Accepted. The rest of this plan implements a decision that has not yet been made.
+**One work item this plan does not contain.** The `drivers.id` / `user_id` collapse belongs to `driver_ops` and needs its own plan; it is a prerequisite for *convergence*, not for this extraction, so `field-ops` can be built while it proceeds in parallel. Do not fold it in here — that would recreate the coupling the amendment exists to remove.
 
 ---
 
@@ -346,6 +268,10 @@ CREATE TABLE IF NOT EXISTS field_ops.couriers (
                                CHECK (status IN ('offline','available','assigned','on_break')),
     vehicle_type   TEXT,
     zone           TEXT,
+    -- CACHE ONLY. The authoritative position is the latest row in
+    -- field_ops.courier_locations (migration 0003); these columns exist so a
+    -- courier list renders without touching the time-series table. Never
+    -- proximity-search on them — see the GiST index in 0002.
     last_lat       DOUBLE PRECISION,
     last_lng       DOUBLE PRECISION,
     last_seen_at   TIMESTAMPTZ,
@@ -362,12 +288,24 @@ CREATE INDEX IF NOT EXISTS idx_courier_tenant_status
     ON field_ops.couriers (tenant_id, status)
     WHERE is_active;
 
--- Supply lookup: available couriers near a pickup point. Partial index keeps it
--- small — only rows that can actually be offered work.
-CREATE INDEX IF NOT EXISTS idx_courier_available_geo
-    ON field_ops.couriers (tenant_id, last_lat, last_lng)
+-- Supply lookup narrows on status first; the geospatial half of the query runs
+-- against courier_latest_locations (0003), which has the GiST index.
+--
+-- There is deliberately NO btree on (tenant_id, last_lat, last_lng). Proximity
+-- search is ST_DWithin against a geography, which a btree on two float columns
+-- cannot serve — it would sit there looking useful while every search scanned.
+CREATE INDEX IF NOT EXISTS idx_courier_available
+    ON field_ops.couriers (tenant_id, status)
     WHERE status = 'available' AND is_active;
 ```
+
+> **Why this is not the simpler denormalised model.** Per ADR-0015, `field_ops`
+> inherits the location model `driver_ops` already has rather than a cheaper one:
+> a history table with a PostGIS GiST index and a latest-fix view, built in
+> **Task 7**. This is the single dimension where the existing product-tier table
+> is ahead of the new platform tier, and shipping the weaker version would force
+> a later choice between downgrading LogisticOS at convergence or rewriting
+> `field-ops` a second time.
 
 - [ ] **Step 2: Verify the SQL parses**
 
@@ -608,6 +546,8 @@ git commit -m "feat(field-ops): Courier entity and tenant-scoped repository cont
 
 ## Task 5: Postgres courier repository
 
+> **Ordering note.** `find_available_near` below queries `field_ops.courier_latest_locations`, which migration 0003 creates in Task 7. Nothing here breaks — these are runtime `sqlx::query` calls, not compile-checked `query!` macros, so this task's `cargo check` passes regardless. But do not point it at a database migrated only through 0001 and expect the proximity search to run; it needs the whole migration set applied, which `bootstrap` does in one pass.
+
 **Files:**
 - Create: `services/field-ops/src/infrastructure/mod.rs`, `src/infrastructure/db/mod.rs`, `src/infrastructure/db/courier_repo.rs`
 
@@ -737,32 +677,41 @@ impl CourierRepository for PgCourierRepository {
         radius_km: f64,
         limit: i64,
     ) -> anyhow::Result<Vec<Courier>> {
-        // Haversine in SQL rather than PostGIS: the couriers table stores plain
-        // lat/lng (matching driver_ops), and a supply lookup over a few hundred
-        // rows does not justify a geometry column. Revisit if this becomes hot.
+        // PostGIS ST_DWithin against field_ops.courier_latest_locations, which
+        // is what the GiST index in migration 0003 serves. This mirrors
+        // dispatch's driver_avail_repo query against driver_latest_locations,
+        // deliberately: convergence should be a repository swap, and two
+        // different notions of "nearest available field worker" would make it
+        // a reconciliation instead.
         //
-        // The distance goes in a subquery because a WHERE clause cannot
-        // reference a SELECT-list alias — filtering on `distance_km` in the same
-        // SELECT that computes it is a syntax error, not a subtle bug.
+        // Not Haversine over couriers.last_lat/last_lng — those are a render
+        // cache. Arithmetic on them cannot use an index at all, so every supply
+        // lookup would scan the courier table.
+        //
+        // INNER JOIN, not LEFT: a courier with no fix has no position to search
+        // on. driver_ops LEFT JOINs and sorts no-fix drivers last, which is
+        // right for "show me the fleet" and wrong for "who can take this job".
         let rows = sqlx::query(
             r#"
-            SELECT * FROM (
-                SELECT *,
-                       6371 * 2 * ASIN(SQRT(
-                           POWER(SIN(RADIANS($3 - last_lat) / 2), 2) +
-                           COS(RADIANS(last_lat)) * COS(RADIANS($3)) *
-                           POWER(SIN(RADIANS($4 - last_lng) / 2), 2)
-                       )) AS distance_km
-                FROM field_ops.couriers
-                WHERE tenant_id = $1
-                  AND is_active
-                  AND status = 'available'
-                  AND last_lat IS NOT NULL
-                  AND last_lng IS NOT NULL
-            ) AS scored
-            WHERE distance_km <= $2
-            ORDER BY distance_km ASC
-            LIMIT $5
+            SELECT c.*,
+                   ST_Distance(
+                       geography(ST_SetSRID(ST_MakePoint(cl.lng, cl.lat), 4326)),
+                       ST_SetSRID(ST_MakePoint($4, $3), 4326)::geography
+                   ) AS distance_m
+              FROM field_ops.couriers c
+              JOIN field_ops.courier_latest_locations cl
+                ON cl.courier_id = c.id
+               AND cl.recorded_at > NOW() - INTERVAL '10 minutes'
+             WHERE c.tenant_id = $1
+               AND c.is_active
+               AND c.status = 'available'
+               AND ST_DWithin(
+                       geography(ST_SetSRID(ST_MakePoint(cl.lng, cl.lat), 4326)),
+                       ST_SetSRID(ST_MakePoint($4, $3), 4326)::geography,
+                       $2 * 1000.0
+                   )
+             ORDER BY distance_m ASC
+             LIMIT $5
             "#,
         )
         .bind(tenant_id)
@@ -819,13 +768,36 @@ This is the ADR's load-bearing invariant. Two products racing for the same couri
 -- both dispatch from the same courier pool, so "one active claim per courier"
 -- must be enforced by the database, not by application convention.
 
+-- The consumer registry. Adding a product is a data change, not a schema
+-- change. `completion_topic` is why this is a table rather than a free-text
+-- column: field-ops has to route a completion event somewhere, and a bare
+-- string gives a label with no destination. The FK also forecloses the typo
+-- failure a free-text column invites, where 'omnideliv ' and 'omnideliv'
+-- silently become two products that no query joins.
+CREATE TABLE IF NOT EXISTS field_ops.products (
+    key              TEXT        PRIMARY KEY,
+    display_name     TEXT        NOT NULL,
+    completion_topic TEXT        NOT NULL,
+    is_active        BOOLEAN     NOT NULL DEFAULT true,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO field_ops.products (key, display_name, completion_topic) VALUES
+    ('logistics', 'LogisticOS',  'logistics.assignment.completed'),
+    ('omnideliv', 'OmniDeliv AI', 'omnideliv.assignment.completed')
+ON CONFLICT (key) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS field_ops.courier_assignments (
     id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id       UUID        NOT NULL,
     courier_id      UUID        NOT NULL REFERENCES field_ops.couriers(id),
-    -- Which product owns this assignment. Opaque to field-ops; used for audit
-    -- and for routing completion events back to the right product.
-    product         TEXT        NOT NULL CHECK (product IN ('logistics','omnideliv')),
+    -- Which product owns this assignment. field-ops does not interpret it
+    -- beyond routing completion events home.
+    --
+    -- FK to a registry, NOT a CHECK enumeration: a platform tier that needs a
+    -- migration to admit its third consumer is not a platform tier. Onboarding
+    -- a product is an INSERT into field_ops.products.
+    product         TEXT        NOT NULL REFERENCES field_ops.products(key),
     -- The product's own job id (shipment_id, order_id). field-ops does not
     -- interpret it — storing a typed FK here would couple the tier to a product.
     external_ref    UUID        NOT NULL,
@@ -870,7 +842,7 @@ mod tests {
     use uuid::Uuid;
 
     fn offered() -> CourierAssignment {
-        CourierAssignment::offer(Uuid::new_v4(), Uuid::new_v4(), Product::Omnideliv, Uuid::new_v4())
+        CourierAssignment::offer(Uuid::new_v4(), Uuid::new_v4(), ProductKey::new("omnideliv"), Uuid::new_v4())
     }
 
     #[test]
@@ -932,19 +904,27 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Product {
-    Logistics,
-    Omnideliv,
+/// Which product owns an assignment.
+///
+/// An opaque key, not an enum. A Rust enum here would be the same closed set
+/// the rejected `CHECK (product IN (...))` was — admitting a third consumer
+/// would mean editing this tier's source and redeploying it, which is exactly
+/// the property ADR-0015 says disqualifies something from being a platform
+/// tier. The registry table `field_ops.products` is the authority; the FK on
+/// `courier_assignments.product` is what rejects an unknown key, at the same
+/// moment a CHECK would have, without naming the consumers in code.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProductKey(String);
+
+impl ProductKey {
+    pub fn new(key: impl Into<String>) -> Self { Self(key.into()) }
+    pub fn as_str(&self) -> &str { &self.0 }
 }
 
-impl Product {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Product::Logistics => "logistics",
-            Product::Omnideliv => "omnideliv",
-        }
+impl std::fmt::Display for ProductKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
@@ -986,7 +966,7 @@ pub struct CourierAssignment {
 }
 
 impl CourierAssignment {
-    pub fn offer(tenant_id: Uuid, courier_id: Uuid, product: Product, external_ref: Uuid) -> Self {
+    pub fn offer(tenant_id: Uuid, courier_id: Uuid, product: ProductKey, external_ref: Uuid) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
@@ -1211,9 +1191,63 @@ CREATE INDEX IF NOT EXISTS idx_courier_location_latest
 
 CREATE INDEX IF NOT EXISTS idx_courier_location_tenant
     ON field_ops.courier_locations (tenant_id, recorded_at DESC);
+
+-- THE proximity index (ADR-0015). Supply lookup is ST_DWithin against a
+-- geography; neither btree above can serve it, and without this every "who is
+-- near this pickup" scans the table. driver_ops has the same index on
+-- driver_locations — carrying it forward is what keeps convergence a
+-- repository swap.
+CREATE INDEX IF NOT EXISTS idx_courier_location_spatial
+    ON field_ops.courier_locations
+    USING GIST (geography(ST_SetSRID(ST_MakePoint(lng, lat), 4326)));
+
+-- One definition of "where is this courier now". Dispatch reads the view, never
+-- the raw table, so the latest-fix rule lives in exactly one place. driver_ops
+-- arrived here the hard way: this view replaced an ad-hoc subquery.
+CREATE OR REPLACE VIEW field_ops.courier_latest_locations AS
+SELECT DISTINCT ON (courier_id)
+    courier_id,
+    tenant_id,
+    lat,
+    lng,
+    speed_kph,
+    heading_deg,
+    accuracy_m,
+    device_timestamp,
+    recorded_at
+FROM field_ops.courier_locations
+ORDER BY courier_id, recorded_at DESC;
+
+-- Hypertable conversion, guarded. The EXCEPTION handler is the whole point: on
+-- a database without TimescaleDB this degrades to a plain table instead of
+-- failing the migration. That matters more here than usual — a migration that
+-- cannot apply pins the service to its last-good image, silently, which is how
+-- engagement sat seven weeks behind master.
+DO $$ BEGIN
+    PERFORM create_hypertable(
+        'field_ops.courier_locations',
+        'recorded_at',
+        chunk_time_interval => INTERVAL '1 day',
+        if_not_exists => TRUE
+    );
+EXCEPTION WHEN undefined_function THEN
+    NULL;
+END $$;
+
+DO $$ BEGIN
+    PERFORM add_compression_policy('field_ops.courier_locations', INTERVAL '7 days', if_not_exists => TRUE);
+EXCEPTION WHEN undefined_function THEN NULL;
+END $$;
+
+DO $$ BEGIN
+    PERFORM add_retention_policy('field_ops.courier_locations', INTERVAL '90 days', if_not_exists => TRUE);
+EXCEPTION WHEN undefined_function THEN NULL;
+END $$;
 ```
 
-> **On hypertables:** the composite primary key above is TimescaleDB-compatible, so this table can be converted with `SELECT create_hypertable(...)` once retention becomes a concern. It is deliberately *not* converted here — TimescaleDB is not currently provisioned for this schema, and a migration that fails on a missing extension blocks the whole service from starting (see the deployment note in CLAUDE.md about a migration that cannot apply pinning a service to its last-good image).
+> **On the composite primary key.** `(id, recorded_at)` is TimescaleDB's requirement — a hypertable's partitioning column must appear in every unique constraint. It is already correct here, so the guarded conversion above is additive rather than a rewrite.
+>
+> **PostGIS is a hard requirement, unlike TimescaleDB.** The GiST index cannot be guarded away: without it the service still starts but every supply lookup degrades to a sequential scan, which fails quietly under load rather than loudly at deploy. `postgis` is already required by `driver_ops` and `dispatch`, so this adds no new dependency — but Task 10 should assert the extension is present rather than assume it.
 
 - [ ] **Step 2: Write the entity**
 
@@ -1439,7 +1473,7 @@ impl DispatchService {
     pub async fn offer_to_nearest(
         &self,
         tenant_id: Uuid,
-        product: Product,
+        product: ProductKey,
         external_ref: Uuid,
         lat: f64,
         lng: f64,
@@ -1838,8 +1872,8 @@ async fn two_products_racing_for_one_courier_produce_exactly_one_winner() {
     couriers.save(&courier).await.expect("save courier");
 
     // Both products offer the same courier a job.
-    let a_logistics = CourierAssignment::offer(tenant, courier.id, Product::Logistics, Uuid::new_v4());
-    let a_omnideliv = CourierAssignment::offer(tenant, courier.id, Product::Omnideliv, Uuid::new_v4());
+    let a_logistics = CourierAssignment::offer(tenant, courier.id, ProductKey::new("logistics"), Uuid::new_v4());
+    let a_omnideliv = CourierAssignment::offer(tenant, courier.id, ProductKey::new("omnideliv"), Uuid::new_v4());
     assignments.save(&a_logistics).await.expect("save A");
     assignments.save(&a_omnideliv).await.expect("save B");
 
