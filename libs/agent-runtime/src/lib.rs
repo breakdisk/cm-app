@@ -11,7 +11,7 @@ pub mod role;
 // pub mod runner;
 pub mod session;
 // pub mod store;
-// pub mod tools;
+pub mod tools;
 
 // #[cfg(feature = "testing")]
 // pub mod testing;
