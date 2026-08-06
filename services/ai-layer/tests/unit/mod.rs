@@ -12,7 +12,7 @@ use logisticos_types::TenantId;
 // ---------------------------------------------------------------------------
 
 fn make_session(agent_type: AgentType) -> AgentSession {
-    AgentSession::new(TenantId::new(), agent_type, json!({"source": "test"}))
+    AgentSession::new(TenantId::new(), agent_type.into(), json!({"source": "test"}), "claude-test")
 }
 
 fn make_message(role: MessageRole) -> AgentMessage {
@@ -78,13 +78,13 @@ mod session_new_tests {
     #[test]
     fn new_session_stores_agent_type() {
         let s = make_session(AgentType::MerchantSupport);
-        assert_eq!(s.agent_type, AgentType::MerchantSupport);
+        assert!(AgentType::MerchantSupport.matches_role(&s.role));
     }
 
     #[test]
     fn new_session_stores_trigger() {
         let trigger = json!({"shipment_id": "123"});
-        let s = AgentSession::new(TenantId::new(), AgentType::Dispatch, trigger.clone());
+        let s = AgentSession::new(TenantId::new(), AgentType::Dispatch.into(), trigger.clone(), "claude-test");
         assert_eq!(s.trigger, trigger);
     }
 }

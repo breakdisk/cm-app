@@ -57,8 +57,13 @@ fn map_row(r: &sqlx::postgres::PgRow) -> AgentSession {
     AgentSession {
         id,
         tenant_id: TenantId::from_uuid(tenant_id),
-        agent_type: serde_json::from_value(serde_json::Value::String(agent_type_str))
-            .unwrap_or(AgentType::OnDemand),
+        // The column stores the `AgentType` serde string. Round-tripping it
+        // through the enum (rather than building an `AgentRole` straight from
+        // the raw string) is what restores the role's tool allowlist — a role
+        // reconstructed without it would be silently unrestricted.
+        role: serde_json::from_value::<AgentType>(serde_json::Value::String(agent_type_str))
+            .unwrap_or(AgentType::OnDemand)
+            .into(),
         status: serde_json::from_value(serde_json::Value::String(status_str))
             .unwrap_or(SessionStatus::Failed),
         trigger:          r.get("trigger_data"),
@@ -76,8 +81,7 @@ fn map_row(r: &sqlx::postgres::PgRow) -> AgentSession {
 #[async_trait]
 impl SessionRepository for PgSessionRepository {
     async fn save(&self, s: &AgentSession) -> anyhow::Result<()> {
-        let agent_type = serde_json::to_value(&s.agent_type)?
-            .as_str().unwrap_or("on_demand").to_owned();
+        let agent_type = s.role.key().to_owned();
         let status = serde_json::to_value(&s.status)?
             .as_str().unwrap_or("running").to_owned();
         let messages = serde_json::to_value(&s.messages)?;
@@ -261,5 +265,19 @@ impl SessionRepository for PgSessionRepository {
             by_type_today,
             hourly_24h: hourly,
         })
+    }
+}
+
+/// The agent runtime persists through `SessionStore`; the product's dashboard
+/// queries stay on `SessionRepository`. One Postgres-backed type serves both —
+/// this impl just narrows the surface the runner sees.
+#[async_trait]
+impl logisticos_agent_runtime::store::SessionStore for PgSessionRepository {
+    async fn save(&self, session: &AgentSession) -> anyhow::Result<()> {
+        SessionRepository::save(self, session).await
+    }
+
+    async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<AgentSession>> {
+        SessionRepository::find_by_id(self, id).await
     }
 }

@@ -76,13 +76,16 @@ impl LogisticOsMcpServer {
     ) {
         let mut session = AgentSession::new(
             TenantId::from_uuid(claims.tenant_id),
-            AgentType::OnDemand,
+            AgentType::OnDemand.into(),
             json!({
                 "source":    "remote_mcp",
                 "user_id":   claims.user_id,
                 "email":     claims.email,
                 "client_ip": client_ip,
             }),
+            // A remote MCP call invokes a tool directly — no model is in the
+            // loop, so recording one would misattribute the action to an LLM.
+            "none",
         );
 
         let mut action = AgentAction::new(session.id, tool_name.to_string(), input.clone());

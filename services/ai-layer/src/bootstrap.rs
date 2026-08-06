@@ -40,7 +40,11 @@ pub async fn run() -> anyhow::Result<()> {
     logisticos_common::migrations::run(&pool, "ai", &sqlx::migrate!("./migrations")).await?;
 
     // Claude API client
-    let claude = Arc::new(ClaudeClient::new(cfg.anthropic.api_key.clone()));
+    let claude = Arc::new(ClaudeClient::new(
+        cfg.anthropic.api_key.clone(),
+        cfg.anthropic.model.clone(),
+        cfg.anthropic.max_tokens,
+    ));
 
     // Tool registry — all available MCP-style tools agents can call
     let tools = Arc::new(ToolRegistry::new(ServiceUrls {
@@ -56,13 +60,18 @@ pub async fn run() -> anyhow::Result<()> {
     }));
 
     // Session repository
-    let session_repo: Arc<dyn SessionRepository> = Arc::new(PgSessionRepository::new(pool));
+    // One concrete repository, coerced to two trait objects: the wide
+    // `SessionRepository` the dashboard handlers query through, and the narrow
+    // `SessionStore` the shared agent runtime persists through.
+    let pg_sessions = Arc::new(PgSessionRepository::new(pool));
+    let session_store: Arc<dyn logisticos_agent_runtime::store::SessionStore> = pg_sessions.clone();
+    let session_repo: Arc<dyn SessionRepository> = pg_sessions;
 
     // Agent runner
     let runner = Arc::new(AgentRunner::new(
         claude,
         tools.clone(),
-        session_repo.clone(),
+        session_store,
     ));
 
     // Kafka trigger consumer — autonomously activates agents on domain events

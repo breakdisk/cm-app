@@ -146,7 +146,7 @@ async fn chat(
             if existing.tenant_id.inner() != claims.tenant_id {
                 return Err(AppError::Forbidden { resource: "agent_session".into() });
             }
-            if existing.agent_type != AgentType::CustomerSupport {
+            if !AgentType::CustomerSupport.matches_role(&existing.role) {
                 return Err(AppError::Forbidden { resource: "agent_session".into() });
             }
             let owner = existing.trigger.get("user_id").and_then(|v| v.as_str());
@@ -178,7 +178,7 @@ async fn chat(
                 .runner
                 .run_with_context(
                     logisticos_types::TenantId::from_uuid(claims.tenant_id),
-                    AgentType::CustomerSupport,
+                    AgentType::CustomerSupport.into(),
                     trigger,
                     turn,
                     ctx,
@@ -230,7 +230,7 @@ async fn get_chat(
     // originating user — customers of one tenant must not read each other's
     // conversations.
     if session.tenant_id.inner() != claims.tenant_id
-        || session.agent_type != AgentType::CustomerSupport
+        || !AgentType::CustomerSupport.matches_role(&session.role)
         || session.trigger.get("user_id").and_then(|v| v.as_str())
             != Some(claims.user_id.to_string().as_str())
     {
@@ -328,7 +328,7 @@ async fn run_agent(
         .runner
         .run(
             logisticos_types::TenantId::from_uuid(claims.tenant_id),
-            AgentType::OnDemand,
+            AgentType::OnDemand.into(),
             trigger,
             req.prompt,
         )
@@ -375,7 +375,7 @@ async fn list_sessions(
     // Return summary (no full message history for list view).
     let summaries: Vec<_> = sessions.iter().map(|s| serde_json::json!({
         "id":               s.id,
-        "agent_type":       s.agent_type,
+        "agent_type":       s.role.key(),
         "status":           s.status,
         "outcome":          s.outcome,
         "escalation_reason": s.escalation_reason,
@@ -471,7 +471,7 @@ async fn resolve_escalation(
     // The operator's note is the reply the customer has been waiting for, so it
     // goes on the conversation as an assistant turn — that is what
     // `GET /v1/agents/chat/:id` hands back to the app.
-    let is_customer_chat = session.agent_type == AgentType::CustomerSupport;
+    let is_customer_chat = AgentType::CustomerSupport.matches_role(&session.role);
     if is_customer_chat {
         session.messages.push(crate::domain::entities::AgentMessage {
             role:    crate::domain::entities::MessageRole::Assistant,

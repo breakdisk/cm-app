@@ -2832,6 +2832,7 @@ dependencies = [
  "chrono",
  "config",
  "dotenvy",
+ "logisticos-agent-runtime",
  "logisticos-auth",
  "logisticos-common",
  "logisticos-errors",

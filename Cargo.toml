@@ -131,6 +131,7 @@ logisticos-types   = { path = "libs/types" }
 logisticos-events  = { path = "libs/events" }
 logisticos-geo     = { path = "libs/geo" }
 logisticos-ai      = { path = "libs/ai-client" }
+logisticos-agent-runtime = { path = "libs/agent-runtime" }
 
 [profile.release]
 opt-level     = 3

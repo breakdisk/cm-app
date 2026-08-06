@@ -26,7 +26,7 @@ use logisticos_types::TenantId;
 use logisticos_ai_layer::domain::entities::{
     AgentAction, AgentMessage, AgentSession, AgentType, MessageRole, SessionStatus,
 };
-use logisticos_ai_layer::infrastructure::db::SessionRepository;
+use logisticos_ai_layer::infrastructure::db::{AggregateStats, SessionRepository};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // In-memory mock repository
@@ -99,6 +99,21 @@ impl SessionRepository for MockSessionRepository {
             .cloned()
             .collect())
     }
+
+    /// Dashboard aggregation. Not exercised by these tests — they cover the
+    /// handlers' auth and shaping, not the stats query — but the trait
+    /// requires it.
+    async fn aggregate(&self, _tenant_id: Uuid) -> anyhow::Result<AggregateStats> {
+        Ok(AggregateStats {
+            total_today:      0,
+            completed_today:  0,
+            escalated_today:  0,
+            failed_today:     0,
+            success_rate_pct: 0.0,
+            by_type_today:    Default::default(),
+            hourly_24h:       Vec::new(),
+        })
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -122,7 +137,7 @@ impl MockAgentRunner {
         trigger: Value,
         _prompt: String,
     ) -> AppResult<AgentSession> {
-        let mut session = AgentSession::new(tenant_id, agent_type, trigger);
+        let mut session = AgentSession::new(tenant_id, agent_type.into(), trigger, "claude-test");
         // Add a sample action to verify actions_taken is populated
         let action = AgentAction::new(
             session.id,
@@ -231,7 +246,7 @@ fn build_test_router(
 
         let summaries: Vec<_> = sessions.iter().map(|s| json!({
             "id":               s.id,
-            "agent_type":       s.agent_type,
+            "agent_type":       s.role.key(),
             "status":           s.status,
             "outcome":          s.outcome,
             "escalation_reason": s.escalation_reason,
@@ -410,19 +425,19 @@ async fn send_post_no_auth(app: Router, uri: &str, body: Value) -> StatusCode {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn completed_session(tenant_id: TenantId) -> AgentSession {
-    let mut s = AgentSession::new(tenant_id, AgentType::Dispatch, json!({}));
+    let mut s = AgentSession::new(tenant_id, AgentType::Dispatch.into(), json!({}), "claude-test");
     s.complete("Route optimised.".into(), 0.92);
     s
 }
 
 fn escalated_session(tenant_id: TenantId) -> AgentSession {
-    let mut s = AgentSession::new(tenant_id, AgentType::Recovery, json!({}));
+    let mut s = AgentSession::new(tenant_id, AgentType::Recovery.into(), json!({}), "claude-test");
     s.escalate("Shipment failed 3 times consecutively".into());
     s
 }
 
 fn failed_session(tenant_id: TenantId) -> AgentSession {
-    let mut s = AgentSession::new(tenant_id, AgentType::Anomaly, json!({}));
+    let mut s = AgentSession::new(tenant_id, AgentType::Anomaly.into(), json!({}), "claude-test");
     s.fail("External service timeout".into());
     s
 }
@@ -541,11 +556,13 @@ mod run_agent_endpoint {
             .await
             .unwrap();
 
-        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        // axum maps a JSON *syntax* error to 400; a well-formed body of the
+        // wrong shape is the 422 case covered by the test below.
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
-    async fn returns_400_when_prompt_field_is_missing() {
+    async fn returns_422_when_prompt_field_is_missing() {
         let tenant_id = Uuid::new_v4();
         let repo = MockSessionRepository::new();
         let runner = MockAgentRunner::new(Arc::clone(&repo) as Arc<dyn SessionRepository>);
@@ -777,7 +794,7 @@ mod get_session_endpoint {
     async fn session_detail_includes_messages_and_actions() {
         let tenant_id = Uuid::new_v4();
         let tid = TenantId::from_uuid(tenant_id);
-        let mut session = AgentSession::new(tid, AgentType::Dispatch, json!({}));
+        let mut session = AgentSession::new(tid, AgentType::Dispatch.into(), json!({}), "claude-test");
         session.messages.push(AgentMessage {
             role: MessageRole::User,
             content: Value::String("Assign driver".into()),

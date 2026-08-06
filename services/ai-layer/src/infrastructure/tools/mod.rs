@@ -9,33 +9,18 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use serde_json::{json, Value};
 
-use crate::domain::entities::ToolDefinition;
+use logisticos_agent_runtime::tools::{ToolBox, ToolDefinition};
 
-/// Result of a single tool execution.
-#[derive(Debug)]
-pub struct ToolResult {
-    pub tool_use_id: String,
-    pub content:     Value,
-    pub is_error:    bool,
-}
-
-/// Per-call context handed to a tool at execution time.
-///
-/// `bearer` carries the *originating caller's* access token so a tool can call a
-/// JWT-protected downstream endpoint as that user rather than as an anonymous
-/// internal caller. Autonomous (Kafka-triggered) agents have no human caller and
-/// therefore no bearer — those runs can only reach `/v1/internal/*` endpoints,
-/// which is the correct blast radius for an unattended agent.
-#[derive(Debug, Clone, Default)]
-pub struct ToolContext {
-    pub bearer: Option<String>,
-}
-
-impl ToolContext {
-    pub fn with_bearer(bearer: impl Into<String>) -> Self {
-        Self { bearer: Some(bearer.into()) }
-    }
-}
+// `ToolResult` and `ToolContext` now live in `logisticos-agent-runtime` so the
+// shared loop can construct and read them. Re-exported here because this
+// module's own signatures — and every call site — refer to them unqualified.
+//
+// `ToolContext.bearer` carries the *originating caller's* access token so a tool
+// can call a JWT-protected downstream endpoint as that user rather than as an
+// anonymous internal caller. Autonomous (Kafka-triggered) agents have no human
+// caller and therefore no bearer — those runs can only reach `/v1/internal/*`
+// endpoints, which is the correct blast radius for an unattended agent.
+pub use logisticos_agent_runtime::tools::{ToolContext, ToolResult};
 
 /// Attach the caller's bearer token to an outbound request when one is present.
 fn authed(req: reqwest::RequestBuilder, ctx: &ToolContext) -> reqwest::RequestBuilder {
@@ -86,21 +71,6 @@ impl ToolRegistry {
 
     pub fn definitions(&self) -> &[ToolDefinition] {
         &self.definitions
-    }
-
-    /// Definitions filtered to an allowlist. `None` means "no restriction" and
-    /// returns every registered tool. Used to give each agent type only the
-    /// tools its role is authorised to reach (see `AgentType::allowed_tools`).
-    pub fn definitions_allowed(&self, allowed: Option<&[&str]>) -> Vec<ToolDefinition> {
-        match allowed {
-            None => self.definitions.clone(),
-            Some(names) => self
-                .definitions
-                .iter()
-                .filter(|d| names.contains(&d.name.as_str()))
-                .cloned()
-                .collect(),
-        }
     }
 
     pub async fn execute(&self, tool_name: &str, input: Value, tool_use_id: String, ctx: ToolContext) -> ToolResult {
@@ -875,5 +845,27 @@ impl ToolRegistry {
             name,
             Arc::new(move |input, ctx| Box::pin(handler(input, ctx))),
         );
+    }
+}
+
+/// Bridges the 21-tool logistics registry to the shared runtime's contract.
+///
+/// The registry keeps its own inherent methods — plenty of call sites use them
+/// directly — and this impl simply exposes the same behaviour under the trait
+/// the agent loop depends on.
+#[async_trait::async_trait]
+impl ToolBox for ToolRegistry {
+    fn definitions(&self) -> &[ToolDefinition] {
+        ToolRegistry::definitions(self)
+    }
+
+    async fn execute(
+        &self,
+        name: String,
+        input: Value,
+        tool_use_id: String,
+        ctx: ToolContext,
+    ) -> ToolResult {
+        ToolRegistry::execute(self, &name, input, tool_use_id, ctx).await
     }
 }
