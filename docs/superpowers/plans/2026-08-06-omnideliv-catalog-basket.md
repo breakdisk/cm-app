@@ -2412,6 +2412,12 @@ an FK violation rather than silently losing the chain."
 2. **Plan 5** — consolidation, orders and settlement. `Vendor::commission_on`/`payout_on` and `Basket::subtotals_by_vendor` are the inputs to the three-leg split.
 3. **Plan 6** — the vendor console, which writes the availability declarations whose freshness this service reasons about.
 
+## Correction — the basket has no non-LLM writer
+
+**This plan builds no way to add a line to a basket outside the mesh.** `Basket::apply` takes a `BasketDelta`, a delta requires a `sub_intent_id`, and only the Concierge creates sub-intents — so after this plan the sole producer of basket lines is the LLM. The two routes here are `POST /v1/baskets` (create empty) and `GET /v1/baskets/:id`.
+
+That gap is closed by **[Plan 8 — Manual Order Path](2026-08-06-omnideliv-manual-order-path.md)**, which adds a browse sub-intent, `Basket::add_line` with append semantics, the line endpoints, and the optimistic lock this plan defers below. Read that plan before assuming the fallback works.
+
 ## Known follow-ups inside this service
 
 - **Tenant from JWT.** `baskets::fetch` uses a placeholder `Uuid::nil()` tenant and `catalog::search` takes `tenant_id` as a query parameter. Both must read from validated `Claims` once Plan 4 wires the mesh's auth context. Tracked here rather than left silent — a tenant-from-the-client API is a cross-tenant read waiting to happen, and it must not reach production in this form.

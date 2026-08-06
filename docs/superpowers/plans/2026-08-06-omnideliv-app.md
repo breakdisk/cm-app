@@ -1348,6 +1348,12 @@ platform rule requires: no model, no mesh, still a working app."
 - [ ] Killing the API mid-run leaves Screen B showing the connection message, not a blank screen
 - [ ] The Quick Intent Pills reach a vendor list with the mesh service stopped
 
+## Correction — the browse fallback is a dead end as built here
+
+The Definition of done above says *"The Quick Intent Pills reach a vendor list with the mesh service stopped"*, and that is all this plan delivers. `app/browse/[vertical].tsx` renders vendors in a plain `<View>` — no `Pressable`, no navigation, no item list, no add-to-basket. A customer can look at vendor names and go no further, so the claim elsewhere in this plan that the pills keep the app working is **not true after this plan alone**.
+
+**[Plan 8 — Manual Order Path](2026-08-06-omnideliv-manual-order-path.md)** closes it: the vendor row becomes navigable, and a vendor-detail screen, a basket screen and an active-basket hook complete the chain to checkout with no model anywhere in it.
+
 ## Follow-on work this surfaces
 
 1. **Four endpoints this plan assumes.** `GET /v1/vendors`, `GET /v1/orders/:id/track`, plus the two the vendor console needs. All are thin wrappers over services that exist.
