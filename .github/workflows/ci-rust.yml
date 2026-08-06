@@ -164,6 +164,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+      # Fails fast, before toolchain setup — this needs no Rust, only grep.
+      - name: Check agent-runtime boundary
+        run: ./scripts/check-runtime-boundary.sh
+
       - name: Install Rust toolchain (stable + components)
         uses: dtolnay/rust-toolchain@stable
         with:
