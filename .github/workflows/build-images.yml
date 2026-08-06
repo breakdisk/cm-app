@@ -81,6 +81,7 @@ jobs:
             cdp:                'services/cdp/**'
             engagement:         'services/engagement/**'
             order-intake:       'services/order-intake/**'
+            omnideliv:          'services/omnideliv/**'
             dispatch:           'services/dispatch/**'
             driver-ops:         'services/driver-ops/**'
             delivery-experience: 'services/delivery-experience/**'
@@ -123,6 +124,7 @@ jobs:
           CDP:                 ${{ steps.per_image.outputs.cdp }}
           ENGAGEMENT:          ${{ steps.per_image.outputs.engagement }}
           ORDER_INTAKE:        ${{ steps.per_image.outputs.order-intake }}
+          OMNIDELIV:           ${{ steps.per_image.outputs.omnideliv }}
           DISPATCH:            ${{ steps.per_image.outputs.dispatch }}
           DRIVER_OPS:          ${{ steps.per_image.outputs.driver-ops }}
           DELIVERY_EXPERIENCE: ${{ steps.per_image.outputs.delivery-experience }}
@@ -148,7 +150,7 @@ jobs:
           services=()
           portals=()
           if [ "$BUILD_ALL" = "true" ]; then
-            services=('"api-gateway"' '"identity"' '"cdp"' '"engagement"' '"order-intake"' '"dispatch"' '"driver-ops"' '"delivery-experience"' '"fleet"' '"hub-ops"' '"carrier"' '"pod"' '"payments"' '"analytics"' '"marketing"' '"business-logic"' '"ai-layer"' '"compliance"' '"webhooks"' '"connectors"')
+            services=('"api-gateway"' '"identity"' '"cdp"' '"engagement"' '"order-intake"' '"omnideliv"' '"dispatch"' '"driver-ops"' '"delivery-experience"' '"fleet"' '"hub-ops"' '"carrier"' '"pod"' '"payments"' '"analytics"' '"marketing"' '"business-logic"' '"ai-layer"' '"compliance"' '"webhooks"' '"connectors"')
             portals=('"admin-portal"' '"merchant-portal"' '"customer-portal"' '"partner-portal"' '"landing"')
           else
             [ "$API_GATEWAY"         = "true" ] && services+=('"api-gateway"') || true
@@ -156,6 +158,7 @@ jobs:
             [ "$CDP"                 = "true" ] && services+=('"cdp"') || true
             [ "$ENGAGEMENT"          = "true" ] && services+=('"engagement"') || true
             [ "$ORDER_INTAKE"        = "true" ] && services+=('"order-intake"') || true
+            [ "$OMNIDELIV"           = "true" ] && services+=('"omnideliv"') || true
             [ "$DISPATCH"            = "true" ] && services+=('"dispatch"') || true
             [ "$DRIVER_OPS"          = "true" ] && services+=('"driver-ops"') || true
             [ "$DELIVERY_EXPERIENCE" = "true" ] && services+=('"delivery-experience"') || true
