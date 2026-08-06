@@ -107,3 +107,6 @@ android_keystore_password.txt
 crash.txt
 # Kotlin compiler daemon session files (build noise)
 .kotlin/
+
+# Superpowers brainstorming scratch (mockups, session state)
+.superpowers/
