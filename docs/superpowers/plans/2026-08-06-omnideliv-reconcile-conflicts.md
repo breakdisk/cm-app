@@ -4,6 +4,30 @@
 
 **Goal:** Build the conflict list the spec's phase 3 promises and the implementation never produced — so "conflicts surface deterministically in reconcile" becomes true rather than aspirational.
 
+> **EXECUTED 2026-08-07** — commits `607e521c` (Tasks 1–4) and `35edf132` (Task 5).
+> Two places where this plan was wrong, corrected in the implementation and
+> below, so nobody rebuilds from the original text:
+>
+> 1. **Task 1's temperature-mix test data was self-contradicting.** It used
+>    restaurant prep 20 and grocery prep 5 — a spread of exactly 15, which also
+>    trips the `>= READINESS_SPREAD_MINUTES` check — while asserting
+>    `conflicts.len() == 1`. The shipped test uses prep 14 to isolate the axis
+>    under test, and adds `the_readiness_threshold_is_inclusive` to pin the
+>    boundary, precisely because the obvious data sits on it.
+> 2. **Task 3 read constraints off the planned workers; it must read `specs`.**
+>    Pharmacy, florist and retail get no slice-one specialist, so an allergen
+>    stated while asking about pharmacy items would have been silently dropped
+>    and never applied to the restaurant lines. An allergen is a fact about the
+>    person, not the sub-intent. Covered by
+>    `a_constraint_on_an_unhandled_vertical_still_counts`, which asserts the
+>    precondition before the behaviour.
+>
+> Also: `MeshRunner` gained `catalog: Arc<dyn MeshCatalog>` directly rather than
+> reaching it through `ToolBox`. Verification must not travel the model's tool
+> surface. Task 5 landed as migration `0012_basket_conflicts.sql` plus a
+> `set_conflicts` repository method that deliberately does not bump the
+> optimistic-lock version.
+
 **Architecture:** `reconcile` stays a pure function and gains a context carrying **catalog facts the runner resolved server-side**, never what the specialist reported. Allergen violations remove the offending line and are reported; everything else is advisory and shown to the customer. The linear pipeline is kept — the topology question is deferred until a slice genuinely needs a cycle.
 
 ---
@@ -162,7 +186,9 @@ mod tests {
     /// not a temperature mix.
     #[test]
     fn a_hot_and_chilled_basket_reports_a_temperature_mix() {
-        let hot     = item(&[], "restaurant", 20, 30_000);
+        // prep 14, not 20: a 20/5 pair is a spread of exactly 15, which also
+        // trips ReadinessSpread and makes the count assertion below meaningless.
+        let hot     = item(&[], "restaurant", 14, 30_000);
         let chilled = item(&[], "grocery", 5, 8_000);
         let c = ctx(None, &[], facts(vec![hot.clone(), chilled.clone()]));
         let (_, conflicts) = detect(
@@ -619,6 +645,8 @@ Replace the hardcoded constraint block in `MeshRunner::run` with:
             });
 
         let ctx = ReconcileContext {
+            // `specs`, not the planned `workers`: a vertical with no slice-one
+            // specialist still contributes its constraints.
             budget_cents: constraints_budget(&specs),
             avoid_allergens: constraints_allergens(&specs),
             facts: facts.into_iter().map(|f| (f.item_id, f)).collect(),
