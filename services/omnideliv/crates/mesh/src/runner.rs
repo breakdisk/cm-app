@@ -336,6 +336,19 @@ impl MeshRunner {
             }
         }
 
+        // Recorded before the events go out: a customer who reaches Screen C
+        // fast must find them already there, and an SSE send that nobody is
+        // listening to must not be what decides whether they were saved.
+        if let Err(e) = self
+            .basket
+            .record_conflicts(tenant_id.inner(), basket_id, &outcome.conflicts)
+            .await
+        {
+            // Non-fatal. The basket is already correct — blocking lines were
+            // never written — so this loses the explanation, not the safety.
+            tracing::error!(err = %e, %basket_id, "could not record reconcile conflicts");
+        }
+
         // One event per conflict, in the customer's words. This replaces a
         // vertical-membership guess: a grocery-only basket of ambient tins no
         // longer claims a temperature constraint it does not have, and a
@@ -555,8 +568,9 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingBasket {
-        created: Mutex<Vec<Uuid>>,
-        writes:  Mutex<Vec<(Uuid, usize)>>,
+        created:   Mutex<Vec<Uuid>>,
+        writes:    Mutex<Vec<(Uuid, usize)>>,
+        conflicts: Mutex<Vec<crate::conflict::Conflict>>,
     }
 
     #[async_trait::async_trait]
@@ -565,6 +579,11 @@ mod tests {
             let id = Uuid::new_v4();
             self.created.lock().unwrap().push(id);
             Ok(id)
+        }
+        async fn record_conflicts(&self, _: Uuid, _: Uuid, c: &[crate::conflict::Conflict])
+            -> anyhow::Result<()> {
+            *self.conflicts.lock().unwrap() = c.to_vec();
+            Ok(())
         }
         async fn write_delta(
             &self, _: Uuid, basket_id: Uuid, _: Uuid, _: &str, _: &str,
@@ -924,6 +943,96 @@ mod tests {
         );
         assert!(events.iter().any(|e| matches!(e, MeshEvent::Completed { .. })));
         assert_eq!(basket.created.lock().unwrap().len(), 1, "exactly one basket per run");
+    }
+
+    /// A catalog that resolves one known item and marks it as carrying peanuts.
+    /// Anything else is unresolvable, which is the fail-closed default.
+    struct PeanutCatalog;
+
+    const PEANUT_ITEM: Uuid = Uuid::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888);
+    const PEANUT_VENDOR: Uuid = Uuid::from_u128(0x9999_8888_7777_6666_5555_4444_3333_2222);
+
+    #[async_trait::async_trait]
+    impl crate::tools::MeshCatalog for PeanutCatalog {
+        async fn search(&self, _: Uuid, _: Uuid, _: &str, _: &[String], _: i64)
+            -> anyhow::Result<serde_json::Value> { Ok(serde_json::json!({ "items": [] })) }
+        async fn vendors_near(&self, _: Uuid, _: &str, _: f64, _: f64, _: f64, _: i64)
+            -> anyhow::Result<serde_json::Value> { Ok(serde_json::json!({ "vendors": [] })) }
+        async fn courier_supply(&self, _: Uuid, _: f64, _: f64, _: f64)
+            -> anyhow::Result<serde_json::Value> { Ok(serde_json::json!({ "available": 3 })) }
+        async fn resolve_facts(&self, _: Uuid, ids: &[Uuid])
+            -> anyhow::Result<Vec<crate::conflict::ItemFacts>> {
+            Ok(ids.iter().filter(|id| **id == PEANUT_ITEM).map(|id| crate::conflict::ItemFacts {
+                item_id: *id,
+                allergens: vec!["Peanuts".into()],
+                vertical: "restaurant".into(),
+                prep_time_minutes: 20,
+                price_cents: 30_000,
+            }).collect())
+        }
+    }
+
+    /// End to end: the Concierge states an allergen, a specialist proposes an
+    /// item that carries it anyway, and the line must not reach the basket.
+    ///
+    /// This is the case the whole verification step exists for — a model that
+    /// was told the constraint and violated it regardless. Asserting it at the
+    /// unit level only would leave the wiring (facts resolved from the catalog,
+    /// constraints read off `specs`, conflicts recorded) untested.
+    #[tokio::test]
+    async fn a_specialist_proposing_a_stated_allergen_never_reaches_the_basket() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let basket = Arc::new(RecordingBasket::default());
+
+        let runner = MeshRunner::new(
+            Arc::new(StubClaude::new(vec![
+                StubClaude::tool_call("t1", "decompose_intent", serde_json::json!({
+                    "sub_intents": [{
+                        "vertical": "restaurant",
+                        "raw_text": "dinner, no peanuts",
+                        "constraints": { "avoid_allergens": ["peanuts"] }
+                    }]
+                })),
+                StubClaude::text("split"),
+                // The specialist proposes the peanut dish regardless.
+                StubClaude::tool_call("t2", "propose_lines", serde_json::json!({
+                    "lines": [{
+                        "vendor_id": PEANUT_VENDOR,
+                        "item_id": PEANUT_ITEM,
+                        "qty": 1,
+                        "unit_price_cents": 30_000
+                    }]
+                })),
+                StubClaude::text("done"),
+                StubClaude::tool_call("t4", "plan_route", serde_json::json!({
+                    "vendor_order": [], "flat_fee_cents": 4900, "total_minutes": 30
+                })),
+                StubClaude::text("planned"),
+            ])),
+            Arc::new(crate::tools::MeshToolBox::new(
+                Arc::new(PeanutCatalog), Uuid::new_v4(), 14.5995, 120.9842)),
+            Arc::new(InMemoryStore::default()),
+            basket.clone(),
+            Arc::new(PeanutCatalog),
+            MeshConfig::default(),
+        );
+
+        runner.run(TenantId::from_uuid(Uuid::new_v4()), Uuid::new_v4(),
+                   "dinner, no peanuts".into(), tx).await;
+
+        let written: usize = basket.writes.lock().unwrap().iter().map(|(_, n)| n).sum();
+        assert_eq!(written, 0, "the peanut line must never be written to the basket");
+
+        let recorded = basket.conflicts.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 1, "the conflict must be persisted, not only streamed");
+        assert!(recorded[0].blocking);
+        assert!(matches!(recorded[0].kind, crate::conflict::ConflictKind::AllergenViolation { .. }));
+
+        let events = collect(&mut rx);
+        assert!(
+            events.iter().any(|e| matches!(e, MeshEvent::ConstraintDetected { .. })),
+            "Screen B must be told, got {events:?}"
+        );
     }
 
     /// Emitting Completed before the last SpecialistFinished would let the app

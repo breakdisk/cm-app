@@ -158,6 +158,20 @@ pub struct BasketDelta {
     pub note:          Option<String>,
 }
 
+/// One thing reconcile found while verifying a mesh run.
+///
+/// Deliberately not the mesh's own `Conflict` type: this crosses the HTTP
+/// boundary to the app, and `kind` is carried as opaque JSON so a new variant
+/// in the mesh does not become a breaking change here.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BasketConflict {
+    pub kind:        serde_json::Value,
+    /// The line is already gone from this basket. Phrased to the customer as
+    /// something done, not something to decide.
+    pub blocking:    bool,
+    pub description: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Basket {
     pub id:              Uuid,
@@ -167,6 +181,9 @@ pub struct Basket {
     pub mesh_session_id: Option<Uuid>,
     pub sub_intents:     Vec<SubIntent>,
     pub lines:           Vec<BasketLine>,
+    /// What the last mesh run's verification found. Empty for a manually built
+    /// basket — nothing proposed it, so there was nothing to verify.
+    pub conflicts:       Vec<BasketConflict>,
     /// Optimistic lock. Bumped by every mutation via `touch`, and compared on
     /// write so a concurrent update is a detected conflict, not a lost one.
     pub version:         i64,
@@ -185,6 +202,7 @@ impl Basket {
             mesh_session_id: None,
             sub_intents: Vec::new(),
             lines: Vec::new(),
+            conflicts: Vec::new(),
             version: 0,
             created_at: now,
             updated_at: now,

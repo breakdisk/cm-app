@@ -61,6 +61,45 @@ export default function Review() {
           </Text>
         )}
 
+        {/* Above the totals, not below: these are things the customer needs
+            before deciding, not afterwards. Screen B streamed them while the
+            run was in flight, but anyone who tapped through quickly never
+            read them — and a blocking conflict means a line they asked for is
+            missing from what they are about to pay for. */}
+        {basket?.conflicts && basket.conflicts.length > 0 && (
+          <View style={{ gap: 8 }}>
+            {basket.conflicts.map((c, i) => (
+              <View
+                key={i}
+                accessibilityRole="alert"
+                style={{
+                  borderLeftWidth: 2,
+                  borderLeftColor: c.blocking ? theme.red : theme.amber,
+                  backgroundColor: c.blocking
+                    ? "rgba(255,59,92,0.07)"
+                    : "rgba(255,171,0,0.07)",
+                  borderRadius: theme.radius.sm,
+                  padding: 11,
+                }}
+              >
+                <Text
+                  style={{
+                    color: c.blocking ? theme.red : theme.amber,
+                    fontSize: 9.5,
+                    letterSpacing: 1,
+                    marginBottom: 4,
+                  }}
+                >
+                  {c.blocking ? "WE CHANGED SOMETHING" : "WORTH KNOWING"}
+                </Text>
+                <Text style={{ color: "rgba(255,255,255,0.82)", fontSize: 12 }}>
+                  {c.description}
+                </Text>
+              </View>
+            ))}
+          </View>
+        )}
+
         {basket && (
           <View
             style={{

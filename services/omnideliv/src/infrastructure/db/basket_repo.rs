@@ -3,7 +3,8 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::domain::entities::{
-    Basket, BasketLine, BasketStatus, LineState, SubIntent, SubIntentSource, SubIntentStatus,
+    Basket, BasketConflict, BasketLine, BasketStatus, LineState, SubIntent, SubIntentSource,
+    SubIntentStatus,
 };
 use crate::domain::repositories::BasketRepository;
 use crate::infrastructure::db::vendor_repo::parse_vertical;
@@ -133,10 +134,28 @@ impl BasketRepository for PgBasketRepository {
             mesh_session_id: b.get("mesh_session_id"),
             sub_intents,
             lines,
+            conflicts:       serde_json::from_value(b.get("conflicts")).unwrap_or_default(),
             version:         b.get("version"),
             created_at:      b.get("created_at"),
             updated_at:      b.get("updated_at"),
         }))
+    }
+
+    async fn set_conflicts(
+        &self,
+        tenant_id: Uuid,
+        basket_id: Uuid,
+        conflicts: &[BasketConflict],
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE omnideliv.baskets SET conflicts = $3 WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(tenant_id)
+        .bind(basket_id)
+        .bind(serde_json::to_value(conflicts)?)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     async fn save(&self, basket: &Basket) -> anyhow::Result<()> {

@@ -23,6 +23,9 @@ pub struct BasketResponse {
     pub status:            String,
     pub goods_total_cents: i64,
     pub lines_awaiting_review: usize,
+    /// What the mesh's verification found, restated at the point of decision.
+    /// Empty for a manually built basket — nothing proposed it.
+    pub conflicts:         Vec<crate::domain::entities::BasketConflict>,
 }
 
 // Namespaced under `/v1/omnideliv` per ADR-0015's API-contract rule: product
@@ -56,6 +59,7 @@ async fn create(
         status: b.status.as_str().to_string(),
         goods_total_cents: b.goods_total_cents(),
         lines_awaiting_review: b.lines_awaiting_review().len(),
+        conflicts: b.conflicts.clone(),
     }))
 }
 
@@ -78,6 +82,7 @@ async fn fetch(
         status: b.status.as_str().to_string(),
         goods_total_cents: b.goods_total_cents(),
         lines_awaiting_review: b.lines_awaiting_review().len(),
+        conflicts: b.conflicts.clone(),
     }))
 }
 
@@ -88,6 +93,7 @@ impl BasketResponse {
             status: b.status.as_str().to_string(),
             goods_total_cents: b.goods_total_cents(),
             lines_awaiting_review: b.lines_awaiting_review().len(),
+            conflicts: b.conflicts.clone(),
         }
     }
 }

@@ -22,6 +22,18 @@ impl BasketService {
         Self { baskets, vendors, catalog }
     }
 
+    /// Record what a mesh run's verification found. Not a basket mutation:
+    /// it does not go through the optimistic lock, because the run is
+    /// describing lines it just wrote rather than changing them.
+    pub async fn record_conflicts(
+        &self,
+        tenant_id: Uuid,
+        basket_id: Uuid,
+        conflicts: &[crate::domain::entities::BasketConflict],
+    ) -> anyhow::Result<()> {
+        self.baskets.set_conflicts(tenant_id, basket_id, conflicts).await
+    }
+
     pub async fn create(&self, tenant_id: Uuid, customer_id: Uuid) -> anyhow::Result<Basket> {
         let b = Basket::new(tenant_id, customer_id);
         self.baskets.save(&b).await?;

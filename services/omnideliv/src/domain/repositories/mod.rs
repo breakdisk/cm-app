@@ -8,7 +8,8 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::domain::entities::{
-    Availability, Basket, CatalogItem, Order, TelemetryEvent, Vendor, VendorLedger, Vertical,
+    Availability, Basket, BasketConflict, CatalogItem, Order, TelemetryEvent, Vendor, VendorLedger,
+    Vertical,
 };
 
 #[async_trait]
@@ -98,6 +99,21 @@ pub struct ItemFacts {
 #[async_trait]
 pub trait BasketRepository: Send + Sync {
     async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<Basket>>;
+
+    /// Record what the mesh's verification found, replacing any prior list.
+    ///
+    /// A targeted UPDATE rather than a field on `save`, and deliberately does
+    /// **not** bump `version`. The optimistic lock guards against two callers
+    /// losing each other's *customer* edits; this is the run recording its own
+    /// findings about lines it just wrote, and making it invalidate a
+    /// concurrent edit would turn an observation into a lost update.
+    async fn set_conflicts(
+        &self,
+        tenant_id: Uuid,
+        basket_id: Uuid,
+        conflicts: &[BasketConflict],
+    ) -> anyhow::Result<()>;
+
     /// Persists the basket and its sub-intents and lines as one unit.
     async fn save(&self, basket: &Basket) -> anyhow::Result<()>;
 }

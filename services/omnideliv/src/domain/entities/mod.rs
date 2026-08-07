@@ -7,6 +7,7 @@ pub mod vendor;
 pub mod vendor_ledger;
 
 pub use basket::{
+    BasketConflict,
     Basket, BasketDelta, BasketLine, BasketStatus, LineState, SubIntent, SubIntentSource,
     SubIntentStatus,
 };

@@ -1,10 +1,22 @@
 import { apiFetch } from "./client";
 
+/** One thing the mesh's verification found while checking proposed lines. */
+export interface BasketConflict {
+  /** Opaque to the app — the mesh owns this enum and will add variants. */
+  kind: unknown;
+  /** The line is already gone. Phrase it as done, not as a decision. */
+  blocking: boolean;
+  description: string;
+}
+
 export interface BasketView {
   id: string;
   status: string;
   goods_total_cents: number;
   lines_awaiting_review: number;
+  /** Empty for a manually built basket — nothing proposed it, so nothing was
+   *  verified. Older responses omit the field entirely; treat it as empty. */
+  conflicts?: BasketConflict[];
 }
 
 export function createBasket(): Promise<BasketView> {

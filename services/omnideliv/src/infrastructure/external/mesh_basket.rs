@@ -13,7 +13,7 @@ use omnideliv_mesh::tools::MeshBasket;
 use omnideliv_mesh::transition::ProposedLine;
 
 use crate::application::services::BasketService;
-use crate::domain::entities::{BasketDelta, BasketLine, Vertical};
+use crate::domain::entities::{BasketConflict, BasketDelta, BasketLine, Vertical};
 
 pub struct BasketServiceAdapter {
     baskets: Arc<BasketService>,
@@ -38,6 +38,29 @@ fn parse_vertical(s: &str) -> anyhow::Result<Vertical> {
 impl MeshBasket for BasketServiceAdapter {
     async fn create(&self, tenant_id: Uuid, customer_id: Uuid) -> anyhow::Result<Uuid> {
         Ok(self.baskets.create(tenant_id, customer_id).await?.id)
+    }
+
+    async fn record_conflicts(
+        &self,
+        tenant_id: Uuid,
+        basket_id: Uuid,
+        conflicts: &[omnideliv_mesh::Conflict],
+    ) -> anyhow::Result<()> {
+        // `kind` crosses as opaque JSON. The mesh owns that enum and will grow
+        // variants; re-encoding it into a product-side enum here would make
+        // every new conflict kind a change in two crates.
+        let rows: Vec<BasketConflict> = conflicts
+            .iter()
+            .map(|c| {
+                Ok(BasketConflict {
+                    kind:        serde_json::to_value(&c.kind)?,
+                    blocking:    c.blocking,
+                    description: c.description.clone(),
+                })
+            })
+            .collect::<anyhow::Result<_>>()?;
+
+        self.baskets.record_conflicts(tenant_id, basket_id, &rows).await
     }
 
     async fn write_delta(

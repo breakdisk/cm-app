@@ -84,6 +84,17 @@ pub trait MeshBasket: Send + Sync {
 
     /// How many lines still need a customer decision. Drives `needs_review`.
     async fn lines_awaiting_review(&self, tenant_id: Uuid, basket_id: Uuid) -> anyhow::Result<usize>;
+
+    /// Persist what reconcile found, so Screen C can restate it at the point of
+    /// decision. The SSE events reach Screen B only, and a customer who taps
+    /// through before the stream ends never sees them — which matters most for
+    /// blocking conflicts, where a line they asked for is missing.
+    async fn record_conflicts(
+        &self,
+        tenant_id: Uuid,
+        basket_id: Uuid,
+        conflicts: &[crate::conflict::Conflict],
+    ) -> anyhow::Result<()>;
 }
 
 pub struct MeshToolBox {
