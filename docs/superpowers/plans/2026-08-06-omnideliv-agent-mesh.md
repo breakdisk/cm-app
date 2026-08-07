@@ -1581,9 +1581,15 @@ basket persists so the customer can reopen it."
 
 ---
 
-## Task 8: Keep partial results at the deadline
+## Task 8: Keep partial results at the deadline — FOLDED INTO TASK 6
 
-Task 6 flagged that a blunt join-timeout discards finished work. Fix it.
+> **Already done.** Task 6 originally specified a blunt `timeout` around the
+> whole join, which discards the results of workers that had already finished,
+> and this task replaced it. Writing the discarding version first and fixing it
+> one task later is churn with a window in which the code is knowingly wrong,
+> so `join_with_deadline` went in directly. The tests below are already in
+> `runner.rs`, plus one asserting the deadline is shared rather than per-worker.
+> Kept for the rationale.
 
 **Files:**
 - Modify: `services/omnideliv/crates/mesh/src/runner.rs`

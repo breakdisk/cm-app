@@ -2,9 +2,10 @@
 
 pub mod events;
 pub mod roles;
+pub mod runner;
 pub mod tools;
 pub mod transition;
-// runner arrives in Task 6.
 
 pub use events::MeshEvent;
+pub use runner::{MeshConfig, MeshOutcome, MeshRunner};
 pub use transition::{MeshTransition, ProposedLine, RoutePlan, SubIntentSpec};
