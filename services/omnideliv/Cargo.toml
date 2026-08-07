@@ -18,6 +18,7 @@ logisticos-tracing.workspace = true
 logisticos-types.workspace   = true
 logisticos-events.workspace  = true
 omnideliv-mesh.workspace     = true
+logisticos-agent-runtime.workspace = true
 tokio.workspace       = true
 axum.workspace        = true
 tower-http.workspace  = true
@@ -34,6 +35,8 @@ validator.workspace   = true
 rdkafka.workspace     = true
 tracing.workspace     = true
 async-trait.workspace = true
+futures-util  = "0.3"
+tokio-stream  = "0.1"
 
 [dev-dependencies]
 tokio      = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -31,7 +31,33 @@ pub struct Config {
     /// `Availability::confidence`.
     #[serde(default = "default_stock_freshness_mins")]
     pub stock_freshness_mins: i64,
+
+    /// See the KNOWN LIMITATION in bootstrap: the mesh tool box is built once
+    /// at startup, so these stand in for per-run request context until it is
+    /// built per run.
+    #[serde(default)]
+    pub default_tenant_id: uuid::Uuid,
+    #[serde(default = "default_lat")]
+    pub default_lat: f64,
+    #[serde(default = "default_lng")]
+    pub default_lng: f64,
+
+    pub claude_api_key: String,
+    #[serde(default = "default_claude_model")]
+    pub claude_model: String,
+    /// 8192 rather than ai-layer's 4096: mesh specialists emit structured
+    /// proposals with several lines plus reasoning, and a tighter cap risks
+    /// truncating a proposal mid-array — which the runner reads as unparseable
+    /// and degrades, turning a token limit into a missing vertical.
+    #[serde(default = "default_claude_max_tokens")]
+    pub claude_max_tokens: u32,
 }
+
+fn default_lat() -> f64 { 14.5995 }
+fn default_lng() -> f64 { 120.9842 }
+
+fn default_claude_model() -> String { "claude-opus-4-6".to_string() }
+fn default_claude_max_tokens() -> u32 { 8192 }
 
 fn default_stock_freshness_mins() -> i64 { 30 }
 

@@ -8,6 +8,8 @@ use crate::api::http::{router, AppState};
 use crate::application::services::{BasketService, CatalogService};
 use crate::config::Config;
 use crate::infrastructure::db::{PgBasketRepository, PgCatalogRepository, PgVendorRepository};
+use crate::infrastructure::external::{BasketServiceAdapter, CatalogServiceAdapter};
+use crate::infrastructure::db::PgMeshSessionStore;
 
 pub async fn run() -> anyhow::Result<()> {
     let cfg = Config::load().context("Failed to load omnideliv config")?;
@@ -55,7 +57,32 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::new(PgCatalogRepository::new(pool.clone())),
     ));
 
-    let state = Arc::new(AppState { catalog, baskets, jwt });
+    // The mesh writes through BasketService like every other caller, so it
+    // inherits the optimistic lock rather than opening a second write path.
+    let mesh = Arc::new(omnideliv_mesh::MeshRunner::new(
+        Arc::new(logisticos_agent_runtime::claude::ClaudeClient::new(
+            cfg.claude_api_key.clone(),
+            cfg.claude_model.clone(),
+            cfg.claude_max_tokens,
+        )),
+        Arc::new(omnideliv_mesh::tools::MeshToolBox::new(
+            Arc::new(CatalogServiceAdapter::new(catalog.clone())),
+            // KNOWN LIMITATION: the tool box binds tenant and delivery address
+            // at construction, so today every run searches from the configured
+            // default rather than the customer's address. Correct for a
+            // single-tenant slice-one deployment and wrong the moment there are
+            // two; the fix is to build the tool box per run inside
+            // `MeshRunner::run`, which needs the request context threaded in.
+            cfg.default_tenant_id,
+            cfg.default_lat,
+            cfg.default_lng,
+        )),
+        Arc::new(PgMeshSessionStore::new(pool.clone())),
+        Arc::new(BasketServiceAdapter::new(baskets.clone())),
+        omnideliv_mesh::MeshConfig::default(),
+    ));
+
+    let state = Arc::new(AppState { catalog, baskets, mesh, jwt });
 
     let addr = format!("0.0.0.0:{}", cfg.app.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;

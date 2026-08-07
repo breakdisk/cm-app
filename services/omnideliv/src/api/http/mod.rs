@@ -1,15 +1,18 @@
 pub mod baskets;
 pub mod catalog;
 pub mod health;
+pub mod mesh;
 
 use std::sync::Arc;
 use axum::Router;
 
 use crate::application::services::{BasketService, CatalogService};
+use omnideliv_mesh::MeshRunner;
 
 pub struct AppState {
     pub catalog: Arc<CatalogService>,
     pub baskets: Arc<BasketService>,
+    pub mesh:    Arc<MeshRunner>,
     pub jwt:     Arc<logisticos_auth::jwt::JwtService>,
 }
 
@@ -28,6 +31,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .merge(
             catalog::routes()
                 .merge(baskets::routes())
+                .merge(mesh::routes())
                 .layer(auth_layer)
                 .with_state(state),
         )

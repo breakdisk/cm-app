@@ -667,7 +667,12 @@ only what and how many. A client-supplied price is a client-supplied discount."
 
 ---
 
-## Task 5: The app — vendor detail and basket
+## Task 5: The app — vendor detail and basket — NEEDS PLAN 7 FIRST
+
+> **Blocked.** This task creates screens under `apps/omnideliv-app/` and modifies
+> `app/browse/[vertical].tsx`. That app does not exist — [Plan 7](2026-08-06-omnideliv-app.md)
+> creates it. Tasks 1-4 and 6 are the backend half of this plan and are done;
+> they are what unblock Plan 9 Task 3.
 
 **Files:**
 - Create: `apps/omnideliv-app/app/vendor/[vendorId].tsx`, `app/basket.tsx`, `src/api/basket.ts`, `src/hooks/useActiveBasket.ts`
