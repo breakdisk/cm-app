@@ -17,6 +17,7 @@ logisticos-auth.workspace    = true
 logisticos-tracing.workspace = true
 logisticos-types.workspace   = true
 logisticos-events.workspace  = true
+omnideliv-mesh.workspace     = true
 tokio.workspace       = true
 axum.workspace        = true
 tower-http.workspace  = true

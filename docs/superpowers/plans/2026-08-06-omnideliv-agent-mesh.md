@@ -308,14 +308,9 @@ pub struct RoutePlan {
     pub total_minutes:   i32,
 }
 
-/// A question only the customer can answer.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct UserPrompt {
-    pub sub_intent_id: Uuid,
-    pub question:      String,
-    pub options:       Vec<String>,
-}
-
+/// No `NeedsUser` variant, deliberately. Plan 12 Task 4 was going to delete
+/// it as dead — never emitted, never handled — so it is simply not written.
+/// The human gate is Screen C via `Completed { needs_review }`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MeshTransition {
@@ -330,8 +325,6 @@ pub enum MeshTransition {
         #[serde(default)]
         note: Option<String>,
     },
-    /// Any agent → the human. Surfaces on Screen C.
-    NeedsUser { prompt: UserPrompt },
     /// Fleet → Concierge.
     Plan { plan: RoutePlan },
     /// Concierge → the commit path. Not an agent action — checkout is a plain
@@ -351,7 +344,7 @@ pub mod tools;
 pub mod transition;
 
 pub use runner::{MeshOutcome, MeshRunner};
-pub use transition::{MeshTransition, ProposedLine, RoutePlan, SubIntentSpec, UserPrompt};
+pub use transition::{MeshTransition, ProposedLine, RoutePlan, SubIntentSpec};
 ```
 
 - [ ] **Step 5: Run the tests**

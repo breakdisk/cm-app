@@ -1,0 +1,24 @@
+[package]
+name        = "omnideliv-mesh"
+description = "Collaborative Agent Mesh — Concierge orchestration over specialist agents"
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+rust-version.workspace = true
+
+[dependencies]
+logisticos-agent-runtime.workspace = true
+logisticos-errors.workspace        = true
+logisticos-types.workspace         = true
+async-trait.workspace = true
+serde.workspace       = true
+serde_json.workspace  = true
+tokio.workspace       = true
+tracing.workspace     = true
+uuid.workspace        = true
+chrono.workspace      = true
+anyhow.workspace      = true
+
+[dev-dependencies]
+logisticos-agent-runtime = { workspace = true, features = ["testing"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

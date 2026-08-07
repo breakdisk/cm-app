@@ -721,7 +721,13 @@ a lookup failure must not become an allergen bypass."
 
 ---
 
-## Task 4: Delete `NeedsUser`
+## Task 4: Delete `NeedsUser` — ALREADY SATISFIED
+
+> **Nothing to do.** Plan 4 never wrote `NeedsUser` or `UserPrompt`: writing a
+> variant in one plan so a later plan can delete it means shipping dead code
+> that a reader may build against in between. `transition.rs` carries a test
+> (`there_is_no_needs_user_transition`) asserting the variant does not parse,
+> so reinstating it fails loudly. Verify with the check below and move on.
 
 **Files:**
 - Modify: `services/omnideliv/crates/mesh/src/transition.rs`, `docs/superpowers/specs/2026-08-06-omnideliv-ai-design.md`

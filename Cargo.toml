@@ -20,6 +20,7 @@ members = [
     "services/engagement",
     "services/order-intake",
     "services/omnideliv",
+    "services/omnideliv/crates/mesh",
     "services/dispatch",
     "services/driver-ops",
     "services/field-ops",
@@ -134,6 +135,7 @@ logisticos-events  = { path = "libs/events" }
 logisticos-geo     = { path = "libs/geo" }
 logisticos-ai      = { path = "libs/ai-client" }
 logisticos-agent-runtime = { path = "libs/agent-runtime" }
+omnideliv-mesh   = { path = "services/omnideliv/crates/mesh" }
 
 [profile.release]
 opt-level     = 3

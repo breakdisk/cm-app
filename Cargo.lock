@@ -3499,6 +3499,7 @@ dependencies = [
  "logisticos-events",
  "logisticos-tracing",
  "logisticos-types",
+ "omnideliv-mesh",
  "rdkafka",
  "serde",
  "serde_json",
@@ -3899,6 +3900,23 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "omnideliv-mesh"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "logisticos-agent-runtime",
+ "logisticos-errors",
+ "logisticos-types",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
