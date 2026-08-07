@@ -28,6 +28,17 @@ pub trait MeshCatalog: Send + Sync {
         limit: i64,
     ) -> anyhow::Result<serde_json::Value>;
 
+    /// Resolve catalog truth for the items a specialist proposed.
+    ///
+    /// The runner calls this between fan-out and reconcile. Facts must come
+    /// from here rather than from the specialist's own output, or the
+    /// verification step verifies the model against itself.
+    async fn resolve_facts(
+        &self,
+        tenant_id: Uuid,
+        item_ids: &[Uuid],
+    ) -> anyhow::Result<Vec<crate::conflict::ItemFacts>>;
+
     /// Orderable vendors of a vertical near the customer.
     async fn vendors_near(
         &self,
@@ -404,6 +415,11 @@ mod tests {
             -> anyhow::Result<serde_json::Value> {
             self.calls.lock().unwrap().push(format!("couriers:{lat}:{lng}"));
             Ok(json!({ "available": 0 }))
+        }
+        async fn resolve_facts(&self, _: Uuid, ids: &[Uuid])
+            -> anyhow::Result<Vec<crate::conflict::ItemFacts>> {
+            self.calls.lock().unwrap().push(format!("facts:{}", ids.len()));
+            Ok(vec![])
         }
     }
 

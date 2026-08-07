@@ -3,7 +3,7 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::domain::entities::{Availability, AvailabilityState, CatalogItem};
-use crate::domain::repositories::{CatalogRepository, ItemWithAvailability};
+use crate::domain::repositories::{CatalogRepository, ItemFacts, ItemWithAvailability};
 
 pub struct PgCatalogRepository { pool: PgPool }
 
@@ -183,5 +183,50 @@ impl CatalogRepository for PgCatalogRepository {
         .fetch_all(&self.pool).await?;
 
         rows.iter().map(map_pair).collect()
+    }
+
+    async fn item_facts(
+        &self,
+        tenant_id: Uuid,
+        item_ids: &[Uuid],
+    ) -> anyhow::Result<Vec<ItemFacts>> {
+        if item_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // `vertical` and `prep_time_minutes` live on the vendor, not the item,
+        // so this joins rather than reading catalog_items alone. INNER JOIN:
+        // an item whose vendor is missing cannot be classified, and reconcile
+        // must treat it as unverifiable rather than guess a temperature class.
+        //
+        // No `is_listed` filter. A delisted item still has real allergens, and
+        // the caller's job here is to verify what was proposed, not to decide
+        // whether it is orderable — hiding it would turn a known allergen into
+        // an unresolved id, which reads the same but for the wrong reason.
+        let rows = sqlx::query(
+            r#"
+            SELECT i.id, i.allergens, i.price_cents,
+                   v.vertical, v.prep_time_minutes
+              FROM omnideliv.catalog_items i
+              JOIN omnideliv.vendors v ON v.id = i.vendor_id AND v.tenant_id = i.tenant_id
+             WHERE i.tenant_id = $1
+               AND i.id = ANY($2)
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(item_ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .iter()
+            .map(|r| ItemFacts {
+                item_id:           r.get("id"),
+                allergens:         r.get("allergens"),
+                vertical:          r.get("vertical"),
+                prep_time_minutes: r.get("prep_time_minutes"),
+                price_cents:       r.get("price_cents"),
+            })
+            .collect())
     }
 }

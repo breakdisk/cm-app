@@ -23,6 +23,7 @@ use uuid::Uuid;
 use crate::events::MeshEvent;
 use crate::roles;
 use crate::tools::MeshBasket;
+use crate::conflict::{Conflict, ReconcileContext};
 use crate::transition::{MeshTransition, ProposedLine, RoutePlan, SubIntentSpec};
 
 #[derive(Debug, Clone)]
@@ -95,25 +96,56 @@ pub struct SpecialistResult {
 #[derive(Debug, Clone)]
 pub struct MeshOutcome {
     pub lines:          Vec<(Uuid, Vec<ProposedLine>)>,
+    /// What verification found. Blocking entries have already had their line
+    /// removed from `lines`; advisory ones are for the customer to weigh.
+    pub conflicts:      Vec<Conflict>,
     pub degraded_count: usize,
     /// Every worker degraded — the mesh produced nothing usable and the client
     /// should fall back to deterministic browse.
     pub total_failure:  bool,
 }
 
-/// Phase 3. The single writer: merges results, counts degradations, and decides
-/// whether the run produced anything usable.
-pub fn reconcile_results(results: Vec<SpecialistResult>) -> MeshOutcome {
+/// Phase 3. The single writer: merges results, verifies them against catalog
+/// facts, and decides whether the run produced anything usable.
+pub fn reconcile_results(results: Vec<SpecialistResult>, ctx: &ReconcileContext) -> MeshOutcome {
     let degraded_count = results.iter().filter(|r| r.degraded).count();
     let total_failure = !results.is_empty() && degraded_count == results.len();
 
-    let lines = results
-        .into_iter()
-        .filter(|r| !r.degraded)
-        .map(|r| (r.sub_intent_id, r.lines))
-        .collect();
+    let mut lines = Vec::new();
+    let mut conflicts = Vec::new();
 
-    MeshOutcome { lines, degraded_count, total_failure }
+    // Only non-degraded results are verified. A degraded specialist's lines were
+    // never trusted, so they must not produce conflicts either.
+    for r in results.into_iter().filter(|r| !r.degraded) {
+        let (kept, mut found) = crate::conflict::detect(r.lines, ctx);
+        lines.push((r.sub_intent_id, kept));
+        conflicts.append(&mut found);
+    }
+
+    MeshOutcome { lines, conflicts, degraded_count, total_failure }
+}
+
+/// Tightest stated budget across sub-intents. The customer said one number for
+/// the whole order, so the strictest reading is the safe one.
+fn constraints_budget(specs: &[SubIntentSpec]) -> Option<i64> {
+    specs
+        .iter()
+        .filter_map(|s| s.constraints.get("budget_cents").and_then(serde_json::Value::as_i64))
+        .min()
+}
+
+/// Union of every allergen mentioned anywhere. An allergen stated for one
+/// vertical applies to the person, not the vertical.
+fn constraints_allergens(specs: &[SubIntentSpec]) -> Vec<String> {
+    let mut out: Vec<String> = specs
+        .iter()
+        .filter_map(|s| s.constraints.get("avoid_allergens").and_then(serde_json::Value::as_array))
+        .flatten()
+        .filter_map(|v| v.as_str().map(str::to_owned))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 pub struct MeshRunner {
@@ -121,6 +153,10 @@ pub struct MeshRunner {
     tools:  Arc<dyn ToolBox>,
     store:  Arc<dyn SessionStore>,
     basket: Arc<dyn MeshBasket>,
+    /// Held directly, not reached through `tools`. Verification must not travel
+    /// the model's tool surface: the facts reconcile checks against have to come
+    /// from a path the model cannot influence.
+    catalog: Arc<dyn crate::tools::MeshCatalog>,
     config: MeshConfig,
 }
 
@@ -130,9 +166,10 @@ impl MeshRunner {
         tools: Arc<dyn ToolBox>,
         store: Arc<dyn SessionStore>,
         basket: Arc<dyn MeshBasket>,
+        catalog: Arc<dyn crate::tools::MeshCatalog>,
         config: MeshConfig,
     ) -> Self {
-        Self { claude, tools, store, basket, config }
+        Self { claude, tools, store, basket, catalog, config }
     }
 
     /// Phase 1. Returns the parent session id alongside the split, so every
@@ -235,7 +272,39 @@ impl MeshRunner {
 
         // Phase 3 — reconcile. Single writer: results are merged and written
         // here, serially, never by the workers themselves.
-        let outcome = reconcile_results(results);
+        //
+        // Resolve catalog truth for everything proposed, then verify against it
+        // rather than against what the specialists claimed.
+        let proposed_ids: Vec<Uuid> = results
+            .iter()
+            .filter(|r| !r.degraded)
+            .flat_map(|r| r.lines.iter().map(|l| l.item_id))
+            .collect();
+
+        let facts = self
+            .catalog
+            .resolve_facts(tenant_id.inner(), &proposed_ids)
+            .await
+            .unwrap_or_else(|e| {
+                // Resolving nothing means every line becomes UnverifiableItem
+                // and is dropped. Failing closed is correct here: the check
+                // exists to keep allergens out of baskets, so a lookup failure
+                // must not become a bypass.
+                tracing::error!(err = %e, "catalog fact resolution failed; failing closed");
+                Vec::new()
+            });
+
+        let ctx = ReconcileContext {
+            // `specs`, not `workers`. A sub-intent that got no slice-one
+            // specialist still contributes its constraints: an allergen stated
+            // while asking about pharmacy items is a fact about the person and
+            // must still filter the restaurant lines.
+            budget_cents:    constraints_budget(&specs),
+            avoid_allergens: constraints_allergens(&specs),
+            facts:           facts.into_iter().map(|f| (f.item_id, f)).collect(),
+        };
+
+        let outcome = reconcile_results(results, &ctx);
 
         if outcome.total_failure {
             let _ = events.send(MeshEvent::Failed {
@@ -267,15 +336,13 @@ impl MeshRunner {
             }
         }
 
-        // A basket spanning verticals with different handling is the constraint
-        // Screen B surfaces. Derived here rather than asked of the model, because
-        // it is a fact about the basket, not a judgement.
-        let verticals: std::collections::HashSet<&str> =
-            workers.iter().map(|w| w.vertical.as_str()).collect();
-        if verticals.contains("restaurant") && verticals.len() > 1 {
+        // One event per conflict, in the customer's words. This replaces a
+        // vertical-membership guess: a grocery-only basket of ambient tins no
+        // longer claims a temperature constraint it does not have, and a
+        // constraint now describes something actually in the basket.
+        for c in &outcome.conflicts {
             let _ = events.send(MeshEvent::ConstraintDetected {
-                description: "Hot food and other items in one trip — we'll collect the hot food last."
-                    .into(),
+                description: c.description.clone(),
             }).await;
         }
 
@@ -525,6 +592,8 @@ mod tests {
             -> anyhow::Result<serde_json::Value> { Ok(serde_json::json!({ "vendors": [] })) }
         async fn courier_supply(&self, _: Uuid, _: f64, _: f64, _: f64)
             -> anyhow::Result<serde_json::Value> { Ok(serde_json::json!({ "available": 6 })) }
+        async fn resolve_facts(&self, _: Uuid, _: &[Uuid])
+            -> anyhow::Result<Vec<crate::conflict::ItemFacts>> { Ok(vec![]) }
     }
 
     fn spec(vertical: &str, text: &str) -> SubIntentSpec {
@@ -576,7 +645,7 @@ mod tests {
             SpecialistResult { sub_intent_id: Uuid::new_v4(), lines: vec![proposed()], degraded: false, note: None },
             SpecialistResult { sub_intent_id: Uuid::new_v4(), lines: vec![], degraded: true,
                                note: Some("deadline exceeded".into()) },
-        ]);
+        ], &ReconcileContext::empty());
 
         assert_eq!(outcome.lines.len(), 1, "the healthy vertical's lines survive");
         assert_eq!(outcome.degraded_count, 1);
@@ -590,9 +659,116 @@ mod tests {
         let outcome = reconcile_results(vec![
             SpecialistResult { sub_intent_id: Uuid::new_v4(), lines: vec![], degraded: true, note: None },
             SpecialistResult { sub_intent_id: Uuid::new_v4(), lines: vec![], degraded: true, note: None },
-        ]);
+        ], &ReconcileContext::empty());
 
         assert!(outcome.total_failure);
+    }
+
+    #[tokio::test]
+    async fn reconcile_reports_conflicts_and_drops_blocked_lines() {
+        let si = Uuid::new_v4();
+        let safe = Uuid::new_v4();
+        let peanut = Uuid::new_v4();
+
+        let mut facts = std::collections::HashMap::new();
+        facts.insert(safe, crate::conflict::ItemFacts {
+            item_id: safe, allergens: vec![], vertical: "restaurant".into(),
+            prep_time_minutes: 20, price_cents: 25_000,
+        });
+        facts.insert(peanut, crate::conflict::ItemFacts {
+            item_id: peanut, allergens: vec!["peanuts".into()], vertical: "restaurant".into(),
+            prep_time_minutes: 20, price_cents: 30_000,
+        });
+
+        let ctx = ReconcileContext {
+            budget_cents: None,
+            avoid_allergens: vec!["peanuts".into()],
+            facts,
+        };
+
+        let outcome = reconcile_results(
+            vec![SpecialistResult {
+                sub_intent_id: si,
+                lines: vec![
+                    ProposedLine { vendor_id: Uuid::new_v4(), item_id: safe,   qty: 1, unit_price_cents: 25_000, substitutes: None },
+                    ProposedLine { vendor_id: Uuid::new_v4(), item_id: peanut, qty: 1, unit_price_cents: 30_000, substitutes: None },
+                ],
+                degraded: false,
+                note: None,
+            }],
+            &ctx,
+        );
+
+        let lines: Vec<_> = outcome.lines.iter().flat_map(|(_, l)| l).collect();
+        assert_eq!(lines.len(), 1, "the peanut line is removed before the basket");
+        assert_eq!(lines[0].item_id, safe);
+        assert_eq!(outcome.conflicts.len(), 1);
+        assert!(outcome.conflicts[0].blocking);
+    }
+
+    /// A degraded specialist's lines were never trusted; its absence must not
+    /// also produce phantom conflicts.
+    #[tokio::test]
+    async fn a_degraded_specialist_contributes_no_conflicts() {
+        let outcome = reconcile_results(
+            vec![SpecialistResult {
+                sub_intent_id: Uuid::new_v4(), lines: vec![], degraded: true, note: None,
+            }],
+            &ReconcileContext { budget_cents: Some(1), avoid_allergens: vec![],
+                                facts: std::collections::HashMap::new() },
+        );
+        assert!(outcome.conflicts.is_empty());
+    }
+
+    #[test]
+    fn the_tightest_budget_wins_across_sub_intents() {
+        let specs = vec![
+            SubIntentSpec { vertical: "restaurant".into(), vendor_hint: None, raw_text: String::new(),
+                            constraints: serde_json::json!({ "budget_cents": 50_000 }) },
+            SubIntentSpec { vertical: "grocery".into(), vendor_hint: None, raw_text: String::new(),
+                            constraints: serde_json::json!({ "budget_cents": 30_000 }) },
+        ];
+        assert_eq!(constraints_budget(&specs), Some(30_000));
+    }
+
+    /// An allergen stated about dinner applies to the groceries too — it is a
+    /// fact about the person, not the sub-intent.
+    #[test]
+    fn allergens_are_unioned_across_sub_intents() {
+        let specs = vec![
+            SubIntentSpec { vertical: "restaurant".into(), vendor_hint: None, raw_text: String::new(),
+                            constraints: serde_json::json!({ "avoid_allergens": ["peanuts"] }) },
+            SubIntentSpec { vertical: "grocery".into(), vendor_hint: None, raw_text: String::new(),
+                            constraints: serde_json::json!({ "avoid_allergens": ["dairy"] }) },
+        ];
+        assert_eq!(constraints_allergens(&specs), vec!["dairy", "peanuts"]);
+    }
+
+    /// The reason `run()` passes `specs` and not `workers`: pharmacy has no
+    /// slice-one specialist, so a constraint stated there would be dropped if
+    /// the constraints were read off the planned workers instead.
+    #[test]
+    fn a_constraint_on_an_unhandled_vertical_still_counts() {
+        let specs = vec![
+            SubIntentSpec { vertical: "restaurant".into(), vendor_hint: None, raw_text: String::new(),
+                            constraints: serde_json::json!({}) },
+            SubIntentSpec { vertical: "pharmacy".into(), vendor_hint: None, raw_text: String::new(),
+                            constraints: serde_json::json!({ "avoid_allergens": ["latex"], "budget_cents": 5_000 }) },
+        ];
+        assert!(plan_workers(&specs).iter().all(|w| w.vertical != "pharmacy"),
+                "precondition: pharmacy gets no slice-one worker");
+        assert_eq!(constraints_allergens(&specs), vec!["latex"]);
+        assert_eq!(constraints_budget(&specs), Some(5_000));
+    }
+
+    #[test]
+    fn absent_constraints_yield_none_and_empty() {
+        let specs = vec![SubIntentSpec {
+            vertical: "grocery".into(), vendor_hint: None, raw_text: String::new(),
+            constraints: serde_json::json!({}),
+        }];
+        assert_eq!(constraints_budget(&specs), None);
+        assert!(constraints_allergens(&specs).is_empty());
     }
 
     /// An empty-but-successful result is not a failure: the specialist looked
@@ -602,7 +778,7 @@ mod tests {
         let outcome = reconcile_results(vec![
             SpecialistResult { sub_intent_id: Uuid::new_v4(), lines: vec![], degraded: false,
                                note: Some("no eggs anywhere nearby".into()) },
-        ]);
+        ], &ReconcileContext::empty());
 
         assert!(!outcome.total_failure);
         assert_eq!(outcome.degraded_count, 0);
@@ -617,6 +793,7 @@ mod tests {
                 Arc::new(NoopCatalog), Uuid::new_v4(), 14.5995, 120.9842)),
             store.clone(),
             Arc::new(RecordingBasket::default()),
+            Arc::new(NoopCatalog),
             MeshConfig::default(),
         );
 
@@ -680,6 +857,7 @@ mod tests {
                 Arc::new(NoopCatalog), Uuid::new_v4(), 14.5995, 120.9842)),
             Arc::new(InMemoryStore::default()),
             basket.clone(),
+            Arc::new(NoopCatalog),
             MeshConfig::default(),
         );
 
@@ -729,6 +907,7 @@ mod tests {
                 Arc::new(NoopCatalog), Uuid::new_v4(), 14.5995, 120.9842)),
             Arc::new(InMemoryStore::default()),
             basket.clone(),
+            Arc::new(NoopCatalog),
             MeshConfig::default(),
         );
 
@@ -769,6 +948,7 @@ mod tests {
                 Arc::new(NoopCatalog), Uuid::new_v4(), 14.5995, 120.9842)),
             Arc::new(InMemoryStore::default()),
             Arc::new(RecordingBasket::default()),
+            Arc::new(NoopCatalog),
             MeshConfig::default(),
         );
 
@@ -797,6 +977,7 @@ mod tests {
                 Arc::new(NoopCatalog), Uuid::new_v4(), 14.5995, 120.9842)),
             Arc::new(InMemoryStore::default()),
             basket.clone(),
+            Arc::new(NoopCatalog),
             MeshConfig::default(),
         );
 

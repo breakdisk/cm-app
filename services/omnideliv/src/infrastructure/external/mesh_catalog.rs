@@ -87,6 +87,24 @@ impl MeshCatalog for CatalogServiceAdapter {
         }))
     }
 
+    async fn resolve_facts(
+        &self,
+        tenant_id: Uuid,
+        item_ids: &[Uuid],
+    ) -> anyhow::Result<Vec<omnideliv_mesh::ItemFacts>> {
+        let facts = self.catalog.item_facts(tenant_id, item_ids).await?;
+        Ok(facts
+            .into_iter()
+            .map(|f| omnideliv_mesh::ItemFacts {
+                item_id:           f.item_id,
+                allergens:         f.allergens,
+                vertical:          f.vertical,
+                prep_time_minutes: f.prep_time_minutes,
+                price_cents:       f.price_cents,
+            })
+            .collect())
+    }
+
     async fn courier_supply(
         &self,
         _tenant_id: Uuid,

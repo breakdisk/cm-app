@@ -66,6 +66,18 @@ impl CatalogService {
     }
 
     /// The store this portal user runs, if any.
+    /// Catalog truth for a set of items, for reconcile-phase verification.
+    ///
+    /// Deliberately a thin passthrough with no filtering of its own: any rule
+    /// applied here would be a second, invisible place where a line can vanish.
+    pub async fn item_facts(
+        &self,
+        tenant_id: Uuid,
+        item_ids: &[Uuid],
+    ) -> anyhow::Result<Vec<crate::domain::repositories::ItemFacts>> {
+        self.catalog.item_facts(tenant_id, item_ids).await
+    }
+
     pub async fn vendor_for_user(&self, tenant_id: Uuid, user_id: Uuid) -> anyhow::Result<Option<Vendor>> {
         self.vendors.find_by_user(tenant_id, user_id).await
     }

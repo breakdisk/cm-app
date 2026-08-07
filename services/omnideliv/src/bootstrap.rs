@@ -86,6 +86,12 @@ pub async fn run() -> anyhow::Result<()> {
         )),
         Arc::new(PgMeshSessionStore::new(pool.clone())),
         Arc::new(BasketServiceAdapter::new(baskets.clone())),
+        // A second handle on the same adapter, held by the runner directly
+        // rather than reached through the tool box. Reconcile verifies proposed
+        // lines against this, and it must not travel the model's tool surface —
+        // checking a model's output against facts the model supplied would
+        // check nothing.
+        Arc::new(CatalogServiceAdapter::new(catalog.clone())),
         omnideliv_mesh::MeshConfig::default(),
     ));
 

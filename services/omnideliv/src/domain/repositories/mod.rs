@@ -66,6 +66,33 @@ pub trait CatalogRepository: Send + Sync {
         avoid_allergens: &[String],
         limit: i64,
     ) -> anyhow::Result<Vec<ItemWithAvailability>>;
+
+    /// The facts reconcile verifies proposed lines against, in one round trip.
+    ///
+    /// Batched rather than a `find_item` loop because it runs on every mesh run
+    /// with one id per proposed line, and it sits between fan-out and the
+    /// customer seeing a basket.
+    ///
+    /// Items that do not exist are simply absent from the result — the caller
+    /// treats an unresolved id as unverifiable and drops the line, so a missing
+    /// row must not be an error.
+    async fn item_facts(
+        &self,
+        tenant_id: Uuid,
+        item_ids: &[Uuid],
+    ) -> anyhow::Result<Vec<ItemFacts>>;
+}
+
+/// Catalog truth about one item: the item's own fields plus the two that live
+/// on its vendor. Mirrors `omnideliv_mesh::ItemFacts`, which the mesh crate
+/// owns — this is the domain-side shape, converted at the adapter.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ItemFacts {
+    pub item_id:           Uuid,
+    pub allergens:         Vec<String>,
+    pub vertical:          String,
+    pub prep_time_minutes: i32,
+    pub price_cents:       i64,
 }
 
 #[async_trait]
