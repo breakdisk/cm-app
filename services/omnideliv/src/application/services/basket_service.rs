@@ -5,14 +5,22 @@ use uuid::Uuid;
 use crate::domain::entities::{
     Basket, BasketDelta, BasketLine, SubIntent, SubIntentSource, SubIntentStatus, Vertical,
 };
-use crate::domain::repositories::BasketRepository;
+use crate::domain::repositories::{BasketRepository, CatalogRepository, VendorRepository};
 
 pub struct BasketService {
     baskets: Arc<dyn BasketRepository>,
+    vendors: Arc<dyn VendorRepository>,
+    catalog: Arc<dyn CatalogRepository>,
 }
 
 impl BasketService {
-    pub fn new(baskets: Arc<dyn BasketRepository>) -> Self { Self { baskets } }
+    pub fn new(
+        baskets: Arc<dyn BasketRepository>,
+        vendors: Arc<dyn VendorRepository>,
+        catalog: Arc<dyn CatalogRepository>,
+    ) -> Self {
+        Self { baskets, vendors, catalog }
+    }
 
     pub async fn create(&self, tenant_id: Uuid, customer_id: Uuid) -> anyhow::Result<Basket> {
         let b = Basket::new(tenant_id, customer_id);
@@ -115,36 +123,59 @@ impl BasketService {
         .await
     }
 
-    /// Add a line the customer picked by hand, into the browse partition for
-    /// its vertical. Append semantics — see `Basket::add_line`.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn add_line(
+    /// Add a catalog item to a basket.
+    ///
+    /// Price and vertical come from the catalog, not from the caller — the
+    /// client supplies only *what* and *how many*. Taking a price from the
+    /// request would let a customer name their own, and taking the vertical
+    /// would let them file a restaurant order into the grocery partition.
+    pub async fn add_item(
         &self,
         tenant_id: Uuid,
         basket_id: Uuid,
-        vertical: Vertical,
         vendor_id: Uuid,
         item_id: Uuid,
         qty: i32,
-        unit_price_cents: i64,
     ) -> anyhow::Result<Basket> {
+        let vendor = self
+            .vendors
+            .find_by_id(tenant_id, vendor_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("vendor {vendor_id} not found"))?;
+
+        if !vendor.is_orderable() {
+            anyhow::bail!("vendor {vendor_id} is not accepting orders");
+        }
+
+        let item = self
+            .catalog
+            .find_item(tenant_id, item_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("item {item_id} not found"))?;
+
+        // Without this a caller could pair any item id with any vendor id and
+        // have the line attributed — and paid out — to the wrong vendor.
+        if item.vendor_id != vendor_id {
+            anyhow::bail!("item {item_id} does not belong to vendor {vendor_id}");
+        }
+
         self.mutate(tenant_id, basket_id, move |b| {
-            let sub_intent_id = b.browse_sub_intent(vertical);
+            let si = b.browse_sub_intent(vendor.vertical);
             b.add_line(BasketLine::propose(
-                b.id, sub_intent_id, tenant_id, vendor_id, item_id, qty, unit_price_cents, "browse",
+                b.id, si, tenant_id, vendor_id, item_id, qty, item.price_cents, "browse",
             ));
         })
         .await
     }
 
-    /// Remove a line. `Ok(None)` when the line was not in the basket, so the
-    /// API can answer 404 rather than reporting success for a no-op.
-    pub async fn remove_line(
+    /// Remove a line. The bool reports whether anything was removed, so the API
+    /// can answer 404 rather than reporting success for a no-op.
+    pub async fn remove_item(
         &self,
         tenant_id: Uuid,
         basket_id: Uuid,
         line_id: Uuid,
-    ) -> anyhow::Result<Option<Basket>> {
+    ) -> anyhow::Result<(Basket, bool)> {
         let mut removed = false;
         let basket = self
             .mutate(tenant_id, basket_id, |b| {
@@ -152,6 +183,6 @@ impl BasketService {
             })
             .await?;
 
-        Ok(removed.then_some(basket))
+        Ok((basket, removed))
     }
 }

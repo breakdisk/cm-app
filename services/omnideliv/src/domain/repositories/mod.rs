@@ -38,6 +38,10 @@ pub struct ItemWithAvailability {
 #[async_trait]
 pub trait CatalogRepository: Send + Sync {
     async fn save_item(&self, item: &CatalogItem) -> anyhow::Result<()>;
+
+    /// One item by id. Needed so a manual add can read the price server-side
+    /// rather than trusting the client's.
+    async fn find_item(&self, tenant_id: Uuid, item_id: Uuid) -> anyhow::Result<Option<CatalogItem>>;
     async fn set_availability(&self, a: &Availability) -> anyhow::Result<()>;
 
     /// Listed items for a vendor, each with its availability.

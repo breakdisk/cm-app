@@ -49,7 +49,11 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::new(PgCatalogRepository::new(pool.clone())),
         cfg.stock_freshness_mins,
     ));
-    let baskets = Arc::new(BasketService::new(Arc::new(PgBasketRepository::new(pool.clone()))));
+    let baskets = Arc::new(BasketService::new(
+        Arc::new(PgBasketRepository::new(pool.clone())),
+        Arc::new(PgVendorRepository::new(pool.clone())),
+        Arc::new(PgCatalogRepository::new(pool.clone())),
+    ));
 
     let state = Arc::new(AppState { catalog, baskets, jwt });
 
