@@ -22,7 +22,8 @@ use uuid::Uuid;
 
 use crate::events::MeshEvent;
 use crate::roles;
-use crate::transition::{MeshTransition, ProposedLine, SubIntentSpec};
+use crate::tools::MeshBasket;
+use crate::transition::{MeshTransition, ProposedLine, RoutePlan, SubIntentSpec};
 
 #[derive(Debug, Clone)]
 pub struct MeshConfig {
@@ -119,6 +120,7 @@ pub struct MeshRunner {
     claude: Arc<dyn ClaudeApi>,
     tools:  Arc<dyn ToolBox>,
     store:  Arc<dyn SessionStore>,
+    basket: Arc<dyn MeshBasket>,
     config: MeshConfig,
 }
 
@@ -127,9 +129,10 @@ impl MeshRunner {
         claude: Arc<dyn ClaudeApi>,
         tools: Arc<dyn ToolBox>,
         store: Arc<dyn SessionStore>,
+        basket: Arc<dyn MeshBasket>,
         config: MeshConfig,
     ) -> Self {
-        Self { claude, tools, store, config }
+        Self { claude, tools, store, basket, config }
     }
 
     /// Phase 1. Returns the parent session id alongside the split, so every
@@ -171,6 +174,156 @@ impl MeshRunner {
             .unwrap_or_default();
 
         Ok((session.id, specs))
+    }
+
+    /// The whole run, phases 1–6.
+    ///
+    /// Does not return a Result: every failure path is an emitted event, because
+    /// the caller is an SSE stream whose only channel to the customer is the
+    /// event sequence. A returned error would be invisible to the app.
+    pub async fn run(
+        &self,
+        tenant_id: TenantId,
+        customer_id: Uuid,
+        utterance: String,
+        events: mpsc::Sender<MeshEvent>,
+    ) {
+        // Phase 1 — parse.
+        let (parent_id, specs) = match self.parse(tenant_id.clone(), utterance).await {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = events.send(MeshEvent::Failed { reason: format!("could not read that: {e}") }).await;
+                return;
+            }
+        };
+
+        if specs.is_empty() {
+            // No parseable decomposition. Terminal and explicit — emitting
+            // Completed with an empty basket would send the customer to a
+            // checkout screen showing nothing, which reads as a lost order.
+            let _ = events.send(MeshEvent::Failed {
+                reason: "couldn't work out what you're after".into(),
+            }).await;
+            return;
+        }
+
+        let _ = events.send(MeshEvent::IntentParsed { sub_intent_count: specs.len() }).await;
+
+        let workers = plan_workers(&specs);
+        if workers.is_empty() {
+            // Every vertical is one no slice-one specialist handles.
+            let _ = events.send(MeshEvent::Failed {
+                reason: "we can't help with that yet".into(),
+            }).await;
+            return;
+        }
+
+        // The basket exists before fan-out so a crash mid-run leaves something
+        // the customer can reopen rather than losing the work entirely.
+        let basket_id = match self.basket.create(tenant_id.inner(), customer_id).await {
+            Ok(id) => id,
+            Err(e) => {
+                let _ = events.send(MeshEvent::Failed { reason: format!("could not start a basket: {e}") }).await;
+                return;
+            }
+        };
+
+        // Phase 2 — concurrent fan-out.
+        let results = self
+            .fan_out(tenant_id.clone(), parent_id, workers.clone(), events.clone())
+            .await;
+
+        // Phase 3 — reconcile. Single writer: results are merged and written
+        // here, serially, never by the workers themselves.
+        let outcome = reconcile_results(results);
+
+        if outcome.total_failure {
+            let _ = events.send(MeshEvent::Failed {
+                reason: "couldn't reach any of the shops just now".into(),
+            }).await;
+            return;
+        }
+
+        let by_sub_intent: std::collections::HashMap<Uuid, &PlannedWorker> =
+            workers.iter().map(|w| (w.sub_intent_id, w)).collect();
+
+        for (sub_intent_id, lines) in outcome.lines {
+            let Some(w) = by_sub_intent.get(&sub_intent_id) else { continue };
+            if let Err(e) = self
+                .basket
+                .write_delta(
+                    tenant_id.inner(), basket_id, sub_intent_id,
+                    &w.vertical, &w.spec.raw_text, lines,
+                )
+                .await
+            {
+                // One vertical failing to persist degrades that vertical, not
+                // the order — same rule as a specialist timing out.
+                tracing::error!(err = %e, %sub_intent_id, "basket write failed");
+                let _ = events.send(MeshEvent::SpecialistFinished {
+                    sub_intent_id, lines_added: 0, degraded: true,
+                    note: Some("couldn't save that part of your order".into()),
+                }).await;
+            }
+        }
+
+        // A basket spanning verticals with different handling is the constraint
+        // Screen B surfaces. Derived here rather than asked of the model, because
+        // it is a fact about the basket, not a judgement.
+        let verticals: std::collections::HashSet<&str> =
+            workers.iter().map(|w| w.vertical.as_str()).collect();
+        if verticals.contains("restaurant") && verticals.len() > 1 {
+            let _ = events.send(MeshEvent::ConstraintDetected {
+                description: "Hot food and other items in one trip — we'll collect the hot food last."
+                    .into(),
+            }).await;
+        }
+
+        // Phase 4 — Fleet.
+        match self.plan_route(tenant_id.clone(), parent_id).await {
+            Ok(plan) => {
+                let _ = events.send(MeshEvent::RoutePlanned {
+                    stops: plan.vendor_order.len(),
+                    flat_fee_cents: plan.flat_fee_cents,
+                    total_minutes: plan.total_minutes,
+                }).await;
+            }
+            Err(e) => {
+                // Routing is not fatal: checkout re-plans from the basket, so a
+                // failed preview only costs the customer the fee estimate.
+                tracing::warn!(err = %e, "fleet planning failed; continuing without a preview");
+            }
+        }
+
+        // Phases 5 and 6 belong to the customer: review on Screen C, commit on tap.
+        let needs_review = self
+            .basket
+            .lines_awaiting_review(tenant_id.inner(), basket_id)
+            .await
+            .unwrap_or(0);
+
+        let _ = events.send(MeshEvent::Completed { basket_id, needs_review }).await;
+    }
+
+    /// Phase 4. Runs the Fleet role once over the merged basket.
+    async fn plan_route(&self, tenant_id: TenantId, parent_id: Uuid) -> anyhow::Result<RoutePlan> {
+        let runner = AgentRunner::new(self.claude.clone(), self.tools.clone(), self.store.clone());
+        let session = runner
+            .run(
+                tenant_id,
+                roles::fleet(),
+                serde_json::json!({ "parent_session_id": parent_id }),
+                "Sequence the pickups for this basket and give me one flat fee.".into(),
+            )
+            .await?;
+
+        session
+            .actions
+            .iter()
+            .rev()
+            .find(|a| a.tool_name == "plan_route" && a.succeeded)
+            .and_then(|a| serde_json::from_value::<RoutePlan>(a.tool_input.clone()).ok())
+            .ok_or_else(|| anyhow::anyhow!("fleet returned no parseable plan"))
     }
 
     /// Phase 2. One concurrent task per worker, joined under a shared deadline.
@@ -331,6 +484,37 @@ mod tests {
     use logisticos_types::TenantId;
     use uuid::Uuid;
 
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingBasket {
+        created: Mutex<Vec<Uuid>>,
+        writes:  Mutex<Vec<(Uuid, usize)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::tools::MeshBasket for RecordingBasket {
+        async fn create(&self, _: Uuid, _: Uuid) -> anyhow::Result<Uuid> {
+            let id = Uuid::new_v4();
+            self.created.lock().unwrap().push(id);
+            Ok(id)
+        }
+        async fn write_delta(
+            &self, _: Uuid, basket_id: Uuid, _: Uuid, _: &str, _: &str,
+            lines: Vec<ProposedLine>,
+        ) -> anyhow::Result<()> {
+            self.writes.lock().unwrap().push((basket_id, lines.len()));
+            Ok(())
+        }
+        async fn lines_awaiting_review(&self, _: Uuid, _: Uuid) -> anyhow::Result<usize> { Ok(0) }
+    }
+
+    fn collect(rx: &mut mpsc::Receiver<MeshEvent>) -> Vec<MeshEvent> {
+        let mut out = Vec::new();
+        while let Ok(e) = rx.try_recv() { out.push(e); }
+        out
+    }
+
     struct NoopCatalog;
 
     #[async_trait::async_trait]
@@ -432,6 +616,7 @@ mod tests {
             Arc::new(crate::tools::MeshToolBox::new(
                 Arc::new(NoopCatalog), Uuid::new_v4(), 14.5995, 120.9842)),
             store.clone(),
+            Arc::new(RecordingBasket::default()),
             MeshConfig::default(),
         );
 
@@ -479,5 +664,147 @@ mod tests {
         assert!(results.iter().all(|r| r.degraded));
         assert!(elapsed < Duration::from_millis(900),
                 "three workers must share one 200ms deadline, took {elapsed:?}");
+    }
+
+    /// A run with no parseable decomposition must fail loudly and terminally.
+    /// Emitting `Completed` with an empty basket would send the customer to a
+    /// checkout screen showing nothing, which reads as "we lost your order".
+    #[tokio::test]
+    async fn a_run_that_cannot_decompose_emits_failed_not_completed() {
+        let (tx, mut rx) = mpsc::channel(32);
+        let basket = Arc::new(RecordingBasket::default());
+        let runner = MeshRunner::new(
+            // The Concierge replies in prose without calling decompose_intent.
+            Arc::new(StubClaude::new(vec![StubClaude::text("I'm not sure what you need.")])),
+            Arc::new(crate::tools::MeshToolBox::new(
+                Arc::new(NoopCatalog), Uuid::new_v4(), 14.5995, 120.9842)),
+            Arc::new(InMemoryStore::default()),
+            basket.clone(),
+            MeshConfig::default(),
+        );
+
+        runner.run(TenantId::from_uuid(Uuid::new_v4()), Uuid::new_v4(), "???".into(), tx).await;
+
+        let events = collect(&mut rx);
+        assert!(
+            events.iter().any(|e| matches!(e, MeshEvent::Failed { .. })),
+            "must emit Failed, got {events:?}"
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, MeshEvent::Completed { .. })),
+            "must not emit Completed"
+        );
+        assert!(basket.writes.lock().unwrap().is_empty(), "nothing should be written");
+    }
+
+    /// The event contract Screen B renders against: parsed, then one
+    /// started/finished pair per worker, then completed.
+    #[tokio::test]
+    async fn a_run_emits_the_screen_b_event_sequence() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let basket = Arc::new(RecordingBasket::default());
+
+        let runner = MeshRunner::new(
+            Arc::new(StubClaude::new(vec![
+                // Phase 1 — the Concierge decomposes.
+                StubClaude::tool_call("t1", "decompose_intent", serde_json::json!({
+                    "sub_intents": [
+                        {"vertical": "restaurant", "raw_text": "dinner", "constraints": {}},
+                        {"vertical": "grocery",    "raw_text": "milk",   "constraints": {}}
+                    ]
+                })),
+                StubClaude::text("split"),
+                // Phase 2 — two specialists, each proposing once.
+                StubClaude::tool_call("t2", "propose_lines", serde_json::json!({ "lines": [] })),
+                StubClaude::text("done"),
+                StubClaude::tool_call("t3", "propose_lines", serde_json::json!({ "lines": [] })),
+                StubClaude::text("done"),
+                // Phase 4 — Fleet plans.
+                StubClaude::tool_call("t4", "plan_route", serde_json::json!({
+                    "vendor_order": [], "flat_fee_cents": 4900, "total_minutes": 30
+                })),
+                StubClaude::text("planned"),
+            ])),
+            Arc::new(crate::tools::MeshToolBox::new(
+                Arc::new(NoopCatalog), Uuid::new_v4(), 14.5995, 120.9842)),
+            Arc::new(InMemoryStore::default()),
+            basket.clone(),
+            MeshConfig::default(),
+        );
+
+        runner.run(TenantId::from_uuid(Uuid::new_v4()), Uuid::new_v4(), "dinner and milk".into(), tx).await;
+
+        let events = collect(&mut rx);
+        assert!(events.iter().any(|e| matches!(e, MeshEvent::IntentParsed { sub_intent_count: 2 })));
+        assert_eq!(
+            events.iter().filter(|e| matches!(e, MeshEvent::SpecialistStarted { .. })).count(), 2,
+            "one card per sub-intent"
+        );
+        assert_eq!(
+            events.iter().filter(|e| matches!(e, MeshEvent::SpecialistFinished { .. })).count(), 2
+        );
+        assert!(events.iter().any(|e| matches!(e, MeshEvent::Completed { .. })));
+        assert_eq!(basket.created.lock().unwrap().len(), 1, "exactly one basket per run");
+    }
+
+    /// Emitting Completed before the last SpecialistFinished would let the app
+    /// navigate away mid-run and lose the remaining cards.
+    #[tokio::test]
+    async fn completed_is_the_last_event() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let runner = MeshRunner::new(
+            Arc::new(StubClaude::new(vec![
+                StubClaude::tool_call("t1", "decompose_intent", serde_json::json!({
+                    "sub_intents": [{"vertical": "grocery", "raw_text": "milk", "constraints": {}}]
+                })),
+                StubClaude::text("split"),
+                StubClaude::tool_call("t2", "propose_lines", serde_json::json!({ "lines": [] })),
+                StubClaude::text("done"),
+                StubClaude::tool_call("t3", "plan_route", serde_json::json!({
+                    "vendor_order": [], "flat_fee_cents": 4900, "total_minutes": 20
+                })),
+                StubClaude::text("planned"),
+            ])),
+            Arc::new(crate::tools::MeshToolBox::new(
+                Arc::new(NoopCatalog), Uuid::new_v4(), 14.5995, 120.9842)),
+            Arc::new(InMemoryStore::default()),
+            Arc::new(RecordingBasket::default()),
+            MeshConfig::default(),
+        );
+
+        runner.run(TenantId::from_uuid(Uuid::new_v4()), Uuid::new_v4(), "milk".into(), tx).await;
+
+        let events = collect(&mut rx);
+        let last = events.last().expect("at least one event");
+        assert!(matches!(last, MeshEvent::Completed { .. }), "got {last:?}");
+    }
+
+    /// A vertical nobody handles yet must not look like a working order. All
+    /// sub-intents unsupported means no worker ran, so there is nothing to
+    /// review and Completed would be a lie.
+    #[tokio::test]
+    async fn a_run_of_only_unsupported_verticals_fails_rather_than_completing_empty() {
+        let (tx, mut rx) = mpsc::channel(32);
+        let basket = Arc::new(RecordingBasket::default());
+        let runner = MeshRunner::new(
+            Arc::new(StubClaude::new(vec![
+                StubClaude::tool_call("t1", "decompose_intent", serde_json::json!({
+                    "sub_intents": [{"vertical": "pharmacy", "raw_text": "paracetamol", "constraints": {}}]
+                })),
+                StubClaude::text("split"),
+            ])),
+            Arc::new(crate::tools::MeshToolBox::new(
+                Arc::new(NoopCatalog), Uuid::new_v4(), 14.5995, 120.9842)),
+            Arc::new(InMemoryStore::default()),
+            basket.clone(),
+            MeshConfig::default(),
+        );
+
+        runner.run(TenantId::from_uuid(Uuid::new_v4()), Uuid::new_v4(), "paracetamol".into(), tx).await;
+
+        let events = collect(&mut rx);
+        assert!(events.iter().any(|e| matches!(e, MeshEvent::Failed { .. })));
+        assert!(basket.created.lock().unwrap().is_empty(),
+                "no basket should be created when nothing can be worked on");
     }
 }

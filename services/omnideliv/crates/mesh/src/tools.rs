@@ -49,6 +49,32 @@ pub trait MeshCatalog: Send + Sync {
     ) -> anyhow::Result<serde_json::Value>;
 }
 
+/// What the mesh needs in order to persist a run's result.
+///
+/// A trait rather than a dependency on the host service's `BasketService`:
+/// the mesh crate is the split seam, and a concrete dependency across it would
+/// make the later two-deployable split a refactor again.
+#[async_trait]
+pub trait MeshBasket: Send + Sync {
+    /// Create the basket a run writes into.
+    async fn create(&self, tenant_id: Uuid, customer_id: Uuid) -> anyhow::Result<Uuid>;
+
+    /// Persist one specialist's lines. Scoped by sub-intent — this is the
+    /// single-writer path, called serially by the Concierge after the join.
+    async fn write_delta(
+        &self,
+        tenant_id: Uuid,
+        basket_id: Uuid,
+        sub_intent_id: Uuid,
+        vertical: &str,
+        raw_text: &str,
+        lines: Vec<crate::transition::ProposedLine>,
+    ) -> anyhow::Result<()>;
+
+    /// How many lines still need a customer decision. Drives `needs_review`.
+    async fn lines_awaiting_review(&self, tenant_id: Uuid, basket_id: Uuid) -> anyhow::Result<usize>;
+}
+
 pub struct MeshToolBox {
     catalog:   Arc<dyn MeshCatalog>,
     tenant_id: Uuid,
