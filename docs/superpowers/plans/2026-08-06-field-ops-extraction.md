@@ -271,7 +271,7 @@ CREATE TABLE IF NOT EXISTS field_ops.couriers (
     -- CACHE ONLY. The authoritative position is the latest row in
     -- field_ops.courier_locations (migration 0003); these columns exist so a
     -- courier list renders without touching the time-series table. Never
-    -- proximity-search on them — see the GiST index in 0002.
+    -- proximity-search on them — see the GiST index in 0003.
     last_lat       DOUBLE PRECISION,
     last_lng       DOUBLE PRECISION,
     last_seen_at   TIMESTAMPTZ,
@@ -284,19 +284,20 @@ CREATE TABLE IF NOT EXISTS field_ops.couriers (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_courier_user
     ON field_ops.couriers (tenant_id, user_id);
 
+-- Serves both "the tenant's active roster" and the status-narrowing half of a
+-- supply lookup. One index, not two: an earlier draft added a second on
+-- (tenant_id, status) WHERE status = 'available', which is a strict subset of
+-- this one and buys nothing a planner cannot already get here — it would only
+-- add write cost on a table that couriers update on every status change.
+--
+-- The geospatial half of a supply lookup runs against courier_latest_locations
+-- (0003), which has the GiST index. There is deliberately NO btree on
+-- (tenant_id, last_lat, last_lng): proximity search is ST_DWithin against a
+-- geography, which a btree on two float columns cannot serve — it would sit
+-- there looking useful while every search scanned.
 CREATE INDEX IF NOT EXISTS idx_courier_tenant_status
     ON field_ops.couriers (tenant_id, status)
     WHERE is_active;
-
--- Supply lookup narrows on status first; the geospatial half of the query runs
--- against courier_latest_locations (0003), which has the GiST index.
---
--- There is deliberately NO btree on (tenant_id, last_lat, last_lng). Proximity
--- search is ST_DWithin against a geography, which a btree on two float columns
--- cannot serve — it would sit there looking useful while every search scanned.
-CREATE INDEX IF NOT EXISTS idx_courier_available
-    ON field_ops.couriers (tenant_id, status)
-    WHERE status = 'available' AND is_active;
 ```
 
 > **Why this is not the simpler denormalised model.** Per ADR-0015, `field_ops`

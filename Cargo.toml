@@ -22,6 +22,7 @@ members = [
     "services/omnideliv",
     "services/dispatch",
     "services/driver-ops",
+    "services/field-ops",
     "services/compliance",
     "services/delivery-experience",
     "services/fleet",
