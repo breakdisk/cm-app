@@ -13,6 +13,11 @@ TENANT="00000000-0000-0000-0000-000000000001"   # the existing dev tenant
 KUYAS="11111111-0000-0000-0000-000000000001"
 PUREGOLD="11111111-0000-0000-0000-000000000002"
 COURIER="33333333-0000-0000-0000-000000000001"
+# The dev driver login, so the courier half of the flow is reachable. A
+# gen_random_uuid() here produces a courier nobody can authenticate as, which
+# leaves the claim -> Kafka -> order-advances leg permanently untestable — the
+# seed looks complete and the only part it cannot exercise is the event pipeline.
+DRIVER_USER="00000000-0000-0000-0000-000000000004"   # driver@demo.com
 
 echo "Seeding vendors…"
 $PSQL -d "$DB" <<SQL
@@ -50,9 +55,9 @@ SQL
 echo "Seeding a courier…"
 $PSQL -d "$FIELD_OPS_DB" <<SQL
 INSERT INTO field_ops.couriers (id, tenant_id, user_id, first_name, last_name, phone, status, last_lat, last_lng, last_seen_at)
-VALUES ('$COURIER', '$TENANT', gen_random_uuid(),
+VALUES ('$COURIER', '$TENANT', '$DRIVER_USER',
         'Rico', 'M', '+639170000001', 'available', 14.5900, 120.9800, NOW())
-ON CONFLICT (id) DO UPDATE SET status = 'available', last_seen_at = NOW();
+ON CONFLICT (id) DO UPDATE SET status = 'available', last_seen_at = NOW(), user_id = '$DRIVER_USER';
 
 -- THE ROW THAT MAKES THE COURIER FINDABLE.
 --
