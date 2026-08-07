@@ -77,6 +77,13 @@ pub trait OrderRepository: Send + Sync {
     /// its legs cannot be settled, and legs without an order are orphaned money.
     async fn save(&self, order: &Order) -> anyhow::Result<()>;
     async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<Order>>;
+
+    /// Orders that have taken payment but not yet found a courier.
+    ///
+    /// Deliberately across all tenants: the recovery sweep is an operator
+    /// concern, not a customer request, and scoping it per tenant would mean
+    /// the sweep only runs for tenants someone remembered to enumerate.
+    async fn find_awaiting_courier(&self) -> anyhow::Result<Vec<Order>>;
 }
 
 #[async_trait]

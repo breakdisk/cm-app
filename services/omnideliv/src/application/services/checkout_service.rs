@@ -161,6 +161,20 @@ impl CheckoutService {
         }
 
         order.courier_task_id = offered.first().copied();
+
+        // Offered, not yet claimed. Without this the order sits in `Placed`
+        // until a courier accepts, and `AwaitingCourier` is a state nothing
+        // ever enters — which would also hide the distinction the recovery
+        // sweep needs between "we never managed to offer it" and "we offered
+        // it and nobody took it".
+        //
+        // Infallible from `Placed`, and the sweep still catches an order left
+        // in `Placed` anyway, so a failure here is logged rather than failing a
+        // checkout whose courier is already offered.
+        if let Err(e) = order.courier_offered() {
+            tracing::error!(err = %e, order_id = %order.id, "could not mark the order awaiting a courier");
+        }
+
         Ok(order)
     }
 }

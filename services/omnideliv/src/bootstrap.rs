@@ -12,7 +12,7 @@ use crate::infrastructure::db::{
     PgVendorRepository,
 };
 use crate::infrastructure::external::{BasketServiceAdapter, CatalogServiceAdapter, FieldOpsDispatch};
-use crate::application::services::CheckoutService;
+use crate::application::services::{CheckoutService, RecoveryService};
 use crate::domain::repositories::{OrderRepository, TelemetryRepository, VendorLedgerRepository};
 use crate::infrastructure::db::PgVendorLedgerRepository;
 use crate::infrastructure::messaging::{CourierMilestoneHandler, TOPIC_COURIER};
@@ -163,6 +163,25 @@ pub async fn run() -> anyhow::Result<()> {
                 "Kafka unavailable — courier milestones will NOT be consumed, so orders will                  stay in their placed state and vendor ledgers will not be credited");
         }
     }
+
+    // Stuck-order recovery. A timer rather than an event handler, because a
+    // stuck order is defined by an event that never arrived — nothing
+    // event-driven can notice its absence.
+    let recovery = Arc::new(RecoveryService::new(orders.clone(), telemetry.clone()));
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+        // The first tick fires immediately, which would sweep before the
+        // service has finished coming up. Skip it.
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            match recovery.sweep().await {
+                Ok(0) => {}
+                Ok(n) => tracing::warn!(escalated = n, "recovery sweep escalated stuck orders"),
+                Err(e) => tracing::error!(err = %e, "recovery sweep failed"),
+            }
+        }
+    });
 
     let addr = format!("0.0.0.0:{}", cfg.app.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;

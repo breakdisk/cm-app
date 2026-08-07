@@ -84,6 +84,43 @@ impl OrderRepository for PgOrderRepository {
         Ok(())
     }
 
+    async fn find_awaiting_courier(&self) -> anyhow::Result<Vec<Order>> {
+        // Legs are not loaded: the sweep only reads status and placed_at, and
+        // fetching every leg for every stuck order would make an operational
+        // sweep proportional to basket size for no benefit.
+        let rows = sqlx::query(
+            "SELECT * FROM omnideliv.orders
+              WHERE status IN ('placed', 'awaiting_courier')
+              ORDER BY placed_at ASC
+              LIMIT 500",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for r in &rows {
+            let status: String = r.get("status");
+            out.push(Order {
+                id:                 r.get("id"),
+                tenant_id:          r.get("tenant_id"),
+                customer_id:        r.get("customer_id"),
+                basket_id:          r.get("basket_id"),
+                plan_id:            r.get("plan_id"),
+                status:             order_status(&status)?,
+                goods_total_cents:  r.get("goods_total_cents"),
+                delivery_fee_cents: r.get("delivery_fee_cents"),
+                tip_cents:          r.get("tip_cents"),
+                grand_total_cents:  r.get("grand_total_cents"),
+                courier_trip_cents: r.get("courier_trip_cents"),
+                courier_task_id:    r.get("courier_task_id"),
+                legs:               Vec::new(),
+                placed_at:          r.get("placed_at"),
+                delivered_at:       r.get("delivered_at"),
+            });
+        }
+        Ok(out)
+    }
+
     async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<Order>> {
         let Some(r) = sqlx::query("SELECT * FROM omnideliv.orders WHERE tenant_id = $1 AND id = $2")
             .bind(tenant_id).bind(id)
