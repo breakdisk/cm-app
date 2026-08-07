@@ -73,6 +73,7 @@ fn map_row(r: &sqlx::postgres::PgRow) -> AgentSession {
         escalation_reason: r.get("escalation_reason"),
         confidence_score: r.get("confidence_score"),
         model_used:       r.get("model_used"),
+        parent_session_id: r.get("parent_session_id"),
         started_at:       r.get("started_at"),
         completed_at:     r.get("completed_at"),
     }
@@ -92,8 +93,8 @@ impl SessionRepository for PgSessionRepository {
             INSERT INTO ai.agent_sessions (
                 id, tenant_id, agent_type, status, trigger_data, messages, actions,
                 outcome, escalation_reason, confidence_score, model_used,
-                started_at, completed_at
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                parent_session_id, started_at, completed_at
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
             ON CONFLICT (id) DO UPDATE SET
                 status            = EXCLUDED.status,
                 messages          = EXCLUDED.messages,
@@ -115,6 +116,9 @@ impl SessionRepository for PgSessionRepository {
         .bind(&s.escalation_reason)
         .bind(s.confidence_score)
         .bind(&s.model_used)
+        // Immutable after insert — a session cannot be re-parented, so it is
+        // deliberately absent from the ON CONFLICT update list.
+        .bind(s.parent_session_id)
         .bind(s.started_at)
         .bind(s.completed_at)
         .execute(&self.pool)
@@ -127,7 +131,7 @@ impl SessionRepository for PgSessionRepository {
             r#"
             SELECT id, tenant_id, agent_type, status, trigger_data,
                    messages, actions, outcome, escalation_reason,
-                   confidence_score, model_used, started_at, completed_at
+                   confidence_score, model_used, parent_session_id, started_at, completed_at
             FROM ai.agent_sessions WHERE id = $1
             "#,
         )
@@ -143,7 +147,7 @@ impl SessionRepository for PgSessionRepository {
             r#"
             SELECT id, tenant_id, agent_type, status, trigger_data,
                    messages, actions, outcome, escalation_reason,
-                   confidence_score, model_used, started_at, completed_at
+                   confidence_score, model_used, parent_session_id, started_at, completed_at
             FROM ai.agent_sessions
             WHERE tenant_id = $1
             ORDER BY started_at DESC
@@ -164,7 +168,7 @@ impl SessionRepository for PgSessionRepository {
             r#"
             SELECT id, tenant_id, agent_type, status, trigger_data,
                    messages, actions, outcome, escalation_reason,
-                   confidence_score, model_used, started_at, completed_at
+                   confidence_score, model_used, parent_session_id, started_at, completed_at
             FROM ai.agent_sessions
             WHERE tenant_id = $1 AND status = 'human_escalated'
             ORDER BY started_at DESC

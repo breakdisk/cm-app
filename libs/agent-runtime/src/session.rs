@@ -70,6 +70,9 @@ pub struct AgentSession {
     pub escalation_reason: Option<String>,
     pub confidence_score:  Option<f32>,
     pub model_used:        String,
+    /// Set on a specialist's session, pointing at the mesh run that spawned
+    /// it. `None` on a root session.
+    pub parent_session_id: Option<Uuid>,
     pub started_at:        DateTime<Utc>,
     pub completed_at:      Option<DateTime<Utc>>,
 }
@@ -95,9 +98,23 @@ impl AgentSession {
             escalation_reason: None,
             confidence_score: None,
             model_used: model.into(),
+            parent_session_id: None,
             started_at: Utc::now(),
             completed_at: None,
         }
+    }
+
+    /// A specialist's session inside a mesh run.
+    pub fn new_child(
+        tenant_id: TenantId,
+        role: AgentRole,
+        trigger: serde_json::Value,
+        model: impl Into<String>,
+        parent_session_id: Uuid,
+    ) -> Self {
+        let mut s = Self::new(tenant_id, role, trigger, model);
+        s.parent_session_id = Some(parent_session_id);
+        s
     }
 
     pub fn complete(&mut self, outcome: String, confidence: f32) {
@@ -180,5 +197,24 @@ mod tests {
         s.reopen();
         assert_eq!(s.status, SessionStatus::Running);
         assert!(s.completed_at.is_none());
+    }
+
+    #[test]
+    fn a_root_session_has_no_parent() {
+        assert!(session().parent_session_id.is_none());
+    }
+
+    #[test]
+    fn a_child_session_records_its_parent() {
+        let parent = session();
+        let child = AgentSession::new_child(
+            parent.tenant_id,
+            AgentRole::unrestricted("worker", "Worker", "You work."),
+            serde_json::json!({}),
+            "claude-opus-4-6",
+            parent.id,
+        );
+        assert_eq!(child.parent_session_id, Some(parent.id));
+        assert_ne!(child.id, parent.id);
     }
 }
