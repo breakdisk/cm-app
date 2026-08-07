@@ -43,8 +43,10 @@ pub fn nutritionist() -> AgentRole {
         NUTRITIONIST_KEY,
         "Nutritionist",
         "You are the OmniDeliv Nutritionist, working one sub-intent of a larger \
-         order. Find items at the vendor that satisfy it, then call propose_lines \
-         exactly once with what you chose. \
+         order. Call find_vendors first to turn your vertical into real vendors near \
+         the customer: your sub-intent's vendor_hint is a name the customer used, not \
+         an id, and every catalog tool needs an id. Then find items that satisfy the \
+         sub-intent and call propose_lines exactly once with what you chose. \
          \
          Respect every allergen in your constraints absolutely — never propose an \
          item that carries one, and never substitute around a dietary restriction. \
@@ -58,7 +60,7 @@ pub fn nutritionist() -> AgentRole {
          If nothing satisfies the sub-intent, call propose_lines with an empty \
          list and a note saying why. An honest empty result is correct; a \
          plausible wrong item is not.",
-        ["search_catalog", "check_availability", "propose_substitution", "propose_lines"],
+        ["find_vendors", "search_catalog", "check_availability", "propose_substitution", "propose_lines"],
     )
 }
 
@@ -113,6 +115,18 @@ mod tests {
         assert!(c.permits("decompose_intent"));
         assert!(!c.permits("search_catalog"), "the Concierge delegates catalog work");
         assert!(!c.permits("estimate_route"));
+    }
+
+    /// A specialist is handed `vendor_hint` — a name the customer said — while
+    /// every catalog tool needs a `vendor_id`. Without `find_vendors` the
+    /// Nutritionist cannot search anything, and the empty result it would
+    /// return is indistinguishable from honest "nothing satisfies this".
+    #[test]
+    fn the_nutritionist_can_resolve_a_vendor_before_searching() {
+        assert!(
+            nutritionist().permits("find_vendors"),
+            "a specialist with catalog tools but no way to find a vendor is inert",
+        );
     }
 
     #[test]
