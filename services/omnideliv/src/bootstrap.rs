@@ -7,10 +7,13 @@ use sqlx::postgres::PgPoolOptions;
 use crate::api::http::{router, AppState};
 use crate::application::services::{BasketService, CatalogService};
 use crate::config::Config;
-use crate::infrastructure::db::{PgBasketRepository, PgCatalogRepository, PgOrderRepository, PgVendorRepository};
+use crate::infrastructure::db::{
+    PgBasketRepository, PgCatalogRepository, PgOrderRepository, PgTelemetryRepository,
+    PgVendorRepository,
+};
 use crate::infrastructure::external::{BasketServiceAdapter, CatalogServiceAdapter, FieldOpsDispatch};
 use crate::application::services::CheckoutService;
-use crate::domain::repositories::OrderRepository;
+use crate::domain::repositories::{OrderRepository, TelemetryRepository};
 use crate::infrastructure::db::PgMeshSessionStore;
 
 pub async fn run() -> anyhow::Result<()> {
@@ -93,8 +96,9 @@ pub async fn run() -> anyhow::Result<()> {
         )),
     ));
     let orders: Arc<dyn OrderRepository> = Arc::new(PgOrderRepository::new(pool.clone()));
+    let telemetry: Arc<dyn TelemetryRepository> = Arc::new(PgTelemetryRepository::new(pool.clone()));
 
-    let state = Arc::new(AppState { catalog, baskets, mesh, checkout, orders, jwt });
+    let state = Arc::new(AppState { catalog, baskets, mesh, checkout, orders, telemetry, jwt });
 
     let addr = format!("0.0.0.0:{}", cfg.app.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;

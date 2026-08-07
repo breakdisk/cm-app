@@ -7,7 +7,9 @@
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use crate::domain::entities::{Availability, Basket, CatalogItem, Order, Vendor, Vertical};
+use crate::domain::entities::{
+    Availability, Basket, CatalogItem, Order, TelemetryEvent, Vendor, VendorLedger, Vertical,
+};
 
 #[async_trait]
 pub trait VendorRepository: Send + Sync {
@@ -75,4 +77,22 @@ pub trait OrderRepository: Send + Sync {
     /// its legs cannot be settled, and legs without an order are orphaned money.
     async fn save(&self, order: &Order) -> anyhow::Result<()>;
     async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<Order>>;
+}
+
+#[async_trait]
+pub trait VendorLedgerRepository: Send + Sync {
+    /// The open ledger for this vendor and period, if one exists.
+    async fn find_open(&self, tenant_id: Uuid, vendor_id: Uuid, period: &str)
+        -> anyhow::Result<Option<VendorLedger>>;
+    /// Persists the ledger and any entries not yet written. Entries are only
+    /// ever inserted — an update would break the append-only guarantee the
+    /// whole shape exists for.
+    async fn save(&self, ledger: &VendorLedger) -> anyhow::Result<()>;
+}
+
+#[async_trait]
+pub trait TelemetryRepository: Send + Sync {
+    /// Append one event. There is deliberately no update or delete.
+    async fn append(&self, event: &TelemetryEvent) -> anyhow::Result<()>;
+    async fn timeline(&self, tenant_id: Uuid, order_id: Uuid) -> anyhow::Result<Vec<TelemetryEvent>>;
 }

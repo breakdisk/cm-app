@@ -5,11 +5,13 @@ use uuid::Uuid;
 use crate::domain::entities::{CourierAssignment, CourierLocation, ProductKey};
 use crate::domain::repositories::CourierRepository;
 use crate::infrastructure::db::{AssignmentRepository, ClaimOutcome, LocationRepository};
+use crate::infrastructure::messaging::{CourierEvent, CourierEvents};
 
 pub struct DispatchService {
     couriers:    Arc<dyn CourierRepository>,
     assignments: Arc<dyn AssignmentRepository>,
     locations:   Arc<dyn LocationRepository>,
+    events:      Arc<dyn CourierEvents>,
 }
 
 impl DispatchService {
@@ -17,8 +19,9 @@ impl DispatchService {
         couriers: Arc<dyn CourierRepository>,
         assignments: Arc<dyn AssignmentRepository>,
         locations: Arc<dyn LocationRepository>,
+        events: Arc<dyn CourierEvents>,
     ) -> Self {
-        Self { couriers, assignments, locations }
+        Self { couriers, assignments, locations, events }
     }
 
     /// Offer a job to the nearest dispatchable couriers. Offering is not
@@ -57,8 +60,79 @@ impl DispatchService {
     /// there first — the caller should show "already taken", not an error.
     pub async fn claim(&self, tenant_id: Uuid, assignment_id: Uuid) -> anyhow::Result<bool> {
         match self.assignments.try_claim(tenant_id, assignment_id).await? {
-            ClaimOutcome::Won  => Ok(true),
             ClaimOutcome::Lost => Ok(false),
+            ClaimOutcome::Won => {
+                if let Some(a) = self.assignments.find_by_id(tenant_id, assignment_id).await? {
+                    self.emit(CourierEvent::Assigned {
+                        tenant_id,
+                        product: a.product.as_str().to_string(),
+                        external_ref: a.external_ref,
+                        courier_id: a.courier_id,
+                        assignment_id: a.id,
+                    })
+                    .await;
+                }
+                Ok(true)
+            }
+        }
+    }
+
+    /// A vendor's goods are in the bag.
+    pub async fn mark_collected(
+        &self,
+        tenant_id: Uuid,
+        assignment_id: Uuid,
+        vendor_id: Uuid,
+        device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> anyhow::Result<bool> {
+        let Some(a) = self.assignments.find_by_id(tenant_id, assignment_id).await? else {
+            return Ok(false);
+        };
+
+        self.emit(CourierEvent::Collected {
+            tenant_id,
+            product: a.product.as_str().to_string(),
+            external_ref: a.external_ref,
+            courier_id: a.courier_id,
+            vendor_id,
+            device_timestamp,
+        })
+        .await;
+        Ok(true)
+    }
+
+    /// The job is done. Completing the assignment frees the courier for the
+    /// next one, which is why it is persisted rather than only published.
+    pub async fn mark_delivered(
+        &self,
+        tenant_id: Uuid,
+        assignment_id: Uuid,
+        device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> anyhow::Result<bool> {
+        let Some(mut a) = self.assignments.find_by_id(tenant_id, assignment_id).await? else {
+            return Ok(false);
+        };
+
+        a.complete();
+        self.assignments.save(&a).await?;
+
+        self.emit(CourierEvent::Delivered {
+            tenant_id,
+            product: a.product.as_str().to_string(),
+            external_ref: a.external_ref,
+            courier_id: a.courier_id,
+            device_timestamp,
+        })
+        .await;
+        Ok(true)
+    }
+
+    /// Fire-and-forget. The state change is already committed; failing it
+    /// because the broker hiccupped would hand a claimed job to nobody. A
+    /// missed event is recoverable by reconciliation — a lost claim is not.
+    async fn emit(&self, event: CourierEvent) {
+        if let Err(e) = self.events.publish(&event).await {
+            tracing::error!(err = %e, ?event, "courier milestone publish failed");
         }
     }
 

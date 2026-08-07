@@ -34,6 +34,19 @@ pub struct ClaimResponse {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct CollectedRequest {
+    pub vendor_id: Uuid,
+    /// Hardware clock at the scan. SLA maths uses this rather than server
+    /// receipt time, so a slow upload is not billed to the courier.
+    pub device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeliveredRequest {
+    pub device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct PositionRequest {
     pub lat:              f64,
     pub lng:              f64,
@@ -53,6 +66,8 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/field-ops/assignments/offer", post(offer))
         .route("/v1/field-ops/assignments/:id/claim", post(claim))
+        .route("/v1/field-ops/assignments/:id/collected", post(collected))
+        .route("/v1/field-ops/assignments/:id/delivered", post(delivered))
         .route("/v1/field-ops/couriers/:id/position", post(position))
 }
 
@@ -108,5 +123,50 @@ async fn position(
             tracing::error!(err = %e, "position ingest failed");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+async fn collected(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+    Json(req): Json<CollectedRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let found = st
+        .dispatch
+        .mark_collected(claims.tenant_id, id, req.vendor_id, req.device_timestamp)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "collected failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    // 404 rather than a cheerful 202: a milestone reported against an
+    // assignment that does not exist means the app is holding a stale id, and
+    // silently accepting it would lose a real collection.
+    if !found {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(StatusCode::ACCEPTED)
+}
+
+async fn delivered(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+    Json(req): Json<DeliveredRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let found = st
+        .dispatch
+        .mark_delivered(claims.tenant_id, id, req.device_timestamp)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "delivered failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    if !found {
+        return Err(StatusCode::NOT_FOUND);
+    }
     Ok(StatusCode::ACCEPTED)
 }

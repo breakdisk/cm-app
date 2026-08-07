@@ -3,12 +3,13 @@ pub mod catalog;
 pub mod health;
 pub mod mesh;
 pub mod orders;
+pub mod tracking;
 
 use std::sync::Arc;
 use axum::Router;
 
 use crate::application::services::{BasketService, CatalogService, CheckoutService};
-use crate::domain::repositories::OrderRepository;
+use crate::domain::repositories::{OrderRepository, TelemetryRepository};
 use omnideliv_mesh::MeshRunner;
 
 pub struct AppState {
@@ -16,7 +17,8 @@ pub struct AppState {
     pub baskets: Arc<BasketService>,
     pub mesh:    Arc<MeshRunner>,
     pub checkout: Arc<CheckoutService>,
-    pub orders:   Arc<dyn OrderRepository>,
+    pub orders:    Arc<dyn OrderRepository>,
+    pub telemetry: Arc<dyn TelemetryRepository>,
     pub jwt:     Arc<logisticos_auth::jwt::JwtService>,
 }
 
@@ -37,6 +39,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .merge(baskets::routes())
                 .merge(mesh::routes())
                 .merge(orders::routes())
+                .merge(tracking::routes())
                 .layer(auth_layer)
                 .with_state(state),
         )

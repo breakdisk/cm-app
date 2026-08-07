@@ -8,6 +8,7 @@ use crate::api::http::{router, AppState};
 use crate::application::services::DispatchService;
 use crate::config::Config;
 use crate::infrastructure::db::{PgAssignmentRepository, PgCourierRepository, PgLocationRepository};
+use crate::infrastructure::messaging::{CourierEvents, KafkaCourierEvents, NoopCourierEvents};
 
 pub async fn run() -> anyhow::Result<()> {
     let cfg = Config::load().context("Failed to load field-ops config")?;
@@ -44,10 +45,24 @@ pub async fn run() -> anyhow::Result<()> {
     let jwt_secret = std::env::var("AUTH__JWT_SECRET").context("AUTH__JWT_SECRET not set")?;
     let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
 
+    // A broker that will not connect must not stop the service starting: a
+    // courier who cannot be dispatched is a worse outage than milestones that
+    // go unpublished, and the claim itself is committed to Postgres either way.
+    let events: Arc<dyn CourierEvents> =
+        match logisticos_events::producer::KafkaProducer::new(&cfg.kafka.brokers) {
+            Ok(p) => Arc::new(KafkaCourierEvents::new(Arc::new(p))),
+            Err(e) => {
+                tracing::error!(err = %e, brokers = %cfg.kafka.brokers,
+                    "Kafka unavailable — courier milestones will NOT be published, so consuming                      products will not see collections or deliveries until this is fixed");
+                Arc::new(NoopCourierEvents)
+            }
+        };
+
     let dispatch = Arc::new(DispatchService::new(
         Arc::new(PgCourierRepository::new(pool.clone())),
         Arc::new(PgAssignmentRepository::new(pool.clone())),
         Arc::new(PgLocationRepository::new(pool.clone())),
+        events,
     ));
 
     let state = Arc::new(AppState { dispatch, jwt });
