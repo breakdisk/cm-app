@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::domain::entities::{Availability, Vendor, Vertical};
+use crate::domain::entities::{Availability, Vendor, VendorStatus, Vertical};
 use crate::domain::repositories::{CatalogRepository, ItemWithAvailability, VendorRepository};
 
 /// An item plus the agent-facing judgement about it.
@@ -63,6 +63,48 @@ impl CatalogService {
                 item_with_availability: iwa,
             })
             .collect())
+    }
+
+    /// The store this portal user runs, if any.
+    pub async fn vendor_for_user(&self, tenant_id: Uuid, user_id: Uuid) -> anyhow::Result<Option<Vendor>> {
+        self.vendors.find_by_user(tenant_id, user_id).await
+    }
+
+    /// A vendor editing its own store.
+    ///
+    /// Resolved from the caller's user id rather than an id in the path: a
+    /// vendor id the caller supplies is a vendor id the caller can change, and
+    /// this endpoint would then edit someone else's store.
+    pub async fn update_own_vendor(
+        &self,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        prep_time_minutes: Option<i32>,
+        status: Option<String>,
+    ) -> anyhow::Result<bool> {
+        let Some(mut vendor) = self.vendors.find_by_user(tenant_id, user_id).await? else {
+            return Ok(false);
+        };
+
+        if let Some(m) = prep_time_minutes {
+            vendor.prep_time_minutes = m;
+        }
+        // Only pause and resume. Offboarding and completing onboarding are
+        // Partner decisions — the HTTP layer rejects the others, and this is
+        // the second gate so a future caller cannot bypass it.
+        match status.as_deref() {
+            Some("active") => vendor.activate(),
+            Some("paused") => vendor.pause(),
+            Some(_) => anyhow::bail!("that status is not the vendor's to set"),
+            None => {}
+        }
+        if vendor.status == VendorStatus::Onboarding && prep_time_minutes.is_some() {
+            // Editing prep time while onboarding is fine; it must not silently
+            // activate the store.
+        }
+
+        self.vendors.save(&vendor).await?;
+        Ok(true)
     }
 
     pub async fn set_availability(&self, a: &Availability) -> anyhow::Result<()> {

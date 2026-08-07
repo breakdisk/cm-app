@@ -16,6 +16,10 @@ pub trait VendorRepository: Send + Sync {
     async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<Vendor>>;
     async fn save(&self, vendor: &Vendor) -> anyhow::Result<()>;
 
+    /// The vendor a portal user operates. `None` when the user runs no store —
+    /// which is the answer for every customer, so it is not an error.
+    async fn find_by_user(&self, tenant_id: Uuid, user_id: Uuid) -> anyhow::Result<Option<Vendor>>;
+
     /// Orderable vendors of a vertical within `radius_km`, nearest first.
     async fn find_near(
         &self,

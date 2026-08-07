@@ -36,6 +36,7 @@ fn map_row(r: &sqlx::postgres::PgRow) -> anyhow::Result<Vendor> {
     Ok(Vendor {
         id:                r.get("id"),
         tenant_id:         r.get("tenant_id"),
+        user_id:           r.get("user_id"),
         vertical:          parse_vertical(&vertical_str)?,
         name:              r.get("name"),
         address:           r.get("address"),
@@ -60,15 +61,24 @@ impl VendorRepository for PgVendorRepository {
         row.as_ref().map(map_row).transpose()
     }
 
+    async fn find_by_user(&self, tenant_id: Uuid, user_id: Uuid) -> anyhow::Result<Option<Vendor>> {
+        let row = sqlx::query(
+            "SELECT * FROM omnideliv.vendors WHERE tenant_id = $1 AND user_id = $2",
+        )
+        .bind(tenant_id).bind(user_id)
+        .fetch_optional(&self.pool).await?;
+        row.as_ref().map(map_row).transpose()
+    }
+
     async fn save(&self, v: &Vendor) -> anyhow::Result<()> {
         sqlx::query(
             r#"
             INSERT INTO omnideliv.vendors (
-                id, tenant_id, vertical, name, address, lat, lng,
+                id, tenant_id, user_id, vertical, name, address, lat, lng,
                 prep_time_minutes, commission_bps, payout_account, hours, status,
                 created_at, updated_at
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
             ON CONFLICT (id) DO UPDATE SET
                 name              = EXCLUDED.name,
                 address           = EXCLUDED.address,
@@ -79,10 +89,11 @@ impl VendorRepository for PgVendorRepository {
                 payout_account    = EXCLUDED.payout_account,
                 hours             = EXCLUDED.hours,
                 status            = EXCLUDED.status,
+                user_id           = EXCLUDED.user_id,
                 updated_at        = EXCLUDED.updated_at
             "#,
         )
-        .bind(v.id).bind(v.tenant_id).bind(v.vertical.as_str())
+        .bind(v.id).bind(v.tenant_id).bind(v.user_id).bind(v.vertical.as_str())
         .bind(&v.name).bind(&v.address).bind(v.lat).bind(v.lng)
         .bind(v.prep_time_minutes).bind(v.commission_bps)
         .bind(&v.payout_account).bind(&v.hours).bind(v.status.as_str())

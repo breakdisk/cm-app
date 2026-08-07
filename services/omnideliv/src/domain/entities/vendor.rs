@@ -51,6 +51,9 @@ impl VendorStatus {
 pub struct Vendor {
     pub id:                Uuid,
     pub tenant_id:         Uuid,
+    /// The identity user who operates this store, once one is invited. `None`
+    /// for a vendor the Partner onboarded but nobody has claimed.
+    pub user_id:           Option<Uuid>,
     pub vertical:          Vertical,
     pub name:              String,
     pub address:           String,
@@ -78,6 +81,7 @@ impl Vendor {
         Self {
             id: Uuid::new_v4(),
             tenant_id,
+            user_id: None,
             vertical,
             name,
             address,

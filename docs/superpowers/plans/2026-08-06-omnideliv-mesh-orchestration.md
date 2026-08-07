@@ -607,7 +607,12 @@ orphaned partition."
 
 ---
 
-## Task 4: The orphaned vendor endpoints
+## Task 4: The orphaned vendor endpoints — DONE
+
+> Built 2026-08-07. `GET /v1/omnideliv/vendors` and `GET|PATCH /v1/omnideliv/vendors/me`.
+> Two deviations from the code below: the extractor is `AuthClaims` with `.user_id`, not
+> `Claims` with `.sub`; and `update_own_vendor` re-checks the status allowlist in the
+> service rather than trusting the HTTP layer alone, so a future caller cannot bypass it.
 
 **Files:**
 - Create: `services/omnideliv/src/api/http/vendors.rs`

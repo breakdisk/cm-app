@@ -11,16 +11,24 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams } from "expo-router";
 
 import { addLine, createBasket, type BasketView } from "@/api/basket";
-import { searchCatalog, type SearchHit } from "@/api/catalog";
+import { searchCatalog, vendorsNear, type SearchHit, type VendorSummary } from "@/api/catalog";
 import { theme } from "@/theme";
 
 function peso(cents: number): string {
   return `₱${(cents / 100).toFixed(2)}`;
 }
 
+/** Slice-one placeholder, mirroring the service's DEFAULT_LAT/DEFAULT_LNG. */
+const DEFAULT_LAT = 14.5995;
+const DEFAULT_LNG = 120.9842;
+
 export default function Browse() {
   const { vertical, vendorId } = useLocalSearchParams<{ vertical: string; vendorId?: string }>();
+  // The vendor actually being browsed: the one named in the route, or the
+  // nearest open one resolved on mount.
+  const [resolvedVendorId, setResolvedVendorId] = useState<string | undefined>(vendorId);
   const [items, setItems] = useState<SearchHit[]>([]);
+  const [vendor, setVendor] = useState<VendorSummary | null>(null);
   const [basket, setBasket] = useState<BasketView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -30,15 +38,23 @@ export default function Browse() {
 
     (async () => {
       try {
-        // Without a vendor there is nothing to list: vendor discovery is the
-        // mesh's find_vendors today, and the browse-side vendor list is Plan 9
-        // Task 4. Say so plainly rather than rendering an empty screen that
-        // looks like the shop has no stock.
-        if (!vendorId) {
-          if (!cancelled) setError("Pick a shop first — shop browsing is not wired up yet.");
-          return;
+        // Resolve a vendor when the caller did not name one. Nearest first, so
+        // browsing a vertical lands in the closest open store rather than
+        // dead-ending — picking between stores is a screen this slice does not
+        // have, and defaulting beats a blank page.
+        let id = vendorId;
+        if (!id) {
+          const near = await vendorsNear(String(vertical), DEFAULT_LAT, DEFAULT_LNG);
+          if (near.length === 0) {
+            if (!cancelled) setError(`No ${vertical} shops are open near you right now.`);
+            return;
+          }
+          id = near[0].id;
+          if (!cancelled) setVendor(near[0]);
         }
-        const hits = await searchCatalog(vendorId, "");
+        setResolvedVendorId(id);
+
+        const hits = await searchCatalog(id, "");
         if (!cancelled) setItems(hits);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : "Could not load this shop");
@@ -54,17 +70,17 @@ export default function Browse() {
 
   const add = useCallback(
     async (item: SearchHit) => {
-      if (!vendorId) return;
+      if (!resolvedVendorId) return;
       try {
         // The basket is created lazily on the first add, so browsing without
         // buying leaves no empty baskets behind.
         const b = basket ?? (await createBasket());
-        setBasket(await addLine(b.id, vendorId, item.item_id));
+        setBasket(await addLine(b.id, resolvedVendorId, item.item_id));
       } catch (e) {
         setError(e instanceof Error ? e.message : "Could not add that");
       }
     },
-    [basket, vendorId]
+    [basket, resolvedVendorId]
   );
 
   if (loading) {
@@ -79,8 +95,13 @@ export default function Browse() {
     <SafeAreaView style={{ flex: 1, backgroundColor: theme.canvas }}>
       <View style={{ padding: 20, gap: 12, flex: 1 }}>
         <Text style={{ color: theme.text, fontSize: 18, fontWeight: "600" }}>
-          {vertical}
+          {vendor?.name ?? vertical}
         </Text>
+        {vendor && (
+          <Text style={{ color: theme.muted, fontSize: 11, marginTop: -6 }}>
+            {vendor.address} · about {vendor.prep_time_minutes} min to prepare
+          </Text>
+        )}
 
         {error && (
           <Text accessibilityRole="alert" style={{ color: theme.amber, fontSize: 12 }}>

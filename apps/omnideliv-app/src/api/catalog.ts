@@ -26,3 +26,26 @@ export function searchCatalog(
   // client-supplied tenant would be a cross-tenant read.
   return apiFetch<SearchHit[]>(`/v1/omnideliv/catalog/search?${params.toString()}`);
 }
+
+export interface VendorSummary {
+  id: string;
+  name: string;
+  address: string;
+  prep_time_minutes: number;
+}
+
+/** Orderable vendors of a vertical near the customer, nearest first. */
+export function vendorsNear(
+  vertical: string,
+  lat: number,
+  lng: number,
+  radiusKm = 5
+): Promise<VendorSummary[]> {
+  const params = new URLSearchParams({
+    vertical,
+    lat: String(lat),
+    lng: String(lng),
+    radius_km: String(radiusKm),
+  });
+  return apiFetch<VendorSummary[]>(`/v1/omnideliv/vendors?${params.toString()}`);
+}

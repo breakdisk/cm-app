@@ -4,6 +4,7 @@ pub mod health;
 pub mod mesh;
 pub mod orders;
 pub mod tracking;
+pub mod vendors;
 
 use std::sync::Arc;
 use axum::Router;
@@ -40,6 +41,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .merge(mesh::routes())
                 .merge(orders::routes())
                 .merge(tracking::routes())
+                .merge(vendors::routes())
                 .layer(auth_layer)
                 .with_state(state),
         )
