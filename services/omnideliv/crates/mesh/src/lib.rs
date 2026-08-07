@@ -1,8 +1,10 @@
 //! Collaborative Agent Mesh.
 
+pub mod events;
 pub mod roles;
 pub mod tools;
 pub mod transition;
-// events, runner arrive in Tasks 5-6.
+// runner arrives in Task 6.
 
+pub use events::MeshEvent;
 pub use transition::{MeshTransition, ProposedLine, RoutePlan, SubIntentSpec};
