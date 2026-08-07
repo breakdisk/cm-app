@@ -76,7 +76,13 @@ Instead: a `field_ops.products` registry table, with `courier_assignments.produc
 
 **Why fixing it changes the cost of convergence.** With one unambiguous courier identity, migrating LogisticOS onto `field-ops` stops being a multi-quarter data-model programme and becomes swapping a repository implementation behind an unchanged trait — `driver_ops` reads couriers from `field-ops` instead of its own table, and the ids already agree. That is a reviewable change of a size a team will actually pick up, which is the entire point: the exit condition should be cheap enough that nobody has to be held to a date.
 
-**Done means:** one identity for a field worker across `driver_ops` and `dispatch`; `driver_locations.driver_id` and `tasks.driver_id` provably hold the same thing; the defensive join in `task_repo.rs` deleted rather than left as documentation of an ambiguity that no longer exists.
+**Decided: `user_id` wins, and `driver_ops` owns the execution.**
+
+`user_id` rather than `drivers.id` because the hot paths have already chosen it — dispatch's three joins, the GPS ping resolution, and the defensive task join all key on `user_id` today. Collapsing onto `drivers.id` would mean rewriting the paths that are currently correct in order to preserve the one that is vestigial. It is also the identity that already means something outside this service: it is `identity.users.id`, so a courier, a portal login and an audit actor are the same id end to end, which `drivers.id` can never be.
+
+`driver_ops` owns it because `driver_ops` owns the table. The work is not OmniDeliv's to schedule and must not be sequenced behind it — that is the whole point of calling it a prerequisite rather than a migration step. It is justified as a latent correctness bug on its own merits (see above); convergence is a beneficiary, not the reason.
+
+**Done means:** one identity for a field worker across `driver_ops` and `dispatch`; `driver_locations.driver_id` and `tasks.driver_id` provably hold the same thing; the defensive join in `task_repo.rs` deleted rather than left as documentation of an ambiguity that no longer exists. `LocationService::load_driver_by_user_id` — present, correct, and currently unreachable — becomes the only lookup.
 
 ### Neutral
 - Tenant isolation in the new service is application-layer (`WHERE tenant_id = $n`), matching how every other service in this repo actually behaves. See the RLS note in the implementation plan; making RLS genuinely enforce needs its own ADR.
