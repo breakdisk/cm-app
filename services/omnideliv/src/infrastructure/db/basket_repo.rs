@@ -133,6 +133,7 @@ impl BasketRepository for PgBasketRepository {
             mesh_session_id: b.get("mesh_session_id"),
             sub_intents,
             lines,
+            version:         b.get("version"),
             created_at:      b.get("created_at"),
             updated_at:      b.get("updated_at"),
         }))
@@ -144,20 +145,31 @@ impl BasketRepository for PgBasketRepository {
         // then re-insert, or a removed line survives in the database.
         let mut tx = self.pool.begin().await?;
 
-        sqlx::query(
+        let result = sqlx::query(
             r#"
-            INSERT INTO omnideliv.baskets (id, tenant_id, customer_id, status, mesh_session_id, created_at, updated_at)
-            VALUES ($1,$2,$3,$4,$5,$6,$7)
+            INSERT INTO omnideliv.baskets (id, tenant_id, customer_id, status, mesh_session_id, version, created_at, updated_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
             ON CONFLICT (id) DO UPDATE SET
                 status          = EXCLUDED.status,
                 mesh_session_id = EXCLUDED.mesh_session_id,
+                version         = EXCLUDED.version,
                 updated_at      = EXCLUDED.updated_at
+            WHERE omnideliv.baskets.version < EXCLUDED.version
             "#,
         )
         .bind(basket.id).bind(basket.tenant_id).bind(basket.customer_id)
         .bind(basket.status.as_str()).bind(basket.mesh_session_id)
-        .bind(basket.created_at).bind(basket.updated_at)
-        .execute(&mut *tx).await?;
+        .bind(basket.version).bind(basket.created_at).bind(basket.updated_at)
+        .execute(&mut *tx)
+        .await?;
+
+        // Zero rows means another writer got there first with an equal or
+        // higher version. Roll back rather than writing lines against a basket
+        // row we did not update — that would leave the two disagreeing.
+        if result.rows_affected() == 0 {
+            tx.rollback().await?;
+            anyhow::bail!("basket {} was modified concurrently", basket.id);
+        }
 
         for si in &basket.sub_intents {
             sqlx::query(

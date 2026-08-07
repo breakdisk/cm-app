@@ -167,6 +167,9 @@ pub struct Basket {
     pub mesh_session_id: Option<Uuid>,
     pub sub_intents:     Vec<SubIntent>,
     pub lines:           Vec<BasketLine>,
+    /// Optimistic lock. Bumped by every mutation via `touch`, and compared on
+    /// write so a concurrent update is a detected conflict, not a lost one.
+    pub version:         i64,
     pub created_at:      DateTime<Utc>,
     pub updated_at:      DateTime<Utc>,
 }
@@ -182,9 +185,17 @@ impl Basket {
             mesh_session_id: None,
             sub_intents: Vec::new(),
             lines: Vec::new(),
+            version: 0,
             created_at: now,
             updated_at: now,
         }
+    }
+
+    /// Every mutation goes through here, so a new one cannot silently skip the
+    /// version bump and reopen the lost-update window.
+    fn touch(&mut self) {
+        self.version += 1;
+        self.updated_at = Utc::now();
     }
 
     /// Find or create the browse partition for a vertical.
@@ -216,7 +227,7 @@ impl Basket {
         };
         let id = si.id;
         self.sub_intents.push(si);
-        self.updated_at = Utc::now();
+        self.touch();
         id
     }
 
@@ -241,7 +252,7 @@ impl Basket {
         } else {
             self.lines.push(line);
         }
-        self.updated_at = Utc::now();
+        self.touch();
     }
 
     /// Remove a line. Returns whether anything was removed, so the API can
@@ -251,7 +262,7 @@ impl Basket {
         self.lines.retain(|l| l.id != line_id);
         let removed = self.lines.len() != before;
         if removed {
-            self.updated_at = Utc::now();
+            self.touch();
         }
         removed
     }
@@ -266,7 +277,7 @@ impl Basket {
     pub fn apply(&mut self, delta: BasketDelta) {
         self.lines.retain(|l| l.sub_intent_id != delta.sub_intent_id);
         self.lines.extend(delta.lines);
-        self.updated_at = Utc::now();
+        self.touch();
     }
 
     /// What the customer pays for goods, before delivery fee and tip.
@@ -552,5 +563,33 @@ mod tests {
 
         assert_eq!(b.lines.len(), 2, "the rejected line stays rejected and separate");
         assert_eq!(b.goods_total_cents(), 12_000, "only the live line is charged");
+    }
+
+    #[test]
+    fn a_new_basket_starts_at_version_zero() {
+        assert_eq!(basket().version, 0);
+    }
+
+    #[test]
+    fn every_mutation_bumps_the_version() {
+        let mut b = basket();
+        let si = b.browse_sub_intent(Vertical::Grocery);
+        assert_eq!(b.version, 1, "creating the browse partition is a mutation");
+
+        b.add_line(line(b.id, si, 1_000, 1));
+        assert_eq!(b.version, 2);
+
+        b.apply(BasketDelta { sub_intent_id: si, lines: vec![], note: None });
+        assert_eq!(b.version, 3);
+    }
+
+    /// A no-op remove must not bump the version: it would invalidate another
+    /// writer's in-flight update for a change that did not happen.
+    #[test]
+    fn a_removal_that_changes_nothing_does_not_bump_the_version() {
+        let mut b = basket();
+        let before = b.version;
+        assert!(!b.remove_line(Uuid::new_v4()));
+        assert_eq!(b.version, before);
     }
 }
