@@ -1,5 +1,7 @@
 pub mod basket;
 pub mod catalog;
+pub mod consolidation;
+pub mod order;
 pub mod vendor;
 
 pub use basket::{
@@ -7,4 +9,6 @@ pub use basket::{
     SubIntentStatus,
 };
 pub use catalog::{Availability, AvailabilityState, CatalogItem, Confidence};
+pub use consolidation::{ConsolidationPlan, PendingStop, Stop, TemperatureClass};
+pub use order::{LegStatus, Order, OrderStatus, Settlement, VendorLeg};
 pub use vendor::{Vendor, VendorStatus, Vertical};
