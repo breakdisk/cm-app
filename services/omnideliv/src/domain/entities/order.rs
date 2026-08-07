@@ -129,6 +129,16 @@ impl Settlement {
     }
 }
 
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum TransitionError {
+    #[error("cannot go from {from:?} to {to:?}")]
+    Illegal { from: OrderStatus, to: OrderStatus },
+    #[error("{0} leg(s) still pending collection")]
+    LegsPending(usize),
+    #[error("no leg was collected — nothing to deliver")]
+    NothingCollected,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Order {
     pub id:                 Uuid,
@@ -186,6 +196,73 @@ impl Order {
             placed_at: Utc::now(),
             delivered_at: None,
         }
+    }
+
+    /// Kafka is at-least-once, so a repeat of the transition we already made is
+    /// a no-op rather than an error. Anything else is refused: silently
+    /// accepting an out-of-order event is how an uncollected order gets marked
+    /// delivered.
+    fn advance(&mut self, to: OrderStatus, from: &[OrderStatus]) -> Result<(), TransitionError> {
+        if self.status == to {
+            return Ok(());
+        }
+        if !from.contains(&self.status) {
+            return Err(TransitionError::Illegal { from: self.status, to });
+        }
+        self.status = to;
+        Ok(())
+    }
+
+    pub fn courier_offered(&mut self) -> Result<(), TransitionError> {
+        self.advance(OrderStatus::AwaitingCourier, &[OrderStatus::Placed])
+    }
+
+    pub fn courier_claimed(&mut self, assignment_id: Uuid) -> Result<(), TransitionError> {
+        self.advance(OrderStatus::Collecting, &[OrderStatus::Placed, OrderStatus::AwaitingCourier])?;
+        self.courier_task_id = Some(assignment_id);
+        Ok(())
+    }
+
+    /// Every leg has reached a terminal state and at least one was collected.
+    ///
+    /// A failed leg is resolved, not pending — the courier delivers what they
+    /// have and the failed leg is refunded separately. Only a still-`Pending`
+    /// leg blocks, because delivering then would pay a vendor whose goods were
+    /// never picked up.
+    pub fn all_legs_collected(&mut self) -> Result<(), TransitionError> {
+        let pending = self.legs.iter().filter(|l| l.status == LegStatus::Pending).count();
+        if pending > 0 {
+            return Err(TransitionError::LegsPending(pending));
+        }
+        if !self.legs.iter().any(|l| l.status == LegStatus::PickedUp) {
+            return Err(TransitionError::NothingCollected);
+        }
+        self.advance(OrderStatus::Delivering, &[OrderStatus::Collecting])
+    }
+
+    pub fn delivered(&mut self) -> Result<(), TransitionError> {
+        self.advance(OrderStatus::Delivered, &[OrderStatus::Delivering])?;
+        self.delivered_at = Some(Utc::now());
+        Ok(())
+    }
+
+    /// Cancel, from any state except delivered.
+    ///
+    /// The plan called this terminal from *any* state, which would let a
+    /// delivered order be flipped to cancelled — quietly dropping a completed
+    /// order out of settlement while the vendor and courier have already been
+    /// credited. Undoing a delivery is a refund, which is a separate concern
+    /// with its own money movement, so it is refused here rather than
+    /// approximated.
+    pub fn cancel(&mut self) -> Result<(), TransitionError> {
+        if self.status == OrderStatus::Delivered {
+            return Err(TransitionError::Illegal {
+                from: OrderStatus::Delivered,
+                to: OrderStatus::Cancelled,
+            });
+        }
+        self.status = OrderStatus::Cancelled;
+        Ok(())
     }
 
     /// Where every cent the customer paid goes.
@@ -349,5 +426,126 @@ mod tests {
             o.grand_total_cents,
             s.vendor_payouts_cents + s.commissions_cents + s.courier_earnings_cents + s.partner_margin_cents,
         );
+    }
+
+    /// The happy path, in order. Each transition is legal only from the state
+    /// before it — a machine that accepts any transition from any state is not
+    /// a machine, it is a mutable field.
+    #[test]
+    fn the_lifecycle_advances_in_order() {
+        let mut o = order(vec![leg(10_000, 1000)], 4_900, 0, 3_500);
+        assert_eq!(o.status, OrderStatus::Placed);
+
+        assert!(o.courier_offered().is_ok());
+        assert_eq!(o.status, OrderStatus::AwaitingCourier);
+
+        assert!(o.courier_claimed(Uuid::new_v4()).is_ok());
+        assert_eq!(o.status, OrderStatus::Collecting);
+
+        o.legs[0].mark_picked_up();
+        assert!(o.all_legs_collected().is_ok());
+        assert_eq!(o.status, OrderStatus::Delivering);
+
+        assert!(o.delivered().is_ok());
+        assert_eq!(o.status, OrderStatus::Delivered);
+        assert!(o.delivered_at.is_some());
+    }
+
+    /// Kafka delivers at least once, so the same event can arrive twice.
+    /// A repeat of the current transition must be a no-op, not an error and
+    /// not a double-advance.
+    #[test]
+    fn a_repeated_transition_is_idempotent() {
+        let mut o = order(vec![leg(10_000, 1000)], 4_900, 0, 3_500);
+        o.courier_offered().unwrap();
+
+        assert!(o.courier_offered().is_ok(), "a duplicate event must not error");
+        assert_eq!(o.status, OrderStatus::AwaitingCourier, "and must not advance");
+    }
+
+    /// Out-of-order delivery is also possible. Skipping ahead must be refused
+    /// loudly rather than silently marking an uncollected order delivered.
+    #[test]
+    fn skipping_a_state_is_refused() {
+        let mut o = order(vec![leg(10_000, 1000)], 4_900, 0, 3_500);
+        assert!(o.delivered().is_err(), "a placed order cannot jump to delivered");
+        assert_eq!(o.status, OrderStatus::Placed);
+    }
+
+    /// Delivering with a leg still pending would pay a vendor whose goods were
+    /// never collected.
+    #[test]
+    fn collection_is_refused_while_a_leg_is_pending() {
+        let mut o = order(vec![leg(10_000, 1000), leg(5_000, 1000)], 4_900, 0, 3_500);
+        o.courier_offered().unwrap();
+        o.courier_claimed(Uuid::new_v4()).unwrap();
+
+        o.legs[0].mark_picked_up();
+        assert!(o.all_legs_collected().is_err(), "one leg is still pending");
+
+        o.legs[1].mark_picked_up();
+        assert!(o.all_legs_collected().is_ok());
+    }
+
+    /// A failed leg does not block the trip — the courier delivers what was
+    /// collected and the failed leg is refunded separately.
+    #[test]
+    fn a_failed_leg_does_not_block_collection() {
+        let mut o = order(vec![leg(10_000, 1000), leg(5_000, 1000)], 4_900, 0, 3_500);
+        o.courier_offered().unwrap();
+        o.courier_claimed(Uuid::new_v4()).unwrap();
+
+        o.legs[0].mark_picked_up();
+        o.legs[1].mark_failed();
+
+        assert!(o.all_legs_collected().is_ok(), "a failed leg is resolved, not pending");
+    }
+
+    /// Every leg failing means there is nothing to deliver.
+    #[test]
+    fn an_order_with_no_collected_legs_cannot_be_delivered() {
+        let mut o = order(vec![leg(10_000, 1000)], 4_900, 0, 3_500);
+        o.courier_offered().unwrap();
+        o.courier_claimed(Uuid::new_v4()).unwrap();
+        o.legs[0].mark_failed();
+
+        assert!(o.all_legs_collected().is_err(), "nothing was collected");
+    }
+
+    #[test]
+    fn a_cancelled_order_accepts_no_further_transitions() {
+        let mut o = order(vec![leg(10_000, 1000)], 4_900, 0, 3_500);
+        o.cancel().unwrap();
+        assert!(o.courier_offered().is_err());
+        assert!(o.delivered().is_err());
+    }
+
+    /// A delivered order cannot be cancelled. Flipping it would drop a completed
+    /// order out of settlement while the vendor and courier have already been
+    /// credited — undoing a delivery is a refund, with its own money movement.
+    #[test]
+    fn a_delivered_order_cannot_be_cancelled() {
+        let mut o = order(vec![leg(10_000, 1000)], 4_900, 0, 3_500);
+        o.courier_offered().unwrap();
+        o.courier_claimed(Uuid::new_v4()).unwrap();
+        o.legs[0].mark_picked_up();
+        o.all_legs_collected().unwrap();
+        o.delivered().unwrap();
+
+        assert!(o.cancel().is_err());
+        assert_eq!(o.status, OrderStatus::Delivered, "the delivery stands");
+    }
+
+    /// A courier claiming straight from Placed is legal: the offer event and
+    /// the claim can arrive out of order, and refusing the claim would strand
+    /// an order whose courier is already on the way.
+    #[test]
+    fn a_claim_without_a_preceding_offer_is_accepted() {
+        let mut o = order(vec![leg(10_000, 1000)], 4_900, 0, 3_500);
+        let assignment = Uuid::new_v4();
+
+        assert!(o.courier_claimed(assignment).is_ok());
+        assert_eq!(o.status, OrderStatus::Collecting);
+        assert_eq!(o.courier_task_id, Some(assignment));
     }
 }
