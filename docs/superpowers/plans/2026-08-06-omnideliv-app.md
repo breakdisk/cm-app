@@ -231,7 +231,7 @@ export async function checkout(
   lat: number,
   lng: number
 ): Promise<CheckoutResponse> {
-  return apiFetch<CheckoutResponse>("/v1/orders/checkout", {
+  return apiFetch<CheckoutResponse>("/v1/omnideliv/orders/checkout", {
     method: "POST",
     body: JSON.stringify({ basket_id: basketId, tip_cents: tipCents, delivery_lat: lat, delivery_lng: lng }),
   });
@@ -245,7 +245,7 @@ export interface BasketView {
 }
 
 export function getBasket(id: string): Promise<BasketView> {
-  return apiFetch<BasketView>(`/v1/baskets/${id}`);
+  return apiFetch<BasketView>(`/v1/omnideliv/baskets/${id}`);
 }
 ```
 
@@ -412,7 +412,7 @@ export function useMeshRun() {
     setState({ events: [], running: true, error: null });
 
     try {
-      const res = await expoFetch(`${API_BASE}/v1/mesh/run`, {
+      const res = await expoFetch(`${API_BASE}/v1/omnideliv/mesh/run`, {
         method: "POST",
         headers: await authHeaders(),
         body: JSON.stringify({ utterance }),
@@ -1146,7 +1146,7 @@ export default function Track() {
 
     const tick = async () => {
       try {
-        const t = await apiFetch<OrderTrack>(`/v1/orders/${orderId}/track`);
+        const t = await apiFetch<OrderTrack>(`/v1/omnideliv/orders/${orderId}/track`);
         if (!cancelled) setTrack(t);
       } catch {
         // A transient failure keeps the last known state on screen rather than
@@ -1270,7 +1270,7 @@ export default function Browse() {
 
   useEffect(() => {
     if (!vertical) return;
-    apiFetch<Vendor[]>(`/v1/vendors?vertical=${vertical}&lat=14.5995&lng=120.9842`)
+    apiFetch<Vendor[]>(`/v1/omnideliv/vendors?vertical=${vertical}&lat=14.5995&lng=120.9842`)
       .then(setVendors)
       .catch((e) => setError(e.message));
   }, [vertical]);
@@ -1310,7 +1310,7 @@ export default function Browse() {
 }
 ```
 
-> **Two endpoints this assumes:** `GET /v1/vendors?vertical=&lat=&lng=` (a thin wrapper over `CatalogService::vendors_near`) and `GET /v1/orders/:id/track`. Add both to `services/omnideliv/src/api/http/` before this screen works.
+> **Two endpoints this assumes:** `GET /v1/omnideliv/vendors?vertical=&lat=&lng=` (a thin wrapper over `CatalogService::vendors_near`) and `GET /v1/omnideliv/orders/:id/track`. Add both to `services/omnideliv/src/api/http/` before this screen works.
 
 - [ ] **Step 3: Wire CI**
 
@@ -1356,7 +1356,7 @@ The Definition of done above says *"The Quick Intent Pills reach a vendor list w
 
 ## Follow-on work this surfaces
 
-1. **Four endpoints this plan assumes.** `GET /v1/vendors`, `GET /v1/orders/:id/track`, plus the two the vendor console needs. All are thin wrappers over services that exist.
+1. **Four endpoints this plan assumes.** `GET /v1/omnideliv/vendors`, `GET /v1/omnideliv/orders/:id/track`, plus the two the vendor console needs. All are thin wrappers over services that exist.
 2. **Voice input.** The spec puts the mic front and centre and the design decision was to ship it in slice one via on-device STT. `expo-speech-recognition` is in `package.json` but Screen A currently has no mic control — wiring it is a small addition that feeds the same `run(utterance)` path, deliberately left until the text path is proven end to end.
 3. **Tip selection.** Screen C hardcodes `tip_cents: 0`. The settlement model handles tips correctly; the UI to choose one is missing.
 4. **Delivery address.** Both Screen C and the browse fallback hardcode Manila coordinates. Address capture and a saved-address list are needed before this leaves a pilot.

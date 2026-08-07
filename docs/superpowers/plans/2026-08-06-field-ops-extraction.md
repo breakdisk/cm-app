@@ -1632,11 +1632,14 @@ pub struct PositionRequest {
     pub device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+// Prefixed because this is a platform tier: `/v1/assignments` is already owned
+// by dispatch and called in production by the driver app, so an unprefixed
+// route resolves to dispatch at the gateway and never arrives here.
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/v1/assignments/offer", post(offer))
-        .route("/v1/assignments/:id/claim", post(claim))
-        .route("/v1/couriers/:id/position", post(position))
+        .route("/v1/field-ops/assignments/offer", post(offer))
+        .route("/v1/field-ops/assignments/:id/claim", post(claim))
+        .route("/v1/field-ops/couriers/:id/position", post(position))
 }
 
 async fn offer(

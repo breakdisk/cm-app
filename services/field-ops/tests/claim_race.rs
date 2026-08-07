@@ -1,7 +1,8 @@
 //! Proves ADR-0015's load-bearing invariant against a real database:
 //! two products racing for the same courier produce exactly one winner.
 //!
-//! Requires a running Postgres. Skipped when DATABASE_URL is unset.
+//! Requires a running Postgres. Skipped locally when DATABASE_URL is unset;
+//! fatal in CI, where a missing database means the harness broke.
 
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
@@ -12,12 +13,34 @@ use logisticos_field_ops::infrastructure::db::{
     AssignmentRepository, ClaimOutcome, PgAssignmentRepository, PgCourierRepository,
 };
 
+/// The database URL, or `None` when it is legitimate to skip.
+///
+/// Skipping is legitimate on a dev machine with no Postgres. It is never
+/// legitimate in CI: the workflow provisions a Postgres service and runs this
+/// service's migrations before the test step, so an absent DATABASE_URL there
+/// means that provisioning failed. Returning quietly in that case prints a
+/// green pass for a test that never executed — which is worse than no test,
+/// because it is indistinguishable from a real one. These tests guard
+/// ADR-0015's load-bearing invariant, so the failure mode has to be loud.
+fn database_url() -> Option<String> {
+    match std::env::var("DATABASE_URL") {
+        Ok(url) => Some(url),
+        Err(_) => {
+            assert!(
+                std::env::var("CI").is_err(),
+                "DATABASE_URL is unset while CI is set — Postgres provisioning \
+                 failed. This test proves that two products racing for one \
+                 courier produce exactly one winner; it must not be skipped here."
+            );
+            eprintln!("skipping: DATABASE_URL not set (this is fatal when CI is set)");
+            None
+        }
+    }
+}
+
 #[tokio::test]
 async fn two_products_racing_for_one_courier_produce_exactly_one_winner() {
-    let Ok(url) = std::env::var("DATABASE_URL") else {
-        eprintln!("skipping: DATABASE_URL not set");
-        return;
-    };
+    let Some(url) = database_url() else { return };
 
     let pool = PgPoolOptions::new()
         .after_connect(|c, _| Box::pin(async move {
@@ -67,10 +90,7 @@ async fn two_products_racing_for_one_courier_produce_exactly_one_winner() {
 /// did not, `product` would be free text and the registry decorative.
 #[tokio::test]
 async fn an_unregistered_product_is_rejected_by_the_foreign_key() {
-    let Ok(url) = std::env::var("DATABASE_URL") else {
-        eprintln!("skipping: DATABASE_URL not set");
-        return;
-    };
+    let Some(url) = database_url() else { return };
 
     let pool = PgPoolOptions::new()
         .after_connect(|c, _| Box::pin(async move {

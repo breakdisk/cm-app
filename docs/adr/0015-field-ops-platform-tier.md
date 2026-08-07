@@ -81,6 +81,16 @@ Instead: a `field_ops.products` registry table, with `courier_assignments.produc
 ### Neutral
 - Tenant isolation in the new service is application-layer (`WHERE tenant_id = $n`), matching how every other service in this repo actually behaves. See the RLS note in the implementation plan; making RLS genuinely enforce needs its own ADR.
 
+### API contract: the tier is addressed by prefix
+
+Every field-ops route is served under **`/v1/field-ops/...`**, and the API gateway resolves that prefix before any flat resource name.
+
+This is forced by the tier being shared. `/v1/assignments` already belongs to dispatch and is called in production by the driver app (`PUT /v1/assignments/:id/accept`); the gateway's resolver is a first-match-wins chain over one flat `/v1` namespace, so an unprefixed `/v1/assignments/offer` reaches dispatch and never arrives at field-ops. Arbitrating that by branch order would re-break silently the next time a branch is added above another.
+
+The prefix is also stable under every gateway topology being considered — one gateway, per-product gateways on separate subdomains, or host-based routing — so it does not need revisiting when that decision lands. Under the per-product-subdomain plan the *product* prefixes become redundant and may be dropped; the field-ops prefix does not, because it is what makes the tier addressable identically from every product that consumes it.
+
+Adding a product to the platform means adding one prefix at the gateway, not auditing the twenty existing branches for a collision.
+
 ## Alternatives Considered
 
 ### Alternative 1: Temporary documented exception — OmniDeliv calls LogisticOS directly

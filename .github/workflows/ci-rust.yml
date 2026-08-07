@@ -380,7 +380,13 @@ jobs:
         env:
           SQLX_OFFLINE: "false"
 
+      # `shell: bash` is load-bearing on every step that pipes to tee.
+      # The GitHub default shell is `bash -e {0}` — `-e` but NOT `pipefail` —
+      # so the exit status of `cargo test | tee` is tee's, which is always 0
+      # and a failing test suite reports a green job. Naming the shell
+      # explicitly gets `set -eo pipefail` and makes the failure propagate.
       - name: Run unit tests
+        shell: bash
         run: |
           cargo test \
             --package "logisticos-${{ matrix.service }}" \
@@ -389,6 +395,7 @@ jobs:
             -- --nocapture 2>&1 | tee test-unit-${{ matrix.service }}.log
 
       - name: Run integration tests
+        shell: bash
         run: |
           cargo test \
             --package "logisticos-${{ matrix.service }}" \
@@ -621,7 +628,10 @@ jobs:
               --database-url "$DATABASE_URL"
           fi
 
+      # Same pipefail reasoning as the test steps above: without `shell: bash`
+      # a benchmark that fails to build or run is masked by tee's exit code.
       - name: Run benchmarks
+        shell: bash
         run: |
           cargo bench \
             --package "logisticos-${{ matrix.service }}" \

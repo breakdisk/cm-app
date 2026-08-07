@@ -1753,7 +1753,7 @@ impl CourierDispatch for FieldOpsDispatch {
         // is a cross-tenant write waiting to happen.
         let reply = self
             .http
-            .post(format!("{}/v1/assignments/offer", self.base_url))
+            .post(format!("{}/v1/field-ops/assignments/offer", self.base_url))
             .bearer_auth(&self.token)
             .json(&OfferBody { product: "omnideliv", external_ref: order_id, lat, lng })
             .send()
@@ -1889,7 +1889,7 @@ pub struct CheckoutResponse {
 }
 
 pub fn routes() -> Router<Arc<AppState>> {
-    Router::new().route("/v1/orders/checkout", post(checkout))
+    Router::new().route("/v1/omnideliv/orders/checkout", post(checkout))
 }
 
 async fn checkout(

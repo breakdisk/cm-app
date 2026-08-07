@@ -769,7 +769,7 @@ a use for it."
 
 - [ ] **Step 1: Carry conflicts through to Screen C**
 
-`ConstraintDetected` events already arrive on Screen B, but a customer who taps through quickly will miss them. `GET /v1/baskets/:id` should also return the conflicts recorded for the run so Screen C can restate them at the point of decision.
+`ConstraintDetected` events already arrive on Screen B, but a customer who taps through quickly will miss them. `GET /v1/omnideliv/baskets/:id` should also return the conflicts recorded for the run so Screen C can restate them at the point of decision.
 
 Persist them on the basket (a `conflicts JSONB` column on `omnideliv.baskets`, written by the mesh alongside the deltas), and extend `BasketView`:
 

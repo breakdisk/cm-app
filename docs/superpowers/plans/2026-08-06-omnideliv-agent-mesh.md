@@ -1496,7 +1496,7 @@ pub struct RunRequest {
 }
 
 pub fn routes() -> Router<Arc<AppState>> {
-    Router::new().route("/v1/mesh/run", post(run))
+    Router::new().route("/v1/omnideliv/mesh/run", post(run))
 }
 
 async fn run(
@@ -1699,7 +1699,7 @@ width, while a worker that finished in time keeps its lines."
 - [ ] `cargo test -p logisticos-agent-runtime` — 15 tests pass (13 + 2 parent/child)
 - [ ] `cargo check --workspace` — clean
 - [ ] `rg -n "assign_courier|charge_customer|generate_invoice" services/omnideliv/crates/mesh/src/roles.rs` returns only the forbidden-tool test
-- [ ] A `POST /v1/mesh/run` against a seeded tenant streams `specialist_started` twice for a two-vertical utterance
+- [ ] A `POST /v1/omnideliv/mesh/run` against a seeded tenant streams `specialist_started` twice for a two-vertical utterance
 
 ## Follow-on work this unblocks
 

@@ -31,7 +31,7 @@ pub struct SearchHit {
 }
 
 pub fn routes() -> Router<Arc<AppState>> {
-    Router::new().route("/v1/catalog/search", get(search))
+    Router::new().route("/v1/omnideliv/catalog/search", get(search))
 }
 
 async fn search(

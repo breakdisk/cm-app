@@ -17,7 +17,7 @@ Plans 3 and 7 both assert that the Quick Intent Pills are the non-AI fallback an
 | Layer | What was built | What is missing |
 |---|---|---|
 | App | `app/browse/[vertical].tsx` renders vendors in a plain `<View>` | No `Pressable`, no navigation — the vendor list is a dead end |
-| API | `POST /v1/baskets`, `GET /v1/baskets/:id` | Nothing adds a line |
+| API | `POST /v1/omnideliv/baskets`, `GET /v1/omnideliv/baskets/:id` | Nothing adds a line |
 | Domain | `Basket::apply(BasketDelta)` | A delta needs a `sub_intent_id`, and only the Concierge creates sub-intents |
 
 The sole producer of basket lines across the whole plan set is the LLM. The pills prove the app does not crash; they do not let anyone order.
@@ -539,10 +539,10 @@ fn one() -> i32 { 1 }
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/v1/baskets", post(create))
-        .route("/v1/baskets/:id", get(fetch))
-        .route("/v1/baskets/:id/lines", post(add_line))
-        .route("/v1/baskets/:id/lines/:line_id", delete(remove_line))
+        .route("/v1/omnideliv/baskets", post(create))
+        .route("/v1/omnideliv/baskets/:id", get(fetch))
+        .route("/v1/omnideliv/baskets/:id/lines", post(add_line))
+        .route("/v1/omnideliv/baskets/:id/lines/:line_id", delete(remove_line))
 }
 
 async fn add_line(
@@ -687,18 +687,18 @@ export interface BasketView {
 }
 
 export const createBasket = () =>
-  apiFetch<BasketView>("/v1/baskets", { method: "POST", body: JSON.stringify({}) });
+  apiFetch<BasketView>("/v1/omnideliv/baskets", { method: "POST", body: JSON.stringify({}) });
 
 export const addLine = (basketId: string, vendorId: string, itemId: string, qty = 1) =>
-  apiFetch<BasketView>(`/v1/baskets/${basketId}/lines`, {
+  apiFetch<BasketView>(`/v1/omnideliv/baskets/${basketId}/lines`, {
     method: "POST",
     body: JSON.stringify({ vendor_id: vendorId, item_id: itemId, qty }),
   });
 
 export const removeLine = (basketId: string, lineId: string) =>
-  apiFetch<BasketView>(`/v1/baskets/${basketId}/lines/${lineId}`, { method: "DELETE" });
+  apiFetch<BasketView>(`/v1/omnideliv/baskets/${basketId}/lines/${lineId}`, { method: "DELETE" });
 
-export const getBasket = (id: string) => apiFetch<BasketView>(`/v1/baskets/${id}`);
+export const getBasket = (id: string) => apiFetch<BasketView>(`/v1/omnideliv/baskets/${id}`);
 ```
 
 ```ts
@@ -802,7 +802,7 @@ export default function VendorDetail() {
 
   useEffect(() => {
     if (vendorId) {
-      apiFetch<Item[]>(`/v1/catalog/items?vendor_id=${vendorId}`).then(setItems).catch(() => setItems([]));
+      apiFetch<Item[]>(`/v1/omnideliv/catalog/items?vendor_id=${vendorId}`).then(setItems).catch(() => setItems([]));
     }
   }, [vendorId]);
 

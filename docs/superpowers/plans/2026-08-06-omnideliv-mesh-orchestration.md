@@ -19,7 +19,7 @@ Plan 7's SSE route calls `mesh.run(utterance, tx)`. Plan 4 defines `MeshRunner::
 
 Plan 4's tests pass because they call `plan_workers` and `reconcile_results` directly. **No test in that plan exercises a full run**, which is how a missing entry point looked like a complete feature.
 
-Four endpoints are also assumed in prose by Plans 6 and 7 without an owning task: `GET /v1/vendors`, `GET /v1/vendors/me`, `PATCH /v1/vendors/me`. (`GET /v1/orders/:id/track` belongs with the lifecycle work in Plan 10.)
+Four endpoints are also assumed in prose by Plans 6 and 7 without an owning task: `GET /v1/omnideliv/vendors`, `GET /v1/omnideliv/vendors/me`, `PATCH /v1/omnideliv/vendors/me`. (`GET /v1/omnideliv/orders/:id/track` belongs with the lifecycle work in Plan 10.)
 
 ---
 
@@ -659,8 +659,8 @@ pub struct ProfilePatch {
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/v1/vendors", get(list_near))
-        .route("/v1/vendors/me", get(me).patch(patch_me))
+        .route("/v1/omnideliv/vendors", get(list_near))
+        .route("/v1/omnideliv/vendors/me", get(me).patch(patch_me))
 }
 
 async fn list_near(
@@ -898,5 +898,5 @@ failure."
 - [ ] `cargo test -p omnideliv-mesh` — 19 tests pass
 - [ ] `cargo test -p logisticos-omnideliv --test mesh_run` — passes
 - [ ] `cargo check --workspace` — clean
-- [ ] `POST /v1/mesh/run` streams `intent_parsed`, two `specialist_started`, two `specialist_finished`, `completed` — in that order, with `completed` last
+- [ ] `POST /v1/omnideliv/mesh/run` streams `intent_parsed`, two `specialist_started`, two `specialist_finished`, `completed` — in that order, with `completed` last
 - [ ] `rg -n "mesh\.run\(" services/omnideliv/src/api/http/mesh.rs` resolves to a method that exists

@@ -40,11 +40,20 @@ pub struct PositionRequest {
     pub device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+// Every route is namespaced under `/v1/field-ops` because this is a platform
+// tier, not a product service: the same paths are reachable by more than one
+// product, and a flat resource name would collide with whichever product
+// claimed it first. `/v1/assignments` is already owned by dispatch and called
+// in production by the driver app (`PUT /v1/assignments/:id/accept`), so an
+// unprefixed `/v1/assignments/offer` resolves to dispatch at the gateway and
+// never reaches this service. The prefix is also stable under every gateway
+// topology Plan 11 might land — one gateway, per-product gateways, or
+// host-based routing — so it does not need revisiting when that lands.
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/v1/assignments/offer", post(offer))
-        .route("/v1/assignments/:id/claim", post(claim))
-        .route("/v1/couriers/:id/position", post(position))
+        .route("/v1/field-ops/assignments/offer", post(offer))
+        .route("/v1/field-ops/assignments/:id/claim", post(claim))
+        .route("/v1/field-ops/couriers/:id/position", post(position))
 }
 
 // Tenant comes from the validated JWT on every handler below, never from the

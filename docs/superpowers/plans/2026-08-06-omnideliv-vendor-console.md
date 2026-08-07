@@ -250,18 +250,18 @@ export interface CatalogItem {
 }
 
 export function listItems(vendorId: string): Promise<CatalogItem[]> {
-  return apiFetch<CatalogItem[]>(`/v1/catalog/items?vendor_id=${vendorId}`);
+  return apiFetch<CatalogItem[]>(`/v1/omnideliv/catalog/items?vendor_id=${vendorId}`);
 }
 
 export function setAvailability(itemId: string, state: AvailabilityState): Promise<void> {
-  return apiFetch<void>(`/v1/catalog/items/${itemId}/availability`, {
+  return apiFetch<void>(`/v1/omnideliv/catalog/items/${itemId}/availability`, {
     method: "PUT",
     body: JSON.stringify({ state }),
   });
 }
 ```
 
-> **Two endpoints Plan 3 did not build.** `GET /v1/catalog/items?vendor_id=` and `PUT /v1/catalog/items/:id/availability` are vendor-facing; Plan 3 built only the agent-facing `GET /v1/catalog/search`. Add both in Task 3 Step 1 before wiring the UI — they are a thin pass-through to `CatalogRepository::list_for_vendor` and `CatalogService::set_availability`, both of which already exist.
+> **Two endpoints Plan 3 did not build.** `GET /v1/omnideliv/catalog/items?vendor_id=` and `PUT /v1/omnideliv/catalog/items/:id/availability` are vendor-facing; Plan 3 built only the agent-facing `GET /v1/omnideliv/catalog/search`. Add both in Task 3 Step 1 before wiring the UI — they are a thin pass-through to `CatalogRepository::list_for_vendor` and `CatalogService::set_availability`, both of which already exist.
 
 - [ ] **Step 3: Write the route guard**
 
@@ -310,9 +310,9 @@ In `services/omnideliv/src/api/http/catalog.rs`, add alongside the existing `sea
 
 ```rust
     Router::new()
-        .route("/v1/catalog/search", get(search))
-        .route("/v1/catalog/items", get(list_items))
-        .route("/v1/catalog/items/:id/availability", put(set_availability))
+        .route("/v1/omnideliv/catalog/search", get(search))
+        .route("/v1/omnideliv/catalog/items", get(list_items))
+        .route("/v1/omnideliv/catalog/items/:id/availability", put(set_availability))
 ```
 
 `list_items` calls `CatalogRepository::list_for_vendor` and returns `item_id`, `name`, `price_cents`, `availability` and `availability_updated_at`. `set_availability` parses the state string and calls `CatalogService::set_availability`, returning `204`. Both read `tenant_id` from validated `Claims`, never from the request.
@@ -788,7 +788,7 @@ export default function ProfilePage() {
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    apiFetch<VendorProfile>("/v1/vendors/me").then(setProfile).catch(() => setProfile(null));
+    apiFetch<VendorProfile>("/v1/omnideliv/vendors/me").then(setProfile).catch(() => setProfile(null));
   }, []);
 
   async function save(next: Partial<VendorProfile>) {
@@ -796,7 +796,7 @@ export default function ProfilePage() {
     setSaving(true);
     setMessage(null);
     try {
-      await apiFetch("/v1/vendors/me", { method: "PATCH", body: JSON.stringify(next) });
+      await apiFetch("/v1/omnideliv/vendors/me", { method: "PATCH", body: JSON.stringify(next) });
       setProfile({ ...profile, ...next });
       setMessage("Saved.");
     } catch {
@@ -865,7 +865,7 @@ export default function ProfilePage() {
 }
 ```
 
-> **`GET`/`PATCH /v1/vendors/me` are not yet built.** Add them to `services/omnideliv/src/api/http/` alongside the catalog routes, resolving the vendor from the session's claims — the same "never take the identity from the client" rule as `list_items`.
+> **`GET`/`PATCH /v1/omnideliv/vendors/me` are not yet built.** Add them to `services/omnideliv/src/api/http/` alongside the catalog routes, resolving the vendor from the session's claims — the same "never take the identity from the client" rule as `list_items`.
 
 - [ ] **Step 2: Add the app to frontend CI**
 
@@ -902,6 +902,6 @@ over-reports it gets cold food."
 
 ## Follow-on work this surfaces
 
-1. **Four endpoints this plan assumes.** `GET /v1/catalog/items`, `PUT /v1/catalog/items/:id/availability`, `GET /v1/vendors/me`, `PATCH /v1/vendors/me` are added here rather than in Plan 3 because Plan 3 built only the agent-facing surface. All four resolve identity from claims.
+1. **Four endpoints this plan assumes.** `GET /v1/omnideliv/catalog/items`, `PUT /v1/omnideliv/catalog/items/:id/availability`, `GET /v1/omnideliv/vendors/me`, `PATCH /v1/omnideliv/vendors/me` are added here rather than in Plan 3 because Plan 3 built only the agent-facing surface. All four resolve identity from claims.
 2. **Design tokens are duplicated by hand.** `tailwind.config.ts` mirrors `apps/merchant-portal/src/lib/design-system/tokens.ts`. Extracting `@logisticos/ui` as a real package is overdue and now has a third consumer arguing for it.
 3. **Vendor self-signup.** Slice one onboards by hand. A vendor who can sign up needs verification, payout-account capture and a terms flow — its own plan.

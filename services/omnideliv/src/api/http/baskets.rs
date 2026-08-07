@@ -15,10 +15,16 @@ pub struct BasketResponse {
     pub lines_awaiting_review: usize,
 }
 
+// Namespaced under `/v1/omnideliv` per ADR-0015's API-contract rule: product
+// services do not take flat resource names in the shared `/v1` namespace.
+// `/v1/orders` is the case that forces this — it already routes to
+// order-intake, where a POST would not 404 but succeed and create a real
+// shipment. Prefixing every OmniDeliv route keeps that class of mistake
+// impossible rather than merely unlikely.
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/v1/baskets", post(create))
-        .route("/v1/baskets/:id", get(fetch))
+        .route("/v1/omnideliv/baskets", post(create))
+        .route("/v1/omnideliv/baskets/:id", get(fetch))
 }
 
 /// Both the tenant and the customer come from the validated JWT rather than a

@@ -2143,7 +2143,7 @@ pub struct SearchHit {
 }
 
 pub fn routes() -> Router<Arc<AppState>> {
-    Router::new().route("/v1/catalog/search", get(search))
+    Router::new().route("/v1/omnideliv/catalog/search", get(search))
 }
 
 async fn search(
@@ -2207,8 +2207,8 @@ pub struct BasketResponse {
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/v1/baskets", post(create))
-        .route("/v1/baskets/:id", get(fetch))
+        .route("/v1/omnideliv/baskets", post(create))
+        .route("/v1/omnideliv/baskets/:id", get(fetch))
 }
 
 async fn create(
@@ -2414,7 +2414,7 @@ an FK violation rather than silently losing the chain."
 
 ## Correction — the basket has no non-LLM writer
 
-**This plan builds no way to add a line to a basket outside the mesh.** `Basket::apply` takes a `BasketDelta`, a delta requires a `sub_intent_id`, and only the Concierge creates sub-intents — so after this plan the sole producer of basket lines is the LLM. The two routes here are `POST /v1/baskets` (create empty) and `GET /v1/baskets/:id`.
+**This plan builds no way to add a line to a basket outside the mesh.** `Basket::apply` takes a `BasketDelta`, a delta requires a `sub_intent_id`, and only the Concierge creates sub-intents — so after this plan the sole producer of basket lines is the LLM. The two routes here are `POST /v1/omnideliv/baskets` (create empty) and `GET /v1/omnideliv/baskets/:id`.
 
 That gap is closed by **[Plan 8 — Manual Order Path](2026-08-06-omnideliv-manual-order-path.md)**, which adds a browse sub-intent, `Basket::add_line` with append semantics, the line endpoints, and the optimistic lock this plan defers below. Read that plan before assuming the fallback works.
 

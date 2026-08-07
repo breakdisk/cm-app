@@ -1,5 +1,7 @@
 //! The basket aggregate must survive a save/load round trip with its
-//! substitution chain intact. Requires a running Postgres; skipped otherwise.
+//! substitution chain intact. Requires a running Postgres: skipped locally
+//! when DATABASE_URL is unset, fatal in CI where a missing database means the
+//! harness broke rather than that there is nothing to test.
 
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
@@ -13,12 +15,29 @@ use logisticos_omnideliv::infrastructure::db::{
     PgBasketRepository, PgCatalogRepository, PgVendorRepository,
 };
 
+/// The database URL, or `None` when it is legitimate to skip.
+///
+/// Legitimate on a dev machine with no Postgres; never legitimate in CI, where
+/// the workflow provisions Postgres and runs this service's migrations before
+/// the test step. A quiet `return` there reports a green pass for a test that
+/// never ran, which is indistinguishable from a real one.
+fn database_url() -> Option<String> {
+    match std::env::var("DATABASE_URL") {
+        Ok(url) => Some(url),
+        Err(_) => {
+            assert!(
+                std::env::var("CI").is_err(),
+                "DATABASE_URL is unset while CI is set — Postgres provisioning failed."
+            );
+            eprintln!("skipping: DATABASE_URL not set (this is fatal when CI is set)");
+            None
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_basket_with_a_substitution_chain_survives_a_round_trip() {
-    let Ok(url) = std::env::var("DATABASE_URL") else {
-        eprintln!("skipping: DATABASE_URL not set");
-        return;
-    };
+    let Some(url) = database_url() else { return };
 
     let pool = PgPoolOptions::new()
         .after_connect(|c, _| Box::pin(async move {

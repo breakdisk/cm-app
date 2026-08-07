@@ -44,18 +44,19 @@ mod routing_tests {
 
     fn table() -> RouteTable {
         RouteTable::from_rules(vec![
-            RouteRule { prefix: "/v1/baskets".into(),  upstream: "http://omnideliv:8091".into() },
-            RouteRule { prefix: "/v1/orders".into(),   upstream: "http://omnideliv:8091".into() },
-            RouteRule { prefix: "/v1/o".into(),        upstream: "http://short:1".into() },
+            RouteRule { prefix: "/v1/omnideliv".into(),        upstream: "http://omnideliv:8091".into() },
+            RouteRule { prefix: "/v1/omnideliv/orders".into(), upstream: "http://orders:2".into() },
+            RouteRule { prefix: "/v1/o".into(),                upstream: "http://short:1".into() },
         ])
     }
 
     #[test]
     fn the_longest_matching_prefix_wins() {
-        // "/v1/o" also matches, but "/v1/orders" is more specific. First-match
-        // on declaration order would make routing depend on config ordering,
-        // which is exactly the fragility this replaces.
-        assert_eq!(table().resolve("/v1/orders/checkout"), Some("http://omnideliv:8091"));
+        // "/v1/o" and "/v1/omnideliv" also match, but "/v1/omnideliv/orders"
+        // is more specific. First-match on declaration order would make routing
+        // depend on config ordering, which is exactly the fragility this
+        // replaces — and is the bug the existing if/else chain already has.
+        assert_eq!(table().resolve("/v1/omnideliv/orders/checkout"), Some("http://orders:2"));
     }
 
     #[test]
@@ -167,29 +168,25 @@ prefix matches must land on a segment boundary."
 # infra/gateways/omnideliv.routes.toml
 # omnideliv.api.cargomarket.net
 #
-# Its own gateway, so /v1/orders here means OmniDeliv orders — no collision
-# with LogisticOS shipments, which live behind logistics.api.cargomarket.net.
-# That separation is the whole reason ADR-0009 chose subdomains over path
-# prefixes.
+# The subdomain split means /v1/orders *here* could safely mean OmniDeliv
+# orders. The services nonetheless serve prefixed paths, decided before these
+# routes were ever called, for two reasons the host split does not cover:
+#
+#   1. This gateway does not exist yet. Until it does there is one gateway, and
+#      an unprefixed POST /v1/orders resolves to order-intake, where it does
+#      not 404 — it succeeds and creates a real shipment.
+#   2. field-ops is a *platform* tier reachable from both gateways. Unprefixed,
+#      /v1/assignments would mean field-ops here and dispatch on the logistics
+#      host — the same path naming two services depending on hostname. The
+#      driver app already calls PUT /v1/assignments/:id/accept against
+#      dispatch; a shared or merged courier app would make that ambiguity a bug.
+#
+# The /v1/omnideliv prefix is redundant once this gateway is live and may be
+# dropped then. The /v1/field-ops prefix is permanent — it is what makes the
+# tier addressable identically from every product.
 
 [[routes]]
-prefix   = "/v1/baskets"
-upstream = "http://omnideliv:8091"
-
-[[routes]]
-prefix   = "/v1/catalog"
-upstream = "http://omnideliv:8091"
-
-[[routes]]
-prefix   = "/v1/vendors"
-upstream = "http://omnideliv:8091"
-
-[[routes]]
-prefix   = "/v1/mesh"
-upstream = "http://omnideliv:8091"
-
-[[routes]]
-prefix   = "/v1/orders"
+prefix   = "/v1/omnideliv"
 upstream = "http://omnideliv:8091"
 
 # Platform tier, reachable from this gateway because the app talks to one host.
@@ -198,11 +195,7 @@ prefix   = "/v1/auth"
 upstream = "http://identity:8001"
 
 [[routes]]
-prefix   = "/v1/couriers"
-upstream = "http://field-ops:8090"
-
-[[routes]]
-prefix   = "/v1/assignments"
+prefix   = "/v1/field-ops"
 upstream = "http://field-ops:8090"
 ```
 
@@ -482,22 +475,22 @@ curl -sf "$GW/../health" >/dev/null 2>&1 || true
 curl -sf http://localhost:8091/health >/dev/null && echo "     omnideliv healthy"
 
 echo "2/5  browse"
-api "$GW/v1/vendors?vertical=restaurant&lat=14.5995&lng=120.9842" | grep -q "$KUYAS" \
+api "$GW/v1/omnideliv/vendors?vertical=restaurant&lat=14.5995&lng=120.9842" | grep -q "$KUYAS" \
   && echo "     Kuya's is listed"
 
 echo "3/5  create basket"
-BASKET=$(api -X POST "$GW/v1/baskets" -d '{}' | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+BASKET=$(api -X POST "$GW/v1/omnideliv/baskets" -d '{}' | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
 [ -n "$BASKET" ] && echo "     basket $BASKET"
 
 echo "4/5  add a line"
-api -X POST "$GW/v1/baskets/$BASKET/lines" \
+api -X POST "$GW/v1/omnideliv/baskets/$BASKET/lines" \
     -d "{\"vendor_id\":\"$KUYAS\",\"item_id\":\"$TAPSILOG\",\"qty\":2}" >/dev/null
-TOTAL=$(api "$GW/v1/baskets/$BASKET" | sed -n 's/.*"goods_total_cents":\([0-9]*\).*/\1/p')
+TOTAL=$(api "$GW/v1/omnideliv/baskets/$BASKET" | sed -n 's/.*"goods_total_cents":\([0-9]*\).*/\1/p')
 [ "$TOTAL" = "34000" ] || { echo "     expected 34000, got $TOTAL"; exit 1; }
 echo "     total $TOTAL"
 
 echo "5/5  checkout"
-ORDER=$(api -X POST "$GW/v1/orders/checkout" \
+ORDER=$(api -X POST "$GW/v1/omnideliv/orders/checkout" \
   -d "{\"basket_id\":\"$BASKET\",\"tip_cents\":0,\"delivery_lat\":14.5995,\"delivery_lng\":120.9842}" \
   | sed -n 's/.*"order_id":"\([^"]*\)".*/\1/p')
 [ -n "$ORDER" ] || { echo "     checkout produced no order"; exit 1; }
