@@ -35,12 +35,19 @@ pub enum CheckoutError {
 #[async_trait::async_trait]
 pub trait CourierDispatch: Send + Sync {
     /// Offer the job to nearby couriers. Returns the assignment ids offered.
+    ///
+    /// The earning travels with the offer: field-ops credits the courier on
+    /// delivery from what we declare here, because pricing is ours and a
+    /// platform tier that computed pay would need every product's tariff.
+    #[allow(clippy::too_many_arguments)]
     async fn offer(
         &self,
         tenant_id: Uuid,
         order_id: Uuid,
         lat: f64,
         lng: f64,
+        trip_cents: i64,
+        tip_cents: i64,
     ) -> anyhow::Result<Vec<Uuid>>;
 }
 
@@ -142,7 +149,8 @@ impl CheckoutService {
         // Only now does anything irreversible happen.
         let offered = self
             .dispatch
-            .offer(tenant_id, order.id, delivery_lat, delivery_lng)
+            .offer(tenant_id, order.id, delivery_lat, delivery_lng,
+                   order.courier_trip_cents, order.tip_cents)
             .await
             .map_err(CheckoutError::Other)?;
 

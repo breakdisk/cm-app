@@ -37,10 +37,10 @@ impl AssignmentRepository for PgAssignmentRepository {
         sqlx::query(
             r#"
             INSERT INTO field_ops.courier_assignments (
-                id, tenant_id, courier_id, product, external_ref, status,
-                offered_at, claimed_at, completed_at, heartbeat_at, created_at
+                id, tenant_id, courier_id, product, external_ref, trip_cents, tip_cents,
+                status, offered_at, claimed_at, completed_at, heartbeat_at, created_at
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
             ON CONFLICT (id) DO UPDATE SET
                 status       = EXCLUDED.status,
                 claimed_at   = EXCLUDED.claimed_at,
@@ -50,6 +50,7 @@ impl AssignmentRepository for PgAssignmentRepository {
         )
         .bind(a.id).bind(a.tenant_id).bind(a.courier_id)
         .bind(a.product.as_str()).bind(a.external_ref)
+        .bind(a.trip_cents).bind(a.tip_cents)
         .bind(a.status.as_str())
         .bind(a.offered_at).bind(a.claimed_at).bind(a.completed_at)
         .bind(a.heartbeat_at).bind(a.created_at)
@@ -77,6 +78,8 @@ impl AssignmentRepository for PgAssignmentRepository {
             courier_id:   r.get("courier_id"),
             product:      ProductKey::new(product),
             external_ref: r.get("external_ref"),
+            trip_cents:   r.get("trip_cents"),
+            tip_cents:    r.get("tip_cents"),
             status: match status.as_str() {
                 "offered"   => AssignmentStatus::Offered,
                 "claimed"   => AssignmentStatus::Claimed,

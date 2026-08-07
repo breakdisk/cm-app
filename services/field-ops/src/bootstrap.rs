@@ -7,7 +7,9 @@ use sqlx::postgres::PgPoolOptions;
 use crate::api::http::{router, AppState};
 use crate::application::services::DispatchService;
 use crate::config::Config;
-use crate::infrastructure::db::{PgAssignmentRepository, PgCourierRepository, PgLocationRepository};
+use crate::infrastructure::db::{
+    PgAssignmentRepository, PgCourierLedgerRepository, PgCourierRepository, PgLocationRepository,
+};
 use crate::infrastructure::messaging::{CourierEvents, KafkaCourierEvents, NoopCourierEvents};
 
 pub async fn run() -> anyhow::Result<()> {
@@ -62,6 +64,7 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::new(PgCourierRepository::new(pool.clone())),
         Arc::new(PgAssignmentRepository::new(pool.clone())),
         Arc::new(PgLocationRepository::new(pool.clone())),
+        Arc::new(PgCourierLedgerRepository::new(pool.clone())),
         events,
     ));
 

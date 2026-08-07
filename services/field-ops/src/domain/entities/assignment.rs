@@ -60,6 +60,11 @@ pub struct CourierAssignment {
     pub courier_id:   Uuid,
     pub product:      ProductKey,
     pub external_ref: Uuid,
+    /// What the courier earns for this job, declared by the product that
+    /// offered it. field-ops credits these on delivery and never interprets
+    /// how they were computed — pricing is a product decision.
+    pub trip_cents:   i64,
+    pub tip_cents:    i64,
     pub status:       AssignmentStatus,
     pub offered_at:   DateTime<Utc>,
     pub claimed_at:   Option<DateTime<Utc>>,
@@ -70,6 +75,19 @@ pub struct CourierAssignment {
 
 impl CourierAssignment {
     pub fn offer(tenant_id: Uuid, courier_id: Uuid, product: ProductKey, external_ref: Uuid) -> Self {
+        Self::offer_with_earnings(tenant_id, courier_id, product, external_ref, 0, 0)
+    }
+
+    /// Offer a job at a stated rate. The zero-earning `offer` above exists for
+    /// tests and for products that settle courier pay elsewhere.
+    pub fn offer_with_earnings(
+        tenant_id: Uuid,
+        courier_id: Uuid,
+        product: ProductKey,
+        external_ref: Uuid,
+        trip_cents: i64,
+        tip_cents: i64,
+    ) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
@@ -77,6 +95,8 @@ impl CourierAssignment {
             courier_id,
             product,
             external_ref,
+            trip_cents,
+            tip_cents,
             status: AssignmentStatus::Offered,
             offered_at: now,
             claimed_at: None,

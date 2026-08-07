@@ -18,6 +18,12 @@ pub struct OfferRequest {
     pub radius_km:    f64,
     #[serde(default = "default_fanout")]
     pub fanout:       i64,
+    /// What the courier earns. Declared by the offering product — field-ops
+    /// stores and credits it without interpreting how it was priced.
+    #[serde(default)]
+    pub trip_cents:   i64,
+    #[serde(default)]
+    pub tip_cents:    i64,
 }
 
 fn default_radius_km() -> f64 { 5.0 }
@@ -86,6 +92,7 @@ async fn offer(
         .offer_to_nearest(
             claims.tenant_id, req.product, req.external_ref,
             req.lat, req.lng, req.radius_km, req.fanout,
+            req.trip_cents, req.tip_cents,
         )
         .await
         .map_err(|e| {

@@ -40,6 +40,8 @@ impl CourierDispatch for FieldOpsDispatch {
         order_id: Uuid,
         lat: f64,
         lng: f64,
+        trip_cents: i64,
+        tip_cents: i64,
     ) -> anyhow::Result<Vec<Uuid>> {
         // Tenant is not sent: field-ops reads it from the token, and a
         // caller-supplied tenant would let one tenant offer work to another's
@@ -55,6 +57,8 @@ impl CourierDispatch for FieldOpsDispatch {
                 "external_ref": order_id,
                 "lat":          lat,
                 "lng":          lng,
+                "trip_cents":   trip_cents,
+                "tip_cents":    tip_cents,
             }))
             .send()
             .await?;
