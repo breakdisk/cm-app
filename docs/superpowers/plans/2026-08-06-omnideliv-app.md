@@ -868,7 +868,17 @@ tells the customer what they can still do rather than what broke."
 
 ---
 
-## Task 6: Screen C — substitution review and checkout
+## Task 6: Screen C — substitution review and checkout — PARTIAL, NEEDS PLAN 5
+
+> **What exists:** `app/review.tsx` renders the real basket — total and the
+> count of lines awaiting a decision — from `GET /v1/omnideliv/baskets/:id`.
+>
+> **What is missing and why:** the substitution cards and the Place Order
+> action need `POST /v1/omnideliv/orders/checkout` and the line-level basket
+> read, both of which are [Plan 5](2026-08-06-omnideliv-consolidation-settlement.md).
+> There is deliberately no disabled checkout button in the meantime: a control
+> that looks like checkout and does nothing reads as a bug to the customer and
+> as done to the next reader.
 
 **Files:**
 - Create: `app/review.tsx`, `src/components/SubstitutionCard.tsx`
@@ -1102,7 +1112,13 @@ and calls support."
 
 ---
 
-## Task 7: Screen D, browse fallback, and CI
+## Task 7: Screen D, browse fallback, and CI — BROWSE DONE, SCREEN D NEEDS PLAN 10
+
+> `app/browse/[vertical].tsx` is built and works end to end against the catalog
+> and basket endpoints with no model in the path. Screen D (`track/[orderId]`)
+> needs orders, which is Plan 10. The vendor list the browse screen wants is
+> Plan 9 Task 4 — until then it says so on screen rather than rendering an empty
+> list that looks like a shop with no stock.
 
 **Files:**
 - Create: `app/track/[orderId].tsx`, `app/browse/[vertical].tsx`
