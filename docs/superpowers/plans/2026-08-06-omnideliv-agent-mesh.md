@@ -1449,7 +1449,16 @@ deterministic browse rather than showing an empty basket as success."
 
 ---
 
-## Task 7: SSE endpoint and service wiring
+## Task 7: SSE endpoint and service wiring — BLOCKED ON PLAN 9
+
+> **Do this after Plan 9 Tasks 1-3, not here.** The route below calls
+> `mesh.run(utterance, tx)` and constructs a `catalog_adapter`. Neither exists
+> at the end of Plan 4: `MeshRunner` has `parse` and `fan_out`, and
+> `MeshRunner::run` is built by [Plan 9](2026-08-06-omnideliv-mesh-orchestration.md)
+> Task 2, with the host-side catalog adapter in its Task 3. Writing a stub `run`
+> here so this task can close would be replaced two plans later — the same churn
+> Task 8 was folded away to avoid. Plan 4 is complete without it; the mesh crate
+> is fully built and tested, and this is the wiring that makes it reachable.
 
 **Files:**
 - Create: `services/omnideliv/src/api/http/mesh.rs`
