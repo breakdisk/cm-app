@@ -7,7 +7,8 @@ use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
 use logisticos_omnideliv::domain::entities::{
-    Basket, BasketDelta, BasketLine, CatalogItem, LineState, SubIntent, SubIntentStatus,
+    Basket, BasketDelta, BasketLine, CatalogItem, LineState, SubIntent, SubIntentSource,
+    SubIntentStatus,
     Vendor, Vertical,
 };
 use logisticos_omnideliv::domain::repositories::{BasketRepository, CatalogRepository, VendorRepository};
@@ -82,6 +83,7 @@ async fn a_basket_with_a_substitution_chain_survives_a_round_trip() {
         vertical: Vertical::Grocery, vendor_hint: None,
         raw_text: "we're out of milk and eggs".into(),
         constraints: serde_json::json!({}), status: SubIntentStatus::Pending,
+        source: SubIntentSource::Mesh,
         created_at: chrono::Utc::now(),
     };
     basket.sub_intents.push(si.clone());

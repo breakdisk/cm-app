@@ -3,7 +3,7 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::domain::entities::{
-    Basket, BasketLine, BasketStatus, LineState, SubIntent, SubIntentStatus,
+    Basket, BasketLine, BasketStatus, LineState, SubIntent, SubIntentSource, SubIntentStatus,
 };
 use crate::domain::repositories::BasketRepository;
 use crate::infrastructure::db::vendor_repo::parse_vertical;
@@ -54,6 +54,14 @@ fn sub_intent_status(s: &str) -> anyhow::Result<SubIntentStatus> {
     })
 }
 
+fn sub_intent_source(s: &str) -> anyhow::Result<SubIntentSource> {
+    Ok(match s {
+        "mesh"   => SubIntentSource::Mesh,
+        "browse" => SubIntentSource::Browse,
+        other => anyhow::bail!("unknown sub-intent source in database: {other}"),
+    })
+}
+
 fn sub_intent_status_str(s: SubIntentStatus) -> &'static str {
     match s {
         SubIntentStatus::Pending   => "pending",
@@ -81,6 +89,7 @@ impl BasketRepository for PgBasketRepository {
         for r in &si_rows {
             let vertical_str: String = r.get("vertical");
             let st: String = r.get("status");
+            let src: String = r.get("source");
             sub_intents.push(SubIntent {
                 id:          r.get("id"),
                 basket_id:   r.get("basket_id"),
@@ -90,6 +99,7 @@ impl BasketRepository for PgBasketRepository {
                 raw_text:    r.get("raw_text"),
                 constraints: r.get("constraints"),
                 status:      sub_intent_status(&st)?,
+                source:      sub_intent_source(&src)?,
                 created_at:  r.get("created_at"),
             });
         }
@@ -154,15 +164,18 @@ impl BasketRepository for PgBasketRepository {
                 r#"
                 INSERT INTO omnideliv.sub_intents (
                     id, basket_id, tenant_id, vertical, vendor_hint, raw_text,
-                    constraints, status, created_at
+                    constraints, status, source, created_at
                 )
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                -- `source` is immutable: a browse partition never becomes a
+                -- mesh one, and rewriting it would move lines between owners.
                 ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status
                 "#,
             )
             .bind(si.id).bind(si.basket_id).bind(si.tenant_id)
             .bind(si.vertical.as_str()).bind(&si.vendor_hint).bind(&si.raw_text)
-            .bind(&si.constraints).bind(sub_intent_status_str(si.status)).bind(si.created_at)
+            .bind(&si.constraints).bind(sub_intent_status_str(si.status))
+            .bind(si.source.as_str()).bind(si.created_at)
             .execute(&mut *tx).await?;
         }
 

@@ -48,6 +48,25 @@ pub enum SubIntentStatus {
     Failed,
 }
 
+/// Where a sub-intent came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubIntentSource {
+    /// Produced by the Concierge's decomposition.
+    Mesh,
+    /// The synthetic partition that carries manually-added lines.
+    Browse,
+}
+
+impl SubIntentSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SubIntentSource::Mesh   => "mesh",
+            SubIntentSource::Browse => "browse",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LineState {
@@ -67,6 +86,7 @@ pub struct SubIntent {
     pub raw_text:    String,
     pub constraints: serde_json::Value,
     pub status:      SubIntentStatus,
+    pub source:      SubIntentSource,
     pub created_at:  DateTime<Utc>,
 }
 
@@ -165,6 +185,39 @@ impl Basket {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    /// Find or create the browse partition for a vertical.
+    ///
+    /// Manual lines need a sub-intent because it is the key `apply` partitions
+    /// by. Giving browsing its own — rather than reusing a mesh sub-intent or
+    /// making the column nullable — means a specialist proposing later cannot
+    /// wipe what the customer added by hand, and vice versa.
+    pub fn browse_sub_intent(&mut self, vertical: Vertical) -> Uuid {
+        if let Some(existing) = self
+            .sub_intents
+            .iter()
+            .find(|s| s.source == SubIntentSource::Browse && s.vertical == vertical)
+        {
+            return existing.id;
+        }
+
+        let si = SubIntent {
+            id: Uuid::new_v4(),
+            basket_id: self.id,
+            tenant_id: self.tenant_id,
+            vertical,
+            vendor_hint: None,
+            raw_text: String::new(),
+            constraints: serde_json::json!({}),
+            status: SubIntentStatus::Satisfied,
+            source: SubIntentSource::Browse,
+            created_at: Utc::now(),
+        };
+        let id = si.id;
+        self.sub_intents.push(si);
+        self.updated_at = Utc::now();
+        id
     }
 
     /// **The single writer.** Replaces this sub-intent's lines wholesale and
@@ -303,5 +356,63 @@ mod tests {
         let pending = b.lines_awaiting_review();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].state, LineState::Substituted);
+    }
+
+    #[test]
+    fn a_browse_sub_intent_is_created_on_first_use() {
+        let mut b = basket();
+        let id = b.browse_sub_intent(Vertical::Grocery);
+
+        assert_eq!(b.sub_intents.len(), 1);
+        assert_eq!(b.sub_intents[0].id, id);
+        assert_eq!(b.sub_intents[0].source, SubIntentSource::Browse);
+        assert_eq!(b.sub_intents[0].vertical, Vertical::Grocery);
+    }
+
+    /// Find-or-create. Tapping "add" twice in the same vertical must not create
+    /// a second partition, or `apply` would later wipe half the customer's cart.
+    #[test]
+    fn the_browse_sub_intent_is_reused_within_a_vertical() {
+        let mut b = basket();
+        let first  = b.browse_sub_intent(Vertical::Grocery);
+        let second = b.browse_sub_intent(Vertical::Grocery);
+
+        assert_eq!(first, second);
+        assert_eq!(b.sub_intents.len(), 1);
+    }
+
+    #[test]
+    fn each_vertical_gets_its_own_browse_sub_intent() {
+        let mut b = basket();
+        let grocery = b.browse_sub_intent(Vertical::Grocery);
+        let food    = b.browse_sub_intent(Vertical::Restaurant);
+
+        assert_ne!(grocery, food);
+        assert_eq!(b.sub_intents.len(), 2);
+    }
+
+    /// A mesh sub-intent must never be mistaken for a browse one — otherwise a
+    /// manual add would land inside a specialist's partition and be wiped the
+    /// next time that specialist proposes.
+    #[test]
+    fn a_mesh_sub_intent_is_never_reused_for_browsing() {
+        let mut b = basket();
+        b.sub_intents.push(SubIntent {
+            id: Uuid::new_v4(),
+            basket_id: b.id,
+            tenant_id: b.tenant_id,
+            vertical: Vertical::Grocery,
+            vendor_hint: None,
+            raw_text: "milk and eggs".into(),
+            constraints: serde_json::json!({}),
+            status: SubIntentStatus::Pending,
+            source: SubIntentSource::Mesh,
+            created_at: chrono::Utc::now(),
+        });
+
+        let browse = b.browse_sub_intent(Vertical::Grocery);
+
+        assert_eq!(b.sub_intents.len(), 2, "browsing must get its own partition");
+        assert_ne!(browse, b.sub_intents[0].id);
     }
 }
