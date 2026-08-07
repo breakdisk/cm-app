@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::{extract::{Query, State}, http::StatusCode, routing::get, Json, Router};
+use axum::{extract::{Path, Query, State}, http::StatusCode, routing::{get, patch}, Json, Router};
 use logisticos_auth::middleware::AuthClaims;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -30,8 +30,50 @@ pub struct SearchHit {
     pub warrants_substitute: bool,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AvailabilityPatch {
+    pub state: String,
+}
+
 pub fn routes() -> Router<Arc<AppState>> {
-    Router::new().route("/v1/omnideliv/catalog/search", get(search))
+    Router::new()
+        .route("/v1/omnideliv/catalog/search", get(search))
+        .route("/v1/omnideliv/catalog/items/:id/availability", patch(set_availability))
+}
+
+/// A vendor declaring stock.
+///
+/// This is the only input to the freshness model. Without it every
+/// availability row keeps its creation timestamp, ages past the window, and
+/// `warrants_substitute` turns true for the entire catalog — the substitution
+/// logic working exactly as designed on data nobody refreshes.
+async fn set_availability(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Path(item_id): Path<Uuid>,
+    Json(p): Json<AvailabilityPatch>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let state = match p.state.as_str() {
+        "available"    => crate::domain::entities::AvailabilityState::Available,
+        "limited"      => crate::domain::entities::AvailabilityState::Limited,
+        "out_of_stock" => crate::domain::entities::AvailabilityState::OutOfStock,
+        other => return Err((StatusCode::BAD_REQUEST, format!("unknown state: {other}"))),
+    };
+
+    let updated = st
+        .catalog
+        .set_own_item_availability(claims.tenant_id, claims.user_id, item_id, state)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "availability update failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "could not save".into())
+        })?;
+
+    if !updated {
+        return Err((StatusCode::NOT_FOUND, "no such item in your store".into()));
+    }
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn search(

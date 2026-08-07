@@ -5,7 +5,7 @@ use logisticos_auth::jwt::JwtService;
 use sqlx::postgres::PgPoolOptions;
 
 use crate::api::http::{router, AppState};
-use crate::application::services::DispatchService;
+use crate::application::services::{DispatchService, PayBounds};
 use crate::config::Config;
 use crate::infrastructure::db::{
     PgAssignmentRepository, PgCourierLedgerRepository, PgCourierRepository, PgLocationRepository,
@@ -66,6 +66,11 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::new(PgLocationRepository::new(pool.clone())),
         Arc::new(PgCourierLedgerRepository::new(pool.clone())),
         events,
+        PayBounds {
+            min_trip_cents: cfg.min_trip_cents,
+            max_trip_cents: cfg.max_trip_cents,
+            max_tip_cents:  cfg.max_tip_cents,
+        },
     ));
 
     let state = Arc::new(AppState { dispatch, jwt });

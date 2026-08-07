@@ -16,6 +16,51 @@ pub struct DispatchService {
     locations:   Arc<dyn LocationRepository>,
     ledgers:     Arc<dyn CourierLedgerRepository>,
     events:      Arc<dyn CourierEvents>,
+    pay_bounds:  PayBounds,
+}
+
+/// What a product may declare a courier will earn.
+///
+/// A platform-tier guard, not a tariff: field-ops still never computes pay.
+/// It only refuses to store a number that cannot be right.
+#[derive(Debug, Clone, Copy)]
+pub struct PayBounds {
+    pub min_trip_cents: i64,
+    pub max_trip_cents: i64,
+    pub max_tip_cents:  i64,
+}
+
+impl Default for PayBounds {
+    fn default() -> Self {
+        Self { min_trip_cents: 2_000, max_trip_cents: 200_000, max_tip_cents: 500_000 }
+    }
+}
+
+impl PayBounds {
+    /// Check a declaration.
+    ///
+    /// Zero trip pay is allowed and unbounded below: a product that settles
+    /// courier pay elsewhere declares nothing here, and forcing a floor on it
+    /// would make field-ops credit money that product never intended to move.
+    /// The floor applies only once a product has said it is paying.
+    pub fn check(&self, trip_cents: i64, tip_cents: i64) -> Result<(), String> {
+        if trip_cents < 0 || tip_cents < 0 {
+            return Err("courier pay cannot be negative".into());
+        }
+        if trip_cents > 0 && trip_cents < self.min_trip_cents {
+            return Err(format!(
+                "trip pay {trip_cents} is below the {} floor — probably a units error",
+                self.min_trip_cents
+            ));
+        }
+        if trip_cents > self.max_trip_cents {
+            return Err(format!("trip pay {trip_cents} exceeds the {} ceiling", self.max_trip_cents));
+        }
+        if tip_cents > self.max_tip_cents {
+            return Err(format!("tip {tip_cents} exceeds the {} ceiling", self.max_tip_cents));
+        }
+        Ok(())
+    }
 }
 
 impl DispatchService {
@@ -25,8 +70,9 @@ impl DispatchService {
         locations: Arc<dyn LocationRepository>,
         ledgers: Arc<dyn CourierLedgerRepository>,
         events: Arc<dyn CourierEvents>,
+        pay_bounds: PayBounds,
     ) -> Self {
-        Self { couriers, assignments, locations, ledgers, events }
+        Self { couriers, assignments, locations, ledgers, events, pay_bounds }
     }
 
     /// Offer a job to the nearest dispatchable couriers. Offering is not
@@ -45,6 +91,15 @@ impl DispatchService {
         trip_cents: i64,
         tip_cents: i64,
     ) -> anyhow::Result<Vec<CourierAssignment>> {
+        // Checked before anything is offered or stored. Rejecting rather than
+        // clamping is deliberate: clamping would credit the courier a different
+        // number from the one the product recorded on its order, so the two
+        // ledgers would disagree and the settlement identity would silently
+        // stop holding. A refused offer leaves both sides consistent.
+        if let Err(e) = self.pay_bounds.check(trip_cents, tip_cents) {
+            anyhow::bail!("refusing the offer: {e}");
+        }
+
         let candidates = self
             .couriers
             .find_available_near(tenant_id, lat, lng, radius_km, fanout)
@@ -213,4 +268,47 @@ fn current_period() -> String {
     use chrono::Datelike;
     let iso = chrono::Utc::now().iso_week();
     format!("{}-W{:02}", iso.year(), iso.week())
+}
+
+#[cfg(test)]
+mod pay_bounds_tests {
+    use super::PayBounds;
+
+    fn bounds() -> PayBounds { PayBounds::default() }
+
+    /// The bug this exists for: cents read as pesos. ₱58.00 declared as 58
+    /// would pay a courier 58 centavos.
+    #[test]
+    fn a_units_error_is_refused() {
+        assert!(bounds().check(58, 0).is_err());
+        assert!(bounds().check(5_800, 0).is_ok());
+    }
+
+    /// The other direction: a multiplication that ran twice, or a fat finger.
+    #[test]
+    fn an_absurd_amount_is_refused() {
+        assert!(bounds().check(5_800 * 5_800, 0).is_err());
+        assert!(bounds().check(0, 900_000).is_err());
+    }
+
+    /// Zero is not "below the floor" — it means the product settles courier pay
+    /// somewhere else, and forcing a floor there would have field-ops credit
+    /// money nobody intended to move.
+    #[test]
+    fn declaring_no_pay_is_allowed() {
+        assert!(bounds().check(0, 0).is_ok());
+    }
+
+    #[test]
+    fn negative_pay_is_refused() {
+        assert!(bounds().check(-1, 0).is_err());
+        assert!(bounds().check(5_800, -1).is_err());
+    }
+
+    /// A generous tip on a cheap trip is ordinary and must pass — the ceiling
+    /// is there for bugs, not for unusual customers.
+    #[test]
+    fn a_large_but_plausible_tip_passes() {
+        assert!(bounds().check(5_800, 20_000).is_ok());
+    }
 }

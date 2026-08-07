@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::domain::entities::{Availability, Vendor, VendorStatus, Vertical};
+use crate::domain::entities::{Availability, AvailabilityState, Vendor, VendorStatus, Vertical};
 use crate::domain::repositories::{CatalogRepository, ItemWithAvailability, VendorRepository};
 
 /// An item plus the agent-facing judgement about it.
@@ -104,6 +104,48 @@ impl CatalogService {
         }
 
         self.vendors.save(&vendor).await?;
+        Ok(true)
+    }
+
+    /// A vendor declaring stock for one of its own items.
+    ///
+    /// Ownership is checked here, not merely in the handler: without it any
+    /// signed-in user could mark a competitor's items out of stock, which is
+    /// both a denial-of-service on that vendor and a way to steer the mesh's
+    /// substitutions toward your own catalog.
+    ///
+    /// Returns `false` when the caller runs no store or the item is not theirs
+    /// — the API answers 404 either way rather than distinguishing them, since
+    /// "this item exists but is not yours" is itself information.
+    pub async fn set_own_item_availability(
+        &self,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        item_id: Uuid,
+        state: AvailabilityState,
+    ) -> anyhow::Result<bool> {
+        let Some(vendor) = self.vendors.find_by_user(tenant_id, user_id).await? else {
+            return Ok(false);
+        };
+        let Some(item) = self.catalog.find_item(tenant_id, item_id).await? else {
+            return Ok(false);
+        };
+        if item.vendor_id != vendor.id {
+            return Ok(false);
+        }
+
+        // updated_at is set server-side inside the repository, not here: the
+        // freshness stamp is only meaningful if it records when the declaration
+        // reached us rather than when a device claims it was made.
+        self.catalog
+            .set_availability(&Availability {
+                item_id,
+                tenant_id,
+                state,
+                updated_at: chrono::Utc::now(),
+                updated_by: Some(user_id),
+            })
+            .await?;
         Ok(true)
     }
 
