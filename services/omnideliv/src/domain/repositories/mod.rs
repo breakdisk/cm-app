@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use crate::domain::entities::{Availability, Basket, CatalogItem, Vendor, Vertical};
+use crate::domain::entities::{Availability, Basket, CatalogItem, Order, Vendor, Vertical};
 
 #[async_trait]
 pub trait VendorRepository: Send + Sync {
@@ -67,4 +67,12 @@ pub trait BasketRepository: Send + Sync {
     async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<Basket>>;
     /// Persists the basket and its sub-intents and lines as one unit.
     async fn save(&self, basket: &Basket) -> anyhow::Result<()>;
+}
+
+#[async_trait]
+pub trait OrderRepository: Send + Sync {
+    /// Persists the order and its vendor legs as one unit — an order without
+    /// its legs cannot be settled, and legs without an order are orphaned money.
+    async fn save(&self, order: &Order) -> anyhow::Result<()>;
+    async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<Order>>;
 }

@@ -42,6 +42,15 @@ pub struct Config {
     #[serde(default = "default_lng")]
     pub default_lng: f64,
 
+    /// field-ops, the platform tier that owns couriers. Checkout offers every
+    /// placed order to it.
+    #[serde(default = "default_field_ops_url")]
+    pub field_ops_url: String,
+    /// Service-to-service bearer for that call. field-ops authenticates its
+    /// operational routes, so without this every checkout fails.
+    #[serde(default)]
+    pub service_token: String,
+
     pub claude_api_key: String,
     #[serde(default = "default_claude_model")]
     pub claude_model: String,
@@ -52,6 +61,8 @@ pub struct Config {
     #[serde(default = "default_claude_max_tokens")]
     pub claude_max_tokens: u32,
 }
+
+fn default_field_ops_url() -> String { "http://field-ops:8090".to_string() }
 
 fn default_lat() -> f64 { 14.5995 }
 fn default_lng() -> f64 { 120.9842 }

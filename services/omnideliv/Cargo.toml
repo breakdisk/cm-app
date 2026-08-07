@@ -35,6 +35,7 @@ validator.workspace   = true
 rdkafka.workspace     = true
 tracing.workspace     = true
 async-trait.workspace = true
+reqwest.workspace     = true
 futures-util  = "0.3"
 tokio-stream  = "0.1"
 
