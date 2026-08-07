@@ -956,7 +956,7 @@ pub struct CourierAssignment {
     pub id:           Uuid,
     pub tenant_id:    Uuid,
     pub courier_id:   Uuid,
-    pub product:      Product,
+    pub product:      ProductKey,
     pub external_ref: Uuid,
     pub status:       AssignmentStatus,
     pub offered_at:   DateTime<Utc>,
@@ -1027,7 +1027,7 @@ Add to `src/domain/entities/mod.rs`:
 
 ```rust
 pub mod assignment;
-pub use assignment::{AssignmentStatus, CourierAssignment, Product};
+pub use assignment::{AssignmentStatus, CourierAssignment, ProductKey};
 ```
 
 - [ ] **Step 5: Run the tests**
@@ -1449,7 +1449,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::domain::entities::{CourierAssignment, CourierLocation, Product};
+use crate::domain::entities::{CourierAssignment, CourierLocation, ProductKey};
 use crate::domain::repositories::CourierRepository;
 use crate::infrastructure::db::{AssignmentRepository, ClaimOutcome, LocationRepository};
 
@@ -1597,11 +1597,11 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::http::AppState;
-use crate::domain::entities::Product;
+use crate::domain::entities::ProductKey;
 
 #[derive(Debug, Deserialize)]
 pub struct OfferRequest {
-    pub product:      Product,
+    pub product:      ProductKey,
     pub external_ref: Uuid,
     pub lat:          f64,
     pub lng:          f64,
@@ -1836,7 +1836,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
-use logisticos_field_ops::domain::entities::{Courier, CourierAssignment, Product};
+use logisticos_field_ops::domain::entities::{Courier, CourierAssignment, ProductKey};
 use logisticos_field_ops::domain::repositories::CourierRepository;
 use logisticos_field_ops::infrastructure::db::{
     AssignmentRepository, ClaimOutcome, PgAssignmentRepository, PgCourierRepository,
