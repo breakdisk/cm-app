@@ -220,6 +220,42 @@ impl Basket {
         id
     }
 
+    /// Append a line the customer added by hand.
+    ///
+    /// Deliberately *not* `apply`. `apply` replaces a sub-intent's lines so a
+    /// retrying specialist cannot double the basket; a customer tapping "add"
+    /// needs the opposite. Two operations, two methods — collapsing them would
+    /// mean either losing manual adds or letting a retry duplicate a proposal.
+    ///
+    /// The same item at the same vendor merges into one line with a bumped
+    /// quantity. Different vendors stay separate: the customer chose each, and
+    /// merging would silently move part of an order to another vendor.
+    pub fn add_line(&mut self, line: BasketLine) {
+        if let Some(existing) = self.lines.iter_mut().find(|l| {
+            l.sub_intent_id == line.sub_intent_id
+                && l.item_id == line.item_id
+                && l.vendor_id == line.vendor_id
+                && l.state != LineState::Rejected
+        }) {
+            existing.qty += line.qty;
+        } else {
+            self.lines.push(line);
+        }
+        self.updated_at = Utc::now();
+    }
+
+    /// Remove a line. Returns whether anything was removed, so the API can
+    /// answer 404 rather than reporting success for a line that never existed.
+    pub fn remove_line(&mut self, line_id: Uuid) -> bool {
+        let before = self.lines.len();
+        self.lines.retain(|l| l.id != line_id);
+        let removed = self.lines.len() != before;
+        if removed {
+            self.updated_at = Utc::now();
+        }
+        removed
+    }
+
     /// **The single writer.** Replaces this sub-intent's lines wholesale and
     /// leaves every other sub-intent untouched.
     ///
@@ -414,5 +450,107 @@ mod tests {
 
         assert_eq!(b.sub_intents.len(), 2, "browsing must get its own partition");
         assert_ne!(browse, b.sub_intents[0].id);
+    }
+
+    #[test]
+    fn add_line_appends_rather_than_replacing() {
+        let mut b = basket();
+        let si = b.browse_sub_intent(Vertical::Grocery);
+
+        b.add_line(line(b.id, si, 10_000, 1));
+        b.add_line(line(b.id, si, 15_000, 1));
+
+        assert_eq!(b.lines.len(), 2, "a second add must not replace the first");
+        assert_eq!(b.goods_total_cents(), 25_000);
+    }
+
+    /// Standard cart behaviour: adding the same item again bumps quantity
+    /// rather than creating a duplicate row the customer then has to remove twice.
+    #[test]
+    fn adding_the_same_item_again_increments_quantity() {
+        let mut b = basket();
+        let si = b.browse_sub_intent(Vertical::Grocery);
+        let item = Uuid::new_v4();
+        let vendor = Uuid::new_v4();
+
+        // Capture the ids by value, not the basket: a closure borrowing `b`
+        // would still hold that borrow when `add_line` needs `&mut b`.
+        let (bid, tid) = (b.id, b.tenant_id);
+        let mk = || BasketLine::propose(bid, si, tid, vendor, item, 1, 12_000, "browse");
+        b.add_line(mk());
+        b.add_line(mk());
+
+        assert_eq!(b.lines.len(), 1, "same item merges");
+        assert_eq!(b.lines[0].qty, 2);
+        assert_eq!(b.goods_total_cents(), 24_000);
+    }
+
+    /// The same item at two different vendors is two lines — the customer chose
+    /// each one, and merging them would silently move an order between vendors.
+    #[test]
+    fn the_same_item_at_different_vendors_stays_separate() {
+        let mut b = basket();
+        let si = b.browse_sub_intent(Vertical::Grocery);
+        let item = Uuid::new_v4();
+
+        b.add_line(BasketLine::propose(b.id, si, b.tenant_id, Uuid::new_v4(), item, 1, 12_000, "browse"));
+        b.add_line(BasketLine::propose(b.id, si, b.tenant_id, Uuid::new_v4(), item, 1, 12_000, "browse"));
+
+        assert_eq!(b.lines.len(), 2);
+    }
+
+    #[test]
+    fn removing_a_line_drops_it_from_the_total() {
+        let mut b = basket();
+        let si = b.browse_sub_intent(Vertical::Grocery);
+        let l = line(b.id, si, 9_000, 1);
+        let id = l.id;
+        b.add_line(l);
+
+        assert!(b.remove_line(id));
+        assert!(b.lines.is_empty());
+        assert_eq!(b.goods_total_cents(), 0);
+    }
+
+    #[test]
+    fn removing_a_line_that_is_not_there_reports_false() {
+        let mut b = basket();
+        assert!(!b.remove_line(Uuid::new_v4()));
+    }
+
+    /// The invariant that matters: a manual line and a mesh proposal coexist,
+    /// and a specialist re-proposing does not touch the browse partition.
+    #[test]
+    fn a_specialist_reproposing_leaves_manual_lines_alone() {
+        let mut b = basket();
+        let browse = b.browse_sub_intent(Vertical::Grocery);
+        b.add_line(line(b.id, browse, 8_000, 1));
+
+        let mesh_si = Uuid::new_v4();
+        b.apply(BasketDelta { sub_intent_id: mesh_si, lines: vec![line(b.id, mesh_si, 30_000, 1)], note: None });
+        b.apply(BasketDelta { sub_intent_id: mesh_si, lines: vec![line(b.id, mesh_si, 32_000, 1)], note: None });
+
+        assert_eq!(b.lines.len(), 2, "the manual line survives both proposals");
+        assert_eq!(b.goods_total_cents(), 8_000 + 32_000);
+    }
+
+    /// A rejected line is not a merge target: re-adding an item the customer
+    /// (or a specialist) rejected must produce a fresh live line, not silently
+    /// resurrect the rejected one by bumping its quantity.
+    #[test]
+    fn a_rejected_line_is_not_merged_into() {
+        let mut b = basket();
+        let si = b.browse_sub_intent(Vertical::Grocery);
+        let (bid, tid) = (b.id, b.tenant_id);
+        let (vendor, item) = (Uuid::new_v4(), Uuid::new_v4());
+
+        let mut rejected = BasketLine::propose(bid, si, tid, vendor, item, 1, 12_000, "browse");
+        rejected.state = LineState::Rejected;
+        b.add_line(rejected);
+
+        b.add_line(BasketLine::propose(bid, si, tid, vendor, item, 1, 12_000, "browse"));
+
+        assert_eq!(b.lines.len(), 2, "the rejected line stays rejected and separate");
+        assert_eq!(b.goods_total_cents(), 12_000, "only the live line is charged");
     }
 }
