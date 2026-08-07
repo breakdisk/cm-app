@@ -6,8 +6,9 @@ edition.workspace      = true
 authors.workspace      = true
 rust-version.workspace = true
 
-# The binary target arrives with `bootstrap` (Task 9). Until then this is a
-# library crate, so every commit in between still compiles.
+[[bin]]
+name = "field_ops"
+path = "src/main.rs"
 
 [dependencies]
 logisticos-common.workspace  = true

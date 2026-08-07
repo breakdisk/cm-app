@@ -84,6 +84,8 @@ jobs:
               - "services/order-intake/**"
             omnideliv:
               - "services/omnideliv/**"
+            field-ops:
+              - "services/field-ops/**"
             dispatch:
               - "services/dispatch/**"
             driver-ops:
@@ -113,7 +115,7 @@ jobs:
         id: build-matrix
         shell: bash
         run: |
-          ALL_SERVICES='["api-gateway","identity","cdp","engagement","order-intake","omnideliv","dispatch","driver-ops","delivery-experience","fleet","hub-ops","carrier","pod","payments","analytics","marketing","business-logic","ai-layer"]'
+          ALL_SERVICES='["api-gateway","identity","cdp","engagement","order-intake","omnideliv","field-ops","dispatch","driver-ops","delivery-experience","fleet","hub-ops","carrier","pod","payments","analytics","marketing","business-logic","ai-layer"]'
 
           # If shared lib changes, test all services (transitive impact)
           if [ "${{ steps.filter.outputs.libs }}" == "true" ]; then
@@ -125,7 +127,7 @@ jobs:
           # Otherwise build matrix from only changed services
           CHANGED="[]"
           declare -a ALL=(
-            api-gateway identity cdp engagement order-intake omnideliv dispatch
+            api-gateway identity cdp engagement order-intake omnideliv field-ops dispatch
             driver-ops delivery-experience fleet hub-ops carrier pod
             payments analytics marketing business-logic ai-layer
           )

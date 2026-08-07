@@ -1488,7 +1488,7 @@ impl DispatchService {
 
         let mut offers = Vec::with_capacity(candidates.len());
         for c in candidates {
-            let a = CourierAssignment::offer(tenant_id, c.id, product, external_ref);
+            let a = CourierAssignment::offer(tenant_id, c.id, product.clone(), external_ref);
             self.assignments.save(&a).await?;
             offers.push(a);
         }
@@ -1515,8 +1515,9 @@ impl DispatchService {
         let fix = CourierLocation::new(tenant_id, courier_id, lat, lng, device_timestamp);
         self.locations.record(&fix).await?;
 
-        // Denormalise the latest fix onto the courier row so supply lookups do
-        // not have to join the breadcrumb table on every dispatch.
+        // Refresh the render cache on the courier row. This is NOT what supply
+        // lookup reads — find_available_near joins courier_latest_locations,
+        // because only the GiST index there can serve ST_DWithin.
         if let Some(mut c) = self.couriers.find_by_id(tenant_id, courier_id).await? {
             c.record_position(lat, lng);
             self.couriers.save(&c).await?;
