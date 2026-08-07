@@ -46,10 +46,6 @@ pub struct Config {
     /// placed order to it.
     #[serde(default = "default_field_ops_url")]
     pub field_ops_url: String,
-    /// Service-to-service bearer for that call. field-ops authenticates its
-    /// operational routes, so without this every checkout fails.
-    #[serde(default)]
-    pub service_token: String,
 
     pub claude_api_key: String,
     #[serde(default = "default_claude_model")]

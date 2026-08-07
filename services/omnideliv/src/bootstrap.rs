@@ -98,10 +98,10 @@ pub async fn run() -> anyhow::Result<()> {
     let checkout = Arc::new(CheckoutService::new(
         Arc::new(PgBasketRepository::new(pool.clone())),
         Arc::new(PgVendorRepository::new(pool.clone())),
-        Arc::new(FieldOpsDispatch::new(
-            cfg.field_ops_url.clone(),
-            cfg.service_token.clone(),
-        )),
+        // The signer, not a token: field-ops validates `exp` and reads
+        // `tenant_id` from the claim set, so the token has to be minted per
+        // call with the caller's tenant. See field_ops_dispatch.rs.
+        Arc::new(FieldOpsDispatch::new(cfg.field_ops_url.clone(), jwt.clone())),
     ));
     let orders: Arc<dyn OrderRepository> = Arc::new(PgOrderRepository::new(pool.clone()));
     let telemetry: Arc<dyn TelemetryRepository> = Arc::new(PgTelemetryRepository::new(pool.clone()));

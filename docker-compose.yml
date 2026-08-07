@@ -1316,7 +1316,6 @@ services:
       # every checkout fails: field-ops authenticates its operational routes and
       # the 401 surfaces to the customer as "no courier available".
       FIELD_OPS_URL: http://field-ops:8090
-      SERVICE_TOKEN: ${OMNIDELIV_SERVICE_TOKEN:-}
       # The mesh. Without a key the agent path fails; browse and checkout still
       # work, which is the whole point of the non-AI fallback.
       CLAUDE_API_KEY: ${ANTHROPIC_API_KEY:-}
