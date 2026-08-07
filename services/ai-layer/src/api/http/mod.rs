@@ -17,7 +17,6 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use logisticos_auth::middleware::AuthClaims;
-use logisticos_auth::rbac::permissions;
 use logisticos_errors::AppError;
 
 use crate::domain::entities::AgentType;
@@ -541,7 +540,13 @@ async fn publish_escalation_resolved(
 // Not exposed through the API gateway.
 // ---------------------------------------------------------------------------
 
+/// The Python sidecar's bridge payload. `tenant_id` and `session_id` are
+/// declared but unused here on purpose: tenancy travels inside `input`,
+/// which is what each tool scopes on (and what the remote-MCP path
+/// overwrites server-side). Reading them here would imply a second,
+/// competing source of tenant truth.
 #[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
 struct ExecuteToolRequest {
     tool_name:   String,
     input:       serde_json::Value,

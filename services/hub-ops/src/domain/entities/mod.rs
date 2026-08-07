@@ -34,6 +34,12 @@ impl Default for HubId { fn default() -> Self { Self::new() } }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InductionId(Uuid);
+impl Default for InductionId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InductionId {
     pub fn new() -> Self { Self(Uuid::new_v4()) }
     pub fn from_uuid(id: Uuid) -> Self { Self(id) }

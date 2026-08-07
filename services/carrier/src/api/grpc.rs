@@ -146,6 +146,8 @@ impl CarrierGrpcService for CarrierGrpc {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// Error type is shared across the crate; boxing it here alone would not shrink it.
+#[allow(clippy::result_large_err)]
 fn parse_uuid(s: &str, field: &'static str) -> Result<Uuid, Status> {
     Uuid::parse_str(s)
         .map_err(|_| Status::invalid_argument(format!("{field}: not a valid UUID")))

@@ -121,9 +121,7 @@ pub fn map_to_command(
 
     // COD detection: payment_method in configured COD list
     let is_cod = creds
-        .woo_cod_payment_methods()
-        .iter()
-        .any(|&m| m == order.payment_method.as_str());
+        .woo_cod_payment_methods().contains(&order.payment_method.as_str());
     let cod_amount_cents = if is_cod { declared_value_cents } else { None };
 
     // Special instructions: include customer note if present

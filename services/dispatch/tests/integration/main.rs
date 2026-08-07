@@ -48,16 +48,16 @@ use logisticos_dispatch::{
 // Mock Kafka producer
 // ---------------------------------------------------------------------------
 
-/// Build a noop `KafkaProducer` backed by rdkafka's in-process `MockCluster`.
-///
-/// `DriverAssignmentService` accepts `Arc<KafkaProducer>` (a concrete struct),
-/// so we cannot substitute a trait object. rdkafka's `MockCluster` (enabled via
-/// the `"mock"` feature) provides a fully in-process broker whose
-/// `bootstrap_servers()` address we pass to `KafkaProducer::new()`.  All
-/// publish calls complete instantly without network I/O.
-///
-/// The dispatch service `Cargo.toml` `[dev-dependencies]` must include:
-///   `rdkafka = { workspace = true, features = ["mock"] }`
+// Build a noop `KafkaProducer` backed by rdkafka's in-process `MockCluster`.
+//
+// `DriverAssignmentService` accepts `Arc<KafkaProducer>` (a concrete struct),
+// so we cannot substitute a trait object. rdkafka's `MockCluster` (enabled via
+// the `"mock"` feature) provides a fully in-process broker whose
+// `bootstrap_servers()` address we pass to `KafkaProducer::new()`.  All
+// publish calls complete instantly without network I/O.
+//
+// The dispatch service `Cargo.toml` `[dev-dependencies]` must include:
+//   `rdkafka = { workspace = true, features = ["mock"] }`
 // ---------------------------------------------------------------------------
 
 // The `DriverAssignmentService` holds a concrete `Arc<KafkaProducer>`.
@@ -247,7 +247,7 @@ impl DispatchQueueRepository for MockDispatchQueueRepo {
             .values()
             .filter(|r| {
                 r.tenant_id == tenant_id
-                    && status.map_or(true, |s| r.status == s)
+                    && status.is_none_or(|s| r.status == s)
             })
             .cloned()
             .collect();
@@ -835,44 +835,6 @@ mod auto_assign {
 mod route_status_transitions {
     use super::*;
 
-    /// Seed a route with an accepted assignment in the repos.
-    /// Returns (route_repo, assignment_repo, route_id, assignment_id, driver_id).
-    fn seed_route_with_accepted_assignment(
-        status: RouteStatus,
-    ) -> (MockRouteRepo, MockAssignmentRepo, Uuid, Uuid, Uuid) {
-        let driver_id = Uuid::new_v4();
-        let vehicle_id = Uuid::new_v4();
-
-        let route_repo = MockRouteRepo::default();
-        let assignment_repo = MockAssignmentRepo::default();
-
-        let mut route = planned_route_with_stop(TEST_TENANT_ID, driver_id, vehicle_id);
-        route.status = status;
-        if matches!(status, RouteStatus::InProgress) {
-            route.started_at = Some(Utc::now());
-        }
-        let route_id = route.id.inner();
-
-        let mut assignment =
-            DriverAssignment::new(
-                TenantId::from_uuid(TEST_TENANT_ID),
-                DriverId::from_uuid(driver_id),
-                route.id.clone(),
-            );
-        assignment.accept().unwrap();
-        let assignment_id = assignment.id;
-
-        {
-            let mut rg = route_repo.store.lock().unwrap();
-            rg.insert(route_id, route);
-        }
-        {
-            let mut ag = assignment_repo.store.lock().unwrap();
-            ag.insert(assignment_id, assignment);
-        }
-
-        (route_repo, assignment_repo, route_id, assignment_id, driver_id)
-    }
 
     // -----------------------------------------------------------------------
     // Accept assignment → route InProgress

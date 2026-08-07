@@ -24,6 +24,8 @@ use crate::infrastructure::db::AnalyticsDb;
 #[derive(Debug, Deserialize)]
 struct ShipmentCreated {
     shipment_id:  Uuid,
+    // Part of the wire/row contract; declared so the shape is documented, not consumed here.
+    #[allow(dead_code)]
     merchant_id:  Uuid,
     service_type: Option<String>,
 }

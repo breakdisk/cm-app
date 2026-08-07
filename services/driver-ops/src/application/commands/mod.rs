@@ -29,7 +29,7 @@ pub struct UpdateDriverCommand {
     #[validate(length(min = 7, max = 20))]
     pub phone: Option<String>,
     pub driver_type: Option<DriverType>,
-    #[validate(range(min = 0, max = 10_000_00))]
+    #[validate(range(min = 0, max = 1_000_000))]
     pub per_delivery_rate_cents: Option<i32>,
     #[validate(range(min = 0, max = 10_000))]
     pub cod_commission_rate_bps: Option<i32>,

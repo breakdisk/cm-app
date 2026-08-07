@@ -25,10 +25,9 @@ use crate::{
         InvoiceSummary,
     },
     domain::{
-        entities::{BillingPeriod, Invoice, InvoiceAdjustment, InvoiceError, InvoiceLineItem},
+        entities::{BillingPeriod, Invoice, InvoiceAdjustment, InvoiceLineItem},
         events::InvoiceGenerated,
         repositories::{InvoiceRepository, ShipmentBillingSource},
-        value_objects::NET_PAYMENT_TERMS_DAYS,
     },
 };
 
@@ -106,7 +105,7 @@ impl InvoiceService {
         // ── Build per-AWB line items ──────────────────────────────────────────
         for charge in cmd.charges {
             let charge_type = parse_charge_type(&charge.charge_type)
-                .map_err(|e| AppError::Validation(e))?;
+                .map_err(AppError::Validation)?;
 
             let awb = Awb::parse(&charge.awb)
                 .map_err(|e| AppError::Validation(e.to_string()))?;

@@ -94,7 +94,7 @@ impl ConnectorService {
         let is_cod = order
             .gateway
             .as_deref()
-            .map(|gw| creds.shopify_cod_gateways().iter().any(|&g| g == gw))
+            .map(|gw| creds.shopify_cod_gateways().contains(&gw))
             .unwrap_or(false);
 
         // Map to internal command.
@@ -168,9 +168,7 @@ impl ConnectorService {
 
         let order_id = order.id;
         let is_cod = creds
-            .woo_cod_payment_methods()
-            .iter()
-            .any(|&m| m == order.payment_method.as_str());
+            .woo_cod_payment_methods().contains(&order.payment_method.as_str());
 
         let cmd = woocommerce::map_to_command(&order, &creds)?;
         let created = self.order_intake.create_shipment(&cmd).await?;

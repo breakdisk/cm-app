@@ -1,8 +1,8 @@
-/// FedEx REST API v1
-/// Docs: https://developer.fedex.com/api/en-us/catalog/
-/// Auth: OAuth2 client_credentials — token cached until expiry - 60 s.
-/// Sandbox base URL: https://apis-sandbox.fedex.com
-/// Production base URL: https://apis.fedex.com
+//! FedEx REST API v1
+//! Docs: https://developer.fedex.com/api/en-us/catalog/
+//! Auth: OAuth2 client_credentials — token cached until expiry - 60 s.
+//! Sandbox base URL: https://apis-sandbox.fedex.com
+//! Production base URL: https://apis.fedex.com
 
 use async_trait::async_trait;
 use reqwest::Client;

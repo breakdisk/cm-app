@@ -187,7 +187,7 @@ pub async fn process_event(
     event_type: &str,
     payload: &serde_json::Value,
     notification_service: &NotificationService,
-    suppression_cache: &SuppressionCache,
+    _suppression_cache: &SuppressionCache,
 ) {
     let Some(mapping) = get_mapping(event_type) else {
         // Not every event triggers a notification — this is expected
@@ -926,7 +926,7 @@ pub async fn handle_campaign_triggered(
         });
         let mut var_names = vec!["customer_name".to_owned(), "name".to_owned()];
 
-        if (channel_str == "whatsapp" || channel_str == "sms") {
+        if channel_str == "whatsapp" || channel_str == "sms" {
             if let Some(phone_str) = r["phone"].as_str().filter(|s| !s.is_empty()) {
                 vars_map["phone"] = serde_json::Value::String(phone_str.to_owned());
                 var_names.push("phone".to_owned());

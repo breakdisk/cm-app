@@ -81,9 +81,8 @@ impl SessionRepository for MockSessionRepository {
         let results: Vec<AgentSession> = store
             .iter()
             .filter(|s| s.tenant_id.inner() == tenant_id)
-            .cloned()
             .skip(offset as usize)
-            .take(limit as usize)
+            .take(limit as usize).cloned()
             .collect();
         Ok(results)
     }
@@ -146,7 +145,7 @@ impl MockAgentRunner {
         );
         session.actions.push(action);
         session.complete("Driver assigned successfully.".into(), 0.95);
-        self.repo.save(&session).await.map_err(|e| AppError::Internal(e.into()))?;
+        self.repo.save(&session).await.map_err(AppError::Internal)?;
         Ok(session)
     }
 }
@@ -242,7 +241,7 @@ fn build_test_router(
                 q.offset.unwrap_or(0).max(0),
             )
             .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+            .map_err(AppError::Internal)?;
 
         let summaries: Vec<_> = sessions.iter().map(|s| json!({
             "id":               s.id,
@@ -271,7 +270,7 @@ fn build_test_router(
             .session_repo
             .list_escalated(claims.tenant_id)
             .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+            .map_err(AppError::Internal)?;
 
         Ok::<_, AppError>((
             StatusCode::OK,
@@ -289,7 +288,7 @@ fn build_test_router(
             .session_repo
             .find_by_id(id)
             .await
-            .map_err(|e| AppError::Internal(e.into()))?
+            .map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound { resource: "agent_session", id: id.to_string() })?;
 
         if session.tenant_id.inner() != claims.tenant_id {
@@ -313,7 +312,7 @@ fn build_test_router(
             .session_repo
             .find_by_id(id)
             .await
-            .map_err(|e| AppError::Internal(e.into()))?
+            .map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound { resource: "agent_session", id: id.to_string() })?;
 
         if session.tenant_id.inner() != claims.tenant_id {
@@ -334,7 +333,7 @@ fn build_test_router(
             .session_repo
             .save(&session)
             .await
-            .map_err(|e| AppError::Internal(e.into()))?;
+            .map_err(AppError::Internal)?;
 
         Ok::<_, AppError>((
             StatusCode::OK,

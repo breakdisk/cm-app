@@ -237,10 +237,10 @@ impl ShipmentRepository for InMemoryShipmentRepository {
                 .filter(|s| {
                     filter
                         .merchant_id
-                        .map_or(true, |mid| s.merchant_id.inner() == mid)
+                        .is_none_or(|mid| s.merchant_id.inner() == mid)
                 })
                 .filter(|s| {
-                    filter.status.as_ref().map_or(true, |st| {
+                    filter.status.as_ref().is_none_or(|st| {
                         format!("{:?}", s.status).to_lowercase() == st.to_lowercase()
                     })
                 })

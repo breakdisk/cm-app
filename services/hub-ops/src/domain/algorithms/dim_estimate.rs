@@ -32,6 +32,6 @@ mod tests {
         let (l, w, h) = estimate_dims_cm(30_000);
         assert_eq!(l, w);
         assert_eq!(w, h);
-        assert!(l >= 50 && l <= 56, "expected ~53 cm, got {l}");
+        assert!((50..=56).contains(&l), "expected ~53 cm, got {l}");
     }
 }

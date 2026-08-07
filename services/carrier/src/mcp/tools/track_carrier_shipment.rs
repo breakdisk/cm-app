@@ -1,9 +1,9 @@
-/// Tool: track_carrier_shipment
-///
-/// Retrieve live tracking events for a carrier tracking number.
-/// If carrier_code is omitted the platform tries all configured carriers until
-/// one returns a result — useful when the tracking number is known but the
-/// carrier is not.
+//! Tool: track_carrier_shipment
+//!
+//! Retrieve live tracking events for a carrier tracking number.
+//! If carrier_code is omitted the platform tries all configured carriers until
+//! one returns a result — useful when the tracking number is known but the
+//! carrier is not.
 
 use serde_json::{json, Value};
 use std::sync::Arc;

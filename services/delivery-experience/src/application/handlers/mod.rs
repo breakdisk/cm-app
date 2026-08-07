@@ -104,7 +104,11 @@ struct DeliveryCompleted {
     recipient_name: Option<String>,
 }
 
+/// Mirrors the canonical `delivery.failed` payload. Fields the handler does
+/// not currently branch on are still declared: serde would accept the event
+/// without them, and the struct is the only written record of the contract.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct DeliveryFailed {
     shipment_id:            Uuid,
     reason:                 String,

@@ -45,6 +45,11 @@ pub struct Claims {
 }
 
 impl Claims {
+    /// Eight arguments, because a JWT claim set has eight fields and every one
+    /// is required. Grouping them into a builder or a params struct would move
+    /// the arity rather than remove it, and would let a caller construct a
+    /// half-populated token — the opposite of what this type is for.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         user_id: Uuid,
         tenant_id: Uuid,

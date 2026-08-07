@@ -47,7 +47,7 @@ pub async fn start_hub_dispatch_consumer(
 ) -> anyhow::Result<()> {
     let consumer: StreamConsumer = ClientConfig::new()
         .set("bootstrap.servers", brokers)
-        .set("group.id", &format!("{}-hub-dispatch", group_id))
+        .set("group.id", format!("{}-hub-dispatch", group_id))
         .set("auto.offset.reset", "earliest")
         .set("enable.auto.commit", "false")
         .create()?;

@@ -1,6 +1,5 @@
 use std::sync::Arc;
 use chrono::NaiveDate;
-use uuid::Uuid;
 
 use logisticos_errors::{AppError, AppResult};
 use logisticos_types::TenantId;
@@ -96,20 +95,20 @@ impl QueryService {
         let kpi_today     = self.db
             .delivery_kpis(tenant_id.inner(), today, today)
             .await
-            .map_err(|e| AppError::Internal(e))?;
+            .map_err(AppError::Internal)?;
         let kpi_yesterday = self.db
             .delivery_kpis(tenant_id.inner(), yesterday, yesterday)
             .await
-            .map_err(|e| AppError::Internal(e))?;
+            .map_err(AppError::Internal)?;
         let kpi_mtd = self.db
             .delivery_kpis(tenant_id.inner(), month_start, today)
             .await
-            .map_err(|e| AppError::Internal(e))?;
+            .map_err(AppError::Internal)?;
 
         let daily_buckets = self.db
             .daily_timeseries(tenant_id.inner(), week_start, today)
             .await
-            .map_err(|e| AppError::Internal(e))?;
+            .map_err(AppError::Internal)?;
 
         let day_names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
         let weekly_volume: Vec<WeeklyVolumeDay> = daily_buckets

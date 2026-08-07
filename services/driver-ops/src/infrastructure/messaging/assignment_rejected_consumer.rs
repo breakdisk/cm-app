@@ -31,7 +31,7 @@ pub async fn start_assignment_rejected_consumer(
 ) -> anyhow::Result<()> {
     let consumer: StreamConsumer = ClientConfig::new()
         .set("bootstrap.servers", brokers)
-        .set("group.id", &format!("{}-assignment-rejected", group_id))
+        .set("group.id", format!("{}-assignment-rejected", group_id))
         .set("auto.offset.reset", "earliest")
         .set("enable.auto.commit", "false")
         .create()?;

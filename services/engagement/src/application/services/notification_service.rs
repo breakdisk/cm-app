@@ -94,7 +94,7 @@ impl NotificationService {
         priority: NotificationPriority,
     ) -> AppResult<Notification> {
         let rendered_body = template.render(vars)
-            .map_err(|e| AppError::Validation(e))?;
+            .map_err(AppError::Validation)?;
 
         let rendered_subject = template.subject.as_ref()
             .map(|s| {

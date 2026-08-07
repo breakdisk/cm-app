@@ -71,7 +71,7 @@ impl OfferService {
     ) -> AppResult<TaskOfferRow> {
         let queue_item = self.queue_repo
             .find_by_shipment(shipment_id).await
-            .map_err(|e| AppError::Internal(e.into()))?
+            .map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound {
                 resource: "Shipment in dispatch queue",
                 id: shipment_id.to_string(),

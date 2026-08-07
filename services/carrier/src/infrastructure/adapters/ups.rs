@@ -1,8 +1,8 @@
-/// UPS REST API
-/// Docs: https://developer.ups.com/catalog
-/// Auth: OAuth2 client_credentials — token cached until expiry - 60 s.
-/// Sandbox base URL: https://wwwcie.ups.com/api
-/// Production base URL: https://onlinetools.ups.com/api
+//! UPS REST API
+//! Docs: https://developer.ups.com/catalog
+//! Auth: OAuth2 client_credentials — token cached until expiry - 60 s.
+//! Sandbox base URL: https://wwwcie.ups.com/api
+//! Production base URL: https://onlinetools.ups.com/api
 
 use async_trait::async_trait;
 use reqwest::Client;

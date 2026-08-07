@@ -214,6 +214,8 @@ impl PgRuleRepository {
     }
 
     /// Append a rule execution record to the audit log.
+    // Arity mirrors the record's field count; a params struct would move it, not remove it.
+    #[allow(clippy::too_many_arguments)]
     pub async fn log_execution(
         &self,
         rule_id: Uuid,

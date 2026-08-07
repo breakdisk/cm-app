@@ -371,7 +371,7 @@ async fn run_consumer(
                             if rule.conditions_met(&ctx) {
                                 tracing::info!(rule_id = %rule.id, rule_name = %rule.name, topic = %topic, "Rule fired");
 
-                                let outcome = match execute_actions(&rule, &ctx, executor.as_ref()).await {
+                                let outcome = match execute_actions(rule, &ctx, executor.as_ref()).await {
                                     Ok(()) => "success",
                                     Err(e) => {
                                         tracing::error!(rule_id = %rule.id, err = %e, "Rule action failed");

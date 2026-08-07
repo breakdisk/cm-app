@@ -897,6 +897,9 @@ impl NotificationDb {
         clicked_url: Option<&str>,
     ) -> anyhow::Result<Option<ReceiptTransition>> {
         if matches!(event, "opened" | "clicked") {
+            // The tuple is the SELECT list, in order. Naming it as a struct
+            // would decouple the two and let a column reorder go unnoticed.
+            #[allow(clippy::type_complexity)]
             let prior: Option<(Uuid, Uuid, Option<Uuid>, Option<chrono::DateTime<chrono::Utc>>, Option<chrono::DateTime<chrono::Utc>>)> =
                 sqlx::query_as(
                     r#"SELECT cs.campaign_id, cs.customer_id, ec.tenant_id, cs.opened_at, cs.clicked_at

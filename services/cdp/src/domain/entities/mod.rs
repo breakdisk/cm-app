@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use logisticos_types::{TenantId, UserId};
+use logisticos_types::TenantId;
 
 // ---------------------------------------------------------------------------
 // ProfileType — distinguishes senders (merchant's shipping clients) from

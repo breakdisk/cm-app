@@ -1,12 +1,12 @@
-/// DPD REST API
-/// Docs: https://api.dpd.co.uk/reference  (UK reference; adjust base URL per market)
-/// Auth: HTTP Basic (username : password) per DPD account.
-/// DPD operates country-specific API hubs — set base_url per deployment region:
-///   UK:  https://api.dpd.co.uk
-///   DE:  https://api.dpd.de/services
-///   FR:  https://api.dpd.fr
-///   NL:  https://api.dpd.nl
-/// The request/response schema is consistent across markets.
+//! DPD REST API
+//! Docs: https://api.dpd.co.uk/reference  (UK reference; adjust base URL per market)
+//! Auth: HTTP Basic (username : password) per DPD account.
+//! DPD operates country-specific API hubs — set base_url per deployment region:
+//!   UK:  https://api.dpd.co.uk
+//!   DE:  https://api.dpd.de/services
+//!   FR:  https://api.dpd.fr
+//!   NL:  https://api.dpd.nl
+//! The request/response schema is consistent across markets.
 
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -25,6 +25,8 @@ pub struct DpdAdapter {
     username: String,
     password: String,
     /// DPD account number assigned at registration
+    // Part of the wire/row contract; declared so the shape is documented, not consumed here.
+    #[allow(dead_code)]
     account:  String,
 }
 

@@ -75,7 +75,7 @@ pub async fn start(
 ) -> anyhow::Result<()> {
     let consumer: StreamConsumer = ClientConfig::new()
         .set("bootstrap.servers", brokers)
-        .set("group.id", &format!("{group_id}-dispatcher"))
+        .set("group.id", format!("{group_id}-dispatcher"))
         .set("auto.offset.reset", "latest") // skip historical events on first start
         .set("enable.auto.commit", "false")
         .create()?;

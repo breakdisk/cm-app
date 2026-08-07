@@ -142,7 +142,7 @@ pub fn map_to_command(
     let is_cod = order
         .gateway
         .as_deref()
-        .map(|gw| creds.shopify_cod_gateways().iter().any(|&g| g == gw))
+        .map(|gw| creds.shopify_cod_gateways().contains(&gw))
         .unwrap_or(false);
     let cod_amount_cents = if is_cod { declared_value_cents } else { None };
 

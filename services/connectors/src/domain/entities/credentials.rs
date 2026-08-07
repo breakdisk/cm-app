@@ -17,6 +17,10 @@ impl Platform {
         }
     }
 
+    /// Inherent `from_str` rather than `FromStr`: it is infallible-by-default
+    /// (unknown input maps to a variant rather than erroring), which is not
+    /// the contract `FromStr` implies.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "shopify"     => Some(Platform::Shopify),

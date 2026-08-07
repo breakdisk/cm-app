@@ -14,7 +14,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
-    routing::{get, post, put},
+    routing::{get, post},
     Router,
 };
 use serde::Deserialize;
@@ -27,7 +27,7 @@ use logisticos_errors::AppError;
 use crate::{
     application::services::notification_service::NotificationService,
     domain::entities::{
-        notification::{NotificationPriority, NotificationStatus},
+        notification::NotificationPriority,
         template::{NotificationChannel, NotificationTemplate},
     },
     infrastructure::db::NotificationDb,
@@ -175,7 +175,7 @@ async fn send_notification(
     let template = db
         .find_template_by_id(req.template_id, tenant_uuid)
         .await
-        .map_err(|e| AppError::Internal(e))?
+        .map_err(AppError::Internal)?
         .ok_or_else(|| AppError::NotFound {
             resource: "template",
             id: req.template_id.to_string(),
@@ -226,7 +226,7 @@ async fn send_notification(
     // Persist before dispatch so the record exists even if dispatch fails.
     db.insert_notification(&notification)
         .await
-        .map_err(|e| AppError::Internal(e))?;
+        .map_err(AppError::Internal)?;
 
     state.notification_svc.dispatch(&mut notification).await?;
 
@@ -237,7 +237,7 @@ async fn send_notification(
         notification.provider_message_id.clone(),
     )
     .await
-    .map_err(|e| AppError::Internal(e))?;
+    .map_err(AppError::Internal)?;
 
     Ok::<_, AppError>((
         StatusCode::ACCEPTED,
@@ -260,7 +260,7 @@ async fn get_notification(
     let notification = db
         .find_by_id(id)
         .await
-        .map_err(|e| AppError::Internal(e))?
+        .map_err(AppError::Internal)?
         .ok_or_else(|| AppError::NotFound { resource: "notification", id: id.to_string() })?;
 
     // Tenant isolation — a notification from another tenant must not be visible.
@@ -285,11 +285,11 @@ async fn list_notifications(
     let notifications = if let Some(customer_id) = q.customer_id {
         db.list_by_customer(customer_id, tenant_uuid, q.clamp_limit(), q.offset())
             .await
-            .map_err(|e| AppError::Internal(e))?
+            .map_err(AppError::Internal)?
     } else {
         db.list_by_tenant(tenant_uuid, q.status.as_deref(), q.clamp_limit(), q.offset())
             .await
-            .map_err(|e| AppError::Internal(e))?
+            .map_err(AppError::Internal)?
     };
 
     let count = notifications.len();
@@ -337,7 +337,7 @@ async fn create_template(
     let db = NotificationDb::new(state.db.clone());
     db.insert_template(&template)
         .await
-        .map_err(|e| AppError::Internal(e))?;
+        .map_err(AppError::Internal)?;
 
     Ok::<_, AppError>((StatusCode::CREATED, Json(template)))
 }
@@ -353,7 +353,7 @@ async fn list_templates(
     let templates = db
         .list_templates(claims.tenant_id)
         .await
-        .map_err(|e| AppError::Internal(e))?;
+        .map_err(AppError::Internal)?;
 
     let count = templates.len();
     Ok::<_, AppError>((
@@ -377,7 +377,7 @@ async fn get_template(
     let template = db
         .find_template_by_id(id, claims.tenant_id)
         .await
-        .map_err(|e| AppError::Internal(e))?
+        .map_err(AppError::Internal)?
         .ok_or_else(|| AppError::NotFound { resource: "template", id: id.to_string() })?;
 
     Ok::<_, AppError>((StatusCode::OK, Json(template)))
@@ -396,7 +396,7 @@ async fn update_template(
     let mut template = db
         .find_template_by_id(id, claims.tenant_id)
         .await
-        .map_err(|e| AppError::Internal(e))?
+        .map_err(AppError::Internal)?
         .ok_or_else(|| AppError::NotFound { resource: "template", id: id.to_string() })?;
 
     // Only tenant-owned templates may be mutated; global templates (tenant_id
@@ -427,7 +427,7 @@ async fn update_template(
 
     db.update_template(&template)
         .await
-        .map_err(|e| AppError::Internal(e))?;
+        .map_err(AppError::Internal)?;
 
     Ok::<_, AppError>((StatusCode::OK, Json(template)))
 }
@@ -455,7 +455,7 @@ async fn list_campaigns(
     let campaigns = db
         .list_campaigns(claims.tenant_id, limit, offset)
         .await
-        .map_err(|e| AppError::Internal(e))?;
+        .map_err(AppError::Internal)?;
 
     let count = campaigns.len();
     Ok::<_, AppError>((
@@ -481,7 +481,7 @@ async fn get_campaign(
     let campaign = db
         .find_campaign_by_id(id, claims.tenant_id)
         .await
-        .map_err(|e| AppError::Internal(e))?
+        .map_err(AppError::Internal)?
         .ok_or_else(|| AppError::NotFound { resource: "campaign", id: id.to_string() })?;
 
     Ok::<_, AppError>((StatusCode::OK, Json(campaign)))
@@ -510,13 +510,13 @@ async fn list_campaign_sends(
     let campaign = db
         .find_campaign_by_id(id, claims.tenant_id)
         .await
-        .map_err(|e| AppError::Internal(e))?
+        .map_err(AppError::Internal)?
         .ok_or_else(|| AppError::NotFound { resource: "campaign", id: id.to_string() })?;
 
     let sends = db
         .list_campaign_sends(id, claims.tenant_id, limit, offset)
         .await
-        .map_err(|e| AppError::Internal(e))?;
+        .map_err(AppError::Internal)?;
 
     let count = sends.len();
     Ok::<_, AppError>((

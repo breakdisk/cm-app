@@ -1,7 +1,7 @@
-/// Tool: get_carrier_label
-///
-/// Retrieve the shipping label for a booked shipment as base64-encoded bytes.
-/// The caller can decode and write directly to a PDF/ZPL printer stream.
+//! Tool: get_carrier_label
+//!
+//! Retrieve the shipping label for a booked shipment as base64-encoded bytes.
+//! The caller can decode and write directly to a PDF/ZPL printer stream.
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};

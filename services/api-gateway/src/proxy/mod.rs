@@ -1,13 +1,6 @@
 //! Reverse proxy layer: forwards validated requests to downstream services.
 //! Uses reqwest for HTTP proxying. In production this is replaced/augmented by Envoy sidecar.
 
-use axum::{
-    body::Body,
-    extract::{Request, State},
-    http::{HeaderMap, HeaderValue, StatusCode, Uri},
-    response::Response,
-};
-use std::sync::Arc;
 use crate::config::ServicesConfig;
 
 pub struct ProxyClient {

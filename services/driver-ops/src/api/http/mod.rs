@@ -4,7 +4,7 @@ pub mod location;
 pub mod health;
 pub mod ws;
 
-use axum::{Router, routing::{delete, get, post, put}};
+use axum::{Router, routing::{get, post, put}};
 use std::sync::Arc;
 use crate::application::services::{DriverService, TaskService, LocationService};
 use crate::infrastructure::external::FcmClient;

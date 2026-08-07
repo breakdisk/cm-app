@@ -26,7 +26,7 @@ pub async fn start_offer_consumer(
 ) -> anyhow::Result<()> {
     let consumer: StreamConsumer = ClientConfig::new()
         .set("bootstrap.servers", brokers)
-        .set("group.id", &format!("{}-offers", group_id))
+        .set("group.id", format!("{}-offers", group_id))
         .set("auto.offset.reset", "latest")  // offers are 30s-TTL ephemera — replaying history is useless
         .set("enable.auto.commit", "false")
         .create()?;

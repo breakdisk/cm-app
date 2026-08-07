@@ -68,8 +68,10 @@ impl Default for SlaCommitment {
 /// Managed by admin compliance review; independent of operational status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ComplianceStatus {
     /// No documents submitted yet (default for newly onboarded carriers).
+    #[default]
     PendingSubmission,
     /// Documents received and under admin review.
     UnderReview,
@@ -85,9 +87,6 @@ pub enum ComplianceStatus {
     Suspended,
 }
 
-impl Default for ComplianceStatus {
-    fn default() -> Self { Self::PendingSubmission }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -329,6 +328,8 @@ impl SizeClass {
         }
     }
 
+    // Inherent `from_str` is total (unknown input maps to a variant); `FromStr` implies fallible.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> anyhow::Result<Self> {
         match s {
             "motorcycle"  => Ok(Self::Motorcycle),
@@ -362,6 +363,8 @@ impl ListingStatus {
         }
     }
 
+    // Inherent `from_str` is total (unknown input maps to a variant); `FromStr` implies fallible.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> anyhow::Result<Self> {
         match s {
             "active"  => Ok(Self::Active),
@@ -398,6 +401,8 @@ impl BookingStatus {
         }
     }
 
+    // Inherent `from_str` is total (unknown input maps to a variant); `FromStr` implies fallible.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> anyhow::Result<Self> {
         match s {
             "pending"    => Ok(Self::Pending),

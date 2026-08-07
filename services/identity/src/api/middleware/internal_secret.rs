@@ -35,7 +35,7 @@ pub async fn require_internal_secret(
     }
     // Length mismatch is safe to short-circuit; the caller already knows
     // their own input length, so no side channel is leaked.
-    if provided_bytes.as_bytes().len() != expected_bytes.len() {
+    if provided_bytes.len() != expected_bytes.len() {
         return Ok(unauthorized());
     }
     if provided_bytes.as_bytes().ct_eq(expected_bytes).unwrap_u8() != 1 {

@@ -27,10 +27,10 @@ impl ComplianceStatus {
         if has_missing {
             return Self::PendingSubmission;
         }
-        if doc_statuses.iter().any(|s| *s == DocumentStatus::Rejected) {
+        if doc_statuses.contains(&DocumentStatus::Rejected) {
             return Self::PendingSubmission;
         }
-        if doc_statuses.iter().any(|s| *s == DocumentStatus::Expired) {
+        if doc_statuses.contains(&DocumentStatus::Expired) {
             return Self::Expired;
         }
         if doc_statuses.iter().any(|s| matches!(s, DocumentStatus::Submitted | DocumentStatus::UnderReview)) {
@@ -54,6 +54,10 @@ impl ComplianceStatus {
         }
     }
 
+    /// Inherent `from_str` rather than `FromStr`: it is infallible-by-default
+    /// (unknown input maps to a variant rather than erroring), which is not
+    /// the contract `FromStr` implies.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> anyhow::Result<Self> {
         match s {
             "pending_submission" => Ok(Self::PendingSubmission),

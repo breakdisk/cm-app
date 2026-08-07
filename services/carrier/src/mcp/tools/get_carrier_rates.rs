@@ -1,7 +1,7 @@
-/// Tool: get_carrier_rates
-///
-/// Fan-out rate shop across all configured carriers (or a single one).
-/// Returns a flat array of rate quotes sorted ascending by price.
+//! Tool: get_carrier_rates
+//!
+//! Fan-out rate shop across all configured carriers (or a single one).
+//! Returns a flat array of rate quotes sorted ascending by price.
 
 use serde_json::{json, Value};
 use std::sync::Arc;

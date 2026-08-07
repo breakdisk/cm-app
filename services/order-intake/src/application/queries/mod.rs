@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use logisticos_errors::{AppError, AppResult};
-use logisticos_types::{Pagination, PaginatedResponse, ShipmentId, TenantId};
+use logisticos_types::ShipmentId;
 
 use crate::{
     application::services::shipment_service::{ShipmentListFilter, ShipmentRepository},

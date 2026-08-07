@@ -68,6 +68,9 @@ pub trait ShipmentRepository: Send + Sync {
         pieces: &'a [Piece],
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
+    // Hand-written boxed future for an object-safe async trait method — the
+    // shape is the point; a type alias would only hide it.
+    #[allow(clippy::type_complexity)]
     fn list<'a>(
         &'a self,
         filter: &'a ShipmentListFilter,
@@ -279,7 +282,7 @@ impl ShipmentService {
                     }
                     None => {
                         // Fallback: uniform pieces from piece_count + aggregate weight.
-                        let count = cmd.piece_count.unwrap_or(1).max(1).min(999);
+                        let count = cmd.piece_count.unwrap_or(1).clamp(1, 999);
                         let child_awbs = generate_child_awbs(&master_awb, count)
                             .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
                         let piece_weight = ShipmentWeight::from_grams(weight.grams / count as u32);
@@ -309,7 +312,7 @@ impl ShipmentService {
                         "Per-piece declarations are only valid for Balikbayan and International shipments.".into()
                     ));
                 }
-                let count = cmd.piece_count.unwrap_or(1).max(1).min(999);
+                let count = cmd.piece_count.unwrap_or(1).clamp(1, 999);
                 let child_awbs = generate_child_awbs(&master_awb, count)
                     .map_err(|e| AppError::Internal(anyhow::anyhow!(e.to_string())))?;
                 let piece_weight = ShipmentWeight::from_grams(weight.grams / count as u32);

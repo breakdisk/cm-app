@@ -164,7 +164,7 @@ impl InvoiceNumber {
     }
 
     pub fn sequence(&self) -> u32 {
-        self.0.split('-').last().unwrap().parse().unwrap()
+        self.0.rsplit('-').next().unwrap().parse().unwrap()
     }
 
     /// Redis key used to generate the sequence counter for this document type/tenant/period.

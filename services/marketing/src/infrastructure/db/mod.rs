@@ -5,7 +5,7 @@ use uuid::Uuid;
 use logisticos_types::TenantId;
 
 use crate::domain::{
-    entities::{Campaign, CampaignId, CampaignRecipient, CampaignStatus, Channel, WeeklyStat},
+    entities::{Campaign, CampaignId, CampaignRecipient, CampaignStatus, WeeklyStat},
     repositories::CampaignRepository,
 };
 
@@ -242,7 +242,7 @@ impl CampaignRepository for PgCampaignRepository {
 // PgAbTestRepository
 // ---------------------------------------------------------------------------
 
-use crate::domain::entities::{AbTest, AbVariant, AbVariantStats};
+use crate::domain::entities::{AbTest, AbVariantStats};
 
 pub struct PgAbTestRepository { pool: PgPool }
 
