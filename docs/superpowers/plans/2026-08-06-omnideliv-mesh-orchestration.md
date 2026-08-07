@@ -437,7 +437,18 @@ nothing, which reads as a lost order."
 
 ---
 
-## Task 3: The host-side adapter
+## Task 3: The host-side adapter — NEEDS PLAN 8 FIRST
+
+> **Blocked, and the dependency is real rather than stylistic.** The adapter below
+> calls `BasketService::mutate` and sets `SubIntentSource::Mesh`. Neither exists
+> after Plans 3, 4 and 9 Tasks 1-2: `BasketService` has `create`, `get` and
+> `apply_delta` only, and `SubIntent` has no `source` field. Both are built by
+> [Plan 8](2026-08-06-omnideliv-manual-order-path.md), which also adds the
+> optimistic lock this adapter relies on to avoid opening a second write path.
+> Run Plan 8, then return here.
+>
+> Tasks 1 and 2 above are done and are what unblocked Plan 4 Task 7 —
+> `MeshRunner::run` now exists.
 
 **Files:**
 - Create: `services/omnideliv/src/infrastructure/external/mesh_basket.rs`
