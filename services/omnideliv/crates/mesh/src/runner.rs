@@ -288,7 +288,7 @@ impl MeshRunner {
 
         // The basket exists before fan-out so a crash mid-run leaves something
         // the customer can reopen rather than losing the work entirely.
-        let basket_id = match self.basket.create(tenant_id.inner(), customer_id).await {
+        let basket_id = match self.basket.create(tenant_id.inner(), customer_id, parent_id).await {
             Ok(id) => id,
             Err(e) => {
                 let _ = events.send(MeshEvent::Failed { reason: format!("could not start a basket: {e}") }).await;
@@ -606,15 +606,17 @@ mod tests {
     #[derive(Default)]
     struct RecordingBasket {
         created:   Mutex<Vec<Uuid>>,
+        sessions:  Mutex<Vec<Uuid>>,
         writes:    Mutex<Vec<(Uuid, usize)>>,
         conflicts: Mutex<Vec<crate::conflict::Conflict>>,
     }
 
     #[async_trait::async_trait]
     impl crate::tools::MeshBasket for RecordingBasket {
-        async fn create(&self, _: Uuid, _: Uuid) -> anyhow::Result<Uuid> {
+        async fn create(&self, _: Uuid, _: Uuid, session: Uuid) -> anyhow::Result<Uuid> {
             let id = Uuid::new_v4();
             self.created.lock().unwrap().push(id);
+            self.sessions.lock().unwrap().push(session);
             Ok(id)
         }
         async fn record_conflicts(&self, _: Uuid, _: Uuid, c: &[crate::conflict::Conflict])
@@ -933,6 +935,46 @@ mod tests {
 
     /// The event contract Screen B renders against: parsed, then one
     /// started/finished pair per worker, then completed.
+    /// The basket must be traceable back to the run that filled it. Without
+    /// this the column exists and is always null, and a support question about
+    /// why an item is in someone's basket has no thread to pull.
+    #[tokio::test]
+    async fn the_basket_is_linked_to_the_mesh_session() {
+        let (tx, _rx) = mpsc::channel(64);
+        let basket = Arc::new(RecordingBasket::default());
+        let store = Arc::new(InMemoryStore::default());
+
+        let runner = MeshRunner::new(
+            Arc::new(StubClaude::new(vec![
+                StubClaude::tool_call("t1", "decompose_intent", serde_json::json!({
+                    "sub_intents": [
+                        {"vertical": "grocery", "raw_text": "milk", "constraints": {}}
+                    ]
+                })),
+                StubClaude::text("split"),
+                StubClaude::tool_call("t2", "propose_lines", serde_json::json!({ "lines": [] })),
+                StubClaude::text("done"),
+                StubClaude::tool_call("t3", "plan_route", serde_json::json!({
+                    "vendor_order": [], "flat_fee_cents": 4900, "total_minutes": 30
+                })),
+                StubClaude::text("planned"),
+            ])),
+            store.clone(),
+            basket.clone(),
+            Arc::new(NoopCatalog),
+            MeshConfig::default(),
+        );
+
+        runner.run(TenantId::from_uuid(Uuid::new_v4()), Uuid::new_v4(),
+                   "milk".into(), 14.5995, 120.9842, tx).await;
+
+        let sessions = basket.sessions.lock().unwrap().clone();
+        assert_eq!(sessions.len(), 1, "exactly one basket per run");
+        assert!(!sessions[0].is_nil(), "the basket must carry a real session id");
+        assert!(store.saved.lock().unwrap().iter().any(|s| s.id == sessions[0]),
+                "and it must be the run's own parent session, not an invented uuid");
+    }
+
     #[tokio::test]
     async fn a_run_emits_the_screen_b_event_sequence() {
         let (tx, mut rx) = mpsc::channel(64);
@@ -1138,7 +1180,7 @@ mod per_run_tool_box {
     struct NoBasket;
     #[async_trait::async_trait]
     impl crate::tools::MeshBasket for NoBasket {
-        async fn create(&self, _: Uuid, _: Uuid) -> anyhow::Result<Uuid> { Ok(Uuid::new_v4()) }
+        async fn create(&self, _: Uuid, _: Uuid, _: Uuid) -> anyhow::Result<Uuid> { Ok(Uuid::new_v4()) }
         async fn write_delta(&self, _: Uuid, _: Uuid, _: Uuid, _: &str, _: &str,
                              _: Vec<ProposedLine>) -> anyhow::Result<()> { Ok(()) }
         async fn lines_awaiting_review(&self, _: Uuid, _: Uuid) -> anyhow::Result<usize> { Ok(0) }

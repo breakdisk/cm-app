@@ -68,7 +68,17 @@ pub trait MeshCatalog: Send + Sync {
 #[async_trait]
 pub trait MeshBasket: Send + Sync {
     /// Create the basket a run writes into.
-    async fn create(&self, tenant_id: Uuid, customer_id: Uuid) -> anyhow::Result<Uuid>;
+    ///
+    /// `mesh_session_id` is the run's parent session. Stored on the basket so a
+    /// basket can be traced back to the agents that filled it — without it the
+    /// column exists and is always null, and a support question about why an
+    /// item is in someone's basket has no thread to pull.
+    async fn create(
+        &self,
+        tenant_id: Uuid,
+        customer_id: Uuid,
+        mesh_session_id: Uuid,
+    ) -> anyhow::Result<Uuid>;
 
     /// Persist one specialist's lines. Scoped by sub-intent — this is the
     /// single-writer path, called serially by the Concierge after the join.

@@ -36,8 +36,17 @@ fn parse_vertical(s: &str) -> anyhow::Result<Vertical> {
 
 #[async_trait]
 impl MeshBasket for BasketServiceAdapter {
-    async fn create(&self, tenant_id: Uuid, customer_id: Uuid) -> anyhow::Result<Uuid> {
-        Ok(self.baskets.create(tenant_id, customer_id).await?.id)
+    async fn create(
+        &self,
+        tenant_id: Uuid,
+        customer_id: Uuid,
+        mesh_session_id: Uuid,
+    ) -> anyhow::Result<Uuid> {
+        Ok(self
+            .baskets
+            .create_for_mesh(tenant_id, customer_id, mesh_session_id)
+            .await?
+            .id)
     }
 
     async fn record_conflicts(

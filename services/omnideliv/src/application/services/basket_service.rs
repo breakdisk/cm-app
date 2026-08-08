@@ -40,6 +40,19 @@ impl BasketService {
         Ok(b)
     }
 
+    /// A basket a mesh run is about to fill, linked to the run that made it.
+    pub async fn create_for_mesh(
+        &self,
+        tenant_id: Uuid,
+        customer_id: Uuid,
+        mesh_session_id: Uuid,
+    ) -> anyhow::Result<Basket> {
+        let mut b = Basket::new(tenant_id, customer_id);
+        b.mesh_session_id = Some(mesh_session_id);
+        self.baskets.save(&b).await?;
+        Ok(b)
+    }
+
     pub async fn get(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<Basket>> {
         self.baskets.find_by_id(tenant_id, id).await
     }
