@@ -264,6 +264,10 @@ async fn run_kafka_consumer(
     use logisticos_events::topics;
 
     consumer.subscribe(&[
+        // OmniDeliv order bookends. Without these a customer who orders dinner
+        // hears nothing at all — no confirmation, no delivery notice.
+        topics::OMNIDELIV_ORDER_PLACED,
+        topics::OMNIDELIV_ORDER_DELIVERED,
         topics::SHIPMENT_CREATED,
         topics::DRIVER_ASSIGNED,
         topics::PICKUP_COMPLETED,

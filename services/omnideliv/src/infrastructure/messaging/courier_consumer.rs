@@ -58,6 +58,7 @@ pub struct CourierMilestoneHandler {
     orders:    Arc<dyn OrderRepository>,
     ledgers:   Arc<dyn VendorLedgerRepository>,
     telemetry: Arc<dyn TelemetryRepository>,
+    events:    Arc<dyn crate::infrastructure::messaging::OrderEvents>,
 }
 
 impl CourierMilestoneHandler {
@@ -65,8 +66,9 @@ impl CourierMilestoneHandler {
         orders: Arc<dyn OrderRepository>,
         ledgers: Arc<dyn VendorLedgerRepository>,
         telemetry: Arc<dyn TelemetryRepository>,
+        events: Arc<dyn crate::infrastructure::messaging::OrderEvents>,
     ) -> Self {
-        Self { orders, ledgers, telemetry }
+        Self { orders, ledgers, telemetry, events }
     }
 
     /// Handle one milestone.
@@ -134,6 +136,14 @@ impl CourierMilestoneHandler {
                 order.delivered()?;
                 self.append(tenant_id, order_id, event_type::ORDER_DELIVERED,
                             device_timestamp, Some(courier_id), serde_json::json!({})).await;
+
+                // After the state change, before the save below. A publish
+                // failure must not stop the order being recorded as delivered:
+                // the courier is already paid and the customer already has their
+                // food, so losing the notification is the smaller loss.
+                if let Err(e) = self.events.order_delivered(&order).await {
+                    tracing::error!(err = %e, %order_id, "order.delivered publish failed");
+                }
             }
         }
 

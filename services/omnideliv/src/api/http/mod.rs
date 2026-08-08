@@ -21,6 +21,7 @@ pub struct AppState {
     pub orders:    Arc<dyn OrderRepository>,
     pub telemetry: Arc<dyn TelemetryRepository>,
     pub ledgers:   Arc<dyn VendorLedgerRepository>,
+    pub order_events: Arc<dyn crate::infrastructure::messaging::OrderEvents>,
     pub jwt:     Arc<logisticos_auth::jwt::JwtService>,
 }
 

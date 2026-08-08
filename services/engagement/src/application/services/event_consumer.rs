@@ -43,6 +43,23 @@ struct EventNotificationMapping {
 
 fn get_mapping(event_type: &str) -> Option<EventNotificationMapping> {
     match event_type {
+        // Push only, deliberately. The generic branch below resolves the
+        // recipient from `customer_id`, and an OmniDeliv order carries no phone
+        // or email — so listing whatsapp here would queue a message with an
+        // empty destination that silently never arrives. Add channels when
+        // contact details are resolved through the CDP, not before.
+        topics::OMNIDELIV_ORDER_PLACED => Some(EventNotificationMapping {
+            template_id: "omnideliv_order_placed",
+            priority: NotificationPriority::Normal,
+            channels: &["push"],
+        }),
+        // High: this is the one the customer is waiting on, and it is also the
+        // receipt for money already taken.
+        topics::OMNIDELIV_ORDER_DELIVERED => Some(EventNotificationMapping {
+            template_id: "omnideliv_order_delivered",
+            priority: NotificationPriority::High,
+            channels: &["push"],
+        }),
         topics::SHIPMENT_CREATED => Some(EventNotificationMapping {
             template_id: "shipment_confirmation",
             priority: NotificationPriority::Normal,

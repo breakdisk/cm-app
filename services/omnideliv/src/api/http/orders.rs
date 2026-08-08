@@ -71,6 +71,13 @@ async fn checkout(
         (StatusCode::INTERNAL_SERVER_ERROR, "checkout failed".into())
     })?;
 
+    // Placed. Published after persistence so a customer is never told about an
+    // order that failed to save; a publish failure loses the confirmation, not
+    // the order.
+    if let Err(e) = st.order_events.order_placed(&order).await {
+        tracing::error!(err = %e, order_id = %order.id, "order.placed publish failed");
+    }
+
     Ok(Json(CheckoutResponse {
         order_id:          order.id,
         grand_total_cents: order.grand_total_cents,

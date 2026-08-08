@@ -128,6 +128,12 @@ create_topic "compliance"
 # external_ref, so a single partition gives total order for free at this volume.
 create_topic "fieldops.courier" 1
 
+# OmniDeliv order bookends, consumed by engagement for the customer's
+# confirmation and delivery notice. One partition: keyed on the order, so a
+# "delivered" push can never overtake its own "placed".
+create_topic "omnideliv.order.placed" 1
+create_topic "omnideliv.order.delivered" 1
+
 echo ""
 echo "=== Done. Verify with: ==="
 echo "docker exec $KAFKA_CONTAINER $KAFKA_BIN --bootstrap-server localhost:9092 --list"

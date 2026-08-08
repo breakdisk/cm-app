@@ -109,6 +109,19 @@ pub async fn run() -> anyhow::Result<()> {
     let ledgers: Arc<dyn VendorLedgerRepository> =
         Arc::new(PgVendorLedgerRepository::new(pool.clone()));
 
+    // One producer for the order events. A broker that is unreachable at
+    // startup degrades to Noop rather than refusing to boot: a customer who
+    // cannot order is worse off than one who is not messaged.
+    let order_events: Arc<dyn crate::infrastructure::messaging::OrderEvents> =
+        match logisticos_events::producer::KafkaProducer::new(&cfg.kafka.brokers) {
+            Ok(p) => Arc::new(crate::infrastructure::messaging::KafkaOrderEvents::new(Arc::new(p))),
+            Err(e) => {
+                tracing::error!(err = %e, brokers = %cfg.kafka.brokers,
+                    "Kafka unavailable — order confirmations and delivery notices will NOT be sent");
+                Arc::new(crate::infrastructure::messaging::NoopOrderEvents)
+            }
+        };
+
     let state = Arc::new(AppState {
         catalog,
         baskets,
@@ -117,6 +130,7 @@ pub async fn run() -> anyhow::Result<()> {
         orders: orders.clone(),
         telemetry: telemetry.clone(),
         ledgers: ledgers.clone(),
+        order_events: order_events.clone(),
         jwt,
     });
 
@@ -131,6 +145,7 @@ pub async fn run() -> anyhow::Result<()> {
         orders.clone(),
         ledgers,
         telemetry.clone(),
+        order_events,
     ));
 
     match logisticos_events::consumer::KafkaConsumer::new(
