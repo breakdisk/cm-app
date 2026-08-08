@@ -323,10 +323,10 @@ async fn run_kafka_consumer(
                                     topics::CONTAINER_ARRIVED_AT_PORT
                                     | topics::CONTAINER_CUSTOMS_HOLD
                                     | topics::CONTAINER_CUSTOMS_CLEARED => {
-                                        handle_hub_milestone(topic, &json, &svc, &cache).await;
+                                        handle_hub_milestone(topic, &json, &db, &svc, &cache).await;
                                     }
                                     _ => {
-                                        process_event(topic, &json, &svc, &cache).await;
+                                        process_event(topic, &json, &db, &svc, &cache).await;
                                     }
                                 }
                             }

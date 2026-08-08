@@ -168,6 +168,7 @@ fn get_mapping(event_type: &str) -> Option<EventNotificationMapping> {
 pub async fn handle_hub_milestone(
     event_type: &str,
     payload: &serde_json::Value,
+    db: &NotificationDb,
     notification_service: &NotificationService,
     suppression_cache: &SuppressionCache,
 ) {
@@ -194,7 +195,7 @@ pub async fn handle_hub_milestone(
                 "tracking_number": detail["tracking_number"].clone(),
             }
         });
-        process_event(event_type, &synthetic, notification_service, suppression_cache).await;
+        process_event(event_type, &synthetic, db, notification_service, suppression_cache).await;
     }
 }
 
@@ -203,6 +204,7 @@ pub async fn handle_hub_milestone(
 pub async fn process_event(
     event_type: &str,
     payload: &serde_json::Value,
+    db: &NotificationDb,
     notification_service: &NotificationService,
     _suppression_cache: &SuppressionCache,
 ) {
@@ -694,7 +696,30 @@ pub async fn process_event(
             }
         };
 
-        match notification_service.dispatch(&mut notification).await {
+        let outcome = notification_service.dispatch(&mut notification).await;
+
+        // Persist whatever happened, before reacting to it.
+        //
+        // Until now only the HTTP `/v1/notifications/send` path wrote a row, so
+        // *every* event-driven notification on the platform — shipment created,
+        // driver assigned, delivery completed, COD collected — was invisible
+        // whether it succeeded or failed. `engagement.notifications` was empty
+        // platform-wide while messages were being sent.
+        //
+        // `dispatch` has already recorded the outcome on the entity
+        // (`mark_sent`/`mark_failed`), so one insert captures both cases with
+        // the provider id or the error attached. `insert_notification` is
+        // ON CONFLICT DO NOTHING, so a Kafka redelivery does not duplicate.
+        //
+        // A failed insert is logged and does not abort: losing the audit row is
+        // worse than nothing, but losing the notification because we could not
+        // file it is worse still.
+        if let Err(e) = db.insert_notification(&notification).await {
+            error!(event_type, channel, err = %e,
+                   notification_id = %notification.id, "could not record the notification");
+        }
+
+        match outcome {
             Ok(_)  => info!(event_type, channel, recipient = %recipient, template = resolved_template, "Notification sent"),
             Err(e) => error!(event_type, channel, err = %e, "Notification dispatch failed"),
         }
