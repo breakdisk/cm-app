@@ -8,6 +8,11 @@
 name: CI — Rust
 
 on:
+  # Lets a change to this file prove itself. Without it, editing the workflow
+  # triggers a run in which `detect-changes` finds no service touched, every
+  # job is skipped, and the run reports **green having tested nothing** — which
+  # is how a broken lint job stayed broken while the badge said success.
+  workflow_dispatch:
   push:
     branches:
       - master
@@ -158,7 +163,13 @@ jobs:
     name: Lint (fmt + clippy)
     runs-on: ubuntu-latest
     needs: detect-changes
-    if: needs.detect-changes.outputs.rust_changed == 'true'
+    # Also on a manual run: linting is workspace-wide, so "no service changed"
+    # is not a reason to skip it when the thing that changed is the linter's own
+    # configuration. That gap is why a lint job that could not compile anything
+    # sat broken behind a green badge.
+    if: >-
+      needs.detect-changes.outputs.rust_changed == 'true' ||
+      github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
 
