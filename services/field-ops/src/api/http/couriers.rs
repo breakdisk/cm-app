@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::{extract::{Path, State}, http::StatusCode, routing::post, Json, Router};
+use axum::{extract::{Path, State}, http::StatusCode, routing::{get, post}, Json, Router};
 use logisticos_auth::middleware::AuthClaims;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -35,7 +35,24 @@ pub struct OfferResponse {
 }
 
 #[derive(Debug, Serialize)]
-pub struct ClaimResponse {
+pub struct OfferSummary {
+    assignment_id: Uuid,
+    product:       String,
+    external_ref:  Uuid,
+    /// What the offering product declared this job pays. The courier decides
+    /// with this in front of them, so it is on the list, not behind a claim.
+    trip_cents:    i64,
+    tip_cents:     i64,
+    offered_at:    chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Serialize)]
+struct MyOffersResponse {
+    offers: Vec<OfferSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct ClaimResponse {
     pub won: bool,
 }
 
@@ -71,6 +88,7 @@ pub struct PositionRequest {
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/field-ops/assignments/offer", post(offer))
+        .route("/v1/field-ops/assignments/mine", get(my_offers))
         .route("/v1/field-ops/assignments/:id/claim", post(claim))
         .route("/v1/field-ops/assignments/:id/collected", post(collected))
         .route("/v1/field-ops/assignments/:id/delivered", post(delivered))
@@ -103,6 +121,38 @@ async fn offer(
     Ok(Json(OfferResponse { assignment_ids: offers.iter().map(|a| a.id).collect() }))
 }
 
+/// `GET /v1/field-ops/assignments/mine` — what this courier has been offered.
+///
+/// The courier is resolved from the token, never from a query parameter: an id
+/// the caller could name would let one courier read another's work queue.
+async fn my_offers(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+) -> Result<Json<MyOffersResponse>, StatusCode> {
+    let offers = st
+        .dispatch
+        .offers_for_user(claims.tenant_id, claims.user_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "listing offers failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(MyOffersResponse {
+        offers: offers
+            .iter()
+            .map(|a| OfferSummary {
+                assignment_id: a.id,
+                product:       a.product.as_str().to_string(),
+                external_ref:  a.external_ref,
+                trip_cents:    a.trip_cents,
+                tip_cents:     a.tip_cents,
+                offered_at:    a.offered_at,
+            })
+            .collect(),
+    }))
+}
+
 async fn claim(
     State(st): State<Arc<AppState>>,
     claims: AuthClaims,
@@ -110,7 +160,7 @@ async fn claim(
 ) -> Result<Json<ClaimResponse>, StatusCode> {
     // A lost race is 200 { won: false }, not an error status. The client needs
     // to distinguish "someone else got it" from "the request failed".
-    let won = st.dispatch.claim(claims.tenant_id, id).await.map_err(|e| {
+    let won = st.dispatch.claim(claims.tenant_id, claims.user_id, id).await.map_err(|e| {
         tracing::error!(err = %e, "claim failed");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;

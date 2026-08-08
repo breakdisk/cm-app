@@ -119,9 +119,50 @@ impl DispatchService {
         Ok(offers)
     }
 
+    /// The open offers waiting for one courier.
+    ///
+    /// `offer_to_nearest` returns ids to the *dispatching product*, not to the
+    /// couriers it fanned out to, so without this a courier has no way to
+    /// discover work and a driver app has nothing to render.
+    pub async fn offers_for_user(
+        &self,
+        tenant_id: Uuid,
+        user_id: Uuid,
+    ) -> anyhow::Result<Vec<CourierAssignment>> {
+        let Some(courier) = self.couriers.find_by_user(tenant_id, user_id).await? else {
+            // Not a courier in this tenant. An empty list, not an error: the
+            // caller asked what work they have, and the answer is none.
+            return Ok(Vec::new());
+        };
+        self.assignments
+            .find_offered_for_courier(tenant_id, courier.id)
+            .await
+    }
+
     /// A courier accepts an offer. Returns `false` when another courier got
     /// there first — the caller should show "already taken", not an error.
-    pub async fn claim(&self, tenant_id: Uuid, assignment_id: Uuid) -> anyhow::Result<bool> {
+    ///
+    /// `user_id` is the authenticated caller, and the offer must have been made
+    /// to *them*. Without that check any authenticated user in the tenant could
+    /// claim any courier's offer just by naming its id — the ids are handed to
+    /// the dispatching product, so they are not secret.
+    pub async fn claim(
+        &self,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        assignment_id: Uuid,
+    ) -> anyhow::Result<bool> {
+        let Some(courier) = self.couriers.find_by_user(tenant_id, user_id).await? else {
+            return Ok(false);
+        };
+        match self.assignments.find_by_id(tenant_id, assignment_id).await? {
+            // Same answer as losing the race, deliberately: a caller probing
+            // ids should not be able to tell "not yours" from "already taken".
+            Some(a) if a.courier_id != courier.id => return Ok(false),
+            None => return Ok(false),
+            Some(_) => {}
+        }
+
         match self.assignments.try_claim(tenant_id, assignment_id).await? {
             ClaimOutcome::Lost => Ok(false),
             ClaimOutcome::Won => {
@@ -310,5 +351,155 @@ mod pay_bounds_tests {
     #[test]
     fn a_large_but_plausible_tip_passes() {
         assert!(bounds().check(5_800, 20_000).is_ok());
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Claim authorization
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod claim_authorization {
+    use super::*;
+    use crate::domain::entities::{AssignmentStatus, Courier, CourierLocation};
+    use crate::domain::repositories::CourierRepository;
+    use crate::infrastructure::db::{ClaimOutcome, LocationRepository};
+    use std::sync::Mutex;
+
+    const TENANT: Uuid = Uuid::from_u128(1);
+
+    struct Couriers {
+        /// user_id -> courier
+        by_user: Vec<(Uuid, Courier)>,
+    }
+
+    #[async_trait::async_trait]
+    impl CourierRepository for Couriers {
+        async fn find_by_id(&self, _: Uuid, id: Uuid) -> anyhow::Result<Option<Courier>> {
+            Ok(self.by_user.iter().find(|(_, c)| c.id == id).map(|(_, c)| c.clone()))
+        }
+        async fn find_by_user(&self, _: Uuid, user_id: Uuid) -> anyhow::Result<Option<Courier>> {
+            Ok(self.by_user.iter().find(|(u, _)| *u == user_id).map(|(_, c)| c.clone()))
+        }
+        async fn save(&self, _: &Courier) -> anyhow::Result<()> { Ok(()) }
+        async fn find_available_near(&self, _: Uuid, _: f64, _: f64, _: f64, _: i64)
+            -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
+    }
+
+    #[derive(Default)]
+    struct Assignments {
+        rows:      Mutex<Vec<CourierAssignment>>,
+        /// Every id try_claim was actually asked to swap. The assertion that
+        /// matters: an unauthorized caller must not even reach the CAS.
+        attempted: Mutex<Vec<Uuid>>,
+    }
+
+    #[async_trait::async_trait]
+    impl AssignmentRepository for Assignments {
+        async fn save(&self, _: &CourierAssignment) -> anyhow::Result<()> { Ok(()) }
+        async fn try_claim(&self, _: Uuid, id: Uuid) -> anyhow::Result<ClaimOutcome> {
+            self.attempted.lock().unwrap().push(id);
+            let mut rows = self.rows.lock().unwrap();
+            match rows.iter_mut().find(|a| a.id == id && a.status == AssignmentStatus::Offered) {
+                Some(a) => { a.status = AssignmentStatus::Claimed; Ok(ClaimOutcome::Won) }
+                None => Ok(ClaimOutcome::Lost),
+            }
+        }
+        async fn find_by_id(&self, _: Uuid, id: Uuid) -> anyhow::Result<Option<CourierAssignment>> {
+            Ok(self.rows.lock().unwrap().iter().find(|a| a.id == id).cloned())
+        }
+        async fn find_offered_for_courier(&self, _: Uuid, courier_id: Uuid)
+            -> anyhow::Result<Vec<CourierAssignment>> {
+            Ok(self.rows.lock().unwrap().iter()
+                .filter(|a| a.courier_id == courier_id && a.status == AssignmentStatus::Offered)
+                .cloned().collect())
+        }
+    }
+
+    struct NoLocations;
+    #[async_trait::async_trait]
+    impl LocationRepository for NoLocations {
+        async fn record(&self, _: &CourierLocation) -> anyhow::Result<()> { Ok(()) }
+        async fn latest(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<CourierLocation>> { Ok(None) }
+    }
+
+    struct NoLedgers;
+    #[async_trait::async_trait]
+    impl crate::infrastructure::db::CourierLedgerRepository for NoLedgers {
+        async fn find_open(&self, _: Uuid, _: Uuid, _: &str)
+            -> anyhow::Result<Option<CourierLedger>> { Ok(None) }
+        async fn save(&self, _: &CourierLedger) -> anyhow::Result<()> { Ok(()) }
+    }
+
+    fn courier() -> Courier {
+        Courier::new(TENANT, Uuid::new_v4(), "A".into(), "B".into(), "+63".into())
+    }
+
+    /// (service, assignment_id, owner_user, other_user, assignments)
+    fn fixture() -> (DispatchService, Uuid, Uuid, Uuid, Arc<Assignments>) {
+        let owner_user = Uuid::new_v4();
+        let other_user = Uuid::new_v4();
+        let owner = courier();
+        let other = courier();
+
+        let a = CourierAssignment::offer_with_earnings(
+            TENANT, owner.id, ProductKey::new("omnideliv".to_string()),
+            Uuid::new_v4(), 3_500, 0,
+        );
+        let id = a.id;
+
+        let assignments = Arc::new(Assignments::default());
+        assignments.rows.lock().unwrap().push(a);
+
+        let svc = DispatchService::new(
+            Arc::new(Couriers { by_user: vec![(owner_user, owner), (other_user, other)] }),
+            assignments.clone(),
+            Arc::new(NoLocations),
+            Arc::new(NoLedgers),
+            Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
+            PayBounds::default(),
+        );
+        (svc, id, owner_user, other_user, assignments)
+    }
+
+    #[tokio::test]
+    async fn the_courier_the_offer_was_made_to_can_claim_it() {
+        let (svc, id, owner, _, _) = fixture();
+        assert!(svc.claim(TENANT, owner, id).await.unwrap());
+    }
+
+    /// The offer ids are handed to the dispatching product, so they are not
+    /// secret. Another courier naming one must not be able to take the job.
+    #[tokio::test]
+    async fn another_courier_cannot_claim_someone_elses_offer() {
+        let (svc, id, _, other, assignments) = fixture();
+
+        assert!(!svc.claim(TENANT, other, id).await.unwrap());
+        assert!(
+            assignments.attempted.lock().unwrap().is_empty(),
+            "an unauthorized claim must be refused before the CAS, not by it"
+        );
+    }
+
+    /// Same answer as losing the race, on purpose: a caller probing ids should
+    /// not be able to tell "not yours" from "already taken".
+    #[tokio::test]
+    async fn a_user_who_is_not_a_courier_is_refused() {
+        let (svc, id, _, _, _) = fixture();
+        assert!(!svc.claim(TENANT, Uuid::new_v4(), id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn offers_are_listed_only_for_the_courier_they_belong_to() {
+        let (svc, id, owner, other, _) = fixture();
+
+        let mine = svc.offers_for_user(TENANT, owner).await.unwrap();
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0].id, id);
+        assert_eq!(mine[0].trip_cents, 3_500, "pay is on the list so the courier can decide");
+
+        assert!(svc.offers_for_user(TENANT, other).await.unwrap().is_empty());
+        assert!(svc.offers_for_user(TENANT, Uuid::new_v4()).await.unwrap().is_empty(),
+                "a non-courier gets an empty list, not an error");
     }
 }

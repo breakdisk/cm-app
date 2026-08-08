@@ -21,6 +21,18 @@ pub trait AssignmentRepository: Send + Sync {
     async fn try_claim(&self, tenant_id: Uuid, assignment_id: Uuid) -> anyhow::Result<ClaimOutcome>;
 
     async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<CourierAssignment>>;
+
+    /// Open offers made to one courier, newest first.
+    ///
+    /// Without this a courier has no way to discover work: `offer` returns the
+    /// ids to the *dispatching product*, not to the courier it fanned out to.
+    /// A driver app would have nothing to render, and the only way to claim
+    /// anything would be to already know an id.
+    async fn find_offered_for_courier(
+        &self,
+        tenant_id: Uuid,
+        courier_id: Uuid,
+    ) -> anyhow::Result<Vec<CourierAssignment>>;
 }
 
 pub struct PgAssignmentRepository {
@@ -29,6 +41,39 @@ pub struct PgAssignmentRepository {
 
 impl PgAssignmentRepository {
     pub fn new(pool: PgPool) -> Self { Self { pool } }
+}
+
+/// One row of `field_ops.courier_assignments`.
+///
+/// Shared by every read so the column list and the status decoding exist once.
+/// A second hand-rolled copy is how a new status ends up understood by one
+/// query and rejected by another.
+fn map_row(r: &sqlx::postgres::PgRow) -> anyhow::Result<CourierAssignment> {
+    let status: String = r.get("status");
+    let product: String = r.get("product");
+
+    Ok(CourierAssignment {
+        id:           r.get("id"),
+        tenant_id:    r.get("tenant_id"),
+        courier_id:   r.get("courier_id"),
+        product:      ProductKey::new(product),
+        external_ref: r.get("external_ref"),
+        trip_cents:   r.get("trip_cents"),
+        tip_cents:    r.get("tip_cents"),
+        status: match status.as_str() {
+            "offered"   => AssignmentStatus::Offered,
+            "claimed"   => AssignmentStatus::Claimed,
+            "completed" => AssignmentStatus::Completed,
+            "released"  => AssignmentStatus::Released,
+            "expired"   => AssignmentStatus::Expired,
+            other => anyhow::bail!("unknown assignment status in database: {other}"),
+        },
+        offered_at:   r.get("offered_at"),
+        claimed_at:   r.get("claimed_at"),
+        completed_at: r.get("completed_at"),
+        heartbeat_at: r.get("heartbeat_at"),
+        created_at:   r.get("created_at"),
+    })
 }
 
 #[async_trait]
@@ -69,31 +114,29 @@ impl AssignmentRepository for PgAssignmentRepository {
             return Ok(None);
         };
 
-        let status: String = r.get("status");
-        let product: String = r.get("product");
+        Ok(Some(map_row(&r)?))
+    }
 
-        Ok(Some(CourierAssignment {
-            id:           r.get("id"),
-            tenant_id:    r.get("tenant_id"),
-            courier_id:   r.get("courier_id"),
-            product:      ProductKey::new(product),
-            external_ref: r.get("external_ref"),
-            trip_cents:   r.get("trip_cents"),
-            tip_cents:    r.get("tip_cents"),
-            status: match status.as_str() {
-                "offered"   => AssignmentStatus::Offered,
-                "claimed"   => AssignmentStatus::Claimed,
-                "completed" => AssignmentStatus::Completed,
-                "released"  => AssignmentStatus::Released,
-                "expired"   => AssignmentStatus::Expired,
-                other => anyhow::bail!("unknown assignment status in database: {other}"),
-            },
-            offered_at:   r.get("offered_at"),
-            claimed_at:   r.get("claimed_at"),
-            completed_at: r.get("completed_at"),
-            heartbeat_at: r.get("heartbeat_at"),
-            created_at:   r.get("created_at"),
-        }))
+    async fn find_offered_for_courier(
+        &self,
+        tenant_id: Uuid,
+        courier_id: Uuid,
+    ) -> anyhow::Result<Vec<CourierAssignment>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT * FROM field_ops.courier_assignments
+             WHERE tenant_id = $1
+               AND courier_id = $2
+               AND status = 'offered'
+             ORDER BY created_at DESC
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(courier_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.iter().map(map_row).collect()
     }
 
     async fn try_claim(&self, tenant_id: Uuid, assignment_id: Uuid) -> anyhow::Result<ClaimOutcome> {

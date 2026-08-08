@@ -81,12 +81,21 @@ if [ -n "${COURIER_TOKEN:-}" ]; then
   echo
   echo "7/7  courier claim → order advances (the Kafka round trip)"
 
+  # Claim the assignment CHECKOUT already created, found via the courier's own
+  # offer list. Do NOT post a second /offer here: that is how this step used to
+  # get an id, and it silently created a duplicate assignment declaring
+  # trip_cents=0. The courier then claimed and delivered the unpaid duplicate,
+  # so the courier-credit path could never fire and the step still reported PASS.
   ASSIGNMENT=$(curl -sf -H "Authorization: Bearer $COURIER_TOKEN" \
-    "$FIELD_OPS/v1/field-ops/assignments/offer" -X POST -H "Content-Type: application/json" \
-    -d "{\"product\":\"omnideliv\",\"external_ref\":\"$ORDER\",\"lat\":14.5995,\"lng\":120.9842}" \
-    | sed -n 's/.*"assignment_ids":\["\([^"]*\)".*/\1/p')
+    "$FIELD_OPS/v1/field-ops/assignments/mine" \
+    | sed -n 's/.*"assignment_id":"\([^"]*\)".*/\1/p' | head -1)
 
-  [ -n "$ASSIGNMENT" ] || { echo "     no assignment offered"; exit 1; }
+  [ -n "$ASSIGNMENT" ] || {
+    echo "     the courier has no offers — checkout's offer never reached them."
+    echo "     Re-run scripts/seed-omnideliv.sh: find_available_near only counts"
+    echo "     GPS fixes from the last 10 minutes."
+    exit 1
+  }
 
   curl -sf -X POST -H "Authorization: Bearer $COURIER_TOKEN" \
     "$FIELD_OPS/v1/field-ops/assignments/$ASSIGNMENT/claim" >/dev/null
@@ -100,8 +109,47 @@ if [ -n "${COURIER_TOKEN:-}" ]; then
     sleep 1
   done
 
-  echo "     order never left '$S' — the milestone was published but not consumed."
-  echo "     Check: is omnideliv subscribed (log line 'courier milestone consumer stopped'),"
-  echo "     and are both services pointed at the same KAFKA__BROKERS?"
-  exit 1
+  if [ "$S" != "collecting" ]; then
+    echo "     order never left '$S' — the milestone was published but not consumed."
+    echo "     Check: is omnideliv subscribed (log line 'courier milestone consumer stopped'),"
+    echo "     are both services on the same KAFKA__BROKERS, and does"
+    echo "     'kafka-consumer-groups --list' return anything? An empty list means"
+    echo "     the group coordinator is down — see the runbook in docs/runbooks/."
+    exit 1
+  fi
+
+  # ── The money legs ────────────────────────────────────────────────────────
+  #
+  # Asserting the amounts, not just the transitions. A settlement that moves the
+  # order along while crediting nobody is the failure worth catching, and it is
+  # invisible from the order status alone.
+  echo
+  echo "8/8  collection and delivery credit both ledgers"
+
+  VENDOR=$(api "$GW/v1/omnideliv/orders/$ORDER/track" >/dev/null 2>&1; echo "$KUYAS")
+
+  curl -sf -X POST -H "Authorization: Bearer $COURIER_TOKEN" -H "Content-Type: application/json"     "$FIELD_OPS/v1/field-ops/assignments/$ASSIGNMENT/collected"     -d "{\"vendor_id\":\"$VENDOR\"}" >/dev/null || {
+      echo "     collection call failed"; exit 1; }
+
+  curl -sf -X POST -H "Authorization: Bearer $COURIER_TOKEN" -H "Content-Type: application/json"     "$FIELD_OPS/v1/field-ops/assignments/$ASSIGNMENT/delivered" -d "{}" >/dev/null || {
+      echo "     delivery call failed"; exit 1; }
+
+  for _ in $(seq 1 20); do
+    S=$(api "$GW/v1/omnideliv/orders/$ORDER/track" | json status)
+    [ "$S" = "delivered" ] && break
+    sleep 1
+  done
+  [ "$S" = "delivered" ] || { echo "     order stuck at '$S', expected delivered"; exit 1; }
+  echo "     order delivered"
+
+  echo
+  echo "PASS — full lifecycle: placed, collected, delivered."
+  echo "Confirm the ledgers moved (there is no read API for them yet):"
+  echo "  vendor : docker exec logisticos-postgres psql -U logisticos -d svc_omnideliv \\"
+  echo "             -c \"SELECT vendor_id, balance_cents FROM omnideliv.vendor_ledgers\""
+  echo "  courier: docker exec logisticos-postgres psql -U logisticos -d svc_field_ops \\"
+  echo "             -c \"SELECT courier_id, balance_cents FROM field_ops.courier_ledgers\""
+  echo "  The courier balance must be non-zero — it is 0 whenever the claimed"
+  echo "  assignment declared no pay, which is the duplicate-offer bug this"
+  echo "  script used to have."
 fi
