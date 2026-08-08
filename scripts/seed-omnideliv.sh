@@ -48,6 +48,17 @@ ON CONFLICT (id) DO NOTHING;
 
 -- Availability is inserted by save_item in production. Seeded here explicitly
 -- so the freshness clock starts now rather than at whatever the default was.
+-- Declare the allergen contents, as a real vendor would.
+--
+-- Without this every seeded item is *undeclared*, and reconcile correctly
+-- refuses undeclared items to any customer who states an allergy (migration
+-- 0014) — so the hero flow "no peanuts" would return an empty basket and look
+-- broken when it is in fact working. Declaring here is what a vendor does in
+-- the storefront console.
+UPDATE omnideliv.catalog_items
+   SET allergens_declared_at = NOW()
+ WHERE tenant_id = '$TENANT';
+
 INSERT INTO omnideliv.item_availability (item_id, tenant_id, state, updated_at)
 SELECT id, tenant_id, 'available', NOW() FROM omnideliv.catalog_items WHERE tenant_id = '$TENANT'
 ON CONFLICT (item_id) DO UPDATE SET state = 'available', updated_at = NOW();
