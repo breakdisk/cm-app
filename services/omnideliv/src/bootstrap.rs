@@ -78,29 +78,15 @@ pub async fn run() -> anyhow::Result<()> {
             cfg.claude_model.clone(),
             cfg.claude_max_tokens,
         )),
-        Arc::new(omnideliv_mesh::tools::MeshToolBox::new(
-            Arc::new(
-                CatalogServiceAdapter::new(catalog.clone())
-                    .with_supply(field_ops.clone()),
-            ),
-            // KNOWN LIMITATION: the tool box binds tenant and delivery address
-            // at construction, so today every run searches from the configured
-            // default rather than the customer's address. Correct for a
-            // single-tenant slice-one deployment and wrong the moment there are
-            // two; the fix is to build the tool box per run inside
-            // `MeshRunner::run`, which needs the request context threaded in.
-            cfg.default_tenant_id,
-            cfg.default_lat,
-            cfg.default_lng,
-        )),
         Arc::new(PgMeshSessionStore::new(pool.clone())),
         Arc::new(BasketServiceAdapter::new(baskets.clone())),
-        // A second handle on the same adapter, held by the runner directly
-        // rather than reached through the tool box. Reconcile verifies proposed
-        // lines against this, and it must not travel the model's tool surface —
-        // checking a model's output against facts the model supplied would
-        // check nothing.
-        Arc::new(CatalogServiceAdapter::new(catalog.clone())),
+        // The runner holds the catalog and builds a tool box per run, binding
+        // that run's tenant and the customer's own delivery point. It also
+        // reads this directly during reconcile to verify proposed lines —
+        // verification must not travel the model's tool surface, because
+        // checking a model's output against facts the model supplied checks
+        // nothing.
+        Arc::new(CatalogServiceAdapter::new(catalog.clone()).with_supply(field_ops.clone())),
         omnideliv_mesh::MeshConfig::default(),
     ));
 

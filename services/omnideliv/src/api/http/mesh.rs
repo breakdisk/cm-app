@@ -26,6 +26,12 @@ use crate::api::http::AppState;
 #[derive(Debug, Deserialize)]
 pub struct RunRequest {
     pub utterance: String,
+    /// Where the customer is. Required: every vendor search in the run is
+    /// centred here, so a missing point is not a detail to default away — it
+    /// would return plausible shops in the wrong place, which reads as the
+    /// agent working badly rather than as a missing field.
+    pub delivery_lat: f64,
+    pub delivery_lng: f64,
 }
 
 pub fn routes() -> Router<Arc<AppState>> {
@@ -47,8 +53,10 @@ async fn run(
     let tenant_id = logisticos_types::TenantId::from_uuid(claims.tenant_id);
     let customer_id = claims.user_id;
 
+    let (lat, lng) = (req.delivery_lat, req.delivery_lng);
+
     tokio::spawn(async move {
-        mesh.run(tenant_id, customer_id, utterance, tx).await;
+        mesh.run(tenant_id, customer_id, utterance, lat, lng, tx).await;
     });
 
     let stream = ReceiverStream::new(rx).map(|ev| {

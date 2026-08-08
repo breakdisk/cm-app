@@ -4,6 +4,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
 import { AgentCard, type CardState } from "@/components/AgentCard";
+import { currentDeliveryPoint } from "@/deliveryPoint";
 import { useMeshRun } from "@/hooks/useMeshRun";
 import { theme } from "@/theme";
 
@@ -13,7 +14,9 @@ export default function Orchestrating() {
   const router = useRouter();
 
   useEffect(() => {
-    if (utterance) void run(utterance);
+    // The same point browsing and checkout use, so the shops the agent
+    // finds are the shops the customer was just looking at.
+    if (utterance) void run(utterance, currentDeliveryPoint());
     return cancel;
   }, [utterance, run, cancel]);
 

@@ -27,7 +27,13 @@ export function useMeshRun() {
   const [state, setState] = useState<MeshRunState>({ events: [], running: false, error: null });
   const abort = useRef<AbortController | null>(null);
 
-  const run = useCallback(async (utterance: string) => {
+  /**
+   * `where` is the customer's delivery point. Every vendor search in the run is
+   * centred on it, so it is a required argument rather than something the hook
+   * defaults — a wrong point returns plausible shops in the wrong place, which
+   * looks like the agent reasoning badly instead of a missing field.
+   */
+  const run = useCallback(async (utterance: string, where: { lat: number; lng: number }) => {
     abort.current?.abort();
     const controller = new AbortController();
     abort.current = controller;
@@ -38,7 +44,11 @@ export function useMeshRun() {
       const res = await expoFetch(`${API_BASE}/v1/omnideliv/mesh/run`, {
         method: "POST",
         headers: await authHeaders(),
-        body: JSON.stringify({ utterance }),
+        body: JSON.stringify({
+          utterance,
+          delivery_lat: where.lat,
+          delivery_lng: where.lng,
+        }),
         signal: controller.signal,
       });
 

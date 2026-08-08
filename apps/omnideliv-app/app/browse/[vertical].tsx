@@ -12,6 +12,7 @@ import { useLocalSearchParams } from "expo-router";
 
 import { addLine, createBasket, type BasketView } from "@/api/basket";
 import { searchCatalog, vendorsNear, type SearchHit, type VendorSummary } from "@/api/catalog";
+import { currentDeliveryPoint } from "@/deliveryPoint";
 import { theme } from "@/theme";
 
 function peso(cents: number): string {
@@ -19,8 +20,9 @@ function peso(cents: number): string {
 }
 
 /** Slice-one placeholder, mirroring the service's DEFAULT_LAT/DEFAULT_LNG. */
-const DEFAULT_LAT = 14.5995;
-const DEFAULT_LNG = 120.9842;
+// One shared definition — see src/deliveryPoint.ts for why these must not be
+// per-screen constants.
+const { lat: DEFAULT_LAT, lng: DEFAULT_LNG } = currentDeliveryPoint();
 
 export default function Browse() {
   const { vertical, vendorId } = useLocalSearchParams<{ vertical: string; vendorId?: string }>();

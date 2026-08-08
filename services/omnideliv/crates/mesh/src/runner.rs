@@ -150,7 +150,6 @@ fn constraints_allergens(specs: &[SubIntentSpec]) -> Vec<String> {
 
 pub struct MeshRunner {
     claude: Arc<dyn ClaudeApi>,
-    tools:  Arc<dyn ToolBox>,
     store:  Arc<dyn SessionStore>,
     basket: Arc<dyn MeshBasket>,
     /// Held directly, not reached through `tools`. Verification must not travel
@@ -163,23 +162,35 @@ pub struct MeshRunner {
 impl MeshRunner {
     pub fn new(
         claude: Arc<dyn ClaudeApi>,
-        tools: Arc<dyn ToolBox>,
         store: Arc<dyn SessionStore>,
         basket: Arc<dyn MeshBasket>,
         catalog: Arc<dyn crate::tools::MeshCatalog>,
         config: MeshConfig,
     ) -> Self {
-        Self { claude, tools, store, basket, catalog, config }
+        Self { claude, store, basket, catalog, config }
+    }
+
+    /// The tool box for one run.
+    ///
+    /// Built per run, not held on the runner. The box binds the tenant and the
+    /// delivery point, and binding them once at startup meant every run — for
+    /// every customer, in every tenant — searched from the configured default.
+    /// A single-tenant deployment hid that; the first real address or the second
+    /// tenant would have made it silently wrong, returning plausible vendors in
+    /// the wrong place rather than failing.
+    fn tools_for(&self, tenant_id: Uuid, lat: f64, lng: f64) -> Arc<dyn ToolBox> {
+        Arc::new(crate::tools::MeshToolBox::new(self.catalog.clone(), tenant_id, lat, lng))
     }
 
     /// Phase 1. Returns the parent session id alongside the split, so every
     /// specialist can be linked to the run that spawned it.
     pub async fn parse(
         &self,
+        tools: Arc<dyn ToolBox>,
         tenant_id: TenantId,
         utterance: String,
     ) -> anyhow::Result<(Uuid, Vec<SubIntentSpec>)> {
-        let runner = AgentRunner::new(self.claude.clone(), self.tools.clone(), self.store.clone());
+        let runner = AgentRunner::new(self.claude.clone(), tools, self.store.clone());
 
         let session = runner
             .run(
@@ -218,15 +229,24 @@ impl MeshRunner {
     /// Does not return a Result: every failure path is an emitted event, because
     /// the caller is an SSE stream whose only channel to the customer is the
     /// event sequence. A returned error would be invisible to the app.
+    /// One mesh run for one customer at one address.
+    ///
+    /// `delivery_lat`/`delivery_lng` are where *this* customer is. Every search
+    /// the specialists perform is centred there, which is why the tool box is
+    /// built here rather than held on the runner.
     pub async fn run(
         &self,
         tenant_id: TenantId,
         customer_id: Uuid,
         utterance: String,
+        delivery_lat: f64,
+        delivery_lng: f64,
         events: mpsc::Sender<MeshEvent>,
     ) {
+        let tools = self.tools_for(tenant_id.inner(), delivery_lat, delivery_lng);
+
         // Phase 1 — parse.
-        let (parent_id, specs) = match self.parse(tenant_id.clone(), utterance).await {
+        let (parent_id, specs) = match self.parse(tools.clone(), tenant_id.clone(), utterance).await {
             Ok(v) => v,
             Err(e) => {
                 let _ = events.send(MeshEvent::Failed { reason: format!("could not read that: {e}") }).await;
@@ -267,7 +287,7 @@ impl MeshRunner {
 
         // Phase 2 — concurrent fan-out.
         let results = self
-            .fan_out(tenant_id.clone(), parent_id, workers.clone(), events.clone())
+            .fan_out(tools.clone(), tenant_id.clone(), parent_id, workers.clone(), events.clone())
             .await;
 
         // Phase 3 — reconcile. Single writer: results are merged and written
@@ -360,7 +380,7 @@ impl MeshRunner {
         }
 
         // Phase 4 — Fleet.
-        match self.plan_route(tenant_id.clone(), parent_id).await {
+        match self.plan_route(tools.clone(), tenant_id.clone(), parent_id).await {
             Ok(plan) => {
                 let _ = events.send(MeshEvent::RoutePlanned {
                     stops: plan.vendor_order.len(),
@@ -386,8 +406,13 @@ impl MeshRunner {
     }
 
     /// Phase 4. Runs the Fleet role once over the merged basket.
-    async fn plan_route(&self, tenant_id: TenantId, parent_id: Uuid) -> anyhow::Result<RoutePlan> {
-        let runner = AgentRunner::new(self.claude.clone(), self.tools.clone(), self.store.clone());
+    async fn plan_route(
+        &self,
+        tools: Arc<dyn ToolBox>,
+        tenant_id: TenantId,
+        parent_id: Uuid,
+    ) -> anyhow::Result<RoutePlan> {
+        let runner = AgentRunner::new(self.claude.clone(), tools, self.store.clone());
         let session = runner
             .run(
                 tenant_id,
@@ -415,6 +440,7 @@ impl MeshRunner {
     /// mean five times the wait.
     pub async fn fan_out(
         &self,
+        tools: Arc<dyn ToolBox>,
         tenant_id: TenantId,
         parent_session_id: Uuid,
         workers: Vec<PlannedWorker>,
@@ -433,7 +459,7 @@ impl MeshRunner {
                 .await;
 
             let claude = self.claude.clone();
-            let tools  = self.tools.clone();
+            let tools  = tools.clone();
             let store  = self.store.clone();
             let tx     = events.clone();
             // `TenantId` is Clone but not Copy, and each task takes ownership.
@@ -808,8 +834,6 @@ mod tests {
         let store = Arc::new(InMemoryStore::default());
         let runner = MeshRunner::new(
             Arc::new(StubClaude::new(vec![StubClaude::text("ok")])),
-            Arc::new(crate::tools::MeshToolBox::new(
-                Arc::new(NoopCatalog), Uuid::new_v4(), 14.5995, 120.9842)),
             store.clone(),
             Arc::new(RecordingBasket::default()),
             Arc::new(NoopCatalog),
@@ -817,7 +841,11 @@ mod tests {
         );
 
         let _ = runner
-            .parse(TenantId::from_uuid(Uuid::new_v4()), "dinner and milk".into())
+            .parse(
+                runner.tools_for(Uuid::new_v4(), 14.5995, 120.9842),
+                TenantId::from_uuid(Uuid::new_v4()),
+                "dinner and milk".into(),
+            )
             .await;
 
         assert!(!store.saved.lock().unwrap().is_empty(),
@@ -872,15 +900,13 @@ mod tests {
         let runner = MeshRunner::new(
             // The Concierge replies in prose without calling decompose_intent.
             Arc::new(StubClaude::new(vec![StubClaude::text("I'm not sure what you need.")])),
-            Arc::new(crate::tools::MeshToolBox::new(
-                Arc::new(NoopCatalog), Uuid::new_v4(), 14.5995, 120.9842)),
             Arc::new(InMemoryStore::default()),
             basket.clone(),
             Arc::new(NoopCatalog),
             MeshConfig::default(),
         );
 
-        runner.run(TenantId::from_uuid(Uuid::new_v4()), Uuid::new_v4(), "???".into(), tx).await;
+        runner.run(TenantId::from_uuid(Uuid::new_v4()), Uuid::new_v4(), "???".into(), 14.5995, 120.9842, tx).await;
 
         let events = collect(&mut rx);
         assert!(
@@ -922,15 +948,13 @@ mod tests {
                 })),
                 StubClaude::text("planned"),
             ])),
-            Arc::new(crate::tools::MeshToolBox::new(
-                Arc::new(NoopCatalog), Uuid::new_v4(), 14.5995, 120.9842)),
             Arc::new(InMemoryStore::default()),
             basket.clone(),
             Arc::new(NoopCatalog),
             MeshConfig::default(),
         );
 
-        runner.run(TenantId::from_uuid(Uuid::new_v4()), Uuid::new_v4(), "dinner and milk".into(), tx).await;
+        runner.run(TenantId::from_uuid(Uuid::new_v4()), Uuid::new_v4(), "dinner and milk".into(), 14.5995, 120.9842, tx).await;
 
         let events = collect(&mut rx);
         assert!(events.iter().any(|e| matches!(e, MeshEvent::IntentParsed { sub_intent_count: 2 })));
@@ -1009,8 +1033,6 @@ mod tests {
                 })),
                 StubClaude::text("planned"),
             ])),
-            Arc::new(crate::tools::MeshToolBox::new(
-                Arc::new(PeanutCatalog), Uuid::new_v4(), 14.5995, 120.9842)),
             Arc::new(InMemoryStore::default()),
             basket.clone(),
             Arc::new(PeanutCatalog),
@@ -1018,7 +1040,7 @@ mod tests {
         );
 
         runner.run(TenantId::from_uuid(Uuid::new_v4()), Uuid::new_v4(),
-                   "dinner, no peanuts".into(), tx).await;
+                   "dinner, no peanuts".into(), 14.5995, 120.9842, tx).await;
 
         let written: usize = basket.writes.lock().unwrap().iter().map(|(_, n)| n).sum();
         assert_eq!(written, 0, "the peanut line must never be written to the basket");
@@ -1053,15 +1075,13 @@ mod tests {
                 })),
                 StubClaude::text("planned"),
             ])),
-            Arc::new(crate::tools::MeshToolBox::new(
-                Arc::new(NoopCatalog), Uuid::new_v4(), 14.5995, 120.9842)),
             Arc::new(InMemoryStore::default()),
             Arc::new(RecordingBasket::default()),
             Arc::new(NoopCatalog),
             MeshConfig::default(),
         );
 
-        runner.run(TenantId::from_uuid(Uuid::new_v4()), Uuid::new_v4(), "milk".into(), tx).await;
+        runner.run(TenantId::from_uuid(Uuid::new_v4()), Uuid::new_v4(), "milk".into(), 14.5995, 120.9842, tx).await;
 
         let events = collect(&mut rx);
         let last = events.last().expect("at least one event");
@@ -1082,19 +1102,111 @@ mod tests {
                 })),
                 StubClaude::text("split"),
             ])),
-            Arc::new(crate::tools::MeshToolBox::new(
-                Arc::new(NoopCatalog), Uuid::new_v4(), 14.5995, 120.9842)),
             Arc::new(InMemoryStore::default()),
             basket.clone(),
             Arc::new(NoopCatalog),
             MeshConfig::default(),
         );
 
-        runner.run(TenantId::from_uuid(Uuid::new_v4()), Uuid::new_v4(), "paracetamol".into(), tx).await;
+        runner.run(TenantId::from_uuid(Uuid::new_v4()), Uuid::new_v4(), "paracetamol".into(), 14.5995, 120.9842, tx).await;
 
         let events = collect(&mut rx);
         assert!(events.iter().any(|e| matches!(e, MeshEvent::Failed { .. })));
         assert!(basket.created.lock().unwrap().is_empty(),
                 "no basket should be created when nothing can be worked on");
+    }
+}
+
+#[cfg(test)]
+mod per_run_tool_box {
+    use super::*;
+    use logisticos_agent_runtime::testing::{InMemoryStore, StubClaude};
+    use std::sync::Mutex;
+
+    /// The runner needs a basket to construct; these tests never write one.
+    struct NoBasket;
+    #[async_trait::async_trait]
+    impl crate::tools::MeshBasket for NoBasket {
+        async fn create(&self, _: Uuid, _: Uuid) -> anyhow::Result<Uuid> { Ok(Uuid::new_v4()) }
+        async fn write_delta(&self, _: Uuid, _: Uuid, _: Uuid, _: &str, _: &str,
+                             _: Vec<ProposedLine>) -> anyhow::Result<()> { Ok(()) }
+        async fn lines_awaiting_review(&self, _: Uuid, _: Uuid) -> anyhow::Result<usize> { Ok(0) }
+        async fn record_conflicts(&self, _: Uuid, _: Uuid, _: &[crate::conflict::Conflict])
+            -> anyhow::Result<()> { Ok(()) }
+    }
+
+    /// Records what the tool box actually asked the catalog for.
+    #[derive(Default)]
+    struct SpyCatalog {
+        seen: Mutex<Vec<(Uuid, f64, f64)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::tools::MeshCatalog for SpyCatalog {
+        async fn search(&self, _: Uuid, _: Uuid, _: &str, _: &[String], _: i64)
+            -> anyhow::Result<serde_json::Value> { Ok(serde_json::json!({ "items": [] })) }
+        async fn vendors_near(&self, tenant: Uuid, _: &str, lat: f64, lng: f64, _: f64, _: i64)
+            -> anyhow::Result<serde_json::Value> {
+            self.seen.lock().unwrap().push((tenant, lat, lng));
+            Ok(serde_json::json!({ "vendors": [] }))
+        }
+        async fn courier_supply(&self, _: Uuid, _: f64, _: f64, _: f64)
+            -> anyhow::Result<serde_json::Value> { Ok(serde_json::json!({ "available": 1 })) }
+        async fn resolve_facts(&self, _: Uuid, _: &[Uuid])
+            -> anyhow::Result<Vec<crate::conflict::ItemFacts>> { Ok(vec![]) }
+    }
+
+    fn runner_with(catalog: Arc<SpyCatalog>) -> MeshRunner {
+        MeshRunner::new(
+            Arc::new(StubClaude::new(vec![StubClaude::text("ok")])),
+            Arc::new(InMemoryStore::default()),
+            Arc::new(NoBasket),
+            catalog as Arc<dyn crate::tools::MeshCatalog>,
+            MeshConfig::default(),
+        )
+    }
+
+    /// The bug this replaced: the tool box was built once at startup, so every
+    /// run — every customer, every tenant — searched from the configured
+    /// default. Two runs must reach the catalog with their *own* coordinates.
+    #[tokio::test]
+    async fn each_run_searches_from_its_own_delivery_point() {
+        let catalog = Arc::new(SpyCatalog::default());
+        let runner = runner_with(catalog.clone());
+
+        let manila = runner.tools_for(Uuid::new_v4(), 14.5995, 120.9842);
+        let cebu   = runner.tools_for(Uuid::new_v4(), 10.3157, 123.8854);
+
+        for t in [&manila, &cebu] {
+            let _ = t.execute("find_vendors".to_string(),
+                serde_json::json!({ "vertical": "restaurant" }),
+                "t".into(), logisticos_agent_runtime::tools::ToolContext::default()).await;
+        }
+
+        let seen = catalog.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2, "both runs must have searched, got {seen:?}");
+        assert_eq!((seen[0].1, seen[0].2), (14.5995, 120.9842));
+        assert_eq!((seen[1].1, seen[1].2), (10.3157, 123.8854),
+                   "the second run must search from its own point, not the first's");
+    }
+
+    /// Tenant is bound per run for the same reason. A shared box would search
+    /// one tenant's catalog on behalf of another.
+    #[tokio::test]
+    async fn each_run_carries_its_own_tenant() {
+        let catalog = Arc::new(SpyCatalog::default());
+        let runner = runner_with(catalog.clone());
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+
+        for t in [runner.tools_for(a, 1.0, 2.0), runner.tools_for(b, 1.0, 2.0)] {
+            let _ = t.execute("find_vendors".to_string(),
+                serde_json::json!({ "vertical": "grocery" }),
+                "t".into(), logisticos_agent_runtime::tools::ToolContext::default()).await;
+        }
+
+        let seen = catalog.seen.lock().unwrap().clone();
+        assert_eq!(seen[0].0, a);
+        assert_eq!(seen[1].0, b);
+        assert_ne!(seen[0].0, seen[1].0);
     }
 }
