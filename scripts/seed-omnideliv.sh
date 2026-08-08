@@ -18,6 +18,10 @@ COURIER="33333333-0000-0000-0000-000000000001"
 # leaves the claim -> Kafka -> order-advances leg permanently untestable — the
 # seed looks complete and the only part it cannot exercise is the event pipeline.
 DRIVER_USER="00000000-0000-0000-0000-000000000004"   # driver@demo.com
+# The merchant portal login, so `GET /v1/omnideliv/vendors/me/earnings`
+# has a store to resolve. Without it that endpoint 404s and the vendor
+# payout cannot be checked over HTTP — only in psql.
+VENDOR_USER="00000000-0000-0000-0000-000000000003"   # merchant@demo.com
 
 echo "Seeding vendors…"
 $PSQL -d "$DB" <<SQL
@@ -26,6 +30,9 @@ VALUES
   ('$KUYAS',    '$TENANT', 'restaurant', 'Kuya''s Silog House', '12 Mabini St, Manila', 14.5995, 120.9842, 20, 1500, 'active'),
   ('$PUREGOLD', '$TENANT', 'grocery',    'Puregold Ermita',     '8 Padre Faura, Manila', 14.5820, 120.9830,  5, 1200, 'active')
 ON CONFLICT (id) DO UPDATE SET status = 'active';
+
+-- Link the restaurant to a real portal login so its earnings are readable.
+UPDATE omnideliv.vendors SET user_id = '$VENDOR_USER' WHERE id = '$KUYAS';
 SQL
 
 echo "Seeding catalog…"
@@ -80,7 +87,7 @@ SQL
 
 echo
 echo "Seeded. Try:"
-echo "  Kuya's Silog House : $KUYAS"
+echo "  Kuya's Silog House : $KUYAS  (owned by merchant@demo.com, so /vendors/me works)"
 echo "  Puregold Ermita    : $PUREGOLD"
 echo "  Courier Rico       : $COURIER  (fresh GPS fix, so proximity search finds him)"
 echo "  Eggs (dozen) is OUT OF STOCK — the substitution path has something to propose."
