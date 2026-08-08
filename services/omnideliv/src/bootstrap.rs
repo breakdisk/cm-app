@@ -87,7 +87,10 @@ pub async fn run() -> anyhow::Result<()> {
         // checking a model's output against facts the model supplied checks
         // nothing.
         Arc::new(CatalogServiceAdapter::new(catalog.clone()).with_supply(field_ops.clone())),
-        omnideliv_mesh::MeshConfig::default(),
+        omnideliv_mesh::MeshConfig {
+            fanout_deadline: std::time::Duration::from_secs(cfg.mesh_deadline_secs),
+            ..omnideliv_mesh::MeshConfig::default()
+        },
     ));
 
     let checkout = Arc::new(CheckoutService::new(

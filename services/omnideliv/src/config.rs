@@ -47,6 +47,13 @@ pub struct Config {
     #[serde(default = "default_field_ops_url")]
     pub field_ops_url: String,
 
+    /// The customer's whole wait on Screen B before the mesh gives up, shared
+    /// across specialists. Tunable without a rebuild because the right value
+    /// depends on the model and the load, and the first live run showed the
+    /// compiled-in default was an order of magnitude too small.
+    #[serde(default = "default_mesh_deadline_secs")]
+    pub mesh_deadline_secs: u64,
+
     pub claude_api_key: String,
     #[serde(default = "default_claude_model")]
     pub claude_model: String,
@@ -63,6 +70,7 @@ fn default_field_ops_url() -> String { "http://field-ops:8090".to_string() }
 fn default_lat() -> f64 { 14.5995 }
 fn default_lng() -> f64 { 120.9842 }
 
+fn default_mesh_deadline_secs() -> u64 { 45 }
 fn default_claude_model() -> String { "claude-opus-4-6".to_string() }
 fn default_claude_max_tokens() -> u32 { 8192 }
 

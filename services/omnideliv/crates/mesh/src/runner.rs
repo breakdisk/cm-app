@@ -40,7 +40,18 @@ pub struct MeshConfig {
 impl Default for MeshConfig {
     fn default() -> Self {
         Self {
-            fanout_deadline: Duration::from_secs(8),
+            // 45s, not 8. Eight was set against a stub that answered instantly
+            // and it never survived contact with a real model: on the first
+            // live run both specialists were abandoned at the deadline, the run
+            // was declared a total failure, and both then finished successfully
+            // a moment later — their proposed lines computed and thrown away.
+            //
+            // This is the customer's whole wait on Screen B, shared across
+            // workers rather than per worker, so it is a ceiling on the run and
+            // not a budget each specialist gets. Long enough for multi-turn tool
+            // use by a large model; short enough that a genuinely stuck worker
+            // still degrades rather than hanging the order.
+            fanout_deadline: Duration::from_secs(45),
             max_turns_per_specialist: 8,
         }
     }

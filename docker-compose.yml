@@ -1312,6 +1312,7 @@ services:
       # How stale a vendor's stock declaration may be before the mesh stops
       # trusting it and proposes substitutes defensively.
       STOCK_FRESHNESS_MINS: "30"
+      MESH_DEADLINE_SECS: "${OMNIDELIV_MESH_DEADLINE_SECS:-45}"
       # Checkout offers every placed order to field-ops. WITHOUT SERVICE_TOKEN
       # every checkout fails: field-ops authenticates its operational routes and
       # the 401 surfaces to the customer as "no courier available".
