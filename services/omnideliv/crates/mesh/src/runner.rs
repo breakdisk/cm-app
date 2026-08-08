@@ -760,8 +760,10 @@ mod tests {
         let lines: Vec<_> = outcome.lines.iter().flat_map(|(_, l)| l).collect();
         assert_eq!(lines.len(), 1, "the peanut line is removed before the basket");
         assert_eq!(lines[0].item_id, safe);
-        assert_eq!(outcome.conflicts.len(), 1);
-        assert!(outcome.conflicts[0].blocking);
+        let blocking: Vec<_> = outcome.conflicts.iter().filter(|c| c.blocking).collect();
+        assert_eq!(blocking.len(), 1);
+        assert!(matches!(blocking[0].kind,
+                crate::conflict::ConflictKind::AllergenViolation { .. }));
     }
 
     /// A degraded specialist's lines were never trusted; its absence must not
@@ -1099,9 +1101,12 @@ mod tests {
         assert_eq!(written, 0, "the peanut line must never be written to the basket");
 
         let recorded = basket.conflicts.lock().unwrap().clone();
-        assert_eq!(recorded.len(), 1, "the conflict must be persisted, not only streamed");
-        assert!(recorded[0].blocking);
-        assert!(matches!(recorded[0].kind, crate::conflict::ConflictKind::AllergenViolation { .. }));
+        let blocking: Vec<_> = recorded.iter().filter(|c| c.blocking).collect();
+        assert_eq!(blocking.len(), 1, "the conflict must be persisted, not only streamed");
+        assert!(matches!(blocking[0].kind, crate::conflict::ConflictKind::AllergenViolation { .. }));
+        assert!(recorded.iter().any(|c| matches!(c.kind,
+                crate::conflict::ConflictKind::AllergenDataUnverified { .. })),
+                "the customer must also be told the allergen data is unverified");
 
         let events = collect(&mut rx);
         assert!(

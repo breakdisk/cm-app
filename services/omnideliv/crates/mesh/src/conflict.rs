@@ -31,6 +31,13 @@ pub enum ConflictKind {
     /// The runner could not resolve the item in the catalog.
     UnverifiableItem { item_id: Uuid },
     BudgetExceeded { limit_cents: i64, actual_cents: i64 },
+    /// Raised once whenever a run filtered on allergens at all.
+    ///
+    /// Not decoration. An allergen filter that silently succeeds teaches a
+    /// customer to trust it, and the data behind it is vendor-typed and
+    /// unverified. This says so at the point of decision, every time, rather
+    /// than once in terms nobody read.
+    AllergenDataUnverified { avoided: Vec<String> },
     TemperatureMix { classes: Vec<String> },
     ReadinessSpread { earliest_minutes: i32, latest_minutes: i32 },
 }
@@ -109,7 +116,20 @@ pub fn detect(
                     allergen: hit.clone(),
                 },
                 blocking: true,
-                description: format!("We left out an item because it contains {hit}."),
+                // Says who knows what, and who does not.
+                //
+                // The old wording — "we left out an item because it contains
+                // peanuts" — reads as a statement of fact the platform has
+                // checked. It has not: `allergens` is free text a vendor typed,
+                // never verified, and absent for any item they did not fill in.
+                // A customer with a serious allergy could reasonably take the
+                // old sentence as clearance to eat the rest of the basket.
+                //
+                // Removing the item is still right. Claiming to have vetted the
+                // remainder is not.
+                description: format!(
+                    "We left out an item the shop lists as containing {hit}. Allergen information comes from the shop, not from us — if this matters medically, please confirm with them directly."
+                ),
             });
             continue;
         }
@@ -167,6 +187,20 @@ pub fn detect(
                 ),
             });
         }
+    }
+
+    // Raised whenever the customer stated an allergen, whether or not anything
+    // was removed. "We found nothing" is exactly the case where a customer is
+    // most likely to assume the basket was vetted.
+    if !avoid.is_empty() {
+        let mut avoided: Vec<String> = ctx.avoid_allergens.clone();
+        avoided.sort();
+        conflicts.push(Conflict {
+            kind:        ConflictKind::AllergenDataUnverified { avoided },
+            blocking:    false,
+            description: "Allergen details come from each shop and are not checked by us. Please confirm anything medically important with the shop before eating."
+                .into(),
+        });
     }
 
     (kept, conflicts)
@@ -234,9 +268,13 @@ mod tests {
 
         assert_eq!(kept.len(), 1, "the offending line is removed");
         assert_eq!(kept[0].item_id, good.item_id);
-        assert_eq!(conflicts.len(), 1);
-        assert!(conflicts[0].blocking);
-        assert!(matches!(conflicts[0].kind, ConflictKind::AllergenViolation { .. }));
+
+        // Filter by kind rather than index: stating an allergen also raises the
+        // unverified-data disclaimer, and a positional assertion would break
+        // every time another advisory is added.
+        let blocking: Vec<_> = conflicts.iter().filter(|c| c.blocking).collect();
+        assert_eq!(blocking.len(), 1);
+        assert!(matches!(blocking[0].kind, ConflictKind::AllergenViolation { .. }));
     }
 
     /// Allergen matching is case-insensitive: vendors type these by hand, and
@@ -248,7 +286,7 @@ mod tests {
         let (kept, conflicts) = detect(vec![line(bad.item_id, 1, 30_000)], &c);
 
         assert!(kept.is_empty());
-        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts.iter().filter(|c| c.blocking).count(), 1);
     }
 
     /// An item the runner could not resolve is dropped, not trusted. Keeping an
@@ -260,9 +298,51 @@ mod tests {
         let (kept, conflicts) = detect(vec![line(Uuid::new_v4(), 1, 10_000)], &c);
 
         assert!(kept.is_empty());
-        assert_eq!(conflicts.len(), 1);
-        assert!(conflicts[0].blocking);
-        assert!(matches!(conflicts[0].kind, ConflictKind::UnverifiableItem { .. }));
+        let blocking: Vec<_> = conflicts.iter().filter(|c| c.blocking).collect();
+        assert_eq!(blocking.len(), 1);
+        assert!(matches!(blocking[0].kind, ConflictKind::UnverifiableItem { .. }));
+    }
+
+    /// The case that matters most. A customer said "no peanuts", nothing was
+    /// removed, and they are now most likely to assume the basket was vetted.
+    /// It was not — every allergen string came from a shop, unverified.
+    #[test]
+    fn stating_an_allergen_always_gets_the_disclaimer_even_when_nothing_is_removed() {
+        let clean = item(&[], "restaurant", 20, 25_000);
+        let c = ctx(None, &["peanuts"], facts(vec![clean.clone()]));
+        let (kept, conflicts) = detect(vec![line(clean.item_id, 1, 25_000)], &c);
+
+        assert_eq!(kept.len(), 1, "nothing to remove");
+        let d: Vec<_> = conflicts.iter()
+            .filter(|c| matches!(c.kind, ConflictKind::AllergenDataUnverified { .. }))
+            .collect();
+        assert_eq!(d.len(), 1, "silence here reads as 'we checked'");
+        assert!(!d[0].blocking, "it informs, it does not remove anything");
+    }
+
+    /// A customer who stated no allergens is not shown an allergen disclaimer.
+    #[test]
+    fn no_stated_allergen_means_no_disclaimer() {
+        let a = item(&[], "grocery", 5, 8_000);
+        let c = ctx(None, &[], facts(vec![a.clone()]));
+        let (_, conflicts) = detect(vec![line(a.item_id, 1, 8_000)], &c);
+
+        assert!(!conflicts.iter()
+            .any(|c| matches!(c.kind, ConflictKind::AllergenDataUnverified { .. })));
+    }
+
+    /// It names what was asked for, so the message is specific rather than a
+    /// generic banner a customer learns to skip.
+    #[test]
+    fn the_disclaimer_names_the_allergens_the_customer_asked_about() {
+        let a = item(&[], "grocery", 5, 8_000);
+        let c = ctx(None, &["peanuts", "dairy"], facts(vec![a.clone()]));
+        let (_, conflicts) = detect(vec![line(a.item_id, 1, 8_000)], &c);
+
+        let kinds: Vec<_> = conflicts.iter().map(|c| &c.kind).collect();
+        assert!(kinds.iter().any(|k| matches!(k,
+            ConflictKind::AllergenDataUnverified { avoided } if avoided == &vec!["dairy".to_string(), "peanuts".to_string()])),
+            "expected both allergens, sorted; got {kinds:?}");
     }
 
     /// Budget is advisory, not blocking: dropping lines to fit would mean

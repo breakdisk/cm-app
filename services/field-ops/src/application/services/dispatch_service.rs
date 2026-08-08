@@ -19,6 +19,21 @@ pub struct DispatchService {
     pay_bounds:  PayBounds,
 }
 
+/// The outcome of one payout run, in enough detail to reconcile.
+#[derive(Debug, Default, Clone)]
+pub struct PayoutRun {
+    pub period: String,
+    pub batch:  String,
+    pub paid:   Vec<(Uuid, i64)>,
+    pub paid_cents: i64,
+    /// Owed money but still holding ours — paid next run, once they remit.
+    pub skipped_holding_cash: Vec<(Uuid, i64)>,
+    /// Zero or negative balance. Nothing to pay.
+    pub skipped_nothing_owed: Vec<Uuid>,
+    /// The ledger write failed. These are unpaid and must be retried.
+    pub failed: Vec<Uuid>,
+}
+
 /// What a product may declare a courier will earn.
 ///
 /// A platform-tier guard, not a tariff: field-ops still never computes pay.
@@ -119,6 +134,55 @@ impl DispatchService {
             offers.push(a);
         }
         Ok(offers)
+    }
+
+    /// Pay every courier who is owed money for a period.
+    ///
+    /// Two rules decide who gets paid, and both exist because getting them
+    /// wrong hands out real money:
+    ///
+    /// 1. **Only a positive balance.** A negative one means the courier owes
+    ///    us, and "paying" it would be a second transfer in the wrong
+    ///    direction.
+    /// 2. **Never while cash is outstanding.** A courier can be in credit
+    ///    overall and still be holding our cash — earn 5000, collect 3000,
+    ///    balance 2000. Paying that 2000 before the 3000 comes back means the
+    ///    platform is down 3000 with nothing to reconcile against, and the
+    ///    courier has been handed money they were already holding.
+    ///
+    /// Skipped couriers are returned rather than silently omitted: a payout run
+    /// that quietly pays fewer people than expected is indistinguishable from
+    /// one that worked.
+    pub async fn run_payout(&self, period: &str, batch: &str) -> anyhow::Result<PayoutRun> {
+        let mut run = PayoutRun { period: period.to_string(), batch: batch.to_string(), ..Default::default() };
+
+        for mut ledger in self.ledgers.find_all_open(period).await? {
+            let held = ledger.cash_held_cents();
+            if held > 0 {
+                run.skipped_holding_cash.push((ledger.courier_id, held));
+                continue;
+            }
+            if ledger.balance_cents <= 0 {
+                run.skipped_nothing_owed.push(ledger.courier_id);
+                continue;
+            }
+
+            let amount = ledger.balance_cents;
+            ledger.record_payout(amount, Some(batch.to_string()));
+
+            // A failed save must not be reported as paid. Continue rather than
+            // abort so one bad row does not stop everyone else being paid.
+            if let Err(e) = self.ledgers.save(&ledger).await {
+                tracing::error!(err = %e, courier_id = %ledger.courier_id, "payout write failed");
+                run.failed.push(ledger.courier_id);
+                continue;
+            }
+
+            run.paid_cents += amount;
+            run.paid.push((ledger.courier_id, amount));
+        }
+
+        Ok(run)
     }
 
     /// Record a cash handover, returning what is still outstanding.
@@ -515,6 +579,7 @@ mod claim_authorization {
         async fn find_open(&self, _: Uuid, _: Uuid, _: &str)
             -> anyhow::Result<Option<CourierLedger>> { Ok(None) }
         async fn save(&self, _: &CourierLedger) -> anyhow::Result<()> { Ok(()) }
+        async fn find_all_open(&self, _: &str) -> anyhow::Result<Vec<CourierLedger>> { Ok(vec![]) }
     }
 
     fn courier() -> Courier {
@@ -587,5 +652,154 @@ mod claim_authorization {
         assert!(svc.offers_for_user(TENANT, other).await.unwrap().is_empty());
         assert!(svc.offers_for_user(TENANT, Uuid::new_v4()).await.unwrap().is_empty(),
                 "a non-courier gets an empty list, not an error");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Payout rules
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod payout_rules {
+    use super::*;
+    use crate::domain::entities::{Courier, CourierLocation};
+    use crate::domain::repositories::CourierRepository;
+    use crate::infrastructure::db::{ClaimOutcome, CourierLedgerRepository, LocationRepository};
+    use std::sync::Mutex;
+
+    const PERIOD: &str = "2026-W32";
+
+    struct Ledgers(Mutex<Vec<CourierLedger>>);
+
+    #[async_trait::async_trait]
+    impl CourierLedgerRepository for Ledgers {
+        async fn find_open(&self, _: Uuid, courier_id: Uuid, _: &str)
+            -> anyhow::Result<Option<CourierLedger>> {
+            Ok(self.0.lock().unwrap().iter().find(|l| l.courier_id == courier_id).cloned())
+        }
+        async fn save(&self, l: &CourierLedger) -> anyhow::Result<()> {
+            let mut v = self.0.lock().unwrap();
+            if let Some(slot) = v.iter_mut().find(|x| x.id == l.id) { *slot = l.clone(); }
+            Ok(())
+        }
+        async fn find_all_open(&self, _: &str) -> anyhow::Result<Vec<CourierLedger>> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+    }
+
+    struct NoCouriers;
+    #[async_trait::async_trait]
+    impl CourierRepository for NoCouriers {
+        async fn find_by_id(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<Courier>> { Ok(None) }
+        async fn find_by_user(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<Courier>> { Ok(None) }
+        async fn save(&self, _: &Courier) -> anyhow::Result<()> { Ok(()) }
+        async fn find_available_near(&self, _: Uuid, _: f64, _: f64, _: f64, _: i64)
+            -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
+    }
+    struct NoLoc;
+    #[async_trait::async_trait]
+    impl LocationRepository for NoLoc {
+        async fn record(&self, _: &CourierLocation) -> anyhow::Result<()> { Ok(()) }
+        async fn latest(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<CourierLocation>> { Ok(None) }
+    }
+    struct NoAssign;
+    #[async_trait::async_trait]
+    impl AssignmentRepository for NoAssign {
+        async fn save(&self, _: &CourierAssignment) -> anyhow::Result<()> { Ok(()) }
+        async fn try_claim(&self, _: Uuid, _: Uuid) -> anyhow::Result<ClaimOutcome> { Ok(ClaimOutcome::Lost) }
+        async fn find_by_id(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<CourierAssignment>> { Ok(None) }
+        async fn find_offered_for_courier(&self, _: Uuid, _: Uuid)
+            -> anyhow::Result<Vec<CourierAssignment>> { Ok(vec![]) }
+    }
+
+    fn svc(ledgers: Arc<Ledgers>) -> DispatchService {
+        DispatchService::new(
+            Arc::new(NoCouriers), Arc::new(NoAssign), Arc::new(NoLoc), ledgers,
+            Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
+            PayBounds::default(),
+        )
+    }
+
+    fn ledger_owed(amount: i64) -> CourierLedger {
+        let mut l = CourierLedger::open(Uuid::new_v4(), Uuid::new_v4(), PERIOD.into());
+        l.credit_trip(amount, 1, Uuid::new_v4());
+        l
+    }
+
+    #[tokio::test]
+    async fn a_courier_who_is_owed_money_gets_paid_and_lands_at_zero() {
+        let ledgers = Arc::new(Ledgers(Mutex::new(vec![ledger_owed(3_500)])));
+        let run = svc(ledgers.clone()).run_payout(PERIOD, "b1").await.unwrap();
+
+        assert_eq!(run.paid.len(), 1);
+        assert_eq!(run.paid_cents, 3_500);
+        assert_eq!(ledgers.0.lock().unwrap()[0].balance_cents, 0,
+                   "a paid ledger is square, not still owing");
+    }
+
+    /// The rule that protects real money. A courier can be in credit overall
+    /// and still be holding our cash — earn 5000, collect 3000, balance 2000.
+    /// Paying that 2000 before the 3000 comes back leaves the platform down
+    /// 3000 with nothing to reconcile against.
+    #[tokio::test]
+    async fn a_courier_still_holding_cash_is_not_paid_even_when_in_credit() {
+        let mut l = ledger_owed(5_000);
+        l.record_cod_collected(3_000, Uuid::new_v4());
+        assert_eq!(l.balance_cents, 2_000, "precondition: in credit overall");
+
+        let ledgers = Arc::new(Ledgers(Mutex::new(vec![l])));
+        let run = svc(ledgers.clone()).run_payout(PERIOD, "b1").await.unwrap();
+
+        assert!(run.paid.is_empty(), "must not pay while our cash is out");
+        assert_eq!(run.skipped_holding_cash, vec![(ledgers.0.lock().unwrap()[0].courier_id, 3_000)]);
+        assert_eq!(ledgers.0.lock().unwrap()[0].balance_cents, 2_000, "untouched");
+    }
+
+    /// A negative balance means the courier owes us. "Paying" it would be a
+    /// second transfer in the wrong direction.
+    #[tokio::test]
+    async fn a_courier_in_debt_is_never_paid() {
+        let mut l = ledger_owed(1_000);
+        l.record_cod_collected(9_000, Uuid::new_v4());
+        l.record_cod_remitted(9_000, None);
+        l.adjust(-5_000, "damages".into());
+        assert!(l.balance_cents < 0);
+
+        let ledgers = Arc::new(Ledgers(Mutex::new(vec![l])));
+        let run = svc(ledgers).run_payout(PERIOD, "b1").await.unwrap();
+
+        assert!(run.paid.is_empty());
+        assert_eq!(run.skipped_nothing_owed.len(), 1);
+    }
+
+    /// Running twice must not pay twice — the first run leaves a zero balance,
+    /// which the second reads as nothing owed.
+    #[tokio::test]
+    async fn a_second_run_pays_nothing_more() {
+        let ledgers = Arc::new(Ledgers(Mutex::new(vec![ledger_owed(3_500)])));
+        let s = svc(ledgers.clone());
+
+        let first  = s.run_payout(PERIOD, "b1").await.unwrap();
+        let second = s.run_payout(PERIOD, "b2").await.unwrap();
+
+        assert_eq!(first.paid_cents, 3_500);
+        assert_eq!(second.paid_cents, 0, "a repeated run must not pay again");
+        assert_eq!(ledgers.0.lock().unwrap()[0].balance_cents, 0);
+    }
+
+    /// Once the cash comes back, the same courier is paid on the next run.
+    #[tokio::test]
+    async fn remitting_unblocks_the_next_payout() {
+        let mut l = ledger_owed(5_000);
+        l.record_cod_collected(3_000, Uuid::new_v4());
+        let ledgers = Arc::new(Ledgers(Mutex::new(vec![l])));
+        let s = svc(ledgers.clone());
+
+        assert!(s.run_payout(PERIOD, "b1").await.unwrap().paid.is_empty());
+
+        ledgers.0.lock().unwrap()[0].record_cod_remitted(3_000, None);
+        let after = s.run_payout(PERIOD, "b2").await.unwrap();
+
+        assert_eq!(after.paid_cents, 5_000, "the full earning, once we have our cash back");
     }
 }

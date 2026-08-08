@@ -133,6 +133,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/v1/field-ops/assignments/:id/delivered", post(delivered))
         .route("/v1/field-ops/couriers/me/earnings", get(my_earnings))
         .route("/v1/field-ops/couriers/me/remit", post(remit))
+        .route("/v1/field-ops/admin/payouts/run", post(run_payout))
         .route("/v1/field-ops/couriers/supply", get(supply))
         .route("/v1/field-ops/couriers/:id/position", post(position))
 }
@@ -251,6 +252,71 @@ async fn my_earnings(
             })
             .collect(),
     }))
+}
+
+/// `POST /v1/field-ops/admin/payouts/run` — pay everyone who is owed.
+///
+/// An operator action, not a courier one. It reports who was skipped and why,
+/// because a run that quietly pays fewer people than expected looks exactly
+/// like one that worked.
+///
+/// NOTE: gated only by `require_auth` today, so any authenticated user in the
+/// tenant can trigger it. Per-role authorization is the platform's open RBAC
+/// question (ADR-0004's "Support Agent can't call assign_driver"); this route
+/// should be in the first batch that gets it.
+async fn run_payout(
+    State(st): State<Arc<AppState>>,
+    _claims: AuthClaims,
+    Json(req): Json<PayoutRunRequest>,
+) -> Result<Json<PayoutRunResponse>, StatusCode> {
+    let period = req.period.unwrap_or_else(crate::application::services::current_period);
+    let batch  = req.batch.unwrap_or_else(|| format!("payout-{period}"));
+
+    let run = st.dispatch.run_payout(&period, &batch).await.map_err(|e| {
+        tracing::error!(err = %e, "payout run failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    tracing::info!(
+        period = %run.period, batch = %run.batch,
+        paid = run.paid.len(), paid_cents = run.paid_cents,
+        holding_cash = run.skipped_holding_cash.len(),
+        failed = run.failed.len(),
+        "payout run complete",
+    );
+
+    Ok(Json(PayoutRunResponse {
+        period:      run.period,
+        batch:       run.batch,
+        paid_count:  run.paid.len(),
+        paid_cents:  run.paid_cents,
+        skipped_holding_cash: run.skipped_holding_cash.len(),
+        skipped_nothing_owed: run.skipped_nothing_owed.len(),
+        failed_count: run.failed.len(),
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PayoutRunRequest {
+    /// Defaults to the current period. Explicit so a missed week can be run.
+    #[serde(default)]
+    pub period: Option<String>,
+    #[serde(default)]
+    pub batch:  Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PayoutRunResponse {
+    period: String,
+    batch:  String,
+    paid_count: usize,
+    paid_cents: i64,
+    /// Owed money but still holding ours. They are paid next run, after they
+    /// remit — not an error, but the number an operator should watch.
+    skipped_holding_cash: usize,
+    skipped_nothing_owed: usize,
+    /// Ledger write failed. Unpaid, and the run must be repeated for them.
+    failed_count: usize,
 }
 
 /// `POST /v1/field-ops/couriers/me/remit` — the courier hands cash back.

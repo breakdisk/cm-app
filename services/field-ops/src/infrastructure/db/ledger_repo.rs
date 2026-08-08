@@ -16,6 +16,13 @@ pub trait CourierLedgerRepository: Send + Sync {
     async fn find_open(&self, tenant_id: Uuid, courier_id: Uuid, period: &str)
         -> anyhow::Result<Option<CourierLedger>>;
     async fn save(&self, ledger: &CourierLedger) -> anyhow::Result<()>;
+
+    /// Every open ledger for a period, for the payout run.
+    ///
+    /// Returns them all rather than pre-filtering to positive balances: the
+    /// decision about who gets paid belongs to the payout logic where it can be
+    /// tested, not to a SQL predicate nobody reads.
+    async fn find_all_open(&self, period: &str) -> anyhow::Result<Vec<CourierLedger>>;
 }
 
 pub struct PgCourierLedgerRepository { pool: PgPool }
@@ -98,6 +105,27 @@ impl CourierLedgerRepository for PgCourierLedgerRepository {
             created_at:    r.get("created_at"),
             updated_at:    r.get("updated_at"),
         }))
+    }
+
+    async fn find_all_open(&self, period: &str) -> anyhow::Result<Vec<CourierLedger>> {
+        // Deliberately across all tenants: a payout run is an operator action,
+        // and scoping it per tenant would mean couriers only get paid for
+        // tenants somebody remembered to enumerate.
+        let ids: Vec<(Uuid, Uuid)> = sqlx::query_as(
+            "SELECT tenant_id, courier_id FROM field_ops.courier_ledgers
+              WHERE period = $1 AND status = 'open'",
+        )
+        .bind(period)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut out = Vec::with_capacity(ids.len());
+        for (tenant_id, courier_id) in ids {
+            if let Some(l) = self.find_open(tenant_id, courier_id, period).await? {
+                out.push(l);
+            }
+        }
+        Ok(out)
     }
 
     async fn save(&self, l: &CourierLedger) -> anyhow::Result<()> {
