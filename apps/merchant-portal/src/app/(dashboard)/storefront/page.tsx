@@ -17,7 +17,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { AlertTriangle, Check, PackageX, RefreshCw, Store } from "lucide-react";
+import { AlertTriangle, Check, PackageX, RefreshCw, ShieldAlert, Store } from "lucide-react";
 
 import { GlassCard } from "@/components/ui/glass-card";
 import { variants } from "@/lib/design-system/tokens";
@@ -37,6 +37,10 @@ interface Item {
   is_listed: boolean;
   availability: Availability;
   confirmed_at: string;
+  /** False = nobody has stated what is in this. NOT the same as "no
+   *  allergens": an undeclared item is refused to any customer who asked us to
+   *  avoid something, so this is the most consequential empty field here. */
+  allergens_declared: boolean;
   warrants_substitute: boolean;
 }
 
@@ -50,6 +54,14 @@ interface Earnings {
   period: string;
   balance_cents: number;
 }
+
+/**
+ * The set a vendor can state in one tap. Not exhaustive and not meant to be —
+ * it covers the common cases, and anything unusual is why the storefront needs
+ * a fuller editor later. Listing a wrong-but-quick set would be worse than
+ * offering fewer accurate ones.
+ */
+const COMMON_ALLERGENS = ["peanuts", "dairy", "eggs", "shellfish", "gluten", "soy"];
 
 const peso = (cents: number) =>
   `₱${(cents / 100).toLocaleString("en-PH", { minimumFractionDigits: 2 })}`;
@@ -121,6 +133,37 @@ export default function Storefront() {
     [load],
   );
 
+  /**
+   * Declare an item's contents.
+   *
+   * `[]` is a real statement — "I confirm it contains none of these" — and is
+   * precisely what an undeclared item cannot say. That is why the control is
+   * two explicit buttons rather than a text field left blank: a blank field is
+   * how the item got into this state.
+   */
+  const declare = useCallback(
+    async (itemId: string, allergens: string[]) => {
+      setBusy(itemId);
+      try {
+        const res = await authFetch(
+          `${OMNIDELIV_URL}/v1/omnideliv/catalog/items/${itemId}/allergens`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ allergens }),
+          },
+        );
+        if (!res.ok) throw new Error(`declaration failed: ${res.status}`);
+        await load();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "could not save that");
+      } finally {
+        setBusy(null);
+      }
+    },
+    [load],
+  );
+
   if (noStore) {
     return (
       <div className="p-6">
@@ -139,6 +182,7 @@ export default function Storefront() {
   }
 
   const stale = catalog?.items.filter((i) => i.warrants_substitute) ?? [];
+  const undeclared = catalog?.items.filter((i) => !i.allergens_declared) ?? [];
 
   return (
     <motion.div {...variants.fadeIn} className="space-y-5 p-6">
@@ -162,6 +206,29 @@ export default function Storefront() {
       {error && (
         <GlassCard className="border-l-2 border-l-[#FF3B5C] p-4">
           <p role="alert" className="text-sm text-[#FF3B5C]">{error}</p>
+        </GlassCard>
+      )}
+
+      {/* Above staleness on purpose. A stale item still gets sold with a
+          substitute lined up; an undeclared one is refused outright to anyone
+          with an allergy, and the vendor has no other way to learn that. */}
+      {undeclared.length > 0 && (
+        <GlassCard className="border-l-2 border-l-[#FF3B5C] p-4">
+          <div className="flex items-start gap-3">
+            <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-[#FF3B5C]" />
+            <div>
+              <p className="text-sm font-semibold text-[#FF3B5C]">
+                {undeclared.length} item{undeclared.length === 1 ? "" : "s"} won't
+                be offered to customers with allergies
+              </p>
+              <p className="mt-1 text-xs text-white/60">
+                Nobody has stated what's in them. We won't guess on a customer's
+                behalf, so we leave them out rather than risk it. Say what each
+                one contains — "none of these" is a valid answer, and it's the
+                one an undeclared item can't make.
+              </p>
+            </div>
+          </div>
         </GlassCard>
       )}
 
@@ -224,8 +291,37 @@ export default function Storefront() {
                 </div>
                 <p className="mt-0.5 text-xs text-white/40">
                   {peso(item.price_cents)} · confirmed {since(item.confirmed_at)}
-                  {item.allergens.length > 0 && ` · ${item.allergens.join(", ")}`}
+                  {item.allergens_declared
+                    ? item.allergens.length > 0
+                      ? ` · contains ${item.allergens.join(", ")}`
+                      : " · declared allergen-free"
+                    : ""}
                 </p>
+
+                {!item.allergens_declared && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <span className="text-[11px] text-[#FF3B5C]">
+                      Contents not stated:
+                    </span>
+                    {COMMON_ALLERGENS.map((a) => (
+                      <button
+                        key={a}
+                        disabled={busy === item.id}
+                        onClick={() => void declare(item.id, [a])}
+                        className="rounded border border-white/10 px-2 py-0.5 text-[11px] text-white/60 hover:bg-white/5 disabled:opacity-40"
+                      >
+                        contains {a}
+                      </button>
+                    ))}
+                    <button
+                      disabled={busy === item.id}
+                      onClick={() => void declare(item.id, [])}
+                      className="rounded border border-[#00FF88]/40 px-2 py-0.5 text-[11px] text-[#00FF88] hover:bg-[#00FF88]/10 disabled:opacity-40"
+                    >
+                      none of these
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div className="flex shrink-0 gap-2">

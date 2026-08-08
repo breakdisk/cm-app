@@ -100,6 +100,34 @@ export default function Review() {
           </View>
         )}
 
+        {/* An empty basket is a result, not a blank screen.
+            It happens legitimately — every candidate refused because no shop
+            had stated its contents and the customer named an allergy — and
+            without this it reads as the app failing rather than the check
+            working. The conflicts above already say what was left out and why;
+            this says what it adds up to and what to do next. */}
+        {basket && basket.goods_total_cents === 0 && (
+          <View
+            style={{
+              borderLeftWidth: 2,
+              borderLeftColor: theme.amber,
+              backgroundColor: "rgba(255,171,0,0.07)",
+              borderRadius: theme.radius.sm,
+              padding: 12,
+              gap: 4,
+            }}
+          >
+            <Text style={{ color: theme.amber, fontSize: 13, fontWeight: "700" }}>
+              Nothing made it into your basket
+            </Text>
+            <Text style={{ color: "rgba(255,255,255,0.72)", fontSize: 12, lineHeight: 17 }}>
+              Everything we found was left out for the reasons above. If you
+              mentioned something to avoid, try browsing shops directly — we
+              only skip items when we can't be sure.
+            </Text>
+          </View>
+        )}
+
         {basket && (
           <View
             style={{
