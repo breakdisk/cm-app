@@ -30,6 +30,8 @@ fn entry_kind(s: &str) -> anyhow::Result<CourierEntryKind> {
         "tip"          => CourierEntryKind::Tip,
         "adjustment"   => CourierEntryKind::Adjustment,
         "payout"       => CourierEntryKind::Payout,
+        "cod_collected" => CourierEntryKind::CodCollected,
+        "cod_remitted"  => CourierEntryKind::CodRemitted,
         other => anyhow::bail!("unknown courier ledger entry kind in database: {other}"),
     })
 }

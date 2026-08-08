@@ -90,6 +90,7 @@ impl DispatchService {
         fanout: i64,
         trip_cents: i64,
         tip_cents: i64,
+        cod_amount_cents: i64,
     ) -> anyhow::Result<Vec<CourierAssignment>> {
         // Checked before anything is offered or stored. Rejecting rather than
         // clamping is deliberate: clamping would credit the courier a different
@@ -112,11 +113,39 @@ impl DispatchService {
             // time, and that ownership is worth one small allocation per offer
             // in a fan-out that is already doing a database write each turn.
             let a = CourierAssignment::offer_with_earnings(
-                tenant_id, c.id, product.clone(), external_ref, trip_cents, tip_cents);
+                tenant_id, c.id, product.clone(), external_ref, trip_cents, tip_cents,
+                cod_amount_cents);
             self.assignments.save(&a).await?;
             offers.push(a);
         }
         Ok(offers)
+    }
+
+    /// Record a cash handover, returning what is still outstanding.
+    ///
+    /// `None` when the user is not a courier. Remitting more than is held is
+    /// allowed and lands the courier in credit — that is a real situation
+    /// (an over-payment, or cash handed over before a delivery settles), and
+    /// refusing it would leave the ledger unable to describe what happened.
+    pub async fn remit_cash(
+        &self,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        amount_cents: i64,
+        reference: Option<String>,
+    ) -> anyhow::Result<Option<i64>> {
+        let Some(courier) = self.couriers.find_by_user(tenant_id, user_id).await? else {
+            return Ok(None);
+        };
+        let period = current_period();
+        let mut ledger = match self.ledgers.find_open(tenant_id, courier.id, &period).await? {
+            Some(l) => l,
+            None => CourierLedger::open(tenant_id, courier.id, period),
+        };
+
+        ledger.record_cod_remitted(amount_cents, reference);
+        self.ledgers.save(&ledger).await?;
+        Ok(Some(ledger.cash_held_cents()))
     }
 
     /// This courier's ledger for the current period.
@@ -264,7 +293,12 @@ impl DispatchService {
         // Credit before publishing. A failed credit surfaces as an error the
         // caller retries; publishing first would tell OmniDeliv the job is done
         // while the courier is unpaid, and nothing downstream would notice.
-        if a.trip_cents > 0 || a.tip_cents > 0 {
+        //
+        // The COD debit rides in the same call for the same reason: the cash is
+        // in the courier's hand the moment the door closes, and a delivery
+        // recorded without it would show them in credit for money they are
+        // holding — which is what a payout run would then hand them again.
+        if a.trip_cents > 0 || a.tip_cents > 0 || a.cod_amount_cents > 0 {
             self.credit_courier(&a).await?;
         }
 
@@ -302,9 +336,18 @@ impl DispatchService {
             return Ok(());
         }
 
-        ledger.credit_trip(a.trip_cents, 0, a.external_ref);
+        // Guarded rather than unconditional: a cash-only job with no trip pay
+        // would otherwise append a zero-value earning, and a ledger full of
+        // zero rows is harder to read than one without them.
+        if a.trip_cents > 0 {
+            ledger.credit_trip(a.trip_cents, 0, a.external_ref);
+        }
         if a.tip_cents > 0 {
             ledger.credit_tip(a.tip_cents, a.external_ref);
+        }
+        // Negative. The courier now holds this much of the platform's money.
+        if a.cod_amount_cents > 0 {
+            ledger.record_cod_collected(a.cod_amount_cents, a.external_ref);
         }
         self.ledgers.save(&ledger).await
     }
@@ -487,7 +530,7 @@ mod claim_authorization {
 
         let a = CourierAssignment::offer_with_earnings(
             TENANT, owner.id, ProductKey::new("omnideliv".to_string()),
-            Uuid::new_v4(), 3_500, 0,
+            Uuid::new_v4(), 3_500, 0, 0,
         );
         let id = a.id;
 

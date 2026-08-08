@@ -24,6 +24,11 @@ pub struct OfferRequest {
     pub trip_cents:   i64,
     #[serde(default)]
     pub tip_cents:    i64,
+    /// Cash to collect at the door. Defaults to 0 — a product that says nothing
+    /// is saying "nothing to collect", which is the safe reading: a courier is
+    /// never asked to collect an amount nobody declared.
+    #[serde(default)]
+    pub cod_amount_cents: i64,
 }
 
 fn default_radius_km() -> f64 { 5.0 }
@@ -127,6 +132,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/v1/field-ops/assignments/:id/collected", post(collected))
         .route("/v1/field-ops/assignments/:id/delivered", post(delivered))
         .route("/v1/field-ops/couriers/me/earnings", get(my_earnings))
+        .route("/v1/field-ops/couriers/me/remit", post(remit))
         .route("/v1/field-ops/couriers/supply", get(supply))
         .route("/v1/field-ops/couriers/:id/position", post(position))
 }
@@ -146,7 +152,7 @@ async fn offer(
         .offer_to_nearest(
             claims.tenant_id, req.product, req.external_ref,
             req.lat, req.lng, req.radius_km, req.fanout,
-            req.trip_cents, req.tip_cents,
+            req.trip_cents, req.tip_cents, req.cod_amount_cents,
         )
         .await
         .map_err(|e| {
@@ -245,6 +251,50 @@ async fn my_earnings(
             })
             .collect(),
     }))
+}
+
+/// `POST /v1/field-ops/couriers/me/remit` — the courier hands cash back.
+///
+/// Closes the COD loop. Without it a courier's ledger only ever goes further
+/// into debt, and "what do we owe this courier" has no path back to a positive
+/// number. The courier is resolved from the token, so nobody can clear a debt
+/// that is not theirs.
+async fn remit(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Json(req): Json<RemitRequest>,
+) -> Result<Json<RemitResponse>, StatusCode> {
+    if req.amount_cents <= 0 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let held = st
+        .dispatch
+        .remit_cash(claims.tenant_id, claims.user_id, req.amount_cents, req.reference)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "remittance failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    Ok(Json(RemitResponse { cash_still_held_cents: held }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemitRequest {
+    pub amount_cents: i64,
+    /// Deposit slip, reference number, or who took the cash. Free text on
+    /// purpose — the audit thread back to a physical handover.
+    #[serde(default)]
+    pub reference: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct RemitResponse {
+    /// Still outstanding after this handover, so a courier watches the debt go
+    /// down rather than having to ask again.
+    cash_still_held_cents: i64,
 }
 
 /// `GET /v1/field-ops/couriers/supply?lat=&lng=&radius_km=`

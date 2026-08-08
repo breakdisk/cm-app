@@ -65,6 +65,9 @@ pub struct CourierAssignment {
     /// how they were computed — pricing is a product decision.
     pub trip_cents:   i64,
     pub tip_cents:    i64,
+    /// Cash to collect at the door, also declared by the product. 0 when there
+    /// is nothing to collect — a prepaid order, once that rail exists.
+    pub cod_amount_cents: i64,
     pub status:       AssignmentStatus,
     pub offered_at:   DateTime<Utc>,
     pub claimed_at:   Option<DateTime<Utc>>,
@@ -75,7 +78,7 @@ pub struct CourierAssignment {
 
 impl CourierAssignment {
     pub fn offer(tenant_id: Uuid, courier_id: Uuid, product: ProductKey, external_ref: Uuid) -> Self {
-        Self::offer_with_earnings(tenant_id, courier_id, product, external_ref, 0, 0)
+        Self::offer_with_earnings(tenant_id, courier_id, product, external_ref, 0, 0, 0)
     }
 
     /// Offer a job at a stated rate. The zero-earning `offer` above exists for
@@ -87,6 +90,7 @@ impl CourierAssignment {
         external_ref: Uuid,
         trip_cents: i64,
         tip_cents: i64,
+        cod_amount_cents: i64,
     ) -> Self {
         let now = Utc::now();
         Self {
@@ -97,6 +101,7 @@ impl CourierAssignment {
             external_ref,
             trip_cents,
             tip_cents,
+            cod_amount_cents,
             status: AssignmentStatus::Offered,
             offered_at: now,
             claimed_at: None,

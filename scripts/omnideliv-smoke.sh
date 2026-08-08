@@ -151,13 +151,6 @@ if [ -n "${COURIER_TOKEN:-}" ]; then
   # look manually, which meant nobody did.
   COURIER_BAL=$(curl -sf -H "Authorization: Bearer $COURIER_TOKEN"     "$FIELD_OPS/v1/field-ops/couriers/me/earnings"     | grep -o '"balance_cents":[0-9-]*' | head -1 | cut -d: -f2)
 
-  [ "$COURIER_BAL" = "3500" ] || {
-    echo "     courier earned '$COURIER_BAL', expected 3500."
-    echo "     Zero means the claimed assignment declared no pay — check that"
-    echo "     step 7 claimed checkout's assignment and not a second one."
-    exit 1
-  }
-  echo "     courier earned $COURIER_BAL"
 
   # The vendor's own view. Needs a portal login linked to the store via
   # omnideliv.vendors.user_id, so it is checked only when one is supplied.
@@ -170,6 +163,25 @@ if [ -n "${COURIER_TOKEN:-}" ]; then
     echo "     vendor payout not checked (set VENDOR_TOKEN to a store's portal login)"
   fi
 
+  # ── COD: the courier is holding the customer's cash ───────────────────────
+  #
+  # 3500 earned minus 38900 collected = -35400. A positive balance here would
+  # mean we were about to pay a courier money they are already holding.
+  [ "$COURIER_BAL" = "-35400" ] || {
+    echo "     courier balance '$COURIER_BAL', expected -35400 (3500 earned less 38900 cash held)."
+    echo "     A positive balance means the COD debit never landed."
+    exit 1
+  }
+  echo "     courier holds the customer's cash: balance $COURIER_BAL"
+
+  curl -sf -X POST -H "Authorization: Bearer $COURIER_TOKEN" -H "Content-Type: application/json"     "$FIELD_OPS/v1/field-ops/couriers/me/remit"     -d '{"amount_cents":38900,"reference":"smoke-test"}' >/dev/null || {
+      echo "     remittance failed"; exit 1; }
+
+  AFTER=$(curl -sf -H "Authorization: Bearer $COURIER_TOKEN"     "$FIELD_OPS/v1/field-ops/couriers/me/earnings"     | grep -o '"balance_cents":[0-9-]*' | head -1 | cut -d: -f2)
+  [ "$AFTER" = "3500" ] || {
+    echo "     after remitting, balance is '$AFTER', expected 3500"; exit 1; }
+  echo "     after remitting, the platform owes the courier $AFTER"
+
   echo
-  echo "PASS — full lifecycle: placed, collected, delivered, both parties paid."
+  echo "PASS — full lifecycle: placed, collected, delivered, cash remitted, everyone square."
 fi

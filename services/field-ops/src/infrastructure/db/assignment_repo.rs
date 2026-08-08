@@ -59,6 +59,7 @@ fn map_row(r: &sqlx::postgres::PgRow) -> anyhow::Result<CourierAssignment> {
         product:      ProductKey::new(product),
         external_ref: r.get("external_ref"),
         trip_cents:   r.get("trip_cents"),
+        cod_amount_cents: r.get("cod_amount_cents"),
         tip_cents:    r.get("tip_cents"),
         status: match status.as_str() {
             "offered"   => AssignmentStatus::Offered,
@@ -83,9 +84,10 @@ impl AssignmentRepository for PgAssignmentRepository {
             r#"
             INSERT INTO field_ops.courier_assignments (
                 id, tenant_id, courier_id, product, external_ref, trip_cents, tip_cents,
-                status, offered_at, claimed_at, completed_at, heartbeat_at, created_at
+                status, offered_at, claimed_at, completed_at, heartbeat_at, created_at,
+                cod_amount_cents
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
             ON CONFLICT (id) DO UPDATE SET
                 status       = EXCLUDED.status,
                 claimed_at   = EXCLUDED.claimed_at,
@@ -98,7 +100,7 @@ impl AssignmentRepository for PgAssignmentRepository {
         .bind(a.trip_cents).bind(a.tip_cents)
         .bind(a.status.as_str())
         .bind(a.offered_at).bind(a.claimed_at).bind(a.completed_at)
-        .bind(a.heartbeat_at).bind(a.created_at)
+        .bind(a.heartbeat_at).bind(a.created_at).bind(a.cod_amount_cents)
         .execute(&self.pool)
         .await?;
         Ok(())

@@ -127,6 +127,7 @@ impl CourierDispatch for FieldOpsDispatch {
         radius_km: f64,
         trip_cents: i64,
         tip_cents: i64,
+        cod_amount_cents: i64,
     ) -> anyhow::Result<Vec<Uuid>> {
         // Tenant is not sent in the body: field-ops reads it from the token, and
         // a caller-supplied tenant would let one tenant offer work to another's
@@ -147,6 +148,7 @@ impl CourierDispatch for FieldOpsDispatch {
                 "radius_km":    radius_km,
                 "trip_cents":   trip_cents,
                 "tip_cents":    tip_cents,
+                "cod_amount_cents": cod_amount_cents,
             }))
             .send()
             .await?;

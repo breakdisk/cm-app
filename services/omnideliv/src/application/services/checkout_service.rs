@@ -64,6 +64,12 @@ pub trait CourierDispatch: Send + Sync {
     /// `radius_km` is explicit so a retry can widen the search. The first offer
     /// goes near; an order nobody took goes wider, which is the only lever
     /// available before giving up and calling a human.
+    ///
+    /// `cod_amount_cents` is the cash the courier collects at the door. Today
+    /// it is the order's grand total, because every OmniDeliv order is
+    /// cash-on-delivery. It becomes 0 for prepaid orders when that rail exists
+    /// — an amount rather than a payment-method flag, so that change is a value
+    /// change and not a new branch through dispatch.
     async fn offer(
         &self,
         tenant_id: Uuid,
@@ -73,6 +79,7 @@ pub trait CourierDispatch: Send + Sync {
         radius_km: f64,
         trip_cents: i64,
         tip_cents: i64,
+        cod_amount_cents: i64,
     ) -> anyhow::Result<Vec<Uuid>>;
 }
 
@@ -176,7 +183,9 @@ impl CheckoutService {
         let offered = self
             .dispatch
             .offer(tenant_id, order.id, delivery_lat, delivery_lng, FIRST_OFFER_RADIUS_KM,
-                   order.courier_trip_cents, order.tip_cents)
+                   order.courier_trip_cents, order.tip_cents,
+                   // COD: the customer pays the whole thing at the door.
+                   order.grand_total_cents)
             .await
             .map_err(CheckoutError::Other)?;
 

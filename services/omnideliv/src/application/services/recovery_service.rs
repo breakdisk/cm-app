@@ -106,7 +106,8 @@ impl RecoveryService {
                     match self
                         .dispatch
                         .offer(order.tenant_id, order.id, lat, lng, RETRY_RADIUS_KM,
-                               order.courier_trip_cents, order.tip_cents)
+                               order.courier_trip_cents, order.tip_cents,
+                               order.grand_total_cents)
                         .await
                     {
                         Ok(ids) if ids.is_empty() => {
@@ -277,13 +278,15 @@ mod sweep_tests {
     #[derive(Default)]
     struct Dispatch {
         calls: Mutex<Vec<(Uuid, f64, f64, f64)>>,
+        cod:   Mutex<Vec<i64>>,
         fail:  bool,
     }
     #[async_trait::async_trait]
     impl CourierDispatch for Dispatch {
         async fn offer(&self, _t: Uuid, order_id: Uuid, lat: f64, lng: f64, radius_km: f64,
-                       _trip: i64, _tip: i64) -> anyhow::Result<Vec<Uuid>> {
+                       _trip: i64, _tip: i64, cod: i64) -> anyhow::Result<Vec<Uuid>> {
             self.calls.lock().unwrap().push((order_id, lat, lng, radius_km));
+            self.cod.lock().unwrap().push(cod);
             if self.fail { anyhow::bail!("field-ops unreachable") }
             Ok(vec![Uuid::new_v4()])
         }
@@ -331,6 +334,8 @@ mod sweep_tests {
 
         assert!(telemetry.0.lock().unwrap().iter().any(|e| e == event_type::COURIER_REOFFERED),
                 "the timeline must record that we tried again");
+        assert_eq!(dispatch.cod.lock().unwrap()[0], 4_900,
+                   "a re-offer must still declare the cash to collect — a courier                     who takes the retry and collects nothing leaves the order unpaid");
         assert_eq!(escalated, 0, "a retried order is not an escalation");
     }
 
