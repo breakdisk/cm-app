@@ -30,6 +30,7 @@ fn map_pair(r: &sqlx::postgres::PgRow) -> anyhow::Result<ItemWithAvailability> {
         price_cents:    r.get("price_cents"),
         modifiers:      r.get("modifiers"),
         allergens:      r.get("allergens"),
+        allergens_declared_at: r.get("allergens_declared_at"),
         dietary_tags:   r.get("dietary_tags"),
         vertical_attrs: r.get("vertical_attrs"),
         is_listed:      r.get("is_listed"),
@@ -185,6 +186,28 @@ impl CatalogRepository for PgCatalogRepository {
         rows.iter().map(map_pair).collect()
     }
 
+    async fn declare_allergens(
+        &self,
+        tenant_id: Uuid,
+        item_id: Uuid,
+        allergens: &[String],
+    ) -> anyhow::Result<bool> {
+        // NOW() server-side, like the availability stamp: an attestation is
+        // only meaningful if it records when it reached us, not when a client
+        // claims it was made.
+        let res = sqlx::query(
+            r#"
+            UPDATE omnideliv.catalog_items
+               SET allergens = $3, allergens_declared_at = NOW()
+             WHERE tenant_id = $1 AND id = $2
+            "#,
+        )
+        .bind(tenant_id).bind(item_id).bind(allergens)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
     async fn item_facts(
         &self,
         tenant_id: Uuid,
@@ -206,6 +229,7 @@ impl CatalogRepository for PgCatalogRepository {
         let rows = sqlx::query(
             r#"
             SELECT i.id, i.allergens, i.price_cents,
+                   (i.allergens_declared_at IS NOT NULL) AS allergens_declared,
                    v.vertical, v.prep_time_minutes
               FROM omnideliv.catalog_items i
               JOIN omnideliv.vendors v ON v.id = i.vendor_id AND v.tenant_id = i.tenant_id
@@ -223,6 +247,7 @@ impl CatalogRepository for PgCatalogRepository {
             .map(|r| ItemFacts {
                 item_id:           r.get("id"),
                 allergens:         r.get("allergens"),
+                allergens_declared: r.get("allergens_declared"),
                 vertical:          r.get("vertical"),
                 prep_time_minutes: r.get("prep_time_minutes"),
                 price_cents:       r.get("price_cents"),

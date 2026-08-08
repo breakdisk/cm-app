@@ -136,6 +136,16 @@ mod tests {
         assert!(!v.is_orderable());
     }
 
+    /// The gate the onboarding flow relies on. An applied-but-unapproved store
+    /// must not be searchable, proposable by an agent, or orderable — if
+    /// `Onboarding` were orderable, "apply" would be "go live".
+    #[test]
+    fn an_applied_but_unapproved_store_cannot_be_ordered_from() {
+        let v = vendor();
+        assert_eq!(v.status, VendorStatus::Onboarding);
+        assert!(!v.is_orderable(), "applying is not approval");
+    }
+
     #[test]
     fn only_an_active_vendor_is_orderable() {
         let mut v = vendor();

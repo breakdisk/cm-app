@@ -82,6 +82,17 @@ pub trait CatalogRepository: Send + Sync {
         tenant_id: Uuid,
         item_ids: &[Uuid],
     ) -> anyhow::Result<Vec<ItemFacts>>;
+
+    /// Record a vendor's assertion of an item's contents, stamping the time.
+    ///
+    /// An empty list is a real answer here — "I confirm it contains none of
+    /// these" — which is precisely what an undeclared item cannot say.
+    async fn declare_allergens(
+        &self,
+        tenant_id: Uuid,
+        item_id: Uuid,
+        allergens: &[String],
+    ) -> anyhow::Result<bool>;
 }
 
 /// Catalog truth about one item: the item's own fields plus the two that live
@@ -91,6 +102,8 @@ pub trait CatalogRepository: Send + Sync {
 pub struct ItemFacts {
     pub item_id:           Uuid,
     pub allergens:         Vec<String>,
+    /// NULL `allergens_declared_at` in the database. See migration 0014.
+    pub allergens_declared: bool,
     pub vertical:          String,
     pub prep_time_minutes: i32,
     pub price_cents:       i64,

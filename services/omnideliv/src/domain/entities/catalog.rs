@@ -19,6 +19,9 @@ pub struct CatalogItem {
     pub price_cents:    i64,
     pub modifiers:      serde_json::Value,
     pub allergens:      Vec<String>,
+    /// When a vendor last asserted the contents. `None` means never — which is
+    /// not the same as "contains none". See migration 0014.
+    pub allergens_declared_at: Option<DateTime<Utc>>,
     pub dietary_tags:   Vec<String>,
     pub vertical_attrs: serde_json::Value,
     pub is_listed:      bool,

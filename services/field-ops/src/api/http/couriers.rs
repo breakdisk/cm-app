@@ -131,6 +131,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/v1/field-ops/assignments/:id/claim", post(claim))
         .route("/v1/field-ops/assignments/:id/collected", post(collected))
         .route("/v1/field-ops/assignments/:id/delivered", post(delivered))
+        .route("/v1/field-ops/couriers/register", post(register))
         .route("/v1/field-ops/couriers/me/earnings", get(my_earnings))
         .route("/v1/field-ops/couriers/me/remit", post(remit))
         .route("/v1/field-ops/admin/payouts/run", post(run_payout))
@@ -252,6 +253,58 @@ async fn my_earnings(
             })
             .collect(),
     }))
+}
+
+/// `POST /v1/field-ops/couriers/register` — a courier signs up.
+///
+/// The user comes from the token, so nobody can register on someone else's
+/// behalf. Registers **offline**: going on duty is a separate, deliberate act.
+/// Until now the only way a courier existed was an INSERT by hand.
+async fn register(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Json(req): Json<RegisterRequest>,
+) -> Result<Json<CourierProfile>, StatusCode> {
+    if req.first_name.trim().is_empty() || req.phone.trim().is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let c = st
+        .dispatch
+        .register_courier(
+            claims.tenant_id, claims.user_id,
+            req.first_name.trim().to_owned(),
+            req.last_name.trim().to_owned(),
+            req.phone.trim().to_owned(),
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "courier registration failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(CourierProfile {
+        id: c.id,
+        first_name: c.first_name,
+        last_name: c.last_name,
+        status: c.status.as_str().to_string(),
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RegisterRequest {
+    pub first_name: String,
+    #[serde(default)]
+    pub last_name:  String,
+    pub phone:      String,
+}
+
+#[derive(Debug, Serialize)]
+struct CourierProfile {
+    id:         Uuid,
+    first_name: String,
+    last_name:  String,
+    status:     String,
 }
 
 /// `POST /v1/field-ops/admin/payouts/run` — pay everyone who is owed.

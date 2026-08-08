@@ -18,6 +18,10 @@ use crate::transition::ProposedLine;
 pub struct ItemFacts {
     pub item_id:           Uuid,
     pub allergens:         Vec<String>,
+    /// False when nobody ever declared this item's contents. An empty
+    /// `allergens` list then means "unknown", not "contains none" — and the two
+    /// must never be treated the same for a customer avoiding an allergen.
+    pub allergens_declared: bool,
     pub vertical:          String,
     pub prep_time_minutes: i32,
     pub price_cents:       i64,
@@ -30,6 +34,10 @@ pub enum ConflictKind {
     AllergenViolation { item_id: Uuid, allergen: String },
     /// The runner could not resolve the item in the catalog.
     UnverifiableItem { item_id: Uuid },
+    /// The customer stated an allergy and this item's contents were never
+    /// declared. Blocking: an undeclared item is not a safe item, it is an
+    /// unknown one, and serving it as safe is the failure this exists to stop.
+    AllergensNotDeclared { item_id: Uuid },
     BudgetExceeded { limit_cents: i64, actual_cents: i64 },
     /// Raised once whenever a run filtered on allergens at all.
     ///
@@ -108,6 +116,20 @@ pub fn detect(
             });
             continue;
         };
+
+        // Undeclared beats declared-and-clean. Checked *before* the allergen
+        // match, because an undeclared item has an empty list and would
+        // otherwise sail through the match below looking exactly like an item
+        // a vendor had confirmed was free of everything.
+        if !avoid.is_empty() && !facts.allergens_declared {
+            conflicts.push(Conflict {
+                kind: ConflictKind::AllergensNotDeclared { item_id: line.item_id },
+                blocking: true,
+                description: "We left out an item because the shop hasn't listed what's in it, and you asked us to avoid something. We won't guess."
+                    .into(),
+            });
+            continue;
+        }
 
         if let Some(hit) = facts.allergens.iter().find(|a| avoid.contains(&a.to_lowercase())) {
             conflicts.push(Conflict {
@@ -216,10 +238,13 @@ mod tests {
         items.into_iter().map(|f| (f.item_id, f)).collect()
     }
 
+    /// Declared by default: these fixtures represent items a vendor described.
+    /// `undeclared()` below is the deliberate opposite.
     fn item(allergens: &[&str], vertical: &str, prep: i32, price: i64) -> ItemFacts {
         ItemFacts {
             item_id:           Uuid::new_v4(),
             allergens:         allergens.iter().map(|s| (*s).to_string()).collect(),
+            allergens_declared: true,
             vertical:          vertical.into(),
             prep_time_minutes: prep,
             price_cents:       price,
@@ -301,6 +326,54 @@ mod tests {
         let blocking: Vec<_> = conflicts.iter().filter(|c| c.blocking).collect();
         assert_eq!(blocking.len(), 1);
         assert!(matches!(blocking[0].kind, ConflictKind::UnverifiableItem { .. }));
+    }
+
+    /// An item nobody described. Empty allergens, no declaration — which is
+    /// exactly what an undeclared peanut dish looks like in the database.
+    fn undeclared(vertical: &str, prep: i32, price: i64) -> ItemFacts {
+        ItemFacts { allergens_declared: false, ..item(&[], vertical, prep, price) }
+    }
+
+    /// THE BUG THIS EXISTS TO STOP.
+    ///
+    /// Before `allergens_declared`, an empty array meant both "contains none of
+    /// them" and "nobody filled this in". A customer said "no peanuts", an
+    /// undeclared peanut dish had an empty array, and it passed the filter and
+    /// was served as screened. The system reported it had checked the basket;
+    /// it had checked the items somebody bothered to describe.
+    #[test]
+    fn an_undeclared_item_is_refused_when_the_customer_stated_an_allergy() {
+        let mystery = undeclared("restaurant", 20, 30_000);
+        let c = ctx(None, &["peanuts"], facts(vec![mystery.clone()]));
+        let (kept, conflicts) = detect(vec![line(mystery.item_id, 1, 30_000)], &c);
+
+        assert!(kept.is_empty(), "an undeclared item is unknown, not safe");
+        assert!(conflicts.iter().any(|c| c.blocking
+            && matches!(c.kind, ConflictKind::AllergensNotDeclared { .. })));
+    }
+
+    /// The distinction is the whole point: a vendor who declared "contains
+    /// nothing" is trusted, one who said nothing is not — and the two are
+    /// stored identically without the timestamp.
+    #[test]
+    fn a_declared_allergen_free_item_is_still_served() {
+        let declared = item(&[], "restaurant", 20, 25_000);
+        let c = ctx(None, &["peanuts"], facts(vec![declared.clone()]));
+        let (kept, _) = detect(vec![line(declared.item_id, 1, 25_000)], &c);
+
+        assert_eq!(kept.len(), 1, "an explicit 'contains none' is an answer");
+    }
+
+    /// A customer with no stated allergy is unaffected. Refusing undeclared
+    /// items to everyone would empty most baskets for no safety gain.
+    #[test]
+    fn an_undeclared_item_is_fine_when_no_allergy_was_stated() {
+        let mystery = undeclared("grocery", 5, 8_000);
+        let c = ctx(None, &[], facts(vec![mystery.clone()]));
+        let (kept, conflicts) = detect(vec![line(mystery.item_id, 1, 8_000)], &c);
+
+        assert_eq!(kept.len(), 1);
+        assert!(conflicts.is_empty());
     }
 
     /// The case that matters most. A customer said "no peanuts", nothing was

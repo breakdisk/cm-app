@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use axum::{extract::{Query, State}, http::StatusCode, routing::get, Json, Router};
+use axum::{extract::{Path, Query, State}, http::StatusCode, routing::{get, post}, Json, Router};
 use logisticos_auth::middleware::AuthClaims;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -56,6 +56,8 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/v1/omnideliv/vendors", get(list_near))
         .route("/v1/omnideliv/vendors/me", get(me).patch(patch_me))
         .route("/v1/omnideliv/vendors/me/earnings", get(my_earnings))
+        .route("/v1/omnideliv/vendors/apply", post(apply))
+        .route("/v1/omnideliv/admin/vendors/:id/approve", post(approve))
 }
 
 async fn list_near(
@@ -116,6 +118,80 @@ async fn me(
         prep_time_minutes: vendor.prep_time_minutes,
         status: vendor.status.as_str().to_string(),
     }))
+}
+
+/// `POST /v1/omnideliv/vendors/apply` — a store applies to sell.
+///
+/// Creates it in `onboarding`, which `is_orderable()` excludes — so it cannot
+/// be searched, proposed by an agent, or ordered from until someone approves
+/// it. Until now the only way in was an INSERT by hand.
+async fn apply(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Json(req): Json<ApplyRequest>,
+) -> Result<Json<VendorProfile>, StatusCode> {
+    let vertical = parse_vertical(&req.vertical).ok_or(StatusCode::BAD_REQUEST)?;
+    if req.name.trim().is_empty() || req.address.trim().is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let v = st
+        .catalog
+        .apply_as_vendor(
+            claims.tenant_id, claims.user_id, vertical,
+            req.name.trim().to_owned(), req.address.trim().to_owned(),
+            req.lat, req.lng,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "vendor application failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(VendorProfile {
+        id: v.id, name: v.name, address: v.address,
+        prep_time_minutes: v.prep_time_minutes,
+        status: v.status.as_str().to_string(),
+    }))
+}
+
+/// `POST /v1/omnideliv/admin/vendors/:id/approve` — operator approval.
+///
+/// Separate from applying on purpose: a store that could list itself would mean
+/// anyone with a login can put food in front of customers.
+///
+/// NOTE: gated only by `require_auth` today — same open per-role RBAC question
+/// as the payout run, and this route belongs in the same first batch.
+async fn approve(
+    State(st): State<Arc<AppState>>,
+    _claims: AuthClaims,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, StatusCode> {
+    let ok = st.catalog.approve_vendor(_claims.tenant_id, id).await.map_err(|e| {
+        tracing::error!(err = %e, "vendor approval failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    if ok { Ok(StatusCode::NO_CONTENT) } else { Err(StatusCode::NOT_FOUND) }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ApplyRequest {
+    pub vertical: String,
+    pub name:     String,
+    pub address:  String,
+    pub lat:      f64,
+    pub lng:      f64,
+}
+
+fn parse_vertical(s: &str) -> Option<Vertical> {
+    Some(match s {
+        "restaurant" => Vertical::Restaurant,
+        "grocery"    => Vertical::Grocery,
+        "pharmacy"   => Vertical::Pharmacy,
+        "florist"    => Vertical::Florist,
+        "retail"     => Vertical::Retail,
+        _ => return None,
+    })
 }
 
 /// `GET /v1/omnideliv/vendors/me/earnings` — this period's payouts.

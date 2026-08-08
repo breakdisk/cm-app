@@ -159,6 +159,87 @@ impl CatalogService {
         Ok(Some((vendor, scored)))
     }
 
+    /// A store applies to sell.
+    ///
+    /// Lands in `Onboarding`, which `is_orderable()` already excludes — so an
+    /// unapproved store cannot be searched, proposed by an agent, or ordered
+    /// from. The states existed and nothing drove them; this is the front door.
+    ///
+    /// Idempotent on the applicant: a user who applies twice gets their
+    /// existing store back rather than a second one, because a double-tap on a
+    /// signup button must not fork a merchant's identity.
+    // Eight arguments because a store application has eight facts and all are
+    // required. A params struct would move the arity, not remove it, and would
+    // let a caller submit a half-described store.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn apply_as_vendor(
+        &self,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        vertical: Vertical,
+        name: String,
+        address: String,
+        lat: f64,
+        lng: f64,
+    ) -> anyhow::Result<Vendor> {
+        if let Some(existing) = self.vendors.find_by_user(tenant_id, user_id).await? {
+            return Ok(existing);
+        }
+        let mut v = Vendor::new(tenant_id, vertical, name, address, lat, lng);
+        v.user_id = Some(user_id);
+        self.vendors.save(&v).await?;
+        Ok(v)
+    }
+
+    /// An operator approves a store. `Onboarding` -> `Active`.
+    ///
+    /// Deliberately a separate action from applying: letting a store list
+    /// itself would mean anyone with a login can put food in front of
+    /// customers, which is exactly the review this status was designed for.
+    pub async fn approve_vendor(&self, tenant_id: Uuid, vendor_id: Uuid) -> anyhow::Result<bool> {
+        let Some(mut v) = self.vendors.find_by_id(tenant_id, vendor_id).await? else {
+            return Ok(false);
+        };
+        v.activate();
+        self.vendors.save(&v).await?;
+        Ok(true)
+    }
+
+    /// A vendor declares what is in one of their own items.
+    ///
+    /// Same ownership rule as availability — resolved from the token, and a
+    /// foreign item is indistinguishable from a missing one — because the
+    /// consequence here is worse: declaring a competitor's peanut dish
+    /// allergen-free would send it to someone who asked us to avoid peanuts.
+    pub async fn declare_own_item_allergens(
+        &self,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        item_id: Uuid,
+        allergens: Vec<String>,
+    ) -> anyhow::Result<bool> {
+        let Some(vendor) = self.vendors.find_by_user(tenant_id, user_id).await? else {
+            return Ok(false);
+        };
+        let Some(item) = self.catalog.find_item(tenant_id, item_id).await? else {
+            return Ok(false);
+        };
+        if item.vendor_id != vendor.id {
+            return Ok(false);
+        }
+
+        // Normalised on the way in. Matching is case-insensitive at read time,
+        // but storing "Peanuts" and "peanuts" as different strings makes the
+        // vendor's own list read as if it had duplicates.
+        let normalised: Vec<String> = allergens
+            .iter()
+            .map(|a| a.trim().to_lowercase())
+            .filter(|a| !a.is_empty())
+            .collect();
+
+        self.catalog.declare_allergens(tenant_id, item_id, &normalised).await
+    }
+
     pub async fn set_own_item_availability(
         &self,
         tenant_id: Uuid,

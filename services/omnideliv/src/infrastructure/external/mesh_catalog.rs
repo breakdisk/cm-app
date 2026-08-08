@@ -144,6 +144,7 @@ impl MeshCatalog for CatalogServiceAdapter {
             .map(|f| omnideliv_mesh::ItemFacts {
                 item_id:           f.item_id,
                 allergens:         f.allergens,
+                allergens_declared: f.allergens_declared,
                 vertical:          f.vertical,
                 prep_time_minutes: f.prep_time_minutes,
                 price_cents:       f.price_cents,

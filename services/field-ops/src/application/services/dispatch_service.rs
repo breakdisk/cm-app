@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::domain::entities::{CourierAssignment, CourierLocation, ProductKey};
+use crate::domain::entities::{Courier, CourierAssignment, CourierLocation, ProductKey};
 use crate::domain::repositories::CourierRepository;
 use crate::domain::entities::CourierLedger;
 use crate::infrastructure::db::{
@@ -134,6 +134,36 @@ impl DispatchService {
             offers.push(a);
         }
         Ok(offers)
+    }
+
+    /// A courier signs up.
+    ///
+    /// Registers as **offline**, not available: a new courier must go on duty
+    /// deliberately, and starting them available would put someone who has just
+    /// tapped "sign up" into the next proximity search.
+    ///
+    /// Idempotent on the user — signing up twice returns the existing profile
+    /// rather than creating a second one, which the `id = user_id` invariant
+    /// (ADR-0015) would reject anyway. Better to return their profile than an
+    /// error they cannot act on.
+    pub async fn register_courier(
+        &self,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        first_name: String,
+        last_name: String,
+        phone: String,
+    ) -> anyhow::Result<Courier> {
+        if let Some(existing) = self.couriers.find_by_user(tenant_id, user_id).await? {
+            return Ok(existing);
+        }
+        let mut c = Courier::new(tenant_id, user_id, first_name, last_name, phone);
+        // The collapse from ADR-0015: one identity for a field worker. Set
+        // explicitly rather than relying on the constructor, because this is
+        // the invariant `drivers_id_is_user_id` enforces on the sibling table.
+        c.id = user_id;
+        self.couriers.save(&c).await?;
+        Ok(c)
     }
 
     /// Pay every courier who is owed money for a period.

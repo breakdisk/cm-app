@@ -40,6 +40,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/v1/omnideliv/catalog/search", get(search))
         .route("/v1/omnideliv/catalog/mine", get(my_items))
         .route("/v1/omnideliv/catalog/items/:id/availability", patch(set_availability))
+        .route("/v1/omnideliv/catalog/items/:id/allergens", patch(declare_allergens))
 }
 
 /// A vendor declaring stock.
@@ -75,6 +76,37 @@ async fn set_availability(
     }
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `PATCH /v1/omnideliv/catalog/items/:id/allergens` — declare what is in it.
+///
+/// An empty list is a real answer: "I confirm it contains none of these". That
+/// is the statement an undeclared item cannot make, and until a vendor makes it
+/// the item is refused to any customer who states an allergy.
+async fn declare_allergens(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Path(item_id): Path<Uuid>,
+    Json(req): Json<DeclareAllergensRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let ok = st
+        .catalog
+        .declare_own_item_allergens(claims.tenant_id, claims.user_id, item_id, req.allergens)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "allergen declaration failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    // 404 for a foreign item, matching availability: a vendor must not be able
+    // to probe whether an item id belongs to a competitor.
+    if ok { Ok(StatusCode::NO_CONTENT) } else { Err(StatusCode::NOT_FOUND) }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeclareAllergensRequest {
+    /// Empty means "none of them", not "unknown".
+    pub allergens: Vec<String>,
 }
 
 /// `GET /v1/omnideliv/catalog/mine` — the authenticated vendor's catalog.
@@ -113,6 +145,7 @@ async fn my_items(
                 sku:   s.item_with_availability.item.sku.clone(),
                 price_cents: s.item_with_availability.item.price_cents,
                 allergens:   s.item_with_availability.item.allergens.clone(),
+                allergens_declared: s.item_with_availability.item.allergens_declared_at.is_some(),
                 is_listed:   s.item_with_availability.item.is_listed,
                 availability: s.item_with_availability.availability.state.as_str().to_string(),
                 confirmed_at: s.item_with_availability.availability.updated_at,
@@ -129,6 +162,10 @@ struct MyItem {
     sku:          String,
     price_cents:  i64,
     allergens:    Vec<String>,
+    /// False means nobody has said what is in this. Not the same as "no
+    /// allergens" — an undeclared item is refused to any customer who states
+    /// an allergy, so this is the vendor's most consequential empty field.
+    allergens_declared: bool,
     is_listed:    bool,
     availability: String,
     /// When the vendor last confirmed this. The freshness clock runs from here.

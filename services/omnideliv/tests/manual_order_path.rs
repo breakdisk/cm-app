@@ -72,6 +72,7 @@ async fn a_customer_can_build_and_check_out_a_basket_without_the_mesh() {
         sku: "milk-1l".into(), name: "Milk 1L".into(), description: None,
         price_cents: 8_500, modifiers: serde_json::json!([]),
         allergens: vec![], dietary_tags: vec![], vertical_attrs: serde_json::json!({}),
+        allergens_declared_at: Some(chrono::Utc::now()),
         is_listed: true, created_at: now, updated_at: now,
     };
     catalog.save_item(&item).await.expect("save item");

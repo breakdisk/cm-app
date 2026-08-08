@@ -67,6 +67,7 @@ async fn a_basket_with_a_substitution_chain_survives_a_round_trip() {
             id: Uuid::new_v4(), tenant_id: tenant, vendor_id: vendor.id,
             sku: sku.into(), name: sku.into(), description: None, price_cents: price,
             modifiers: serde_json::json!([]), allergens: vec![], dietary_tags: vec![],
+            allergens_declared_at: Some(now),
             vertical_attrs: serde_json::json!({}), is_listed: true,
             created_at: now, updated_at: now,
         }

@@ -730,11 +730,11 @@ mod tests {
 
         let mut facts = std::collections::HashMap::new();
         facts.insert(safe, crate::conflict::ItemFacts {
-            item_id: safe, allergens: vec![], vertical: "restaurant".into(),
+            item_id: safe, allergens: vec![], allergens_declared: true, vertical: "restaurant".into(),
             prep_time_minutes: 20, price_cents: 25_000,
         });
         facts.insert(peanut, crate::conflict::ItemFacts {
-            item_id: peanut, allergens: vec!["peanuts".into()], vertical: "restaurant".into(),
+            item_id: peanut, allergens: vec!["peanuts".into()], allergens_declared: true, vertical: "restaurant".into(),
             prep_time_minutes: 20, price_cents: 30_000,
         });
 
@@ -1044,6 +1044,7 @@ mod tests {
             Ok(ids.iter().filter(|id| **id == PEANUT_ITEM).map(|id| crate::conflict::ItemFacts {
                 item_id: *id,
                 allergens: vec!["Peanuts".into()],
+                allergens_declared: true,
                 vertical: "restaurant".into(),
                 prep_time_minutes: 20,
                 price_cents: 30_000,
