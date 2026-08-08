@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::{extract::{Path, State}, http::StatusCode, routing::{get, post}, Json, Router};
+use axum::{extract::{Path, Query, State}, http::StatusCode, routing::{get, post}, Json, Router};
 use logisticos_auth::middleware::AuthClaims;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -34,8 +34,25 @@ pub struct OfferResponse {
     pub assignment_ids: Vec<Uuid>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SupplyQuery {
+    lat: f64,
+    lng: f64,
+    #[serde(default = "default_supply_radius")]
+    radius_km: f64,
+}
+
+fn default_supply_radius() -> f64 { 5.0 }
+
 #[derive(Debug, Serialize)]
-pub struct OfferSummary {
+struct SupplyResponse {
+    /// Couriers who could be offered this job right now. Capped — see
+    /// `supply_near`. Zero is a real answer, not an error.
+    available: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct OfferSummary {
     assignment_id: Uuid,
     product:       String,
     external_ref:  Uuid,
@@ -92,6 +109,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/v1/field-ops/assignments/:id/claim", post(claim))
         .route("/v1/field-ops/assignments/:id/collected", post(collected))
         .route("/v1/field-ops/assignments/:id/delivered", post(delivered))
+        .route("/v1/field-ops/couriers/supply", get(supply))
         .route("/v1/field-ops/couriers/:id/position", post(position))
 }
 
@@ -165,6 +183,28 @@ async fn claim(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
     Ok(Json(ClaimResponse { won }))
+}
+
+/// `GET /v1/field-ops/couriers/supply?lat=&lng=&radius_km=`
+///
+/// Read-only capacity check for a product deciding whether it can promise a
+/// delivery. Deliberately a count and not a list: a consuming product has no
+/// business knowing which couriers exist, only whether anyone can take the job.
+async fn supply(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Query(q): Query<SupplyQuery>,
+) -> Result<Json<SupplyResponse>, StatusCode> {
+    let available = st
+        .dispatch
+        .supply_near(claims.tenant_id, q.lat, q.lng, q.radius_km)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "supply lookup failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(SupplyResponse { available }))
 }
 
 async fn position(

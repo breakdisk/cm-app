@@ -78,6 +78,40 @@ impl FieldOpsDispatch {
 }
 
 #[derive(Debug, Deserialize)]
+struct SupplyResponse {
+    available: usize,
+}
+
+#[async_trait]
+impl crate::application::services::CourierSupply for FieldOpsDispatch {
+    async fn available_near(
+        &self,
+        tenant_id: Uuid,
+        lat: f64,
+        lng: f64,
+        radius_km: f64,
+    ) -> anyhow::Result<usize> {
+        let token = self.mint(tenant_id)?;
+
+        let res = self
+            .http
+            .get(format!("{}/v1/field-ops/couriers/supply", self.base_url))
+            .bearer_auth(token)
+            .query(&[("lat", lat), ("lng", lng), ("radius_km", radius_km)])
+            .send()
+            .await?;
+
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            anyhow::bail!("field-ops supply lookup failed: {status} {body}");
+        }
+
+        Ok(res.json::<SupplyResponse>().await?.available)
+    }
+}
+
+#[derive(Debug, Deserialize)]
 struct OfferResponse {
     assignment_ids: Vec<Uuid>,
 }

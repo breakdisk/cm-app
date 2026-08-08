@@ -119,6 +119,30 @@ impl DispatchService {
         Ok(offers)
     }
 
+    /// How many couriers could take a job here right now.
+    ///
+    /// The same query that backs dispatch, so the number a product plans
+    /// against is the number it would actually get offered to — a count from a
+    /// looser predicate would promise supply that dispatch then cannot find.
+    pub async fn supply_near(
+        &self,
+        tenant_id: Uuid,
+        lat: f64,
+        lng: f64,
+        radius_km: f64,
+    ) -> anyhow::Result<usize> {
+        // The limit is a ceiling on the answer, not a page size: a product
+        // deciding whether to promise a delivery window does not care whether
+        // there are 40 couriers or 400, and an unbounded scan on a busy tenant
+        // would be a slow query on a read path an agent calls per run.
+        const SUPPLY_CEILING: i64 = 50;
+        Ok(self
+            .couriers
+            .find_available_near(tenant_id, lat, lng, radius_km, SUPPLY_CEILING)
+            .await?
+            .len())
+    }
+
     /// The open offers waiting for one courier.
     ///
     /// `offer_to_nearest` returns ids to the *dispatching product*, not to the

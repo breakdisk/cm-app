@@ -29,6 +29,23 @@ pub enum CheckoutError {
     Other(#[from] anyhow::Error),
 }
 
+/// Read-only capacity, for deciding whether a delivery can be promised.
+///
+/// Separate from `CourierDispatch` because the callers are different: this is
+/// what the Fleet agent asks while planning, and it must never be able to
+/// dispatch as a side effect of asking.
+#[async_trait::async_trait]
+pub trait CourierSupply: Send + Sync {
+    /// Couriers who could take a job at this point right now.
+    async fn available_near(
+        &self,
+        tenant_id: Uuid,
+        lat: f64,
+        lng: f64,
+        radius_km: f64,
+    ) -> anyhow::Result<usize>;
+}
+
 /// Placing an order requires a courier. The trait keeps `services/omnideliv`
 /// from depending on field-ops types directly — a product service calling a
 /// platform service through an interface it owns, not the reverse.

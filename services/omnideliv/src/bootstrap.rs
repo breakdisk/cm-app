@@ -64,6 +64,12 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::new(PgCatalogRepository::new(pool.clone())),
     ));
 
+    // One client for both directions of the field-ops conversation: dispatch
+    // (write) and supply (read). Same base url, same signer, one connection
+    // pool — and `CourierSupply` is a separate trait so the Fleet agent's
+    // capacity question can never dispatch as a side effect of being asked.
+    let field_ops = Arc::new(FieldOpsDispatch::new(cfg.field_ops_url.clone(), jwt.clone()));
+
     // The mesh writes through BasketService like every other caller, so it
     // inherits the optimistic lock rather than opening a second write path.
     let mesh = Arc::new(omnideliv_mesh::MeshRunner::new(
@@ -73,7 +79,10 @@ pub async fn run() -> anyhow::Result<()> {
             cfg.claude_max_tokens,
         )),
         Arc::new(omnideliv_mesh::tools::MeshToolBox::new(
-            Arc::new(CatalogServiceAdapter::new(catalog.clone())),
+            Arc::new(
+                CatalogServiceAdapter::new(catalog.clone())
+                    .with_supply(field_ops.clone()),
+            ),
             // KNOWN LIMITATION: the tool box binds tenant and delivery address
             // at construction, so today every run searches from the configured
             // default rather than the customer's address. Correct for a
@@ -101,7 +110,7 @@ pub async fn run() -> anyhow::Result<()> {
         // The signer, not a token: field-ops validates `exp` and reads
         // `tenant_id` from the claim set, so the token has to be minted per
         // call with the caller's tenant. See field_ops_dispatch.rs.
-        Arc::new(FieldOpsDispatch::new(cfg.field_ops_url.clone(), jwt.clone())),
+        field_ops.clone(),
     ));
     let orders: Arc<dyn OrderRepository> = Arc::new(PgOrderRepository::new(pool.clone()));
     let telemetry: Arc<dyn TelemetryRepository> = Arc::new(PgTelemetryRepository::new(pool.clone()));

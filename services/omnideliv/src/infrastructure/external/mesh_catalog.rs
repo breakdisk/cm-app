@@ -11,15 +11,28 @@ use uuid::Uuid;
 
 use omnideliv_mesh::tools::MeshCatalog;
 
-use crate::application::services::CatalogService;
+use crate::application::services::{CatalogService, CourierSupply};
 use crate::domain::entities::Vertical;
 
 pub struct CatalogServiceAdapter {
     catalog: Arc<CatalogService>,
+    /// Optional on purpose. field-ops may not be deployed in every environment,
+    /// and a Fleet agent that cannot ask about supply should get an honest
+    /// `null` rather than the service failing to start.
+    supply:  Option<Arc<dyn CourierSupply>>,
 }
 
 impl CatalogServiceAdapter {
-    pub fn new(catalog: Arc<CatalogService>) -> Self { Self { catalog } }
+    pub fn new(catalog: Arc<CatalogService>) -> Self {
+        Self { catalog, supply: None }
+    }
+
+    /// Wire the field-ops supply lookup. Without it `courier_supply` answers
+    /// `null`, which the Fleet agent is told to read as "unknown".
+    pub fn with_supply(mut self, supply: Arc<dyn CourierSupply>) -> Self {
+        self.supply = Some(supply);
+        self
+    }
 }
 
 fn parse_vertical(s: &str) -> anyhow::Result<Vertical> {
@@ -31,6 +44,39 @@ fn parse_vertical(s: &str) -> anyhow::Result<Vertical> {
         "retail"     => Vertical::Retail,
         other => anyhow::bail!("unknown vertical from the mesh: {other}"),
     })
+}
+
+/// Shape the Fleet agent's supply answer.
+///
+/// Free rather than a method so the null-vs-zero rule can be tested without
+/// standing up a `CatalogService` and its repositories — the rule is the whole
+/// point, and a test that needs a database to check it would not get written.
+async fn supply_json(
+    supply: Option<&Arc<dyn CourierSupply>>,
+    tenant_id: Uuid,
+    lat: f64,
+    lng: f64,
+    radius_km: f64,
+) -> serde_json::Value {
+    let Some(supply) = supply else {
+        return json!({
+            "available": null,
+            "note": "courier supply lookup is not configured in this environment"
+        });
+    };
+
+    // A failed lookup answers `null`, never zero. Zero means "nobody is
+    // available", which the Fleet agent plans around by declining the delivery;
+    // null means "we could not find out", which it is told to treat as unknown.
+    // Collapsing them turns a field-ops outage into a confident refusal to
+    // take any orders at all.
+    match supply.available_near(tenant_id, lat, lng, radius_km).await {
+        Ok(n) => json!({ "available": n }),
+        Err(e) => {
+            tracing::warn!(err = %e, "courier supply lookup failed; answering unknown");
+            json!({ "available": null, "note": "supply lookup failed" })
+        }
+    }
 }
 
 #[async_trait]
@@ -107,14 +153,66 @@ impl MeshCatalog for CatalogServiceAdapter {
 
     async fn courier_supply(
         &self,
-        _tenant_id: Uuid,
-        _lat: f64,
-        _lng: f64,
-        _radius_km: f64,
+        tenant_id: Uuid,
+        lat: f64,
+        lng: f64,
+        radius_km: f64,
     ) -> anyhow::Result<serde_json::Value> {
-        // Courier supply lives in field-ops. Wiring the cross-service call is
-        // Plan 11's gateway work; until then the Fleet agent sees an explicit
-        // null rather than a fabricated count it would confidently plan against.
-        Ok(json!({ "available": null, "note": "courier supply lookup not yet wired to field-ops" }))
+        Ok(supply_json(self.supply.as_ref(), tenant_id, lat, lng, radius_km).await)
+    }
+}
+
+#[cfg(test)]
+mod supply_tests {
+    use super::*;
+
+    struct Counting(usize);
+    #[async_trait]
+    impl CourierSupply for Counting {
+        async fn available_near(&self, _: Uuid, _: f64, _: f64, _: f64) -> anyhow::Result<usize> {
+            Ok(self.0)
+        }
+    }
+
+    struct Broken;
+    #[async_trait]
+    impl CourierSupply for Broken {
+        async fn available_near(&self, _: Uuid, _: f64, _: f64, _: f64) -> anyhow::Result<usize> {
+            anyhow::bail!("field-ops is down")
+        }
+    }
+
+    /// Zero is a real answer — nobody is free — and the Fleet agent is expected
+    /// to plan around it by declining. It must be a number, not null.
+    #[tokio::test]
+    async fn no_couriers_available_is_zero_not_null() {
+        let s: Arc<dyn CourierSupply> = Arc::new(Counting(0));
+        let v = supply_json(Some(&s), Uuid::new_v4(), 0.0, 0.0, 5.0).await;
+        assert_eq!(v["available"], serde_json::json!(0));
+        assert!(!v["available"].is_null());
+    }
+
+    #[tokio::test]
+    async fn a_real_count_is_returned() {
+        let s: Arc<dyn CourierSupply> = Arc::new(Counting(7));
+        let v = supply_json(Some(&s), Uuid::new_v4(), 0.0, 0.0, 5.0).await;
+        assert_eq!(v["available"], serde_json::json!(7));
+    }
+
+    /// A failed lookup must NOT collapse to zero. Zero means "decline the
+    /// order"; null means "unknown". Conflating them turns a field-ops outage
+    /// into a confident refusal to take any orders at all.
+    #[tokio::test]
+    async fn a_failed_lookup_answers_null_not_zero() {
+        let s: Arc<dyn CourierSupply> = Arc::new(Broken);
+        let v = supply_json(Some(&s), Uuid::new_v4(), 0.0, 0.0, 5.0).await;
+        assert!(v["available"].is_null(), "got {v}");
+    }
+
+    /// Same rule when supply was never wired at all.
+    #[tokio::test]
+    async fn an_unconfigured_lookup_answers_null() {
+        let v = supply_json(None, Uuid::new_v4(), 0.0, 0.0, 5.0).await;
+        assert!(v["available"].is_null());
     }
 }
