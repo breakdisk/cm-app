@@ -22,9 +22,7 @@ import { AlertTriangle, Check, PackageX, RefreshCw, ShieldAlert, Store } from "l
 import { GlassCard } from "@/components/ui/glass-card";
 import { variants } from "@/lib/design-system/tokens";
 import { authFetch } from "@/lib/auth/auth-fetch";
-
-const OMNIDELIV_URL =
-  process.env.NEXT_PUBLIC_OMNIDELIV_URL ?? "http://localhost:8091";
+import { API_BASE } from "@/lib/api/endpoints";
 
 type Availability = "available" | "limited" | "out_of_stock";
 
@@ -85,7 +83,7 @@ export default function Storefront() {
 
   const load = useCallback(async () => {
     try {
-      const res = await authFetch(`${OMNIDELIV_URL}/v1/omnideliv/catalog/mine`);
+      const res = await authFetch(`${API_BASE}/v1/omnideliv/catalog/mine`);
       if (res.status === 404) {
         // Distinct from "no items": this login runs no store at all.
         setNoStore(true);
@@ -95,7 +93,7 @@ export default function Storefront() {
       setCatalog(await res.json());
       setNoStore(false);
 
-      const e = await authFetch(`${OMNIDELIV_URL}/v1/omnideliv/vendors/me/earnings`);
+      const e = await authFetch(`${API_BASE}/v1/omnideliv/vendors/me/earnings`);
       if (e.ok) setEarnings(await e.json());
       setError(null);
     } catch (err) {
@@ -112,7 +110,7 @@ export default function Storefront() {
       setBusy(itemId);
       try {
         const res = await authFetch(
-          `${OMNIDELIV_URL}/v1/omnideliv/catalog/items/${itemId}/availability`,
+          `${API_BASE}/v1/omnideliv/catalog/items/${itemId}/availability`,
           {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -146,7 +144,7 @@ export default function Storefront() {
       setBusy(itemId);
       try {
         const res = await authFetch(
-          `${OMNIDELIV_URL}/v1/omnideliv/catalog/items/${itemId}/allergens`,
+          `${API_BASE}/v1/omnideliv/catalog/items/${itemId}/allergens`,
           {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },

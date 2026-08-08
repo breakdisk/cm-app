@@ -1,8 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Search, Package, Loader2, MapPin, Clock, CheckCircle2, XCircle, Truck, Zap } from "lucide-react";
+
+import { API_BASE } from "@/lib/api-base";
 
 interface TrackingEvent {
   status:    string;
@@ -34,15 +36,26 @@ export default function TrackPage() {
   const [result, setResult]   = useState<TrackingResult | null>(null);
   const [error, setError]     = useState<string | null>(null);
 
-  async function handleSearch(e: React.FormEvent) {
-    e.preventDefault();
-    if (!awb.trim()) return;
+  /**
+   * Look up one tracking number.
+   *
+   * Split out of the submit handler so a link can trigger it. A merchant
+   * shares `/track?awb=CM-…` from the portal; landing on a page that ignores
+   * the number and shows an empty search box asks the customer to re-type
+   * something we already knew, which is the moment most of them give up.
+   */
+  const lookup = useCallback(async (number: string) => {
+    const trimmed = number.trim().toUpperCase();
+    if (!trimmed) return;
     setLoading(true);
     setError(null);
     setResult(null);
     try {
+      // The gateway's unauthenticated tracking route. The previous URL,
+      // `/api/v1/tracking/...`, was relative to this app — which has no such
+      // route handler and never had one, so every lookup 404'd.
       const res = await fetch(
-        `/api/v1/tracking/${awb.trim().toUpperCase()}`
+        `${API_BASE}/v1/tracking/public/${encodeURIComponent(trimmed)}`,
       );
       if (res.status === 404) {
         setError("No shipment found for this tracking number.");
@@ -56,6 +69,25 @@ export default function TrackPage() {
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  /**
+   * Read `?awb=` straight off `window.location` rather than via
+   * `useSearchParams`, which would force this page behind a Suspense boundary
+   * to keep prerendering. The effect only ever runs in the browser, so there is
+   * no server-render to opt out of.
+   */
+  useEffect(() => {
+    const fromLink = new URLSearchParams(window.location.search).get("awb");
+    if (fromLink) {
+      setAwb(fromLink);
+      void lookup(fromLink);
+    }
+  }, [lookup]);
+
+  function handleSearch(e: React.FormEvent) {
+    e.preventDefault();
+    void lookup(awb);
   }
 
   return (
