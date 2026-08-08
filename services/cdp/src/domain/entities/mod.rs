@@ -253,7 +253,8 @@ impl CustomerProfile {
         }
         // Keep top 20 addresses only (by use_count).
         if self.address_history.len() > 20 {
-            self.address_history.sort_by(|a, b| b.use_count.cmp(&a.use_count));
+            self.address_history
+                .sort_by_key(|a| std::cmp::Reverse(a.use_count));
             self.address_history.truncate(20);
         }
     }
