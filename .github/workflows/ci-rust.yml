@@ -404,7 +404,28 @@ jobs:
 
       - name: Initialize base schema
         run: |
-          psql "$DATABASE_URL" -f scripts/db/init.sql 2>/dev/null || true
+          # `|| true` is kept — init.sql is written for a fresh production
+          # cluster and re-running parts of it is expected to complain — but the
+          # output is no longer sent to /dev/null. A silent base-schema step
+          # turns every downstream migration failure into a mystery, which is
+          # exactly how the five below looked before this line changed.
+          psql "$DATABASE_URL" -f scripts/db/init.sql || true
+
+          # Roles the migrations GRANT to. init.sql creates per-service logins
+          # (identity_svc, cdp_svc, …) but the migrations reference a different
+          # set — logisticos_service (6 files), logisticos_app (5), app_role (2)
+          # and logisticos — which nothing in the repo creates. On a clean
+          # database those GRANTs abort the migration, which is why identity,
+          # dispatch, carrier, business-logic and delivery-experience all failed
+          # before running a single test.
+          #
+          # NOLOGIN and unprivileged: these exist so GRANT has a subject, not so
+          # anything can connect as them.
+          for r in logisticos_service logisticos_app app_role logisticos; do
+            psql "$DATABASE_URL" -c \
+              "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='$r')
+               THEN CREATE ROLE $r NOLOGIN; END IF; END \$\$;"
+          done
 
       - name: Run database migrations for ${{ matrix.service }}
         run: |
