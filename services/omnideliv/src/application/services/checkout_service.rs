@@ -29,6 +29,9 @@ pub enum CheckoutError {
     Other(#[from] anyhow::Error),
 }
 
+/// How far the first offer reaches. The recovery sweep widens from here.
+pub const FIRST_OFFER_RADIUS_KM: f64 = 5.0;
+
 /// Read-only capacity, for deciding whether a delivery can be promised.
 ///
 /// Separate from `CourierDispatch` because the callers are different: this is
@@ -57,12 +60,17 @@ pub trait CourierDispatch: Send + Sync {
     /// delivery from what we declare here, because pricing is ours and a
     /// platform tier that computed pay would need every product's tariff.
     #[allow(clippy::too_many_arguments)]
+    ///
+    /// `radius_km` is explicit so a retry can widen the search. The first offer
+    /// goes near; an order nobody took goes wider, which is the only lever
+    /// available before giving up and calling a human.
     async fn offer(
         &self,
         tenant_id: Uuid,
         order_id: Uuid,
         lat: f64,
         lng: f64,
+        radius_km: f64,
         trip_cents: i64,
         tip_cents: i64,
     ) -> anyhow::Result<Vec<Uuid>>;
@@ -161,12 +169,13 @@ impl CheckoutService {
         let mut order = Order::place(
             tenant_id, basket.customer_id, basket.id, plan.id,
             legs, flat_fee_cents, tip_cents, courier_trip_cents,
+            delivery_lat, delivery_lng,
         );
 
         // Only now does anything irreversible happen.
         let offered = self
             .dispatch
-            .offer(tenant_id, order.id, delivery_lat, delivery_lng,
+            .offer(tenant_id, order.id, delivery_lat, delivery_lng, FIRST_OFFER_RADIUS_KM,
                    order.courier_trip_cents, order.tip_cents)
             .await
             .map_err(CheckoutError::Other)?;

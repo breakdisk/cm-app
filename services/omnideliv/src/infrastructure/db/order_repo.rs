@@ -45,12 +45,18 @@ impl OrderRepository for PgOrderRepository {
             INSERT INTO omnideliv.orders (
                 id, tenant_id, customer_id, basket_id, plan_id, status,
                 goods_total_cents, delivery_fee_cents, tip_cents, grand_total_cents,
-                courier_trip_cents, courier_task_id, placed_at, delivered_at
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+                courier_trip_cents, courier_task_id, placed_at, delivered_at,
+                delivery_lat, delivery_lng
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
             ON CONFLICT (id) DO UPDATE SET
                 status          = EXCLUDED.status,
                 courier_task_id = EXCLUDED.courier_task_id,
-                delivered_at    = EXCLUDED.delivered_at
+                delivered_at    = EXCLUDED.delivered_at,
+                -- COALESCE, not a plain assignment: an order loaded from before
+                -- migration 0013 carries NULL coordinates, and saving it after a
+                -- status change must not erase a destination that was set since.
+                delivery_lat    = COALESCE(EXCLUDED.delivery_lat, omnideliv.orders.delivery_lat),
+                delivery_lng    = COALESCE(EXCLUDED.delivery_lng, omnideliv.orders.delivery_lng)
             "#,
         )
         .bind(o.id).bind(o.tenant_id).bind(o.customer_id).bind(o.basket_id).bind(o.plan_id)
@@ -58,6 +64,7 @@ impl OrderRepository for PgOrderRepository {
         .bind(o.goods_total_cents).bind(o.delivery_fee_cents).bind(o.tip_cents)
         .bind(o.grand_total_cents).bind(o.courier_trip_cents)
         .bind(o.courier_task_id).bind(o.placed_at).bind(o.delivered_at)
+        .bind(o.delivery_lat).bind(o.delivery_lng)
         .execute(&mut *tx).await?;
 
         for l in &o.legs {
@@ -107,6 +114,8 @@ impl OrderRepository for PgOrderRepository {
                 basket_id:          r.get("basket_id"),
                 plan_id:            r.get("plan_id"),
                 status:             order_status(&status)?,
+                delivery_lat:       r.get("delivery_lat"),
+                delivery_lng:       r.get("delivery_lng"),
                 goods_total_cents:  r.get("goods_total_cents"),
                 delivery_fee_cents: r.get("delivery_fee_cents"),
                 tip_cents:          r.get("tip_cents"),
@@ -162,6 +171,8 @@ impl OrderRepository for PgOrderRepository {
             basket_id:          r.get("basket_id"),
             plan_id:            r.get("plan_id"),
             status:             order_status(&status)?,
+            delivery_lat:       r.get("delivery_lat"),
+            delivery_lng:       r.get("delivery_lng"),
             goods_total_cents:  r.get("goods_total_cents"),
             delivery_fee_cents: r.get("delivery_fee_cents"),
             tip_cents:          r.get("tip_cents"),

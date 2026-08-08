@@ -153,6 +153,11 @@ pub struct Order {
     pub grand_total_cents:  i64,
     pub courier_trip_cents: i64,
     pub courier_task_id:    Option<Uuid>,
+    /// Where this order is going. `None` only for orders placed before
+    /// migration 0013 — the recovery sweep escalates those rather than
+    /// re-offering to a guessed point.
+    pub delivery_lat:       Option<f64>,
+    pub delivery_lng:       Option<f64>,
     pub legs:               Vec<VendorLeg>,
     pub placed_at:          DateTime<Utc>,
     pub delivered_at:       Option<DateTime<Utc>>,
@@ -169,6 +174,8 @@ impl Order {
         delivery_fee_cents: i64,
         tip_cents: i64,
         courier_trip_cents: i64,
+        delivery_lat: f64,
+        delivery_lng: f64,
     ) -> Self {
         let id = Uuid::new_v4();
         for l in &mut legs {
@@ -192,6 +199,11 @@ impl Order {
             grand_total_cents: goods_total_cents + delivery_fee_cents + tip_cents,
             courier_trip_cents,
             courier_task_id: None,
+            // Taken as plain f64 and stored as Some: a newly placed order always
+            // knows its destination. The Option exists for history, not for
+            // callers to leave empty.
+            delivery_lat: Some(delivery_lat),
+            delivery_lng: Some(delivery_lng),
             legs,
             placed_at: Utc::now(),
             delivered_at: None,
@@ -310,7 +322,8 @@ mod tests {
     }
 
     fn order(legs: Vec<VendorLeg>, fee: i64, tip: i64, trip: i64) -> Order {
-        Order::place(Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), legs, fee, tip, trip)
+        Order::place(Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), legs, fee, tip, trip,
+                     14.5995, 120.9842)
     }
 
     #[test]

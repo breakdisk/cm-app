@@ -18,6 +18,7 @@ pub mod event_type {
     pub const ORDER_DELIVERED:   &str = "order.delivered";
     pub const ORDER_CANCELLED:   &str = "order.cancelled";
     /// Paid, but no courier accepted within the retry window.
+    pub const COURIER_REOFFERED: &str = "courier.reoffered";
     pub const ORDER_ESCALATED:   &str = "order.escalated";
 }
 

@@ -182,7 +182,13 @@ pub async fn run() -> anyhow::Result<()> {
     // Stuck-order recovery. A timer rather than an event handler, because a
     // stuck order is defined by an event that never arrived — nothing
     // event-driven can notice its absence.
-    let recovery = Arc::new(RecoveryService::new(orders.clone(), telemetry.clone()));
+    let recovery = Arc::new(RecoveryService::new(
+        orders.clone(),
+        telemetry.clone(),
+        // The same field-ops client checkout uses, so a re-offer is
+        // indistinguishable from a first offer at the platform tier.
+        field_ops.clone(),
+    ));
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
         // The first tick fires immediately, which would sweep before the

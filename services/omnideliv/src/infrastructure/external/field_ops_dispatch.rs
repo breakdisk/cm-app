@@ -124,6 +124,7 @@ impl CourierDispatch for FieldOpsDispatch {
         order_id: Uuid,
         lat: f64,
         lng: f64,
+        radius_km: f64,
         trip_cents: i64,
         tip_cents: i64,
     ) -> anyhow::Result<Vec<Uuid>> {
@@ -143,6 +144,7 @@ impl CourierDispatch for FieldOpsDispatch {
                 "external_ref": order_id,
                 "lat":          lat,
                 "lng":          lng,
+                "radius_km":    radius_km,
                 "trip_cents":   trip_cents,
                 "tip_cents":    tip_cents,
             }))

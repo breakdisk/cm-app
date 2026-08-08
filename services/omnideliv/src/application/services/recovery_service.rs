@@ -10,6 +10,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Duration, Utc};
 
 use crate::domain::entities::{telemetry::event_type, OrderStatus, TelemetryEvent};
+use crate::application::services::CourierDispatch;
 use crate::domain::repositories::{OrderRepository, TelemetryRepository};
 
 /// How long to keep re-offering before handing it to a human.
@@ -58,11 +59,21 @@ pub fn decide(status: OrderStatus, placed_at: DateTime<Utc>, now: DateTime<Utc>)
 pub struct RecoveryService {
     orders:    Arc<dyn OrderRepository>,
     telemetry: Arc<dyn TelemetryRepository>,
+    dispatch:  Arc<dyn CourierDispatch>,
 }
 
+/// A retry reaches further than the first offer. Widening is the only lever
+/// available before giving up: the pay is already fixed on the order, so the
+/// alternative to a bigger circle is a human.
+const RETRY_RADIUS_KM: f64 = 12.0;
+
 impl RecoveryService {
-    pub fn new(orders: Arc<dyn OrderRepository>, telemetry: Arc<dyn TelemetryRepository>) -> Self {
-        Self { orders, telemetry }
+    pub fn new(
+        orders: Arc<dyn OrderRepository>,
+        telemetry: Arc<dyn TelemetryRepository>,
+        dispatch: Arc<dyn CourierDispatch>,
+    ) -> Self {
+        Self { orders, telemetry, dispatch }
     }
 
     /// One pass. Returns how many orders were escalated, so the caller can log
@@ -77,12 +88,56 @@ impl RecoveryService {
                 Recovery::None | Recovery::Wait => {}
 
                 Recovery::Retry => {
-                    // Re-offering needs the dispatch port and the delivery
-                    // address, neither of which is on the order today — the
-                    // address lives on the basket. Recorded rather than
-                    // silently skipped, so the timeline shows the order was
-                    // seen and what was not done about it.
-                    tracing::warn!(order_id = %order.id, "order awaiting a courier; re-offer not yet wired");
+                    // Orders placed before migration 0013 have no destination.
+                    // Re-offering to a guessed point would send a courier to the
+                    // wrong address, which is worse than waiting for the
+                    // escalation a human can resolve from the basket.
+                    let (Some(lat), Some(lng)) = (order.delivery_lat, order.delivery_lng) else {
+                        tracing::warn!(order_id = %order.id,
+                            "stuck order has no delivery point; leaving it to escalate");
+                        continue;
+                    };
+
+                    // Re-offering is safe to repeat. field-ops keys the credit
+                    // on `external_ref` — the order — not the assignment, so a
+                    // courier cannot be paid twice for the same job however many
+                    // times it is offered. Offers to couriers who already hold
+                    // one are refused by the single-live-claim index.
+                    match self
+                        .dispatch
+                        .offer(order.tenant_id, order.id, lat, lng, RETRY_RADIUS_KM,
+                               order.courier_trip_cents, order.tip_cents)
+                        .await
+                    {
+                        Ok(ids) if ids.is_empty() => {
+                            tracing::warn!(order_id = %order.id, radius_km = RETRY_RADIUS_KM,
+                                "re-offer reached no couriers");
+                        }
+                        Ok(ids) => {
+                            tracing::info!(order_id = %order.id, offered = ids.len(),
+                                radius_km = RETRY_RADIUS_KM, "re-offered a stuck order");
+
+                            let e = TelemetryEvent::new(
+                                order.tenant_id, order.id, event_type::COURIER_REOFFERED,
+                                None, None,
+                                serde_json::json!({
+                                    "offered_to": ids.len(),
+                                    "radius_km":  RETRY_RADIUS_KM,
+                                    "minutes_waiting": (now - order.placed_at).num_minutes(),
+                                }),
+                            );
+                            if let Err(err) = self.telemetry.append(&e).await {
+                                tracing::error!(err = %err, order_id = %order.id,
+                                    "re-offer telemetry failed");
+                            }
+                        }
+                        Err(err) => {
+                            // Logged, not fatal: one unreachable dispatch must
+                            // not stop the sweep looking at every later order,
+                            // and the next pass will try again.
+                            tracing::error!(err = %err, order_id = %order.id, "re-offer failed");
+                        }
+                    }
                 }
 
                 Recovery::Escalate => {
@@ -188,5 +243,114 @@ mod tests {
         let now = Utc::now();
         let placed = now + Duration::seconds(30);
         assert_eq!(decide(OrderStatus::AwaitingCourier, placed, now), Recovery::Wait);
+    }
+}
+
+#[cfg(test)]
+mod sweep_tests {
+    use super::*;
+    use uuid::Uuid;
+    use crate::application::services::FIRST_OFFER_RADIUS_KM;
+    use crate::domain::entities::{Order, TelemetryEvent};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Orders(Vec<Order>);
+    #[async_trait::async_trait]
+    impl OrderRepository for Orders {
+        async fn save(&self, _: &Order) -> anyhow::Result<()> { Ok(()) }
+        async fn find_by_id(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<Order>> { Ok(None) }
+        async fn find_awaiting_courier(&self) -> anyhow::Result<Vec<Order>> { Ok(self.0.clone()) }
+    }
+
+    #[derive(Default)]
+    struct Telemetry(Mutex<Vec<String>>);
+    #[async_trait::async_trait]
+    impl TelemetryRepository for Telemetry {
+        async fn append(&self, e: &TelemetryEvent) -> anyhow::Result<()> {
+            self.0.lock().unwrap().push(e.event_type.clone());
+            Ok(())
+        }
+        async fn timeline(&self, _: Uuid, _: Uuid) -> anyhow::Result<Vec<TelemetryEvent>> { Ok(vec![]) }
+    }
+
+    #[derive(Default)]
+    struct Dispatch {
+        calls: Mutex<Vec<(Uuid, f64, f64, f64)>>,
+        fail:  bool,
+    }
+    #[async_trait::async_trait]
+    impl CourierDispatch for Dispatch {
+        async fn offer(&self, _t: Uuid, order_id: Uuid, lat: f64, lng: f64, radius_km: f64,
+                       _trip: i64, _tip: i64) -> anyhow::Result<Vec<Uuid>> {
+            self.calls.lock().unwrap().push((order_id, lat, lng, radius_km));
+            if self.fail { anyhow::bail!("field-ops unreachable") }
+            Ok(vec![Uuid::new_v4()])
+        }
+    }
+
+    /// Old enough to be retried, not old enough to escalate.
+    fn stuck_order(with_point: bool) -> Order {
+        let mut o = Order::place(
+            Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(),
+            vec![], 4_900, 0, 3_500, 14.5995, 120.9842,
+        );
+        o.status = OrderStatus::AwaitingCourier;
+        o.placed_at = Utc::now() - Duration::minutes(GRACE_MINUTES + 1);
+        if !with_point {
+            o.delivery_lat = None;
+            o.delivery_lng = None;
+        }
+        o
+    }
+
+    async fn sweep_with(order: Order, fail: bool)
+        -> (Arc<Dispatch>, Arc<Telemetry>, usize) {
+        let dispatch = Arc::new(Dispatch { fail, ..Default::default() });
+        let telemetry = Arc::new(Telemetry::default());
+        let svc = RecoveryService::new(
+            Arc::new(Orders(vec![order])), telemetry.clone(), dispatch.clone(),
+        );
+        let escalated = svc.sweep().await.unwrap();
+        (dispatch, telemetry, escalated)
+    }
+
+    #[tokio::test]
+    async fn a_stuck_order_is_re_offered_at_a_wider_radius() {
+        let o = stuck_order(true);
+        let id = o.id;
+        let (dispatch, telemetry, escalated) = sweep_with(o, false).await;
+
+        let calls = dispatch.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1, "the stuck order must be re-offered");
+        assert_eq!(calls[0].0, id);
+        assert_eq!((calls[0].1, calls[0].2), (14.5995, 120.9842),
+                   "re-offered to the order's own destination");
+        assert!(calls[0].3 > FIRST_OFFER_RADIUS_KM,
+                "a retry must reach further than the first offer, got {}", calls[0].3);
+
+        assert!(telemetry.0.lock().unwrap().iter().any(|e| e == event_type::COURIER_REOFFERED),
+                "the timeline must record that we tried again");
+        assert_eq!(escalated, 0, "a retried order is not an escalation");
+    }
+
+    /// Orders placed before migration 0013 have no destination. Re-offering to
+    /// a guessed point would send a courier to the wrong address.
+    #[tokio::test]
+    async fn an_order_with_no_delivery_point_is_never_re_offered() {
+        let (dispatch, _, _) = sweep_with(stuck_order(false), false).await;
+        assert!(dispatch.calls.lock().unwrap().is_empty(),
+                "no destination means no re-offer, at any radius");
+    }
+
+    /// One unreachable dispatch must not stop the sweep — the next pass retries.
+    #[tokio::test]
+    async fn a_failed_re_offer_does_not_fail_the_sweep() {
+        let (dispatch, telemetry, escalated) = sweep_with(stuck_order(true), true).await;
+
+        assert_eq!(dispatch.calls.lock().unwrap().len(), 1, "it was attempted");
+        assert_eq!(escalated, 0);
+        assert!(!telemetry.0.lock().unwrap().iter().any(|e| e == event_type::COURIER_REOFFERED),
+                "a failed re-offer must not be recorded as a successful one");
     }
 }

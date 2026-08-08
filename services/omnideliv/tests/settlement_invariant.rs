@@ -31,7 +31,7 @@ fn check(subtotals: &[i64], bps: &[i32], fee: i64, tip: i64, trip: i64) {
     }
 
     let o = Order::place(Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(),
-                         legs, fee, tip, trip);
+                         legs, fee, tip, trip, 14.5995, 120.9842);
     let s = o.settlement();
 
     assert_eq!(
@@ -106,7 +106,7 @@ fn the_commission_extremes_still_balance() {
 #[test]
 fn an_order_with_no_legs_is_arithmetically_sound() {
     let o = Order::place(Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(),
-                         vec![], 4_900, 0, 3_500);
+                         vec![], 4_900, 0, 3_500, 14.5995, 120.9842);
     let s = o.settlement();
 
     assert_eq!(o.goods_total_cents, 0);
