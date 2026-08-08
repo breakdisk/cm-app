@@ -113,6 +113,17 @@ create_topic "logisticos.carrier.allocated"
 # Compliance (internal)
 create_topic "compliance"
 
+# Field-ops (platform tier) — courier milestones, consumed by every product that
+# dispatches through it. Listed here rather than left to auto-create: the topic
+# is only created by the first PUBLISH, so a consumer that starts first logs
+# UnknownTopicOrPartition and does not recover on its own. On 2026-08-07 that
+# left omnideliv silently deaf until it was restarted after the first claim.
+#
+# One partition on purpose. Ordering per job is what matters (assigned ->
+# collected -> delivered for a given external_ref), and these are keyed on
+# external_ref, so a single partition gives total order for free at this volume.
+create_topic "fieldops.courier" 1
+
 echo ""
 echo "=== Done. Verify with: ==="
 echo "docker exec $KAFKA_CONTAINER $KAFKA_BIN --bootstrap-server localhost:9092 --list"

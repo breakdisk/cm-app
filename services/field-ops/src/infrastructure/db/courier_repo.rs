@@ -142,6 +142,28 @@ impl CourierRepository for PgCourierRepository {
              WHERE c.tenant_id = $1
                AND c.is_active
                AND c.status = 'available'
+               -- A courier already holding a live claim cannot take another
+               -- job: `uq_courier_single_live_claim` (migration 0002) is a
+               -- partial unique index on (courier_id) WHERE status='claimed',
+               -- so their claim would be rejected by the database.
+               --
+               -- Without this the two disagree. `couriers.status` is a
+               -- denormalised field that has to be written back, and when that
+               -- write is missed the courier reads as available forever: they
+               -- keep winning proximity searches, keep being offered work, and
+               -- can only ever answer `{"won":false}`. The order then waits out
+               -- the recovery window and escalates, with nothing in the logs
+               -- pointing at the cause. Observed live on 2026-08-07.
+               --
+               -- The index is the authority on "has a live job" because it is
+               -- what actually enforces it; asking it directly means there is
+               -- no second copy of that fact to drift.
+               AND NOT EXISTS (
+                   SELECT 1
+                     FROM field_ops.courier_assignments a
+                    WHERE a.courier_id = c.id
+                      AND a.status = 'claimed'
+               )
                AND ST_DWithin(
                        geography(ST_SetSRID(ST_MakePoint(cl.lng, cl.lat), 4326)),
                        ST_SetSRID(ST_MakePoint($4, $3), 4326)::geography,
