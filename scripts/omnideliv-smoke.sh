@@ -146,14 +146,30 @@ if [ -n "${COURIER_TOKEN:-}" ]; then
   [ "$S" = "delivered" ] || { echo "     order stuck at '$S', expected delivered"; exit 1; }
   echo "     order delivered"
 
+  # Read the money back over HTTP, not psql. A ledger nobody can query is a
+  # ledger nobody can verify — and this used to end with instructions to go and
+  # look manually, which meant nobody did.
+  COURIER_BAL=$(curl -sf -H "Authorization: Bearer $COURIER_TOKEN"     "$FIELD_OPS/v1/field-ops/couriers/me/earnings"     | grep -o '"balance_cents":[0-9-]*' | head -1 | cut -d: -f2)
+
+  [ "$COURIER_BAL" = "3500" ] || {
+    echo "     courier earned '$COURIER_BAL', expected 3500."
+    echo "     Zero means the claimed assignment declared no pay — check that"
+    echo "     step 7 claimed checkout's assignment and not a second one."
+    exit 1
+  }
+  echo "     courier earned $COURIER_BAL"
+
+  # The vendor's own view. Needs a portal login linked to the store via
+  # omnideliv.vendors.user_id, so it is checked only when one is supplied.
+  if [ -n "${VENDOR_TOKEN:-}" ]; then
+    VENDOR_BAL=$(curl -sf -H "Authorization: Bearer $VENDOR_TOKEN"       "$GW/v1/omnideliv/vendors/me/earnings"       | grep -o '"balance_cents":[0-9-]*' | head -1 | cut -d: -f2)
+    [ "$VENDOR_BAL" = "28900" ] || {
+      echo "     vendor earned '$VENDOR_BAL', expected 28900 (34000 less 15%)"; exit 1; }
+    echo "     vendor earned $VENDOR_BAL"
+  else
+    echo "     vendor payout not checked (set VENDOR_TOKEN to a store's portal login)"
+  fi
+
   echo
-  echo "PASS — full lifecycle: placed, collected, delivered."
-  echo "Confirm the ledgers moved (there is no read API for them yet):"
-  echo "  vendor : docker exec logisticos-postgres psql -U logisticos -d svc_omnideliv \\"
-  echo "             -c \"SELECT vendor_id, balance_cents FROM omnideliv.vendor_ledgers\""
-  echo "  courier: docker exec logisticos-postgres psql -U logisticos -d svc_field_ops \\"
-  echo "             -c \"SELECT courier_id, balance_cents FROM field_ops.courier_ledgers\""
-  echo "  The courier balance must be non-zero — it is 0 whenever the claimed"
-  echo "  assignment declared no pay, which is the duplicate-offer bug this"
-  echo "  script used to have."
+  echo "PASS — full lifecycle: placed, collected, delivered, both parties paid."
 fi

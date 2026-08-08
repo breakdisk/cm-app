@@ -10,7 +10,7 @@ use std::sync::Arc;
 use axum::Router;
 
 use crate::application::services::{BasketService, CatalogService, CheckoutService};
-use crate::domain::repositories::{OrderRepository, TelemetryRepository};
+use crate::domain::repositories::{OrderRepository, TelemetryRepository, VendorLedgerRepository};
 use omnideliv_mesh::MeshRunner;
 
 pub struct AppState {
@@ -20,6 +20,7 @@ pub struct AppState {
     pub checkout: Arc<CheckoutService>,
     pub orders:    Arc<dyn OrderRepository>,
     pub telemetry: Arc<dyn TelemetryRepository>,
+    pub ledgers:   Arc<dyn VendorLedgerRepository>,
     pub jwt:     Arc<logisticos_auth::jwt::JwtService>,
 }
 

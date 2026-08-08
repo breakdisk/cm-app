@@ -119,6 +119,23 @@ impl DispatchService {
         Ok(offers)
     }
 
+    /// This courier's ledger for the current period.
+    ///
+    /// `None` means they have not earned anything yet this period — a courier
+    /// who has just started a shift, not an error. The caller renders a zero.
+    pub async fn earnings_for_user(
+        &self,
+        tenant_id: Uuid,
+        user_id: Uuid,
+    ) -> anyhow::Result<Option<CourierLedger>> {
+        let Some(courier) = self.couriers.find_by_user(tenant_id, user_id).await? else {
+            return Ok(None);
+        };
+        self.ledgers
+            .find_open(tenant_id, courier.id, &current_period())
+            .await
+    }
+
     /// How many couriers could take a job here right now.
     ///
     /// The same query that backs dispatch, so the number a product plans
@@ -329,7 +346,9 @@ impl DispatchService {
 
 /// ISO week, matching OmniDeliv's vendor payout period so the two ledgers can
 /// be reconciled against the same calendar.
-fn current_period() -> String {
+/// The ledger period. Public so callers rendering an empty ledger label it
+/// the same way the credit path would have.
+pub fn current_period() -> String {
     use chrono::Datelike;
     let iso = chrono::Utc::now().iso_week();
     format!("{}-W{:02}", iso.year(), iso.week())

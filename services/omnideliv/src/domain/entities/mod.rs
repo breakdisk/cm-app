@@ -16,4 +16,4 @@ pub use consolidation::{ConsolidationPlan, PendingStop, Stop, TemperatureClass};
 pub use order::{LegStatus, Order, OrderStatus, Settlement, VendorLeg};
 pub use telemetry::TelemetryEvent;
 pub use vendor::{Vendor, VendorStatus, Vertical};
-pub use vendor_ledger::{EntryKind, LedgerEntry, LedgerStatus, VendorLedger};
+pub use vendor_ledger::{current_period,EntryKind, LedgerEntry, LedgerStatus, VendorLedger};

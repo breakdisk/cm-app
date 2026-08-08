@@ -34,6 +34,23 @@ pub struct OfferResponse {
     pub assignment_ids: Vec<Uuid>,
 }
 
+#[derive(Debug, Serialize)]
+struct EarningEntry {
+    kind:         String,
+    /// Signed, as stored: credits positive, payouts negative, so a client
+    /// summing the list gets the balance and cannot disagree with it.
+    amount_cents: i64,
+    external_ref: Option<Uuid>,
+    at:           chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Serialize)]
+struct EarningsResponse {
+    period:        String,
+    balance_cents: i64,
+    entries:       Vec<EarningEntry>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SupplyQuery {
     lat: f64,
@@ -109,6 +126,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/v1/field-ops/assignments/:id/claim", post(claim))
         .route("/v1/field-ops/assignments/:id/collected", post(collected))
         .route("/v1/field-ops/assignments/:id/delivered", post(delivered))
+        .route("/v1/field-ops/couriers/me/earnings", get(my_earnings))
         .route("/v1/field-ops/couriers/supply", get(supply))
         .route("/v1/field-ops/couriers/:id/position", post(position))
 }
@@ -183,6 +201,50 @@ async fn claim(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
     Ok(Json(ClaimResponse { won }))
+}
+
+/// `GET /v1/field-ops/couriers/me/earnings` — this period's ledger.
+///
+/// The courier comes from the token. Until now the only way to see whether a
+/// delivery had actually been paid was to open psql, which meant a courier
+/// could not answer their own most basic question.
+async fn my_earnings(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+) -> Result<Json<EarningsResponse>, StatusCode> {
+    let ledger = st
+        .dispatch
+        .earnings_for_user(claims.tenant_id, claims.user_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "earnings lookup failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    // No ledger yet is a zero, not a 404: a courier who has started a shift and
+    // not yet been paid has earnings, and they are nil.
+    let Some(l) = ledger else {
+        return Ok(Json(EarningsResponse {
+            period:        crate::application::services::current_period(),
+            balance_cents: 0,
+            entries:       Vec::new(),
+        }));
+    };
+
+    Ok(Json(EarningsResponse {
+        period:        l.period.clone(),
+        balance_cents: l.balance_cents,
+        entries: l
+            .entries
+            .iter()
+            .map(|e| EarningEntry {
+                kind:         format!("{:?}", e.kind).to_lowercase(),
+                amount_cents: e.amount_cents,
+                external_ref: e.external_ref,
+                at:           e.created_at,
+            })
+            .collect(),
+    }))
 }
 
 /// `GET /v1/field-ops/couriers/supply?lat=&lng=&radius_km=`

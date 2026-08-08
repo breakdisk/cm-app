@@ -115,6 +115,11 @@ pub async fn run() -> anyhow::Result<()> {
     let orders: Arc<dyn OrderRepository> = Arc::new(PgOrderRepository::new(pool.clone()));
     let telemetry: Arc<dyn TelemetryRepository> = Arc::new(PgTelemetryRepository::new(pool.clone()));
 
+    // One ledger repository for both readers: the milestone consumer that
+    // credits it and the vendor endpoint that reads it back.
+    let ledgers: Arc<dyn VendorLedgerRepository> =
+        Arc::new(PgVendorLedgerRepository::new(pool.clone()));
+
     let state = Arc::new(AppState {
         catalog,
         baskets,
@@ -122,6 +127,7 @@ pub async fn run() -> anyhow::Result<()> {
         checkout,
         orders: orders.clone(),
         telemetry: telemetry.clone(),
+        ledgers: ledgers.clone(),
         jwt,
     });
 
@@ -132,8 +138,6 @@ pub async fn run() -> anyhow::Result<()> {
     // The consumer commits only after the handler returns Ok, so a failed
     // ledger credit is redelivered rather than dropped — which is what the
     // credit-before-advance ordering in the handler relies on.
-    let ledgers: Arc<dyn VendorLedgerRepository> =
-        Arc::new(PgVendorLedgerRepository::new(pool.clone()));
     let milestones = Arc::new(CourierMilestoneHandler::new(
         orders.clone(),
         ledgers,

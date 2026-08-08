@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::http::AppState;
+use crate::domain::entities::current_period;
 use crate::domain::entities::Vertical;
 
 #[derive(Debug, Deserialize)]
@@ -54,6 +55,7 @@ pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/omnideliv/vendors", get(list_near))
         .route("/v1/omnideliv/vendors/me", get(me).patch(patch_me))
+        .route("/v1/omnideliv/vendors/me/earnings", get(my_earnings))
 }
 
 async fn list_near(
@@ -114,6 +116,76 @@ async fn me(
         prep_time_minutes: vendor.prep_time_minutes,
         status: vendor.status.as_str().to_string(),
     }))
+}
+
+/// `GET /v1/omnideliv/vendors/me/earnings` — this period's payouts.
+///
+/// The vendor comes from the token, never a parameter: an id a caller could
+/// name would let one store read another's takings. Until now there was no read
+/// path at all — the only way to see whether a collected order had actually
+/// been credited was psql.
+async fn my_earnings(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+) -> Result<Json<EarningsResponse>, StatusCode> {
+    let vendor = st
+        .catalog
+        .vendor_for_user(claims.tenant_id, claims.user_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "vendor lookup failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let period = current_period();
+    let ledger = st
+        .ledgers
+        .find_open(claims.tenant_id, vendor.id, &period)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "vendor ledger lookup failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    // No ledger yet is zero, not 404. A store that is open and has sold nothing
+    // this week has earnings, and they are nil — a 404 would read as "your
+    // store does not exist".
+    let Some(l) = ledger else {
+        return Ok(Json(EarningsResponse { period, balance_cents: 0, entries: Vec::new() }));
+    };
+
+    Ok(Json(EarningsResponse {
+        period:        l.period.clone(),
+        balance_cents: l.balance_cents,
+        entries: l
+            .entries
+            .iter()
+            .map(|e| EarningEntry {
+                kind:         format!("{:?}", e.kind).to_lowercase(),
+                amount_cents: e.amount_cents,
+                order_id:     e.order_id,
+                at:           e.created_at,
+            })
+            .collect(),
+    }))
+}
+
+#[derive(Debug, Serialize)]
+struct EarningEntry {
+    kind:         String,
+    /// Signed as stored — credits positive, payouts negative — so a client
+    /// summing the list gets the balance and cannot disagree with it.
+    amount_cents: i64,
+    order_id:     Option<Uuid>,
+    at:           chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Serialize)]
+struct EarningsResponse {
+    period:        String,
+    balance_cents: i64,
+    entries:       Vec<EarningEntry>,
 }
 
 async fn patch_me(

@@ -143,6 +143,17 @@ impl VendorLedger {
     }
 }
 
+/// The ledger period a credit lands in, and the one a reader is shown.
+///
+/// One definition so the write path and the read path cannot label the same
+/// week differently — a mismatch there would show a vendor an empty ledger
+/// while their money sat in a period nobody was asking for.
+pub fn current_period() -> String {
+    use chrono::Datelike;
+    let iso = chrono::Utc::now().iso_week();
+    format!("{}-W{:02}", iso.year(), iso.week())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

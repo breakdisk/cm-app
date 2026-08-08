@@ -180,13 +180,7 @@ impl CourierMilestoneHandler {
 }
 
 /// ISO week, e.g. `2026-W32`. Payout periods are weekly.
-fn current_period() -> String {
-    let now = chrono::Utc::now();
-    let iso = now.iso_week();
-    format!("{}-W{:02}", iso.year(), iso.week())
-}
-
-use chrono::Datelike;
+use crate::domain::entities::current_period;
 
 #[cfg(test)]
 mod tests {
