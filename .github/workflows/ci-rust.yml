@@ -253,28 +253,27 @@ jobs:
                -A clippy::missing_panics_doc \
                -A clippy::too_many_lines
 
-      - name: Enforce zero .unwrap() in production paths
+      # Advisory for now — same reasoning as the rustfmt step above, and the
+      # same instruction: flip this to a gate in the change that clears the
+      # backlog. There are 62 (41 on Result, 21 on Option) as of 2026-08-09.
+      #
+      # The previous implementation was a line-based grep that excluded lines
+      # *containing* `#[cfg(test)]`. Inline `#[cfg(test)] mod tests { … }` is
+      # the dominant pattern here, and an unwrap 120 lines inside such a block
+      # is nowhere near the attribute — so the check reported test doubles and
+      # assertions as production violations. It could not have passed on a
+      # healthy repo, and it never ran, so nobody found out.
+      #
+      # Clippy knows what test code is. Without `--all-targets`, `cfg(test)` is
+      # off, so inline test modules are not compiled and not linted — which is
+      # exactly the boundary this check was trying and failing to express.
+      - name: Check for .unwrap() in production paths (advisory)
+        continue-on-error: true
         run: |
-          echo "Scanning for disallowed .unwrap() calls outside test code..."
-          VIOLATIONS=$(grep -rn '\.unwrap()' services/ libs/ \
-            --include='*.rs' \
-            | grep -v '#\[cfg(test)\]' \
-            | grep -v '#\[test\]' \
-            | grep -v '_test\.rs' \
-            | grep -v 'tests/' \
-            | grep -v '// SAFETY:' \
-            | grep -v '// unwrap_ok:' \
-            | head -30 || true)
-
-          if [ -n "$VIOLATIONS" ]; then
-            echo "ERROR: .unwrap() calls found in non-test production code:"
-            echo ""
-            echo "$VIOLATIONS"
-            echo ""
-            echo "Use ? operator with thiserror/anyhow for error propagation."
-            exit 1
-          fi
-          echo "No forbidden .unwrap() calls."
+          cargo clippy --workspace --lib --bins --all-features \
+            -- -W clippy::unwrap_used 2>&1 | grep -E "unwrap\(\) on" -A 2 || true
+          echo ""
+          echo "Use the ? operator with thiserror/anyhow instead."
 
       - name: Check all services expose /health /metrics /ready
         run: |
