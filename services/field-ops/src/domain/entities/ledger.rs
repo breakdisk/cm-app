@@ -232,9 +232,21 @@ mod cod_accounting {
         assert_eq!(l.cash_held_cents(), 18_900);
     }
 
-    /// Over-remitting is allowed and must not read as negative cash held —
-    /// it happens (an over-payment, or cash handed over before a delivery
-    /// settles), and a negative "held" would subtract from the next debt.
+    /// Over-remitting is representable here and must not read as negative cash
+    /// held — it happens (an over-payment, or cash handed over before a
+    /// delivery settles), and a negative "held" would subtract from the next
+    /// debt.
+    ///
+    /// Note what the second assertion means: the excess lands in
+    /// `balance_cents`, which is what the payout run pays. The ledger is a
+    /// faithful log and deliberately has no opinion about whether a remittance
+    /// *should* have been accepted — so nothing here stops a courier remitting
+    /// cash they never collected and being paid the difference.
+    ///
+    /// That policy lives one layer up, in `DispatchService::remit_cash`, which
+    /// refuses any self-serve remittance above `cash_held_cents`. It is not
+    /// enforced here on purpose: an ops correction still needs to be able to
+    /// write one.
     #[test]
     fn over_remitting_reports_no_cash_held_rather_than_a_negative() {
         let mut l = ledger();
@@ -242,7 +254,7 @@ mod cod_accounting {
         l.record_cod_remitted(15_000, None);
 
         assert_eq!(l.cash_held_cents(), 0);
-        assert_eq!(l.balance_cents, 5_000);
+        assert_eq!(l.balance_cents, 5_000, "the excess is payable — hence the guard above this layer");
     }
 
     /// `cash_held_cents` must read only the COD entries. Counting earnings

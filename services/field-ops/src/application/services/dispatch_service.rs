@@ -78,6 +78,20 @@ impl PayBounds {
     }
 }
 
+/// What happened to a remittance.
+///
+/// A refusal is a normal outcome, not an error: a courier tapping "remit" twice
+/// on a flaky connection is the expected way to reach it. It is modelled
+/// explicitly so the caller cannot mistake a refusal for a recorded handover —
+/// the previous signature returned a bare `i64` and had no way to say "no".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemitOutcome {
+    /// Recorded. Carries the cash still outstanding afterwards.
+    Recorded { cash_still_held_cents: i64 },
+    /// Refused: more than this courier is holding. Carries what they do hold.
+    ExceedsCashHeld { cash_held_cents: i64 },
+}
+
 impl DispatchService {
     pub fn new(
         couriers: Arc<dyn CourierRepository>,
@@ -221,13 +235,18 @@ impl DispatchService {
     /// allowed and lands the courier in credit — that is a real situation
     /// (an over-payment, or cash handed over before a delivery settles), and
     /// refusing it would leave the ledger unable to describe what happened.
+    /// Record a courier handing collected cash back to the platform.
+    ///
+    /// `Ok(None)` means the token does not belong to a courier. The outcome
+    /// distinguishes a recorded remittance from one refused for exceeding the
+    /// cash actually held — see [`RemitOutcome`].
     pub async fn remit_cash(
         &self,
         tenant_id: Uuid,
         user_id: Uuid,
         amount_cents: i64,
         reference: Option<String>,
-    ) -> anyhow::Result<Option<i64>> {
+    ) -> anyhow::Result<Option<RemitOutcome>> {
         let Some(courier) = self.couriers.find_by_user(tenant_id, user_id).await? else {
             return Ok(None);
         };
@@ -237,9 +256,28 @@ impl DispatchService {
             None => CourierLedger::open(tenant_id, courier.id, period),
         };
 
+        // A courier can only hand back cash they are actually holding.
+        //
+        // Without this check the endpoint mints balance out of nothing:
+        // remitting money that was never collected credits the ledger, the
+        // balance goes positive, and the next payout run pays it out. It is a
+        // self-serve withdrawal, and the only thing standing between it and
+        // real money is that nobody had tried.
+        //
+        // Not hypothetical — found by probing the running service. A 100-cent
+        // remittance against a fully-settled ledger was accepted and credited,
+        // and a test script had already walked 38900 out of the dev tenant this
+        // way by remitting twice against a single collection.
+        let held = ledger.cash_held_cents();
+        if amount_cents > held {
+            return Ok(Some(RemitOutcome::ExceedsCashHeld { cash_held_cents: held }));
+        }
+
         ledger.record_cod_remitted(amount_cents, reference);
         self.ledgers.save(&ledger).await?;
-        Ok(Some(ledger.cash_held_cents()))
+        Ok(Some(RemitOutcome::Recorded {
+            cash_still_held_cents: ledger.cash_held_cents(),
+        }))
     }
 
     /// This courier's ledger for the current period.

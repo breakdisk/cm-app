@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::http::AppState;
+use crate::application::services::dispatch_service::RemitOutcome;
 use crate::domain::entities::ProductKey;
 
 #[derive(Debug, Deserialize)]
@@ -387,7 +388,7 @@ async fn remit(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let held = st
+    let outcome = st
         .dispatch
         .remit_cash(claims.tenant_id, claims.user_id, req.amount_cents, req.reference)
         .await
@@ -397,7 +398,24 @@ async fn remit(
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    Ok(Json(RemitResponse { cash_still_held_cents: held }))
+    match outcome {
+        RemitOutcome::Recorded { cash_still_held_cents } => {
+            Ok(Json(RemitResponse { cash_still_held_cents }))
+        }
+        // 409 rather than 400: the request is well-formed, it just disagrees
+        // with the ledger. Logged at warn because the honest cause is a double
+        // tap, and the dishonest one is someone trying to withdraw money that
+        // was never collected.
+        RemitOutcome::ExceedsCashHeld { cash_held_cents } => {
+            tracing::warn!(
+                courier_user = %claims.user_id,
+                attempted = req.amount_cents,
+                cash_held = cash_held_cents,
+                "remittance refused: more than the courier is holding",
+            );
+            Err(StatusCode::CONFLICT)
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
