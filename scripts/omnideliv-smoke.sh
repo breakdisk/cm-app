@@ -88,7 +88,11 @@ if [ -n "${COURIER_TOKEN:-}" ]; then
   # so the courier-credit path could never fire and the step still reported PASS.
   ASSIGNMENT=$(curl -sf -H "Authorization: Bearer $COURIER_TOKEN" \
     "$FIELD_OPS/v1/field-ops/assignments/mine" \
-    | sed -n 's/.*"assignment_id":"\([^"]*\)".*/\1/p' | head -1)
+    | grep -o '"assignment_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+  # grep -o rather than sed: a leading `.*` is greedy, so a sed capture takes the
+  # LAST match on the line, not the first. With several offers outstanding that
+  # silently claims the oldest instead of this order's, and the failure then
+  # looks exactly like "the milestone was published but never consumed".
 
   [ -n "$ASSIGNMENT" ] || {
     echo "     the courier has no offers — checkout's offer never reached them."
@@ -105,7 +109,7 @@ if [ -n "${COURIER_TOKEN:-}" ]; then
   # anyone can guess correctly.
   for _ in $(seq 1 20); do
     S=$(api "$GW/v1/omnideliv/orders/$ORDER/track" | json status)
-    [ "$S" = "collecting" ] && { echo "     order advanced to collecting"; exit 0; }
+    [ "$S" = "collecting" ] && { echo "     order advanced to collecting"; break; }
     sleep 1
   done
 
