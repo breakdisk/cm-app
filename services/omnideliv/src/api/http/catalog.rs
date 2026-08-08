@@ -38,6 +38,7 @@ pub struct AvailabilityPatch {
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/omnideliv/catalog/search", get(search))
+        .route("/v1/omnideliv/catalog/mine", get(my_items))
         .route("/v1/omnideliv/catalog/items/:id/availability", patch(set_availability))
 }
 
@@ -74,6 +75,74 @@ async fn set_availability(
     }
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /v1/omnideliv/catalog/mine` — the authenticated vendor's catalog.
+///
+/// The store is resolved from the token. Every item carries its availability
+/// and `warrants_substitute`, which is the thing a vendor is really managing:
+/// an item nobody has confirmed inside the freshness window reads as uncertain
+/// and the agent proposes a substitute for it. Without this endpoint a vendor
+/// cannot see, let alone refresh, that state — and after the window everything
+/// they sell is quietly being swapped.
+async fn my_items(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+) -> Result<Json<MyCatalogResponse>, StatusCode> {
+    let found = st
+        .catalog
+        .own_items(claims.tenant_id, claims.user_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "own catalog lookup failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    // 404 rather than an empty list: "you run no store" and "your store has no
+    // items" are different answers, and a console needs to tell them apart.
+    let (vendor, items) = found.ok_or(StatusCode::NOT_FOUND)?;
+
+    Ok(Json(MyCatalogResponse {
+        vendor_id:   vendor.id,
+        vendor_name: vendor.name,
+        items: items
+            .iter()
+            .map(|s| MyItem {
+                id:    s.item_with_availability.item.id,
+                name:  s.item_with_availability.item.name.clone(),
+                sku:   s.item_with_availability.item.sku.clone(),
+                price_cents: s.item_with_availability.item.price_cents,
+                allergens:   s.item_with_availability.item.allergens.clone(),
+                is_listed:   s.item_with_availability.item.is_listed,
+                availability: s.item_with_availability.availability.state.as_str().to_string(),
+                confirmed_at: s.item_with_availability.availability.updated_at,
+                warrants_substitute: s.warrants_substitute,
+            })
+            .collect(),
+    }))
+}
+
+#[derive(Debug, Serialize)]
+struct MyItem {
+    id:           Uuid,
+    name:         String,
+    sku:          String,
+    price_cents:  i64,
+    allergens:    Vec<String>,
+    is_listed:    bool,
+    availability: String,
+    /// When the vendor last confirmed this. The freshness clock runs from here.
+    confirmed_at: chrono::DateTime<chrono::Utc>,
+    /// True when the agent will line up a substitute — either because the item
+    /// is out of stock or limited, or because the confirmation has gone stale.
+    warrants_substitute: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct MyCatalogResponse {
+    vendor_id:   Uuid,
+    vendor_name: String,
+    items:       Vec<MyItem>,
 }
 
 async fn search(

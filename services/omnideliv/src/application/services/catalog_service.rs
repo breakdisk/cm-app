@@ -129,6 +129,36 @@ impl CatalogService {
     /// Returns `false` when the caller runs no store or the item is not theirs
     /// — the API answers 404 either way rather than distinguishing them, since
     /// "this item exists but is not yours" is itself information.
+    /// This vendor's whole catalog, with each item's availability and how
+    /// stale that declaration is.
+    ///
+    /// Returns `None` when the user runs no store — an absence, not a failure.
+    ///
+    /// `warrants_substitute` is included because it is the consequence a vendor
+    /// is actually managing: an item nobody has confirmed for longer than the
+    /// freshness window is treated as uncertain, and the agent lines up a
+    /// substitute for it. Showing the flag makes the reason for that visible,
+    /// rather than leaving a vendor to wonder why their in-stock dish keeps
+    /// being swapped out.
+    pub async fn own_items(
+        &self,
+        tenant_id: Uuid,
+        user_id: Uuid,
+    ) -> anyhow::Result<Option<(Vendor, Vec<ScoredItem>)>> {
+        let Some(vendor) = self.vendors.find_by_user(tenant_id, user_id).await? else {
+            return Ok(None);
+        };
+        let items = self.catalog.list_for_vendor(tenant_id, vendor.id).await?;
+        let scored = items
+            .into_iter()
+            .map(|iwa| ScoredItem {
+                warrants_substitute: iwa.availability.warrants_substitute(self.fresh_window_mins),
+                item_with_availability: iwa,
+            })
+            .collect();
+        Ok(Some((vendor, scored)))
+    }
+
     pub async fn set_own_item_availability(
         &self,
         tenant_id: Uuid,

@@ -24,8 +24,7 @@ import {
   X,
   Users,
   Users2,
-  GitBranch,
-} from "lucide-react";
+  GitBranch, ShoppingBag } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 import { useBranding } from "@/lib/branding";
 import { identityApi, type Me, type Tenant } from "@/lib/api/identity";
@@ -48,6 +47,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Overview",     href: "/",            icon: LayoutDashboard },
   { label: "Shipments",    href: "/shipments",   icon: Package },
   { label: "Marketplace",  href: "/marketplace", icon: Store },
+  { label: "Storefront",   href: "/storefront",  icon: ShoppingBag },
   { label: "Customers",    href: "/customers",   icon: Users },
   { label: "Campaigns",    href: "/campaigns",   icon: Megaphone },
   { label: "Segments",     href: "/crm/segments",    icon: Users2 },
