@@ -6,7 +6,11 @@
 set -e
 
 KAFKA_CONTAINER="${KAFKA_CONTAINER:-$(docker ps --format '{{.Names}}' | grep -i kafka | head -1)}"
-BOOTSTRAP="localhost:9092"
+# The advertised internal listener, not localhost:9092. Both are advertised
+# (PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092), but the
+# localhost one hangs from inside the container on the VPS deployment —
+# every create silently blocks until the script is killed. Overridable.
+BOOTSTRAP="${KAFKA_BOOTSTRAP:-kafka:29092}"
 
 if [ -z "$KAFKA_CONTAINER" ]; then
   echo "ERROR: No Kafka container found. Set KAFKA_CONTAINER=<name> and retry."
