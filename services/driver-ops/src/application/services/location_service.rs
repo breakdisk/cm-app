@@ -172,12 +172,4 @@ impl LocationService {
         Ok(driver)
     }
 
-    /// Unused today, and deliberately kept: this is the *correct* lookup once
-    /// the `drivers.id` / `drivers.user_id` split-brain is collapsed onto
-    /// `user_id` (ADR-0015). Callers currently reach for the id-keyed variant.
-    #[allow(dead_code)]
-    async fn load_driver_by_user_id(&self, user_id: &DriverId) -> AppResult<Driver> {
-        self.driver_repo.find_by_user_id(user_id.inner()).await.map_err(AppError::Internal)?
-            .ok_or_else(|| AppError::NotFound { resource: "Driver", id: user_id.inner().to_string() })
-    }
 }
