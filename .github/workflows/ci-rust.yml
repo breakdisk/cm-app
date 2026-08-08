@@ -440,11 +440,42 @@ jobs:
             --no-fail-fast \
             -- --nocapture 2>&1 | tee test-unit-${{ matrix.service }}.log
 
+      # `--test '*'` is a hard error when a package has no integration test
+      # target — "error: no test target matches pattern `*`" — so this step
+      # failed for 18 of 20 services on the matrix's first ever run, none of
+      # them because a test failed.
+      #
+      # Two reasons a service has no target. Some genuinely have no integration
+      # tests. Most have `tests/{unit,integration}/mod.rs`, which Cargo does not
+      # discover (it finds `tests/*.rs` and `tests/<dir>/main.rs`) — 15 services
+      # are in that state and only ai-layer has the `[[test]]` stanzas that fix
+      # it. Those suites exist, are not compiled, and have never run.
+      #
+      # Asking cargo what targets exist, rather than asserting they exist, keeps
+      # the step honest for the first case. It deliberately prints a loud line
+      # for the second: a service silently reporting "no integration tests" when
+      # it has a tests/ directory full of them is how this stayed hidden.
       - name: Run integration tests
         shell: bash
         run: |
+          SVC="logisticos-${{ matrix.service }}"
+          TARGETS=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c "import json,sys;p=[x for x in json.load(sys.stdin)['packages'] if x['name']=='$SVC'];print(sum(1 for t in (p[0]['targets'] if p else []) if 'test' in t['kind']))")
+
+          if [ "$TARGETS" -eq 0 ]; then
+            if [ -d "services/${{ matrix.service }}/tests" ]; then
+              echo "::warning::${{ matrix.service }} has a tests/ directory but no test target cargo can see."
+              echo "Almost certainly tests/<dir>/mod.rs, which cargo does not discover."
+              echo "Add a [[test]] stanza per directory — see services/ai-layer/Cargo.toml."
+              ls -R "services/${{ matrix.service }}/tests" || true
+            else
+              echo "${{ matrix.service }} has no integration tests."
+            fi
+            exit 0
+          fi
+
           cargo test \
-            --package "logisticos-${{ matrix.service }}" \
+            --package "$SVC" \
             --test '*' \
             --no-fail-fast \
             -- --nocapture 2>&1 | tee test-integration-${{ matrix.service }}.log
