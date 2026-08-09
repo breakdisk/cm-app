@@ -15,9 +15,9 @@ use logisticos_types::TenantId;
 
 use crate::AppState;
 
-pub fn router() -> Router<AppState> {
+/// Routes a customer reaches with a tracking number and no account.
+pub fn public_router() -> Router<AppState> {
     Router::new()
-        // Public — no auth required
         .route("/track/:tracking_number",                          get(public_track))
         .route("/v1/tracking/public/:tracking_number",             get(public_track))
         .route("/track/:tracking_number/reschedule",               post(reschedule_delivery))
@@ -26,7 +26,17 @@ pub fn router() -> Router<AppState> {
         .route("/v1/tracking/:tracking_number/feedback",           post(submit_feedback))
         .route("/v1/tracking/:tracking_number/confirm-receipt",    post(confirm_receipt))
         .route("/v1/tracking/:tracking_number/send-receipt",       post(send_receipt))
-        // Authenticated — merchant/ops
+}
+
+/// Merchant/ops routes. Both handlers extract `AuthClaims`, so the caller
+/// **must** layer `require_auth` over this — see `bootstrap::run`.
+///
+/// Split into its own function rather than layering the whole router, because
+/// the public half above is reached by customers with no account and applying
+/// auth to it would break the tracking page. Previously nothing was layered at
+/// all and these two returned 500 AUTH_NOT_CONFIGURED on every call.
+pub fn authenticated_router() -> Router<AppState> {
+    Router::new()
         .route("/v1/tracking/:shipment_id",                        get(get_by_shipment_id))
         .route("/v1/tracking",                                     get(list_shipments))
 }

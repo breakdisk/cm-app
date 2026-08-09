@@ -31,7 +31,24 @@ pub async fn run() -> anyhow::Result<()> {
 
     let state = AppState { fleet_svc };
 
+    // Every handler in this service extracts `AuthClaims`, which reads `Claims`
+    // out of the request extensions — and only `require_auth` puts them there.
+    // Without this layer the extractor's rejection fires on *every* request:
+    // 500 AUTH_NOT_CONFIGURED, "Auth middleware not mounted". The error message
+    // was describing the deployment accurately.
+    //
+    // Nineteen of the twenty-one services mount this. fleet and
+    // delivery-experience did not, and nothing caught it because fleet's test
+    // suite has never compiled — see the [[test]] stanzas in Cargo.toml.
+    let jwt_secret = std::env::var("AUTH__JWT_SECRET").unwrap_or_default();
+    let jwt: logisticos_auth::middleware::AuthState =
+        Arc::new(logisticos_auth::jwt::JwtService::new(&jwt_secret, 3600, 86_400));
+
     let app = http::router()
+        .layer(axum::middleware::from_fn_with_state(
+            jwt,
+            logisticos_auth::middleware::require_auth,
+        ))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state);
 
