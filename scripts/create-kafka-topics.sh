@@ -134,6 +134,37 @@ create_topic "fieldops.courier" 1
 create_topic "omnideliv.order.placed" 1
 create_topic "omnideliv.order.delivered" 1
 
+# ── Topics that had consumers but no topic ───────────────────────────────────
+#
+# A topic is created by its first PUBLISH. A consumer that subscribes before
+# that logs `UnknownTopicOrPartition` and **does not recover on its own** — it
+# stays subscribed to nothing until the process restarts after the topic exists.
+#
+# Every one of these had a live consumer subscribed to a topic the broker had
+# never heard of, so the feature behind it was silently inert:
+#
+#   dispatch.assignment.rejected            a driver declining an assignment
+#   dispatch.offer.created / offer.closed   the gig broadcast-wave offers
+#   hub.container.customs_cleared           customs clearance
+#   hub.shipment.dispatch_requested         hub handing a shipment to dispatch
+#   hub.shipment.carrier_booking_requested  hub booking an outbound carrier
+#   marketing.campaign.completed            campaign completion
+#   engagement.campaign.opened / clicked    CRM auto-enrolment on engagement
+#
+# `driver.available` is here too. It already existed on the broker — auto-created
+# by a publish that happened to land first — which is exactly the coin-flip this
+# file exists to remove.
+create_topic "logisticos.dispatch.assignment.rejected"
+create_topic "logisticos.dispatch.offer.created"
+create_topic "logisticos.dispatch.offer.closed"
+create_topic "logisticos.driver.available"
+create_topic "logisticos.hub.container.customs_cleared"
+create_topic "logisticos.hub.shipment.dispatch_requested"
+create_topic "logisticos.hub.shipment.carrier_booking_requested"
+create_topic "logisticos.marketing.campaign.completed"
+create_topic "logisticos.engagement.campaign.opened"
+create_topic "logisticos.engagement.campaign.clicked"
+
 echo ""
 echo "=== Done. Verify with: ==="
 echo "docker exec $KAFKA_CONTAINER $KAFKA_BIN --bootstrap-server localhost:9092 --list"

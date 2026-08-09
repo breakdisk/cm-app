@@ -181,6 +181,13 @@ jobs:
       - name: Check agent-runtime boundary
         run: ./scripts/check-runtime-boundary.sh
 
+      # Also grep-only, also fails fast. A consumer subscribing to a topic that
+      # does not exist yet gets UnknownTopicOrPartition and never recovers, so
+      # whether the feature works depends on whether the publisher or the
+      # consumer started first. 9 of 14 subscribed topics were in that state.
+      - name: Check every subscribed Kafka topic is pre-created
+        run: ./scripts/check-kafka-topics.sh
+
       # rdkafka-sys vendors and compiles librdkafka from C source, so the
       # runner needs its build deps or *nothing downstream compiles*. Without
       # this, clippy dies on `fatal error: curl/curl.h: No such file or
