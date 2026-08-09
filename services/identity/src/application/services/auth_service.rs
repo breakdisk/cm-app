@@ -899,8 +899,14 @@ impl AuthService {
 /// Verify the HMAC-SHA256 signature a white-label partner includes when
 /// deep-linking a customer into their tenant:
 ///
-///     mac = HMAC-SHA256(LOGISTICOS_PARTNER_HMAC_SECRET, "<partner_slug>:<firebase_uid>")
-///     sig = base64url(mac)
+/// Fenced as `text`. A four-space indent is Markdown's *other* code-block
+/// syntax, and rustdoc compiles those as Rust too — so this pseudocode was
+/// failing identity's doc-test job just as surely as an untagged fence would.
+///
+/// ```text
+/// mac = HMAC-SHA256(LOGISTICOS_PARTNER_HMAC_SECRET, "<partner_slug>:<firebase_uid>")
+/// sig = base64url(mac)
+/// ```
 fn verify_partner_signature(partner_slug: &str, firebase_uid: &str, sig_b64: &str) -> AppResult<()> {
     use base64::Engine;
     use hmac::{Hmac, Mac};
