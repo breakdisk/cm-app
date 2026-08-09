@@ -48,10 +48,29 @@ impl ProxyClient {
             return self.services.omnideliv_url.as_deref();
         }
         // Identity & Auth
-        if path.starts_with("/v1/auth") || path.starts_with("/v1/users") || path.starts_with("/v1/tenants") || path.starts_with("/v1/api-keys") || path.starts_with("/v1/audit-log") || path.starts_with("/v1/push-tokens") {
+        if path.starts_with("/v1/auth")
+            || path.starts_with("/v1/users")
+            || path.starts_with("/v1/tenants")
+            || path.starts_with("/v1/api-keys")
+            || path.starts_with("/v1/audit-log")
+            || path.starts_with("/v1/push-tokens")
+            // Tenant branding for a caller with no session yet — the customer
+            // app fetches this to brand its *login* screen, before there is a
+            // token to send. Identity serves it; the gateway did not route it,
+            // so a white-label app reaching the gateway got a 404 and silently
+            // fell back to the default brand. Also allowlisted in `is_public`
+            // (see bootstrap.rs), or it would 401 instead — the same outcome
+            // by a different door.
+            || path.starts_with("/v1/public")
+        {
             Some(&self.services.identity_url)
         // Order & Shipment Intake
-        } else if path.starts_with("/v1/shipments") || path.starts_with("/v1/orders") {
+        } else if path.starts_with("/v1/shipments")
+            || path.starts_with("/v1/orders")
+            // Address autocomplete for the booking form. Authenticated, unlike
+            // /v1/public above.
+            || path.starts_with("/v1/address")
+        {
             Some(&self.services.order_intake_url)
         // Dispatch & Routing — dispatch service exposes /v1/routes, /v1/queue,
         // /v1/assignments, and /v1/offers (gig grab surface)
@@ -260,5 +279,39 @@ mod routing_tests {
         // *because* this route table refuses the path — so the claim is pinned
         // here rather than left as a comment that could quietly stop being true.
         assert_eq!(resolve("/v1/omnideliv/internal/catalog/ingest"), None);
+    }
+
+    /// Both of these are paths the customer app calls and the gateway did not
+    /// route. Direct to the service they answered (422 / 401); through the
+    /// gateway they 404'd — so on any build pointed at the gateway, address
+    /// autocomplete was dead and a white-label app silently fell back to the
+    /// default brand.
+    #[test]
+    fn customer_app_paths_the_gateway_used_to_miss() {
+        assert_eq!(
+            resolve("/v1/address/lookup").as_deref(),
+            Some("http://order-intake:8004"),
+            "address autocomplete lives in order-intake"
+        );
+        assert_eq!(
+            resolve("/v1/public/branding").as_deref(),
+            Some("http://identity:8001"),
+            "tenant branding is served by identity"
+        );
+    }
+
+    /// `/v1/public` must not shadow `/v1/public/...`-shaped paths belonging to
+    /// other services, and must not be confused with the authenticated
+    /// `/v1/tenants/me/branding` the same client uses once signed in.
+    #[test]
+    fn branding_has_an_authenticated_twin_and_both_reach_identity() {
+        assert_eq!(
+            resolve("/v1/tenants/me/branding").as_deref(),
+            Some("http://identity:8001")
+        );
+        assert_eq!(
+            resolve("/v1/public/branding").as_deref(),
+            Some("http://identity:8001")
+        );
     }
 }
