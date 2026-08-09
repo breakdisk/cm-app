@@ -425,7 +425,7 @@ async fn schedule_maintenance_records_stored() {
         .header(header::AUTHORIZATION, bearer(&make_jwt(tid)))
         .header(header::CONTENT_TYPE, "application/json")
         .body(jbody(&payload)).unwrap();
-    let (s, b) = call(make_app(repo.clone()), req).await;
+    let (s, _b) = call(make_app(repo.clone()), req).await;
     assert_eq!(s, StatusCode::OK);
     // `maintenance_history` is not part of the wire projection. Asserted on the
     // stored vehicle, which is where the record actually has to land.

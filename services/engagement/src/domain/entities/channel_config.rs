@@ -2,7 +2,12 @@
 // Stored encrypted in Vault; referenced here by key name only.
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// `Default` is "nothing enabled, no credentials", which is the same thing the
+/// `#[serde(default)]` attributes below already say field by field. Deriving it
+/// lets a caller name only the channels it cares about and pick up the rest —
+/// this struct has gained seven channels since it was written, and every
+/// exhaustive literal had to be revisited each time.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TenantChannelConfig {
     pub tenant_id: uuid::Uuid,
     pub whatsapp_enabled: bool,

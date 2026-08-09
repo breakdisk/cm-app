@@ -63,7 +63,16 @@ impl MockAdapter {
 
 #[async_trait]
 impl ChannelAdapter for MockAdapter {
-    async fn send(&self, recipient: &str, body: &str, subject: Option<&str>) -> Result<String, String> {
+    // `data` carries channel-specific metadata (a push deep link, say). The
+    // mock records the three fields its assertions read and ignores it, which
+    // is what the trait tells adapters that do not use it to do.
+    async fn send(
+        &self,
+        recipient: &str,
+        body:      &str,
+        subject:   Option<&str>,
+        _data:     Option<&serde_json::Value>,
+    ) -> Result<String, String> {
         self.calls.lock().await.push((
             recipient.to_string(),
             body.to_string(),
@@ -99,6 +108,9 @@ fn make_notification(channel: NotificationChannel, recipient: &str) -> Notificat
         sent_at: None,
         delivered_at: None,
         retry_count: 0,
+        // Channel-specific payload (a push deep link, say). None here:
+        // these fixtures are about routing, not payload.
+        extra_data: None,
     }
 }
 
@@ -129,7 +141,8 @@ mod dispatch_routing {
         let sms      = MockAdapter::succeeds("sms-msg-001");
         let email    = MockAdapter::succeeds("email-msg-001");
 
-        let svc = NotificationService::new(whatsapp.clone(), sms.clone(), email.clone());
+        let svc = NotificationService::new(whatsapp.clone(), sms.clone(), email.clone(),
+            MockAdapter::succeeds("push-msg"), MockAdapter::succeeds("social-msg"));
         let mut n = make_notification(NotificationChannel::WhatsApp, "+639171234567");
         svc.dispatch(&mut n).await.unwrap();
 
@@ -144,7 +157,8 @@ mod dispatch_routing {
         let sms      = MockAdapter::succeeds("sms-abc");
         let email    = MockAdapter::succeeds("em");
 
-        let svc = NotificationService::new(whatsapp.clone(), sms.clone(), email.clone());
+        let svc = NotificationService::new(whatsapp.clone(), sms.clone(), email.clone(),
+            MockAdapter::succeeds("push-msg"), MockAdapter::succeeds("social-msg"));
         let mut n = make_notification(NotificationChannel::Sms, "+639170000002");
         svc.dispatch(&mut n).await.unwrap();
 
@@ -159,7 +173,8 @@ mod dispatch_routing {
         let sms      = MockAdapter::succeeds("sms");
         let email    = MockAdapter::succeeds("sg-abc123");
 
-        let svc = NotificationService::new(whatsapp.clone(), sms.clone(), email.clone());
+        let svc = NotificationService::new(whatsapp.clone(), sms.clone(), email.clone(),
+            MockAdapter::succeeds("push-msg"), MockAdapter::succeeds("social-msg"));
         let mut n = make_notification(NotificationChannel::Email, "customer@example.com");
         svc.dispatch(&mut n).await.unwrap();
 
@@ -175,6 +190,8 @@ mod dispatch_routing {
             whatsapp.clone(),
             MockAdapter::succeeds("s"),
             MockAdapter::succeeds("e"),
+            MockAdapter::succeeds("push"),
+            MockAdapter::succeeds("social"),
         );
         let mut n = make_notification(NotificationChannel::WhatsApp, "+6391799999");
         svc.dispatch(&mut n).await.unwrap();
@@ -185,16 +202,31 @@ mod dispatch_routing {
         );
     }
 
+    /// Push used to be unroutable, and this test asserted the error that came
+    /// back. It is wired now — `NotificationService` takes a push adapter — so
+    /// the old assertion was pinning an absence that had already been filled.
+    /// Nothing noticed, because the suite has never compiled.
+    ///
+    /// Rewritten to assert the behaviour that replaced it: a push notification
+    /// reaches the push adapter, and only that one.
     #[tokio::test]
-    async fn push_notification_returns_error_because_push_is_not_wired() {
+    async fn push_notification_is_routed_to_the_push_adapter() {
+        let whatsapp = MockAdapter::succeeds("wa");
+        let push     = MockAdapter::succeeds("push");
         let svc = NotificationService::new(
-            MockAdapter::succeeds("wa"),
+            whatsapp.clone(),
             MockAdapter::succeeds("sms"),
             MockAdapter::succeeds("email"),
+            push.clone(),
+            MockAdapter::succeeds("social"),
         );
+
         let mut n = make_notification(NotificationChannel::Push, "device-token-abc");
-        let result = svc.dispatch(&mut n).await;
-        assert!(result.is_err(), "Push should return an error until wired");
+        svc.dispatch(&mut n).await.expect("push dispatch should succeed now that it is wired");
+
+        assert_eq!(push.call_count().await, 1, "the push adapter should have been called");
+        assert_eq!(push.last_recipient().await.as_deref(), Some("device-token-abc"));
+        assert_eq!(whatsapp.call_count().await, 0, "a push must not also go out over WhatsApp");
     }
 }
 
@@ -211,6 +243,8 @@ mod dispatch_success {
             MockAdapter::succeeds("wa-provider-001"),
             MockAdapter::succeeds("sms"),
             MockAdapter::succeeds("email"),
+            MockAdapter::succeeds("push"),
+            MockAdapter::succeeds("social")
         );
         let mut n = make_notification(NotificationChannel::WhatsApp, "+63917000001");
         svc.dispatch(&mut n).await.unwrap();
@@ -224,6 +258,8 @@ mod dispatch_success {
             MockAdapter::succeeds("wa-provider-001"),
             MockAdapter::succeeds("sms"),
             MockAdapter::succeeds("email"),
+            MockAdapter::succeeds("push"),
+            MockAdapter::succeeds("social")
         );
         let mut n = make_notification(NotificationChannel::WhatsApp, "+63917000001");
         svc.dispatch(&mut n).await.unwrap();
@@ -240,6 +276,8 @@ mod dispatch_success {
             MockAdapter::succeeds("wa-001"),
             MockAdapter::succeeds("s"),
             MockAdapter::succeeds("e"),
+            MockAdapter::succeeds("push"),
+            MockAdapter::succeeds("social"),
         );
         let mut n = make_notification(NotificationChannel::WhatsApp, "+63917000001");
         svc.dispatch(&mut n).await.unwrap();
@@ -261,6 +299,8 @@ mod dispatch_failure {
             MockAdapter::fails("upstream timeout"),
             MockAdapter::succeeds("sms"),
             MockAdapter::succeeds("email"),
+            MockAdapter::succeeds("push"),
+            MockAdapter::succeeds("social")
         );
         let mut n = make_notification(NotificationChannel::WhatsApp, "+63917000001");
         // First failure — retry_count becomes 1, still can_retry → dispatch returns Ok.
@@ -275,6 +315,8 @@ mod dispatch_failure {
             MockAdapter::fails("rate limit exceeded"),
             MockAdapter::succeeds("sms"),
             MockAdapter::succeeds("email"),
+            MockAdapter::succeeds("push"),
+            MockAdapter::succeeds("social")
         );
         let mut n = make_notification(NotificationChannel::WhatsApp, "+63917000001");
         svc.dispatch(&mut n).await.unwrap();
@@ -291,6 +333,8 @@ mod dispatch_failure {
             MockAdapter::fails("error"),
             MockAdapter::succeeds("sms"),
             MockAdapter::succeeds("email"),
+            MockAdapter::succeeds("push"),
+            MockAdapter::succeeds("social")
         );
         let mut n = make_notification(NotificationChannel::WhatsApp, "+63917000001");
         svc.dispatch(&mut n).await.unwrap();
@@ -304,6 +348,8 @@ mod dispatch_failure {
             MockAdapter::fails("persistent error"),
             MockAdapter::succeeds("sms"),
             MockAdapter::succeeds("email"),
+            MockAdapter::succeeds("push"),
+            MockAdapter::succeeds("social")
         );
         let mut n = make_notification(NotificationChannel::WhatsApp, "+63917000001");
 
@@ -322,6 +368,8 @@ mod dispatch_failure {
             MockAdapter::fails("transient error"),
             MockAdapter::succeeds("sms"),
             MockAdapter::succeeds("email"),
+            MockAdapter::succeeds("push"),
+            MockAdapter::succeeds("social")
         );
         let mut n = make_notification(NotificationChannel::WhatsApp, "+63917000001");
         // retry_count is 0 — first failure is recoverable.
