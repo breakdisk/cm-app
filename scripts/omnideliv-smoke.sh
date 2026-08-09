@@ -132,6 +132,14 @@ if [ -n "${COURIER_TOKEN:-}" ]; then
 
   VENDOR=$(api "$GW/v1/omnideliv/orders/$ORDER/track" >/dev/null 2>&1; echo "$KUYAS")
 
+  # The courier's balance *before* this order. The ledger is per-week and
+  # append-only, so the absolute figure carries every earlier run — only the
+  # delta belongs to this one.
+  COURIER_BEFORE=$(curl -sf -H "Authorization: Bearer $COURIER_TOKEN" \
+    "$FIELD_OPS/v1/field-ops/couriers/me/earnings" \
+    | grep -o '"balance_cents":[0-9-]*' | head -1 | cut -d: -f2)
+  COURIER_BEFORE=${COURIER_BEFORE:-0}
+
   curl -sf -X POST -H "Authorization: Bearer $COURIER_TOKEN" -H "Content-Type: application/json"     "$FIELD_OPS/v1/field-ops/assignments/$ASSIGNMENT/collected"     -d "{\"vendor_id\":\"$VENDOR\"}" >/dev/null || {
       echo "     collection call failed"; exit 1; }
 
@@ -165,22 +173,37 @@ if [ -n "${COURIER_TOKEN:-}" ]; then
 
   # ── COD: the courier is holding the customer's cash ───────────────────────
   #
-  # 3500 earned minus 38900 collected = -35400. A positive balance here would
-  # mean we were about to pay a courier money they are already holding.
-  [ "$COURIER_BAL" = "-35400" ] || {
-    echo "     courier balance '$COURIER_BAL', expected -35400 (3500 earned less 38900 cash held)."
-    echo "     A positive balance means the COD debit never landed."
+  # 3500 earned minus 38900 collected = a delta of -35400. Asserted as a delta,
+  # not an absolute: the ledger is per-week and append-only, so a second run in
+  # the same week starts from wherever the first one left off. Pinning the
+  # absolute made this fail on every run after the first — a real result buried
+  # under a failure that only meant "you have run this today".
+  #
+  # A delta at or above zero is the failure worth catching: it means the COD
+  # debit never landed and we were about to pay a courier money they are
+  # already holding.
+  COURIER_DELTA=$((COURIER_BAL - COURIER_BEFORE))
+  [ "$COURIER_DELTA" = "-35400" ] || {
+    echo "     courier balance moved by $COURIER_DELTA, expected -35400 (3500 earned less 38900 cash held)."
+    echo "     before=$COURIER_BEFORE after=$COURIER_BAL"
+    echo "     A delta of 0 or more means the COD debit never landed."
     exit 1
   }
-  echo "     courier holds the customer's cash: balance $COURIER_BAL"
+  echo "     courier holds the customer's cash: balance moved $COURIER_DELTA (now $COURIER_BAL)"
 
   curl -sf -X POST -H "Authorization: Bearer $COURIER_TOKEN" -H "Content-Type: application/json"     "$FIELD_OPS/v1/field-ops/couriers/me/remit"     -d '{"amount_cents":38900,"reference":"smoke-test"}' >/dev/null || {
       echo "     remittance failed"; exit 1; }
 
   AFTER=$(curl -sf -H "Authorization: Bearer $COURIER_TOKEN"     "$FIELD_OPS/v1/field-ops/couriers/me/earnings"     | grep -o '"balance_cents":[0-9-]*' | head -1 | cut -d: -f2)
-  [ "$AFTER" = "3500" ] || {
-    echo "     after remitting, balance is '$AFTER', expected 3500"; exit 1; }
-  echo "     after remitting, the platform owes the courier $AFTER"
+  # Same reasoning: the remittance returns the 38900, so this order's net effect
+  # on the balance is the 3500 the courier earned.
+  REMIT_DELTA=$((AFTER - COURIER_BEFORE))
+  [ "$REMIT_DELTA" = "3500" ] || {
+    echo "     after remitting, balance moved by $REMIT_DELTA, expected 3500"
+    echo "     before=$COURIER_BEFORE after=$AFTER"
+    exit 1
+  }
+  echo "     after remitting, the platform owes the courier $REMIT_DELTA more (balance $AFTER)"
 
   echo
   echo "PASS — full lifecycle: placed, collected, delivered, cash remitted, everyone square."
