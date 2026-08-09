@@ -22,6 +22,9 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/ci-rust.yml"
+      # The lint job's guard scripts. Without this a change to one of them does
+      # not even trigger the workflow, so the guard ships unexercised.
+      - "scripts/check-*.sh"
   pull_request:
     branches:
       - master
@@ -31,6 +34,9 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/ci-rust.yml"
+      # The lint job's guard scripts. Without this a change to one of them does
+      # not even trigger the workflow, so the guard ships unexercised.
+      - "scripts/check-*.sh"
 
 concurrency:
   group: ci-rust-${{ github.ref }}-${{ github.event.pull_request.number || github.sha }}
@@ -169,7 +175,8 @@ jobs:
     # sat broken behind a green badge.
     if: >-
       needs.detect-changes.outputs.rust_changed == 'true' ||
-      github.event_name == 'workflow_dispatch'
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push'
     permissions:
       contents: read
 
