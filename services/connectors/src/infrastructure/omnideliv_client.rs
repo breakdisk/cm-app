@@ -36,7 +36,10 @@ use crate::adapters::shopify_catalog::IngestItem;
 /// Stable, obviously synthetic identity for the connectors service in
 /// omnideliv's audit trail. Fixed so the actor is greppable; outside any range
 /// `identity.users` allocates so it can never collide with a real person.
-const CONNECTORS_SERVICE_USER: Uuid = Uuid::from_u128(0xc0_11ec_705_0000_4000_8000_0000_0001);
+/// Grouped in uniform fours like `FieldOpsDispatch`'s equivalent — irregular
+/// grouping is a clippy denial under `-D clippy::all`, and it reads as a UUID
+/// this way besides.
+const CONNECTORS_SERVICE_USER: Uuid = Uuid::from_u128(0xc011_ec70_0000_4000_8000_0000_0000_0001);
 
 /// Long enough for one internal call and any sane clock skew, short enough that
 /// a leaked token is worthless before it can be replayed.
