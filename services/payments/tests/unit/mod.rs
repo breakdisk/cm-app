@@ -8,11 +8,14 @@
 // No database, no HTTP, no Kafka.
 
 use logisticos_payments::domain::entities::{
-    invoice::{Invoice, InvoiceLineItem, InvoiceStatus},
+    invoice::{BillingPeriod, Invoice, InvoiceLineItem, InvoiceStatus},
     cod_reconciliation::{CodCollection, CodStatus},
 };
-use logisticos_types::{InvoiceId, MerchantId, TenantId, Money, Currency};
-use chrono::Utc;
+use logisticos_types::{
+    invoice::{ChargeType, InvoiceNumber, InvoiceType},
+    MerchantId, TenantId, Money, Currency,
+};
+use chrono::{NaiveDate, Utc};
 use uuid::Uuid;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -21,27 +24,47 @@ use uuid::Uuid;
 
 fn php(centavos: i64) -> Money { Money::new(centavos, Currency::PHP) }
 
+/// Built through `document_level` rather than as a struct literal. The literal
+/// this replaces named four fields and the type now has eight — `id`,
+/// `charge_type`, `awb` and `reason` arrived with the billing-track work, and
+/// every one of them broke this fixture. Going through the constructor means
+/// the next field does not.
 fn make_line_item(unit_price: i64, qty: u32, discount: Option<i64>) -> InvoiceLineItem {
-    InvoiceLineItem {
-        description: "Delivery fee".into(),
-        quantity: qty,
-        unit_price: php(unit_price),
-        discount: discount.map(php),
-    }
+    let mut item = InvoiceLineItem::document_level(
+        ChargeType::BaseFreight,
+        "Delivery fee".into(),
+        php(unit_price),
+    );
+    item.quantity = qty;
+    item.discount = discount.map(php);
+    item
 }
 
 /// Build an Invoice with the given line items. Status defaults to Issued.
+///
+/// Through `Invoice::new` rather than a struct literal: the type gained eight
+/// fields since this fixture was written (`adjustments`, `billing_period`,
+/// `created_at` among them) and the literal named nine of the seventeen. A
+/// constructor call survives the next addition.
 fn make_invoice(items: Vec<InvoiceLineItem>) -> Invoice {
-    Invoice {
-        id:          InvoiceId::new(),
-        merchant_id: MerchantId::new(),
-        line_items:  items,
-        status:      InvoiceStatus::Issued,
-        issued_at:   Utc::now(),
-        due_at:      Utc::now() + chrono::Duration::days(15),
-        paid_at:     None,
-        currency:    Currency::PHP,
-    }
+    let mut invoice = Invoice::new(
+        InvoiceNumber::generate(
+            InvoiceType::ShipmentCharges,
+            "PH1",
+            NaiveDate::from_ymd_opt(2026, 4, 1).expect("valid date"),
+            1,
+        )
+        .expect("valid invoice number"),
+        InvoiceType::ShipmentCharges,
+        TenantId::new(),
+        MerchantId::new(),
+        None,
+        BillingPeriod::monthly(2026, 4),
+        Currency::PHP,
+    );
+    invoice.line_items = items;
+    invoice.status = InvoiceStatus::Issued;
+    invoice
 }
 
 fn make_cod(tenant_id: TenantId, amount_centavos: i64) -> CodCollection {
@@ -65,7 +88,7 @@ mod line_item_total {
     #[test]
     fn total_with_no_discount_is_unit_price_times_quantity() {
         let item = make_line_item(8500, 3, None); // PHP 85 × 3 = PHP 255
-        assert_eq!(item.total(), php(25500), "3 × PHP 85.00 = PHP 255.00 (25500 centavos)");
+        assert_eq!(item.net(), php(25500), "3 × PHP 85.00 = PHP 255.00 (25500 centavos)");
     }
 
     #[test]
@@ -73,7 +96,7 @@ mod line_item_total {
         // unit_price=10000, qty=2 → gross=20000; discount=3000 → net=17000
         let item = make_line_item(10000, 2, Some(3000));
         assert_eq!(
-            item.total(), php(17000),
+            item.net(), php(17000),
             "PHP 200 gross minus PHP 30 discount = PHP 170 (17000 centavos)"
         );
     }
@@ -81,20 +104,20 @@ mod line_item_total {
     #[test]
     fn total_with_zero_discount_equals_gross() {
         let item = make_line_item(8500, 1, Some(0));
-        assert_eq!(item.total(), php(8500), "Zero discount must not change the total");
+        assert_eq!(item.net(), php(8500), "Zero discount must not change the total");
     }
 
     #[test]
     fn total_qty_1_equals_unit_price() {
         let item = make_line_item(15000, 1, None);
-        assert_eq!(item.total(), php(15000), "Quantity 1 must return unit price exactly");
+        assert_eq!(item.net(), php(15000), "Quantity 1 must return unit price exactly");
     }
 
     #[test]
     fn total_full_discount_equals_zero() {
         // Discount exactly cancels the full line value
         let item = make_line_item(8500, 2, Some(17000)); // gross=17000, discount=17000
-        assert_eq!(item.total(), php(0), "Full discount must reduce total to 0");
+        assert_eq!(item.net(), php(0), "Full discount must reduce total to 0");
     }
 }
 
@@ -251,14 +274,14 @@ mod invoice_status_rules {
     fn can_cancel_draft_invoice() {
         let mut invoice = make_invoice(vec![]);
         invoice.status = InvoiceStatus::Draft;
-        assert!(invoice.can_cancel(), "Draft invoice can be cancelled");
+        assert!(invoice.cancel().is_ok(), "Draft invoice can be cancelled");
     }
 
     #[test]
     fn can_cancel_issued_invoice() {
-        let invoice = make_invoice(vec![]);
+        let mut invoice = make_invoice(vec![]);
         assert_eq!(invoice.status, InvoiceStatus::Issued);
-        assert!(invoice.can_cancel(), "Issued invoice can be cancelled");
+        assert!(invoice.cancel().is_ok(), "Issued invoice can be cancelled");
     }
 
     #[test]
@@ -266,7 +289,7 @@ mod invoice_status_rules {
         let mut invoice = make_invoice(vec![]);
         invoice.status = InvoiceStatus::Paid;
         assert!(
-            !invoice.can_cancel(),
+            invoice.cancel().is_err(),
             "Paid invoice must NOT be cancellable"
         );
     }
@@ -275,14 +298,14 @@ mod invoice_status_rules {
     fn can_cancel_overdue_invoice() {
         let mut invoice = make_invoice(vec![]);
         invoice.status = InvoiceStatus::Overdue;
-        assert!(invoice.can_cancel(), "Overdue invoice can be cancelled");
+        assert!(invoice.cancel().is_ok(), "Overdue invoice can be cancelled");
     }
 
     #[test]
     fn can_cancel_disputed_invoice() {
         let mut invoice = make_invoice(vec![]);
         invoice.status = InvoiceStatus::Disputed;
-        assert!(invoice.can_cancel(), "Disputed invoice can be cancelled");
+        assert!(invoice.cancel().is_ok(), "Disputed invoice can be cancelled");
     }
 
     #[test]
@@ -325,21 +348,14 @@ mod invoice_status_rules {
         );
     }
 
+    /// Net-15 is applied by `Invoice::new` now. The `with_net_15_terms()`
+    /// builder this test used to call is gone — the terms became the default
+    /// rather than something a caller opted into, so the rule is asserted where
+    /// it now lives.
     #[test]
-    fn with_net_15_terms_sets_due_at_15_days_after_issued_at() {
-        let issued = Utc::now();
-        let invoice = Invoice {
-            id:          InvoiceId::new(),
-            merchant_id: MerchantId::new(),
-            line_items:  vec![],
-            status:      InvoiceStatus::Draft,
-            issued_at:   issued,
-            due_at:      issued, // will be overwritten
-            paid_at:     None,
-            currency:    Currency::PHP,
-        }.with_net_15_terms();
-
-        let diff = invoice.due_at.signed_duration_since(issued);
+    fn a_new_invoice_is_due_15_days_after_it_is_issued() {
+        let invoice = make_invoice(vec![]);
+        let diff = invoice.due_at.signed_duration_since(invoice.issued_at);
         assert_eq!(diff.num_days(), 15, "net-15 terms must set due_at to exactly 15 days after issued_at");
     }
 }
