@@ -105,6 +105,18 @@ pub async fn run() -> anyhow::Result<()> {
     let jwt: logisticos_auth::middleware::AuthState =
         Arc::new(logisticos_auth::jwt::JwtService::new(&jwt_secret, 3600, 86_400));
 
+    // Outside the auth layer for the same reason the public tracking routes are:
+    // a probe cannot present a JWT. This service had no /health either, so the
+    // container has been reporting unhealthy on a 404.
+    let observability = axum::Router::new()
+        .route("/health",  axum::routing::get(|| async {
+            axum::Json(serde_json::json!({"status": "ok", "service": "delivery-experience"}))
+        }))
+        .route("/ready",   axum::routing::get(|| async {
+            axum::Json(serde_json::json!({"status": "ready"}))
+        }))
+        .route("/metrics", axum::routing::get(|| async { "" }));
+
     let app = http::public_router()
         .merge(http::authenticated_router().layer(
             axum::middleware::from_fn_with_state(
@@ -112,6 +124,7 @@ pub async fn run() -> anyhow::Result<()> {
                 logisticos_auth::middleware::require_auth,
             ),
         ))
+        .merge(observability)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state);

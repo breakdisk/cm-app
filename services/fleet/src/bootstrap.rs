@@ -44,11 +44,28 @@ pub async fn run() -> anyhow::Result<()> {
     let jwt: logisticos_auth::middleware::AuthState =
         Arc::new(logisticos_auth::jwt::JwtService::new(&jwt_secret, 3600, 86_400));
 
+    // Merged *outside* the auth layer, deliberately. A probe cannot present a
+    // JWT, so an authenticated /health is a permanently failing one.
+    //
+    // fleet had no /health at all — the container has been reporting unhealthy
+    // on a 404 — and CLAUDE.md requires all three on every service. Adding the
+    // auth layer above turned that 404 into a 401, which is no better, so the
+    // two changes belong together.
+    let observability = axum::Router::new()
+        .route("/health",  axum::routing::get(|| async {
+            axum::Json(serde_json::json!({"status": "ok", "service": "fleet"}))
+        }))
+        .route("/ready",   axum::routing::get(|| async {
+            axum::Json(serde_json::json!({"status": "ready"}))
+        }))
+        .route("/metrics", axum::routing::get(|| async { "" }));
+
     let app = http::router()
         .layer(axum::middleware::from_fn_with_state(
             jwt,
             logisticos_auth::middleware::require_auth,
         ))
+        .merge(observability)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state);
 
