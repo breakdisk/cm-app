@@ -43,3 +43,17 @@ futures              = "0.3"
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
+
+# The unit suite is NOT wired either: 15 compile errors, with 27 in integration.
+# Wants its own pass.
+#
+# Cargo discovers tests/*.rs and tests/<dir>/main.rs — but NOT tests/<dir>/mod.rs,
+# so without a stanza the suite is not a target: never compiled, never run, and
+# `cargo test` reports a clean pass over nothing.
+# [[test]]
+# name = "unit"
+# path = "tests/unit/mod.rs"
+#
+# [[test]]
+# name = "integration"
+# path = "tests/integration/mod.rs"

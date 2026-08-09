@@ -39,3 +39,19 @@ async-trait.workspace  = true
 reqwest.workspace      = true
 jsonwebtoken.workspace = true
 base64       = "0.22"
+
+# The unit suite is NOT wired either: it has 13 compile errors of its own, and
+# integration has 120 — by far the largest drift of any service. Both want a
+# dedicated pass. The stanzas are left commented rather than deleted so the
+# next person finds the suites instead of rediscovering that they exist.
+#
+# Cargo discovers tests/*.rs and tests/<dir>/main.rs — but NOT tests/<dir>/mod.rs,
+# so without a stanza the suite is not a target: never compiled, never run, and
+# `cargo test` reports a clean pass over nothing.
+# [[test]]
+# name = "unit"
+# path = "tests/unit/mod.rs"
+#
+# [[test]]
+# name = "integration"
+# path = "tests/integration/mod.rs"

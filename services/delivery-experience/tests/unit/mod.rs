@@ -19,7 +19,7 @@ use logisticos_types::TenantId;
 
 // Import the crate under test.
 use logisticos_delivery_experience::domain::entities::{
-    DriverPosition, StatusEvent, TrackingRecord, TrackingStatus,
+    TrackingRecord, TrackingStatus,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -5,7 +5,7 @@
 // against entity methods and field values.
 
 use logisticos_hub_ops::domain::entities::{
-    Hub, HubId, InductionId, InductionStatus, ParcelInduction,
+    Hub, InductionStatus, ParcelInduction,
 };
 use logisticos_types::TenantId;
 use uuid::Uuid;
