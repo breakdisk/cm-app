@@ -17,11 +17,20 @@ pub type AuthState = Arc<JwtService>;
 
 /// Axum middleware that validates the Bearer token and adds Claims to extensions.
 ///
-/// Usage:
-/// ```rust
+/// Usage — `ignore`, not `rust`: `Router`, the handler and the state are all
+/// caller-supplied, so as a compiled doctest this could only ever fail, which
+/// is what it was doing.
+///
+/// Note where `.layer` sits. It wraps everything chained before it, so
+/// `/health` must be merged **after** this line or the probe gets a 401 — see
+/// `scripts/check-health-endpoints.sh`, which exists because nine services had
+/// it the other way round.
+///
+/// ```ignore
 /// let app = Router::new()
 ///     .route("/shipments", get(list_shipments))
-///     .layer(axum::middleware::from_fn_with_state(auth_state, require_auth));
+///     .layer(axum::middleware::from_fn_with_state(auth_state, require_auth))
+///     .merge(observability_router());
 /// ```
 pub async fn require_auth(
     axum::extract::State(jwt): axum::extract::State<AuthState>,

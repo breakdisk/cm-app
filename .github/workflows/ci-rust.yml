@@ -456,9 +456,24 @@ jobs:
                      "services/${{ matrix.service }}/src" 2>/dev/null \
                    | sed 's/.*"\(.*\)"/\1/' | head -1)
           if [ -n "$SCHEMA" ]; then
-            echo "Pre-creating schema '$SCHEMA' (as migrations::run does)"
+            # Dropped first, so the migrations own the schema outright.
+            #
+            # init.sql above is written for a fresh production cluster and
+            # pre-creates some service tables — `identity.tenants` among them,
+            # with IF NOT EXISTS. identity's migration 0001 creates the same
+            # table *without* IF NOT EXISTS, so the job died on
+            # `relation "tenants" already exists` before running a test.
+            #
+            # Fixing the migration is not an option: it is applied in production
+            # and editing it breaks its recorded checksum. Fixing init.sql means
+            # deciding whether it should define service-owned tables at all
+            # (per ADR-0012 it should not) — a real question, but not one a test
+            # database needs answered. This database is disposable, so the
+            # migrations simply get a clean schema, which is what they assume.
+            echo "Resetting schema '$SCHEMA' so migrations own it"
             psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-              -c "CREATE SCHEMA IF NOT EXISTS \"$SCHEMA\""
+              -c "DROP SCHEMA IF EXISTS \"$SCHEMA\" CASCADE" \
+              -c "CREATE SCHEMA \"$SCHEMA\""
           else
             echo "::warning::no migrations::run call found for ${{ matrix.service }} — not pre-creating a schema"
           fi
