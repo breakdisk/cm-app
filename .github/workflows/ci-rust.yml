@@ -435,16 +435,39 @@ jobs:
           done
 
       - name: Run database migrations for ${{ matrix.service }}
+        shell: bash
         run: |
           MIGRATIONS_DIR="services/${{ matrix.service }}/migrations"
-          if [ -d "$MIGRATIONS_DIR" ]; then
-            echo "Running migrations for ${{ matrix.service }}..."
-            sqlx migrate run \
-              --source "$MIGRATIONS_DIR" \
-              --database-url "$DATABASE_URL"
-          else
+          if [ ! -d "$MIGRATIONS_DIR" ]; then
             echo "No migrations directory for ${{ matrix.service }} — skipping."
+            exit 0
           fi
+
+          # Services do not call `sqlx migrate run` directly — they call
+          # `logisticos_common::migrations::run`, which creates the service's
+          # schema *before* migrating (ADR-0012). Several migrations rely on
+          # that: delivery-experience's 0001 creates schema `tracking` while
+          # 0002 writes to `delivery_experience`, which no migration file ever
+          # creates. Running the bare sqlx command here skipped that step, so
+          # the job failed on something that works fine in the service.
+          #
+          # The schema name is read from the source rather than derived from the
+          # service name — they mostly match with hyphens as underscores, but
+          # ai-layer uses `ai`, so deriving it would be wrong exactly once and
+          # silently.
+          SCHEMA=$(grep -rhoE 'migrations::run\(&pool, "[a-z_]+"' \
+                     "services/${{ matrix.service }}/src" 2>/dev/null \
+                   | sed 's/.*"\(.*\)"/\1/' | head -1)
+          if [ -n "$SCHEMA" ]; then
+            echo "Pre-creating schema '$SCHEMA' (as migrations::run does)"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+              -c "CREATE SCHEMA IF NOT EXISTS \"$SCHEMA\""
+          else
+            echo "::warning::no migrations::run call found for ${{ matrix.service }} — not pre-creating a schema"
+          fi
+
+          echo "Running migrations for ${{ matrix.service }}..."
+          sqlx migrate run --source "$MIGRATIONS_DIR" --database-url "$DATABASE_URL"
 
       - name: Build ${{ matrix.service }} (check compile)
         run: |
