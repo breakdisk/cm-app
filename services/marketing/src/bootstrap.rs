@@ -136,6 +136,19 @@ pub async fn run() -> anyhow::Result<()> {
 
     let state = AppState { campaign_svc, ab_test_repo, journey_repo, jwt: Arc::clone(&jwt), cdp_client };
 
+    // A probe cannot present a JWT, so /health lives outside the authenticated
+    // merge. marketing had no health route at all — note it answered 404 rather
+    // than 401, because `route_layer` below only applies to routes that match —
+    // and its container has been reporting unhealthy on that.
+    let observability = axum::Router::new()
+        .route("/health",  axum::routing::get(|| async {
+            axum::Json(serde_json::json!({"status": "ok", "service": "marketing"}))
+        }))
+        .route("/ready",   axum::routing::get(|| async {
+            axum::Json(serde_json::json!({"status": "ready"}))
+        }))
+        .route("/metrics", axum::routing::get(|| async { "" }));
+
     // Public routes require a valid JWT; internal routes are network-isolated.
     let app = axum::Router::new()
         .merge(
@@ -143,6 +156,7 @@ pub async fn run() -> anyhow::Result<()> {
                 .route_layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth))
         )
         .merge(http::internal_router())
+        .merge(observability)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state);
 

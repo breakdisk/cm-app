@@ -607,6 +607,21 @@ async fn metrics() -> &'static str {
 
 /// Builds the Axum router for the engagement service.
 /// Pass the fully-constructed `AppState` during bootstrap.
+/// Liveness/readiness/metrics, deliberately kept out of `router()`.
+///
+/// `router()` is mounted behind `require_auth` in bootstrap, and a probe cannot
+/// present a JWT — so a health route in there answers 401 forever, which is
+/// what this service had been doing.
+/// Takes state because `/ready` is a real check — it runs `SELECT 1` against
+/// the pool, which is what makes it a readiness probe rather than a liveness one.
+pub fn observability_router(state: AppState) -> Router {
+    Router::new()
+        .route("/health",  get(health))
+        .route("/ready",   get(ready))
+        .route("/metrics", get(metrics))
+        .with_state(state)
+}
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         // ── Notifications ───────────────────────────────────────────
@@ -622,10 +637,6 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/campaigns/:id/sends",    get(list_campaign_sends))
         // ── Customer communication history ──────────────────────────
         .route("/v1/customers/:customer_id/sends", get(customer_send_history))
-        // ── Observability ───────────────────────────────────────────
-        .route("/health",                get(health))
-        .route("/ready",                 get(ready))
-        .route("/metrics",               get(metrics))
         .with_state(state)
 }
 

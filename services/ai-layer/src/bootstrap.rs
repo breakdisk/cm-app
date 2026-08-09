@@ -111,11 +111,24 @@ pub async fn run() -> anyhow::Result<()> {
 
     let state = AppState { runner, session_repo, tools, jwt: Arc::clone(&jwt), kafka };
 
+    // Outside the auth layer: a probe cannot present a JWT, so /health inside
+    // the authenticated router answers 401 and the container reports unhealthy
+    // on it — which is what this service had been doing.
+    let observability = axum::Router::new()
+        .route("/health",  axum::routing::get(|| async {
+            axum::Json(serde_json::json!({"status": "ok", "service": "ai-layer"}))
+        }))
+        .route("/ready",   axum::routing::get(|| async {
+            axum::Json(serde_json::json!({"status": "ready"}))
+        }))
+        .route("/metrics", axum::routing::get(|| async { "" }));
+
     let app = http::router()
         // Mounted before the auth layer below so `require_auth` also guards
         // /mcp — Claims land in the request extensions the MCP handler reads.
         .nest_service("/mcp", mcp_service)
         .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth))
+        .merge(observability)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state);
 

@@ -229,6 +229,10 @@ pub async fn run() -> anyhow::Result<()> {
 
     let app = Router::new()
         .merge(protected)
+        // Outside `protected` for the same reason the webhooks are: a probe
+        // cannot present a JWT, so /health inside the authenticated router
+        // answered 401 and the container reported unhealthy on it.
+        .merge(crate::api::http::observability_router(http_state.clone()))
         .merge(public_routes)
         .merge(internal_routes)
         .layer(tower_http::trace::TraceLayer::new_for_http())

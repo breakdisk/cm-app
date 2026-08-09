@@ -21,11 +21,23 @@ use crate::application::services::{
 use crate::domain::entities::SlaRecord;
 use crate::AppState;
 
-/// JWT-protected routes — mounted with `require_auth` middleware in bootstrap.
+
+/// Liveness/readiness/metrics, deliberately kept out of `router()`.
+///
+/// `router()` is mounted behind `require_auth` in bootstrap, and a probe cannot
+/// present a JWT — so a health route in there answers 401 forever. That is what
+/// this service was doing — the comment beside the old route said
+/// "no auth required", which the composition had been quietly contradicting.
+pub fn observability_router() -> Router<AppState> {
+    Router::new()
+        .route("/health",  get(health))
+        .route("/ready",   get(health))
+        .route("/metrics", get(|| async { "" }))
+}
+
+/// JWT-protected routes.
 pub fn router() -> Router<AppState> {
     Router::new()
-        // Health check — no auth required (gateway / K8s liveness probes)
-        .route("/health",                                      get(health))
         // Carrier CRUD
         .route("/v1/carriers",                                 get(list_carriers).post(onboard_carrier))
         .route("/v1/carriers/me",                              get(get_my_carrier))
