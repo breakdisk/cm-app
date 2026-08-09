@@ -59,9 +59,20 @@ UPDATE omnideliv.catalog_items
    SET allergens_declared_at = NOW()
  WHERE tenant_id = '$TENANT';
 
-INSERT INTO omnideliv.item_availability (item_id, tenant_id, state, updated_at)
-SELECT id, tenant_id, 'available', NOW() FROM omnideliv.catalog_items WHERE tenant_id = '$TENANT'
-ON CONFLICT (item_id) DO UPDATE SET state = 'available', updated_at = NOW();
+-- confirmed_at as well as updated_at, and not by accident: since migration 0015
+-- the freshness model reads only confirmed_at, and NULL there means "no human
+-- has ever attested to this". Seeding without it would leave every demo item
+-- permanently uncertain — the mesh would substitute the whole catalog and the
+-- hero flow would look broken while behaving exactly as designed.
+--
+-- The seed stands in for the vendor tapping "confirm" in the storefront console,
+-- so it writes the human clock. An *ingest* never may; that is the distinction
+-- the two columns exist to hold.
+INSERT INTO omnideliv.item_availability (item_id, tenant_id, state, updated_at, confirmed_at)
+SELECT id, tenant_id, 'available', NOW(), NOW()
+  FROM omnideliv.catalog_items WHERE tenant_id = '$TENANT'
+ON CONFLICT (item_id) DO UPDATE SET
+    state = 'available', updated_at = NOW(), confirmed_at = NOW();
 
 -- One item out of stock, so the substitution path has something to do. Without
 -- this the hero flow never exercises Screen C, which is half the design.

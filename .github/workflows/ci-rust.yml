@@ -93,6 +93,8 @@ jobs:
               - "services/order-intake/**"
             omnideliv:
               - "services/omnideliv/**"
+            connectors:
+              - "services/connectors/**"
             field-ops:
               - "services/field-ops/**"
             dispatch:
@@ -124,7 +126,7 @@ jobs:
         id: build-matrix
         shell: bash
         run: |
-          ALL_SERVICES='["api-gateway","identity","cdp","engagement","order-intake","omnideliv","field-ops","dispatch","driver-ops","delivery-experience","fleet","hub-ops","carrier","pod","payments","analytics","marketing","business-logic","ai-layer"]'
+          ALL_SERVICES='["api-gateway","identity","cdp","engagement","order-intake","omnideliv","connectors","field-ops","dispatch","driver-ops","delivery-experience","fleet","hub-ops","carrier","pod","payments","analytics","marketing","business-logic","ai-layer"]'
 
           # If shared lib changes, test all services (transitive impact)
           if [ "${{ steps.filter.outputs.libs }}" == "true" ]; then
@@ -136,7 +138,7 @@ jobs:
           # Otherwise build matrix from only changed services
           CHANGED="[]"
           declare -a ALL=(
-            api-gateway identity cdp engagement order-intake omnideliv field-ops dispatch
+            api-gateway identity cdp engagement order-intake omnideliv connectors field-ops dispatch
             driver-ops delivery-experience fleet hub-ops carrier pod
             payments analytics marketing business-logic ai-layer
           )
@@ -450,9 +452,20 @@ jobs:
           # service name — they mostly match with hyphens as underscores, but
           # ai-layer uses `ai`, so deriving it would be wrong exactly once and
           # silently.
-          SCHEMA=$(grep -rhoE 'migrations::run\(&pool, "[a-z_]+"' \
+          # Two traps here, both of which cost a red job before this shape:
+          #
+          # 1. The call is not always on one line. connectors wraps it over
+          #    four lines, which a single-line pattern cannot see. -A3 spans
+          #    the wrapped form and still matches the inline one, and
+          #    ./migrations never matches [a-z_]+ because of the dot and
+          #    slash, so the schema name is reliably the first hit.
+          # 2. SCHEMA=$(grep ...) inherits grep's exit status, and this step
+          #    runs under set -eo pipefail — so *no match* aborted the job
+          #    instead of taking the warning branch below that exists exactly
+          #    to handle it. '|| true' restores the intent.
+          SCHEMA=$(grep -rhA3 'migrations::run(' \
                      "services/${{ matrix.service }}/src" 2>/dev/null \
-                   | sed 's/.*"\(.*\)"/\1/' | head -1)
+                   | grep -oE '"[a-z_]+"' | head -1 | tr -d '"' || true)
           if [ -n "$SCHEMA" ]; then
             # Dropped first, so the migrations own the schema outright.
             #

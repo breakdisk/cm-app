@@ -8,4 +8,6 @@ pub use checkout_service::{
     CheckoutError, CheckoutService, CourierDispatch, CourierSupply, FIRST_OFFER_RADIUS_KM,
 };
 pub use recovery_service::{Recovery, RecoveryService};
-pub use catalog_service::{CatalogService, ScoredItem};
+pub use catalog_service::{
+    CatalogService, IngestReport, ItemDraft, ItemPatch, ScoredItem,
+};

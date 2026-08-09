@@ -12,6 +12,7 @@ use crate::{
     domain::repositories::CredentialsRepository,
     infrastructure::{
         db::PgCredentialsRepository,
+        omnideliv_client::OmniDelivClient,
         order_intake_client::OrderIntakeClient,
     },
 };
@@ -72,10 +73,23 @@ pub async fn run() -> anyhow::Result<()> {
     let public_url = std::env::var("PUBLIC_URL")
         .unwrap_or_else(|_| format!("http://{}:{}", cfg.app.host, cfg.app.port));
 
+    // Absent when this deployment runs no OmniDeliv tier. Logged either way:
+    // "catalog sync is off" needs to be visible at boot, not discovered by a
+    // merchant pressing a button and getting a 501.
+    let omnideliv = cfg.omnideliv.as_ref().map(|c| {
+        tracing::info!(url = %c.internal_url, "catalog sync enabled");
+        Arc::new(OmniDelivClient::new(c.internal_url.clone(), Arc::clone(&jwt)))
+    });
+    if omnideliv.is_none() {
+        tracing::info!("catalog sync disabled — OMNIDELIV__INTERNAL_URL is not set");
+    }
+
     let state = AppState {
         svc:        connector_svc,
         jwt:        Arc::clone(&jwt),
         public_url,
+        omnideliv,
+        http:       reqwest::Client::new(),
     };
 
     let app = router(state)

@@ -11,7 +11,9 @@ pub use basket::{
     Basket, BasketDelta, BasketLine, BasketStatus, LineState, SubIntent, SubIntentSource,
     SubIntentStatus,
 };
-pub use catalog::{Availability, AvailabilityState, CatalogItem, Confidence};
+pub use catalog::{
+    Availability, AvailabilityState, CatalogItem, CatalogSource, Confidence, IngestedItem,
+};
 pub use consolidation::{ConsolidationPlan, PendingStop, Stop, TemperatureClass};
 pub use order::{LegStatus, Order, OrderStatus, Settlement, VendorLeg};
 pub use telemetry::TelemetryEvent;

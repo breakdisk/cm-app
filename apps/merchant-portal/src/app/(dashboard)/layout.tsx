@@ -28,6 +28,7 @@ import {
 import { cn } from "@/lib/design-system/cn";
 import { useBranding } from "@/lib/branding";
 import { identityApi, type Me, type Tenant } from "@/lib/api/identity";
+import { useHasStorefront } from "@/lib/api/storefront";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -35,6 +36,8 @@ interface NavItem {
   label: string;
   href: string;
   icon: React.ElementType;
+  /** Only rendered when the login actually runs an OmniDeliv store. */
+  requiresStorefront?: boolean;
 }
 
 interface DashboardLayoutProps {
@@ -47,7 +50,11 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Overview",     href: "/",            icon: LayoutDashboard },
   { label: "Shipments",    href: "/shipments",   icon: Package },
   { label: "Marketplace",  href: "/marketplace", icon: Store },
-  { label: "Storefront",   href: "/storefront",  icon: ShoppingBag },
+  // Gated. The portal serves parcel merchants (who sell on their own Shopify
+  // and use us for fulfilment) and OmniDeliv vendors (whose shop *is* here).
+  // Only the second kind has a catalog, and showing the tab to the first only
+  // ever produced "this login is not linked to a store".
+  { label: "Storefront",   href: "/storefront",  icon: ShoppingBag, requiresStorefront: true },
   { label: "Customers",    href: "/customers",   icon: Users },
   { label: "Campaigns",    href: "/campaigns",   icon: Megaphone },
   { label: "Segments",     href: "/crm/segments",    icon: Users2 },
@@ -67,6 +74,7 @@ const PAGE_TITLE_MAP: Record<string, string> = {
   "/":             "Overview",
   "/shipments":    "Shipments",
   "/marketplace":  "Marketplace",
+  "/storefront":   "Storefront",
   "/customers":    "Customers",
   "/campaigns":    "Campaigns",
   "/crm":          "CRM",
@@ -182,6 +190,14 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const router   = useRouter();
   const pageTitle = getPageTitle(pathname);
   const { branding } = useBranding();
+
+  // `null` while the check is in flight — the item stays hidden rather than
+  // appearing and being retracted. One request, resolved before a user has
+  // read the sidebar.
+  const hasStorefront = useHasStorefront();
+  const visibleNav = NAV_ITEMS.filter(
+    (item) => !item.requiresStorefront || hasStorefront === true,
+  );
 
   // ⌘K / Ctrl+K → jump to shipments search
   useEffect(() => {
@@ -337,7 +353,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
         {/* ── Navigation ────────────────────────────────────────────────── */}
         <nav className="flex flex-1 flex-col gap-1 overflow-y-auto overflow-x-hidden p-3">
-          {NAV_ITEMS.map((item) => (
+          {visibleNav.map((item) => (
             <NavLink
               key={item.href}
               item={item}

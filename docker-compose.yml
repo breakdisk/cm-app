@@ -1214,6 +1214,11 @@ services:
       DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_connectors
       DATABASE__MAX_CONNECTIONS: "5"
       ORDER_INTAKE__INTERNAL_URL: http://order-intake:8004
+      # Catalog sync target. Without this the connectors service still boots and
+      # still takes orders — it just answers "no OmniDeliv tier configured" to
+      # every catalog sync, which is a silent no-op for the whole Shopify/Woo
+      # product path rather than a startup failure anyone would notice.
+      OMNIDELIV__INTERNAL_URL: http://omnideliv:8091
       AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       PUBLIC_URL: ${CONNECTORS_PUBLIC_URL:-http://localhost:8021}
       RUST_LOG: info,sqlx=warn

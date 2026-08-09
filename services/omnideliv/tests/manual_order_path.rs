@@ -11,7 +11,7 @@ use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
 use logisticos_omnideliv::domain::entities::{
-    Basket, BasketLine, CatalogItem, Vendor, Vertical,
+    Basket, BasketLine, CatalogItem, CatalogSource, Vendor, Vertical,
 };
 use logisticos_omnideliv::domain::repositories::{BasketRepository, CatalogRepository, VendorRepository};
 use logisticos_omnideliv::infrastructure::db::{
@@ -73,7 +73,9 @@ async fn a_customer_can_build_and_check_out_a_basket_without_the_mesh() {
         price_cents: 8_500, modifiers: serde_json::json!([]),
         allergens: vec![], dietary_tags: vec![], vertical_attrs: serde_json::json!({}),
         allergens_declared_at: Some(chrono::Utc::now()),
-        is_listed: true, created_at: now, updated_at: now,
+        is_listed: true,
+        source: CatalogSource::Manual, external_id: None, synced_at: None,
+        created_at: now, updated_at: now,
     };
     catalog.save_item(&item).await.expect("save item");
 

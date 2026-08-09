@@ -5,7 +5,19 @@ pub struct Config {
     pub app:          AppConfig,
     pub database:     DatabaseConfig,
     pub order_intake: OrderIntakeConfig,
+    /// Optional: a deployment with no OmniDeliv tier configured simply cannot
+    /// sync catalogs, and the route says so. Making it required would stop the
+    /// whole service booting over a feature most tenants do not use.
+    #[serde(default)]
+    pub omnideliv:    Option<OmniDelivConfig>,
     pub auth:         AuthConfig,
+}
+
+/// Base URL of the omnideliv service, reached over the mesh.
+/// Example: http://omnideliv:8091
+#[derive(Debug, Deserialize, Clone)]
+pub struct OmniDelivConfig {
+    pub internal_url: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]

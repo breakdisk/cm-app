@@ -1,0 +1,211 @@
+/**
+ * OmniDeliv storefront — merchant-portal client.
+ *
+ * The merchant portal serves two different kinds of business. A parcel merchant
+ * ships goods they sold elsewhere; an OmniDeliv vendor *is* the shop, and their
+ * catalog lives here. Only the second kind has a storefront, so the nav item is
+ * gated on `useHasStorefront` rather than shown to everyone and explained away
+ * with an empty state — a parcel merchant clicking "Storefront" and being told
+ * their login is not linked to a store is a navigation bug wearing the costume
+ * of an account problem.
+ *
+ * Hiding the tab is not access control. `GET /catalog/mine` resolves the store
+ * from the JWT and 404s for anyone who runs none; that is the enforcement, and
+ * it does not move because a menu entry disappeared.
+ */
+import { useCallback, useEffect, useState } from "react";
+
+import { authFetch } from "@/lib/auth/auth-fetch";
+import { API_BASE } from "@/lib/api/endpoints";
+
+export type Availability = "available" | "limited" | "out_of_stock";
+
+/** Where a row's facts came from. `manual` is the only one with a human author. */
+export type CatalogSource = "manual" | "shopify" | "woocommerce" | "csv" | "pos";
+
+export interface Item {
+  id: string;
+  name: string;
+  sku: string;
+  description: string | null;
+  price_cents: number;
+  allergens: string[];
+  is_listed: boolean;
+  availability: Availability;
+  /** `null` = nobody has ever confirmed this. Not the same as "confirmed long ago". */
+  confirmed_at: string | null;
+  source: CatalogSource;
+  synced_at: string | null;
+  /** False = nobody has stated what is in this. See the storefront page. */
+  allergens_declared: boolean;
+  warrants_substitute: boolean;
+}
+
+export interface Catalog {
+  vendor_id: string;
+  vendor_name: string;
+  items: Item[];
+}
+
+export interface IngestReport {
+  created: number;
+  updated: number;
+  rejected: number;
+}
+
+export interface ItemInput {
+  sku: string;
+  name: string;
+  description?: string | null;
+  price_cents: number;
+  /** Omit for "not stated"; `[]` is the real declaration "contains none of these". */
+  allergens?: string[];
+  dietary_tags?: string[];
+}
+
+async function expectOk(res: Response, what: string): Promise<void> {
+  if (res.ok) return;
+  // Handlers answer 400 with a plain-text reason ("this store already has an
+  // item with SKU X"). Surfacing it beats "request failed", which tells a
+  // vendor nothing about the duplicate they just typed.
+  const detail = await res.text().catch(() => "");
+  throw new Error(detail?.trim() || `${what}: ${res.status}`);
+}
+
+export const storefrontApi = {
+  async catalog(): Promise<Catalog | null> {
+    const res = await authFetch(`${API_BASE}/v1/omnideliv/catalog/mine`);
+    if (res.status === 404) return null; // runs no store — an absence, not a failure
+    await expectOk(res, "catalog");
+    return res.json();
+  },
+
+  async createItem(input: ItemInput): Promise<{ id: string }> {
+    const res = await authFetch(`${API_BASE}/v1/omnideliv/catalog/items`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    await expectOk(res, "create");
+    return res.json();
+  },
+
+  async updateItem(id: string, patch: Partial<ItemInput> & { is_listed?: boolean }): Promise<void> {
+    const res = await authFetch(`${API_BASE}/v1/omnideliv/catalog/items/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    await expectOk(res, "update");
+  },
+
+  async delistItem(id: string): Promise<void> {
+    const res = await authFetch(`${API_BASE}/v1/omnideliv/catalog/items/${id}`, {
+      method: "DELETE",
+    });
+    await expectOk(res, "delist");
+  },
+
+  async setAvailability(id: string, state: Availability): Promise<void> {
+    const res = await authFetch(`${API_BASE}/v1/omnideliv/catalog/items/${id}/availability`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state }),
+    });
+    await expectOk(res, "availability");
+  },
+
+  async declareAllergens(id: string, allergens: string[]): Promise<void> {
+    const res = await authFetch(`${API_BASE}/v1/omnideliv/catalog/items/${id}/allergens`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ allergens }),
+    });
+    await expectOk(res, "declaration");
+  },
+
+  /** One human act covering every listed, in-stock item. */
+  async confirmAll(): Promise<number> {
+    const res = await authFetch(`${API_BASE}/v1/omnideliv/catalog/confirm-all`, {
+      method: "POST",
+    });
+    await expectOk(res, "confirm");
+    const body = (await res.json()) as { confirmed: number };
+    return body.confirmed;
+  },
+
+  /** The ingest port. Same endpoint every adapter will use. */
+  async ingest(source: Exclude<CatalogSource, "manual">, items: unknown[]): Promise<IngestReport> {
+    const res = await authFetch(`${API_BASE}/v1/omnideliv/catalog/ingest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source, items }),
+    });
+    await expectOk(res, "ingest");
+    return res.json();
+  },
+
+  /**
+   * Pull the merchant's shop products into this storefront.
+   *
+   * Lives on the connectors service, not omnideliv: the shop credentials are
+   * there, and the sync is a service-to-service call the browser never makes.
+   *
+   * `platform` is optional — the server resolves it when exactly one shop is
+   * linked to a store, and asks when more than one is. Guessing here would let
+   * a WooCommerce menu quietly overwrite a Shopify one.
+   *
+   * No client-side check for whether a connector exists. The server
+   * knows, and it answers with a sentence a merchant can act on ("connect your
+   * shop first", "not linked to an OmniDeliv store") — which `expectOk`
+   * surfaces verbatim. A button that hides itself teaches nobody why.
+   */
+  async syncCatalog(platform?: "shopify" | "woocommerce"): Promise<SyncResult> {
+    const qs = platform ? `?platform=${platform}` : "";
+    const res = await authFetch(`${API_BASE}/v1/connectors/catalog/sync${qs}`, { method: "POST" });
+    await expectOk(res, "sync");
+    return res.json();
+  },
+};
+
+export interface SyncResult {
+  platform: string;
+  fetched: number;
+  created: number;
+  updated: number;
+  rejected: number;
+  /** Variable products whose variations were not fetched (fan-out cap). */
+  deferred: number;
+  /** Rows with no usable price. Reported so a partial sync cannot look whole. */
+  unpriced: number;
+  next_step: string;
+}
+
+/**
+ * Does this login run an OmniDeliv store?
+ *
+ * `null` while unknown. The nav renders nothing during that window rather than
+ * showing the tab and retracting it — a control that appears and vanishes reads
+ * as a glitch, and this resolves in one request.
+ */
+export function useHasStorefront(): boolean | null {
+  const [has, setHas] = useState<boolean | null>(null);
+
+  const check = useCallback(async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/v1/omnideliv/vendors/me`);
+      setHas(res.ok);
+    } catch {
+      // A network failure is not evidence of absence, but the honest fallback
+      // is still "don't show it" — a tab that 404s is worse than a missing one,
+      // and the vendor's next page load re-checks.
+      setHas(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void check();
+  }, [check]);
+
+  return has;
+}
