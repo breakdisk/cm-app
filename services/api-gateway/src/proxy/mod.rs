@@ -255,5 +255,10 @@ mod routing_tests {
         assert_eq!(resolve("/v1/field-ops/internal/couriers"), None);
         assert_eq!(resolve("/v1/omnideliv/internal/orders"), None);
         assert_eq!(resolve("/v1/internal/auth/exchange"), None);
+        // omnideliv's multi-vendor catalog ingest. Its handler lets the caller
+        // name any vendor in the tenant, and its doc comment says that is safe
+        // *because* this route table refuses the path — so the claim is pinned
+        // here rather than left as a comment that could quietly stop being true.
+        assert_eq!(resolve("/v1/omnideliv/internal/catalog/ingest"), None);
     }
 }

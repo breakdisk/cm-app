@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
-use crate::domain::entities::{Availability, AvailabilityState, CatalogItem};
+use crate::domain::entities::{Availability, AvailabilityState, CatalogItem, CatalogSource};
 use crate::domain::repositories::{CatalogRepository, ItemFacts, ItemWithAvailability};
 
 pub struct PgCatalogRepository { pool: PgPool }
@@ -34,6 +34,15 @@ fn map_pair(r: &sqlx::postgres::PgRow) -> anyhow::Result<ItemWithAvailability> {
         dietary_tags:   r.get("dietary_tags"),
         vertical_attrs: r.get("vertical_attrs"),
         is_listed:      r.get("is_listed"),
+        // An unknown source in the database is a schema/CHECK drift, not a
+        // recoverable row — refuse rather than silently relabel it manual.
+        source:         {
+            let s: String = r.get("source");
+            CatalogSource::parse(&s)
+                .ok_or_else(|| anyhow::anyhow!("unknown catalog source in database: {s}"))?
+        },
+        external_id:    r.get("external_id"),
+        synced_at:      r.get("synced_at"),
         created_at:     r.get("created_at"),
         updated_at:     r.get("updated_at"),
     };
@@ -42,8 +51,9 @@ fn map_pair(r: &sqlx::postgres::PgRow) -> anyhow::Result<ItemWithAvailability> {
         item_id:    item.id,
         tenant_id:  item.tenant_id,
         state,
-        updated_at: r.get("availability_updated_at"),
-        updated_by: r.get("updated_by"),
+        updated_at:   r.get("availability_updated_at"),
+        confirmed_at: r.get("confirmed_at"),
+        updated_by:   r.get("updated_by"),
     };
 
     Ok(ItemWithAvailability { item, availability })
@@ -59,10 +69,12 @@ impl CatalogRepository for PgCatalogRepository {
             INSERT INTO omnideliv.catalog_items (
                 id, tenant_id, vendor_id, sku, name, description, price_cents,
                 modifiers, allergens, dietary_tags, vertical_attrs, is_listed,
+                source, external_id, synced_at, allergens_declared_at,
                 created_at, updated_at
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
             ON CONFLICT (id) DO UPDATE SET
+                sku            = EXCLUDED.sku,
                 name           = EXCLUDED.name,
                 description    = EXCLUDED.description,
                 price_cents    = EXCLUDED.price_cents,
@@ -71,6 +83,12 @@ impl CatalogRepository for PgCatalogRepository {
                 dietary_tags   = EXCLUDED.dietary_tags,
                 vertical_attrs = EXCLUDED.vertical_attrs,
                 is_listed      = EXCLUDED.is_listed,
+                source         = EXCLUDED.source,
+                external_id    = EXCLUDED.external_id,
+                synced_at      = EXCLUDED.synced_at,
+                -- Written from the entity, which applies the merge rules. An
+                -- ingest never advances it; only `declare_allergens` does.
+                allergens_declared_at = EXCLUDED.allergens_declared_at,
                 updated_at     = EXCLUDED.updated_at
             "#,
         )
@@ -78,12 +96,14 @@ impl CatalogRepository for PgCatalogRepository {
         .bind(&i.sku).bind(&i.name).bind(&i.description).bind(i.price_cents)
         .bind(&i.modifiers).bind(&i.allergens).bind(&i.dietary_tags)
         .bind(&i.vertical_attrs).bind(i.is_listed)
+        .bind(i.source.as_str()).bind(&i.external_id).bind(i.synced_at)
+        .bind(i.allergens_declared_at)
         .bind(i.created_at).bind(i.updated_at)
         .execute(&mut *tx).await?;
 
-        // A new item is available by default — but the freshness stamp starts
-        // now, so it is honestly "declared present just now" rather than
-        // silently inheriting trust it has not earned.
+        // A new item is listed as available — but `confirmed_at` stays NULL, so
+        // it reads as uncertain until a human taps it. This is what stops a bulk
+        // import from presenting 200 unverified items to the agent as fact.
         sqlx::query(
             r#"
             INSERT INTO omnideliv.item_availability (item_id, tenant_id, state, updated_at)
@@ -103,7 +123,8 @@ impl CatalogRepository for PgCatalogRepository {
         // only wants the item, but one mapper is better than two that can drift.
         let row = sqlx::query(
             r#"
-            SELECT i.*, a.state, a.updated_at AS availability_updated_at, a.updated_by
+            SELECT i.*, a.state, a.updated_at AS availability_updated_at,
+                   a.confirmed_at, a.updated_by
               FROM omnideliv.catalog_items i
               JOIN omnideliv.item_availability a ON a.item_id = i.id
              WHERE i.tenant_id = $1 AND i.id = $2
@@ -116,22 +137,103 @@ impl CatalogRepository for PgCatalogRepository {
     }
 
     async fn set_availability(&self, a: &Availability) -> anyhow::Result<()> {
-        // updated_at is set to NOW() server-side rather than trusting the
-        // caller's clock — the freshness stamp is only meaningful if it records
-        // when the declaration actually reached us.
+        // Both clocks are NOW() server-side rather than the caller's — a stamp
+        // is only meaningful if it records when the declaration reached us.
+        //
+        // What the caller *does* decide is whether this was a human act: a
+        // `confirmed_at` of Some means "a person stated this", and only then
+        // does the attestation clock move. An ingest passes None and the
+        // existing confirmation is left exactly where it was.
+        let is_human = a.confirmed_at.is_some();
         sqlx::query(
             r#"
-            INSERT INTO omnideliv.item_availability (item_id, tenant_id, state, updated_at, updated_by)
-            VALUES ($1, $2, $3, NOW(), $4)
+            INSERT INTO omnideliv.item_availability
+                   (item_id, tenant_id, state, updated_at, confirmed_at, updated_by)
+            VALUES ($1, $2, $3, NOW(), CASE WHEN $5 THEN NOW() END, $4)
             ON CONFLICT (item_id) DO UPDATE SET
-                state      = EXCLUDED.state,
-                updated_at = NOW(),
-                updated_by = EXCLUDED.updated_by
+                state        = EXCLUDED.state,
+                updated_at   = NOW(),
+                confirmed_at = CASE WHEN $5 THEN NOW()
+                                    ELSE omnideliv.item_availability.confirmed_at END,
+                updated_by   = COALESCE(EXCLUDED.updated_by, omnideliv.item_availability.updated_by)
             "#,
         )
         .bind(a.item_id).bind(a.tenant_id).bind(a.state.as_str()).bind(a.updated_by)
+        .bind(is_human)
         .execute(&self.pool).await?;
         Ok(())
+    }
+
+    async fn find_item_by_sku(
+        &self,
+        tenant_id: Uuid,
+        vendor_id: Uuid,
+        sku: &str,
+    ) -> anyhow::Result<Option<CatalogItem>> {
+        let row = sqlx::query(
+            r#"
+            SELECT i.*, a.state, a.updated_at AS availability_updated_at,
+                   a.confirmed_at, a.updated_by
+              FROM omnideliv.catalog_items i
+              JOIN omnideliv.item_availability a ON a.item_id = i.id
+             WHERE i.tenant_id = $1 AND i.vendor_id = $2 AND i.sku = $3
+            "#,
+        )
+        .bind(tenant_id).bind(vendor_id).bind(sku)
+        .fetch_optional(&self.pool).await?;
+
+        row.as_ref().map(map_pair).transpose().map(|o| o.map(|p| p.item))
+    }
+
+    async fn find_item_by_external(
+        &self,
+        tenant_id: Uuid,
+        vendor_id: Uuid,
+        source: CatalogSource,
+        external_id: &str,
+    ) -> anyhow::Result<Option<CatalogItem>> {
+        let row = sqlx::query(
+            r#"
+            SELECT i.*, a.state, a.updated_at AS availability_updated_at,
+                   a.confirmed_at, a.updated_by
+              FROM omnideliv.catalog_items i
+              JOIN omnideliv.item_availability a ON a.item_id = i.id
+             WHERE i.tenant_id = $1 AND i.vendor_id = $2
+               AND i.source = $3 AND i.external_id = $4
+            "#,
+        )
+        .bind(tenant_id).bind(vendor_id).bind(source.as_str()).bind(external_id)
+        .fetch_optional(&self.pool).await?;
+
+        row.as_ref().map(map_pair).transpose().map(|o| o.map(|p| p.item))
+    }
+
+    async fn confirm_all_for_vendor(
+        &self,
+        tenant_id: Uuid,
+        vendor_id: Uuid,
+        user_id: Uuid,
+    ) -> anyhow::Result<u64> {
+        // Scoped by a join on the item's vendor rather than a list of ids from
+        // the client: an id list is an id list the caller can extend, and this
+        // statement writes an attestation in someone's name.
+        //
+        // Only `available` rows. A vendor confirming their store is saying "what
+        // is listed is on the shelf" — silently flipping their out-of-stock
+        // markers back to available would be the opposite of an attestation.
+        let res = sqlx::query(
+            r#"
+            UPDATE omnideliv.item_availability a
+               SET confirmed_at = NOW(), updated_at = NOW(), updated_by = $3
+              FROM omnideliv.catalog_items i
+             WHERE i.id = a.item_id
+               AND i.tenant_id = $1 AND i.vendor_id = $2 AND i.is_listed
+               AND a.state = 'available'
+            "#,
+        )
+        .bind(tenant_id).bind(vendor_id).bind(user_id)
+        .execute(&self.pool).await?;
+        Ok(res.rows_affected())
     }
 
     async fn list_for_vendor(
@@ -141,7 +243,8 @@ impl CatalogRepository for PgCatalogRepository {
     ) -> anyhow::Result<Vec<ItemWithAvailability>> {
         let rows = sqlx::query(
             r#"
-            SELECT i.*, a.state, a.updated_at AS availability_updated_at, a.updated_by
+            SELECT i.*, a.state, a.updated_at AS availability_updated_at,
+                   a.confirmed_at, a.updated_by
               FROM omnideliv.catalog_items i
               JOIN omnideliv.item_availability a ON a.item_id = i.id
              WHERE i.tenant_id = $1 AND i.vendor_id = $2 AND i.is_listed
@@ -168,7 +271,8 @@ impl CatalogRepository for PgCatalogRepository {
         // them would make "we swapped X for Y" impossible to explain.
         let rows = sqlx::query(
             r#"
-            SELECT i.*, a.state, a.updated_at AS availability_updated_at, a.updated_by
+            SELECT i.*, a.state, a.updated_at AS availability_updated_at,
+                   a.confirmed_at, a.updated_by
               FROM omnideliv.catalog_items i
               JOIN omnideliv.item_availability a ON a.item_id = i.id
              WHERE i.tenant_id = $1

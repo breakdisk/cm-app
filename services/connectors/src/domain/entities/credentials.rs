@@ -70,6 +70,19 @@ impl ConnectorCredentials {
         self.config_str("consumer_secret")
     }
 
+    /// Which OmniDeliv store this shop's catalog syncs into.
+    ///
+    /// Config rather than derived, because there is no derivation available: a
+    /// connector is keyed on (tenant, merchant, platform) and an OmniDeliv
+    /// vendor is a storefront, and the two are separate objects a person has to
+    /// associate. Absent means this merchant has a Shopify connection for
+    /// orders but no storefront to sync a menu into, which is the normal state
+    /// for a parcel merchant and not an error.
+    pub fn omnideliv_vendor_id(&self) -> Option<uuid::Uuid> {
+        self.config_str("omnideliv_vendor_id")
+            .and_then(|s| uuid::Uuid::parse_str(s).ok())
+    }
+
     pub fn default_service_type(&self) -> &str {
         self.config_str("default_service_type").unwrap_or("standard")
     }

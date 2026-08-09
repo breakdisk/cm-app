@@ -7,7 +7,7 @@ use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
 use logisticos_omnideliv::domain::entities::{
-    Basket, BasketDelta, BasketLine, CatalogItem, LineState, SubIntent, SubIntentSource,
+    Basket, BasketDelta, BasketLine, CatalogItem, CatalogSource, LineState, SubIntent, SubIntentSource,
     SubIntentStatus,
     Vendor, Vertical,
 };
@@ -69,6 +69,7 @@ async fn a_basket_with_a_substitution_chain_survives_a_round_trip() {
             modifiers: serde_json::json!([]), allergens: vec![], dietary_tags: vec![],
             allergens_declared_at: Some(now),
             vertical_attrs: serde_json::json!({}), is_listed: true,
+            source: CatalogSource::Manual, external_id: None, synced_at: None,
             created_at: now, updated_at: now,
         }
     };

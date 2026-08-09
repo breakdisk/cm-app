@@ -8,8 +8,8 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::domain::entities::{
-    Availability, Basket, BasketConflict, CatalogItem, Order, TelemetryEvent, Vendor, VendorLedger,
-    Vertical,
+    Availability, Basket, BasketConflict, CatalogItem, CatalogSource, Order, TelemetryEvent, Vendor,
+    VendorLedger, Vertical,
 };
 
 #[async_trait]
@@ -49,7 +49,41 @@ pub trait CatalogRepository: Send + Sync {
     /// One item by id. Needed so a manual add can read the price server-side
     /// rather than trusting the client's.
     async fn find_item(&self, tenant_id: Uuid, item_id: Uuid) -> anyhow::Result<Option<CatalogItem>>;
+
+    /// Match by the vendor's own product code. The fallback ingest key, and the
+    /// duplicate check for manual entry — two items with one SKU in a store make
+    /// every later reconciliation ambiguous.
+    async fn find_item_by_sku(
+        &self,
+        tenant_id: Uuid,
+        vendor_id: Uuid,
+        sku: &str,
+    ) -> anyhow::Result<Option<CatalogItem>>;
+
+    /// Match by the id in the source system. The preferred ingest key: a vendor
+    /// who renames a SKU in Shopify must not get a duplicate row here.
+    async fn find_item_by_external(
+        &self,
+        tenant_id: Uuid,
+        vendor_id: Uuid,
+        source: CatalogSource,
+        external_id: &str,
+    ) -> anyhow::Result<Option<CatalogItem>>;
+
     async fn set_availability(&self, a: &Availability) -> anyhow::Result<()>;
+
+    /// Stamp a human confirmation across every listed item in a store, in one
+    /// statement. The bulk answer to the console's opening state — a vendor who
+    /// has just synced 200 items should confirm them with one deliberate act,
+    /// not 200 taps or (worse) a checkbox nobody reads.
+    ///
+    /// Returns how many rows it confirmed.
+    async fn confirm_all_for_vendor(
+        &self,
+        tenant_id: Uuid,
+        vendor_id: Uuid,
+        user_id: Uuid,
+    ) -> anyhow::Result<u64>;
 
     /// Listed items for a vendor, each with its availability.
     async fn list_for_vendor(

@@ -36,3 +36,8 @@ subtle.workspace      = true
 hmac.workspace        = true
 base64.workspace      = true
 reqwest = { workspace = true, features = ["json"] }
+
+[dev-dependencies]
+# The omnideliv client has async paths worth asserting (an empty batch must not
+# be sent). The crate itself gets tokio from the workspace without the macros.
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
