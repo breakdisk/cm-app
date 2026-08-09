@@ -32,6 +32,9 @@ fn base_ctx(tenant_id: Uuid) -> RuleContext {
         current_hour: 10,
         current_day: "Tuesday".into(),
         metadata: serde_json::Value::Null,
+        // Resolved before evaluate() runs; empty is "this customer is in no
+        // segment", which is what these fixtures mean.
+        customer_segment_ids: Vec::new(),
     }
 }
 
@@ -563,6 +566,7 @@ mod rule_context {
             current_hour: 14,
             current_day: "Monday".into(),
             metadata: serde_json::json!({ "custom_key": "value" }),
+            customer_segment_ids: Vec::new(),
         };
 
         assert_eq!(ctx.tenant_id, tenant_id);

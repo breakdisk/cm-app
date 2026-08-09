@@ -276,7 +276,7 @@ mod daily_bucket_tests {
     #[test]
     fn cod_collected_cents_stored_correctly() {
         let mut b = make_bucket(5, 1);
-        b.cod_collected_cents = 120_00; // 120.00 in cents
+        b.cod_collected_cents = 12_000; // ₱120.00, in cents
         assert_eq!(b.cod_collected_cents, 12000);
     }
 }

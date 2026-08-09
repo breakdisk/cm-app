@@ -39,3 +39,15 @@ async-trait.workspace = true
 
 [dev-dependencies]
 tower        = { workspace = true }
+
+# The unit suite only. `tests/integration/mod.rs` builds an `AppState`, which
+# gained `segment_svc`, `consent_svc`, `jwt` and `kafka` since it was written.
+# All four are constructible in a test — the services take trait objects and
+# `KafkaProducer::new` builds its client lazily without touching a broker — but
+# `SegmentRepository` has ten methods and no mock exists yet. That is the work
+# this needs, and it is test-writing rather than a stanza.
+#
+# Cargo discovers tests/*.rs and tests/<dir>/main.rs — but NOT tests/<dir>/mod.rs.
+[[test]]
+name = "unit"
+path = "tests/unit/mod.rs"

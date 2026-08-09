@@ -6,7 +6,6 @@
 // Tests are async via tokio.
 
 use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
 use async_trait::async_trait;
 use uuid::Uuid;
 
@@ -23,12 +22,25 @@ use logisticos_business_logic::{
 // Mock executor — records all side-effect calls
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// What an executed action recorded, shared so each field reads as a log of
+/// one action type rather than a wall of nested generics.
+type Recorded<T> = Arc<Mutex<Vec<T>>>;
+
+/// (tenant, customer, channel, template)
+type NotificationCall = (Uuid, Uuid, String, String);
+/// (shipment_id, delay_hours)
+type RescheduleCall = (Uuid, u32);
+/// (tenant, message, priority)
+type AlertCall = (Uuid, String, String);
+/// (topic, key)
+type EventCall = (String, String);
+
 #[derive(Default, Clone)]
 struct MockExecutor {
-    notifications: Arc<Mutex<Vec<(Uuid, Uuid, String, String)>>>,  // (tenant, customer, channel, template)
-    reschedules:   Arc<Mutex<Vec<(Uuid, u32)>>>,                   // (shipment_id, delay_hours)
-    alerts:        Arc<Mutex<Vec<(Uuid, String, String)>>>,        // (tenant, message, priority)
-    events:        Arc<Mutex<Vec<(String, String)>>>,              // (topic, key)
+    notifications: Recorded<NotificationCall>,
+    reschedules:   Recorded<RescheduleCall>,
+    alerts:        Recorded<AlertCall>,
+    events:        Recorded<EventCall>,
 }
 
 #[async_trait]
@@ -121,6 +133,7 @@ fn simple_ctx(tenant_id: Uuid) -> RuleContext {
         current_hour: 14,
         current_day: "Tuesday".into(),
         metadata: serde_json::json!({}),
+        customer_segment_ids: Vec::new(),
     }
 }
 

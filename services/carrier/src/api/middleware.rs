@@ -27,7 +27,12 @@ pub struct CarrierApiKeyPrincipal {
 /// Mount this middleware on routes that should be accessible to carrier systems
 /// rather than the JWT-authenticated portal flows:
 ///
-/// ```rust
+/// `ignore`, not `rust`: this shows the mounting shape, and `Router`, `post`,
+/// `state` and the handler are all caller-supplied. As a compiled doctest it
+/// could only ever fail, which is what it was doing — carrier's whole doc-test
+/// job was red on this one block.
+///
+/// ```ignore
 /// let app = Router::new()
 ///     .route("/v1/webhooks/carrier/:id/tracking", post(tracking_webhook))
 ///     .layer(axum::middleware::from_fn_with_state(
