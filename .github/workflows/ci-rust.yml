@@ -282,24 +282,12 @@ jobs:
           echo ""
           echo "Use the ? operator with thiserror/anyhow instead."
 
-      - name: Check all services expose /health /metrics /ready
-        run: |
-          echo "Verifying required endpoints are registered..."
-          MISSING=""
-          for SVC in services/*/src/main.rs services/*/src/router.rs; do
-            [ -f "$SVC" ] || continue
-            DIR=$(dirname "$(dirname "$SVC")")
-            NAME=$(basename "$DIR")
-            # Check for health route registration in main.rs or router.rs
-            if ! grep -qE '"/health"|health_handler|route_health' "$DIR/src/main.rs" \
-               "$DIR/src/router.rs" 2>/dev/null; then
-              MISSING="$MISSING $NAME"
-            fi
-          done
-          if [ -n "$MISSING" ]; then
-            echo "WARNING: Services possibly missing /health route:$MISSING"
-            echo "Ensure each service registers GET /health, /metrics, and /ready"
-          fi
+      # Replaces a check that could not fail: it grepped src/main.rs and
+      # src/router.rs — files these services do not use for routing — and
+      # printed a WARNING with no exit code. It passed while NINE services had
+      # /health behind the auth layer, answering 401 to every probe.
+      - name: Check /health is reachable without a token
+        run: ./scripts/check-health-endpoints.sh
 
   # ──────────────────────────────────────────────────────────────
   # JOB 3: test
