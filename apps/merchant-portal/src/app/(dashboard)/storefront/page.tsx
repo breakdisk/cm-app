@@ -23,13 +23,14 @@
  * why "Never confirmed" is its own state on this screen rather than being
  * rendered as "confirmed a long time ago".
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
   AlertTriangle,
   Check,
   CheckCheck,
   DownloadCloud,
+  Upload,
   PackageX,
   Pencil,
   Plus,
@@ -49,6 +50,7 @@ import {
   type Availability,
   type Catalog,
   type CatalogSource,
+  type CsvRowError,
   type Item,
 } from "@/lib/api/storefront";
 
@@ -95,6 +97,8 @@ export default function Storefront() {
   const [noStore, setNoStore] = useState(false);
   const [editing, setEditing] = useState<Item | null>(null);
   const [adding, setAdding] = useState(false);
+  const [rowErrors, setRowErrors] = useState<CsvRowError[]>([]);
+  const fileInput = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     try {
@@ -124,6 +128,7 @@ export default function Storefront() {
     async (key: string, fn: () => Promise<void>, ok?: string) => {
       setBusy(key);
       setNotice(null);
+      if (key !== "import") setRowErrors([]);
       try {
         await fn();
         await load();
@@ -163,6 +168,22 @@ export default function Storefront() {
       run("confirm-all", async () => {
         const n = await storefrontApi.confirmAll();
         setNotice(`Confirmed ${n} item${n === 1 ? "" : "s"}.`);
+      }),
+    [run],
+  );
+
+  const importCsv = useCallback(
+    (file: File) =>
+      run("import", async () => {
+        const r = await storefrontApi.importCsv(file);
+        setRowErrors(r.row_errors);
+        setNotice(
+          `Imported ${r.created} new and ${r.updated} updated from ${file.name}` +
+            (r.row_errors.length > 0
+              ? ` — ${r.row_errors.length} row${r.row_errors.length === 1 ? "" : "s"} could not be read`
+              : "") +
+            `. ${r.next_step}`,
+        );
       }),
     [run],
   );
@@ -242,6 +263,27 @@ export default function Storefront() {
           >
             <Plus className="h-4 w-4" /> Add item
           </button>
+          <input
+            ref={fileInput}
+            type="file"
+            accept=".csv,text/csv"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              // Reset first: picking the same file twice must re-fire change,
+              // which it will not if the value still holds that filename.
+              e.target.value = "";
+              if (f) void importCsv(f);
+            }}
+          />
+          <button
+            onClick={() => fileInput.current?.click()}
+            disabled={busy === "import"}
+            className="flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-sm text-white/70 hover:bg-white/5 disabled:opacity-40"
+          >
+            <Upload className="h-4 w-4" />
+            {busy === "import" ? "Importing…" : "Import CSV"}
+          </button>
           <button
             onClick={() => void syncCatalog()}
             disabled={busy === "sync"}
@@ -280,6 +322,26 @@ export default function Storefront() {
           <p role="status" className="text-sm text-[#00FF88]">
             {notice}
           </p>
+        </GlassCard>
+      )}
+
+      {rowErrors.length > 0 && (
+        <GlassCard className="border-l-2 border-l-[#FFAB00] p-4">
+          <p className="text-sm font-semibold text-[#FFAB00]">
+            {rowErrors.length} row{rowErrors.length === 1 ? "" : "s"} in that file could not be
+            imported
+          </p>
+          <p className="mt-1 text-xs text-white/60">
+            Everything else went in. Fix these lines and upload again — re-importing is safe,
+            rows are matched on SKU.
+          </p>
+          <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto font-mono text-xs text-white/70">
+            {rowErrors.map((e) => (
+              <li key={e.line}>
+                <span className="text-white/40">line {e.line}:</span> {e.reason}
+              </li>
+            ))}
+          </ul>
         </GlassCard>
       )}
 

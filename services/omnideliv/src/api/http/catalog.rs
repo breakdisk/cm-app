@@ -57,6 +57,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/v1/omnideliv/catalog/items/:id/allergens", patch(declare_allergens))
         .route("/v1/omnideliv/catalog/confirm-all", post(confirm_all))
         .route("/v1/omnideliv/catalog/ingest", post(ingest))
+        .route("/v1/omnideliv/catalog/ingest/csv", post(ingest_csv))
         // Mesh-internal. `/internal/` is refused by the API gateway's route
         // table before any tier prefix is considered, so this is reachable from
         // inside the cluster and nowhere else — see
@@ -304,6 +305,84 @@ async fn ingest(
         "catalog ingest applied",
     );
     Ok(Json(report))
+}
+
+/// `POST /v1/omnideliv/catalog/ingest/csv` — a vendor uploads their spreadsheet.
+///
+/// The adapter for the vendor class the storefront exists to serve: no Shopify,
+/// no WooCommerce, no POS — a spreadsheet. It needs no credentials and no second
+/// system, which makes it the only ingest a store can use on its first day.
+///
+/// Takes the raw file as the body rather than multipart: there is exactly one
+/// file and no other fields, and multipart would add a parser to the request
+/// path for no information gained.
+///
+/// Rows that cannot be imported come back **with their line numbers**. A vendor
+/// holding a 200-row spreadsheet cannot act on "12 rejected"; they can act on
+/// "line 47: could not read the price". A file whose header is unusable is
+/// refused whole, because importing three of two hundred rows silently is worse
+/// than importing none.
+///
+/// Confirms nothing and declares nothing, exactly like every other ingest —
+/// `CatalogSource::Csv` is not `is_human()`, so the vendor still confirms stock
+/// and states contents in the console. Uploading a file at 9am is not a claim
+/// about the shelf at 7pm.
+async fn ingest_csv(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    body: String,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let parsed = crate::application::csv_import::parse(&body)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+    let vendor = st
+        .catalog
+        .vendor_for_user(claims.tenant_id, claims.user_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "vendor lookup failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "could not resolve your store".into())
+        })?
+        .ok_or((StatusCode::NOT_FOUND, "you do not operate a store".into()))?;
+
+    // A file that parsed but yielded nothing usable is a failure to report, not
+    // a sync of zero items — otherwise a vendor who exported the wrong sheet
+    // sees "imported 0" and reads it as success.
+    if parsed.items.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "no usable rows in that file ({} row{} could not be read)",
+                parsed.errors.len(),
+                if parsed.errors.len() == 1 { "" } else { "s" },
+            ),
+        ));
+    }
+
+    let report = st
+        .catalog
+        .ingest_for_vendor(claims.tenant_id, vendor.id, CatalogSource::Csv, parsed.items)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "csv ingest failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "import failed".into())
+        })?;
+
+    tracing::info!(
+        vendor_id = %vendor.id, created = report.created, updated = report.updated,
+        rejected = report.rejected, unreadable_rows = parsed.errors.len(),
+        "csv catalog import applied",
+    );
+
+    Ok(Json(serde_json::json!({
+        "created":  report.created,
+        "updated":  report.updated,
+        "rejected": report.rejected,
+        // Per-row, with line numbers. The whole reason this is not a bare count.
+        "row_errors": parsed.errors,
+        "next_step": "Open your Storefront and confirm stock — imported items \
+                      are substituted until a person confirms them.",
+    })))
 }
 
 #[derive(Debug, Deserialize)]

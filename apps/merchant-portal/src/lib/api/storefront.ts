@@ -146,6 +146,26 @@ export const storefrontApi = {
   },
 
   /**
+   * Upload a spreadsheet.
+   *
+   * The adapter for vendors with no shop system at all — most of them. Posts
+   * the raw file; parsing lives server-side so the rules sit next to the port
+   * they feed rather than being reimplemented by every future client.
+   *
+   * Unreadable rows come back with line numbers, because a vendor holding a
+   * 200-row sheet cannot act on a count.
+   */
+  async importCsv(file: File): Promise<CsvImportResult> {
+    const res = await authFetch(`${API_BASE}/v1/omnideliv/catalog/ingest/csv`, {
+      method: "POST",
+      headers: { "Content-Type": "text/csv" },
+      body: await file.text(),
+    });
+    await expectOk(res, "import");
+    return res.json();
+  },
+
+  /**
    * Pull the merchant's shop products into this storefront.
    *
    * Lives on the connectors service, not omnideliv: the shop credentials are
@@ -167,6 +187,20 @@ export const storefrontApi = {
     return res.json();
   },
 };
+
+export interface CsvRowError {
+  /** 1-based, header counted — matches the spreadsheet's own gutter. */
+  line: number;
+  reason: string;
+}
+
+export interface CsvImportResult {
+  created: number;
+  updated: number;
+  rejected: number;
+  row_errors: CsvRowError[];
+  next_step: string;
+}
 
 export interface SyncResult {
   platform: string;
