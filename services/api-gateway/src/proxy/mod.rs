@@ -115,6 +115,14 @@ impl ProxyClient {
         // Must be checked before the generic /v1/customers → CDP rule.
         } else if path.starts_with("/v1/customers/") && path.ends_with("/sends") {
             Some(&self.services.engagement_url)
+        // Billing history — payments owns /customers/:id/invoices (see
+        // services/payments/src/api/http/mod.rs). Same reason as /sends: it
+        // has to beat the generic /v1/customers rule below, which would hand
+        // it to CDP, where the route does not exist. The customer app's
+        // Invoices and Receipt screens were both getting a bare 404 from
+        // axum — indistinguishable from "you have no invoices".
+        } else if path.starts_with("/v1/customers/") && path.ends_with("/invoices") {
+            Some(&self.services.payments_url)
         // Customer Data Platform — customers + segment CRUD + segment membership
         } else if path.starts_with("/v1/customers") || path.starts_with("/v1/segments") || path.starts_with("/v1/profiles") {
             Some(&self.services.cdp_url)
@@ -297,6 +305,33 @@ mod routing_tests {
             resolve("/v1/public/branding").as_deref(),
             Some("http://identity:8001"),
             "tenant branding is served by identity"
+        );
+    }
+
+    /// Three services answer under `/v1/customers/`, so ordering is the whole
+    /// contract: the two sub-path rules must beat the generic CDP rule, and
+    /// the plain customer routes must still reach CDP.
+    #[test]
+    fn customer_sub_paths_go_to_their_owning_service() {
+        assert_eq!(
+            resolve("/v1/customers/abc/invoices").as_deref(),
+            Some("http://payments:8012"),
+            "billing history is owned by payments, not CDP"
+        );
+        assert_eq!(
+            resolve("/v1/customers/abc/sends").as_deref(),
+            Some("http://engagement:8003"),
+            "communication history is owned by engagement"
+        );
+        assert_eq!(
+            resolve("/v1/customers/abc").as_deref(),
+            Some("http://cdp:8002"),
+            "the profile itself is still CDP"
+        );
+        assert_eq!(
+            resolve("/v1/customers").as_deref(),
+            Some("http://cdp:8002"),
+            "and so is the collection"
         );
     }
 

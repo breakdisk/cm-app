@@ -43,6 +43,10 @@ pub mod permissions {
     // Narrow self-scoped permission: a driver may read their own day's COD
     // summary (end-of-shift cash bag) but nothing else billing-related.
     pub const DRIVER_COD_VIEW:   &str = "payments:cod-read-own";
+    // The end-customer equivalent: their own receipts, nothing else. Not
+    // BILLING_VIEW -- that is tenant-wide and also gates the wallet summary,
+    // the COD batches and the partner commission ledger.
+    pub const BILLING_READ_OWN:  &str = "payments:read-own";
 
     // ── Analytics ────────────────────────────────────────────
     pub const ANALYTICS_VIEW:    &str = "analytics:view";
@@ -170,6 +174,8 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             // Self-scoped only. The customer app's notification screen reads
             // its own history; the handler pins customer_id to the token.
             permissions::ENGAGEMENT_READ_OWN,
+            // Likewise the Invoices and Receipt screens.
+            permissions::BILLING_READ_OWN,
         ],
         "partner" => vec![
             permissions::CARRIERS_READ,
@@ -265,6 +271,18 @@ mod grant_tests {
     }
 
     /// An unknown role is not a free pass.
+    /// Same rule as the engagement pair: the customer app's billing screens
+    /// need their own receipts, and BILLING_VIEW is tenant-wide -- it also
+    /// gates the wallet summary, COD batches and the partner commission
+    /// ledger, none of which belong to an end customer.
+    #[test]
+    fn a_customer_gets_self_scoped_billing_and_not_tenant_wide_billing() {
+        let p = perms("customer");
+        assert!(p.contains(&permissions::BILLING_READ_OWN), "needs own-read");
+        assert!(!p.contains(&permissions::BILLING_VIEW), "must NOT be tenant-wide");
+        assert!(!p.contains(&permissions::PAYMENTS_READ), "same string as BILLING_VIEW");
+    }
+
     #[test]
     fn an_unknown_role_gets_nothing() {
         assert!(perms("not_a_role").is_empty());
