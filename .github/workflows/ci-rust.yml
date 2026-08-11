@@ -128,6 +128,18 @@ jobs:
         run: |
           ALL_SERVICES='["api-gateway","identity","cdp","engagement","order-intake","omnideliv","connectors","field-ops","dispatch","driver-ops","delivery-experience","fleet","hub-ops","carrier","pod","payments","analytics","marketing","business-logic","ai-layer"]'
 
+          # A manual run means someone wants to verify the whole workspace —
+          # typically because a previous run's matrix was empty or skipped and
+          # they need to see the tests actually execute. Without this branch,
+          # workflow_dispatch has no push range for paths-filter to diff, so it
+          # detects nothing changed and skips every service: a manual run of a
+          # test workflow that runs no tests, reported green.
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "Manual run — running full service matrix"
+            echo "matrix={\"service\":${ALL_SERVICES}}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # If shared lib changes, test all services (transitive impact)
           if [ "${{ steps.filter.outputs.libs }}" == "true" ]; then
             echo "Lib changes detected — running full service matrix"
