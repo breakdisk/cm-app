@@ -28,14 +28,20 @@ pub async fn get_self_branding(
 }
 
 /// PUT /v1/tenants/me/branding — upsert the caller's branding. Gated on the
-/// white-label entitlement (Enterprise tier) AND `tenants:manage`. Partial:
-/// omitted fields keep their current value (or the default on first write).
+/// white-label entitlement (Enterprise tier) AND `tenants:update-self`.
+/// Partial: omitted fields keep their current value (or the default on first
+/// write).
+///
+/// Was `tenants:manage`, which no role grants -- so the entire white-label
+/// feature was unreachable: every tenant admin got 403 setting their own
+/// branding, while the public read of that branding 500'd on an ambiguous
+/// column. Broken at both ends, which is why neither end reported it.
 pub async fn put_self_branding(
     AuthClaims(claims): AuthClaims,
     State(state): State<Arc<AppState>>,
     Json(cmd): Json<UpdateBrandingCommand>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    require_permission!(claims, logisticos_auth::rbac::permissions::TENANT_MANAGE);
+    require_permission!(claims, logisticos_auth::rbac::permissions::TENANT_UPDATE_SELF);
 
     // Entitlement gate — only Enterprise tenants may customise branding.
     if !claims.can_use_white_label() {

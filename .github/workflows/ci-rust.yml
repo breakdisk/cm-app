@@ -197,6 +197,15 @@ jobs:
       - name: Check every subscribed Kafka topic is pre-created
         run: ./scripts/check-kafka-topics.sh
 
+      # Same shape of defect, different pair of hand-maintained lists: a
+      # permission a handler demands but no role grants makes the endpoint
+      # return a clean 403 to everyone forever. That reads as "you lack access",
+      # not "nobody can reach this", so it survives review and manual testing.
+      # Two live instances on 2026-08-11 — the whole engagement API, and the
+      # white-label branding write.
+      - name: Check every required permission is grantable
+        run: ./scripts/check-rbac-grants.sh
+
       # rdkafka-sys vendors and compiles librdkafka from C source, so the
       # runner needs its build deps or *nothing downstream compiles*. Without
       # this, clippy dies on `fatal error: curl/curl.h: No such file or
