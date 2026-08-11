@@ -18,7 +18,17 @@ pub struct Config {
 #[derive(Debug, Deserialize, Clone)]
 pub struct OmniDelivConfig {
     pub internal_url: String,
+    /// Seconds between sweeps for connectors whose schedule is due.
+    ///
+    /// This is the *sweep* cadence, not a vendor's sync interval — that lives
+    /// per connector in `credentials.sync_interval_mins`, with a 15-minute
+    /// floor. 60s means a vendor on an hourly schedule is synced within a
+    /// minute of becoming due, and costs one indexed query a minute otherwise.
+    #[serde(default = "default_sync_tick_secs")]
+    pub sync_tick_secs: u64,
 }
+
+fn default_sync_tick_secs() -> u64 { 60 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct AppConfig {

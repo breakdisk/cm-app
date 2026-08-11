@@ -57,6 +57,60 @@ impl CredentialsRepository for PgCredentialsRepository {
         Ok(row.as_ref().map(row_to_creds))
     }
 
+    async fn claim_due_syncs(&self, limit: i64) -> AppResult<Vec<ConnectorCredentials>> {
+        // One statement: pick the due rows, lock them, stamp them, return them.
+        //
+        // `FOR UPDATE SKIP LOCKED` is what makes a second replica's sweep step
+        // over rows this one already holds rather than blocking on them or —
+        // far worse — reading them before the stamp lands and syncing the same
+        // vendor twice.
+        //
+        // The stamp goes on at *claim* time, not on completion. A sync that
+        // hangs or panics must not leave its connector permanently due and
+        // re-claimed on every tick; it waits out its interval like any other.
+        let rows = sqlx::query(
+            r#"
+            UPDATE connectors.credentials c
+               SET last_synced_at = NOW()
+              FROM (
+                    SELECT id
+                      FROM connectors.credentials
+                     WHERE is_active = true
+                       AND sync_interval_mins IS NOT NULL
+                       AND (last_synced_at IS NULL
+                            OR last_synced_at < NOW()
+                               - (sync_interval_mins || ' minutes')::interval)
+                     ORDER BY last_synced_at NULLS FIRST
+                     LIMIT $1
+                       FOR UPDATE SKIP LOCKED
+                   ) due
+             WHERE c.id = due.id
+         RETURNING c.id, c.tenant_id, c.merchant_id, c.tenant_slug, c.platform,
+                   c.webhook_secret, c.config, c.is_active, c.created_at
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+        Ok(rows.iter().map(row_to_creds).collect())
+    }
+
+    async fn record_sync_result(&self, id: Uuid, error: Option<&str>) -> AppResult<()> {
+        sqlx::query(
+            "UPDATE connectors.credentials
+                SET last_sync_error = $2, updated_at = NOW()
+              WHERE id = $1",
+        )
+        .bind(id)
+        .bind(error)
+        .execute(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+        Ok(())
+    }
+
     async fn upsert(&self, creds: &ConnectorCredentials) -> AppResult<()> {
         let now = Utc::now();
         sqlx::query(
