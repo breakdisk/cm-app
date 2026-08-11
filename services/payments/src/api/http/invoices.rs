@@ -32,14 +32,58 @@ pub async fn list_tenant_invoices(
     Ok(Json(serde_json::json!({ "data": invoices })))
 }
 
+
+/// How much of the tenant's billing history a caller may read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BillingReadScope {
+    /// Staff: any customer in the tenant.
+    Tenant,
+    /// End customer: their own invoices only.
+    OwnOnly,
+}
+
+/// Tenant-wide read wins when a caller holds both.
+pub(crate) fn scope_for(has_tenant_read: bool, has_own_read: bool) -> Option<BillingReadScope> {
+    match (has_tenant_read, has_own_read) {
+        (true, _) => Some(BillingReadScope::Tenant),
+        (false, true) => Some(BillingReadScope::OwnOnly),
+        (false, false) => None,
+    }
+}
+
+fn billing_read_scope(claims: &logisticos_auth::claims::Claims) -> Result<BillingReadScope, AppError> {
+    scope_for(
+        claims.has_permission(logisticos_auth::rbac::permissions::BILLING_VIEW),
+        claims.has_permission(logisticos_auth::rbac::permissions::BILLING_READ_OWN),
+    )
+    .ok_or_else(|| AppError::Forbidden { resource: "invoices".into() })
+}
+
 pub async fn get_invoice(
     AuthClaims(claims): AuthClaims,
     Path(id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_VIEW);
+    let scope = billing_read_scope(&claims)?;
     let invoice_id = InvoiceId::from_uuid(id);
     let invoice = state.invoice_service.get(&invoice_id).await?;
+
+    // Tenant isolation. The lookup is `SELECT ... WHERE id = $1` with no
+    // tenant predicate, and row-level security is not enabled on
+    // payments.invoices, so without this check an id from another tenant
+    // returns that tenant's invoice. NotFound rather than Forbidden, so the
+    // response does not confirm the id exists.
+    if invoice.tenant_id.inner() != claims.tenant_id {
+        return Err(AppError::NotFound { resource: "Invoice", id: id.to_string() });
+    }
+
+    // A customer reading by id may only read their own.
+    if scope == BillingReadScope::OwnOnly
+        && invoice.customer_id.as_ref().map(|c| c.inner()) != Some(claims.user_id)
+    {
+        return Err(AppError::NotFound { resource: "Invoice", id: id.to_string() });
+    }
+
     Ok(Json(serde_json::json!({ "data": invoice })))
 }
 
@@ -50,7 +94,11 @@ pub async fn list_customer_invoices(
     Path(customer_id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    require_permission!(claims, logisticos_auth::rbac::permissions::BILLING_VIEW);
+    // BILLING_VIEW is tenant-wide staff access; BILLING_READ_OWN is the
+    // customer's own receipts. The customer role holds only the latter, so
+    // requiring BILLING_VIEW here made the app's Invoices screen 403 even
+    // once the gateway routed it.
+    billing_read_scope(&claims)?;
     // Customers may only fetch their own receipts.
     // Callers with BILLING_MANAGE (admins, ops) may fetch any customer's receipts.
     let has_manage = claims.has_permission(logisticos_auth::rbac::permissions::BILLING_MANAGE);
@@ -96,4 +144,28 @@ pub async fn generate_invoice(
             "due_at": invoice.due_at.to_rfc3339()
         }
     })))
+}
+
+#[cfg(test)]
+mod billing_scope_tests {
+    use super::*;
+
+    #[test]
+    fn no_billing_permission_is_refused() {
+        assert_eq!(scope_for(false, false), None);
+    }
+
+    #[test]
+    fn staff_read_is_tenant_wide_and_wins_when_both_are_held() {
+        assert_eq!(scope_for(true, false), Some(BillingReadScope::Tenant));
+        assert_eq!(scope_for(true, true), Some(BillingReadScope::Tenant));
+    }
+
+    /// The customer role holds only this one. Before it existed, the app's
+    /// Invoices and Receipt screens got 403 from a handler that was otherwise
+    /// written correctly for them -- it self-scopes by claims.user_id already.
+    #[test]
+    fn a_customer_gets_own_only() {
+        assert_eq!(scope_for(false, true), Some(BillingReadScope::OwnOnly));
+    }
 }

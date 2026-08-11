@@ -43,6 +43,10 @@ pub mod permissions {
     // Narrow self-scoped permission: a driver may read their own day's COD
     // summary (end-of-shift cash bag) but nothing else billing-related.
     pub const DRIVER_COD_VIEW:   &str = "payments:cod-read-own";
+    // The end-customer equivalent: their own receipts, nothing else. Not
+    // BILLING_VIEW -- that is tenant-wide and also gates the wallet summary,
+    // the COD batches and the partner commission ledger.
+    pub const BILLING_READ_OWN:  &str = "payments:read-own";
 
     // ── Analytics ────────────────────────────────────────────
     pub const ANALYTICS_VIEW:    &str = "analytics:view";
@@ -51,6 +55,19 @@ pub mod permissions {
     // ── Marketing ────────────────────────────────────────────
     pub const CAMPAIGNS_CREATE:  &str = "campaigns:create";
     pub const CAMPAIGNS_SEND:    &str = "campaigns:send";
+
+    // ── Engagement (notifications, templates) ─────────────────
+    // The engagement service used to declare these strings privately, so they
+    // matched no entry below and every one of its endpoints answered 403 to
+    // every caller, including admins. It now imports these constants, which
+    // makes the link a compile error rather than a silent mismatch.
+    pub const ENGAGEMENT_READ:   &str = "engagement:read";
+    pub const ENGAGEMENT_SEND:   &str = "engagement:send";
+    pub const ENGAGEMENT_TEMPLATES_WRITE: &str = "engagement:templates:write";
+    // Self-scoped, like DRIVER_COD_VIEW above: an end customer reads their own
+    // notification history and nothing else. ENGAGEMENT_READ is tenant-wide —
+    // granting it to the customer role would expose every customer's messages.
+    pub const ENGAGEMENT_READ_OWN: &str = "engagement:read-own";
 
     // ── Users / Tenants (admin) ───────────────────────────────
     pub const USERS_INVITE:      &str = "users:invite";
@@ -63,6 +80,15 @@ pub mod permissions {
     // tenants. These are the ONLY permissions a draft-tenant JWT receives;
     // `finalize_self` promotes the tenant to active, after which the owner
     // gets the full `merchant` permission set on next refresh.
+    //
+    // TENANT_UPDATE_SELF is also the standing permission for a tenant admin
+    // editing their *own* tenant: profile fields and white-label branding.
+    // It is deliberately not TENANT_MANAGE, which is platform-scoped -- that
+    // one gates `PUT /v1/pricing/features/:key/tiers`, which takes no tenant
+    // id and rewrites the pricing matrix for every tenant on the platform,
+    // and `PUT /v1/tenants/:id/tier`, which would be a free self-upgrade to
+    // Enterprise. Platform admins reach those through the `*` wildcard; no
+    // role grants TENANT_MANAGE, and that is intentional.
     pub const TENANT_UPDATE_SELF: &str = "tenants:update-self";
     pub const BILLING_SETUP:      &str = "billing:setup";
 
@@ -103,7 +129,10 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::BILLING_ADMIN,
             permissions::ANALYTICS_VIEW, permissions::ANALYTICS_EXPORT,
             permissions::CAMPAIGNS_CREATE, permissions::CAMPAIGNS_SEND,
+            permissions::ENGAGEMENT_READ, permissions::ENGAGEMENT_SEND,
+            permissions::ENGAGEMENT_TEMPLATES_WRITE,
             permissions::USERS_INVITE, permissions::USERS_MANAGE,
+            permissions::TENANT_UPDATE_SELF,
             permissions::API_KEYS_MANAGE,
             permissions::CARRIERS_MANAGE, permissions::CARRIERS_READ,
             permissions::CUSTOMERS_VIEW, permissions::CUSTOMERS_MANAGE,
@@ -122,6 +151,7 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::ANALYTICS_VIEW,
             permissions::CUSTOMERS_VIEW,
             permissions::SEGMENTS_VIEW,
+            permissions::ENGAGEMENT_READ,
         ],
         "driver" => vec![
             permissions::SHIPMENT_READ,
@@ -141,6 +171,11 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
         "customer" => vec![
             permissions::SHIPMENT_CREATE, permissions::SHIPMENT_READ,
             permissions::SHIPMENT_CANCEL,
+            // Self-scoped only. The customer app's notification screen reads
+            // its own history; the handler pins customer_id to the token.
+            permissions::ENGAGEMENT_READ_OWN,
+            // Likewise the Invoices and Receipt screens.
+            permissions::BILLING_READ_OWN,
         ],
         "partner" => vec![
             permissions::CARRIERS_READ,
@@ -160,7 +195,10 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::BILLING_ADMIN,
             permissions::ANALYTICS_VIEW, permissions::ANALYTICS_EXPORT,
             permissions::CAMPAIGNS_CREATE, permissions::CAMPAIGNS_SEND,
+            permissions::ENGAGEMENT_READ, permissions::ENGAGEMENT_SEND,
+            permissions::ENGAGEMENT_TEMPLATES_WRITE,
             permissions::USERS_INVITE, permissions::USERS_MANAGE,
+            permissions::TENANT_UPDATE_SELF,
             permissions::API_KEYS_MANAGE,
             permissions::CARRIERS_MANAGE, permissions::CARRIERS_READ,
             permissions::CUSTOMERS_VIEW, permissions::CUSTOMERS_MANAGE,
@@ -173,5 +211,80 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::SHIPMENT_UPDATE,
         ],
         _ => vec![],
+    }
+}
+
+#[cfg(test)]
+mod grant_tests {
+    use super::*;
+
+    fn perms(role: &str) -> Vec<&'static str> { default_permissions_for_role(role) }
+
+    /// The invariant behind the split. TENANT_MANAGE gates
+    /// `PUT /v1/pricing/features/:key/tiers`, which takes no tenant id and
+    /// rewrites the pricing matrix for the whole platform, and the tier
+    /// upgrade, which would be a free jump to Enterprise. Both endpoints
+    /// currently answer 403 to every role, and that is the correct state --
+    /// granting this to "fix" the 403 is the mistake this test exists to stop.
+    /// Platform admins hold the `*` wildcard instead.
+    #[test]
+    fn no_role_may_hold_tenant_manage() {
+        for role in ["admin", "tenant_admin", "merchant", "dispatcher", "driver",
+                     "finance", "readonly", "customer", "partner", "hub_scanner"] {
+            assert!(
+                !perms(role).contains(&permissions::TENANT_MANAGE),
+                "{role} must not hold {} -- it is platform-scoped",
+                permissions::TENANT_MANAGE,
+            );
+        }
+    }
+
+    /// Tenant admins edit their own tenant and their own branding. Without
+    /// this the white-label feature is unreachable by anyone.
+    #[test]
+    fn tenant_admins_can_edit_their_own_tenant() {
+        for role in ["admin", "tenant_admin"] {
+            assert!(perms(role).contains(&permissions::TENANT_UPDATE_SELF), "{role}");
+        }
+    }
+
+    /// Every engagement endpoint was gated on strings no role held.
+    #[test]
+    fn staff_roles_can_reach_the_engagement_api() {
+        for role in ["admin", "tenant_admin"] {
+            let p = perms(role);
+            assert!(p.contains(&permissions::ENGAGEMENT_READ), "{role} read");
+            assert!(p.contains(&permissions::ENGAGEMENT_SEND), "{role} send");
+            assert!(p.contains(&permissions::ENGAGEMENT_TEMPLATES_WRITE), "{role} templates");
+        }
+        assert!(perms("merchant").contains(&permissions::ENGAGEMENT_READ));
+    }
+
+    /// The customer app reads its own notification history -- and only that.
+    /// ENGAGEMENT_READ is tenant-wide: holding it would let any end customer
+    /// list every message the tenant ever sent to anyone.
+    #[test]
+    fn a_customer_gets_self_scoped_read_and_not_tenant_wide_read() {
+        let p = perms("customer");
+        assert!(p.contains(&permissions::ENGAGEMENT_READ_OWN), "needs own-read");
+        assert!(!p.contains(&permissions::ENGAGEMENT_READ), "must NOT be tenant-wide");
+    }
+
+    /// An unknown role is not a free pass.
+    /// Same rule as the engagement pair: the customer app's billing screens
+    /// need their own receipts, and BILLING_VIEW is tenant-wide -- it also
+    /// gates the wallet summary, COD batches and the partner commission
+    /// ledger, none of which belong to an end customer.
+    #[test]
+    fn a_customer_gets_self_scoped_billing_and_not_tenant_wide_billing() {
+        let p = perms("customer");
+        assert!(p.contains(&permissions::BILLING_READ_OWN), "needs own-read");
+        assert!(!p.contains(&permissions::BILLING_VIEW), "must NOT be tenant-wide");
+        assert!(!p.contains(&permissions::PAYMENTS_READ), "same string as BILLING_VIEW");
+    }
+
+    #[test]
+    fn an_unknown_role_gets_nothing() {
+        assert!(perms("not_a_role").is_empty());
     }
 }

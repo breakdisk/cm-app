@@ -48,10 +48,29 @@ impl ProxyClient {
             return self.services.omnideliv_url.as_deref();
         }
         // Identity & Auth
-        if path.starts_with("/v1/auth") || path.starts_with("/v1/users") || path.starts_with("/v1/tenants") || path.starts_with("/v1/api-keys") || path.starts_with("/v1/audit-log") || path.starts_with("/v1/push-tokens") {
+        if path.starts_with("/v1/auth")
+            || path.starts_with("/v1/users")
+            || path.starts_with("/v1/tenants")
+            || path.starts_with("/v1/api-keys")
+            || path.starts_with("/v1/audit-log")
+            || path.starts_with("/v1/push-tokens")
+            // Tenant branding for a caller with no session yet — the customer
+            // app fetches this to brand its *login* screen, before there is a
+            // token to send. Identity serves it; the gateway did not route it,
+            // so a white-label app reaching the gateway got a 404 and silently
+            // fell back to the default brand. Also allowlisted in `is_public`
+            // (see bootstrap.rs), or it would 401 instead — the same outcome
+            // by a different door.
+            || path.starts_with("/v1/public")
+        {
             Some(&self.services.identity_url)
         // Order & Shipment Intake
-        } else if path.starts_with("/v1/shipments") || path.starts_with("/v1/orders") {
+        } else if path.starts_with("/v1/shipments")
+            || path.starts_with("/v1/orders")
+            // Address autocomplete for the booking form. Authenticated, unlike
+            // /v1/public above.
+            || path.starts_with("/v1/address")
+        {
             Some(&self.services.order_intake_url)
         // Dispatch & Routing — dispatch service exposes /v1/routes, /v1/queue,
         // /v1/assignments, and /v1/offers (gig grab surface)
@@ -96,6 +115,14 @@ impl ProxyClient {
         // Must be checked before the generic /v1/customers → CDP rule.
         } else if path.starts_with("/v1/customers/") && path.ends_with("/sends") {
             Some(&self.services.engagement_url)
+        // Billing history — payments owns /customers/:id/invoices (see
+        // services/payments/src/api/http/mod.rs). Same reason as /sends: it
+        // has to beat the generic /v1/customers rule below, which would hand
+        // it to CDP, where the route does not exist. The customer app's
+        // Invoices and Receipt screens were both getting a bare 404 from
+        // axum — indistinguishable from "you have no invoices".
+        } else if path.starts_with("/v1/customers/") && path.ends_with("/invoices") {
+            Some(&self.services.payments_url)
         // Customer Data Platform — customers + segment CRUD + segment membership
         } else if path.starts_with("/v1/customers") || path.starts_with("/v1/segments") || path.starts_with("/v1/profiles") {
             Some(&self.services.cdp_url)
@@ -260,5 +287,66 @@ mod routing_tests {
         // *because* this route table refuses the path — so the claim is pinned
         // here rather than left as a comment that could quietly stop being true.
         assert_eq!(resolve("/v1/omnideliv/internal/catalog/ingest"), None);
+    }
+
+    /// Both of these are paths the customer app calls and the gateway did not
+    /// route. Direct to the service they answered (422 / 401); through the
+    /// gateway they 404'd — so on any build pointed at the gateway, address
+    /// autocomplete was dead and a white-label app silently fell back to the
+    /// default brand.
+    #[test]
+    fn customer_app_paths_the_gateway_used_to_miss() {
+        assert_eq!(
+            resolve("/v1/address/lookup").as_deref(),
+            Some("http://order-intake:8004"),
+            "address autocomplete lives in order-intake"
+        );
+        assert_eq!(
+            resolve("/v1/public/branding").as_deref(),
+            Some("http://identity:8001"),
+            "tenant branding is served by identity"
+        );
+    }
+
+    /// Three services answer under `/v1/customers/`, so ordering is the whole
+    /// contract: the two sub-path rules must beat the generic CDP rule, and
+    /// the plain customer routes must still reach CDP.
+    #[test]
+    fn customer_sub_paths_go_to_their_owning_service() {
+        assert_eq!(
+            resolve("/v1/customers/abc/invoices").as_deref(),
+            Some("http://payments:8012"),
+            "billing history is owned by payments, not CDP"
+        );
+        assert_eq!(
+            resolve("/v1/customers/abc/sends").as_deref(),
+            Some("http://engagement:8003"),
+            "communication history is owned by engagement"
+        );
+        assert_eq!(
+            resolve("/v1/customers/abc").as_deref(),
+            Some("http://cdp:8002"),
+            "the profile itself is still CDP"
+        );
+        assert_eq!(
+            resolve("/v1/customers").as_deref(),
+            Some("http://cdp:8002"),
+            "and so is the collection"
+        );
+    }
+
+    /// `/v1/public` must not shadow `/v1/public/...`-shaped paths belonging to
+    /// other services, and must not be confused with the authenticated
+    /// `/v1/tenants/me/branding` the same client uses once signed in.
+    #[test]
+    fn branding_has_an_authenticated_twin_and_both_reach_identity() {
+        assert_eq!(
+            resolve("/v1/tenants/me/branding").as_deref(),
+            Some("http://identity:8001")
+        );
+        assert_eq!(
+            resolve("/v1/public/branding").as_deref(),
+            Some("http://identity:8001")
+        );
     }
 }

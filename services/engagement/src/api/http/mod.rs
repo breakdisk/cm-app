@@ -38,9 +38,57 @@ use crate::{
 // Engagement service permissions follow the `<resource>:<action>` convention.
 // ---------------------------------------------------------------------------
 
-const PERM_SEND:             &str = "engagement:send";
-const PERM_READ:             &str = "engagement:read";
-const PERM_TEMPLATES_WRITE:  &str = "engagement:templates:write";
+// Imported, not re-declared. These were private string literals here, matching
+// no entry in the RBAC catalogue, so no role could ever hold them and all 11
+// endpoints below returned 403 to every caller. Importing them means a rename
+// on either side is a compile error.
+use logisticos_auth::rbac::permissions::{
+    ENGAGEMENT_READ as PERM_READ,
+    ENGAGEMENT_READ_OWN as PERM_READ_OWN,
+    ENGAGEMENT_SEND as PERM_SEND,
+    ENGAGEMENT_TEMPLATES_WRITE as PERM_TEMPLATES_WRITE,
+};
+
+/// How much of the tenant's notification history a caller may read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadScope {
+    /// Staff roles: any customer, or the whole tenant.
+    Tenant,
+    /// End customer: their own rows only, keyed by the user id in the token.
+    OwnOnly,
+}
+
+/// Tenant-wide read wins when a caller holds both, so granting an end customer
+/// a staff role does not accidentally *narrow* what they can see.
+fn scope_for(has_tenant_read: bool, has_own_read: bool) -> Option<ReadScope> {
+    match (has_tenant_read, has_own_read) {
+        (true, _) => Some(ReadScope::Tenant),
+        (false, true) => Some(ReadScope::OwnOnly),
+        (false, false) => None,
+    }
+}
+
+fn read_scope(claims: &AuthClaims) -> Result<ReadScope, AppError> {
+    scope_for(claims.has_permission(PERM_READ), claims.has_permission(PERM_READ_OWN))
+        .ok_or_else(|| AppError::Forbidden { resource: "notification".into() })
+}
+
+/// Which `customer_id` the query actually filters on.
+///
+/// `requested` is what the caller asked for and is discarded outright under
+/// `OwnOnly` — not compared, not validated, replaced. A comparison would still
+/// leak whether a guessed id exists via the difference between "forbidden" and
+/// "empty"; substitution cannot.
+fn effective_customer_filter(
+    scope: ReadScope,
+    requested: Option<Uuid>,
+    own: Uuid,
+) -> Option<Uuid> {
+    match scope {
+        ReadScope::Tenant => requested,
+        ReadScope::OwnOnly => Some(own),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // AppState
@@ -254,7 +302,7 @@ async fn get_notification(
     claims: AuthClaims,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-    claims.require_permission(PERM_READ)?;
+    let scope = read_scope(&claims)?;
 
     let db = NotificationDb::new(state.db.clone());
     let notification = db
@@ -268,6 +316,14 @@ async fn get_notification(
         return Err(AppError::Forbidden { resource: "notification".into() });
     }
 
+    // The list endpoint pins the query; this one takes an id directly, so the
+    // same rule has to be re-checked against the row that came back. Without
+    // it a customer could read any notification in their tenant by guessing
+    // an id, which is the leak the pin above exists to prevent.
+    if scope == ReadScope::OwnOnly && notification.customer_id != claims.user_id {
+        return Err(AppError::Forbidden { resource: "notification".into() });
+    }
+
     Ok::<_, AppError>((StatusCode::OK, Json(notification)))
 }
 
@@ -277,12 +333,21 @@ async fn list_notifications(
     claims: AuthClaims,
     Query(q): Query<ListNotificationsQuery>,
 ) -> impl IntoResponse {
-    claims.require_permission(PERM_READ)?;
+    // A self-scoped caller (the customer app) may read only its own history.
+    // Its customer_id is taken from the token, never from the query string —
+    // the app sources that value from device storage, so as a request
+    // parameter it is a claim by the caller about who they are, not proof.
+    // The tenant-wide branch below is the reason this matters: without the
+    // pin, `?customer_id=` omitted would list every customer in the tenant.
+    let scope = read_scope(&claims)?;
 
     let tenant_uuid = claims.tenant_id;
     let db          = NotificationDb::new(state.db.clone());
 
-    let notifications = if let Some(customer_id) = q.customer_id {
+    let effective_customer_id =
+        effective_customer_filter(scope, q.customer_id, claims.user_id);
+
+    let notifications = if let Some(customer_id) = effective_customer_id {
         db.list_by_customer(customer_id, tenant_uuid, q.clamp_limit(), q.offset())
             .await
             .map_err(AppError::Internal)?
@@ -674,4 +739,58 @@ async fn internal_campaign_engagement(
             "clicked":     clicked,
         })),
     ))
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    #[test]
+    fn no_engagement_permission_is_refused() {
+        assert_eq!(scope_for(false, false), None);
+    }
+
+    #[test]
+    fn staff_read_is_tenant_wide_and_survives_holding_both() {
+        assert_eq!(scope_for(true, false), Some(ReadScope::Tenant));
+        assert_eq!(scope_for(true, true), Some(ReadScope::Tenant));
+    }
+
+    #[test]
+    fn read_own_alone_is_self_scoped() {
+        assert_eq!(scope_for(false, true), Some(ReadScope::OwnOnly));
+    }
+
+    /// The one that matters. The customer app sends `?customer_id=` from device
+    /// storage, so a modified client can send anyone's id. Under OwnOnly the
+    /// filter must come out as the token's user, whatever was asked for.
+    #[test]
+    fn a_self_scoped_caller_cannot_read_another_customer() {
+        let me = Uuid::from_u128(1);
+        let someone_else = Uuid::from_u128(2);
+        assert_eq!(
+            effective_customer_filter(ReadScope::OwnOnly, Some(someone_else), me),
+            Some(me),
+        );
+    }
+
+    /// Omitting the parameter is the dangerous case: for staff it means
+    /// "whole tenant", so it must not mean that for a customer.
+    #[test]
+    fn a_self_scoped_caller_cannot_reach_the_tenant_wide_branch() {
+        let me = Uuid::from_u128(1);
+        assert_eq!(effective_customer_filter(ReadScope::OwnOnly, None, me), Some(me));
+        // Staff, by contrast, keep the tenant-wide listing.
+        assert_eq!(effective_customer_filter(ReadScope::Tenant, None, me), None);
+    }
+
+    #[test]
+    fn staff_may_still_filter_to_any_customer() {
+        let me = Uuid::from_u128(1);
+        let target = Uuid::from_u128(2);
+        assert_eq!(
+            effective_customer_filter(ReadScope::Tenant, Some(target), me),
+            Some(target),
+        );
+    }
 }

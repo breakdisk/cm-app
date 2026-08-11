@@ -47,13 +47,6 @@ impl MockHubRepository {
         Arc::new(Self { store: Mutex::new(HashMap::new()) })
     }
 
-    fn new_with(hubs: Vec<Hub>) -> Arc<Self> {
-        let mut map = HashMap::new();
-        for h in hubs {
-            map.insert(h.id.inner(), h);
-        }
-        Arc::new(Self { store: Mutex::new(map) })
-    }
 }
 
 #[async_trait::async_trait]
@@ -169,7 +162,11 @@ impl TestApp {
         let induction_repo = MockInductionRepository::new();
         let hub_svc = Arc::new(HubService::new(hub_repo.clone(), induction_repo.clone()));
         let state = AppState { hub_svc };
-        let router = router(state);
+        // router() gained a jwt parameter when auth moved inside it — it builds
+        // the require_auth layer itself now, rather than leaving the caller to
+        // add one. Same secret the tokens below are signed with, or every
+        // request 401s for a reason unrelated to what is under test.
+        let router = router(state, Arc::new(jwt_service()));
         Self { tenant_id, hub_repo, induction_repo, router }
     }
 
@@ -213,16 +210,6 @@ impl TestApp {
             .unwrap()
     }
 
-    fn patch(&self, path: &str, body: Value) -> Request<Body> {
-        let (name, value) = self.auth_header();
-        Request::builder()
-            .method(Method::PATCH)
-            .uri(path)
-            .header(name, value)
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(body.to_string()))
-            .unwrap()
-    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -251,9 +238,9 @@ fn seed_inducted_parcel(app: &TestApp, hub: &Hub) -> ParcelInduction {
         None,
     );
     // Also increment hub load so state is consistent
-    app.hub_repo.store.lock().unwrap().get_mut(&hub.id.inner()).map(|h| {
+    if let Some(h) = app.hub_repo.store.lock().unwrap().get_mut(&hub.id.inner()) {
         h.current_load += 1;
-    });
+    }
     app.induction_repo.store.lock().unwrap().insert(induction.id.inner(), induction.clone());
     induction
 }

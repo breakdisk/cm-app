@@ -26,6 +26,10 @@ fn make_driver(status: DriverStatus, active_route_id: Option<Uuid>) -> Driver {
         current_location: None,
         last_location_at: None,
         vehicle_id: None,
+        // A tenant-owned field driver: no carrier, no hub. Both arrived with
+        // partner-portal manifest scoping and hub scanner assignment.
+        carrier_id: None,
+        hub_id: None,
         active_route_id,
         is_active: true,
         driver_type: DriverType::FullTime,
@@ -263,23 +267,26 @@ mod task_status {
         assert!(task.started_at.is_some());
     }
 
+    /// `Task::complete` used to return Err("Delivery task requires proof of
+    /// delivery"). It does not any more — it takes (pod_id, pop_id) and returns
+    /// unit. **The rule was not dropped**, it moved: `task_service.rs` refuses
+    /// the command when a Delivery task arrives with no pod_id, and the entity
+    /// keeps `requires_pod()` as the predicate that decides it.
+    ///
+    /// So this asserts the half the entity still owns. The refusal itself
+    /// belongs to a service-level test, and there is not one — worth writing
+    /// when driver-ops' integration suite is repaired.
     #[test]
-    fn complete_delivery_task_without_pod_returns_err() {
-        let mut task = make_task(TaskType::Delivery, TaskStatus::InProgress);
-        let result = task.complete(None);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err(),
-            "Delivery task requires proof of delivery"
-        );
+    fn a_delivery_task_requires_proof_of_delivery() {
+        let task = make_task(TaskType::Delivery, TaskStatus::InProgress);
+        assert!(task.requires_pod(), "delivery is what makes a POD mandatory");
     }
 
     #[test]
     fn complete_delivery_task_with_pod_succeeds() {
         let mut task = make_task(TaskType::Delivery, TaskStatus::InProgress);
         let pod_id = Uuid::new_v4();
-        let result = task.complete(Some(pod_id));
-        assert!(result.is_ok());
+        task.complete(Some(pod_id), None);
         assert_eq!(task.status, TaskStatus::Completed);
         assert_eq!(task.pod_id, Some(pod_id));
     }
@@ -287,8 +294,7 @@ mod task_status {
     #[test]
     fn complete_pickup_task_without_pod_succeeds() {
         let mut task = make_task(TaskType::Pickup, TaskStatus::InProgress);
-        let result = task.complete(None);
-        assert!(result.is_ok());
+        task.complete(None, None);
         assert_eq!(task.status, TaskStatus::Completed);
     }
 
@@ -296,7 +302,7 @@ mod task_status {
     fn complete_records_completed_at_timestamp() {
         let mut task = make_task(TaskType::Pickup, TaskStatus::InProgress);
         assert!(task.completed_at.is_none());
-        task.complete(None).unwrap();
+        task.complete(None, None);
         assert!(task.completed_at.is_some());
     }
 
@@ -325,13 +331,13 @@ mod task_status {
     #[test]
     fn pickup_task_can_complete_without_pod() {
         let task = make_task(TaskType::Pickup, TaskStatus::InProgress);
-        assert!(task.can_complete_without_pod());
+        assert!(!task.requires_pod());
     }
 
     #[test]
     fn delivery_task_cannot_complete_without_pod() {
         let task = make_task(TaskType::Delivery, TaskStatus::InProgress);
-        assert!(!task.can_complete_without_pod());
+        assert!(task.requires_pod());
     }
 }
 

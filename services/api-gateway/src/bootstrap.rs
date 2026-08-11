@@ -114,6 +114,10 @@ async fn proxy_handler(
     // Public paths that skip authentication entirely.
     let path = req.uri().path();
     let is_public = path.starts_with("/v1/tracking/public/")
+        // Tenant branding, fetched before sign-in so the login screen can carry
+        // the tenant's colours. Requiring a token here would mean a white-label
+        // app can only look like itself *after* you are already inside it.
+        || path.starts_with("/v1/public/")
         || path == "/v1/auth/login"
         || path == "/v1/auth/register"
         || path == "/v1/auth/refresh"

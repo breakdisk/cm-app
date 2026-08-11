@@ -57,6 +57,25 @@ const SELECT_COLS: &str = "tenant_id, display_name, app_tagline, logo_url, logo_
     favicon_url, primary_color, secondary_color, accent_color, support_email, support_phone, \
     legal_text, custom_domain, created_at, updated_at";
 
+/// `SELECT_COLS` with every column qualified to `alias`.
+///
+/// The slug lookup joins `tenant_branding` with `tenants`, and the two share
+/// `created_at` and `updated_at` — so an unqualified list makes Postgres reject
+/// the whole query with `column reference "created_at" is ambiguous`, and the
+/// endpoint 500s.
+///
+/// This replaces a `SELECT_COLS.replace("tenant_id", "b.tenant_id")`, which
+/// qualified exactly one column and left the two that actually collide. Adding
+/// a column to `SELECT_COLS` that `tenants` also has would have reintroduced it;
+/// qualifying all of them cannot.
+fn qualified_cols(alias: &str) -> String {
+    SELECT_COLS
+        .split(',')
+        .map(|c| format!("{alias}.{}", c.trim()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 #[async_trait]
 impl BrandingRepository for PgBrandingRepository {
     async fn find_by_tenant(&self, tenant_id: &TenantId) -> anyhow::Result<Option<Branding>> {
@@ -75,7 +94,7 @@ impl BrandingRepository for PgBrandingRepository {
             "SELECT {} FROM identity.tenant_branding b \
              JOIN identity.tenants t ON t.id = b.tenant_id \
              WHERE t.slug = $1",
-            SELECT_COLS.replace("tenant_id", "b.tenant_id")
+            qualified_cols("b")
         );
         let row = sqlx::query_as::<_, BrandingRow>(&sql)
             .bind(slug)
@@ -135,5 +154,28 @@ impl BrandingRepository for PgBrandingRepository {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every column, not just the one that happened to be noticed.
+    /// `tenant_branding` and `tenants` share `created_at` and `updated_at`, and
+    /// the public branding endpoint 500'd on exactly that for as long as it was
+    /// reachable — which was not long, because the gateway did not route it
+    /// either. Two faults hiding one another.
+    #[test]
+    fn the_joined_select_qualifies_every_column() {
+        let cols = qualified_cols("b");
+        for col in SELECT_COLS.split(',').map(str::trim) {
+            assert!(
+                cols.contains(&format!("b.{col}")),
+                "{col} must be qualified or the join is ambiguous"
+            );
+        }
+        assert!(!cols.contains(", created_at"), "bare created_at is the ambiguous one");
+        assert!(!cols.contains(", updated_at"), "bare updated_at is the other");
     }
 }
