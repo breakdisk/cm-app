@@ -1317,6 +1317,16 @@ services:
       # How stale a vendor's stock declaration may be before the mesh stops
       # trusting it and proposes substitutes defensively.
       STOCK_FRESHNESS_MINS: "30"
+      # Product photos. Absent, the service still boots and serves catalogs —
+      # only the photo routes report themselves unconfigured. minio is on this
+      # network with no published port, which is why bytes go through the
+      # service rather than a presigned URL the browser could not reach.
+      STORAGE__ENDPOINT: http://minio:9000
+      STORAGE__BUCKET: omnideliv-catalog
+      STORAGE__ACCESS_KEY: minioadmin
+      STORAGE__SECRET_KEY: minioadmin
+      STORAGE__REGION: us-east-1
+      STORAGE__FORCE_PATH_STYLE: "true"
       MESH_DEADLINE_SECS: "${OMNIDELIV_MESH_DEADLINE_SECS:-45}"
       # Checkout offers every placed order to field-ops. WITHOUT SERVICE_TOKEN
       # every checkout fails: field-ops authenticates its operational routes and
