@@ -1,15 +1,32 @@
 {
   "expo": {
     "name": "OmniDeliv",
-    "slug": "omnideliv",
+    "slug": "omnidelivery",
     "scheme": "omnideliv",
     "version": "0.1.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "backgroundColor": "#050810",
-    "plugins": ["expo-router", "expo-secure-store"],
-    "ios": { "bundleIdentifier": "net.cargomarket.omnideliv", "supportsTablet": false },
-    "android": { "package": "net.cargomarket.omnideliv" },
-    "experiments": { "typedRoutes": true }
+    "plugins": [
+      "expo-router",
+      "expo-secure-store"
+    ],
+    "ios": {
+      "bundleIdentifier": "net.cargomarket.omnideliv",
+      "supportsTablet": false
+    },
+    "android": {
+      "package": "net.cargomarket.omnideliv"
+    },
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "448d7215-3364-4d92-a8d7-4b982edb9273"
+      }
+    },
+    "owner": "breakdiskexpo"
   }
 }
