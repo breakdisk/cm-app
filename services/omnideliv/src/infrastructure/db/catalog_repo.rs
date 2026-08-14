@@ -104,8 +104,15 @@ impl CatalogRepository for PgCatalogRepository {
         .bind(&i.vertical_attrs).bind(i.is_listed)
         .bind(i.source.as_str()).bind(&i.external_id).bind(i.synced_at)
         .bind(i.allergens_declared_at)
-        .bind(&i.category)
+        // Positional. `category` is last in the column list above, so it binds
+        // last — putting it here rather than next to its neighbours is not
+        // style, it is the contract. Binding it before created_at shifted every
+        // parameter after it and Postgres rejected the whole write with
+        // `column "created_at" is of type timestamp with time zone but
+        // expression is of type text` — which broke *every* catalog write, not
+        // just the ones setting a category.
         .bind(i.created_at).bind(i.updated_at)
+        .bind(&i.category)
         .execute(&mut *tx).await?;
 
         // A new item is listed as available — but `confirmed_at` stays NULL, so
