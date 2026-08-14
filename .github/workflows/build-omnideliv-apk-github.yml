@@ -1,0 +1,146 @@
+# ============================================================
+# OmniDeliv — Android APK built on GitHub (no EAS Build)
+# ============================================================
+# `expo prebuild` + Gradle on the runner, instead of EAS Build's cloud.
+#
+# Why this exists: EAS free-plan Android builds are a small monthly per-account
+# quota, and running out means no APK until the reset — which is exactly what
+# happened on 2026-08-14. GitHub Actions minutes are the constraint here
+# instead, and there is no queue.
+#
+# SIGNING. This produces a **debug-signed** APK. Expo's generated Gradle sets
+# `release { signingConfig signingConfigs.debug }` (see the "Caution!" comment
+# it writes into android/app/build.gradle), so a release build is signed with
+# the bundled debug keystore. That is:
+#   - fine for internal testing and sideloading
+#   - NOT publishable to Play, which requires a real upload key
+#
+# It also means **no keystore goes anywhere near this repository**, which is a
+# deliberate choice: a release keystore and its passwords were once committed
+# here and are still in git history. To produce a store-signable build later,
+# add the keystore as a base64 repository secret and decode it into
+# android/app at build time — never as a file in the tree.
+#
+# EXPO_PUBLIC_* are read out of eas.json rather than duplicated here. They are
+# inlined into the bundle at build time, and Gradle does not read eas.json, so
+# without this step the app would silently bake in its localhost fallback and
+# ship inert — the failure that made every customer-app production build dead.
+# ============================================================
+
+name: Build OmniDeliv APK (GitHub)
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Which eas.json profile's env to bake in"
+        type: choice
+        required: true
+        default: preview
+        options:
+          - development
+          - preview
+          - production
+      variant:
+        description: "Gradle variant"
+        type: choice
+        required: true
+        default: release
+        options:
+          - release
+          - debug
+
+concurrency:
+  group: omnideliv-apk-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    name: Gradle APK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/omnideliv-app
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: apps/omnideliv-app/package-lock.json
+
+      # AGP 8.x (Expo SDK 54 / RN 0.81) requires JDK 17.
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # One source of truth. Duplicating these here is how a build profile and
+      # its workflow drift until the APK points somewhere that does not exist.
+      - name: Load EXPO_PUBLIC_* from eas.json
+        env:
+          PROFILE: ${{ inputs.profile }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import json, os, sys
+          profile = os.environ["PROFILE"]
+          env = json.load(open("eas.json"))["build"][profile].get("env", {})
+          if not env:
+              raise SystemExit(f"eas.json profile '{profile}' declares no env — refusing to build an app with no API base")
+          for k, v in env.items():
+              print(f"{k}={v}")
+          # stdout is redirected into $GITHUB_ENV, so the human-readable
+          # confirmation goes to stderr or it would be parsed as a variable.
+          print(f"baking in from '{profile}': {sorted(env)}", file=sys.stderr)
+          PY
+
+      - name: Prebuild the Android project
+        run: npx expo prebuild --platform android --no-install
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-omnideliv-${{ hashFiles('apps/omnideliv-app/package-lock.json') }}
+          restore-keys: gradle-omnideliv-
+
+      - name: Build APK
+        working-directory: apps/omnideliv-app/android
+        run: |
+          chmod +x ./gradlew
+          if [ "${{ inputs.variant }}" = "debug" ]; then
+            ./gradlew assembleDebug --no-daemon --stacktrace
+          else
+            ./gradlew assembleRelease --no-daemon --stacktrace
+          fi
+
+      # Fails loudly rather than uploading an empty artifact — a missing APK
+      # that produces a green run is worse than a red one.
+      - name: Locate the APK
+        id: apk
+        run: |
+          FOUND=$(find android/app/build/outputs/apk -name "*.apk" | head -1)
+          if [ -z "$FOUND" ]; then
+            echo "::error::Gradle reported success but produced no APK."
+            exit 1
+          fi
+          echo "path=apps/omnideliv-app/$FOUND" >> "$GITHUB_OUTPUT"
+          ls -la "$FOUND"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: omnideliv-${{ inputs.profile }}-${{ inputs.variant }}-${{ github.run_number }}
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30
