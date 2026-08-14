@@ -51,6 +51,15 @@ impl VendorRepository for FakeVendors {
     async fn find_near(
         &self, _t: Uuid, _v: Vertical, _lat: f64, _lng: f64, _r: f64, _l: i64,
     ) -> anyhow::Result<Vec<Vendor>> { Ok(vec![]) }
+    // Filters on tenant for the same reason every method above does: the
+    // operator review queue is the one place a vendor from another tenant
+    // would be both visible and actionable.
+    async fn list_for_tenant(&self, tenant_id: Uuid) -> anyhow::Result<Vec<Vendor>> {
+        Ok(self.by_user.iter()
+            .filter(|(_, v)| v.tenant_id == tenant_id)
+            .map(|(_, v)| v.clone())
+            .collect())
+    }
 }
 
 #[derive(Default)]
