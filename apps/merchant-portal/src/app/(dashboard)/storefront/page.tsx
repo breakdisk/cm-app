@@ -744,7 +744,9 @@ function ApplyToSell({ onApplied }: { onApplied: () => void }) {
     Math.abs(latNum) <= 90 && Math.abs(lngNum) <= 180;
   const ready = name.trim() !== "" && address.trim() !== "" && coordsValid && !saving;
 
-  function useMyLocation() {
+  // Deliberately not `use`-prefixed: it is a click handler, not a hook, and
+  // rules-of-hooks errors on a use* function called from a callback.
+  function fillFromDeviceLocation() {
     if (typeof navigator === "undefined" || !navigator.geolocation) {
       setErr("This browser cannot report a location — enter the coordinates instead.");
       return;
@@ -837,7 +839,7 @@ function ApplyToSell({ onApplied }: { onApplied: () => void }) {
             </div>
             <button
               type="button"
-              onClick={useMyLocation}
+              onClick={fillFromDeviceLocation}
               disabled={locating}
               className="mt-2 rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white/70 hover:bg-white/5 disabled:opacity-40"
             >

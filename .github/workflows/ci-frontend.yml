@@ -370,9 +370,12 @@ jobs:
           # build-android-driver.yml. The job failed every run with
           # "Some specified paths were not resolved", which nobody saw because
           # this whole job was skipped behind a lint step that could not run.
-          # apps/omnideliv-app is a real Expo app and belongs here once its
-          # own suite is green.
           - customer-app
+          # Added 2026-08-14. Its suite is green — `tsc --noEmit` clean and 14
+          # jest tests across 2 suites — so the precondition this comment used
+          # to state is met. Until now nothing gated the app at all, which is
+          # how customer-app's six suites rotted unnoticed.
+          - omnideliv-app
 
     defaults:
       run:

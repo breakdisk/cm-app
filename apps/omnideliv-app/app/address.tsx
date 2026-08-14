@@ -10,7 +10,7 @@
  *
  * So: use my location, or enter a point. Honest about what it can do.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { ActivityIndicator, Pressable, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
@@ -29,7 +29,9 @@ export default function Address() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const useMyLocation = useCallback(async () => {
+  // Not a hook. Naming it `useMyLocation` made rules-of-hooks treat the
+  // onPress call as a hook invoked inside a callback, which is an error.
+  const fillFromDeviceLocation = useCallback(async () => {
     setBusy(true);
     setError(null);
     try {
@@ -93,7 +95,7 @@ export default function Address() {
         </View>
 
         <Pressable
-          onPress={() => void useMyLocation()}
+          onPress={() => void fillFromDeviceLocation()}
           disabled={busy}
           style={{
             borderColor: theme.cyan,
