@@ -103,7 +103,7 @@ function RescheduleContent() {
               {TIME_WINDOWS.find((t) => t.id === timeWindow)?.sub ?? ""}
             </p>
           </div>
-          <p className="text-xs text-white/30">You'll receive a confirmation via SMS and email.</p>
+          <p className="text-xs text-white/30">You&apos;ll receive a confirmation via SMS and email.</p>
           <a href="/" className="mt-6 inline-block text-sm text-[#00E5FF] hover:text-[#00E5FF]/70 transition-colors">
             Track your shipment →
           </a>
@@ -132,7 +132,7 @@ function RescheduleContent() {
             <span className="text-white">
               {new Date(Date.now() - 86400000).toLocaleDateString("en-PH", { month: "long", day: "numeric", year: "numeric" })}
             </span>{" "}
-            but couldn't reach you.
+            but couldn&apos;t reach you.
           </p>
         </div>
       </motion.div>

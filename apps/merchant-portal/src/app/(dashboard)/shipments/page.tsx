@@ -1566,7 +1566,13 @@ function ShipmentsContent() {
   function toggleSelect(id: string) {
     setSelected((prev) => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      // An if/else, not a ternary evaluated for effect — the expression form
+      // reads as though it produces the next value, and it does not.
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
       return next;
     });
   }

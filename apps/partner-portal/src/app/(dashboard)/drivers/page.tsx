@@ -757,7 +757,7 @@ function DriversPageInner() {
             <div>
               <h2 className="font-heading text-sm font-semibold text-white">Driver Roster</h2>
               <p className="text-xs text-white/40 mt-0.5">
-                Set driver type and commission rates. Changes apply to the driver's next shift.
+                Set driver type and commission rates. Changes apply to the driver&apos;s next shift.
               </p>
             </div>
             <div className="flex items-center gap-2">

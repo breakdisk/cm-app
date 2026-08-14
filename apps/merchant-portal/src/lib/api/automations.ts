@@ -94,7 +94,7 @@ export interface CreateRulePayload {
   priority?: number;
 }
 
-export interface UpdateRulePayload extends CreateRulePayload {}
+export type UpdateRulePayload = CreateRulePayload;
 
 export interface ValidateExpressionResponse {
   valid: boolean;
