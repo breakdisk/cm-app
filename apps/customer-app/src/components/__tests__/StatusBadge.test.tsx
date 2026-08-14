@@ -1,5 +1,6 @@
 import React from 'react';
 import { render } from '@testing-library/react-native';
+import { StyleSheet } from 'react-native';
 import StatusBadge from '../StatusBadge';
 
 describe('StatusBadge', () => {
@@ -24,6 +25,10 @@ describe('StatusBadge', () => {
   test('renders with compact size', () => {
     const { getByTestId } = render(<StatusBadge status="delivered" size="sm" />);
     const badge = getByTestId('status-badge');
-    expect(badge.props.style.some((s: any) => s.paddingVertical === 4)).toBe(true);
+    // Flattened rather than searched: the component hands `Animated.View` an
+    // array, and Animated reshapes it, so `style.some(...)` was asserting on
+    // internal plumbing rather than on the padding the prop is supposed to
+    // produce. StyleSheet.flatten asks the question the test means to ask.
+    expect(StyleSheet.flatten(badge.props.style).paddingVertical).toBe(4);
   });
 });

@@ -16,14 +16,18 @@ describe('HomeScreen', () => {
     expect(getByText(/Welcome back/i)).toBeTruthy();
   });
 
-  test('renders 4 quick-action cards', () => {
-    const { getAllByTestId } = render(
+  // Was `toBe(4)` and had been wrong since "Get Quote" was added — a bare
+  // count says nothing about which action went missing, so this names them.
+  test('renders every quick action', () => {
+    const { getAllByTestId, getByText } = render(
       <Provider store={store}>
         <HomeScreen navigation={mockNavigation} />
       </Provider>
     );
-    const actions = getAllByTestId('quick-action');
-    expect(actions.length).toBe(4);
+    for (const label of ['Book New', 'Get Quote', 'Track', 'History', 'Support']) {
+      expect(getByText(label)).toBeTruthy();
+    }
+    expect(getAllByTestId('quick-action')).toHaveLength(5);
   });
 
   test('navigates to Booking when "Book New" is tapped', () => {

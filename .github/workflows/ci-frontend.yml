@@ -438,24 +438,10 @@ jobs:
           "
           fi
 
-      # Advisory, with the drift stated rather than hidden.
-      #
-      # These tests had never run: the job was skipped behind a lint step that
-      # could not execute, and beneath that `jest.setup.js` mocked a package
-      # that is not installed, so the suite died before its first test. Both are
-      # fixed, and the suite now runs — 68 tests, 62 passing, **6 suites failing
-      # on drift** (useTracking, useShipments, StatusBadge, HomeScreen, and two
-      # that fail to load at all: services/api/client and db/sync).
-      #
-      # That is real rot in never-executed tests, exactly as the Rust services
-      # showed when their suites were first wired. Gating on it would make this
-      # job permanently red for pre-existing breakage and teach people to ignore
-      # the pipeline — the failure mode this whole change exists to undo. The
-      # type check above it is a real gate and passes.
-      #
-      # Flip this to a gate in the commit that repairs those six suites.
-      - name: Run unit tests (mobile, advisory — 6 suites failing on drift)
-        continue-on-error: true
+      # A real gate as of the commit that repaired the six drifted suites:
+      # 14 suites, 81 tests, all passing. It was advisory for exactly one
+      # commit, which is how long it took to fix what turning it on revealed.
+      - name: Run unit tests (mobile)
         run: npm test -- --ci --passWithNoTests
         env:
           CI: "true"

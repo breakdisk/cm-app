@@ -1,4 +1,25 @@
-jest.mock('axios');
+// A factory, not a bare automock. `jest.mock('axios')` makes Jest *load* the
+// real axios to generate the mock shape, and axios's fetch adapter probes
+// ReadableStream at import time — which throws "Cannot cancel a stream that
+// already has a reader" against Expo's stream polyfill. The suite died before
+// its first test, and had done since it was written.
+jest.mock('axios', () => {
+  const client = {
+    defaults: { baseURL: '', headers: { common: {} } },
+    interceptors: {
+      request: { use: jest.fn(), eject: jest.fn() },
+      response: { use: jest.fn(), eject: jest.fn() },
+    },
+    get: jest.fn(), post: jest.fn(), put: jest.fn(),
+    patch: jest.fn(), delete: jest.fn(), request: jest.fn(),
+  };
+  return {
+    __esModule: true,
+    default: { create: jest.fn(() => client), ...client },
+    create: jest.fn(() => client),
+    isAxiosError: jest.fn(() => false),
+  };
+});
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(() => Promise.resolve(null)),
   setItemAsync: jest.fn(() => Promise.resolve()),
