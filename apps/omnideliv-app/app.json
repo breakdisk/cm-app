@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "OmniDeliv",
-    "slug": "omnidelivery",
+    "slug": "omnideliv",
     "scheme": "omnideliv",
     "version": "0.1.0",
     "orientation": "portrait",
@@ -24,9 +24,9 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "448d7215-3364-4d92-a8d7-4b982edb9273"
+        "projectId": "7248eb1b-8d22-4042-af9c-d0182476e746"
       }
     },
-    "owner": "breakdiskexpo"
+    "owner": "cargomarket"
   }
 }
