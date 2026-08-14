@@ -70,6 +70,7 @@ async fn a_basket_with_a_substitution_chain_survives_a_round_trip() {
             allergens_declared_at: Some(now),
             vertical_attrs: serde_json::json!({}), is_listed: true,
             source: CatalogSource::Manual, external_id: None, synced_at: None,
+            image_key: None,
             created_at: now, updated_at: now,
         }
     };

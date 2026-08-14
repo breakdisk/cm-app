@@ -118,6 +118,11 @@ async fn proxy_handler(
         // the tenant's colours. Requiring a token here would mean a white-label
         // app can only look like itself *after* you are already inside it.
         || path.starts_with("/v1/public/")
+        // Product photos. An <img> tag cannot send an Authorization header, so
+        // gating these would mean no pictures anywhere in the storefront or the
+        // customer app. The path carries only UUIDs and the response is image
+        // bytes — no other item data is exposed.
+        || path.starts_with("/v1/omnideliv/public/")
         || path == "/v1/auth/login"
         || path == "/v1/auth/register"
         || path == "/v1/auth/refresh"

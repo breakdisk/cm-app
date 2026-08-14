@@ -101,6 +101,7 @@ fn an_item(tenant: Uuid, vendor_id: Uuid, sku: &str) -> CatalogItem {
         source: CatalogSource::Manual,
         external_id: None,
         synced_at: None,
+        image_key: None,
         created_at: now,
         updated_at: now,
     }

@@ -31,6 +31,13 @@ pub struct CatalogItem {
     pub external_id:    Option<String>,
     /// When an ingest last touched this item. `None` for hand-entered rows.
     pub synced_at:      Option<DateTime<Utc>>,
+    /// Object key of the product photo, or `None` for no photo.
+    ///
+    /// A key rather than a URL: the bucket is cluster-internal, so a stored URL
+    /// would be unreachable from a browser. Only the photo endpoint writes it —
+    /// the catalog upsert leaves it alone, so a re-sync cannot wipe a picture
+    /// the vendor uploaded.
+    pub image_key:      Option<String>,
     pub created_at:     DateTime<Utc>,
     pub updated_at:     DateTime<Utc>,
 }
@@ -367,6 +374,7 @@ mod tests {
             source: CatalogSource::Manual,
             external_id: None,
             synced_at: None,
+            image_key: None,
             created_at: Utc::now(), updated_at: Utc::now(),
         }
     }

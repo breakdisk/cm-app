@@ -20,11 +20,41 @@ pub struct KafkaConfig {
     pub brokers: String,
 }
 
+/// Object storage for product photos.
+///
+/// Every field defaults to empty so an environment that has not configured
+/// storage still boots — `PhotoStorage::new` refuses, the upload route reports
+/// itself unconfigured, and catalogs keep serving. Photos are an addition to
+/// OmniDeliv, not a precondition for it.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct StorageConfig {
+    /// e.g. `http://minio:9000`. Empty disables photo storage.
+    #[serde(default)]
+    pub endpoint:   String,
+    #[serde(default)]
+    pub bucket:     String,
+    #[serde(default)]
+    pub access_key: String,
+    #[serde(default)]
+    pub secret_key: String,
+    #[serde(default)]
+    pub region:     Option<String>,
+    /// MinIO needs path-style; virtual-hosted addressing resolves
+    /// `bucket.minio:9000`, which has no DNS entry.
+    #[serde(default = "default_true")]
+    pub force_path_style: bool,
+}
+
+fn default_true() -> bool { true }
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub app:      AppConfig,
     pub database: DatabaseConfig,
     pub kafka:    KafkaConfig,
+    /// Absent env vars must still deserialize — see StorageConfig.
+    #[serde(default)]
+    pub storage:  StorageConfig,
 
     /// How old a vendor-declared availability flag may be before the catalog
     /// stops treating it as trustworthy. Drives defensive substitution — see

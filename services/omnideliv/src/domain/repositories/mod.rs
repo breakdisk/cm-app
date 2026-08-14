@@ -77,6 +77,18 @@ pub trait CatalogRepository: Send + Sync {
 
     async fn set_availability(&self, a: &Availability) -> anyhow::Result<()>;
 
+    /// Point an item at a stored photo, or clear it with `None`.
+    ///
+    /// Its own method rather than a field on `save_item`, because the catalog
+    /// upsert is also the ingest path: folding the photo into it would let a
+    /// Shopify or CSV re-sync wipe a picture the vendor uploaded by hand.
+    async fn set_image_key(
+        &self,
+        tenant_id: Uuid,
+        item_id:   Uuid,
+        key:       Option<&str>,
+    ) -> anyhow::Result<()>;
+
     /// Stamp a human confirmation across every listed item in a store, in one
     /// statement. The bulk answer to the console's opening state — a vendor who
     /// has just synced 200 items should confirm them with one deliberate act,

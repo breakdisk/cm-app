@@ -312,6 +312,18 @@ mod routing_tests {
     /// contract: the two sub-path rules must beat the generic CDP rule, and
     /// the plain customer routes must still reach CDP.
     #[test]
+    fn omnideliv_public_photos_still_reach_omnideliv() {
+        // The tier prefix is matched before the flat chain, so this resolves on
+        // `/v1/omnideliv` like everything else — but it is also allowlisted in
+        // `is_public` (bootstrap.rs), and routing without that turns the 404
+        // into a 401: the same failure by a different door.
+        assert_eq!(
+            resolve("/v1/omnideliv/public/catalog/abc/items/def/photo").as_deref(),
+            Some("http://omnideliv:8091"),
+        );
+    }
+
+    #[test]
     fn customer_sub_paths_go_to_their_owning_service() {
         assert_eq!(
             resolve("/v1/customers/abc/invoices").as_deref(),

@@ -38,10 +38,13 @@ export interface Item {
   synced_at: string | null;
   /** False = nobody has stated what is in this. See the storefront page. */
   allergens_declared: boolean;
+  /** Whether a photo has been uploaded. Not a URL — see `photoUrl`. */
+  has_photo: boolean;
   warrants_substitute: boolean;
 }
 
 export interface Catalog {
+  tenant_id: string;
   vendor_id: string;
   vendor_name: string;
   items: Item[];
@@ -207,6 +210,32 @@ export const storefrontApi = {
     });
     await expectOk(res, "apply");
     return res.json();
+  },
+
+  /**
+   * Public URL for an item's photo.
+   *
+   * Built rather than stored: the server returns `has_photo`, not a link. A
+   * stored URL goes stale the moment the backing store moves, and this one is
+   * derivable from ids the console already holds.
+   *
+   * Unauthenticated by design — an <img> tag cannot send a bearer token.
+   */
+  photoUrl(tenantId: string, itemId: string): string {
+    return `${API_BASE}/v1/omnideliv/public/catalog/${tenantId}/items/${itemId}/photo`;
+  },
+
+  /** Upload or replace an item's photo. JPEG, PNG or WebP, up to 5 MB. */
+  async uploadPhoto(itemId: string, file: File): Promise<void> {
+    const body = new FormData();
+    body.append("file", file);
+    // No Content-Type header: the browser must set the multipart boundary, and
+    // naming the type here overwrites it with one that has no boundary at all.
+    const res = await authFetch(`${API_BASE}/v1/omnideliv/catalog/items/${itemId}/photo`, {
+      method: "POST",
+      body,
+    });
+    await expectOk(res, "photo");
   },
 
   async catalog(): Promise<Catalog | null> {

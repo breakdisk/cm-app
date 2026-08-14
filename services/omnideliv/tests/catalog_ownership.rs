@@ -98,6 +98,15 @@ impl CatalogRepository for FakeCatalog {
                    && i.external_id.as_deref() == Some(external_id))
             .cloned())
     }
+    // Records the write like every other method on this fake, and filters on
+    // tenant for the same reason the Pg one does.
+    async fn set_image_key(
+        &self,
+        _tenant_id: Uuid,
+        _item_id:   Uuid,
+        _key:       Option<&str>,
+    ) -> anyhow::Result<()> { Ok(()) }
+
     async fn set_availability(&self, a: &Availability) -> anyhow::Result<()> {
         self.writes.lock().unwrap().push(a.clone());
         Ok(())
@@ -163,6 +172,7 @@ fn world() -> World {
         allergens_declared_at: Some(Utc::now()), dietary_tags: vec![],
         vertical_attrs: serde_json::json!({}), is_listed: true,
         source: CatalogSource::Manual, external_id: None, synced_at: None,
+        image_key: None,
         created_at: Utc::now(), updated_at: Utc::now(),
     });
 

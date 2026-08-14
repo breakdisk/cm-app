@@ -55,6 +55,13 @@ pub fn routes() -> Router<Arc<AppState>> {
         )
         .route("/v1/omnideliv/catalog/items/:id/availability", patch(set_availability))
         .route("/v1/omnideliv/catalog/items/:id/allergens", patch(declare_allergens))
+        .route("/v1/omnideliv/catalog/items/:id/photo", post(upload_item_photo))
+        // Public by design — see the handler. Lives under /v1/omnideliv/public
+        // so the gateway can allowlist the prefix rather than one path.
+        .route(
+            "/v1/omnideliv/public/catalog/:tenant_id/items/:id/photo",
+            get(get_item_photo),
+        )
         .route("/v1/omnideliv/catalog/confirm-all", post(confirm_all))
         .route("/v1/omnideliv/catalog/ingest", post(ingest))
         .route("/v1/omnideliv/catalog/ingest/csv", post(ingest_csv))
@@ -550,6 +557,10 @@ async fn my_items(
     let (vendor, items) = found.ok_or(StatusCode::NOT_FOUND)?;
 
     Ok(Json(MyCatalogResponse {
+        // The console builds the public photo URL from this. Kept explicit in
+        // the path rather than looked up by bare item id, so a photo read is
+        // tenant-scoped like every other read in this service.
+        tenant_id:   claims.tenant_id,
         vendor_id:   vendor.id,
         vendor_name: vendor.name,
         items: items
@@ -567,6 +578,10 @@ async fn my_items(
                 confirmed_at: s.item_with_availability.availability.confirmed_at,
                 source:      s.item_with_availability.item.source.as_str().to_string(),
                 synced_at:   s.item_with_availability.item.synced_at,
+                // A flag, not a URL. The public photo path is derivable from
+                // (tenant, item) and a stored URL would go stale the moment the
+                // backing store moves; the client builds it when this is true.
+                has_photo: s.item_with_availability.item.image_key.is_some(),
                 warrants_substitute: s.warrants_substitute,
             })
             .collect(),
@@ -600,11 +615,13 @@ struct MyItem {
     synced_at:    Option<chrono::DateTime<chrono::Utc>>,
     /// True when the agent will line up a substitute — either because the item
     /// is out of stock or limited, or because the confirmation has gone stale.
+    has_photo:    bool,
     warrants_substitute: bool,
 }
 
 #[derive(Debug, Serialize)]
 struct MyCatalogResponse {
+    tenant_id:   Uuid,
     vendor_id:   Uuid,
     vendor_name: String,
     items:       Vec<MyItem>,
@@ -647,4 +664,135 @@ async fn search(
             })
             .collect(),
     ))
+}
+
+// ── Product photos ──────────────────────────────────────────────────────────
+
+/// `POST /v1/omnideliv/catalog/items/:id/photo` — multipart, field name `file`.
+///
+/// Bytes go through the service rather than a presigned URL. The bucket is
+/// cluster-internal (minio publishes no port and has no Traefik route), so a
+/// presigned URL would name somewhere the vendor's browser cannot reach.
+async fn upload_item_photo(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+    mut multipart: axum::extract::Multipart,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let Some(storage) = st.photos.clone() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "photo storage is not configured on this deployment".to_string(),
+        ));
+    };
+
+    let mut bytes: Option<Vec<u8>> = None;
+    while let Some(field) = multipart.next_field().await.map_err(|e| {
+        (StatusCode::BAD_REQUEST, format!("could not read the upload: {e}"))
+    })? {
+        if field.name() == Some("file") {
+            let data = field.bytes().await.map_err(|e| {
+                (StatusCode::BAD_REQUEST, format!("could not read the file: {e}"))
+            })?;
+            bytes = Some(data.to_vec());
+            break;
+        }
+    }
+
+    let bytes = bytes.ok_or((
+        StatusCode::BAD_REQUEST,
+        "expected a multipart field named 'file'".to_string(),
+    ))?;
+
+    if bytes.len() > crate::infrastructure::storage::MAX_PHOTO_BYTES {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "that image is {} KB; the limit is {} KB",
+                bytes.len() / 1024,
+                crate::infrastructure::storage::MAX_PHOTO_BYTES / 1024
+            ),
+        ));
+    }
+
+    // Sniffed from the bytes, never taken from the request's Content-Type —
+    // that header is supplied by the caller and so is a claim, not evidence.
+    // It also keeps SVG out, which is an image to a person and a script host
+    // to a browser.
+    let content_type = crate::infrastructure::storage::sniff_image(&bytes).ok_or((
+        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        "only JPEG, PNG and WebP images are accepted".to_string(),
+    ))?;
+
+    // Tenant-prefixed so one tenant's keys can never collide with another's,
+    // and random per upload so replacing a photo cannot be served stale from
+    // any cache sitting in front of this.
+    let key = format!("catalog/{}/{}/{}", claims.tenant_id, id, Uuid::new_v4());
+
+    storage.put(&key, bytes, content_type).await.map_err(|e| {
+        tracing::error!(error = ?e, "photo upload failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, "could not store that image".to_string())
+    })?;
+
+    let owned = st.catalog
+        .set_own_item_photo(claims.tenant_id, claims.user_id, id, Some(&key))
+        .await
+        .map_err(|e| {
+            tracing::error!(error = ?e, "photo attach failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "could not attach that image".to_string())
+        })?;
+
+    if !owned {
+        // Written before the ownership check resolved, so remove it rather
+        // than leave an orphan billing storage forever.
+        let _ = storage.delete(&key).await;
+        return Err((StatusCode::NOT_FOUND, "no such item in your store".to_string()));
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /v1/omnideliv/public/catalog/items/:id/photo` — unauthenticated.
+///
+/// Public on purpose: a product photo is the thing a customer looks at while
+/// deciding, before they have any relationship with the vendor. An `<img>` tag
+/// cannot send an Authorization header, so gating this would mean no pictures
+/// anywhere. The id is a UUID and the response carries no other item data.
+async fn get_item_photo(
+    State(st): State<Arc<AppState>>,
+    Path((tenant_id, id)): Path<(Uuid, Uuid)>,
+) -> Result<axum::response::Response, StatusCode> {
+    let storage = st.photos.clone().ok_or(StatusCode::NOT_FOUND)?;
+
+    let key = st.catalog
+        .item_photo_key(tenant_id, id)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = ?e, "photo lookup failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let (bytes, content_type) = storage
+        .get(&key)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = ?e, "photo fetch failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        // The row outlived its object. A 404 is the honest answer; a 500 would
+        // page somebody for a missing picture.
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    use axum::response::IntoResponse;
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, content_type),
+            // Immutable: the key is random per upload, so a changed photo is a
+            // different URL and this can never serve a stale one.
+            (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string()),
+        ],
+        bytes,
+    )
+        .into_response())
 }

@@ -290,6 +290,46 @@ impl CatalogService {
         self.catalog.declare_allergens(tenant_id, item_id, &normalised).await
     }
 
+    /// Attach a photo to one of the caller's own items.
+    ///
+    /// Same ownership rule as availability — the store is resolved from the
+    /// token and the item must belong to it. Returns `false` when the caller
+    /// runs no store, the item does not exist, or it belongs to someone else;
+    /// the three are deliberately indistinguishable to the caller, because
+    /// telling them apart tells a prober which item ids are real.
+    pub async fn set_own_item_photo(
+        &self,
+        tenant_id: Uuid,
+        user_id:   Uuid,
+        item_id:   Uuid,
+        key:       Option<&str>,
+    ) -> anyhow::Result<bool> {
+        let Some(vendor) = self.vendors.find_by_user(tenant_id, user_id).await? else {
+            return Ok(false);
+        };
+        let Some(item) = self.catalog.find_item(tenant_id, item_id).await? else {
+            return Ok(false);
+        };
+        if item.vendor_id != vendor.id {
+            return Ok(false);
+        }
+        self.catalog.set_image_key(tenant_id, item_id, key).await?;
+        Ok(true)
+    }
+
+    /// The stored object key for an item's photo.
+    ///
+    /// No ownership check: a product photo is public-facing content — the whole
+    /// point is that a customer browsing the storefront can see it before they
+    /// have any relationship with the vendor.
+    pub async fn item_photo_key(
+        &self,
+        tenant_id: Uuid,
+        item_id:   Uuid,
+    ) -> anyhow::Result<Option<String>> {
+        Ok(self.catalog.find_item(tenant_id, item_id).await?.and_then(|i| i.image_key))
+    }
+
     pub async fn set_own_item_availability(
         &self,
         tenant_id: Uuid,
@@ -383,6 +423,7 @@ impl CatalogService {
             source:         CatalogSource::Manual,
             external_id:    None,
             synced_at:      None,
+            image_key:      None,
             created_at:     now,
             updated_at:     now,
         };
@@ -600,6 +641,7 @@ impl CatalogService {
                         source,
                         external_id:    None,
                         synced_at:      None,
+                        image_key:      None,
                         created_at:     now,
                         updated_at:     now,
                     };

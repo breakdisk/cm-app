@@ -23,6 +23,10 @@ pub struct AppState {
     pub ledgers:   Arc<dyn VendorLedgerRepository>,
     pub order_events: Arc<dyn crate::infrastructure::messaging::OrderEvents>,
     pub jwt:     Arc<logisticos_auth::jwt::JwtService>,
+    /// `None` when storage is unconfigured. The photo routes report that
+    /// plainly rather than the service refusing to boot — a catalog without
+    /// pictures is still a catalog.
+    pub photos:  Option<Arc<crate::infrastructure::storage::PhotoStorage>>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {

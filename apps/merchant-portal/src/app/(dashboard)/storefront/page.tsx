@@ -452,6 +452,16 @@ export default function Storefront() {
               key={item.id}
               className="flex flex-col gap-3 p-4 lg:flex-row lg:items-center lg:justify-between"
             >
+              {catalog && (
+                <ItemPhoto
+                  tenantId={catalog.tenant_id}
+                  item={item}
+                  busy={busy === `photo-${item.id}`}
+                  onPick={(file) =>
+                    run(`photo-${item.id}`, () => storefrontApi.uploadPhoto(item.id, file))
+                  }
+                />
+              )}
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="truncate font-semibold text-white">{item.name}</span>
@@ -871,6 +881,75 @@ function ApplyToSell({ onApplied }: { onApplied: () => void }) {
           </button>
         </div>
       </GlassCard>
+    </div>
+  );
+}
+
+/**
+ * An item's picture, and the control to set it.
+ *
+ * The thumbnail is loaded from the public photo route — an <img> cannot send a
+ * bearer token, which is why that route is unauthenticated. `has_photo` decides
+ * whether to render one at all: pointing an <img> at a 404 gives every
+ * pictureless item a broken-image icon, which reads as "this is broken" rather
+ * than "nobody has added one".
+ */
+function ItemPhoto({
+  tenantId,
+  item,
+  busy,
+  onPick,
+}: {
+  tenantId: string;
+  item: Item;
+  busy: boolean;
+  onPick: (file: File) => void;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  // Bumped after each upload so the browser refetches. The key is random per
+  // upload server-side, but this element's src is derived from ids that do not
+  // change, so without it the old bytes stay on screen.
+  const [v, setV] = useState(0);
+
+  return (
+    <div className="shrink-0">
+      <input
+        ref={input}
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) {
+            onPick(f);
+            setV((n) => n + 1);
+          }
+          // Cleared so picking the same file twice still fires onChange.
+          e.target.value = "";
+        }}
+      />
+      <button
+        type="button"
+        onClick={() => input.current?.click()}
+        disabled={busy}
+        aria-label={item.has_photo ? `Replace the photo for ${item.name}` : `Add a photo for ${item.name}`}
+        className="group relative h-16 w-16 overflow-hidden rounded-lg border border-white/10 bg-white/5 disabled:opacity-50"
+      >
+        {item.has_photo ? (
+          // eslint-disable-next-line @next/next/no-img-element -- next/image
+          // cannot be given an allowlisted remote host here: the API origin is
+          // per-environment and baked in at build time.
+          <img
+            src={`${storefrontApi.photoUrl(tenantId, item.id)}?v=${v}`}
+            alt=""
+            className="h-full w-full object-cover"
+          />
+        ) : (
+          <span className="flex h-full w-full items-center justify-center text-[10px] leading-tight text-white/35">
+            {busy ? "…" : "add photo"}
+          </span>
+        )}
+      </button>
     </div>
   );
 }

@@ -75,6 +75,7 @@ async fn a_customer_can_build_and_check_out_a_basket_without_the_mesh() {
         allergens_declared_at: Some(chrono::Utc::now()),
         is_listed: true,
         source: CatalogSource::Manual, external_id: None, synced_at: None,
+        image_key: None,
         created_at: now, updated_at: now,
     };
     catalog.save_item(&item).await.expect("save item");

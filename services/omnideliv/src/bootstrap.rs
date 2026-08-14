@@ -122,6 +122,29 @@ pub async fn run() -> anyhow::Result<()> {
             }
         };
 
+    // Storage is optional. An environment with no STORAGE__* vars keeps
+    // serving catalogs; only the photo routes go dark, and they say so.
+    let photos = if cfg.storage.endpoint.trim().is_empty() {
+        tracing::info!("omnideliv: no STORAGE__ENDPOINT — product photos disabled");
+        None
+    } else {
+        match crate::infrastructure::storage::PhotoStorage::new(&cfg.storage).await {
+            Ok(s) => {
+                if let Err(e) = s.ensure_bucket().await {
+                    // Not fatal: the bucket may be created out of band, and a
+                    // boot failure here would take the whole catalog down for
+                    // a feature that is additive.
+                    tracing::warn!(error = ?e, "omnideliv: could not ensure the photo bucket");
+                }
+                Some(Arc::new(s))
+            }
+            Err(e) => {
+                tracing::warn!(error = ?e, "omnideliv: photo storage misconfigured — photos disabled");
+                None
+            }
+        }
+    };
+
     let state = Arc::new(AppState {
         catalog,
         baskets,
@@ -132,6 +155,7 @@ pub async fn run() -> anyhow::Result<()> {
         ledgers: ledgers.clone(),
         order_events: order_events.clone(),
         jwt,
+        photos,
     });
 
     // Courier milestones. Spawned rather than awaited so the HTTP surface comes

@@ -43,6 +43,7 @@ fn map_pair(r: &sqlx::postgres::PgRow) -> anyhow::Result<ItemWithAvailability> {
         },
         external_id:    r.get("external_id"),
         synced_at:      r.get("synced_at"),
+        image_key:      r.get("image_key"),
         created_at:     r.get("created_at"),
         updated_at:     r.get("updated_at"),
     };
@@ -89,6 +90,9 @@ impl CatalogRepository for PgCatalogRepository {
                 -- Written from the entity, which applies the merge rules. An
                 -- ingest never advances it; only `declare_allergens` does.
                 allergens_declared_at = EXCLUDED.allergens_declared_at,
+                -- image_key is absent on purpose. Only the photo endpoint
+                -- writes it, so re-syncing a Shopify or CSV catalog cannot
+                -- wipe a picture the vendor uploaded by hand.
                 updated_at     = EXCLUDED.updated_at
             "#,
         )
@@ -134,6 +138,27 @@ impl CatalogRepository for PgCatalogRepository {
         .fetch_optional(&self.pool).await?;
 
         row.as_ref().map(map_pair).transpose().map(|o| o.map(|p| p.item))
+    }
+
+    async fn set_image_key(
+        &self,
+        tenant_id: Uuid,
+        item_id:   Uuid,
+        key:       Option<&str>,
+    ) -> anyhow::Result<()> {
+        // Filtered on tenant as well as id: an item id is a bare UUID from the
+        // request path, and this is a write.
+        sqlx::query(
+            "UPDATE omnideliv.catalog_items
+                SET image_key = $3, updated_at = NOW()
+              WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(tenant_id)
+        .bind(item_id)
+        .bind(key)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     async fn set_availability(&self, a: &Availability) -> anyhow::Result<()> {
