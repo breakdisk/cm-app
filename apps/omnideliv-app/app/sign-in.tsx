@@ -36,7 +36,14 @@ export default function SignIn() {
       await requestOtp(normalisePhone(phone));
       setStep("code");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not send a code.");
+      setError(
+        e instanceof Error
+          ? // A fetch that never reached the server throws rather than
+            // returning a status — name that, so it is not mistaken for a
+            // rejected number.
+            (/network|fetch/i.test(e.message) ? `Could not reach the server. ${e.message}` : e.message)
+          : "Could not send a code.",
+      );
     } finally {
       setBusy(false);
     }
@@ -50,7 +57,11 @@ export default function SignIn() {
       // replace, not push: signing in must not leave a back route to itself.
       router.replace("/");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not sign you in.");
+      setError(
+        e instanceof Error
+          ? (/network|fetch/i.test(e.message) ? `Could not reach the server. ${e.message}` : e.message)
+          : "Could not sign you in.",
+      );
     } finally {
       setBusy(false);
     }

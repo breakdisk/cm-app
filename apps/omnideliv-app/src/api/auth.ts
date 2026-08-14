@@ -43,6 +43,29 @@ async function post(path: string, body: unknown): Promise<Response> {
   });
 }
 
+
+/**
+ * A message that says what actually happened.
+ *
+ * These used to collapse every failure into one of three fixed strings, so a
+ * report of "cannot log in" carried no status, no server message, and no way
+ * to tell a rejected code from an unreachable host. The friendly sentence
+ * stays first; the detail is appended so a screenshot is diagnosable.
+ */
+async function describe(res: Response, friendly: string): Promise<string> {
+  const raw = await res.text().catch(() => "");
+  let detail = raw.trim();
+  try {
+    const parsed = JSON.parse(detail) as { error?: { message?: string } | string };
+    const msg = typeof parsed.error === "string" ? parsed.error : parsed.error?.message;
+    if (msg) detail = msg;
+  } catch {
+    // Not JSON — a proxy or gateway page. Keep it short.
+  }
+  const suffix = detail ? ` (${res.status}: ${detail.slice(0, 120)})` : ` (${res.status})`;
+  return friendly + suffix;
+}
+
 /**
  * Ask for a code. Resolves on success; throws with a readable message so the
  * screen can show why rather than a status number.
@@ -57,9 +80,12 @@ export async function requestOtp(phone: string): Promise<void> {
   });
   if (!res.ok) {
     throw new Error(
-      res.status === 429
-        ? "Too many attempts. Wait a moment and try again."
-        : "We couldn't send a code to that number.",
+      await describe(
+        res,
+        res.status === 429
+          ? "Too many attempts. Wait a moment and try again."
+          : "We couldn't send a code to that number.",
+      ),
     );
   }
 }
@@ -80,9 +106,12 @@ export async function verifyOtp(phone: string, code: string): Promise<Session> {
 
   if (!res.ok) {
     throw new Error(
-      res.status === 401 || res.status === 400
-        ? "That code didn't work. Check it and try again."
-        : "Something went wrong signing you in.",
+      await describe(
+        res,
+        res.status === 401 || res.status === 400
+          ? "That code didn't work. Check it and try again."
+          : "Something went wrong signing you in.",
+      ),
     );
   }
 
