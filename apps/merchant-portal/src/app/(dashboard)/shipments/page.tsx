@@ -69,8 +69,8 @@ const STATUS_FILTERS: Array<{ label: string; value: ShipmentStatus | "all" }> = 
 
 // ── Summary stats ──────────────────────────────────────────────────────────────
 
-const DELIVERED_STATUSES: ReadonlySet<ShipmentStatus> = new Set(["delivered", "partial_delivery"]);
-const FAILED_STATUSES:    ReadonlySet<ShipmentStatus> = new Set(["failed", "cancelled", "returned"]);
+const DELIVERED_STATUSES: ReadonlySet<ShipmentStatus> = new Set<ShipmentStatus>(["delivered", "partial_delivery"]);
+const FAILED_STATUSES:    ReadonlySet<ShipmentStatus> = new Set<ShipmentStatus>(["failed", "cancelled", "returned"]);
 
 function computeStats(shipments: Shipment[]) {
   const total     = shipments.length;

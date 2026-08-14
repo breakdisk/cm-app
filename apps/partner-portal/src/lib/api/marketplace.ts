@@ -196,8 +196,19 @@ export { subscribeToBus as subscribeToMarketplaceUpdates };
 
 export interface IssueReceiptInput {
   booking_id:    string;
-  /** The booking object — used to populate receipt fields without an extra round-trip. */
-  booking?:      MarketplaceBooking | null;
+  /**
+   * The booking object — used to populate receipt fields without an extra
+   * round-trip.
+   *
+   * Deliberately structural rather than `MarketplaceBooking`: the receipt modal
+   * holds a narrower shape (`ReceiptModalBooking`) that carries
+   * `consumer_display` where the full booking carries `consumer_name`, and no
+   * `shipment_id` at all. Demanding the full type made the call site a type
+   * error that was silenced by nobody type-checking this portal — and every
+   * receipt issued from that modal came out with an empty consumer name while
+   * the correct value sat one field away.
+   */
+  booking?:      (Partial<MarketplaceBooking> & { consumer_display?: string }) | null;
   /** Carrier's UUID — used to populate the receipt's partner_id field. */
   carrier_id?:   string | null;
   /** Carrier's display name — used to populate the receipt's issued_by_name. */
@@ -242,7 +253,8 @@ export async function issueReceipt(input: IssueReceiptInput): Promise<BusReceipt
     partner_display_name: partnerName,
     merchant_id:          null,
     merchant_display:     "",
-    consumer_display:     booking?.consumer_name ?? "",
+    // Either shape may supply it; the modal's is the one that was being lost.
+    consumer_display:     booking?.consumer_name ?? booking?.consumer_display ?? "",
     pickup_label:         booking?.pickup_label  ?? "",
     dropoff_label:        booking?.dropoff_label ?? "",
     pickup_at:            booking?.pickup_at     ?? new Date().toISOString(),

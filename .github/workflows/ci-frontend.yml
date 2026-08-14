@@ -75,7 +75,26 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run ESLint
+      # Advisory, not a gate — and the reason is the whole point of this change.
+      #
+      # No portal has an `.eslintrc`, so `next lint` drops into its interactive
+      # "How would you like to configure ESLint?" prompt, reads EOF on the
+      # runner and exits 1. It did that for all four portals on every run this
+      # workflow has ever had, which meant the type check below **never
+      # executed** and everything downstream (`test`, `build`, `e2e`) reported
+      # `skipped`. A permanently-red job teaches people to ignore CI, and this
+      # one was red for a reason that had nothing to do with any portal's code.
+      #
+      # Type-checking is the part with real value here and it is now the gate:
+      # turning it on immediately found 11 errors across two portals, one of
+      # which was a live defect (receipts issued with an empty consumer name).
+      #
+      # Adopting ESLint properly means adding a config and fixing whatever it
+      # then reports across four portals — its own commit, its own decision,
+      # exactly as `cargo fmt` is handled in ci-rust.yml. Flip this to a gate in
+      # that change.
+      - name: Run ESLint (advisory)
+        continue-on-error: true
         run: npm run lint
         env:
           NEXT_TELEMETRY_DISABLED: "1"

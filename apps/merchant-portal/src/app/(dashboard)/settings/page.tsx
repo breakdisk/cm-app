@@ -315,7 +315,7 @@ function PickupAddressesTab() {
   return (
     <motion.div variants={variants.fadeInUp} className="space-y-4">
       {error && (
-        <GlassCard padding="sm">
+        <GlassCard>
           <p className="text-xs text-red-400 font-mono">{error}</p>
         </GlassCard>
       )}
@@ -498,7 +498,7 @@ function ApiKeysTab() {
   return (
     <motion.div variants={variants.fadeInUp} className="space-y-4">
       {error && (
-        <GlassCard padding="sm">
+        <GlassCard>
           <p className="text-xs text-red-signal font-mono">{error}</p>
         </GlassCard>
       )}
