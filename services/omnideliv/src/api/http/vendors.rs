@@ -13,6 +13,19 @@ use uuid::Uuid;
 use crate::api::http::AppState;
 use crate::domain::entities::current_period;
 use crate::domain::entities::Vertical;
+use logisticos_auth::rbac::permissions::VENDORS_MANAGE;
+
+/// A vendor as the operator review queue sees it.
+#[derive(Debug, Serialize)]
+pub struct VendorAdminRow {
+    pub id: Uuid,
+    pub name: String,
+    pub address: String,
+    pub vertical: String,
+    pub status: String,
+    pub has_owner: bool,
+    pub created_at: String,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct NearQuery {
@@ -57,6 +70,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/v1/omnideliv/vendors/me", get(me).patch(patch_me))
         .route("/v1/omnideliv/vendors/me/earnings", get(my_earnings))
         .route("/v1/omnideliv/vendors/apply", post(apply))
+        .route("/v1/omnideliv/admin/vendors", get(list_all))
         .route("/v1/omnideliv/admin/vendors/:id/approve", post(approve))
 }
 
@@ -162,12 +176,47 @@ async fn apply(
 ///
 /// NOTE: gated only by `require_auth` today — same open per-role RBAC question
 /// as the payout run, and this route belongs in the same first batch.
+/// Every vendor in the tenant with its status — the operator review queue.
+/// `list_near` cannot serve this: it returns only active stores, which are by
+/// definition the ones already past review.
+async fn list_all(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+) -> Result<Json<Vec<VendorAdminRow>>, StatusCode> {
+    if !claims.has_permission(VENDORS_MANAGE) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let vendors = st.catalog.list_vendors(claims.tenant_id).await.map_err(|e| {
+        tracing::error!(err = %e, "vendor list failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    Ok(Json(vendors.into_iter().map(|v| VendorAdminRow {
+        id: v.id,
+        name: v.name,
+        address: v.address,
+        vertical: v.vertical.as_str().to_string(),
+        status: v.status.as_str().to_string(),
+        // Null means the store is unreachable by any login: nobody can manage
+        // its catalog, because /vendors/me resolves by user_id. Seeded rows
+        // land this way, so the operator needs to see it.
+        has_owner: v.user_id.is_some(),
+        created_at: v.created_at.to_rfc3339(),
+    }).collect()))
+}
+
 async fn approve(
     State(st): State<Arc<AppState>>,
-    _claims: AuthClaims,
+    claims: AuthClaims,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, StatusCode> {
-    let ok = st.catalog.approve_vendor(_claims.tenant_id, id).await.map_err(|e| {
+    // This route used to take `_claims` and check nothing, so any signed-in
+    // user could approve any vendor -- including the application they had just
+    // submitted themselves. That erases the entire point of Onboarding being a
+    // separate state from Active.
+    if !claims.has_permission(VENDORS_MANAGE) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let ok = st.catalog.approve_vendor(claims.tenant_id, id).await.map_err(|e| {
         tracing::error!(err = %e, "vendor approval failed");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;

@@ -47,6 +47,7 @@ import { authFetch } from "@/lib/auth/auth-fetch";
 import { API_BASE } from "@/lib/api/endpoints";
 import {
   storefrontApi,
+  VERTICALS,
   type Availability,
   type Catalog,
   type CatalogSource,
@@ -223,16 +224,12 @@ export default function Storefront() {
 
   if (noStore) {
     return (
-      <div className="p-6">
-        <GlassCard className="p-8 text-center">
-          <Store className="mx-auto mb-3 h-8 w-8 text-white/40" />
-          <p className="text-white/70">This login is not linked to an OmniDeliv store.</p>
-          <p className="mt-2 text-xs text-white/40">
-            A store is linked by setting its <code>user_id</code>. Ask an operator to
-            connect this account to your storefront.
-          </p>
-        </GlassCard>
-      </div>
+      <ApplyToSell
+        onApplied={() => {
+          setNoStore(false);
+          void load();
+        }}
+      />
     );
   }
 
@@ -713,5 +710,162 @@ function ItemForm({
         </div>
       </form>
     </GlassCard>
+  );
+}
+
+/**
+ * The only way to become an OmniDeliv vendor.
+ *
+ * This used to be a dead end: it told the merchant their `user_id` was not set
+ * and to "ask an operator", while no operator UI could set it either. Every
+ * vendor that existed had been written by hand in SQL, so in practice nobody
+ * could start selling — the Storefront nav tab hides until you have a store,
+ * and the only route to having one was behind that hidden tab.
+ *
+ * Coordinates are asked for rather than defaulted. `find_near` is what puts a
+ * store in front of a customer, so a wrong or zeroed position does not fail
+ * loudly — it just means nobody is ever shown the shop.
+ */
+function ApplyToSell({ onApplied }: { onApplied: () => void }) {
+  const [name, setName] = useState("");
+  const [vertical, setVertical] = useState<string>(VERTICALS[0].value);
+  const [address, setAddress] = useState("");
+  const [lat, setLat] = useState<string>("");
+  const [lng, setLng] = useState<string>("");
+  const [locating, setLocating] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const latNum = Number(lat);
+  const lngNum = Number(lng);
+  const coordsValid =
+    lat.trim() !== "" && lng.trim() !== "" &&
+    Number.isFinite(latNum) && Number.isFinite(lngNum) &&
+    Math.abs(latNum) <= 90 && Math.abs(lngNum) <= 180;
+  const ready = name.trim() !== "" && address.trim() !== "" && coordsValid && !saving;
+
+  function useMyLocation() {
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setErr("This browser cannot report a location — enter the coordinates instead.");
+      return;
+    }
+    setLocating(true);
+    setErr(null);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLat(pos.coords.latitude.toFixed(6));
+        setLng(pos.coords.longitude.toFixed(6));
+        setLocating(false);
+      },
+      (geoErr) => {
+        setLocating(false);
+        setErr(
+          geoErr.code === geoErr.PERMISSION_DENIED
+            ? "Location permission was declined — enter the coordinates instead."
+            : "Could not read this device's location — enter the coordinates instead.",
+        );
+      },
+      { enableHighAccuracy: true, timeout: 10_000 },
+    );
+  }
+
+  async function submit() {
+    setSaving(true);
+    setErr(null);
+    try {
+      await storefrontApi.apply({
+        vertical,
+        name: name.trim(),
+        address: address.trim(),
+        lat: latNum,
+        lng: lngNum,
+      });
+      onApplied();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "could not submit the application");
+      setSaving(false);
+    }
+  }
+
+  const field =
+    "w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white " +
+    "placeholder:text-white/30 focus:border-cyan-400/50 focus:outline-none";
+
+  return (
+    <div className="p-4 sm:p-6">
+      <GlassCard className="mx-auto max-w-xl p-6 sm:p-8">
+        <Store className="mb-3 h-8 w-8 text-cyan-400/80" />
+        <h1 className="text-lg font-semibold text-white">Sell on OmniDeliv</h1>
+        <p className="mt-1 text-sm text-white/50">
+          This login does not run a store yet. Apply here and you can build your
+          catalog straight away — an operator reviews the shop before customers
+          can order from it.
+        </p>
+
+        <div className="mt-6 space-y-4">
+          <div>
+            <label htmlFor="v-name" className="mb-1 block text-xs text-white/60">Store name</label>
+            <input id="v-name" className={field} value={name} placeholder="Kuya&apos;s Silog House"
+                   onChange={(e) => setName(e.target.value)} />
+          </div>
+
+          <div>
+            <label htmlFor="v-vertical" className="mb-1 block text-xs text-white/60">What do you sell?</label>
+            <select id="v-vertical" className={field} value={vertical}
+                    onChange={(e) => setVertical(e.target.value)}>
+              {VERTICALS.map((v) => (
+                <option key={v.value} value={v.value} className="bg-[#0a0f1c]">{v.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label htmlFor="v-address" className="mb-1 block text-xs text-white/60">Address</label>
+            <input id="v-address" className={field} value={address} placeholder="12 Mabini St, Ermita, Manila"
+                   onChange={(e) => setAddress(e.target.value)} />
+          </div>
+
+          <div>
+            <span className="mb-1 block text-xs text-white/60">
+              Where the shop is — this is what decides which customers see it
+            </span>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <input aria-label="Latitude" className={field} value={lat} placeholder="Latitude"
+                     inputMode="decimal" onChange={(e) => setLat(e.target.value)} />
+              <input aria-label="Longitude" className={field} value={lng} placeholder="Longitude"
+                     inputMode="decimal" onChange={(e) => setLng(e.target.value)} />
+            </div>
+            <button
+              type="button"
+              onClick={useMyLocation}
+              disabled={locating}
+              className="mt-2 rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white/70 hover:bg-white/5 disabled:opacity-40"
+            >
+              {locating ? "Locating…" : "Use my current location"}
+            </button>
+            {lat.trim() !== "" && lng.trim() !== "" && !coordsValid && (
+              <p className="mt-1 text-xs text-amber-300/80">
+                That is not a valid latitude/longitude.
+              </p>
+            )}
+          </div>
+
+          {err && (
+            <p className="rounded-lg border border-rose-400/20 bg-rose-400/5 px-3 py-2 text-xs text-rose-300">
+              {err}
+            </p>
+          )}
+
+          <button
+            type="button"
+            onClick={() => void submit()}
+            disabled={!ready}
+            className="w-full rounded-lg bg-cyan-500/90 px-4 py-2.5 text-sm font-medium text-[#04121a] hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {saving ? "Submitting…" : "Apply to sell"}
+          </button>
+        </div>
+      </GlassCard>
+    </div>
   );
 }

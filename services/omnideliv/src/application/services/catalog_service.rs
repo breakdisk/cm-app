@@ -236,6 +236,11 @@ impl CatalogService {
         Ok(v)
     }
 
+    /// The operator review queue: every vendor in the tenant, any status.
+    pub async fn list_vendors(&self, tenant_id: Uuid) -> anyhow::Result<Vec<Vendor>> {
+        self.vendors.list_for_tenant(tenant_id).await
+    }
+
     /// An operator approves a store. `Onboarding` -> `Active`.
     ///
     /// Deliberately a separate action from applying: letting a store list

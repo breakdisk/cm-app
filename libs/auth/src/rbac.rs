@@ -92,6 +92,13 @@ pub mod permissions {
     pub const TENANT_UPDATE_SELF: &str = "tenants:update-self";
     pub const BILLING_SETUP:      &str = "billing:setup";
 
+    // ── OmniDeliv vendors ────────────────────────────────────
+    // Approving a store is the review that stands between "anyone with a
+    // login" and "food listed to customers", so it is an operator action.
+    // Until this existed the approve route took `_claims` and checked
+    // nothing -- an applicant could approve their own application.
+    pub const VENDORS_MANAGE:    &str = "vendors:manage";
+
     // ── Carriers ─────────────────────────────────────────────
     pub const CARRIERS_MANAGE:   &str = "carriers:manage";
     pub const CARRIERS_READ:     &str = "carriers:read";
@@ -134,6 +141,7 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::USERS_INVITE, permissions::USERS_MANAGE,
             permissions::TENANT_UPDATE_SELF,
             permissions::API_KEYS_MANAGE,
+            permissions::VENDORS_MANAGE,
             permissions::CARRIERS_MANAGE, permissions::CARRIERS_READ,
             permissions::CUSTOMERS_VIEW, permissions::CUSTOMERS_MANAGE,
             permissions::SEGMENTS_VIEW, permissions::SEGMENTS_MANAGE,
@@ -200,6 +208,7 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::USERS_INVITE, permissions::USERS_MANAGE,
             permissions::TENANT_UPDATE_SELF,
             permissions::API_KEYS_MANAGE,
+            permissions::VENDORS_MANAGE,
             permissions::CARRIERS_MANAGE, permissions::CARRIERS_READ,
             permissions::CUSTOMERS_VIEW, permissions::CUSTOMERS_MANAGE,
             permissions::SEGMENTS_VIEW, permissions::SEGMENTS_MANAGE,
@@ -299,6 +308,20 @@ mod grant_tests {
         assert!(!p.contains(&permissions::BILLING_MANAGE), "withdraws tenant funds");
         assert!(!p.contains(&permissions::PAYMENTS_RECONCILE), "same string as BILLING_MANAGE");
         assert!(!p.contains(&permissions::BILLING_ADMIN), "approves withdrawals");
+    }
+
+    /// Approving a vendor is what stands between "anyone with a login" and
+    /// "a store listed to customers". The route checked nothing at all until
+    /// 2026-08-14, so an applicant could approve their own application; the
+    /// permission is useless if no operator role can hold it.
+    #[test]
+    fn operators_can_approve_vendors_and_merchants_cannot() {
+        for role in ["admin", "tenant_admin"] {
+            assert!(perms(role).contains(&permissions::VENDORS_MANAGE), "{role}");
+        }
+        // A merchant applies; they do not review their own application.
+        assert!(!perms("merchant").contains(&permissions::VENDORS_MANAGE));
+        assert!(!perms("customer").contains(&permissions::VENDORS_MANAGE));
     }
 
     #[test]

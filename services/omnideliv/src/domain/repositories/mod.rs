@@ -21,6 +21,11 @@ pub trait VendorRepository: Send + Sync {
     /// which is the answer for every customer, so it is not an error.
     async fn find_by_user(&self, tenant_id: Uuid, user_id: Uuid) -> anyhow::Result<Option<Vendor>>;
 
+    /// Every vendor in the tenant, newest first. The operator review queue
+    /// reads this; `find_near` cannot serve it because it only ever returns
+    /// stores that are already active and therefore already past review.
+    async fn list_for_tenant(&self, tenant_id: Uuid) -> anyhow::Result<Vec<Vendor>>;
+
     /// Orderable vendors of a vertical within `radius_km`, nearest first.
     async fn find_near(
         &self,

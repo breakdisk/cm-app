@@ -70,6 +70,15 @@ impl VendorRepository for PgVendorRepository {
         row.as_ref().map(map_row).transpose()
     }
 
+    async fn list_for_tenant(&self, tenant_id: Uuid) -> anyhow::Result<Vec<Vendor>> {
+        let rows = sqlx::query(
+            "SELECT * FROM omnideliv.vendors WHERE tenant_id = $1 ORDER BY created_at DESC"
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool).await?;
+        rows.iter().map(map_row).collect()
+    }
+
     async fn save(&self, v: &Vendor) -> anyhow::Result<()> {
         sqlx::query(
             r#"

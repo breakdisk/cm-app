@@ -72,7 +72,50 @@ async function expectOk(res: Response, what: string): Promise<void> {
   throw new Error(detail?.trim() || `${what}: ${res.status}`);
 }
 
+/** The five OmniDeliv verticals the backend accepts. */
+export const VERTICALS = [
+  { value: "restaurant", label: "Restaurant" },
+  { value: "grocery",    label: "Grocery" },
+  { value: "pharmacy",   label: "Pharmacy" },
+  { value: "florist",    label: "Florist" },
+  { value: "retail",     label: "Retail" },
+] as const;
+
+export interface VendorApplication {
+  vertical: string;
+  name:     string;
+  address:  string;
+  lat:      number;
+  lng:      number;
+}
+
+export interface VendorProfile {
+  id:                string;
+  name:              string;
+  address:           string;
+  prep_time_minutes: number | null;
+  status:            string;
+}
+
 export const storefrontApi = {
+  /**
+   * Apply to run a store. Idempotent server-side: a login that already has a
+   * vendor gets that vendor back rather than a second one.
+   *
+   * The new store lands in `onboarding`, not `active` — an operator approves
+   * it before customers can see it. The catalog is editable immediately, so
+   * the vendor can have their menu ready when that happens.
+   */
+  async apply(input: VendorApplication): Promise<VendorProfile> {
+    const res = await authFetch(`${API_BASE}/v1/omnideliv/vendors/apply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    await expectOk(res, "apply");
+    return res.json();
+  },
+
   async catalog(): Promise<Catalog | null> {
     const res = await authFetch(`${API_BASE}/v1/omnideliv/catalog/mine`);
     if (res.status === 404) return null; // runs no store — an absence, not a failure
