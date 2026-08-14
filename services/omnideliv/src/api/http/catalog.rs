@@ -42,6 +42,19 @@ pub struct AvailabilityPatch {
     pub state: String,
 }
 
+/// Routes that must sit **outside** this service's auth layer.
+///
+/// Allowlisting `/v1/omnideliv/public/` at the API gateway is only half of it:
+/// omnideliv wraps its own router in `require_auth`, so a path the gateway
+/// waves through still meets a 401 one hop later. Two doors, and the first fix
+/// looked complete because the gateway binary genuinely had the prefix in it.
+pub fn public_routes() -> Router<Arc<AppState>> {
+    Router::new().route(
+        "/v1/omnideliv/public/catalog/:tenant_id/items/:id/photo",
+        get(get_item_photo),
+    )
+}
+
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/omnideliv/catalog/search", get(search))
@@ -56,12 +69,6 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/v1/omnideliv/catalog/items/:id/availability", patch(set_availability))
         .route("/v1/omnideliv/catalog/items/:id/allergens", patch(declare_allergens))
         .route("/v1/omnideliv/catalog/items/:id/photo", post(upload_item_photo))
-        // Public by design — see the handler. Lives under /v1/omnideliv/public
-        // so the gateway can allowlist the prefix rather than one path.
-        .route(
-            "/v1/omnideliv/public/catalog/:tenant_id/items/:id/photo",
-            get(get_item_photo),
-        )
         .route("/v1/omnideliv/catalog/confirm-all", post(confirm_all))
         .route("/v1/omnideliv/catalog/ingest", post(ingest))
         .route("/v1/omnideliv/catalog/ingest/csv", post(ingest_csv))

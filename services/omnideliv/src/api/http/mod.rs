@@ -41,6 +41,10 @@ pub fn router(state: Arc<AppState>) -> Router {
 
     Router::new()
         .merge(health::routes())
+        // Product photos are read by <img> tags with no Authorization header —
+        // see catalog::public_routes. Mounted before the auth layer for the
+        // same reason health is.
+        .merge(catalog::public_routes().with_state(Arc::clone(&state)))
         .merge(
             catalog::routes()
                 .merge(baskets::routes())
