@@ -14,6 +14,7 @@
   "dependencies": {
     "expo": "~54.0.6",
     "expo-device": "~8.0.7",
+    "expo-linking": "~8.0.12",
     "expo-location": "~19.0.7",
     "expo-notifications": "~0.32.11",
     "expo-router": "~6.0.3",
