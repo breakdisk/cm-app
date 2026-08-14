@@ -25,6 +25,7 @@ on:
       # The lint job's guard scripts. Without this a change to one of them does
       # not even trigger the workflow, so the guard ships unexercised.
       - "scripts/check-*.sh"
+      - "scripts/check-*.py"
   pull_request:
     branches:
       - master
@@ -37,6 +38,7 @@ on:
       # The lint job's guard scripts. Without this a change to one of them does
       # not even trigger the workflow, so the guard ships unexercised.
       - "scripts/check-*.sh"
+      - "scripts/check-*.py"
 
 concurrency:
   group: ci-rust-${{ github.ref }}-${{ github.event.pull_request.number || github.sha }}
@@ -217,6 +219,15 @@ jobs:
       # white-label branding write.
       - name: Check every required permission is grantable
         run: ./scripts/check-rbac-grants.sh
+
+      # Same family again: two hand-maintained lists that must agree, and a
+      # failure mode no test can see. sqlx binds are positional, so appending a
+      # column to an INSERT and inserting the bind next to its logical
+      # neighbours shifts every later parameter — which broke *every* catalog
+      # write on 2026-08-14. Repository tests use in-memory fakes and the
+      # integration suites stand up no database, so neither can observe it.
+      - name: Check INSERTs bind what they name
+        run: python3 ./scripts/check-sql-bind-arity.py
 
       # rdkafka-sys vendors and compiles librdkafka from C source, so the
       # runner needs its build deps or *nothing downstream compiles*. Without
