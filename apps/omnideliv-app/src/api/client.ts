@@ -4,6 +4,8 @@
  */
 import * as SecureStore from "expo-secure-store";
 
+import { refreshSession } from "./auth";
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -21,11 +23,48 @@ export async function authHeaders(): Promise<Record<string, string>> {
   };
 }
 
+/**
+ * One in-flight refresh, shared.
+ *
+ * A screen fires several requests at once (vendors + catalog + basket). Without
+ * this they would each notice the 401 and each POST /v1/auth/refresh — and
+ * since the server rotates the refresh token on use, the first would succeed
+ * and the rest would present a token that had just been invalidated, signing
+ * the person out mid-session.
+ */
+let inFlightRefresh: Promise<string | null> | null = null;
+
+function refreshOnce(): Promise<string | null> {
+  if (!inFlightRefresh) {
+    inFlightRefresh = refreshSession().finally(() => {
+      inFlightRefresh = null;
+    });
+  }
+  return inFlightRefresh;
+}
+
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  let res = await fetch(`${BASE}${path}`, {
     ...init,
     headers: { ...(await authHeaders()), ...(init?.headers ?? {}) },
   });
+
+  // The access token lives an hour. Before this, expiry was terminal: every
+  // call returned {"error":"Invalid or expired token"} and the only way back
+  // was reinstalling the app.
+  if (res.status === 401) {
+    const token = await refreshOnce();
+    if (token) {
+      res = await fetch(`${BASE}${path}`, {
+        ...init,
+        headers: {
+          ...(await authHeaders()),
+          ...(init?.headers ?? {}),
+          Authorization: `Bearer ${token}`,
+        },
+      });
+    }
+  }
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");

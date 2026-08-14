@@ -11,6 +11,7 @@ import { useCallback, useRef, useState } from "react";
 import { fetch as expoFetch } from "expo/fetch";
 
 import { API_BASE, authHeaders } from "../api/client";
+import { refreshSession } from "@/api/auth";
 import type { MeshEvent } from "../api/mesh";
 import { parseSseChunk } from "../api/sse";
 
@@ -41,16 +42,34 @@ export function useMeshRun() {
     setState({ events: [], running: true, error: null });
 
     try {
-      const res = await expoFetch(`${API_BASE}/v1/omnideliv/mesh/run`, {
+      const body = JSON.stringify({
+        utterance,
+        delivery_lat: where.lat,
+        delivery_lng: where.lng,
+      });
+
+      let res = await expoFetch(`${API_BASE}/v1/omnideliv/mesh/run`, {
         method: "POST",
         headers: await authHeaders(),
-        body: JSON.stringify({
-          utterance,
-          delivery_lat: where.lat,
-          delivery_lng: where.lng,
-        }),
+        body,
         signal: controller.signal,
       });
+
+      // This request does not go through apiFetch, so it needs the same
+      // treatment: an hour after sign-in the token expires and the stream 401s
+      // before a single frame arrives. That surfaced as "Lost the connection",
+      // which reads like a network problem and is not one.
+      if (res.status === 401) {
+        const token = await refreshSession();
+        if (token) {
+          res = await expoFetch(`${API_BASE}/v1/omnideliv/mesh/run`, {
+            method: "POST",
+            headers: { ...(await authHeaders()), Authorization: `Bearer ${token}` },
+            body,
+            signal: controller.signal,
+          });
+        }
+      }
 
       if (!res.ok || !res.body) {
         throw new Error(`mesh run failed: ${res.status}`);

@@ -22,6 +22,13 @@ const AUTH_BASE =
 const TENANT_SLUG = process.env.EXPO_PUBLIC_TENANT_SLUG ?? "demo";
 
 export const TOKEN_KEY = "auth_token";
+/**
+ * The access token lives 60 minutes. Without persisting this alongside it the
+ * app simply stopped working an hour after sign-in: every request came back
+ * `{"error":"Invalid or expired token"}` and there was no way out but a
+ * reinstall, because nothing refreshed and nothing signed you out.
+ */
+export const REFRESH_KEY = "refresh_token";
 
 export interface Session {
   token: string;
@@ -81,12 +88,16 @@ export async function verifyOtp(phone: string, code: string): Promise<Session> {
 
   // Identity wraps successful bodies in `data`.
   const body = (await res.json()) as {
-    data?: { access_token?: string; user?: { id?: string } };
+    data?: { access_token?: string; refresh_token?: string; user?: { id?: string } };
   };
   const token = body.data?.access_token;
   if (!token) throw new Error("Signed in, but no session came back.");
 
   await SecureStore.setItemAsync(TOKEN_KEY, token);
+  // The server returns this and the app used to drop it on the floor.
+  if (body.data?.refresh_token) {
+    await SecureStore.setItemAsync(REFRESH_KEY, body.data.refresh_token);
+  }
   return { token, userId: body.data?.user?.id ?? "" };
 }
 
@@ -96,6 +107,49 @@ export async function currentToken(): Promise<string | null> {
 
 export async function signOut(): Promise<void> {
   await SecureStore.deleteItemAsync(TOKEN_KEY);
+  await SecureStore.deleteItemAsync(REFRESH_KEY);
+}
+
+/**
+ * Trade the refresh token for a new session.
+ *
+ * Returns the new access token, or `null` when there is nothing to refresh
+ * with or the server refuses — in which case the caller should sign out and
+ * send the person back to the phone screen rather than retry forever.
+ *
+ * The refresh token is rotated on every use, so the new one is stored too;
+ * keeping the old one would make the *next* refresh fail.
+ */
+export async function refreshSession(): Promise<string | null> {
+  const refresh = await SecureStore.getItemAsync(REFRESH_KEY);
+  if (!refresh) return null;
+
+  let res: Response;
+  try {
+    res = await post("/v1/auth/refresh", { refresh_token: refresh });
+  } catch {
+    // Offline. Not a dead session — leave the tokens alone so it can retry.
+    return null;
+  }
+  if (!res.ok) {
+    await signOut();
+    return null;
+  }
+
+  const body = (await res.json().catch(() => ({}))) as {
+    data?: { access_token?: string; refresh_token?: string };
+  };
+  const token = body.data?.access_token;
+  if (!token) {
+    await signOut();
+    return null;
+  }
+
+  await SecureStore.setItemAsync(TOKEN_KEY, token);
+  if (body.data?.refresh_token) {
+    await SecureStore.setItemAsync(REFRESH_KEY, body.data.refresh_token);
+  }
+  return token;
 }
 
 /**
