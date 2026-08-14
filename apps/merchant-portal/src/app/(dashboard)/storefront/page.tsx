@@ -42,6 +42,7 @@ import {
 } from "lucide-react";
 
 import { GlassCard } from "@/components/ui/glass-card";
+import { ShopConnections } from "@/components/storefront/shop-connections";
 import { variants } from "@/lib/design-system/tokens";
 import { authFetch } from "@/lib/auth/auth-fetch";
 import { API_BASE } from "@/lib/api/endpoints";
@@ -321,6 +322,8 @@ export default function Storefront() {
           </p>
         </GlassCard>
       )}
+
+      {catalog && <ShopConnections vendorId={catalog.vendor_id} />}
 
       {rowErrors.length > 0 && (
         <GlassCard className="border-l-2 border-l-[#FFAB00] p-4">

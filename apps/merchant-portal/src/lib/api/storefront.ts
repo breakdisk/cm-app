@@ -97,6 +97,99 @@ export interface VendorProfile {
   status:            string;
 }
 
+/**
+ * A shop connection, as the connectors service reports it.
+ *
+ * `webhook_url` is generated server-side and is what the merchant pastes into
+ * Shopify/WooCommerce so order events reach us. It is returned on list, not on
+ * create, so the panel below reloads after connecting rather than guessing it.
+ */
+export interface ShopConnection {
+  id:          string;
+  platform:    string;
+  is_active:   boolean;
+  webhook_url: string;
+  created_at:  string;
+}
+
+/** One credential input. `secret` masks it; absent means a plain text field. */
+export interface ShopField {
+  key:          string;
+  label:        string;
+  placeholder:  string;
+  secret?:      boolean;
+}
+
+export interface ShopPlatform {
+  value:  string;
+  label:  string;
+  fields: ShopField[];
+}
+
+/** What each platform needs before a sync can run. */
+export const SHOP_PLATFORMS: ShopPlatform[] = [
+  {
+    value:  "shopify",
+    label:  "Shopify",
+    fields: [
+      { key: "shop_domain",     label: "Shop domain",     placeholder: "my-store.myshopify.com" },
+      { key: "admin_api_token", label: "Admin API token", placeholder: "shpat_…", secret: true },
+    ],
+  },
+  {
+    value:  "woocommerce",
+    label:  "WooCommerce",
+    fields: [
+      { key: "store_url",       label: "Store URL",       placeholder: "https://mystore.com" },
+      { key: "consumer_key",    label: "Consumer key",    placeholder: "ck_…" },
+      { key: "consumer_secret", label: "Consumer secret", placeholder: "cs_…", secret: true },
+    ],
+  },
+];
+
+export const connectorsApi = {
+  async list(): Promise<ShopConnection[]> {
+    const res = await authFetch(`${API_BASE}/v1/connectors/credentials`);
+    if (res.status === 404) return [];
+    await expectOk(res, "connections");
+    return res.json();
+  },
+
+  /**
+   * Connect a shop.
+   *
+   * `omnideliv_vendor_id` is passed rather than asked for. The connector is
+   * keyed on (tenant, merchant, platform) and a storefront is a separate
+   * object, so something has to associate the two — and this page is the one
+   * place that already knows both. Without it a sync has no storefront to land
+   * in and quietly imports nothing.
+   */
+  async connect(input: {
+    platform:       string;
+    webhook_secret: string;
+    config:         Record<string, string>;
+    vendorId:       string;
+  }): Promise<void> {
+    const res = await authFetch(`${API_BASE}/v1/connectors/credentials`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        platform:       input.platform,
+        webhook_secret: input.webhook_secret,
+        config: { ...input.config, omnideliv_vendor_id: input.vendorId },
+      }),
+    });
+    await expectOk(res, "connect");
+  },
+
+  async disconnect(platform: string): Promise<void> {
+    const res = await authFetch(`${API_BASE}/v1/connectors/credentials/${platform}`, {
+      method: "DELETE",
+    });
+    await expectOk(res, "disconnect");
+  },
+};
+
 export const storefrontApi = {
   /**
    * Apply to run a store. Idempotent server-side: a login that already has a
