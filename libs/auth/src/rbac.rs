@@ -283,6 +283,24 @@ mod grant_tests {
         assert!(!p.contains(&permissions::PAYMENTS_READ), "same string as BILLING_VIEW");
     }
 
+    /// `POST /v1/wallet/withdraw` reserves against the **tenant's** settlement
+    /// wallet -- `TransactionType::Withdrawal` is commented "Merchant bank
+    /// transfer" -- and is gated on BILLING_MANAGE. The customer app shipped a
+    /// Wallet screen with a "Request Withdrawal" button pointed straight at it.
+    /// The only thing between an end customer and the merchant's money was this
+    /// grant being absent.
+    ///
+    /// The screen is gone now, but the incentive that made it dangerous is not:
+    /// a broken customer-facing screen invites someone to "fix" the 403 by
+    /// granting the permission. That is the mistake this test exists to stop.
+    #[test]
+    fn a_customer_can_never_reach_the_tenant_wallet() {
+        let p = perms("customer");
+        assert!(!p.contains(&permissions::BILLING_MANAGE), "withdraws tenant funds");
+        assert!(!p.contains(&permissions::PAYMENTS_RECONCILE), "same string as BILLING_MANAGE");
+        assert!(!p.contains(&permissions::BILLING_ADMIN), "approves withdrawals");
+    }
+
     #[test]
     fn an_unknown_role_gets_nothing() {
         assert!(perms("not_a_role").is_empty());
