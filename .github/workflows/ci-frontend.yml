@@ -397,13 +397,14 @@ jobs:
         env:
           CI: "true"
 
-      # Advisory for the same reason as the portals': the mobile apps have no
-      # `.eslintrc` either, so ESLint exits 2 on a missing configuration before
-      # it reads a line of code. This job's type check runs *before* it and
-      # passes — gating on the lint step meant discarding a green type check
-      # over absent config.
-      - name: Run ESLint (advisory)
-        continue-on-error: true
+      # A real gate. customer-app now has `eslint-config-expo` and an
+      # `.eslintrc.json`, so ESLint no longer exits 2 on missing configuration.
+      #
+      # `no-unused-vars` and `no-explicit-any` are warnings here for the same
+      # reason as the portals — 157 occurrences of pre-existing debt, and
+      # gating on them would keep this job red for code this change never
+      # touched. Everything else errors.
+      - name: Run ESLint
         run: npm run lint
         env:
           CI: "true"
