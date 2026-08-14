@@ -29,6 +29,7 @@ pub struct ItemDraft {
     pub price_cents:    i64,
     pub allergens:      Option<Vec<String>>,
     pub dietary_tags:   Vec<String>,
+    pub category:       Option<String>,
     pub modifiers:      serde_json::Value,
     pub vertical_attrs: serde_json::Value,
 }
@@ -42,6 +43,7 @@ pub struct ItemPatch {
     pub description:  Option<Option<String>>,
     pub price_cents:  Option<i64>,
     pub dietary_tags: Option<Vec<String>>,
+    pub category:     Option<Option<String>>,
     pub is_listed:    Option<bool>,
     pub modifiers:    Option<serde_json::Value>,
 }
@@ -418,6 +420,7 @@ impl CatalogService {
                              .filter(|a| !a.is_empty()).collect(),
             allergens_declared_at: draft.allergens.as_ref().map(|_| now),
             dietary_tags:   draft.dietary_tags,
+            category:       draft.category.clone(),
             vertical_attrs: draft.vertical_attrs,
             is_listed:      true,
             source:         CatalogSource::Manual,
@@ -483,6 +486,12 @@ impl CatalogService {
         if let Some(t) = patch.dietary_tags { item.dietary_tags = t; }
         if let Some(l) = patch.is_listed    { item.is_listed    = l; }
         if let Some(m) = patch.modifiers    { item.modifiers    = m; }
+        // Option<Option<_>>: omitted leaves it alone, Some(None) clears it.
+        // Flattening these would make "remove the category" indistinguishable
+        // from "do not touch the category".
+        if let Some(c) = patch.category {
+            item.category = c.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+        }
         item.updated_at = chrono::Utc::now();
 
         self.catalog.save_item(&item).await?;
@@ -628,6 +637,8 @@ impl CatalogService {
                         tenant_id,
                         vendor_id,
                         sku:         incoming.sku.trim().to_owned(),
+                        // An ingest carries no category — see migration 0017.
+                        category:    None,
                         name:        incoming.name.trim().to_owned(),
                         description: None,
                         price_cents: 0,

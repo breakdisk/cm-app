@@ -40,6 +40,8 @@ export interface Item {
   allergens_declared: boolean;
   /** Whether a photo has been uploaded. Not a URL — see `photoUrl`. */
   has_photo: boolean;
+  /** `null` = uncategorised, which an import legitimately produces. */
+  category: string | null;
   warrants_substitute: boolean;
 }
 
@@ -64,6 +66,8 @@ export interface ItemInput {
   /** Omit for "not stated"; `[]` is the real declaration "contains none of these". */
   allergens?: string[];
   dietary_tags?: string[];
+  /** "Mains", "Beverages"… `null` clears it; omit to leave it unchanged. */
+  category?: string | null;
 }
 
 async function expectOk(res: Response, what: string): Promise<void> {

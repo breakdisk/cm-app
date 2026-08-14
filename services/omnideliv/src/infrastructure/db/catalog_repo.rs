@@ -32,6 +32,7 @@ fn map_pair(r: &sqlx::postgres::PgRow) -> anyhow::Result<ItemWithAvailability> {
         allergens:      r.get("allergens"),
         allergens_declared_at: r.get("allergens_declared_at"),
         dietary_tags:   r.get("dietary_tags"),
+        category:       r.get("category"),
         vertical_attrs: r.get("vertical_attrs"),
         is_listed:      r.get("is_listed"),
         // An unknown source in the database is a schema/CHECK drift, not a
@@ -71,9 +72,9 @@ impl CatalogRepository for PgCatalogRepository {
                 id, tenant_id, vendor_id, sku, name, description, price_cents,
                 modifiers, allergens, dietary_tags, vertical_attrs, is_listed,
                 source, external_id, synced_at, allergens_declared_at,
-                created_at, updated_at
+                created_at, updated_at, category
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
             ON CONFLICT (id) DO UPDATE SET
                 sku            = EXCLUDED.sku,
                 name           = EXCLUDED.name,
@@ -82,6 +83,7 @@ impl CatalogRepository for PgCatalogRepository {
                 modifiers      = EXCLUDED.modifiers,
                 allergens      = EXCLUDED.allergens,
                 dietary_tags   = EXCLUDED.dietary_tags,
+                category       = EXCLUDED.category,
                 vertical_attrs = EXCLUDED.vertical_attrs,
                 is_listed      = EXCLUDED.is_listed,
                 source         = EXCLUDED.source,
@@ -102,6 +104,7 @@ impl CatalogRepository for PgCatalogRepository {
         .bind(&i.vertical_attrs).bind(i.is_listed)
         .bind(i.source.as_str()).bind(&i.external_id).bind(i.synced_at)
         .bind(i.allergens_declared_at)
+        .bind(&i.category)
         .bind(i.created_at).bind(i.updated_at)
         .execute(&mut *tx).await?;
 

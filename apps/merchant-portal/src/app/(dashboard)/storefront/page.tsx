@@ -43,6 +43,7 @@ import {
 
 import { GlassCard } from "@/components/ui/glass-card";
 import { ShopConnections } from "@/components/storefront/shop-connections";
+import { UnconfirmedQueue } from "@/components/storefront/unconfirmed-queue";
 import { variants } from "@/lib/design-system/tokens";
 import { authFetch } from "@/lib/auth/auth-fetch";
 import { API_BASE } from "@/lib/api/endpoints";
@@ -221,6 +222,11 @@ export default function Storefront() {
   const stale = items.filter((i) => i.warrants_substitute);
   const undeclared = items.filter((i) => !i.allergens_declared);
   const neverConfirmed = items.filter((i) => i.confirmed_at === null);
+  // Whatever this store already uses. Suggestions, not a taxonomy — a florist
+  // and a pharmacy share none, so a fixed list would be wrong for most.
+  const categoriesInUse = Array.from(
+    new Set(items.map((i) => i.category).filter((c): c is string => !!c)),
+  ).sort();
   const synced = items.filter((i) => i.source !== "manual");
 
   if (noStore) {
@@ -376,6 +382,13 @@ export default function Storefront() {
       )}
 
       {/* Lead with the consequence, not the inventory. */}
+      <UnconfirmedQueue
+        items={neverConfirmed}
+        busyKey={busy}
+        onDeclare={setAvailability}
+        onConfirmAll={confirmAll}
+      />
+
       {stale.length > 0 && (
         <GlassCard className="border-l-2 border-l-[#FFAB00] p-4">
           <div className="flex items-start gap-3">
@@ -388,16 +401,9 @@ export default function Storefront() {
                 Either they are out of stock or limited, or nobody has confirmed them
                 recently enough for the assistant to rely on. Confirming an item as
                 available resets that clock.
-                {neverConfirmed.length > 0 && (
-                  <>
-                    {" "}
-                    <span className="text-white/80">
-                      {neverConfirmed.length} of them have never been confirmed by anyone
-                    </span>{" "}
-                    — newly added or imported. &ldquo;Confirm all&rdquo; clears them in one
-                    go.
-                  </>
-                )}
+                {/* The never-confirmed subset has its own queue above, with the
+                    rows and the per-item actions. Repeating the count here only
+                    told the merchant a number twice. */}
               </p>
             </div>
           </div>
@@ -419,6 +425,7 @@ export default function Storefront() {
 
       {(adding || editing) && (
         <ItemForm
+          categoriesInUse={categoriesInUse}
           item={editing}
           onClose={() => {
             setAdding(false);
@@ -478,7 +485,8 @@ export default function Storefront() {
                 </div>
 
                 <p className="mt-0.5 text-xs text-white/40">
-                  <span className="font-mono">{item.sku}</span> · {peso(item.price_cents)} ·{" "}
+                  <span className="font-mono">{item.sku}</span> · {peso(item.price_cents)}
+                  {item.category ? ` · ${item.category}` : ""} ·{" "}
                   {item.confirmed_at === null ? (
                     // Deliberately not "confirmed never ago". An item nobody has
                     // ever attested to is a different state from a stale one, and
@@ -591,16 +599,20 @@ export default function Storefront() {
  */
 function ItemForm({
   item,
+  categoriesInUse,
   onClose,
   onSaved,
   onError,
 }: {
   item: Item | null;
+  /** Existing categories, offered as suggestions rather than a fixed list. */
+  categoriesInUse: string[];
   onClose: () => void;
   onSaved: () => Promise<void>;
   onError: (msg: string) => void;
 }) {
   const [sku, setSku] = useState(item?.sku ?? "");
+  const [category, setCategory] = useState(item?.category ?? "");
   const [name, setName] = useState(item?.name ?? "");
   const [description, setDescription] = useState(item?.description ?? "");
   const [price, setPrice] = useState(item ? (item.price_cents / 100).toFixed(2) : "");
@@ -623,6 +635,9 @@ function ItemForm({
       } else {
         await storefrontApi.createItem({
           sku,
+          // Empty means uncategorised — sent as null so clearing the box
+          // actually clears it rather than storing "".
+          category: category.trim() === "" ? null : category.trim(),
           name,
           description: description.trim() === "" ? null : description,
           price_cents,
@@ -662,6 +677,27 @@ function ItemForm({
               placeholder="ADOBO-REG"
               className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 font-mono text-sm text-white placeholder:text-white/20 disabled:opacity-40"
             />
+          </label>
+
+          <label className="block">
+            <span className="mb-1 block text-xs text-white/50">
+              Category <span className="text-white/25">— optional</span>
+            </span>
+            <input
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              list="storefront-categories"
+              placeholder="Mains"
+              className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/25 focus:border-cyan-400/50 focus:outline-none"
+            />
+            {/* Suggestions, not a closed set: a florist and a pharmacy do not
+                share a taxonomy, and forcing one would make the field wrong
+                for most verticals. */}
+            <datalist id="storefront-categories">
+              {categoriesInUse.map((c) => (
+                <option key={c} value={c} />
+              ))}
+            </datalist>
           </label>
 
           <label className="block">

@@ -23,6 +23,10 @@ pub struct CatalogItem {
     /// not the same as "contains none". See migration 0014.
     pub allergens_declared_at: Option<DateTime<Utc>>,
     pub dietary_tags:   Vec<String>,
+    /// "Mains", "Beverages"… `None` = uncategorised, which an import legitimately
+    /// produces. A real column, not a `vertical_attrs` key: it means the same
+    /// thing in every vertical and both browse surfaces group by it.
+    pub category:       Option<String>,
     pub vertical_attrs: serde_json::Value,
     pub is_listed:      bool,
     /// Which ingest wrote this row last.
@@ -369,6 +373,7 @@ mod tests {
             allergens: allergens.iter().map(|s| s.to_string()).collect(),
             allergens_declared_at: declared,
             dietary_tags: vec![],
+            category: None,
             vertical_attrs: serde_json::json!({}),
             is_listed: true,
             source: CatalogSource::Manual,

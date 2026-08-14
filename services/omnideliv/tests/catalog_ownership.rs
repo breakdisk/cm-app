@@ -170,6 +170,7 @@ fn world() -> World {
         sku: "B-1".into(), name: "Milk".into(), description: None, price_cents: 9000,
         modifiers: serde_json::json!([]), allergens: vec!["dairy".into()],
         allergens_declared_at: Some(Utc::now()), dietary_tags: vec![],
+        category: None,
         vertical_attrs: serde_json::json!({}), is_listed: true,
         source: CatalogSource::Manual, external_id: None, synced_at: None,
         image_key: None,
@@ -190,6 +191,7 @@ fn draft(sku: &str) -> ItemDraft {
         price_cents: 18000,
         allergens: None,
         dietary_tags: vec![],
+        category: None,
         modifiers: serde_json::json!([]),
         vertical_attrs: serde_json::json!({}),
     }

@@ -38,6 +38,8 @@ pub struct SearchHit {
     /// Whether a photo exists. Not a URL — the client derives the path, so a
     /// moved backing store does not strand links in old responses.
     pub has_photo:           bool,
+    /// Groups the browse list. `None` = uncategorised, rendered last.
+    pub category:            Option<String>,
     pub availability:        String,
     /// Surfaced so the caller can see *why* a substitute was proposed.
     pub warrants_substitute: bool,
@@ -107,6 +109,9 @@ pub struct CreateItemRequest {
     pub allergens:    Option<Vec<String>>,
     #[serde(default)]
     pub dietary_tags: Vec<String>,
+    /// "Mains", "Beverages"… omitted or null = uncategorised.
+    #[serde(default)]
+    pub category:     Option<String>,
     #[serde(default = "empty_array")]
     pub modifiers:      serde_json::Value,
     #[serde(default = "empty_object")]
@@ -133,6 +138,7 @@ async fn create_item(
             claims.tenant_id,
             claims.user_id,
             ItemDraft {
+                category:       req.category.clone(),
                 sku:            req.sku,
                 name:           req.name,
                 description:    req.description,
@@ -167,6 +173,9 @@ async fn create_item(
 
 #[derive(Debug, Default, Deserialize)]
 pub struct UpdateItemRequest {
+    /// `Some(None)` clears the category; omitted leaves it alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category:      Option<Option<String>>,
     pub name:         Option<String>,
     /// Double option: absent leaves the description alone, explicit `null`
     /// clears it. Flattening these would make "don't touch" indistinguishable
@@ -197,6 +206,7 @@ async fn update_item(
     let updated = st
         .catalog
         .update_own_item(claims.tenant_id, claims.user_id, item_id, ItemPatch {
+            category:     req.category.clone(),
             name:         req.name,
             description:  req.description,
             price_cents:  req.price_cents,
@@ -595,6 +605,7 @@ async fn my_items(
                 // (tenant, item) and a stored URL would go stale the moment the
                 // backing store moves; the client builds it when this is true.
                 has_photo: s.item_with_availability.item.image_key.is_some(),
+                category:  s.item_with_availability.item.category.clone(),
                 warrants_substitute: s.warrants_substitute,
             })
             .collect(),
@@ -629,6 +640,7 @@ struct MyItem {
     /// True when the agent will line up a substitute — either because the item
     /// is out of stock or limited, or because the confirmation has gone stale.
     has_photo:    bool,
+    category:     Option<String>,
     warrants_substitute: bool,
 }
 
@@ -672,6 +684,7 @@ async fn search(
                 item_id:             h.item_with_availability.item.id,
                 tenant_id:           claims.tenant_id,
                 has_photo:           h.item_with_availability.item.image_key.is_some(),
+                category:            h.item_with_availability.item.category.clone(),
                 name:                h.item_with_availability.item.name,
                 price_cents:         h.item_with_availability.item.price_cents,
                 availability:        h.item_with_availability.availability.state.as_str().to_string(),

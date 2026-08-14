@@ -96,6 +96,7 @@ fn an_item(tenant: Uuid, vendor_id: Uuid, sku: &str) -> CatalogItem {
         allergens: vec![],
         allergens_declared_at: None,
         dietary_tags: vec![],
+        category: None,
         vertical_attrs: serde_json::json!({}),
         is_listed: true,
         source: CatalogSource::Manual,
