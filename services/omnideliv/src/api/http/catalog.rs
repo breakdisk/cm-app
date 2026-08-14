@@ -173,8 +173,9 @@ async fn create_item(
 
 #[derive(Debug, Default, Deserialize)]
 pub struct UpdateItemRequest {
-    /// `Some(None)` clears the category; omitted leaves it alone.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// `Some(None)` clears the category; omitted leaves it alone. Needs
+    /// `double_option` or serde collapses `null` into "absent".
+    #[serde(default, deserialize_with = "double_option")]
     pub category:      Option<Option<String>>,
     pub name:         Option<String>,
     /// Double option: absent leaves the description alone, explicit `null`
