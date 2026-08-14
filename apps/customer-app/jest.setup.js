@@ -11,6 +11,10 @@ jest.mock('@expo/vector-icons', () => ({
   Ionicons: () => null,
 }));
 
+// `virtual: true` because react-native-reanimated is NOT a dependency of this
+// app — the mock exists defensively. Without it Jest throws "Cannot find module
+// 'react-native-reanimated' from 'jest.setup.js'" before a single test runs,
+// which is what every mobile test did here until the job stopped being skipped.
 jest.mock('react-native-reanimated', () => {
   const mockAnimation = {
     delay: (ms) => mockAnimation,
@@ -24,7 +28,7 @@ jest.mock('react-native-reanimated', () => {
     FadeInUp: mockAnimation,
     FadeIn: mockAnimation,
   };
-});
+}, { virtual: true });
 
 // Mock react-redux for testing
 jest.mock('react-redux', () => {
