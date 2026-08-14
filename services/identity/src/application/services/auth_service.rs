@@ -354,7 +354,7 @@ impl AuthService {
         } else {
             "driver"
         };
-        let mut user = crate::domain::entities::User::new(
+        let user = crate::domain::entities::User::new(
             tenant.id.clone(),
             cmd.email.clone(),
             password_hash,
