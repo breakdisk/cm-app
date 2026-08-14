@@ -130,6 +130,56 @@ impl OrderRepository for PgOrderRepository {
         Ok(out)
     }
 
+    async fn list_summaries_for_customer(
+        &self,
+        tenant_id:   Uuid,
+        customer_id: Uuid,
+        limit:       i64,
+    ) -> anyhow::Result<Vec<crate::domain::repositories::OrderSummary>> {
+        // Every column is qualified. `orders`, `order_vendor_legs` and
+        // `vendors` all carry tenant_id/created_at, and an unqualified name
+        // across a three-way join is rejected outright as ambiguous.
+        //
+        // LEFT JOINs so an order with no legs still appears — a broken order is
+        // exactly the one a customer needs to see.
+        let rows = sqlx::query(
+            r#"
+            SELECT o.id                AS id,
+                   o.status            AS status,
+                   o.grand_total_cents AS grand_total_cents,
+                   o.placed_at         AS placed_at,
+                   o.delivered_at      AS delivered_at,
+                   COUNT(l.id)         AS stops_total,
+                   COALESCE(STRING_AGG(DISTINCT v.name, ', '), '') AS vendor_names
+              FROM omnideliv.orders o
+              LEFT JOIN omnideliv.order_vendor_legs l ON l.order_id  = o.id
+              LEFT JOIN omnideliv.vendors          v ON v.id        = l.vendor_id
+             WHERE o.tenant_id = $1 AND o.customer_id = $2
+             GROUP BY o.id
+             ORDER BY o.placed_at DESC
+             LIMIT $3
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(customer_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .iter()
+            .map(|r| crate::domain::repositories::OrderSummary {
+                id:                r.get("id"),
+                status:            r.get("status"),
+                grand_total_cents: r.get("grand_total_cents"),
+                stops_total:       r.get("stops_total"),
+                vendor_names:      r.get("vendor_names"),
+                placed_at:         r.get("placed_at"),
+                delivered_at:      r.get("delivered_at"),
+            })
+            .collect())
+    }
+
     async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<Order>> {
         let Some(r) = sqlx::query("SELECT * FROM omnideliv.orders WHERE tenant_id = $1 AND id = $2")
             .bind(tenant_id).bind(id)

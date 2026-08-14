@@ -262,6 +262,8 @@ mod sweep_tests {
         async fn save(&self, _: &Order) -> anyhow::Result<()> { Ok(()) }
         async fn find_by_id(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<Order>> { Ok(None) }
         async fn find_awaiting_courier(&self) -> anyhow::Result<Vec<Order>> { Ok(self.0.clone()) }
+        async fn list_summaries_for_customer(&self, _: Uuid, _: Uuid, _: i64)
+            -> anyhow::Result<Vec<crate::domain::repositories::OrderSummary>> { Ok(vec![]) }
     }
 
     #[derive(Default)]

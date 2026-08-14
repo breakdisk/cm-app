@@ -42,3 +42,27 @@ export function classifyCheckoutError(e: unknown): CheckoutFailure {
   if (e.status === 400 || e.status === 404) return "rejected";
   return "unknown";
 }
+
+export interface OrderListItem {
+  order_id: string;
+  status: string;
+  grand_total_cents: number;
+  stops_total: number;
+  /** Comma-joined shop names. Empty if an order somehow has no legs. */
+  vendor_names: string;
+  placed_at: string;
+  delivered_at: string | null;
+}
+
+/**
+ * The signed-in customer's orders, newest first.
+ *
+ * The customer is taken from the token server-side — there is no parameter
+ * here that could name someone else's history.
+ *
+ * Without this an order was unreachable the moment the app closed: checkout
+ * hands you a tracking screen and nothing ever linked back to it again.
+ */
+export async function listMyOrders(): Promise<OrderListItem[]> {
+  return apiFetch<OrderListItem[]>("/v1/omnideliv/orders");
+}

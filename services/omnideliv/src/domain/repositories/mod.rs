@@ -147,6 +147,21 @@ pub trait CatalogRepository: Send + Sync {
 }
 
 /// Catalog truth about one item: the item's own fields plus the two that live
+/// One row of a customer's order list. Query-shaped, like `ItemFacts`.
+#[derive(Debug, Clone)]
+pub struct OrderSummary {
+    pub id:                Uuid,
+    pub status:            String,
+    pub grand_total_cents: i64,
+    pub stops_total:       i64,
+    /// Comma-joined vendor names, for "Kuya's Silog House, Puregold Ermita".
+    /// Empty when an order somehow has no legs — rendered as nothing rather
+    /// than as a placeholder that reads like a real shop.
+    pub vendor_names:      String,
+    pub placed_at:         chrono::DateTime<chrono::Utc>,
+    pub delivered_at:      Option<chrono::DateTime<chrono::Utc>>,
+}
+
 /// on its vendor. Mirrors `omnideliv_mesh::ItemFacts`, which the mesh crate
 /// owns — this is the domain-side shape, converted at the adapter.
 #[derive(Debug, Clone, PartialEq)]
@@ -195,6 +210,18 @@ pub trait OrderRepository: Send + Sync {
     /// concern, not a customer request, and scoping it per tenant would mean
     /// the sweep only runs for tenants someone remembered to enumerate.
     async fn find_awaiting_courier(&self) -> anyhow::Result<Vec<Order>>;
+
+    /// A customer's own orders, newest first.
+    ///
+    /// Returns summaries rather than `Order`, because an `Order` carries its
+    /// vendor legs and hydrating those per row is an N+1 for a screen that only
+    /// needs a count. The detail view already loads the full order.
+    async fn list_summaries_for_customer(
+        &self,
+        tenant_id:   Uuid,
+        customer_id: Uuid,
+        limit:       i64,
+    ) -> anyhow::Result<Vec<OrderSummary>>;
 }
 
 #[async_trait]

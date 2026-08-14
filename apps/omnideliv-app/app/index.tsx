@@ -79,6 +79,19 @@ export default function OmniIntentCanvas() {
           </Text>
           <IntentPills />
         </View>
+
+        {/* The way back to an order in flight. Checkout used to be a one-way
+            door: it handed you a tracking screen and nothing linked back, so
+            closing the app lost the order until it turned up at the door. */}
+        <Pressable
+          onPress={() => router.push("/orders")}
+          style={{ paddingVertical: 12 }}
+          accessibilityRole="button"
+        >
+          <Text style={{ color: theme.cyan, fontSize: 14, fontWeight: "600" }}>
+            Your orders →
+          </Text>
+        </Pressable>
       </View>
     </SafeAreaView>
   );

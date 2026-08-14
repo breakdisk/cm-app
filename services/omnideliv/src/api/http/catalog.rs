@@ -30,8 +30,14 @@ fn default_limit() -> i64 { 20 }
 #[derive(Debug, Serialize)]
 pub struct SearchHit {
     pub item_id:             Uuid,
+    /// Which tenant to build the public photo URL under. The app holds a slug,
+    /// not this id, and the photo route is tenant-scoped like every other read.
+    pub tenant_id:           Uuid,
     pub name:                String,
     pub price_cents:         i64,
+    /// Whether a photo exists. Not a URL — the client derives the path, so a
+    /// moved backing store does not strand links in old responses.
+    pub has_photo:           bool,
     pub availability:        String,
     /// Surfaced so the caller can see *why* a substitute was proposed.
     pub warrants_substitute: bool,
@@ -664,6 +670,8 @@ async fn search(
         hits.into_iter()
             .map(|h| SearchHit {
                 item_id:             h.item_with_availability.item.id,
+                tenant_id:           claims.tenant_id,
+                has_photo:           h.item_with_availability.item.image_key.is_some(),
                 name:                h.item_with_availability.item.name,
                 price_cents:         h.item_with_availability.item.price_cents,
                 availability:        h.item_with_availability.availability.state.as_str().to_string(),

@@ -6,12 +6,18 @@
  * non-AI plan, a customer still reaches a basket they can check out.
  */
 import { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, FlatList, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, FlatList, Image, Pressable, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams } from "expo-router";
 
 import { addLine, createBasket, type BasketView } from "@/api/basket";
-import { searchCatalog, vendorsNear, type SearchHit, type VendorSummary } from "@/api/catalog";
+import {
+  itemPhotoUrl,
+  searchCatalog,
+  vendorsNear,
+  type SearchHit,
+  type VendorSummary,
+} from "@/api/catalog";
 import { currentDeliveryPoint } from "@/deliveryPoint";
 import { theme } from "@/theme";
 
@@ -119,6 +125,16 @@ export default function Browse() {
           )}
           renderItem={({ item }) => (
             <View style={{ flexDirection: "row", alignItems: "center", paddingVertical: 11, gap: 10 }}>
+              {/* Only rendered when the server says a photo exists. Pointing an
+                  <Image> at a 404 gives every pictureless item a broken frame,
+                  which reads as "this shop is broken" rather than "no photo". */}
+              {item.has_photo && (
+                <Image
+                  source={{ uri: itemPhotoUrl(item.tenant_id, item.item_id) }}
+                  style={{ width: 44, height: 44, borderRadius: 8, backgroundColor: theme.surface }}
+                  accessibilityIgnoresInvertColors
+                />
+              )}
               <View style={{ flex: 1 }}>
                 <Text style={{ color: theme.text, fontSize: 13 }}>{item.name}</Text>
                 <Text style={{ color: theme.muted, fontSize: 11, marginTop: 2 }}>
