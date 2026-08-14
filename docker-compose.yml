@@ -238,6 +238,19 @@ services:
       DATABASE__MAX_CONNECTIONS: "5"
       KAFKA__BROKERS: kafka:29092
       KAFKA__GROUP_ID: identity-dev
+      # ⚠ ACCEPTS THE FIXED OTP 123456 FOR ANY PHONE NUMBER.
+      #
+      # Anyone who can reach this API can sign in as any customer while this is
+      # "true". It is set deliberately because real SMS delivery does not work
+      # here — TWILIO_SMS_FROM is +15005550006, Twilio's magic test number that
+      # never delivers — so removing it locks every OTP app out entirely.
+      #
+      # Until 2026-08-14 this was not a flag at all: the shortcut keyed off
+      # APP__ENV != "production", which is open when the variable is unset and
+      # open on this box, which runs "development". Making it an explicit
+      # variable is the point — DELETE THIS LINE the moment a real Twilio
+      # sending number is configured, and the bypass is closed.
+      AUTH__ALLOW_DEV_OTP: "true"
       AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       AUTH__JWT_EXPIRY_SECONDS: "3600"
       AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
