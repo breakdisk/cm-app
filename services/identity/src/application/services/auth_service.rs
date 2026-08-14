@@ -19,6 +19,19 @@ use crate::{
 
 /// Permissions granted to a draft-tenant owner during lazy onboarding.
 /// Intentionally narrow: they can only finalize the tenant and set up billing;
+/// Domains for addresses minted from a phone number for OTP-only sign-in.
+///
+/// Not mailboxes: nothing can ever be delivered to `<digits>@customer…` or
+/// `<digits>@driver…`, so "verify your email" is unsatisfiable for these
+/// accounts. Their phone was the thing verified.
+const SYNTHESIZED_EMAIL_DOMAINS: &[&str] =
+    &["@customer.logisticos.app", "@driver.logisticos.app"];
+
+/// Was this address minted from a phone number rather than supplied by a person?
+fn is_synthesized_login_email(email: &str) -> bool {
+    SYNTHESIZED_EMAIL_DOMAINS.iter().any(|d| email.ends_with(d))
+}
+
 /// Is the fixed development OTP (`123456`) accepted, and may generated codes be
 /// written to the log?
 ///
@@ -335,9 +348,24 @@ impl AuthService {
             vec![role.to_owned()],
         );
 
-        // In development, auto-verify customer accounts so the mobile app flow works.
-        let env = std::env::var("APP__ENV").unwrap_or_default();
-        if env == "development" && user.email.ends_with("@customer.logisticos.app") {
+        // A synthesized phone-derived address is not a mailbox. Nothing can ever
+        // be delivered to `<digits>@customer.logisticos.app`, so "verify your
+        // email" is an unsatisfiable condition for an OTP customer — their
+        // phone was the thing verified.
+        //
+        // This used to be conditional on APP__ENV == "development", which made
+        // it a latent production outage rather than a dev convenience:
+        // `can_login()` requires email_verified and is called by `refresh`, so
+        // under APP__ENV=production an OTP customer would sign in, work until
+        // the access token expired, then be logged out at the first refresh
+        // with no way back. Worse, the trigger would have been setting
+        // APP__ENV=production — exactly what someone does to close the 123456
+        // bypass. See dev_otp_enabled() above.
+        // Drivers as well as customers. The original covered only the customer
+        // domain, so an OTP-created driver was left unverified even in
+        // development — one such account exists in production today and cannot
+        // refresh its token.
+        if is_synthesized_login_email(&user.email) {
             user.email_verified = true;
         }
 
@@ -1013,5 +1041,30 @@ mod dev_otp_gate_tests {
             std::env::remove_var("AUTH__ALLOW_DEV_OTP");
             std::env::remove_var("APP__ENV");
         }
+    }
+}
+
+#[cfg(test)]
+mod synthesized_email_tests {
+    use super::is_synthesized_login_email;
+
+    /// These addresses are derived from a phone number and receive no mail, so
+    /// requiring verification locks the account out at the first token refresh
+    /// — `can_login()` demands email_verified and `refresh` calls it.
+    #[test]
+    fn phone_derived_addresses_are_treated_as_verified() {
+        assert!(is_synthesized_login_email("639170000123@customer.logisticos.app"));
+        assert!(is_synthesized_login_email("971553604321@driver.logisticos.app"));
+    }
+
+    /// A real address must still go through verification.
+    #[test]
+    fn real_addresses_are_not() {
+        assert!(!is_synthesized_login_email("eduard@example.com"));
+        assert!(!is_synthesized_login_email("admin@demo.com"));
+        // Near-misses: the suffix has to be the actual domain, not a prefix of
+        // some other host that merely starts the same way.
+        assert!(!is_synthesized_login_email("x@customer.logisticos.app.evil.com"));
+        assert!(!is_synthesized_login_email("x@notcustomer.logisticos.app.co"));
     }
 }
