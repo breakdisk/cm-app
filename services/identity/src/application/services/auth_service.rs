@@ -19,6 +19,29 @@ use crate::{
 
 /// Permissions granted to a draft-tenant owner during lazy onboarding.
 /// Intentionally narrow: they can only finalize the tenant and set up billing;
+/// Is the fixed development OTP (`123456`) accepted, and may generated codes be
+/// written to the log?
+///
+/// **Fails closed.** This used to be `std::env::var("APP__ENV") != "production"`,
+/// which is open by default twice over: `unwrap_or_default()` yields `""` when
+/// the variable is unset, and `""` is not `"production"`. The internet-facing
+/// VPS also runs with `APP__ENV=development`, so on 2026-08-14 anyone could
+/// POST /v1/auth/otp/verify with `123456` for any phone number and receive a
+/// working customer token — verified against the live host. Every OTP was also
+/// being written to the container log in plaintext.
+///
+/// Now both require `AUTH__ALLOW_DEV_OTP` to be set explicitly, *and* the
+/// environment not to be production. A missing or misspelt variable disables
+/// the shortcut rather than enabling it.
+fn dev_otp_enabled() -> bool {
+    let explicitly_allowed = matches!(
+        std::env::var("AUTH__ALLOW_DEV_OTP").as_deref(),
+        Ok("true") | Ok("1")
+    );
+    let is_production = std::env::var("APP__ENV").as_deref() == Ok("production");
+    explicitly_allowed && !is_production
+}
+
 /// every other API call returns 403 `onboarding_required` until
 /// `POST /v1/tenants/me/finalize` promotes the tenant to `active`.
 const ONBOARDING_PERMISSIONS: &[&str] = &[
@@ -370,9 +393,6 @@ impl AuthService {
         self.redis_cache.store_otp(identifier, &otp).await
             .map_err(|e| AppError::Internal(anyhow::anyhow!("Redis: {e}")))?;
 
-        let env = std::env::var("APP__ENV").unwrap_or_default();
-        let is_prod = env == "production";
-
         if cmd.email.is_some() {
             // Email-based OTP — publish to engagement engine for delivery.
             let event = Event::new(
@@ -413,12 +433,16 @@ impl AuthService {
             }
         }
 
-        if !is_prod {
-            tracing::info!(identifier = %identifier, otp = %otp, "OTP generated (also accept 123456)");
+        // The code itself is a credential. Logged only when the development
+        // shortcut is explicitly enabled — never merely because APP__ENV is
+        // something other than "production".
+        if dev_otp_enabled() {
+            tracing::info!(identifier = %identifier, otp = %otp, "OTP generated (123456 also accepted)");
         }
 
         Ok(())
     }
+
 
     pub async fn otp_verify(&self, cmd: OtpVerifyCommand) -> AppResult<OtpVerifyResult> {
         use validator::Validate;
@@ -428,10 +452,9 @@ impl AuthService {
             .ok_or_else(|| AppError::Validation("phone_number or email is required".into()))?;
 
         let tenant_slug = cmd.tenant_slug.as_deref().unwrap_or("demo");
-        let env = std::env::var("APP__ENV").unwrap_or_default();
 
-        // 123456 bypass works on any non-production env (dev, staging, local VPS).
-        let otp_valid = if env != "production" && cmd.otp_code == "123456" {
+        // Opt-in only — see dev_otp_enabled().
+        let otp_valid = if dev_otp_enabled() && cmd.otp_code == "123456" {
             true
         } else {
             self.redis_cache.verify_otp(identifier, &cmd.otp_code).await
@@ -947,4 +970,48 @@ fn sha2_hash(data: &[u8]) -> String {
     hasher.update(data);
     let result = hasher.finalize();
     result.iter().fold(String::new(), |mut s, b| { write!(s, "{b:02x}").ok(); s })
+}
+
+#[cfg(test)]
+mod dev_otp_gate_tests {
+    use super::dev_otp_enabled;
+
+    /// These mutate process-wide env, so they run in one test to keep the
+    /// ordering deterministic — separate #[test] fns race each other.
+    #[test]
+    fn the_development_otp_shortcut_fails_closed() {
+        // SAFETY: single-threaded within this test; no other test reads these.
+        unsafe {
+            std::env::remove_var("AUTH__ALLOW_DEV_OTP");
+            std::env::remove_var("APP__ENV");
+        }
+        assert!(!dev_otp_enabled(), "unset must mean OFF — this was the bug: an \
+             absent APP__ENV read as non-production and enabled the bypass");
+
+        unsafe { std::env::set_var("APP__ENV", "development") }
+        assert!(
+            !dev_otp_enabled(),
+            "a development environment alone must NOT enable it — the live VPS \
+             runs APP__ENV=development and was accepting 123456 from the internet"
+        );
+
+        unsafe { std::env::set_var("AUTH__ALLOW_DEV_OTP", "true") }
+        assert!(dev_otp_enabled(), "explicit opt-in in a dev environment enables it");
+
+        // Production wins over the opt-in, so shipping the flag by accident is
+        // still not enough to open it.
+        unsafe { std::env::set_var("APP__ENV", "production") }
+        assert!(!dev_otp_enabled(), "production must refuse even when opted in");
+
+        unsafe {
+            std::env::set_var("APP__ENV", "development");
+            std::env::set_var("AUTH__ALLOW_DEV_OTP", "yes");
+        }
+        assert!(!dev_otp_enabled(), "only 'true'/'1' count — a typo means OFF");
+
+        unsafe {
+            std::env::remove_var("AUTH__ALLOW_DEV_OTP");
+            std::env::remove_var("APP__ENV");
+        }
+    }
 }
