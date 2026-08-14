@@ -317,6 +317,21 @@ impl AuthService {
         use validator::Validate;
         cmd.validate().map_err(|e| AppError::Validation(e.to_string()))?;
 
+        // The phone-derived namespace is not claimable with a password.
+        //
+        // `<digits>@customer.logisticos.app` / `@driver…` are minted by the OTP
+        // path from a verified phone number. This endpoint is public, so
+        // without this check someone could register one of those addresses
+        // with a password of their choosing and take the identity that phone
+        // number resolves to within the tenant. Nobody owns these addresses —
+        // no mail is deliverable to them — so there is no legitimate reason to
+        // register one.
+        if is_synthesized_login_email(&cmd.email) {
+            return Err(AppError::Validation(
+                "That email domain is reserved for phone sign-in. Use the OTP flow instead.".into(),
+            ));
+        }
+
         let tenant = self.tenant_repo.find_by_slug(&cmd.tenant_slug).await
             .map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound { resource: "Tenant", id: cmd.tenant_slug.clone() })?;
@@ -348,26 +363,9 @@ impl AuthService {
             vec![role.to_owned()],
         );
 
-        // A synthesized phone-derived address is not a mailbox. Nothing can ever
-        // be delivered to `<digits>@customer.logisticos.app`, so "verify your
-        // email" is an unsatisfiable condition for an OTP customer — their
-        // phone was the thing verified.
-        //
-        // This used to be conditional on APP__ENV == "development", which made
-        // it a latent production outage rather than a dev convenience:
-        // `can_login()` requires email_verified and is called by `refresh`, so
-        // under APP__ENV=production an OTP customer would sign in, work until
-        // the access token expired, then be logged out at the first refresh
-        // with no way back. Worse, the trigger would have been setting
-        // APP__ENV=production — exactly what someone does to close the 123456
-        // bypass. See dev_otp_enabled() above.
-        // Drivers as well as customers. The original covered only the customer
-        // domain, so an OTP-created driver was left unverified even in
-        // development — one such account exists in production today and cannot
-        // refresh its token.
-        if is_synthesized_login_email(&user.email) {
-            user.email_verified = true;
-        }
+        // Deliberately no auto-verification here. The OTP sign-in path creates
+        // its own users and sets email_verified itself ("OTP-verified phone =
+        // verified identity"); nothing phone-derived reaches this function.
 
         self.user_repo.save(&user).await.map_err(AppError::Internal)?;
 
@@ -1048,16 +1046,16 @@ mod dev_otp_gate_tests {
 mod synthesized_email_tests {
     use super::is_synthesized_login_email;
 
-    /// These addresses are derived from a phone number and receive no mail, so
-    /// requiring verification locks the account out at the first token refresh
-    /// — `can_login()` demands email_verified and `refresh` calls it.
+    /// These belong to the OTP path, which mints them from a verified phone
+    /// number. `register()` refuses them so the namespace cannot be claimed
+    /// with a password.
     #[test]
-    fn phone_derived_addresses_are_treated_as_verified() {
+    fn phone_derived_addresses_are_recognised() {
         assert!(is_synthesized_login_email("639170000123@customer.logisticos.app"));
         assert!(is_synthesized_login_email("971553604321@driver.logisticos.app"));
     }
 
-    /// A real address must still go through verification.
+    /// A real address registers normally.
     #[test]
     fn real_addresses_are_not() {
         assert!(!is_synthesized_login_email("eduard@example.com"));
