@@ -72,9 +72,17 @@ def bind_arguments(tail: str) -> list[str]:
 
 # Trailing method calls carry no column name: `i.source.as_str()` is the
 # `source` column, `tenant_id.inner()` is `tenant_id`.
+CAST_RE = re.compile(r"\s+as\s+[\w:<>, ]+$")
+
+
 def column_of(expr: str) -> str | None:
     """The column an argument plainly refers to, or None when it is not plain."""
     e = expr.strip().lstrip("&").strip()
+    # A width cast says nothing about which column this is: `p.total_shipments
+    # as i32` is the `total_shipments` column. Without this the last segment is
+    # `total_shipments as i32`, which matches no identifier, and the walk falls
+    # back to the receiver `p` — so a whole statement gets skipped for a cast.
+    e = CAST_RE.sub("", e).strip()
     segments = [seg for seg in e.split(".") if seg]
     for seg in reversed(segments):
         if re.fullmatch(r"[a-z_][a-z0-9_]*", seg):
@@ -90,11 +98,12 @@ def columns(raw: str) -> list[str]:
     return [c.strip() for c in without_comments.split(",") if c.strip()]
 
 
-def analyse(path: Path) -> tuple[list[str], list[str]]:
-    """Return (failures, skips) for one file."""
+def analyse(path: Path) -> tuple[list[str], list[str], int]:
+    """Return (failures, skips, judged) for one file."""
     text = path.read_text(encoding="utf-8", errors="replace")
     failures: list[str] = []
     skips: list[str] = []
+    judged = 0
 
     for m in INSERT_RE.finditer(text):
         line = text.count("\n", 0, m.start()) + 1
@@ -164,8 +173,10 @@ def analyse(path: Path) -> tuple[list[str], list[str]]:
                     f"      error naming a column you never touched."
                 )
                 break
+        else:
+            judged += 1
 
-    return failures, skips
+    return failures, skips, judged
 
 
 def main() -> int:
@@ -173,15 +184,20 @@ def main() -> int:
     all_failures: list[str] = []
     all_skips: list[str] = []
     checked = 0
+    all_judged = 0
 
     for path in files:
         if "INSERT INTO" not in path.read_text(encoding="utf-8", errors="replace"):
             continue
-        failures, skips = analyse(path)
+        failures, skips, judged = analyse(path)
         checked += 1
+        all_judged += judged
         all_failures.extend(failures)
         all_skips.extend(skips)
 
+    # Report both halves. "61 files checked" alone would read as full coverage
+    # when the guard in fact verified the order of a little over half the
+    # statements — the same overclaim this script exists to prevent.
     if all_skips:
         print(f"Not judged ({len(all_skips)}) — listed so this is never mistaken for a clean bill:")
         for s in all_skips:
@@ -194,7 +210,10 @@ def main() -> int:
             print(f"  - {f}\n")
         return 1
 
-    print(f"OK: {checked} file(s) checked — every judged INSERT binds what it names, in order.")
+    print(
+        f"OK: {all_judged} of {all_judged + len(all_skips)} INSERT statement(s) across "
+        f"{checked} file(s) verified to bind what they name, in order."
+    )
     return 0
 
 
