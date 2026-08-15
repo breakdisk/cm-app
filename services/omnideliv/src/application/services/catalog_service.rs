@@ -3,8 +3,8 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::domain::entities::{
-    Availability, AvailabilityState, CatalogItem, CatalogSource, IngestedItem, Vendor, VendorStatus,
-    Vertical,
+    Availability, AvailabilityState, CatalogItem, CatalogSource, IngestedItem, ModifierGroup,
+    Vendor, VendorStatus, Vertical,
 };
 use crate::domain::repositories::{CatalogRepository, ItemWithAvailability, VendorRepository};
 
@@ -30,7 +30,7 @@ pub struct ItemDraft {
     pub allergens:      Option<Vec<String>>,
     pub dietary_tags:   Vec<String>,
     pub category:       Option<String>,
-    pub modifiers:      serde_json::Value,
+    pub modifiers:      Vec<ModifierGroup>,
     pub vertical_attrs: serde_json::Value,
 }
 
@@ -45,7 +45,7 @@ pub struct ItemPatch {
     pub dietary_tags: Option<Vec<String>>,
     pub category:     Option<Option<String>>,
     pub is_listed:    Option<bool>,
-    pub modifiers:    Option<serde_json::Value>,
+    pub modifiers:    Option<Vec<ModifierGroup>>,
 }
 
 /// What one ingest run did. Returned rather than logged so an adapter's caller
@@ -396,6 +396,7 @@ impl CatalogService {
         if draft.price_cents < 0 {
             anyhow::bail!("price cannot be negative");
         }
+        validate_modifiers(&draft.modifiers)?;
         // One SKU per store. Two rows with the same code make every later
         // reconciliation — ingest matching, an ops query, a vendor's own
         // spreadsheet — silently ambiguous.
@@ -485,7 +486,10 @@ impl CatalogService {
         }
         if let Some(t) = patch.dietary_tags { item.dietary_tags = t; }
         if let Some(l) = patch.is_listed    { item.is_listed    = l; }
-        if let Some(m) = patch.modifiers    { item.modifiers    = m; }
+        if let Some(m) = patch.modifiers    {
+            validate_modifiers(&m)?;
+            item.modifiers = m;
+        }
         // Option<Option<_>>: omitted leaves it alone, Some(None) clears it.
         // Flattening these would make "remove the category" indistinguishable
         // from "do not touch the category".
@@ -642,7 +646,7 @@ impl CatalogService {
                         name:        incoming.name.trim().to_owned(),
                         description: None,
                         price_cents: 0,
-                        modifiers:      serde_json::json!([]),
+                        modifiers:      Vec::new(),
                         allergens:      Vec::new(),
                         // Never declared by an ingest — see `merge_ingested`.
                         allergens_declared_at: None,
@@ -672,4 +676,38 @@ impl CatalogService {
 
         Ok(report)
     }
+}
+
+/// Reject a modifier definition a customer could never satisfy.
+///
+/// Checked when the vendor saves, not when a customer orders. A group with
+/// `min_select: 2` over one option, or `max_select: 0`, makes *every*
+/// add-to-basket for that item fail — and fail with a message about the
+/// customer's choices, which sends the wrong person looking for the bug. Better
+/// to refuse the definition than to ship an unorderable item.
+fn validate_modifiers(groups: &[ModifierGroup]) -> anyhow::Result<()> {
+    for g in groups {
+        if g.name.trim().is_empty() {
+            anyhow::bail!("a modifier group needs a name");
+        }
+        if !g.is_coherent() {
+            anyhow::bail!(
+                "modifier group \"{}\" is impossible to satisfy: it offers {} option(s)                  but requires between {} and {}",
+                g.name, g.options.len(), g.min_select, g.max_select,
+            );
+        }
+        // Duplicate option ids inside a group would make a selection ambiguous
+        // and let `resolve_modifiers` price the wrong one.
+        let mut seen = Vec::with_capacity(g.options.len());
+        for o in &g.options {
+            if o.name.trim().is_empty() {
+                anyhow::bail!("an option in \"{}\" needs a name", g.name);
+            }
+            if seen.contains(&o.id) {
+                anyhow::bail!("modifier group \"{}\" repeats an option id", g.name);
+            }
+            seen.push(o.id);
+        }
+    }
+    Ok(())
 }

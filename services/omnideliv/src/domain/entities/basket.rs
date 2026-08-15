@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::catalog::SelectedModifier;
 use super::Vertical;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,7 +102,18 @@ pub struct BasketLine {
     pub qty:               i32,
     /// Captured at proposal time — the customer pays what they were shown, even
     /// if the catalog price moves before checkout.
+    ///
+    /// Modifier deltas are already folded in, so this stays the one number every
+    /// total multiplies by `qty`. Nothing downstream had to learn about
+    /// modifiers for them to be charged correctly.
     pub unit_price_cents:  i64,
+    /// The chosen options behind `unit_price_cents`, frozen at proposal time.
+    ///
+    /// Kept alongside the price so a line can be *explained* — on the customer's
+    /// receipt, and to the vendor who has to make the thing. `serde(default)`
+    /// because baskets persisted before migration 0018 have no such field.
+    #[serde(default)]
+    pub modifiers:         Vec<SelectedModifier>,
     pub state:             LineState,
     pub substitution_for:  Option<Uuid>,
     pub proposed_by_agent: Option<String>,
@@ -132,8 +144,20 @@ impl BasketLine {
             state: LineState::Proposed,
             substitution_for: None,
             proposed_by_agent: Some(agent.to_string()),
+            modifiers: Vec::new(),
             created_at: Utc::now(),
         }
+    }
+
+    /// Attach resolved modifier selections.
+    ///
+    /// A builder rather than a ninth parameter on `propose`: the price passed to
+    /// `propose` is already the effective one, so every existing caller that has
+    /// no modifiers stays correct and unchanged.
+    #[must_use]
+    pub fn with_modifiers(mut self, modifiers: Vec<SelectedModifier>) -> Self {
+        self.modifiers = modifiers;
+        self
     }
 
     pub fn subtotal_cents(&self) -> i64 {

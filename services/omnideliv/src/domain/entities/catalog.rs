@@ -17,7 +17,13 @@ pub struct CatalogItem {
     pub name:           String,
     pub description:    Option<String>,
     pub price_cents:    i64,
-    pub modifiers:      serde_json::Value,
+    /// Choices offered against this item — "Size", "Add-ons". Empty for most.
+    ///
+    /// Typed rather than raw JSON since migration 0018. It spent its whole life
+    /// before that as an untyped column the API round-tripped and nothing read,
+    /// which is precisely why a merchant form alone would not have made
+    /// modifiers work: there was nothing downstream to receive a selection.
+    pub modifiers:      Vec<ModifierGroup>,
     pub allergens:      Vec<String>,
     /// When a vendor last asserted the contents. `None` means never — which is
     /// not the same as "contains none". See migration 0014.
@@ -86,6 +92,154 @@ impl CatalogItem {
         self.external_id  = incoming.external_id.clone();
         self.synced_at    = Some(now);
         self.updated_at   = now;
+    }
+}
+
+/// One choice inside a group — "Large", "Extra shot", "No onions".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModifierOption {
+    pub id:   Uuid,
+    pub name: String,
+    /// Added to the item's base price when chosen. Signed, because "no cheese"
+    /// is a legitimate discount and not every modifier costs money.
+    #[serde(default)]
+    pub price_delta_cents: i64,
+}
+
+/// A set of choices offered against an item.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModifierGroup {
+    pub id:   Uuid,
+    pub name: String,
+    /// How many options must be chosen. 0 leaves the group optional.
+    #[serde(default)]
+    pub min_select: usize,
+    /// How many options may be chosen. 1 is a radio group, more is checkboxes.
+    #[serde(default = "one")]
+    pub max_select: usize,
+    pub options: Vec<ModifierOption>,
+}
+
+const fn one() -> usize { 1 }
+
+impl ModifierGroup {
+    /// A group nobody can satisfy is a catalog bug, not a customer error — it
+    /// would make every add-to-basket for the item fail with a message about
+    /// the customer's choices. Checked when a vendor saves, not at order time.
+    pub fn is_coherent(&self) -> bool {
+        self.max_select >= 1
+            && self.min_select <= self.max_select
+            && self.min_select <= self.options.len()
+            && !self.options.is_empty()
+    }
+}
+
+/// What the customer chose, resolved against the catalog and frozen.
+///
+/// Names are copied rather than referenced so a later rename or delete cannot
+/// change what an existing line says — the same reasoning that makes
+/// `BasketLine::unit_price_cents` a snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectedModifier {
+    pub group_id:          Uuid,
+    pub group_name:        String,
+    pub option_id:         Uuid,
+    pub option_name:       String,
+    pub price_delta_cents: i64,
+}
+
+/// Why a set of chosen option ids was refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModifierError {
+    /// Not an option of any group on this item. Covers both a typo and an
+    /// attempt to attach a cheaper item's option to a dearer one.
+    UnknownOption(Uuid),
+    /// The same option id sent twice. Rejected rather than deduplicated: it is
+    /// ambiguous whether the customer meant "two of these" (which is `qty`, and
+    /// priced differently) or fat-fingered the request.
+    DuplicateOption(Uuid),
+    TooFew  { group: String, min: usize, got: usize },
+    TooMany { group: String, max: usize, got: usize },
+}
+
+impl std::fmt::Display for ModifierError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownOption(id)   => write!(f, "option {id} is not offered on this item"),
+            Self::DuplicateOption(id) => write!(f, "option {id} was selected more than once"),
+            Self::TooFew { group, min, got } => {
+                write!(f, "\"{group}\" needs at least {min} selection(s), got {got}")
+            }
+            Self::TooMany { group, max, got } => {
+                write!(f, "\"{group}\" allows at most {max} selection(s), got {got}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ModifierError {}
+
+impl CatalogItem {
+    /// Resolve chosen option ids into a frozen selection and an effective unit
+    /// price.
+    ///
+    /// The caller passes ids only. Prices are read here, from the catalog, for
+    /// the same reason `BasketService::add_item` refuses a caller-supplied
+    /// price: anything the client can name, the client can lower. A modifier
+    /// delta is as much money as the base price is.
+    ///
+    /// Returns the price *including* deltas, so callers keep multiplying by qty
+    /// exactly as before and no total anywhere needs to learn about modifiers.
+    pub fn resolve_modifiers(
+        &self,
+        chosen: &[Uuid],
+    ) -> Result<(i64, Vec<SelectedModifier>), ModifierError> {
+        let mut seen: Vec<Uuid> = Vec::with_capacity(chosen.len());
+        for id in chosen {
+            if seen.contains(id) {
+                return Err(ModifierError::DuplicateOption(*id));
+            }
+            seen.push(*id);
+        }
+
+        let mut selected = Vec::with_capacity(chosen.len());
+        for id in chosen {
+            let found = self.modifiers.iter().find_map(|g| {
+                g.options.iter().find(|o| o.id == *id).map(|o| (g, o))
+            });
+            let (group, option) = found.ok_or(ModifierError::UnknownOption(*id))?;
+            selected.push(SelectedModifier {
+                group_id:          group.id,
+                group_name:        group.name.clone(),
+                option_id:         option.id,
+                option_name:       option.name.clone(),
+                price_delta_cents: option.price_delta_cents,
+            });
+        }
+
+        // Cardinality is checked per group, including groups with no selection
+        // at all — that is the case that catches a required group the client
+        // simply omitted, which is the one a UI bug produces most often.
+        for group in &self.modifiers {
+            let got = selected.iter().filter(|s| s.group_id == group.id).count();
+            if got < group.min_select {
+                return Err(ModifierError::TooFew {
+                    group: group.name.clone(),
+                    min:   group.min_select,
+                    got,
+                });
+            }
+            if got > group.max_select {
+                return Err(ModifierError::TooMany {
+                    group: group.name.clone(),
+                    max:   group.max_select,
+                    got,
+                });
+            }
+        }
+
+        let unit = self.price_cents + selected.iter().map(|s| s.price_delta_cents).sum::<i64>();
+        Ok((unit, selected))
     }
 }
 
@@ -369,7 +523,7 @@ mod tests {
             id: Uuid::new_v4(), tenant_id: Uuid::new_v4(), vendor_id: Uuid::new_v4(),
             sku: "SKU-1".into(), name: "Adobo".into(), description: None,
             price_cents: 18000,
-            modifiers: serde_json::json!([]),
+            modifiers: Vec::new(),
             allergens: allergens.iter().map(|s| s.to_string()).collect(),
             allergens_declared_at: declared,
             dietary_tags: vec![],
@@ -455,4 +609,146 @@ mod tests {
         assert!(!CatalogSource::Shopify.is_human());
         assert!(!CatalogSource::Pos.is_human());
     }
+
+    // ---- modifiers ----------------------------------------------------------
+    //
+    // Every assertion here is about money or about what a customer is allowed to
+    // send. The pricing path has no database, so these are the only place the
+    // arithmetic is checked before it reaches a real basket.
+
+    fn opt(name: &str, delta: i64) -> ModifierOption {
+        ModifierOption { id: Uuid::new_v4(), name: name.into(), price_delta_cents: delta }
+    }
+
+    fn group(name: &str, min: usize, max: usize, options: Vec<ModifierOption>) -> ModifierGroup {
+        ModifierGroup { id: Uuid::new_v4(), name: name.into(), min_select: min, max_select: max, options }
+    }
+
+    fn with_groups(groups: Vec<ModifierGroup>) -> CatalogItem {
+        let mut i = item(&[], None);
+        i.price_cents = 10_000;
+        i.modifiers = groups;
+        i
+    }
+
+    #[test]
+    fn no_modifiers_leaves_the_price_alone() {
+        let i = with_groups(vec![]);
+        let (price, sel) = i.resolve_modifiers(&[]).unwrap();
+        assert_eq!(price, 10_000);
+        assert!(sel.is_empty());
+    }
+
+    #[test]
+    fn deltas_are_added_to_the_base_price() {
+        let large = opt("Large", 2_500);
+        let id = large.id;
+        let i = with_groups(vec![group("Size", 1, 1, vec![large])]);
+        let (price, sel) = i.resolve_modifiers(&[id]).unwrap();
+        assert_eq!(price, 12_500);
+        assert_eq!(sel.len(), 1);
+        assert_eq!(sel[0].option_name, "Large");
+        assert_eq!(sel[0].group_name, "Size");
+    }
+
+    #[test]
+    fn a_negative_delta_takes_money_off() {
+        let no_cheese = opt("No cheese", -1_000);
+        let id = no_cheese.id;
+        let i = with_groups(vec![group("Cheese", 0, 1, vec![no_cheese])]);
+        assert_eq!(i.resolve_modifiers(&[id]).unwrap().0, 9_000);
+    }
+
+    #[test]
+    fn several_options_across_groups_all_count() {
+        let large = opt("Large", 2_500);
+        let bacon = opt("Bacon", 3_000);
+        let egg   = opt("Egg", 1_500);
+        let (l, b, e) = (large.id, bacon.id, egg.id);
+        let i = with_groups(vec![
+            group("Size", 1, 1, vec![large]),
+            group("Extras", 0, 2, vec![bacon, egg]),
+        ]);
+        assert_eq!(i.resolve_modifiers(&[l, b, e]).unwrap().0, 17_000);
+    }
+
+    /// The one that matters: an option id lifted from a *different*, cheaper
+    /// item must not attach here. Without this a caller could pick any option
+    /// in the catalog and pay its delta against this item's price.
+    #[test]
+    fn an_option_from_another_item_is_refused() {
+        let i = with_groups(vec![group("Size", 1, 1, vec![opt("Large", 2_500)])]);
+        let foreign = Uuid::new_v4();
+        assert_eq!(i.resolve_modifiers(&[foreign]), Err(ModifierError::UnknownOption(foreign)));
+    }
+
+    #[test]
+    fn a_required_group_left_empty_is_refused() {
+        let i = with_groups(vec![group("Size", 1, 1, vec![opt("Large", 2_500)])]);
+        match i.resolve_modifiers(&[]) {
+            Err(ModifierError::TooFew { min, got, .. }) => { assert_eq!((min, got), (1, 0)); }
+            other => panic!("expected TooFew, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exceeding_a_groups_maximum_is_refused() {
+        let a = opt("Bacon", 3_000);
+        let b = opt("Egg", 1_500);
+        let c = opt("Avocado", 2_000);
+        let (x, y, z) = (a.id, b.id, c.id);
+        let i = with_groups(vec![group("Extras", 0, 2, vec![a, b, c])]);
+        match i.resolve_modifiers(&[x, y, z]) {
+            Err(ModifierError::TooMany { max, got, .. }) => { assert_eq!((max, got), (2, 3)); }
+            other => panic!("expected TooMany, got {other:?}"),
+        }
+    }
+
+    /// Sending the same option twice is rejected rather than silently counted
+    /// once — quietly deduplicating would charge one delta for what the client
+    /// believes it asked for twice, and the difference is money.
+    #[test]
+    fn the_same_option_twice_is_refused() {
+        let bacon = opt("Bacon", 3_000);
+        let id = bacon.id;
+        let i = with_groups(vec![group("Extras", 0, 2, vec![bacon])]);
+        assert_eq!(i.resolve_modifiers(&[id, id]), Err(ModifierError::DuplicateOption(id)));
+    }
+
+    #[test]
+    fn an_optional_group_may_be_skipped() {
+        let i = with_groups(vec![group("Extras", 0, 3, vec![opt("Bacon", 3_000)])]);
+        assert_eq!(i.resolve_modifiers(&[]).unwrap().0, 10_000);
+    }
+
+    #[test]
+    fn a_group_nobody_could_satisfy_is_incoherent() {
+        // min above the number of options on offer
+        assert!(!group("Size", 2, 2, vec![opt("Large", 0)]).is_coherent());
+        // max of zero — the group can never be chosen from
+        assert!(!group("Size", 0, 0, vec![opt("Large", 0)]).is_coherent());
+        // min above max
+        assert!(!group("Size", 2, 1, vec![opt("A", 0), opt("B", 0)]).is_coherent());
+        // no options at all
+        assert!(!group("Size", 0, 1, vec![]).is_coherent());
+        // and a normal one
+        assert!(group("Size", 1, 1, vec![opt("Large", 0)]).is_coherent());
+    }
+
+    /// The selection is a snapshot. A vendor repricing or renaming an option
+    /// afterwards must not change what an existing line says it owes.
+    #[test]
+    fn the_selection_captures_names_and_deltas_not_references() {
+        let large = opt("Large", 2_500);
+        let id = large.id;
+        let mut i = with_groups(vec![group("Size", 1, 1, vec![large])]);
+        let (_, sel) = i.resolve_modifiers(&[id]).unwrap();
+
+        i.modifiers[0].options[0].price_delta_cents = 9_999;
+        i.modifiers[0].options[0].name = "Enormous".into();
+
+        assert_eq!(sel[0].price_delta_cents, 2_500);
+        assert_eq!(sel[0].option_name, "Large");
+    }
+
 }

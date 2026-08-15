@@ -44,6 +44,7 @@ import {
 import { GlassCard } from "@/components/ui/glass-card";
 import { ShopConnections } from "@/components/storefront/shop-connections";
 import { UnconfirmedQueue } from "@/components/storefront/unconfirmed-queue";
+import { ModifierEditor, modifierProblems } from "@/components/storefront/modifier-editor";
 import { variants } from "@/lib/design-system/tokens";
 import { authFetch } from "@/lib/auth/auth-fetch";
 import { API_BASE } from "@/lib/api/endpoints";
@@ -55,6 +56,7 @@ import {
   type CatalogSource,
   type CsvRowError,
   type Item,
+  type ModifierGroup,
 } from "@/lib/api/storefront";
 
 interface Earnings {
@@ -616,7 +618,13 @@ function ItemForm({
   const [name, setName] = useState(item?.name ?? "");
   const [description, setDescription] = useState(item?.description ?? "");
   const [price, setPrice] = useState(item ? (item.price_cents / 100).toFixed(2) : "");
+  const [modifiers, setModifiers] = useState<ModifierGroup[]>(item?.modifiers ?? []);
   const [saving, setSaving] = useState(false);
+
+  // Checked before the request rather than after: the server refuses an
+  // impossible group too, but a round trip to learn that "at least 2 of 1"
+  // cannot work is a worse way to find out.
+  const problems = modifierProblems(modifiers);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -626,11 +634,16 @@ function ItemForm({
       // trusting a float through JSON: money is integer cents everywhere in
       // this platform and the conversion belongs at the boundary.
       const price_cents = Math.round(parseFloat(price || "0") * 100);
+      if (problems.length > 0) {
+        onError(problems[0]);
+        return; // `finally` below still clears `saving`
+      }
       if (item) {
         await storefrontApi.updateItem(item.id, {
           name,
           description: description.trim() === "" ? null : description,
           price_cents,
+          modifiers,
         });
       } else {
         await storefrontApi.createItem({
@@ -641,6 +654,7 @@ function ItemForm({
           name,
           description: description.trim() === "" ? null : description,
           price_cents,
+          modifiers,
         });
       }
       await onSaved();
@@ -736,10 +750,12 @@ function ItemForm({
           />
         </label>
 
+        <ModifierEditor groups={modifiers} onChange={setModifiers} />
+
         <div className="flex flex-wrap items-center gap-2 pt-1">
           <button
             type="submit"
-            disabled={saving}
+            disabled={saving || problems.length > 0}
             className="rounded-lg border border-[#00E5FF]/40 bg-[#00E5FF]/10 px-4 py-2 text-sm text-[#00E5FF] hover:bg-[#00E5FF]/20 disabled:opacity-40"
           >
             {saving ? "Saving…" : item ? "Save changes" : "Add item"}

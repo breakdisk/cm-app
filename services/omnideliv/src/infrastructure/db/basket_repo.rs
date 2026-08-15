@@ -3,8 +3,8 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::domain::entities::{
-    Basket, BasketConflict, BasketLine, BasketStatus, LineState, SubIntent, SubIntentSource,
-    SubIntentStatus,
+    Basket, BasketConflict, BasketLine, BasketStatus, LineState, SelectedModifier, SubIntent,
+    SubIntentSource, SubIntentStatus,
 };
 use crate::domain::repositories::BasketRepository;
 use crate::infrastructure::db::vendor_repo::parse_vertical;
@@ -119,6 +119,7 @@ impl BasketRepository for PgBasketRepository {
                 item_id:           r.get("item_id"),
                 qty:               r.get("qty"),
                 unit_price_cents:  r.get("unit_price_cents"),
+                modifiers:         r.get::<sqlx::types::Json<Vec<SelectedModifier>>, _>("modifiers").0,
                 state:             line_state(&st)?,
                 substitution_for:  r.get("substitution_for"),
                 proposed_by_agent: r.get("proposed_by_agent"),
@@ -216,20 +217,27 @@ impl BasketRepository for PgBasketRepository {
             .execute(&mut *tx).await?;
 
         for l in &basket.lines {
+            let modifiers = sqlx::types::Json(&l.modifiers);
             sqlx::query(
                 r#"
                 INSERT INTO omnideliv.basket_lines (
                     id, basket_id, sub_intent_id, tenant_id, vendor_id, item_id,
                     qty, unit_price_cents, state, substitution_for,
-                    proposed_by_agent, created_at
+                    proposed_by_agent, created_at, modifiers
                 )
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
                 "#,
             )
             .bind(l.id).bind(l.basket_id).bind(l.sub_intent_id).bind(l.tenant_id)
             .bind(l.vendor_id).bind(l.item_id).bind(l.qty).bind(l.unit_price_cents)
             .bind(line_state_str(l.state)).bind(l.substitution_for)
             .bind(&l.proposed_by_agent).bind(l.created_at)
+            // Appended to the end of the column list above, so it binds last.
+            // Bound through a local named for its column rather than inline as
+            // `sqlx::types::Json(&l.modifiers)`, because check-sql-bind-arity.py
+            // reads the bind's *name* to verify position — an inline wrapper
+            // parses as `types` and makes it skip this whole statement.
+            .bind(modifiers)
             .execute(&mut *tx).await?;
         }
 

@@ -92,7 +92,7 @@ fn an_item(tenant: Uuid, vendor_id: Uuid, sku: &str) -> CatalogItem {
         name: "Chicken Adobo".into(),
         description: None,
         price_cents: 18000,
-        modifiers: serde_json::json!([]),
+        modifiers: Vec::new(),
         allergens: vec![],
         allergens_declared_at: None,
         dietary_tags: vec![],

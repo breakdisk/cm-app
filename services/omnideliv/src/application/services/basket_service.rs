@@ -154,6 +154,11 @@ impl BasketService {
     /// client supplies only *what* and *how many*. Taking a price from the
     /// request would let a customer name their own, and taking the vertical
     /// would let them file a restaurant order into the grocery partition.
+    ///
+    /// `modifier_options` is the same bargain one level down: the caller names
+    /// option ids, and the deltas behind them are read here from the item. A
+    /// modifier delta is money exactly as the base price is, so it gets the same
+    /// treatment.
     pub async fn add_item(
         &self,
         tenant_id: Uuid,
@@ -161,6 +166,7 @@ impl BasketService {
         vendor_id: Uuid,
         item_id: Uuid,
         qty: i32,
+        modifier_options: &[Uuid],
     ) -> anyhow::Result<Basket> {
         let vendor = self
             .vendors
@@ -184,11 +190,25 @@ impl BasketService {
             anyhow::bail!("item {item_id} does not belong to vendor {vendor_id}");
         }
 
+        // Resolves ids to prices, and rejects an unknown option, a repeat, or a
+        // group whose min/max is not met. An unknown option is the interesting
+        // one: it is how an option belonging to a *different* — cheaper — item
+        // would otherwise be attached to this one.
+        // `Error::new` rather than `anyhow!("{e}")` so the HTTP layer can
+        // downcast and answer 400. Flattening it to a string here is what would
+        // make a customer's bad selection look like a server fault.
+        let (unit_price_cents, selected) = item
+            .resolve_modifiers(modifier_options)
+            .map_err(anyhow::Error::new)?;
+
         self.mutate(tenant_id, basket_id, move |b| {
             let si = b.browse_sub_intent(vendor.vertical);
-            b.add_line(BasketLine::propose(
-                b.id, si, tenant_id, vendor_id, item_id, qty, item.price_cents, "browse",
-            ));
+            b.add_line(
+                BasketLine::propose(
+                    b.id, si, tenant_id, vendor_id, item_id, qty, unit_price_cents, "browse",
+                )
+                .with_modifiers(selected.clone()),
+            );
         })
         .await
     }

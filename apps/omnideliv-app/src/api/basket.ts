@@ -39,11 +39,14 @@ export function addLine(
   basketId: string,
   vendorId: string,
   itemId: string,
-  qty = 1
+  qty = 1,
+  /** Chosen modifier option ids. Ids only — the server reads the deltas from
+   *  the catalog, for the same reason it reads the base price there. */
+  modifiers: string[] = []
 ): Promise<BasketView> {
   return apiFetch<BasketView>(`/v1/omnideliv/baskets/${basketId}/lines`, {
     method: "POST",
-    body: JSON.stringify({ vendor_id: vendorId, item_id: itemId, qty }),
+    body: JSON.stringify({ vendor_id: vendorId, item_id: itemId, qty, modifiers }),
   });
 }
 

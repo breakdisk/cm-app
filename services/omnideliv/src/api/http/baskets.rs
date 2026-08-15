@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::http::AppState;
+use crate::domain::entities::ModifierError;
 
 #[derive(Debug, Deserialize)]
 pub struct AddLineRequest {
@@ -13,6 +14,11 @@ pub struct AddLineRequest {
     pub item_id:   Uuid,
     #[serde(default = "one")]
     pub qty:       i32,
+    /// Chosen modifier option ids. Ids only — the prices behind them are read
+    /// from the catalog server-side, for the same reason the base price is.
+    /// Absent means "no modifiers", which is the common case.
+    #[serde(default)]
+    pub modifiers: Vec<Uuid>,
 }
 
 fn one() -> i32 { 1 }
@@ -116,9 +122,24 @@ async fn add_line(
 
     let basket = st
         .baskets
-        .add_item(claims.tenant_id, basket_id, req.vendor_id, req.item_id, req.qty)
+        .add_item(
+            claims.tenant_id,
+            basket_id,
+            req.vendor_id,
+            req.item_id,
+            req.qty,
+            &req.modifiers,
+        )
         .await
         .map_err(|e| {
+            // A rejected modifier selection is the caller's to fix — an option
+            // that is not on this item, a repeat, or a required group left
+            // empty. Answering 500 would tell the customer to try again later
+            // for something retrying can never resolve, and would bury a real
+            // client bug in the error log as a server fault.
+            if let Some(me) = e.downcast_ref::<ModifierError>() {
+                return (StatusCode::BAD_REQUEST, me.to_string());
+            }
             tracing::error!(err = %e, "add line failed");
             (StatusCode::INTERNAL_SERVER_ERROR, "could not add the item".into())
         })?;

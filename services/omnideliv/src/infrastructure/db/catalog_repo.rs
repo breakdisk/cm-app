@@ -2,7 +2,9 @@ use async_trait::async_trait;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
-use crate::domain::entities::{Availability, AvailabilityState, CatalogItem, CatalogSource};
+use crate::domain::entities::{
+    Availability, AvailabilityState, CatalogItem, CatalogSource, ModifierGroup,
+};
 use crate::domain::repositories::{CatalogRepository, ItemFacts, ItemWithAvailability};
 
 pub struct PgCatalogRepository { pool: PgPool }
@@ -28,7 +30,7 @@ fn map_pair(r: &sqlx::postgres::PgRow) -> anyhow::Result<ItemWithAvailability> {
         name:           r.get("name"),
         description:    r.get("description"),
         price_cents:    r.get("price_cents"),
-        modifiers:      r.get("modifiers"),
+        modifiers:      r.get::<sqlx::types::Json<Vec<ModifierGroup>>, _>("modifiers").0,
         allergens:      r.get("allergens"),
         allergens_declared_at: r.get("allergens_declared_at"),
         dietary_tags:   r.get("dietary_tags"),
@@ -66,6 +68,12 @@ impl CatalogRepository for PgCatalogRepository {
     async fn save_item(&self, i: &CatalogItem) -> anyhow::Result<()> {
         let mut tx = self.pool.begin().await?;
 
+        // Bound through a local named for its column. Inline as
+        // `sqlx::types::Json(&i.modifiers)` the argument reads as `types` to
+        // check-sql-bind-arity.py, which would make it skip this statement —
+        // the exact statement whose bind order broke every catalog write.
+        let modifiers = sqlx::types::Json(&i.modifiers);
+
         sqlx::query(
             r#"
             INSERT INTO omnideliv.catalog_items (
@@ -100,7 +108,7 @@ impl CatalogRepository for PgCatalogRepository {
         )
         .bind(i.id).bind(i.tenant_id).bind(i.vendor_id)
         .bind(&i.sku).bind(&i.name).bind(&i.description).bind(i.price_cents)
-        .bind(&i.modifiers).bind(&i.allergens).bind(&i.dietary_tags)
+        .bind(modifiers).bind(&i.allergens).bind(&i.dietary_tags)
         .bind(&i.vertical_attrs).bind(i.is_listed)
         .bind(i.source.as_str()).bind(&i.external_id).bind(i.synced_at)
         .bind(i.allergens_declared_at)

@@ -168,7 +168,7 @@ fn world() -> World {
     catalog.items.lock().unwrap().push(CatalogItem {
         id: b_item, tenant_id: tenant, vendor_id: vendor_b,
         sku: "B-1".into(), name: "Milk".into(), description: None, price_cents: 9000,
-        modifiers: serde_json::json!([]), allergens: vec!["dairy".into()],
+        modifiers: Vec::new(), allergens: vec!["dairy".into()],
         allergens_declared_at: Some(Utc::now()), dietary_tags: vec![],
         category: None,
         vertical_attrs: serde_json::json!({}), is_listed: true,
@@ -192,7 +192,7 @@ fn draft(sku: &str) -> ItemDraft {
         allergens: None,
         dietary_tags: vec![],
         category: None,
-        modifiers: serde_json::json!([]),
+        modifiers: Vec::new(),
         vertical_attrs: serde_json::json!({}),
     }
 }

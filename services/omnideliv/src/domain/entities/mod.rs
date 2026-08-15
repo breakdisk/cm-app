@@ -13,6 +13,7 @@ pub use basket::{
 };
 pub use catalog::{
     Availability, AvailabilityState, CatalogItem, CatalogSource, Confidence, IngestedItem,
+    ModifierError, ModifierGroup, ModifierOption, SelectedModifier,
 };
 pub use consolidation::{ConsolidationPlan, PendingStop, Stop, TemperatureClass};
 pub use order::{LegStatus, Order, OrderStatus, Settlement, VendorLeg};

@@ -11,6 +11,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams } from "expo-router";
 
 import { addLine, createBasket, type BasketView } from "@/api/basket";
+import { ModifierPicker } from "@/components/ModifierPicker";
 import {
   itemPhotoUrl,
   searchCatalog,
@@ -76,19 +77,38 @@ export default function Browse() {
     };
   }, [vendorId]);
 
-  const add = useCallback(
-    async (item: SearchHit) => {
+  /** The item whose options are being chosen, or null when none is. */
+  const [picking, setPicking] = useState<SearchHit | null>(null);
+
+  const commit = useCallback(
+    async (item: SearchHit, modifiers: string[]) => {
       if (!resolvedVendorId) return;
       try {
         // The basket is created lazily on the first add, so browsing without
         // buying leaves no empty baskets behind.
         const b = basket ?? (await createBasket());
-        setBasket(await addLine(b.id, resolvedVendorId, item.item_id));
+        setBasket(await addLine(b.id, resolvedVendorId, item.item_id, 1, modifiers));
       } catch (e) {
+        // A rejected selection comes back as a 400 with the server's own words
+        // ("Size needs at least 1 selection"), which is more use than a generic
+        // failure — surface it rather than replacing it.
         setError(e instanceof Error ? e.message : "Could not add that");
       }
     },
     [basket, resolvedVendorId]
+  );
+
+  const add = useCallback(
+    async (item: SearchHit) => {
+      // Only interrupt the tap when there is genuinely something to choose. For
+      // the majority of items — no groups — this stays a single tap.
+      if ((item.modifiers?.length ?? 0) > 0) {
+        setPicking(item);
+        return;
+      }
+      await commit(item, []);
+    },
+    [commit]
   );
 
   if (loading) {
@@ -187,6 +207,20 @@ export default function Browse() {
           </View>
         )}
       </View>
+
+      {/* Rendered last and absolutely positioned, so it sits over the list
+          without a Modal — which the web export does not render. */}
+      {picking && (
+        <ModifierPicker
+          item={picking}
+          onCancel={() => setPicking(null)}
+          onConfirm={async (optionIds) => {
+            const item = picking;
+            setPicking(null);
+            await commit(item, optionIds);
+          }}
+        />
+      )}
     </SafeAreaView>
   );
 }

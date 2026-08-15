@@ -85,8 +85,15 @@ def column_of(expr: str) -> str | None:
     e = CAST_RE.sub("", e).strip()
     segments = [seg for seg in e.split(".") if seg]
     for seg in reversed(segments):
-        if re.fullmatch(r"[a-z_][a-z0-9_]*", seg):
-            return seg
+        # Trailing `)` belongs to a converter wrapping the value, not to the
+        # name: `line_state_str(l.state)` is the `state` column. A segment with
+        # an *opening* paren is a call of its own (`as_str()`) and still falls
+        # through to the receiver, which is what we want.
+        candidate = seg.rstrip(")")
+        if "(" in candidate:
+            continue
+        if re.fullmatch(r"[a-z_][a-z0-9_]*", candidate):
+            return candidate
     return None
 # Where a query chain stops being binds.
 TERMINATOR_RE = re.compile(r"\.(execute|fetch_one|fetch_all|fetch_optional|fetch)\s*\(")

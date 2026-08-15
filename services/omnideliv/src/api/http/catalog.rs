@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::api::http::AppState;
 use crate::application::services::{IngestReport, ItemDraft, ItemPatch};
-use crate::domain::entities::{CatalogSource, IngestedItem};
+use crate::domain::entities::{CatalogSource, IngestedItem, ModifierGroup};
 
 #[derive(Debug, Deserialize)]
 pub struct SearchQuery {
@@ -41,6 +41,11 @@ pub struct SearchHit {
     /// Groups the browse list. `None` = uncategorised, rendered last.
     pub category:            Option<String>,
     pub availability:        String,
+    /// Choices this item offers. Sent with the hit rather than behind a second
+    /// fetch: the customer app needs them the instant someone taps an item, and
+    /// a required group the client does not know about becomes a 400 it cannot
+    /// explain. Empty for most items, so this costs almost nothing.
+    pub modifiers:           Vec<ModifierGroup>,
     /// Surfaced so the caller can see *why* a substitute was proposed.
     pub warrants_substitute: bool,
 }
@@ -112,13 +117,12 @@ pub struct CreateItemRequest {
     /// "Mains", "Beverages"… omitted or null = uncategorised.
     #[serde(default)]
     pub category:     Option<String>,
-    #[serde(default = "empty_array")]
-    pub modifiers:      serde_json::Value,
+    #[serde(default)]
+    pub modifiers:      Vec<ModifierGroup>,
     #[serde(default = "empty_object")]
     pub vertical_attrs: serde_json::Value,
 }
 
-fn empty_array()  -> serde_json::Value { serde_json::json!([]) }
 fn empty_object() -> serde_json::Value { serde_json::json!({}) }
 
 /// `POST /v1/omnideliv/catalog/items` — a vendor adds an item by hand.
@@ -186,7 +190,7 @@ pub struct UpdateItemRequest {
     pub price_cents:  Option<i64>,
     pub dietary_tags: Option<Vec<String>>,
     pub is_listed:    Option<bool>,
-    pub modifiers:    Option<serde_json::Value>,
+    pub modifiers:    Option<Vec<ModifierGroup>>,
 }
 
 fn double_option<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
@@ -607,6 +611,7 @@ async fn my_items(
                 // backing store moves; the client builds it when this is true.
                 has_photo: s.item_with_availability.item.image_key.is_some(),
                 category:  s.item_with_availability.item.category.clone(),
+                modifiers: s.item_with_availability.item.modifiers.clone(),
                 warrants_substitute: s.warrants_substitute,
             })
             .collect(),
@@ -635,6 +640,9 @@ struct MyItem {
     /// `csv`, `pos`. Shown so a vendor can tell what they typed from what their
     /// shop pushed — and so "why did my price change" has an answer.
     source:       String,
+    /// Choices offered against this item. Sent whole so the console can edit
+    /// them; empty for most items.
+    modifiers:    Vec<ModifierGroup>,
     /// When an ingest last touched it. Distinct from `confirmed_at` on purpose:
     /// a sync that ran a minute ago still confirms nothing.
     synced_at:    Option<chrono::DateTime<chrono::Utc>>,
@@ -686,6 +694,7 @@ async fn search(
                 tenant_id:           claims.tenant_id,
                 has_photo:           h.item_with_availability.item.image_key.is_some(),
                 category:            h.item_with_availability.item.category.clone(),
+                modifiers:           h.item_with_availability.item.modifiers.clone(),
                 name:                h.item_with_availability.item.name,
                 price_cents:         h.item_with_availability.item.price_cents,
                 availability:        h.item_with_availability.availability.state.as_str().to_string(),

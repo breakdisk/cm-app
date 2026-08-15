@@ -1,5 +1,24 @@
 import { API_BASE, apiFetch } from "./client";
 
+/** One choice inside a group — "Large", "Extra shot". */
+export interface ModifierOption {
+  id: string;
+  name: string;
+  /** Added to the base price when chosen. Signed: negative is a discount. */
+  price_delta_cents: number;
+}
+
+/** A set of choices offered against an item. */
+export interface ModifierGroup {
+  id: string;
+  name: string;
+  /** 0 means the group can be skipped. */
+  min_select: number;
+  /** 1 is pick-one; more allows several. */
+  max_select: number;
+  options: ModifierOption[];
+}
+
 export interface SearchHit {
   item_id: string;
   /** Needed to build the public photo URL; the app holds a slug, not this id. */
@@ -11,6 +30,9 @@ export interface SearchHit {
   availability: "available" | "limited" | "out_of_stock";
   /** Why a substitute was proposed — surfaced so the UI can explain itself. */
   warrants_substitute: boolean;
+  /** Choices to make before this can be added. Empty for most items.
+   *  Older responses omit the field entirely; treat it as empty. */
+  modifiers?: ModifierGroup[];
 }
 
 export function searchCatalog(

@@ -23,6 +23,25 @@ export type Availability = "available" | "limited" | "out_of_stock";
 /** Where a row's facts came from. `manual` is the only one with a human author. */
 export type CatalogSource = "manual" | "shopify" | "woocommerce" | "csv" | "pos";
 
+/** One choice inside a group — "Large", "Extra shot". */
+export interface ModifierOption {
+  id: string;
+  name: string;
+  /** Added to the item's base price when chosen. Signed: a negative is a discount. */
+  price_delta_cents: number;
+}
+
+/** A set of choices offered against an item. */
+export interface ModifierGroup {
+  id: string;
+  name: string;
+  /** 0 makes the group optional. */
+  min_select: number;
+  /** 1 renders as radio buttons, more as checkboxes. */
+  max_select: number;
+  options: ModifierOption[];
+}
+
 export interface Item {
   id: string;
   name: string;
@@ -42,6 +61,8 @@ export interface Item {
   has_photo: boolean;
   /** `null` = uncategorised, which an import legitimately produces. */
   category: string | null;
+  /** Choices offered against this item. Empty for most. */
+  modifiers: ModifierGroup[];
   warrants_substitute: boolean;
 }
 
@@ -68,6 +89,8 @@ export interface ItemInput {
   dietary_tags?: string[];
   /** "Mains", "Beverages"… `null` clears it; omit to leave it unchanged. */
   category?: string | null;
+  /** Omit to leave unchanged. Sending `[]` removes every group. */
+  modifiers?: ModifierGroup[];
 }
 
 async function expectOk(res: Response, what: string): Promise<void> {
