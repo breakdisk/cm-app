@@ -67,6 +67,21 @@ pub struct CatalogService {
 }
 
 impl CatalogService {
+    /// Names for a set of item ids, in one query.
+    ///
+    /// A passthrough on purpose: there is no catalog rule to apply here, and the
+    /// alternative — handing the HTTP layer the repository directly — would let
+    /// the next reader reach past the rules that do exist.
+    pub async fn find_items(
+        &self,
+        tenant_id: Uuid,
+        ids: &[Uuid],
+    ) -> anyhow::Result<Vec<CatalogItem>> {
+        self.catalog.find_items(tenant_id, ids).await
+    }
+}
+
+impl CatalogService {
     pub fn new(
         vendors: Arc<dyn VendorRepository>,
         catalog: Arc<dyn CatalogRepository>,

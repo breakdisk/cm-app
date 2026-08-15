@@ -140,6 +140,25 @@ impl CatalogRepository for PgCatalogRepository {
         Ok(())
     }
 
+    async fn find_items(&self, tenant_id: Uuid, ids: &[Uuid]) -> anyhow::Result<Vec<CatalogItem>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            r#"
+            SELECT i.*, a.state, a.updated_at AS availability_updated_at,
+                   a.confirmed_at, a.updated_by
+              FROM omnideliv.catalog_items i
+              JOIN omnideliv.item_availability a ON a.item_id = i.id
+             WHERE i.tenant_id = $1 AND i.id = ANY($2)
+            "#,
+        )
+        .bind(tenant_id).bind(ids)
+        .fetch_all(&self.pool).await?;
+
+        rows.iter().map(|r| map_pair(r).map(|p| p.item)).collect()
+    }
+
     async fn find_item(&self, tenant_id: Uuid, item_id: Uuid) -> anyhow::Result<Option<CatalogItem>> {
         // Joins availability so the row shape matches `map_pair`; the caller
         // only wants the item, but one mapper is better than two that can drift.

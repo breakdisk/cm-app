@@ -83,6 +83,9 @@ impl CatalogRepository for FakeCatalog {
     async fn find_item(&self, _t: Uuid, item_id: Uuid) -> anyhow::Result<Option<CatalogItem>> {
         Ok(self.items.lock().unwrap().iter().find(|i| i.id == item_id).cloned())
     }
+    async fn find_items(&self, _t: Uuid, ids: &[Uuid]) -> anyhow::Result<Vec<CatalogItem>> {
+        Ok(self.items.lock().unwrap().iter().filter(|i| ids.contains(&i.id)).cloned().collect())
+    }
     async fn find_item_by_sku(
         &self, _t: Uuid, vendor_id: Uuid, sku: &str,
     ) -> anyhow::Result<Option<CatalogItem>> {

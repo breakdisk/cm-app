@@ -69,6 +69,13 @@ pub trait CatalogRepository: Send + Sync {
     /// One item by id. Needed so a manual add can read the price server-side
     /// rather than trusting the client's.
     async fn find_item(&self, tenant_id: Uuid, item_id: Uuid) -> anyhow::Result<Option<CatalogItem>>;
+    /// Several items at once, for callers holding a list of ids.
+    ///
+    /// One query rather than one per line: a basket view needs a name for every
+    /// line, and looping `find_item` would make rendering a basket cost a round
+    /// trip per item. Missing ids are simply absent from the result — an item
+    /// deleted since it was added to a basket is a real case, not an error.
+    async fn find_items(&self, tenant_id: Uuid, ids: &[Uuid]) -> anyhow::Result<Vec<CatalogItem>>;
 
     /// Match by the vendor's own product code. The fallback ingest key, and the
     /// duplicate check for manual entry — two items with one SKU in a store make

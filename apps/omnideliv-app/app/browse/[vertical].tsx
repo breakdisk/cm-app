@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, FlatList, Image, Pressable, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 
 import { addLine, createBasket, type BasketView } from "@/api/basket";
 import { ModifierPicker } from "@/components/ModifierPicker";
@@ -76,6 +76,8 @@ export default function Browse() {
       cancelled = true;
     };
   }, [vendorId]);
+
+  const router = useRouter();
 
   /** The item whose options are being chosen, or null when none is. */
   const [picking, setPicking] = useState<SearchHit | null>(null);
@@ -191,20 +193,33 @@ export default function Browse() {
         />
 
         {basket && (
-          <View
+          /*
+           * The basket footer was a read-only total. Adding items here had no
+           * exit: `/review` was reachable only from the mesh run, so anyone who
+           * browsed a shop by hand filled a basket they could never check out.
+           * The footer is the natural place for that door, and the total was
+           * already sitting in it.
+           */
+          <Pressable
+            onPress={() => router.push({ pathname: "/review", params: { basketId: basket.id } })}
+            accessibilityRole="button"
+            accessibilityLabel={`Review basket, ${peso(basket.goods_total_cents)}`}
             style={{
               borderTopWidth: 1,
               borderTopColor: theme.border,
               paddingTop: 12,
               flexDirection: "row",
               justifyContent: "space-between",
+              alignItems: "center",
             }}
           >
-            <Text style={{ color: theme.muted, fontSize: 12 }}>Basket</Text>
+            <Text style={{ color: theme.cyan, fontSize: 13, fontWeight: "600" }}>
+              Review basket ›
+            </Text>
             <Text style={{ color: theme.text, fontSize: 13, fontWeight: "700" }}>
               {peso(basket.goods_total_cents)}
             </Text>
-          </View>
+          </Pressable>
         )}
       </View>
 

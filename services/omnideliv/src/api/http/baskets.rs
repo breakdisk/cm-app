@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::http::AppState;
-use crate::domain::entities::ModifierError;
+use crate::domain::entities::{ModifierError, SelectedModifier};
 
 #[derive(Debug, Deserialize)]
 pub struct AddLineRequest {
@@ -32,6 +32,32 @@ pub struct BasketResponse {
     /// What the mesh's verification found, restated at the point of decision.
     /// Empty for a manually built basket — nothing proposed it.
     pub conflicts:         Vec<crate::domain::entities::BasketConflict>,
+    /// What is actually in the basket.
+    ///
+    /// The response carried a total and nothing else, so the review screen could
+    /// tell a customer what they owed but not what for — and gave them no way to
+    /// remove a line they did not want. A total with no itemisation is the one
+    /// thing a checkout screen must not be.
+    pub lines:             Vec<BasketLineView>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BasketLineView {
+    pub id:                Uuid,
+    pub item_id:           Uuid,
+    pub vendor_id:         Uuid,
+    /// Resolved from the catalog at read time. An item deleted since it was
+    /// added still has a line and still has to render — hence the fallback
+    /// rather than dropping the line or failing the request.
+    pub name:              String,
+    pub qty:               i32,
+    /// Already includes the modifier deltas below; `subtotal` is this × qty.
+    pub unit_price_cents:  i64,
+    pub subtotal_cents:    i64,
+    /// `proposed` | `accepted` | `substituted` | `rejected`. A substituted line
+    /// is what `lines_awaiting_review` counts and what blocks checkout.
+    pub state:             String,
+    pub modifiers:         Vec<SelectedModifier>,
 }
 
 // Namespaced under `/v1/omnideliv` per ADR-0015's API-contract rule: product
@@ -60,13 +86,7 @@ async fn create(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    Ok(Json(BasketResponse {
-        id: b.id,
-        status: b.status.as_str().to_string(),
-        goods_total_cents: b.goods_total_cents(),
-        lines_awaiting_review: b.lines_awaiting_review().len(),
-        conflicts: b.conflicts.clone(),
-    }))
+    Ok(Json(basket_view(&st, claims.tenant_id, &b).await))
 }
 
 async fn fetch(
@@ -83,24 +103,61 @@ async fn fetch(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    Ok(Json(BasketResponse {
+    Ok(Json(basket_view(&st, claims.tenant_id, &b).await))
+}
+
+/// Build the wire view of a basket, resolving item names.
+///
+/// One `find_items` for the whole basket rather than a lookup per line. Async,
+/// which is why this replaced the plain `BasketResponse::of` — every caller now
+/// awaits it, and none of them can render a basket without the names.
+async fn basket_view(
+    st: &AppState,
+    tenant_id: Uuid,
+    b: &crate::domain::entities::Basket,
+) -> BasketResponse {
+    let mut ids: Vec<Uuid> = b.lines.iter().map(|l| l.item_id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+
+    // A failed lookup degrades to unnamed lines rather than failing the request:
+    // the customer can still see quantities, prices and their total, and can
+    // still remove something. Losing the basket entirely because one name could
+    // not be read would be the worse trade.
+    let names: std::collections::HashMap<Uuid, String> = match st.catalog.find_items(tenant_id, &ids).await {
+        Ok(items) => items.into_iter().map(|i| (i.id, i.name)).collect(),
+        Err(e) => {
+            tracing::warn!(err = %e, "could not resolve basket item names");
+            std::collections::HashMap::new()
+        }
+    };
+
+    BasketResponse {
         id: b.id,
         status: b.status.as_str().to_string(),
         goods_total_cents: b.goods_total_cents(),
         lines_awaiting_review: b.lines_awaiting_review().len(),
         conflicts: b.conflicts.clone(),
-    }))
-}
-
-impl BasketResponse {
-    fn of(b: &crate::domain::entities::Basket) -> Self {
-        Self {
-            id: b.id,
-            status: b.status.as_str().to_string(),
-            goods_total_cents: b.goods_total_cents(),
-            lines_awaiting_review: b.lines_awaiting_review().len(),
-            conflicts: b.conflicts.clone(),
-        }
+        lines: b
+            .lines
+            .iter()
+            .map(|l| BasketLineView {
+                id:               l.id,
+                item_id:          l.item_id,
+                vendor_id:        l.vendor_id,
+                name:             names
+                    .get(&l.item_id)
+                    .cloned()
+                    // Said plainly. A blank would read as a rendering bug; this
+                    // reads as what it is, and the line is still removable.
+                    .unwrap_or_else(|| "Item no longer listed".to_string()),
+                qty:              l.qty,
+                unit_price_cents: l.unit_price_cents,
+                subtotal_cents:   l.subtotal_cents(),
+                state:            format!("{:?}", l.state).to_lowercase(),
+                modifiers:        l.modifiers.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -144,7 +201,7 @@ async fn add_line(
             (StatusCode::INTERNAL_SERVER_ERROR, "could not add the item".into())
         })?;
 
-    Ok(Json(BasketResponse::of(&basket)))
+    Ok(Json(basket_view(&st, claims.tenant_id, &basket).await))
 }
 
 async fn remove_line(
@@ -167,5 +224,5 @@ async fn remove_line(
         return Err((StatusCode::NOT_FOUND, "no such line".into()));
     }
 
-    Ok(Json(BasketResponse::of(&basket)))
+    Ok(Json(basket_view(&st, claims.tenant_id, &basket).await))
 }
