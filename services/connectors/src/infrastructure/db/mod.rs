@@ -45,7 +45,12 @@ impl CredentialsRepository for PgCredentialsRepository {
     ) -> AppResult<Option<ConnectorCredentials>> {
         let row = sqlx::query(
             r#"SELECT id, tenant_id, merchant_id, tenant_slug, platform,
-                      webhook_secret, config, is_active, created_at
+                      webhook_secret, config, is_active,
+                      -- row_to_creds reads both; a SELECT that omits them
+                      -- compiles fine and panics at runtime on the missing
+                      -- column, which is how this broke once already.
+                      last_synced_at, sync_interval_mins,
+                      created_at
                FROM connectors.credentials
                WHERE tenant_id = $1 AND platform = $2 AND is_active = true
                LIMIT 1"#,
@@ -88,7 +93,10 @@ impl CredentialsRepository for PgCredentialsRepository {
                    ) due
              WHERE c.id = due.id
          RETURNING c.id, c.tenant_id, c.merchant_id, c.tenant_slug, c.platform,
-                   c.webhook_secret, c.config, c.is_active, c.created_at
+                   c.webhook_secret, c.config, c.is_active,
+                   -- Returned post-UPDATE, so this is the stamp just written.
+                   c.last_synced_at, c.sync_interval_mins,
+                   c.created_at
             "#,
         )
         .bind(limit)
@@ -160,7 +168,12 @@ impl CredentialsRepository for PgCredentialsRepository {
     async fn list_for_tenant(&self, tenant_id: Uuid) -> AppResult<Vec<ConnectorCredentials>> {
         let rows = sqlx::query(
             r#"SELECT id, tenant_id, merchant_id, tenant_slug, platform,
-                      webhook_secret, config, is_active, created_at
+                      webhook_secret, config, is_active,
+                      -- row_to_creds reads both; a SELECT that omits them
+                      -- compiles fine and panics at runtime on the missing
+                      -- column, which is how this broke once already.
+                      last_synced_at, sync_interval_mins,
+                      created_at
                FROM connectors.credentials
                WHERE tenant_id = $1 AND is_active = true
                ORDER BY platform"#,
