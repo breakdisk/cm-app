@@ -45,6 +45,7 @@ import { GlassCard } from "@/components/ui/glass-card";
 import { ShopConnections } from "@/components/storefront/shop-connections";
 import { UnconfirmedQueue } from "@/components/storefront/unconfirmed-queue";
 import { ModifierEditor, modifierProblems } from "@/components/storefront/modifier-editor";
+import { CsvFormat } from "@/components/storefront/csv-format";
 import { variants } from "@/lib/design-system/tokens";
 import { authFetch } from "@/lib/auth/auth-fetch";
 import { API_BASE } from "@/lib/api/endpoints";
@@ -313,6 +314,10 @@ export default function Storefront() {
             <DownloadCloud className="h-4 w-4" />
             {busy === "sync" ? "Syncing…" : "Sync from shop"}
           </button>
+
+          {/* Next to the button, not in a doc: the question is only ever asked
+              with a file already in hand. */}
+          <CsvFormat />
           <button
             onClick={() => void confirmAll()}
             disabled={busy === "confirm-all" || items.length === 0}

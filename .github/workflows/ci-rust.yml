@@ -26,6 +26,9 @@ on:
       # not even trigger the workflow, so the guard ships unexercised.
       - "scripts/check-*.sh"
       - "scripts/check-*.py"
+      # The console half of the CSV contract. Without this a rename in the
+      # portal alone never triggers the guard that compares it to the parser.
+      - "apps/merchant-portal/src/components/storefront/csv-format.tsx"
   pull_request:
     branches:
       - master
@@ -39,6 +42,9 @@ on:
       # not even trigger the workflow, so the guard ships unexercised.
       - "scripts/check-*.sh"
       - "scripts/check-*.py"
+      # The console half of the CSV contract. Without this a rename in the
+      # portal alone never triggers the guard that compares it to the parser.
+      - "apps/merchant-portal/src/components/storefront/csv-format.tsx"
 
 concurrency:
   group: ci-rust-${{ github.ref }}-${{ github.event.pull_request.number || github.sha }}
@@ -237,6 +243,13 @@ jobs:
       # Dockerfiles still pinned at 1.91.
       - name: Check Dockerfiles build with a Rust new enough for the lock
         run: ./scripts/check-rust-version-pins.sh
+
+      # The console tells a vendor what to put in their CSV; the Rust parser
+      # decides what it actually accepts. Nothing connected them, so a rename on
+      # either side leaves a merchant following instructions that produce a
+      # rejected file — or worse, filling a column the importer silently drops.
+      - name: Check the documented CSV columns match the parser
+        run: ./scripts/check-csv-columns.sh
 
       # rdkafka-sys vendors and compiles librdkafka from C source, so the
       # runner needs its build deps or *nothing downstream compiles*. Without
