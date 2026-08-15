@@ -40,7 +40,9 @@ export function ModifierPicker({
   onCancel: () => void;
   onConfirm: (optionIds: string[]) => void;
 }) {
-  const groups = item.modifiers ?? [];
+  // `?? []` makes a fresh array every render, which would change the useMemo
+  // dependency below on every render and defeat it entirely.
+  const groups = useMemo(() => item.modifiers ?? [], [item.modifiers]);
   const [chosen, setChosen] = useState<string[]>([]);
 
   const toggle = (g: ModifierGroup, optionId: string) => {

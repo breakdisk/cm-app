@@ -26,16 +26,21 @@ function peso(cents: number): string {
   return `₱${(cents / 100).toFixed(2)}`;
 }
 
-/** Slice-one placeholder, mirroring the service's DEFAULT_LAT/DEFAULT_LNG. */
-// One shared definition — see src/deliveryPoint.ts for why these must not be
-// per-screen constants.
-const { lat: DEFAULT_LAT, lng: DEFAULT_LNG } = currentDeliveryPoint();
+// `currentDeliveryPoint()` is deliberately NOT read here at module scope.
+// Route modules are evaluated when the bundle loads, which is before the root
+// layout has awaited `loadDeliveryPoint()` — so a module-level constant captures
+// the Manila *fallback* and keeps it forever. The customer sets an address in
+// Cebu and still gets shops near Manila. Read it inside the effect, where the
+// cache is primed. (Same shape as the session gate: a value read once and never
+// again.)
 
 export default function Browse() {
   const { vertical, vendorId } = useLocalSearchParams<{ vertical: string; vendorId?: string }>();
   // The vendor actually being browsed: the one named in the route, or the
   // nearest open one resolved on mount.
   const [resolvedVendorId, setResolvedVendorId] = useState<string | undefined>(vendorId);
+  /** Every open shop of this vertical nearby. `null` until loaded. */
+  const [shops, setShops] = useState<VendorSummary[] | null>(null);
   const [items, setItems] = useState<SearchHit[]>([]);
   const [vendor, setVendor] = useState<VendorSummary | null>(null);
   const [basket, setBasket] = useState<BasketView | null>(null);
@@ -47,19 +52,41 @@ export default function Browse() {
 
     (async () => {
       try {
-        // Resolve a vendor when the caller did not name one. Nearest first, so
-        // browsing a vertical lands in the closest open store rather than
-        // dead-ending — picking between stores is a screen this slice does not
-        // have, and defaulting beats a blank page.
+        // Read the delivery point here, not at module scope — see the note
+        // above the imports.
+        const here = currentDeliveryPoint();
+
+        // Fetched even when the route names a shop, so "Other shops" is offered
+        // consistently — a deep link should not be a one-way door either. Its
+        // own try/catch: failing to list the neighbours must not stop the shop
+        // the customer actually asked for from loading.
+        let near: VendorSummary[] = [];
+        try {
+          near = await vendorsNear(String(vertical), here.lat, here.lng);
+        } catch {
+          near = [];
+        }
+        if (cancelled) return;
+        setShops(near);
+
         let id = vendorId;
         if (!id) {
-          const near = await vendorsNear(String(vertical), DEFAULT_LAT, DEFAULT_LNG);
           if (near.length === 0) {
-            if (!cancelled) setError(`No ${vertical} shops are open near you right now.`);
+            setError(`No ${vertical} shops are open near you right now.`);
             return;
           }
+          // One shop is not a choice, so do not make the customer tap through a
+          // list of one — the original "defaulting beats a blank page" instinct
+          // was right, it was only wrong when there were others to see.
+          //
+          // With two or more we stop here and show the picker. Taking `near[0]`
+          // and searching only that one made every other shop in the vertical
+          // permanently unreachable: no picker existed, so a second restaurant
+          // simply did not exist as far as the app was concerned.
+          if (near.length > 1) return;
+
           id = near[0].id;
-          if (!cancelled) setVendor(near[0]);
+          setVendor(near[0]);
         }
         setResolvedVendorId(id);
 
@@ -75,7 +102,10 @@ export default function Browse() {
     return () => {
       cancelled = true;
     };
-  }, [vendorId]);
+  // `vertical` belongs here: it decides which shops are fetched. Left out, a
+  // move between verticals that reuses the component would keep the previous
+  // vertical's shops.
+  }, [vendorId, vertical]);
 
   const router = useRouter();
 
@@ -113,6 +143,29 @@ export default function Browse() {
     [commit]
   );
 
+  /** Open one shop's menu. */
+  const selectShop = useCallback(async (s: VendorSummary) => {
+    setLoading(true);
+    setError(null);
+    try {
+      setVendor(s);
+      setResolvedVendorId(s.id);
+      setItems(await searchCatalog(s.id, ""));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not load that shop");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  /** Back to the list without leaving the screen — the basket footer stays. */
+  const changeShop = useCallback(() => {
+    setResolvedVendorId(undefined);
+    setVendor(null);
+    setItems([]);
+    setError(null);
+  }, []);
+
   if (loading) {
     return (
       <SafeAreaView style={{ flex: 1, backgroundColor: theme.canvas, justifyContent: "center" }}>
@@ -121,16 +174,31 @@ export default function Browse() {
     );
   }
 
+  // The picker. Shown whenever no shop is chosen yet and there is more than one
+  // to choose from; a single shop opens directly (see the effect).
+  const choosing = !resolvedVendorId && shops !== null && shops.length > 0;
+
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: theme.canvas }}>
       <View style={{ padding: 20, gap: 12, flex: 1 }}>
         <Text style={{ color: theme.text, fontSize: 18, fontWeight: "600" }}>
-          {vendor?.name ?? vertical}
+          {choosing ? `${vertical} near you` : (vendor?.name ?? vertical)}
         </Text>
-        {vendor && (
+        {choosing && shops && (
+          <Text style={{ color: theme.muted, fontSize: 11, marginTop: -6 }}>
+            {shops.length} shop{shops.length === 1 ? "" : "s"} open
+          </Text>
+        )}
+        {!choosing && vendor && (
           <Text style={{ color: theme.muted, fontSize: 11, marginTop: -6 }}>
             {vendor.address} · about {vendor.prep_time_minutes} min to prepare
           </Text>
+        )}
+        {/* Only offered when there is somewhere else to go. */}
+        {!choosing && shops !== null && shops.length > 1 && (
+          <Pressable onPress={changeShop} accessibilityRole="button" hitSlop={6}>
+            <Text style={{ color: theme.cyan, fontSize: 12 }}>‹ Other shops</Text>
+          </Pressable>
         )}
 
         {error && (
@@ -139,6 +207,36 @@ export default function Browse() {
           </Text>
         )}
 
+        {/* The shop list. Every open shop of this vertical, nearest first —
+            which is the order the server returns them in. Before this the
+            screen took the first and searched only that one, so a second
+            restaurant was unreachable by any route in the app. */}
+        {choosing && shops && (
+          <FlatList
+            data={shops}
+            keyExtractor={(v) => v.id}
+            ItemSeparatorComponent={() => (
+              <View style={{ height: 1, backgroundColor: "rgba(255,255,255,0.06)" }} />
+            )}
+            renderItem={({ item: s }) => (
+              <Pressable
+                onPress={() => void selectShop(s)}
+                accessibilityRole="button"
+                accessibilityLabel={`Browse ${s.name}`}
+                style={{ paddingVertical: 14, gap: 3 }}
+              >
+                <Text style={{ color: theme.text, fontSize: 14, fontWeight: "600" }}>
+                  {s.name}
+                </Text>
+                <Text style={{ color: theme.muted, fontSize: 11 }}>
+                  {s.address} · about {s.prep_time_minutes} min to prepare
+                </Text>
+              </Pressable>
+            )}
+          />
+        )}
+
+        {!choosing && (
         <FlatList
           data={items}
           keyExtractor={(i) => i.item_id}
@@ -191,6 +289,7 @@ export default function Browse() {
             </View>
           )}
         />
+        )}
 
         {basket && (
           /*
