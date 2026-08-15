@@ -17,6 +17,50 @@ import {
   type ShopConnection,
 } from "@/lib/api/storefront";
 
+/**
+ * What a connection's sync state actually is, in the words a merchant needs.
+ *
+ * "Connected" on its own was the whole status before this, and it is the one
+ * thing that is never in doubt — the row exists. What was invisible is whether
+ * anything has ever come through it. A shop connected with a bad token looks
+ * exactly like a healthy one until you notice the catalog never changed.
+ */
+function syncState(c: ShopConnection): { label: string; tone: "good" | "warn" | "idle" } {
+  if (!c.is_active) return { label: "Paused", tone: "idle" };
+  if (c.last_synced_at === null) {
+    // Deliberately not "never" alone — that reads as a fact about the past
+    // rather than something to do next.
+    return { label: "Never synced — press Sync to pull products", tone: "warn" };
+  }
+
+  const ageMins = (Date.now() - new Date(c.last_synced_at).getTime()) / 60000;
+
+  if (c.sync_interval_mins === null) {
+    return { label: `Manual only · last synced ${relative(ageMins)}`, tone: "idle" };
+  }
+  // Two missed windows before calling it overdue: one skipped sweep is normal
+  // (the claim is `SKIP LOCKED`, so a busy minute defers rather than fails) and
+  // flagging that would train merchants to ignore the badge.
+  if (ageMins > c.sync_interval_mins * 2) {
+    return { label: `Overdue — last synced ${relative(ageMins)}`, tone: "warn" };
+  }
+  return { label: `Synced ${relative(ageMins)}`, tone: "good" };
+}
+
+function relative(mins: number): string {
+  if (mins < 2) return "just now";
+  if (mins < 60) return `${Math.round(mins)} min ago`;
+  const hours = mins / 60;
+  if (hours < 24) return `${Math.round(hours)}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+const TONE: Record<"good" | "warn" | "idle", string> = {
+  good: "border-[#00FF88]/30 bg-[#00FF88]/10 text-[#00FF88]",
+  warn: "border-amber-400/30 bg-amber-400/10 text-amber-300",
+  idle: "border-white/10 bg-white/5 text-white/50",
+};
+
 const FIELD =
   "w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white " +
   "placeholder:text-white/25 focus:border-cyan-400/50 focus:outline-none";
@@ -113,12 +157,21 @@ export function ShopConnections({ vendorId }: { vendorId: string }) {
               className="flex flex-col gap-2 p-4 sm:flex-row sm:items-center sm:justify-between"
             >
               <div className="min-w-0">
-                <p className="text-sm text-white">
-                  {SHOP_PLATFORMS.find((p) => p.value === c.platform)?.label ?? c.platform}
-                  {!c.is_active && (
-                    <span className="ml-2 text-xs text-amber-300">inactive</span>
-                  )}
-                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-sm text-white">
+                    {SHOP_PLATFORMS.find((p) => p.value === c.platform)?.label ?? c.platform}
+                  </p>
+                  {(() => {
+                    const st = syncState(c);
+                    return (
+                      <span
+                        className={`rounded-full border px-2 py-0.5 text-[11px] ${TONE[st.tone]}`}
+                      >
+                        {st.label}
+                      </span>
+                    );
+                  })()}
+                </div>
                 {/* Generated server-side. The merchant pastes it into their
                     shop so order events reach us. */}
                 <p className="mt-1 break-all font-mono text-[11px] text-white/40">

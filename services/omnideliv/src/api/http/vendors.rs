@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::http::AppState;
-use crate::domain::entities::current_period;
+use crate::domain::entities::{current_period, LedgerStatus};
 use crate::domain::entities::Vertical;
 use logisticos_auth::rbac::permissions::VENDORS_MANAGE;
 
@@ -276,13 +276,56 @@ async fn my_earnings(
     // No ledger yet is zero, not 404. A store that is open and has sold nothing
     // this week has earnings, and they are nil — a 404 would read as "your
     // store does not exist".
+    // Closed and settled periods, so the card can say what is owed and what has
+    // already been paid. `find_open` alone can never show either: the moment a
+    // period closes it stops returning it, and the vendor's view of everything
+    // they had earned went to zero.
+    let recent = st
+        .ledgers
+        .list_recent(claims.tenant_id, vendor.id, 8)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "vendor ledger history lookup failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let awaiting_payout_cents = recent
+        .iter()
+        .filter(|p| p.status == LedgerStatus::Closed)
+        .map(|p| p.balance_cents)
+        .sum();
+    let paid_cents = recent
+        .iter()
+        .filter(|p| p.status == LedgerStatus::Settled)
+        .map(|p| p.balance_cents)
+        .sum();
+    let periods: Vec<PeriodSummary> = recent
+        .iter()
+        .map(|p| PeriodSummary {
+            period:        p.period.clone(),
+            status:        p.status.as_str().to_string(),
+            balance_cents: p.balance_cents,
+            updated_at:    p.updated_at,
+        })
+        .collect();
+
     let Some(l) = ledger else {
-        return Ok(Json(EarningsResponse { period, balance_cents: 0, entries: Vec::new() }));
+        return Ok(Json(EarningsResponse {
+            period,
+            balance_cents: 0,
+            awaiting_payout_cents,
+            paid_cents,
+            periods,
+            entries: Vec::new(),
+        }));
     };
 
     Ok(Json(EarningsResponse {
         period:        l.period.clone(),
         balance_cents: l.balance_cents,
+        awaiting_payout_cents,
+        paid_cents,
+        periods,
         entries: l
             .entries
             .iter()
@@ -307,9 +350,26 @@ struct EarningEntry {
 }
 
 #[derive(Debug, Serialize)]
+struct PeriodSummary {
+    period:        String,
+    /// `open` | `closed` | `settled`. The distinction the console needs: an open
+    /// figure is still moving, a closed one is owed, a settled one is history.
+    status:        String,
+    balance_cents: i64,
+    updated_at:    chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Serialize)]
 struct EarningsResponse {
+    /// The period still accruing, and its running total. Not payable yet.
     period:        String,
     balance_cents: i64,
+    /// Closed but not yet settled — what the vendor is actually owed.
+    awaiting_payout_cents: i64,
+    /// Already settled. Shown so "where did my money go" has an answer on the
+    /// same card as the question.
+    paid_cents:    i64,
+    periods:       Vec<PeriodSummary>,
     entries:       Vec<EarningEntry>,
 }
 

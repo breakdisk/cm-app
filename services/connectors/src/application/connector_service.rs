@@ -29,6 +29,14 @@ pub struct CredentialsSummary {
     pub platform:        String,
     pub is_active:       bool,
     pub webhook_url:     String,   // pre-constructed URL for merchant to paste into platform
+    /// `None` = never synced. The console shows that as its own state rather
+    /// than as a blank, because "connected but nothing pulled yet" is the case
+    /// a merchant is most likely to be staring at and least able to diagnose.
+    pub last_synced_at:  Option<chrono::DateTime<chrono::Utc>>,
+    /// Minutes between scheduled sweeps, so the console can tell overdue from
+    /// merely recent without hard-coding the schedule. `None` = no schedule;
+    /// this connection only moves when someone presses Sync.
+    pub sync_interval_mins: Option<i32>,
     pub created_at:      chrono::DateTime<chrono::Utc>,
 }
 
@@ -219,6 +227,8 @@ impl ConnectorService {
                     c.platform.as_str(),
                     c.tenant_id,
                 ),
+                last_synced_at: c.last_synced_at,
+                sync_interval_mins: c.sync_interval_mins,
                 created_at: c.created_at,
             })
             .collect())

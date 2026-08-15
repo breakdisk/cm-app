@@ -59,9 +59,24 @@ import {
   type ModifierGroup,
 } from "@/lib/api/storefront";
 
+interface PeriodSummary {
+  period: string;
+  /** `open` still accrues, `closed` is owed, `settled` has been paid. */
+  status: string;
+  balance_cents: number;
+  updated_at: string;
+}
+
 interface Earnings {
+  /** The period still accruing. Not payable yet — that is the whole point of
+   *  keeping it separate from the two figures below. */
   period: string;
   balance_cents: number;
+  /** Closed but not yet settled — what the vendor is actually owed. */
+  awaiting_payout_cents: number;
+  /** Already settled. */
+  paid_cents: number;
+  periods: PeriodSummary[];
 }
 
 /**
@@ -413,15 +428,89 @@ export default function Storefront() {
       )}
 
       {earnings && (
+        /*
+         * Three figures, not one.
+         *
+         * This card used to show a single bold green number labelled "Payouts",
+         * which was in fact only the *open* period — still accruing, not owed,
+         * not paid. It read as money on its way. Worse, the moment a period
+         * closed the endpoint stopped returning it and the number dropped to
+         * zero, so a vendor's earnings appeared to vanish on the day they
+         * became payable.
+         */
         <GlassCard className="p-4">
-          <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <span className="text-xs uppercase tracking-wider text-white/40">
-              Payouts · {earnings.period}
-            </span>
-            <span className="text-2xl font-bold text-[#00FF88]">
-              {peso(earnings.balance_cents)}
-            </span>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div>
+              <span className="block text-xs uppercase tracking-wider text-white/40">
+                This period
+              </span>
+              <span className="mt-1 block text-2xl font-bold text-white">
+                {peso(earnings.balance_cents)}
+              </span>
+              <span className="text-[11px] text-white/30">
+                {earnings.period} · still adding up
+              </span>
+            </div>
+
+            <div>
+              <span className="block text-xs uppercase tracking-wider text-white/40">
+                Awaiting payout
+              </span>
+              <span
+                className={`mt-1 block text-2xl font-bold ${
+                  earnings.awaiting_payout_cents > 0 ? "text-[#00FF88]" : "text-white/30"
+                }`}
+              >
+                {peso(earnings.awaiting_payout_cents)}
+              </span>
+              <span className="text-[11px] text-white/30">closed, not yet paid</span>
+            </div>
+
+            <div>
+              <span className="block text-xs uppercase tracking-wider text-white/40">
+                Paid out
+              </span>
+              <span className="mt-1 block text-2xl font-bold text-white/60">
+                {peso(earnings.paid_cents)}
+              </span>
+              <span className="text-[11px] text-white/30">settled to date</span>
+            </div>
           </div>
+
+          {earnings.periods.length > 0 && (
+            <div className="mt-4 border-t border-white/5 pt-3">
+              <div className="space-y-1">
+                {earnings.periods.map((p) => (
+                  <div
+                    key={p.period}
+                    className="flex items-center justify-between text-[11px]"
+                  >
+                    <span className="font-mono text-white/40">{p.period}</span>
+                    <span className="flex items-center gap-2">
+                      <span
+                        className={
+                          p.status === "settled"
+                            ? "text-white/30"
+                            : p.status === "closed"
+                              ? "text-[#00FF88]"
+                              : "text-white/50"
+                        }
+                      >
+                        {p.status === "open"
+                          ? "accruing"
+                          : p.status === "closed"
+                            ? "owed"
+                            : "paid"}
+                      </span>
+                      <span className="w-20 text-right font-mono text-white/60">
+                        {peso(p.balance_cents)}
+                      </span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </GlassCard>
       )}
 

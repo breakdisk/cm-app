@@ -40,6 +40,15 @@ pub struct ConnectorCredentials {
     pub webhook_secret: String,
     pub config:         serde_json::Value,
     pub is_active:      bool,
+    /// When the scheduled sweep last claimed this connection. `None` means it
+    /// never has — which is not the same as "synced long ago", and is the state
+    /// a merchant most needs to see: credentials accepted, nothing pulled yet.
+    pub last_synced_at: Option<DateTime<Utc>>,
+    /// How often the sweep is meant to claim it, so the console can say whether
+    /// a gap is overdue rather than just old. `None` is a real state, not a
+    /// missing value: the sweep skips rows where this is NULL, so the
+    /// connection is manual-sync-only.
+    pub sync_interval_mins: Option<i32>,
     pub created_at:     DateTime<Utc>,
 }
 

@@ -139,6 +139,12 @@ export interface ShopConnection {
   platform:    string;
   is_active:   boolean;
   webhook_url: string;
+  /** `null` = never synced. Its own state, not a missing value: credentials
+   *  accepted but nothing pulled yet is the case a merchant most needs told. */
+  last_synced_at: string | null;
+  /** Minutes between scheduled sweeps. `null` = no schedule; this connection
+   *  only moves when someone presses Sync. */
+  sync_interval_mins: number | null;
   created_at:  string;
 }
 

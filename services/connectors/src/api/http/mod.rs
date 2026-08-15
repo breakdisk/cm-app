@@ -146,6 +146,10 @@ async fn upsert_credentials(
         webhook_secret: body.webhook_secret,
         config:         body.config,
         is_active:      true,
+        // Neither is written by `upsert` — reconnecting a shop must not erase
+        // when it last synced or silently drop it off the schedule.
+        last_synced_at: None,
+        sync_interval_mins: None,
         created_at:     Utc::now(),
     };
 
@@ -161,6 +165,9 @@ async fn upsert_credentials(
             creds.platform.as_str(),
             creds.tenant_id,
         ),
+        // A connection that was just created has, by definition, never synced.
+        last_synced_at: None,
+        sync_interval_mins: None,
         created_at: creds.created_at,
     };
 

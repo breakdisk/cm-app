@@ -3,7 +3,7 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::domain::entities::{EntryKind, LedgerEntry, LedgerStatus, TelemetryEvent, VendorLedger};
-use crate::domain::repositories::{TelemetryRepository, VendorLedgerRepository};
+use crate::domain::repositories::{LedgerPeriod, TelemetryRepository, VendorLedgerRepository};
 
 pub struct PgVendorLedgerRepository { pool: PgPool }
 
@@ -32,6 +32,39 @@ fn ledger_status(s: &str) -> anyhow::Result<LedgerStatus> {
 
 #[async_trait]
 impl VendorLedgerRepository for PgVendorLedgerRepository {
+    async fn list_recent(
+        &self,
+        tenant_id: Uuid,
+        vendor_id: Uuid,
+        limit: i64,
+    ) -> anyhow::Result<Vec<LedgerPeriod>> {
+        // Period is a sortable `YYYY-Www`/`YYYY-MM` string (see `current_period`),
+        // so ordering on it lexically is ordering it chronologically. No entries
+        // are joined — this feeds three totals on a card.
+        let rows = sqlx::query(
+            "SELECT period, status, balance_cents, updated_at
+               FROM omnideliv.vendor_ledgers
+              WHERE tenant_id = $1 AND vendor_id = $2
+              ORDER BY period DESC
+              LIMIT $3",
+        )
+        .bind(tenant_id).bind(vendor_id).bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for r in &rows {
+            let status: String = r.get("status");
+            out.push(LedgerPeriod {
+                period:        r.get("period"),
+                status:        ledger_status(&status)?,
+                balance_cents: r.get("balance_cents"),
+                updated_at:    r.get("updated_at"),
+            });
+        }
+        Ok(out)
+    }
+
     async fn find_open(
         &self,
         tenant_id: Uuid,

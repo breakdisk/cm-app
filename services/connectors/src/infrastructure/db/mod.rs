@@ -30,6 +30,8 @@ fn row_to_creds(r: &sqlx::postgres::PgRow) -> ConnectorCredentials {
         webhook_secret: r.get("webhook_secret"),
         config:         r.get("config"),
         is_active:      r.get("is_active"),
+        last_synced_at: r.get::<Option<DateTime<Utc>>, _>("last_synced_at"),
+        sync_interval_mins: r.get("sync_interval_mins"),
         created_at:     r.get::<DateTime<Utc>, _>("created_at"),
     }
 }

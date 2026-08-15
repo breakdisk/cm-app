@@ -8,9 +8,24 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::domain::entities::{
-    Availability, Basket, BasketConflict, CatalogItem, CatalogSource, Order, TelemetryEvent, Vendor,
-    VendorLedger, Vertical,
+    Availability, Basket, BasketConflict, CatalogItem, CatalogSource, LedgerStatus, Order,
+    TelemetryEvent, Vendor, VendorLedger, Vertical,
 };
+
+/// One period's headline figures, without its entries.
+///
+/// A payout has three distinct meanings and the console had been showing one
+/// number for all of them: still accruing (`Open`), owed but not yet paid
+/// (`Closed`), and paid (`Settled`). Collapsing them tells a vendor money is on
+/// its way when the figure is still moving, or that it has arrived when it has
+/// not.
+#[derive(Debug, Clone)]
+pub struct LedgerPeriod {
+    pub period:        String,
+    pub status:        LedgerStatus,
+    pub balance_cents: i64,
+    pub updated_at:    chrono::DateTime<chrono::Utc>,
+}
 
 #[async_trait]
 pub trait VendorRepository: Send + Sync {
@@ -229,6 +244,15 @@ pub trait VendorLedgerRepository: Send + Sync {
     /// The open ledger for this vendor and period, if one exists.
     async fn find_open(&self, tenant_id: Uuid, vendor_id: Uuid, period: &str)
         -> anyhow::Result<Option<VendorLedger>>;
+    /// Recent periods, newest first, headline figures only.
+    ///
+    /// Without this a vendor can only ever see the period still accruing —
+    /// `find_open` returns nothing once a period closes, so what they are owed
+    /// and what has already been paid were both invisible. Entries are left
+    /// unloaded on purpose: this feeds a summary, and fetching every entry of
+    /// every period to display three totals would be a scan per card render.
+    async fn list_recent(&self, tenant_id: Uuid, vendor_id: Uuid, limit: i64)
+        -> anyhow::Result<Vec<LedgerPeriod>>;
     /// Persists the ledger and any entries not yet written. Entries are only
     /// ever inserted — an update would break the append-only guarantee the
     /// whole shape exists for.
