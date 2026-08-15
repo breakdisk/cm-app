@@ -4,6 +4,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 
 import { IntentPills } from "@/components/IntentPills";
+import { signOut } from "@/api/auth";
 import { theme } from "@/theme";
 
 function greeting(now = new Date()): string {
@@ -91,6 +92,27 @@ export default function OmniIntentCanvas() {
           <Text style={{ color: theme.cyan, fontSize: 14, fontWeight: "600" }}>
             Your orders →
           </Text>
+        </Pressable>
+
+        {/* The way out of a session.
+            `signOut()` existed in the API layer and was reachable from no
+            screen, so a session that had gone bad — an expired refresh token, a
+            token restored from a backup that can no longer be decrypted — could
+            only be cleared by uninstalling the app. That is not a thing to ask
+            of anyone, and during development it is the difference between a
+            ten-second recovery and a reinstall. */}
+        <Pressable
+          onPress={() => {
+            void (async () => {
+              await signOut();
+              router.replace("/sign-in");
+            })();
+          }}
+          style={{ paddingVertical: 12 }}
+          accessibilityRole="button"
+          accessibilityLabel="Sign out"
+        >
+          <Text style={{ color: theme.faint, fontSize: 12 }}>Sign out</Text>
         </Pressable>
       </View>
     </SafeAreaView>

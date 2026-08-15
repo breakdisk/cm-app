@@ -11,7 +11,7 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, View } from "react-native";
 import { Stack, useRouter, useSegments } from "expo-router";
 
-import { currentToken } from "@/api/auth";
+import { isSignedIn, loadSession } from "@/api/auth";
 import { registerForPush } from "@/api/push";
 import { hasDeliveryPoint, loadDeliveryPoint } from "@/deliveryPoint";
 import { theme } from "@/theme";
@@ -20,17 +20,15 @@ export default function RootLayout() {
   const router = useRouter();
   const segments = useSegments();
   const [ready, setReady] = useState(false);
-  const [signedIn, setSignedIn] = useState(false);
 
   useEffect(() => {
     void (async () => {
-      const token = await currentToken();
+      await loadSession();
       await loadDeliveryPoint();
-      setSignedIn(!!token);
       setReady(true);
 
       // After sign-in, not before: the token is stored against a user.
-      if (token) void registerForPush();
+      if (isSignedIn()) void registerForPush();
     })();
   }, []);
 
@@ -40,6 +38,13 @@ export default function RootLayout() {
     const route = segments[0];
     const onSignIn = route === "sign-in";
     const onAddress = route === "address";
+
+    // Read on every navigation, never from React state. Signing in writes the
+    // token and then routes here; a `signedIn` captured once at mount is still
+    // false at that moment, and the gate bounces a freshly signed-in customer
+    // straight back to the code screen — which reads as "that OTP didn't work"
+    // and only clears on the next cold start.
+    const signedIn = isSignedIn();
 
     if (!signedIn && !onSignIn) {
       router.replace("/sign-in");
@@ -51,7 +56,7 @@ export default function RootLayout() {
     if (signedIn && !hasDeliveryPoint() && !onAddress) {
       router.replace("/address");
     }
-  }, [ready, signedIn, segments, router]);
+  }, [ready, segments, router]);
 
   if (!ready) {
     return (

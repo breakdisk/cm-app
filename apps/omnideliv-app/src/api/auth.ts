@@ -35,6 +35,37 @@ export interface Session {
   userId: string;
 }
 
+/**
+ * Whether we hold a token, answerable *synchronously*.
+ *
+ * The root layout gate needs this the instant navigation happens, and
+ * SecureStore is async. It used to solve that by reading the token once on
+ * mount into React state — which meant that after a successful sign-in the gate
+ * still believed you were signed out, bounced you from "/" straight back to
+ * "/sign-in", and made a correct OTP look rejected. It only came right on the
+ * next cold start, when the mount effect ran again.
+ *
+ * Same shape as `deliveryPoint.ts`: a module-level cache, primed once, kept
+ * current by every writer. There is deliberately no React state involved — a
+ * gate that can hold a stale answer is the bug.
+ */
+let cachedToken: string | null = null;
+
+/** Populate the cache. Call once at startup, before the gate reads it. */
+export async function loadSession(): Promise<void> {
+  try {
+    cachedToken = await SecureStore.getItemAsync(TOKEN_KEY);
+  } catch {
+    // An unreadable store is the same as being signed out: ask again rather
+    // than stranding someone in a session we cannot prove.
+    cachedToken = null;
+  }
+}
+
+export function isSignedIn(): boolean {
+  return cachedToken !== null;
+}
+
 async function post(path: string, body: unknown): Promise<Response> {
   return fetch(`${AUTH_BASE}${path}`, {
     method: "POST",
@@ -122,6 +153,7 @@ export async function verifyOtp(phone: string, code: string): Promise<Session> {
   const token = body.data?.access_token;
   if (!token) throw new Error("Signed in, but no session came back.");
 
+  cachedToken = token;
   await SecureStore.setItemAsync(TOKEN_KEY, token);
   // The server returns this and the app used to drop it on the floor.
   if (body.data?.refresh_token) {
@@ -131,10 +163,14 @@ export async function verifyOtp(phone: string, code: string): Promise<Session> {
 }
 
 export async function currentToken(): Promise<string | null> {
-  return SecureStore.getItemAsync(TOKEN_KEY);
+  // Reads through and refreshes the cache, so the sync and async answers can
+  // never drift apart.
+  cachedToken = await SecureStore.getItemAsync(TOKEN_KEY);
+  return cachedToken;
 }
 
 export async function signOut(): Promise<void> {
+  cachedToken = null;
   await SecureStore.deleteItemAsync(TOKEN_KEY);
   await SecureStore.deleteItemAsync(REFRESH_KEY);
 }
@@ -174,6 +210,7 @@ export async function refreshSession(): Promise<string | null> {
     return null;
   }
 
+  cachedToken = token;
   await SecureStore.setItemAsync(TOKEN_KEY, token);
   if (body.data?.refresh_token) {
     await SecureStore.setItemAsync(REFRESH_KEY, body.data.refresh_token);

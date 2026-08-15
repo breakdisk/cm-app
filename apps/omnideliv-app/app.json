@@ -16,7 +16,8 @@
       "supportsTablet": false
     },
     "android": {
-      "package": "net.cargomarket.omnideliv"
+      "package": "net.cargomarket.omnideliv",
+      "allowBackup": false
     },
     "experiments": {
       "typedRoutes": true
