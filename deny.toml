@@ -15,15 +15,20 @@ targets = [
 # [advisories] — RustSec advisory database
 # ─────────────────────────────────────────────────────────────
 [advisories]
+# `version = 2` already means "every advisory is an error unless ignored", so
+# there is no per-severity switch to set — vulnerability/unsound/notice are not
+# configurable keys under it, and `deny = ["warnings"]` belongs to [bans], not
+# here. This file previously carried all four, which made it fail to
+# *deserialize*: `cargo deny check` did not run a weaker policy, it did not run
+# at all. Nobody noticed because `cargo audit` runs first in the same job and
+# had been failing for months, so the job never reached this step.
 version = 2
-# Fail on any unignored vulnerability
-deny = ["warnings"]
-# Reject unmaintained crates
-unmaintained = "deny"
-# Reject yanked crates
+# The one advisory class that is still a knob. "all" flags unmaintained crates
+# anywhere in the graph, not just direct dependencies — which is where they
+# actually turn up: async-std and proc-macro-error both arrived transitively.
+unmaintained = "all"
+# Reject yanked crates.
 yanked = "deny"
-# Reject unsound code
-unsound = "deny"
 # The same two advisories the cargo-audit step ignores, and for the same
 # reasons. cargo-deny reads this file and knows nothing about cargo-audit's
 # --ignore flags, so both lists have to be kept in step or the audit job fails
@@ -38,6 +43,13 @@ unsound = "deny"
 #
 # scripts/check-audit-ignores.sh re-derives both justifications on every CI run
 # and fails when either stops holding, so neither entry can quietly outlive it.
+#
+# Expect `advisory-not-detected` warnings for both, and do not "fix" them by
+# deleting the entries — the guard above requires all three lists to agree and
+# will fail. The warnings are the interesting part: cargo-deny prunes the graph
+# to the targets above and resolves features properly, where cargo-audit reads
+# Cargo.lock flat. So cargo-deny independently confirms what the rsa
+# justification claims, by not finding the crate at all.
 ignore = [
   "RUSTSEC-2023-0071",
   "RUSTSEC-2026-0253",
@@ -64,20 +76,26 @@ allow = [
   "Zlib",
   "CC0-1.0",
   "OpenSSL",
+  # webpki-roots ships Mozilla's CA bundle under the Community Data License
+  # Agreement, which is a data licence rather than a code one — permissive, no
+  # copyleft, no attribution burden on binaries. It arrives with the rustls
+  # stack, so refusing it means refusing TLS root certificates.
+  "CDLA-Permissive-2.0",
 ]
-# GPL variants are blocked (copyleft incompatible with SaaS)
-deny = [
-  "GPL-1.0",
-  "GPL-2.0",
-  "GPL-3.0",
-  "AGPL-1.0",
-  "AGPL-3.0",
-  "LGPL-2.0",
-  "LGPL-2.1",
-  "LGPL-3.0",
-  "EUPL-1.1",
-  "EUPL-1.2",
-]
+
+# Our own crates carry no SPDX expression: they are proprietary and unpublished,
+# not missing metadata. `publish = false` in each manifest is what marks them
+# private, and this is what stops 33 "unlicensed" errors about our own code
+# drowning the third-party findings this check exists for.
+private = { ignore = true }
+# The GPL/AGPL/LGPL/EUPL list that used to sit here is gone, not relaxed.
+# `[licenses].deny` was removed in cargo-deny (PR #611): with `version = 2` the
+# allow list is exhaustive, so every copyleft licence above is already refused by
+# not appearing in it — along with every other licence nobody has vetted, which
+# is strictly stronger than naming ten of them.
+#
+# Keeping the key was worse than useless: it made this file fail to parse, and a
+# config that does not parse enforces nothing at all.
 
 # ─────────────────────────────────────────────────────────────
 # [bans] — Banned crates and duplicate detection
@@ -85,8 +103,13 @@ deny = [
 [bans]
 # Deny multiple versions of the same crate (forces dep resolution hygiene)
 multiple-versions = "warn"
-# Deny wildcard dependencies in workspace crates
+# Deny wildcard dependencies in workspace crates.
 wildcards = "deny"
+# …but a `{ path = "../common" }` dependency has no version requirement and so
+# reads as `*`. Every crate in this workspace depends on its siblings that way,
+# which made this rule fire 100+ times on our own layout while saying nothing
+# about a real `version = "*"` against crates.io — the thing it is for.
+allow-wildcard-paths = true
 # Deny workspace crates depending on themselves
 workspace-default-features = "allow"
 external-default-features = "allow"
