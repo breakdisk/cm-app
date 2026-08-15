@@ -45,7 +45,12 @@ version      = "0.1.0"
 edition      = "2021"
 authors      = ["LogisticOS Team"]
 license      = "UNLICENSED"
-rust-version = "1.91"
+# Floor is set by the AWS SDK, which requires 1.94.1 as of aws-config 1.10 /
+# aws-sdk-s3 1.141 — the versions that moved off the vulnerable rustls 0.21
+# stack. Pinned to 1.97 because that is the toolchain the workspace is
+# actually verified against (cargo check, clippy -D warnings) and the one the
+# service Dockerfiles build with; keep those two in step.
+rust-version = "1.97"
 
 [workspace.dependencies]
 # Async runtime
@@ -105,7 +110,7 @@ config       = { version = "0.14" }
 dotenvy      = { version = "0.15" }
 
 # Validation
-validator    = { version = "0.18", features = ["derive"] }
+validator    = { version = "0.21", features = ["derive"] }
 
 # Async traits
 async-trait  = { version = "0.1" }
@@ -114,11 +119,19 @@ async-trait  = { version = "0.1" }
 rdkafka      = { version = "0.36", default-features = false, features = ["naive-runtime", "cmake-build"] }
 
 # HTTP client
-reqwest      = { version = "0.11", features = ["json", "rustls-tls"] }
+reqwest      = { version = "0.12", features = ["json", "rustls-tls"] }
 
 # Object storage (S3-compatible)
-aws-sdk-s3    = { version = "1", features = ["behavior-version-latest"] }
-aws-sdk-sesv2 = { version = "1", features = ["behavior-version-latest"] }
+# `default-features = false` here is a security fix, not tidying. These SDKs'
+# default feature set includes `rustls`, which despite the name is the *legacy*
+# hyper-0.14 connector: it pulls rustls 0.21 and rustls-webpki 0.101.7, carrying
+# RUSTSEC-2026-0098/0099/0104 (name constraints wrongly accepted, and a reachable
+# panic parsing CRLs). The modern TLS stack is a separate feature,
+# `default-https-client` → rustls-aws-lc → rustls 0.23, which is kept below.
+# Everything else here is that same default list, restated so dropping the
+# default does not silently remove sigv4a/http-1x/rt-tokio too.
+aws-sdk-s3    = { version = "1", default-features = false, features = ["behavior-version-latest", "sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
+aws-sdk-sesv2 = { version = "1", default-features = false, features = ["behavior-version-latest", "sigv4a", "default-https-client", "rt-tokio"] }
 aws-config    = { version = "1" }
 
 # Geo / Spatial

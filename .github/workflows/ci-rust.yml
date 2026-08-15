@@ -229,6 +229,15 @@ jobs:
       - name: Check INSERTs bind what they name
         run: python3 ./scripts/check-sql-bind-arity.py
 
+      # Same family a third time: the workspace MSRV and 22 Dockerfile base-image
+      # pins must agree, and every Rust job here uses the *runner's* toolchain,
+      # never the image's — so a lock that outgrows the images passes lint, tests
+      # and clippy, then fails 22 image builds at GHCR long after review. That is
+      # exactly what a dependency bump to 1.94.1 did on 2026-08-15 against
+      # Dockerfiles still pinned at 1.91.
+      - name: Check Dockerfiles build with a Rust new enough for the lock
+        run: ./scripts/check-rust-version-pins.sh
+
       # rdkafka-sys vendors and compiles librdkafka from C source, so the
       # runner needs its build deps or *nothing downstream compiles*. Without
       # this, clippy dies on `fatal error: curl/curl.h: No such file or
@@ -664,12 +673,36 @@ jobs:
         run: cargo install cargo-deny --locked --quiet
 
       - name: Run cargo audit (RustSec CVE check)
+        # Two advisories are ignored, both because there is no fixed version to
+        # upgrade to. Neither is a blanket exemption — check-audit-ignores.sh
+        # below re-derives the justification on every run and fails when it
+        # stops holding:
+        #
+        #   RUSTSEC-2023-0071  rsa "Marvin Attack". rsa is never compiled; it
+        #                      reaches Cargo.lock only as an optional dependency
+        #                      of sqlx-mysql, and we are Postgres-only. cargo
+        #                      audit reads the lock, which lists optional
+        #                      dependencies that no feature activates.
+        #   RUSTSEC-2026-0253  lru panic-safety UAF. This one IS compiled, inside
+        #                      aws-sdk-s3's internals. No released lru fixes it
+        #                      and aws-sdk-s3 pins the major version. Unsoundness
+        #                      rather than a remotely reachable vulnerability.
         run: |
           cargo audit \
             --deny warnings \
             --deny unmaintained \
             --deny unsound \
-            --deny yanked
+            --deny yanked \
+            --ignore RUSTSEC-2023-0071 \
+            --ignore RUSTSEC-2026-0253
+
+      # An --ignore never expires on its own: once upstream ships a fix, the flag
+      # keeps suppressing the finding and the job stays green for a reason that
+      # stopped being true. This asserts each ignored advisory is still reported
+      # AND, where the justification is "never compiled", still absent from the
+      # build graph.
+      - name: Check every ignored advisory still earns its ignore
+        run: ./scripts/check-audit-ignores.sh
 
       - name: Run cargo deny (license + bans policy)
         run: cargo deny check
