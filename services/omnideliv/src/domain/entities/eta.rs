@@ -65,6 +65,17 @@ pub fn haversine_km(a: LatLng, b: LatLng) -> f64 {
 
 /// How long until this order reaches the door.
 ///
+/// Whether a fix is recent enough to be shown as live.
+///
+/// The single definition of "fresh", because there are two consumers and they
+/// must not disagree. The ETA refusing a stale fix while the map keeps drawing
+/// the dot is the incoherent middle: the courier's phone died, the arrival time
+/// quietly vanished, and the screen is still animating a point that has not
+/// moved in twenty minutes. Either both go or neither does.
+pub fn is_fresh(fix: &CourierFix) -> bool {
+    fix.age_seconds <= FIX_STALE_AFTER_SECS
+}
+
 /// `remaining_stops` are the pickups not yet collected, in visit order.
 /// Returns `None` when the fix is too old to reason from — the caller shows no
 /// number at all rather than a stale one, which is the same rule that makes
@@ -74,7 +85,7 @@ pub fn estimate_eta(
     remaining_stops: &[LatLng],
     destination: LatLng,
 ) -> Option<EtaEstimate> {
-    if fix.age_seconds > FIX_STALE_AFTER_SECS {
+    if !is_fresh(fix) {
         return None;
     }
 

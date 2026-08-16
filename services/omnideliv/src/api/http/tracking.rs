@@ -66,6 +66,24 @@ fn discloses_position(status: crate::domain::entities::OrderStatus) -> bool {
     matches!(status, Collecting | Delivering)
 }
 
+/// The position to actually put on the wire, given the order's state and
+/// whatever field-ops last heard.
+///
+/// Both rules live here rather than inline in the handler so they are testable
+/// *together*. Separately they were each correct and the pair was not: the
+/// status gate was tested, `is_fresh` was tested, and nothing asserted that a
+/// stale fix is dropped — so a courier whose phone died kept a pulsing dot on
+/// the customer's screen while the ETA silently disappeared.
+fn disclosable_position(
+    status: crate::domain::entities::OrderStatus,
+    fix: Option<crate::application::services::CourierFix>,
+) -> Option<crate::application::services::CourierFix> {
+    if !discloses_position(status) {
+        return None;
+    }
+    fix.filter(crate::domain::entities::eta::is_fresh)
+}
+
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/omnideliv/orders", get(my_orders))
@@ -116,7 +134,7 @@ async fn track(
 
     // Checked before the outbound call, so it is one gate rather than a rule
     // spread across two services, and it saves the call.
-    let courier = match (discloses_position(order.status), order.courier_task_id) {
+    let reported = match (discloses_position(order.status), order.courier_task_id) {
         (true, Some(assignment_id)) => st
             .courier_telemetry
             .position(claims.tenant_id, assignment_id)
@@ -129,6 +147,12 @@ async fn track(
             }),
         _ => None,
     };
+
+    // Both rules, applied together. A stale fix is not a position: field-ops
+    // answers with the newest row it holds however old that is, so freshness is
+    // this layer's to enforce and it must be enforced on the dot, not only on
+    // the ETA.
+    let courier = disclosable_position(order.status, reported);
 
     let vendor_ids: Vec<uuid::Uuid> = order.legs.iter().map(|l| l.vendor_id).collect();
     let vendors = st
@@ -279,5 +303,57 @@ mod tests {
     fn an_order_with_no_courier_yet_discloses_nothing() {
         assert!(!discloses_position(Placed));
         assert!(!discloses_position(AwaitingCourier));
+    }
+
+    fn fix(age: i64) -> crate::application::services::CourierFix {
+        crate::application::services::CourierFix {
+            lat: 14.5995,
+            lng: 120.9842,
+            heading_deg: None,
+            smoothed_speed_kph: Some(20.0),
+            age_seconds: age,
+        }
+    }
+
+    #[test]
+    fn a_fresh_fix_on_a_moving_order_is_disclosed() {
+        assert!(disclosable_position(Delivering, Some(fix(5))).is_some());
+        assert!(disclosable_position(Collecting, Some(fix(5))).is_some());
+    }
+
+    /// The bug this function exists for. field-ops answers with the newest row
+    /// it holds however old that is, so a courier whose phone died mid-route
+    /// keeps reporting one position forever. Showing it is worse than showing
+    /// nothing: the customer reads a stationary dot as a courier who has
+    /// stopped, not as a signal that was lost.
+    #[test]
+    fn a_stale_fix_is_dropped_even_while_the_order_is_moving() {
+        let stale = crate::domain::entities::eta::FIX_STALE_AFTER_SECS + 1;
+        assert!(disclosable_position(Delivering, Some(fix(stale))).is_none());
+        assert!(disclosable_position(Collecting, Some(fix(stale))).is_none());
+    }
+
+    /// Freshness must not resurrect a position the status gate refused.
+    #[test]
+    fn a_finished_order_discloses_nothing_however_fresh_the_fix() {
+        assert!(disclosable_position(Delivered, Some(fix(0))).is_none());
+        assert!(disclosable_position(Cancelled, Some(fix(0))).is_none());
+        assert!(disclosable_position(Placed, Some(fix(0))).is_none());
+    }
+
+    /// The boundary itself, so the two consumers cannot drift apart: anything
+    /// this function keeps, `estimate_eta` must also be willing to price.
+    #[test]
+    fn the_freshness_boundary_matches_the_one_the_eta_uses() {
+        use crate::domain::entities::eta::{estimate_eta, LatLng, FIX_STALE_AFTER_SECS};
+        let dest = LatLng { lat: 14.60, lng: 120.99 };
+
+        let at_limit = fix(FIX_STALE_AFTER_SECS);
+        assert!(disclosable_position(Delivering, Some(at_limit.clone())).is_some());
+        assert!(estimate_eta(&at_limit, &[], dest).is_some());
+
+        let past = fix(FIX_STALE_AFTER_SECS + 1);
+        assert!(disclosable_position(Delivering, Some(past.clone())).is_none());
+        assert!(estimate_eta(&past, &[], dest).is_none());
     }
 }
