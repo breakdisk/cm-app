@@ -13,7 +13,9 @@ use crate::infrastructure::db::{
 };
 use crate::infrastructure::external::{BasketServiceAdapter, CatalogServiceAdapter, FieldOpsDispatch};
 use crate::application::services::{CheckoutService, RecoveryService};
-use crate::domain::repositories::{OrderRepository, TelemetryRepository, VendorLedgerRepository};
+use crate::domain::repositories::{
+    OrderRepository, TelemetryRepository, VendorLedgerRepository, VendorRepository,
+};
 use crate::infrastructure::db::PgVendorLedgerRepository;
 use crate::infrastructure::messaging::{CourierMilestoneHandler, TOPIC_COURIER};
 use crate::infrastructure::db::PgMeshSessionStore;
@@ -104,6 +106,12 @@ pub async fn run() -> anyhow::Result<()> {
     let orders: Arc<dyn OrderRepository> = Arc::new(PgOrderRepository::new(pool.clone()));
     let telemetry: Arc<dyn TelemetryRepository> = Arc::new(PgTelemetryRepository::new(pool.clone()));
 
+    // One vendor repository Arc held directly on AppState, for the tracking
+    // read to draw stop coordinates from — separate from the `PgVendorRepository`
+    // instances threaded into `CatalogService`, `BasketService` and
+    // `CheckoutService` above, each of which owns its own.
+    let vendors: Arc<dyn VendorRepository> = Arc::new(PgVendorRepository::new(pool.clone()));
+
     // One ledger repository for both readers: the milestone consumer that
     // credits it and the vendor endpoint that reads it back.
     let ledgers: Arc<dyn VendorLedgerRepository> =
@@ -156,6 +164,8 @@ pub async fn run() -> anyhow::Result<()> {
         order_events: order_events.clone(),
         jwt,
         photos,
+        courier_telemetry: field_ops.clone(),
+        vendors:           vendors.clone(),
     });
 
     // Courier milestones. Spawned rather than awaited so the HTTP surface comes

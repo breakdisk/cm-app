@@ -60,6 +60,12 @@ impl VendorRepository for FakeVendors {
             .map(|(_, v)| v.clone())
             .collect())
     }
+    async fn find_by_ids(&self, tenant_id: Uuid, ids: &[Uuid]) -> anyhow::Result<Vec<Vendor>> {
+        Ok(self.by_user.iter()
+            .filter(|(_, v)| v.tenant_id == tenant_id && ids.contains(&v.id))
+            .map(|(_, v)| v.clone())
+            .collect())
+    }
 }
 
 #[derive(Default)]

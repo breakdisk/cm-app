@@ -111,6 +111,25 @@ impl VendorRepository for PgVendorRepository {
         Ok(())
     }
 
+    async fn find_by_ids(&self, tenant_id: Uuid, ids: &[Uuid]) -> anyhow::Result<Vec<Vendor>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // `= ANY($2)` rather than a built IN-list: one prepared statement
+        // regardless of how many stops an order has, and no string building
+        // anywhere near a query.
+        let rows = sqlx::query(
+            "SELECT * FROM omnideliv.vendors WHERE tenant_id = $1 AND id = ANY($2)",
+        )
+        .bind(tenant_id)
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.iter().map(map_row).collect()
+    }
+
     async fn find_near(
         &self,
         tenant_id: Uuid,

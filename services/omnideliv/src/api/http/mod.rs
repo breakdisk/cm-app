@@ -10,7 +10,9 @@ use std::sync::Arc;
 use axum::Router;
 
 use crate::application::services::{BasketService, CatalogService, CheckoutService};
-use crate::domain::repositories::{OrderRepository, TelemetryRepository, VendorLedgerRepository};
+use crate::domain::repositories::{
+    OrderRepository, TelemetryRepository, VendorLedgerRepository, VendorRepository,
+};
 use omnideliv_mesh::MeshRunner;
 
 pub struct AppState {
@@ -27,6 +29,10 @@ pub struct AppState {
     /// plainly rather than the service refusing to boot — a catalog without
     /// pictures is still a catalog.
     pub photos:  Option<Arc<crate::infrastructure::storage::PhotoStorage>>,
+    /// Where the courier is. Distinct from `telemetry` above, which is the
+    /// order event log.
+    pub courier_telemetry: Arc<dyn crate::application::services::CourierTelemetry>,
+    pub vendors:           Arc<dyn VendorRepository>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {

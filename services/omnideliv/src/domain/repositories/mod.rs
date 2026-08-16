@@ -51,6 +51,13 @@ pub trait VendorRepository: Send + Sync {
         radius_km: f64,
         limit: i64,
     ) -> anyhow::Result<Vec<Vendor>>;
+
+    /// Several vendors in one round trip.
+    ///
+    /// One query, not a lookup per leg. An order with four stops would
+    /// otherwise issue four queries to draw four dots — the same N+1 that
+    /// `CatalogRepository::find_items` was introduced to avoid on the basket.
+    async fn find_by_ids(&self, tenant_id: Uuid, ids: &[Uuid]) -> anyhow::Result<Vec<Vendor>>;
 }
 
 /// An item paired with its current availability declaration. Returned together
