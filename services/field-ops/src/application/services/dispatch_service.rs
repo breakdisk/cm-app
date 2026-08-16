@@ -517,6 +517,40 @@ impl DispatchService {
         }
         Ok(())
     }
+
+    /// Where the courier holding this assignment is, with enough recent history
+    /// to smooth a speed.
+    ///
+    /// Keyed on the assignment rather than the courier so a caller never needs
+    /// to hold a courier id. field-ops therefore stays product-agnostic — it is
+    /// answering "where is the courier on this job", not "where is this person".
+    ///
+    /// `None` for an unknown assignment and `None` for a courier with no fix on
+    /// record. Both are a 404 to the caller: distinguishing them would confirm
+    /// that an assignment id is real to someone who guessed it.
+    pub async fn position_for_assignment(
+        &self,
+        tenant_id: Uuid,
+        assignment_id: Uuid,
+    ) -> anyhow::Result<Option<(Uuid, CourierLocation, Option<f64>)>> {
+        const SMOOTHING_WINDOW: i64 = 5;
+
+        let Some(a) = self.assignments.find_by_id(tenant_id, assignment_id).await? else {
+            return Ok(None);
+        };
+
+        let recent = self
+            .locations
+            .recent(tenant_id, a.courier_id, SMOOTHING_WINDOW)
+            .await?;
+
+        let Some(latest) = recent.first().cloned() else {
+            return Ok(None);
+        };
+
+        let smoothed = crate::domain::entities::smoothed_speed_kph(&recent);
+        Ok(Some((a.courier_id, latest, smoothed)))
+    }
 }
 
 /// ISO week, matching OmniDeliv's vendor payout period so the two ledgers can
@@ -871,5 +905,133 @@ mod payout_rules {
         let after = s.run_payout(PERIOD, "b2").await.unwrap();
 
         assert_eq!(after.paid_cents, 5_000, "the full earning, once we have our cash back");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Assignment → courier position lookup
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod position_lookup {
+    use super::*;
+    use crate::domain::entities::{Courier, CourierLocation};
+    use crate::domain::repositories::CourierRepository;
+    use crate::infrastructure::db::{ClaimOutcome, CourierLedgerRepository, LocationRepository};
+    use std::sync::Mutex;
+
+    const TENANT: Uuid = Uuid::from_u128(1);
+
+    struct NoCouriers;
+    #[async_trait::async_trait]
+    impl CourierRepository for NoCouriers {
+        async fn find_by_id(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<Courier>> { Ok(None) }
+        async fn find_by_user(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<Courier>> { Ok(None) }
+        async fn save(&self, _: &Courier) -> anyhow::Result<()> { Ok(()) }
+        async fn find_available_near(&self, _: Uuid, _: f64, _: f64, _: f64, _: i64)
+            -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
+    }
+
+    struct NoLedgers;
+    #[async_trait::async_trait]
+    impl CourierLedgerRepository for NoLedgers {
+        async fn find_open(&self, _: Uuid, _: Uuid, _: &str)
+            -> anyhow::Result<Option<CourierLedger>> { Ok(None) }
+        async fn save(&self, _: &CourierLedger) -> anyhow::Result<()> { Ok(()) }
+        async fn find_all_open(&self, _: &str) -> anyhow::Result<Vec<CourierLedger>> { Ok(vec![]) }
+    }
+
+    #[derive(Default)]
+    struct Assignments(Mutex<Vec<CourierAssignment>>);
+    #[async_trait::async_trait]
+    impl AssignmentRepository for Assignments {
+        async fn save(&self, _: &CourierAssignment) -> anyhow::Result<()> { Ok(()) }
+        async fn try_claim(&self, _: Uuid, _: Uuid) -> anyhow::Result<ClaimOutcome> { Ok(ClaimOutcome::Lost) }
+        async fn find_by_id(&self, _: Uuid, id: Uuid) -> anyhow::Result<Option<CourierAssignment>> {
+            Ok(self.0.lock().unwrap().iter().find(|a| a.id == id).cloned())
+        }
+        async fn find_offered_for_courier(&self, _: Uuid, _: Uuid)
+            -> anyhow::Result<Vec<CourierAssignment>> { Ok(vec![]) }
+    }
+
+    /// Empty for every courier — the "no fix on record" case.
+    struct NoFixes;
+    #[async_trait::async_trait]
+    impl LocationRepository for NoFixes {
+        async fn record(&self, _: &CourierLocation) -> anyhow::Result<()> { Ok(()) }
+        async fn latest(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<CourierLocation>> { Ok(None) }
+        async fn recent(&self, _: Uuid, _: Uuid, _: i64) -> anyhow::Result<Vec<CourierLocation>> { Ok(vec![]) }
+    }
+
+    /// A fixed, caller-supplied newest-first list for any courier — enough to
+    /// prove the method hands back `recent()`'s first element verbatim rather
+    /// than recomputing anything of its own.
+    struct WithFixes(Vec<CourierLocation>);
+    #[async_trait::async_trait]
+    impl LocationRepository for WithFixes {
+        async fn record(&self, _: &CourierLocation) -> anyhow::Result<()> { Ok(()) }
+        async fn latest(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<CourierLocation>> {
+            Ok(self.0.first().cloned())
+        }
+        async fn recent(&self, _: Uuid, _: Uuid, _: i64) -> anyhow::Result<Vec<CourierLocation>> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn assignment() -> CourierAssignment {
+        CourierAssignment::offer_with_earnings(
+            TENANT, Uuid::new_v4(), ProductKey::new("omnideliv".to_string()),
+            Uuid::new_v4(), 3_500, 0, 0,
+        )
+    }
+
+    fn fix(courier_id: Uuid) -> CourierLocation {
+        CourierLocation::new(TENANT, courier_id, 14.5995, 120.9842, None)
+    }
+
+    fn svc(assignments: Arc<Assignments>, locations: Arc<dyn LocationRepository>) -> DispatchService {
+        DispatchService::new(
+            Arc::new(NoCouriers), assignments, locations, Arc::new(NoLedgers),
+            Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
+            PayBounds::default(),
+        )
+    }
+
+    /// A guessed id must read exactly like an unknown one — see the doc comment
+    /// on `position_for_assignment` for why that is deliberate.
+    #[tokio::test]
+    async fn an_unknown_assignment_id_is_none() {
+        let svc = svc(Arc::new(Assignments::default()), Arc::new(NoFixes));
+        assert!(svc.position_for_assignment(TENANT, Uuid::new_v4()).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_known_assignment_whose_courier_has_no_fix_is_none() {
+        let a = assignment();
+        let assignments = Arc::new(Assignments::default());
+        assignments.0.lock().unwrap().push(a.clone());
+
+        let svc = svc(assignments, Arc::new(NoFixes));
+        assert!(svc.position_for_assignment(TENANT, a.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_known_assignment_resolves_to_its_couriers_newest_fix() {
+        let a = assignment();
+        let assignments = Arc::new(Assignments::default());
+        assignments.0.lock().unwrap().push(a.clone());
+
+        let newest = fix(a.courier_id);
+        let older = fix(a.courier_id);
+        let locations: Arc<dyn LocationRepository> = Arc::new(WithFixes(vec![newest.clone(), older]));
+
+        let (courier_id, loc, _) = svc(assignments, locations)
+            .position_for_assignment(TENANT, a.id)
+            .await
+            .unwrap()
+            .expect("a known assignment with fixes on record must resolve");
+
+        assert_eq!(courier_id, a.courier_id, "must be the assignment's courier, never trusted from elsewhere");
+        assert_eq!(loc.id, newest.id, "must be recent()'s first element — the newest fix");
     }
 }
