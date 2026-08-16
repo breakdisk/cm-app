@@ -159,7 +159,9 @@ export const carriersApi = {
    * The plaintext key is returned ONCE — show it in a copy-to-clipboard
    * modal immediately. It cannot be retrieved again.
    *
-   * Requires `carriers:manage` (admin/tenant_admin token).
+   * Requires `carriers:manage` (tenant-wide) or `carriers:manage-own` (the
+   * partner role, scoped to its own carrier). Passing another carrier's id
+   * with a partner token returns 404.
    */
   async generateApiKey(carrierId: string): Promise<GenerateApiKeyResult> {
     const { data } = await createApiClient().post<GenerateApiKeyResult>(

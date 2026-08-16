@@ -30,9 +30,12 @@ pub struct OnboardCarrierCommand {
 
 /// Partial update applied to an existing carrier — fields left None are
 /// preserved. Used by partner-portal Settings (profile fields) and Rates
-/// (rate_cards). Per ADR-0013 draft a future partner role will scope this
-/// to the partner's own carrier_id; today the gateway requires CARRIERS_MANAGE
-/// which only the admin role holds, so partners log in with admin tokens.
+/// (rate_cards).
+///
+/// Authorization lives in `application::authz`: `carriers:manage` reaches any
+/// carrier in the tenant, `carriers:manage-own` only the caller's own record.
+/// The full partner_id model is still ADR-0013's job; contact-email identity is
+/// the interim binding.
 #[derive(Debug, Deserialize)]
 pub struct UpdateCarrierCommand {
     pub name:              Option<String>,
@@ -41,7 +44,9 @@ pub struct UpdateCarrierCommand {
     pub api_endpoint:      Option<String>,
     pub sla:               Option<SlaCommitment>,
     pub rate_cards:        Option<Vec<RateCard>>,
-    /// Admin-only: update the compliance/KYB verification state.
+    /// The KYB verdict. Requires full `carriers:manage` — the HTTP handler
+    /// rejects this field for `carriers:manage-own` callers so a partner
+    /// cannot mark itself `compliant`.
     pub compliance_status: Option<crate::domain::entities::ComplianceStatus>,
 }
 

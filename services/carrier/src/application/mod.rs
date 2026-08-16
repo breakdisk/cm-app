@@ -1,3 +1,4 @@
+pub mod authz;
 pub mod commands;
 pub mod handlers;
 pub mod queries;

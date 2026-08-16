@@ -67,7 +67,16 @@ pub mod permissions {
     pub const BILLING_SETUP:      &str = "billing:setup";
 
     // ── Carriers ─────────────────────────────────────────────
+    /// Tenant-wide carrier authority: onboard, edit, activate/suspend, and
+    /// mint API keys for **any** carrier in the tenant. Admin/tenant_admin only.
     pub const CARRIERS_MANAGE:   &str = "carriers:manage";
+    // Narrow self-scoped permission: a partner may edit the profile, rate
+    // cards and API key of the single carrier record whose `contact_email`
+    // matches their JWT email — and nothing else carrier-related. It does NOT
+    // grant onboarding new carriers, lifecycle transitions (activate/suspend),
+    // or compliance/KYB overrides; those stay with CARRIERS_MANAGE so the
+    // tenant retains its lever over the partner. See ADR-0013.
+    pub const CARRIERS_MANAGE_OWN: &str = "carriers:manage-own";
     pub const CARRIERS_READ:     &str = "carriers:read";
 
     // ── Customers / CDP ───────────────────────────────────────
@@ -142,9 +151,12 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::SHIPMENT_CREATE, permissions::SHIPMENT_READ,
             permissions::SHIPMENT_CANCEL,
         ],
+        // A partner is a carrier's own operator. It gets self-scoped carrier
+        // authority only — CARRIERS_MANAGE would let one partner edit, suspend
+        // or mint an API key for a competing carrier in the same tenant.
         "partner" => vec![
             permissions::CARRIERS_READ,
-            permissions::CARRIERS_MANAGE,
+            permissions::CARRIERS_MANAGE_OWN,
             permissions::SHIPMENT_READ,
             permissions::PAYMENTS_READ,
             permissions::ANALYTICS_VIEW,
@@ -173,5 +185,63 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::SHIPMENT_UPDATE,
         ],
         _ => vec![],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn role(r: &str) -> Vec<&'static str> {
+        default_permissions_for_role(r)
+    }
+
+    /// The partner role is a carrier's own operator. Granting it tenant-wide
+    /// `carriers:manage` would let one partner edit, suspend, or mint an API
+    /// key for a competing carrier in the same tenant — see ADR-0013 and
+    /// `services/carrier/src/application/authz.rs`.
+    #[test]
+    fn partner_does_not_hold_tenant_wide_carrier_authority() {
+        let p = role("partner");
+        assert!(
+            !p.contains(&permissions::CARRIERS_MANAGE),
+            "partner must not hold carriers:manage — use carriers:manage-own",
+        );
+        assert!(p.contains(&permissions::CARRIERS_MANAGE_OWN));
+        assert!(p.contains(&permissions::CARRIERS_READ));
+    }
+
+    /// The narrow permission is partner-only; handing it to an operator role
+    /// would be harmless but signals confusion about which is which.
+    #[test]
+    fn manage_own_is_granted_to_partner_alone() {
+        for r in ["admin", "tenant_admin", "dispatcher", "merchant", "driver",
+                  "finance", "readonly", "customer", "hub_scanner"] {
+            assert!(
+                !role(r).contains(&permissions::CARRIERS_MANAGE_OWN),
+                "{r} should not hold carriers:manage-own",
+            );
+        }
+    }
+
+    /// Tenant operators keep full carrier authority — the partner change must
+    /// not have narrowed the admin path.
+    #[test]
+    fn operator_roles_retain_carrier_manage() {
+        for r in ["admin", "tenant_admin"] {
+            assert!(role(r).contains(&permissions::CARRIERS_MANAGE), "{r} lost carriers:manage");
+        }
+    }
+
+    /// The two permission strings must stay distinct — a substring-matching
+    /// check anywhere would otherwise silently conflate them.
+    #[test]
+    fn carrier_permission_strings_are_distinct() {
+        assert_ne!(permissions::CARRIERS_MANAGE, permissions::CARRIERS_MANAGE_OWN);
+    }
+
+    #[test]
+    fn unknown_role_has_no_permissions() {
+        assert!(role("undefined_role").is_empty());
     }
 }
