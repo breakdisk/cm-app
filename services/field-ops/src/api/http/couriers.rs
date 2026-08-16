@@ -132,6 +132,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/v1/field-ops/assignments/:id/claim", post(claim))
         .route("/v1/field-ops/assignments/:id/collected", post(collected))
         .route("/v1/field-ops/assignments/:id/delivered", post(delivered))
+        .route("/v1/field-ops/assignments/:id/position", get(assignment_position))
         .route("/v1/field-ops/couriers/register", post(register))
         .route("/v1/field-ops/couriers/me/earnings", get(my_earnings))
         .route("/v1/field-ops/couriers/me/remit", post(remit))
@@ -470,6 +471,63 @@ async fn position(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
     Ok(StatusCode::ACCEPTED)
+}
+
+/// One courier's live position on a job.
+///
+/// `age_seconds` travels with the fix so the caller can decide what counts as
+/// stale without needing the server's clock. Sending the freshness alongside
+/// the point is what lets a consumer refuse to draw a dot rather than drawing
+/// an old one and calling it live.
+#[derive(Debug, Serialize)]
+pub struct PositionResponse {
+    pub courier_id:         Uuid,
+    pub lat:                f64,
+    pub lng:                f64,
+    /// Instantaneous reading from the most recent fix, when the device sent one.
+    pub speed_kph:          Option<f32>,
+    /// EWMA across recent fixes. `None` when no fix carried a speed.
+    pub smoothed_speed_kph: Option<f64>,
+    pub heading_deg:        Option<f32>,
+    pub device_timestamp:   Option<chrono::DateTime<chrono::Utc>>,
+    pub recorded_at:        chrono::DateTime<chrono::Utc>,
+    pub age_seconds:        i64,
+}
+
+/// `GET /v1/field-ops/assignments/:id/position` — where the courier on this
+/// job is right now.
+///
+/// Keyed on the assignment, not the courier: a caller who can see the
+/// assignment can see the position, and never needs to hold a courier id
+/// directly. `None` — unknown assignment or a courier with no fix yet — is a
+/// 404 either way; see `position_for_assignment` for why the two are not
+/// distinguished.
+async fn assignment_position(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Path(assignment_id): Path<Uuid>,
+) -> Result<Json<PositionResponse>, StatusCode> {
+    let (courier_id, fix, smoothed) = st
+        .dispatch
+        .position_for_assignment(claims.tenant_id, assignment_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, %assignment_id, "position lookup failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    Ok(Json(PositionResponse {
+        courier_id,
+        lat:                fix.lat,
+        lng:                fix.lng,
+        speed_kph:          fix.speed_kph,
+        smoothed_speed_kph: smoothed,
+        heading_deg:        fix.heading_deg,
+        device_timestamp:   fix.device_timestamp,
+        recorded_at:        fix.recorded_at,
+        age_seconds:        fix.age_seconds(chrono::Utc::now()),
+    }))
 }
 
 async fn collected(
