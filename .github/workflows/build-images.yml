@@ -12,7 +12,18 @@ on:
 
 concurrency:
   group: build-images-${{ github.ref }}
-  cancel-in-progress: true
+  # NOT cancel-in-progress on master. This pipeline publishes artifacts, it does
+  # not just check them, and cancelling it loses work silently:
+  #
+  # On 2026-08-16 a merge to master started a full rebuild; a docs-only commit
+  # pushed nine minutes later cancelled it, and that replacement run's path
+  # filter diffed only its own commit range — no Rust in it — so all 23 image
+  # jobs reported `skipped` and the run went green in 33 seconds. The merge's
+  # Rust changes had no image anywhere, while CI said everything was fine.
+  #
+  # Cancelling is still right on a feature branch, where nothing is published
+  # and the newest push is the only one anyone wants.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 env:
   REGISTRY: ghcr.io
