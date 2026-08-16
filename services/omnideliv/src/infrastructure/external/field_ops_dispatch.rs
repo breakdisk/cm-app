@@ -167,6 +167,58 @@ impl CourierDispatch for FieldOpsDispatch {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct PositionResponse {
+    lat:                f64,
+    lng:                f64,
+    heading_deg:        Option<f32>,
+    smoothed_speed_kph: Option<f64>,
+    age_seconds:        i64,
+}
+
+#[async_trait]
+impl crate::application::services::CourierTelemetry for FieldOpsDispatch {
+    async fn position(
+        &self,
+        tenant_id: Uuid,
+        assignment_id: Uuid,
+    ) -> anyhow::Result<Option<crate::application::services::CourierFix>> {
+        let token = self.mint(tenant_id)?;
+
+        let res = self
+            .http
+            .get(format!(
+                "{}/v1/field-ops/assignments/{assignment_id}/position",
+                self.base_url
+            ))
+            .bearer_auth(token)
+            .send()
+            .await?;
+
+        // 404 is the ordinary answer for a courier who has not reported yet.
+        // It is not an error and must not be logged as one, or a normal early
+        // minute of every order fills the log with noise that hides real faults.
+        if res.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            anyhow::bail!("field-ops position lookup failed: {status} {body}");
+        }
+
+        let p = res.json::<PositionResponse>().await?;
+        Ok(Some(crate::application::services::CourierFix {
+            lat:                p.lat,
+            lng:                p.lng,
+            heading_deg:        p.heading_deg,
+            smoothed_speed_kph: p.smoothed_speed_kph,
+            age_seconds:        p.age_seconds,
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
