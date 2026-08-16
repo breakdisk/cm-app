@@ -15,6 +15,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams } from "expo-router";
 
 import { trackOrder, pollIntervalMs, type TrackResponse } from "@/api/tracking";
+import { MapSurface } from "@/components/map/MapSurface";
 import { theme } from "@/theme";
 
 /** What each status means to someone waiting, not to the state machine. */
@@ -40,6 +41,13 @@ const EVENT_LABEL: Record<string, string> = {
 };
 
 const peso = (c: number) => `₱${(c / 100).toFixed(2)}`;
+
+/** The steps every order passes through, so the list shows what is still to come. */
+const FUTURE_STEPS: { key: TrackResponse["status"][]; label: string }[] = [
+  { key: ["placed", "awaiting_courier"], label: "Courier accepted" },
+  { key: ["placed", "awaiting_courier", "collecting"], label: "All items collected" },
+  { key: ["placed", "awaiting_courier", "collecting", "delivering"], label: "Delivered" },
+];
 
 export default function Track() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -92,7 +100,33 @@ export default function Track() {
         <View style={{ gap: 6 }}>
           <Text style={{ color: say.tone, fontSize: 26, fontWeight: "800" }}>{say.title}</Text>
           <Text style={{ color: theme.muted, fontSize: 14 }}>{say.sub}</Text>
+          {order.eta && (
+            <Text style={{ color: theme.text, fontSize: 15, fontWeight: "600" }}>
+              {order.eta.low_minutes === order.eta.high_minutes
+                ? `Arriving in about ${order.eta.low_minutes} min`
+                : `Arriving in ${order.eta.low_minutes}–${order.eta.high_minutes} min`}
+            </Text>
+          )}
         </View>
+
+        {/* Four states, not one. A finished delivery does not need a map, and
+            the backend returns no position for one anyway. */}
+        {order.destination &&
+          order.status !== "delivered" &&
+          order.status !== "cancelled" && (
+            <View style={{ gap: 6 }}>
+              <MapSurface
+                courier={order.courier}
+                stops={order.stops}
+                destination={order.destination}
+              />
+              {!order.courier && (
+                <Text style={{ color: theme.faint, fontSize: 12 }}>
+                  Waiting for the courier&apos;s location.
+                </Text>
+              )}
+            </View>
+          )}
 
         <View
           style={{
@@ -143,6 +177,23 @@ export default function Track() {
               </View>
             </View>
           ))}
+
+          {order.status !== "cancelled" &&
+            FUTURE_STEPS.filter((s) => s.key.includes(order.status)).map((s) => (
+              <View key={s.label} style={{ flexDirection: "row", gap: 10 }}>
+                <View
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: 3,
+                    backgroundColor: theme.faint,
+                    marginTop: 6,
+                    opacity: 0.4,
+                  }}
+                />
+                <Text style={{ color: theme.faint, fontSize: 13, opacity: 0.6 }}>{s.label}</Text>
+              </View>
+            ))}
         </View>
       </ScrollView>
     </SafeAreaView>
