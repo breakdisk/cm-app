@@ -639,6 +639,7 @@ mod claim_authorization {
     impl LocationRepository for NoLocations {
         async fn record(&self, _: &CourierLocation) -> anyhow::Result<()> { Ok(()) }
         async fn latest(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<CourierLocation>> { Ok(None) }
+        async fn recent(&self, _: Uuid, _: Uuid, _: i64) -> anyhow::Result<Vec<CourierLocation>> { Ok(vec![]) }
     }
 
     struct NoLedgers;
@@ -769,6 +770,7 @@ mod payout_rules {
     impl LocationRepository for NoLoc {
         async fn record(&self, _: &CourierLocation) -> anyhow::Result<()> { Ok(()) }
         async fn latest(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<CourierLocation>> { Ok(None) }
+        async fn recent(&self, _: Uuid, _: Uuid, _: i64) -> anyhow::Result<Vec<CourierLocation>> { Ok(vec![]) }
     }
     struct NoAssign;
     #[async_trait::async_trait]

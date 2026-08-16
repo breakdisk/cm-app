@@ -8,6 +8,18 @@ use crate::domain::entities::CourierLocation;
 pub trait LocationRepository: Send + Sync {
     async fn record(&self, l: &CourierLocation) -> anyhow::Result<()>;
     async fn latest(&self, tenant_id: Uuid, courier_id: Uuid) -> anyhow::Result<Option<CourierLocation>>;
+
+    /// The most recent `limit` fixes, newest first.
+    ///
+    /// Smoothing a speed needs a series and `latest` is one point. The history
+    /// is already in this table — `record` appends and never updates — so this
+    /// is a read of data we hold, not new capture.
+    async fn recent(
+        &self,
+        tenant_id: Uuid,
+        courier_id: Uuid,
+        limit: i64,
+    ) -> anyhow::Result<Vec<CourierLocation>>;
 }
 
 pub struct PgLocationRepository {
@@ -73,5 +85,31 @@ impl LocationRepository for PgLocationRepository {
         .await?;
 
         Ok(row.as_ref().map(map_row))
+    }
+
+    async fn recent(
+        &self,
+        tenant_id: Uuid,
+        courier_id: Uuid,
+        limit: i64,
+    ) -> anyhow::Result<Vec<CourierLocation>> {
+        // Same table, same ORDER BY as `latest`, so the newest row here is the
+        // same row `latest` returns. Two orderings would let the map show one
+        // point and the ETA smooth around a different one.
+        let rows = sqlx::query(
+            r#"
+            SELECT * FROM field_ops.courier_locations
+             WHERE tenant_id = $1 AND courier_id = $2
+             ORDER BY recorded_at DESC
+             LIMIT $3
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(courier_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.iter().map(map_row).collect())
     }
 }
