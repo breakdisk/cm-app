@@ -40,6 +40,11 @@ on:
         options:
           - development
           - preview
+          # Same build as `preview`, pointed at the cargomarket-ph tenant.
+          # The slug is baked into the bundle at build time, so an APK built
+          # for `demo` searches `demo` forever — which is how a real item that
+          # existed in cargomarket-ph read as "my item isn't in the app".
+          - preview-ph
           - production
       variant:
         description: "Gradle variant"

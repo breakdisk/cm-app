@@ -31,6 +31,18 @@
         "EXPO_PUBLIC_TENANT_SLUG": "demo"
       }
     },
+    "preview-ph": {
+      "distribution": "internal",
+      "autoIncrement": true,
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_GATEWAY_API": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_OMNIDELIV_API": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_TENANT_SLUG": "cargomarket-ph"
+      }
+    },
     "production": {
       "autoIncrement": true,
       "android": {
