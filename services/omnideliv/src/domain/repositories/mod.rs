@@ -181,6 +181,12 @@ pub trait CatalogRepository: Send + Sync {
 pub struct OrderSummary {
     pub id:                Uuid,
     pub status:            String,
+    /// The breakdown a receipt needs. Already columns on `omnideliv.orders` —
+    /// the list simply never selected them, so a customer could see what they
+    /// owed and never what for.
+    pub goods_total_cents:  i64,
+    pub delivery_fee_cents: i64,
+    pub tip_cents:          i64,
     pub grand_total_cents: i64,
     pub stops_total:       i64,
     /// Comma-joined vendor names, for "Kuya's Silog House, Puregold Ermita".

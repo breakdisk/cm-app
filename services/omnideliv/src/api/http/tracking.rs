@@ -33,6 +33,12 @@ pub struct StopView {
 pub struct TrackResponse {
     pub order_id:          Uuid,
     pub status:            String,
+    /// The breakdown a receipt needs. Already columns on `omnideliv.orders` —
+    /// the list simply never selected them, so a customer could see what they
+    /// owed and never what for.
+    pub goods_total_cents:  i64,
+    pub delivery_fee_cents: i64,
+    pub tip_cents:          i64,
     pub grand_total_cents: i64,
     pub stops_total:       usize,
     pub stops_collected:   usize,
@@ -170,6 +176,9 @@ async fn track(
     Ok(Json(TrackResponse {
         order_id:          order.id,
         status:            order.status.as_str().to_string(),
+        goods_total_cents:  order.goods_total_cents,
+        delivery_fee_cents: order.delivery_fee_cents,
+        tip_cents:          order.tip_cents,
         grand_total_cents: order.grand_total_cents,
         stops_total:       order.legs.len(),
         stops_collected,
@@ -194,6 +203,12 @@ async fn track(
 pub struct OrderListItem {
     pub order_id:          uuid::Uuid,
     pub status:            String,
+    /// The breakdown a receipt needs. Already columns on `omnideliv.orders` —
+    /// the list simply never selected them, so a customer could see what they
+    /// owed and never what for.
+    pub goods_total_cents:  i64,
+    pub delivery_fee_cents: i64,
+    pub tip_cents:          i64,
     pub grand_total_cents: i64,
     pub stops_total:       i64,
     pub vendor_names:      String,
@@ -228,6 +243,9 @@ async fn my_orders(
             .map(|s| OrderListItem {
                 order_id:          s.id,
                 status:            s.status,
+                goods_total_cents:  s.goods_total_cents,
+                delivery_fee_cents: s.delivery_fee_cents,
+                tip_cents:          s.tip_cents,
                 grand_total_cents: s.grand_total_cents,
                 stops_total:       s.stops_total,
                 vendor_names:      s.vendor_names,

@@ -146,6 +146,9 @@ impl OrderRepository for PgOrderRepository {
             r#"
             SELECT o.id                AS id,
                    o.status            AS status,
+                   o.goods_total_cents  AS goods_total_cents,
+                   o.delivery_fee_cents AS delivery_fee_cents,
+                   o.tip_cents          AS tip_cents,
                    o.grand_total_cents AS grand_total_cents,
                    o.placed_at         AS placed_at,
                    o.delivered_at      AS delivered_at,
@@ -171,6 +174,9 @@ impl OrderRepository for PgOrderRepository {
             .map(|r| crate::domain::repositories::OrderSummary {
                 id:                r.get("id"),
                 status:            r.get("status"),
+                goods_total_cents:  r.get("goods_total_cents"),
+                delivery_fee_cents: r.get("delivery_fee_cents"),
+                tip_cents:          r.get("tip_cents"),
                 grand_total_cents: r.get("grand_total_cents"),
                 stops_total:       r.get("stops_total"),
                 vendor_names:      r.get("vendor_names"),
