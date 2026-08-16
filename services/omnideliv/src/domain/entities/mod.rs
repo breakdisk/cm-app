@@ -1,6 +1,7 @@
 pub mod basket;
 pub mod catalog;
 pub mod consolidation;
+pub mod eta;
 pub mod order;
 pub mod telemetry;
 pub mod vendor;
