@@ -55,8 +55,11 @@ const ROLE_PERMISSIONS: Record<string, string[]> = {
   customer: [
     "shipments:create", "shipments:read", "shipments:cancel",
   ],
+  // Self-scoped: `carriers:manage-own` reaches only the carrier whose
+  // contact_email matches this user. Not `carriers:manage`, which is
+  // tenant-wide carrier authority.
   partner: [
-    "carriers:read", "carriers:manage", "shipments:read", "payments:read", "analytics:view",
+    "carriers:read", "carriers:manage-own", "shipments:read", "payments:read", "analytics:view",
   ],
 };
 

@@ -28,6 +28,25 @@ val junit5Version = libs.versions.junit5.get()
 subprojects {
     tasks.withType<Test>().configureEach {
         useJUnitPlatform()
+
+        // Gradle's default Test worker heap is 512m, which was never set explicitly
+        // here. JUnit 5 plus MockK — which retains a record of every call made to
+        // every mock — runs close enough to that ceiling that it is not a useful
+        // safety margin.
+        maxHeapSize = "1g"
+
+        // A test worker that exhausts its heap does not reliably die. The OOM
+        // surfaces on whichever thread happens to be allocating, and when that is
+        // the worker's connection thread, the process stays alive but can no longer
+        // report the task result. Gradle waits for a message that will never
+        // arrive, so the build hangs instead of failing — on CI that meant two runs
+        // burning GitHub's full 6-hour job limit rather than failing in minutes.
+        //
+        // Exiting the JVM on the first OutOfMemoryError converts that into a worker
+        // process death, which Gradle already handles correctly ("Process 'Gradle
+        // Test Executor N' finished with non-zero exit value") and turns into a
+        // prompt build failure.
+        jvmArgs("-XX:+ExitOnOutOfMemoryError")
     }
     plugins.withId("com.android.base") {
         // The engine is a runtime-only dependency, which a version-catalog bundle

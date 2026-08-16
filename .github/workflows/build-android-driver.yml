@@ -12,6 +12,13 @@ jobs:
   build:
     name: Build stagingDebug + stagingRelease + prodRelease APKs
     runs-on: ubuntu-latest
+    # Healthy runs finish in 8-13 minutes. The default is GitHub's 360, which is
+    # what two hung runs consumed in full when a unit-test worker OOMed and Gradle
+    # sat waiting on a dead worker connection instead of failing. The Gradle-side
+    # fix (-XX:+ExitOnOutOfMemoryError, in build.gradle.kts) should mean this is
+    # never reached; it is the backstop for the next hang that has a cause we have
+    # not thought of yet.
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v5

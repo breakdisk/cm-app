@@ -11,8 +11,17 @@ info:
     all active carriers for a given service type and weight, sorted by price ascending.
     This powers the AI-driven carrier selection logic.
 
-    All endpoints require a valid JWT. Read operations require `carriers:read`,
-    management operations require `carriers:manage`.
+    All endpoints require a valid JWT. Read operations require `carriers:read`.
+
+    **Carrier authority is two-tiered.** `carriers:manage` (admin / tenant_admin)
+    reaches every carrier in the tenant. `carriers:manage-own` (partner) reaches
+    only the single carrier whose `contact_email` matches the caller's JWT email,
+    and covers profile, rate-card and API-key operations only — onboarding,
+    activate/suspend and `compliance_status` writes stay with `carriers:manage`.
+
+    For a `carriers:manage-own` caller, `GET /v1/carriers` returns just their own
+    carrier, and any `/v1/carriers/{id}` route addressing another carrier responds
+    `404` rather than `403` so carrier ids cannot be enumerated.
   contact:
     name: LogisticOS Engineering
     email: engineering@logisticos.io

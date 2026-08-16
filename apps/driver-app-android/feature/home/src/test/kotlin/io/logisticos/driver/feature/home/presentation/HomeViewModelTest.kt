@@ -22,11 +22,10 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.*
 import org.junit.jupiter.api.*
 import org.junit.jupiter.api.Assertions.*
+import java.io.IOException
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class HomeViewModelTest {
-    private val testDispatcher = UnconfinedTestDispatcher()
-
     private val repo:          ShiftRepository      = mockk()
     private val api:           DriverOpsApiService  = mockk(relaxed = true)
     private val complianceApi: ComplianceApiService = mockk(relaxed = true)
@@ -40,7 +39,36 @@ class HomeViewModelTest {
     private lateinit var vm: HomeViewModel
 
     @BeforeEach fun setUp() {
-        Dispatchers.setMain(testDispatcher)
+        // Deliberately a real dispatcher, not UnconfinedTestDispatcher — unlike every
+        // other ViewModel test in this app.
+        //
+        // HomeViewModel.init starts four unbounded `while (true) { delay(...) }`
+        // pollers on viewModelScope (the TTL ticker, startOfferPolling, startPolling
+        // and the go-online heartbeat). It is the only ViewModel here that does.
+        // Those run on Dispatchers.Main, and when Main is a TestDispatcher, runTest
+        // adopts its TestCoroutineScheduler so the two share one virtual clock.
+        // Virtual time costs nothing to advance, so runTest's end-of-test
+        // "advance until idle" can never reach idle: each loop schedules its next
+        // delay the instant the previous one fires. The suite then spins at full
+        // CPU, and because every collaborator here is a relaxed mock — and MockK
+        // records every call it receives — the recorded-call log grows without
+        // bound until the test JVM dies of OutOfMemoryError.
+        //
+        // On CI that OOM landed in the Gradle worker's connection thread, which
+        // killed the channel carrying the task result. The build did not fail; it
+        // hung until GitHub's 6-hour job limit, twice.
+        //
+        // Handing Main a non-test dispatcher decouples the two clocks: runTest gets
+        // its own scheduler and goes idle immediately, while the pollers park on
+        // real timers and never tick during a sub-second test. Unconfined keeps
+        // init eager, so uiState is populated by the time the constructor returns,
+        // which is what these tests assert on.
+        //
+        // Consequence: virtual-time control (advanceTimeBy/advanceUntilIdle) is not
+        // available for this ViewModel. It never was — the infinite pollers make
+        // that impossible regardless. Testing the poll intervals themselves needs
+        // the polling hoisted out of init behind an injected dispatcher first.
+        Dispatchers.setMain(Dispatchers.Unconfined)
         val shift = ShiftEntity("s1", "d1", "t1", null, null, true, 5, 2, 0, 0.0, null)
         every { repo.observeActiveShift() } returns flowOf(shift)
         coEvery { repo.syncShift() } returns Unit
@@ -105,6 +133,16 @@ class HomeViewModelTest {
     fun `isHubScanner flag is loaded from session manager`() = runTest {
         every { sessionManager.isHubScanner() } returns true
         every { sessionManager.getHubId() } returns "hub-42"
+        // init renders in two phases: the cached role from SessionManager first,
+        // then refreshHubProfile() overwrites it from identity/driver-ops so a
+        // mid-shift role change lands without re-login. The server is authoritative
+        // when it answers, so this test — which is about the cached phase — has to
+        // stop it answering. Left relaxed, both calls return a default-constructed
+        // success (empty roles, null hub_id) that reads as "server says you are not
+        // a hub scanner" and clobbers the cache, which is correct behaviour and
+        // exactly what failed here once the suite actually started running.
+        coEvery { identityApi.getMe() } throws IOException("offline")
+        coEvery { api.getMyProfile() } throws IOException("offline")
         val hubVm = HomeViewModel(
             context      = context,
             repo         = repo,

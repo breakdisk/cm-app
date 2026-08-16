@@ -100,7 +100,16 @@ pub mod permissions {
     pub const VENDORS_MANAGE:    &str = "vendors:manage";
 
     // ── Carriers ─────────────────────────────────────────────
+    /// Tenant-wide carrier authority: onboard, edit, activate/suspend, and
+    /// mint API keys for **any** carrier in the tenant. Admin/tenant_admin only.
     pub const CARRIERS_MANAGE:   &str = "carriers:manage";
+    // Narrow self-scoped permission: a partner may edit the profile, rate
+    // cards and API key of the single carrier record whose `contact_email`
+    // matches their JWT email — and nothing else carrier-related. It does NOT
+    // grant onboarding new carriers, lifecycle transitions (activate/suspend),
+    // or compliance/KYB overrides; those stay with CARRIERS_MANAGE so the
+    // tenant retains its lever over the partner. See ADR-0013.
+    pub const CARRIERS_MANAGE_OWN: &str = "carriers:manage-own";
     pub const CARRIERS_READ:     &str = "carriers:read";
 
     // ── Customers / CDP ───────────────────────────────────────
@@ -185,9 +194,12 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             // Likewise the Invoices and Receipt screens.
             permissions::BILLING_READ_OWN,
         ],
+        // A partner is a carrier's own operator. It gets self-scoped carrier
+        // authority only — CARRIERS_MANAGE would let one partner edit, suspend
+        // or mint an API key for a competing carrier in the same tenant.
         "partner" => vec![
             permissions::CARRIERS_READ,
-            permissions::CARRIERS_MANAGE,
+            permissions::CARRIERS_MANAGE_OWN,
             permissions::SHIPMENT_READ,
             permissions::PAYMENTS_READ,
             permissions::ANALYTICS_VIEW,
@@ -322,6 +334,44 @@ mod grant_tests {
         // A merchant applies; they do not review their own application.
         assert!(!perms("merchant").contains(&permissions::VENDORS_MANAGE));
         assert!(!perms("customer").contains(&permissions::VENDORS_MANAGE));
+    }
+
+    /// Same self-scoping rule as the two customer pairs above, applied to the
+    /// partner role. A partner is a carrier's own operator; CARRIERS_MANAGE is
+    /// tenant-wide, so holding it lets one partner edit, suspend, or mint an
+    /// API key for a competing carrier in the same tenant. That last one is
+    /// the sharp edge -- the key authenticates the JWT-less tracking webhook.
+    /// See ADR-0013 and `services/carrier/src/application/authz.rs`.
+    #[test]
+    fn a_partner_gets_self_scoped_carrier_authority_and_not_tenant_wide() {
+        let p = perms("partner");
+        assert!(p.contains(&permissions::CARRIERS_MANAGE_OWN), "needs own-manage");
+        assert!(!p.contains(&permissions::CARRIERS_MANAGE), "must NOT be tenant-wide");
+        assert!(p.contains(&permissions::CARRIERS_READ));
+    }
+
+    /// The narrow permission belongs to the partner alone -- handing it to an
+    /// operator role would be harmless but signals confusion about which is
+    /// which, and operators must keep the tenant-wide grant.
+    #[test]
+    fn operators_keep_tenant_wide_carrier_manage_and_no_one_else_gets_manage_own() {
+        for role in ["admin", "tenant_admin"] {
+            assert!(perms(role).contains(&permissions::CARRIERS_MANAGE), "{role} lost it");
+        }
+        for role in ["admin", "tenant_admin", "dispatcher", "merchant", "driver",
+                     "finance", "readonly", "customer", "hub_scanner"] {
+            assert!(
+                !perms(role).contains(&permissions::CARRIERS_MANAGE_OWN),
+                "{role} should not hold carriers:manage-own",
+            );
+        }
+    }
+
+    /// The two carrier strings must stay distinct -- a substring-matching
+    /// check anywhere would otherwise silently conflate them.
+    #[test]
+    fn carrier_permission_strings_are_distinct() {
+        assert_ne!(permissions::CARRIERS_MANAGE, permissions::CARRIERS_MANAGE_OWN);
     }
 
     #[test]

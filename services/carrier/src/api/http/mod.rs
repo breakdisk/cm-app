@@ -14,13 +14,93 @@ use logisticos_auth::middleware::AuthClaims;
 use logisticos_auth::rbac::permissions;
 use logisticos_errors::AppError;
 
+use crate::application::authz::{
+    authorize_carrier_read, authorize_carrier_target, CarrierAuthority,
+};
 use crate::application::services::{
     CreateListingCommand, OnboardCarrierCommand, RecordPickupInput,
     UpdateCarrierCommand, UpdateListingPatch,
 };
-use crate::domain::entities::SlaRecord;
+use crate::domain::entities::{Carrier, SlaRecord};
 use crate::AppState;
 
+// ── Carrier authorization helpers ─────────────────────────────────────────────
+//
+// Every `/v1/carriers/:id` route funnels through these so the tenant guard and
+// the partner self-scope are applied in exactly one place. See
+// `application::authz` for the policy itself.
+
+/// The id of the carrier this caller operates, if any.
+///
+/// Identity is the JWT email matched against `carrier.contact_email` — the same
+/// binding `/v1/carriers/me` and the marketplace handlers already use. A caller
+/// with no matching carrier row simply owns nothing; that is not an error here.
+async fn own_carrier_id(state: &AppState, claims: &AuthClaims) -> Option<Uuid> {
+    use logisticos_types::TenantId;
+    let tenant_id = TenantId::from_uuid(claims.tenant_id);
+    state.carrier_svc
+        .get_by_email(&tenant_id, &claims.email)
+        .await
+        .ok()
+        .map(|c| c.id.inner())
+}
+
+/// Load carrier `id` for a caller that intends to **write** to it.
+///
+/// Enforces, in order: the record exists, it belongs to the caller's tenant,
+/// and the caller's authority reaches it. All three failures return the same
+/// `NotFound` so carrier ids cannot be enumerated across tenants or across
+/// partners.
+async fn load_writable_carrier(
+    state: &AppState,
+    claims: &AuthClaims,
+    id: Uuid,
+) -> Result<Carrier, AppError> {
+    use logisticos_types::TenantId;
+    let authority = CarrierAuthority::from_permissions(&claims.permissions);
+    let existing   = state.carrier_svc.get(id).await?;
+
+    let claim_tenant = TenantId::from_uuid(claims.tenant_id);
+    if existing.tenant_id.inner() != claim_tenant.inner() {
+        return Err(AppError::NotFound { resource: "Carrier", id: id.to_string() });
+    }
+
+    // Only partners need the extra lookup — skip the round-trip for admins.
+    let own = match authority {
+        CarrierAuthority::OwnOnly => own_carrier_id(state, claims).await,
+        _ => None,
+    };
+    authorize_carrier_target(authority, id, own)?;
+    Ok(existing)
+}
+
+/// Read-side guard for `/v1/carriers/:id` routes.
+///
+/// The tenant check here is the fix for a real gap: `get_carrier` and the three
+/// SLA endpoints previously ran `carrier_svc.get(id)` with no tenant comparison
+/// at all, so any authenticated `carriers:read` holder in **any** tenant could
+/// read any carrier UUID's record and full delivery history.
+async fn load_readable_carrier(
+    state: &AppState,
+    claims: &AuthClaims,
+    id: Uuid,
+) -> Result<Carrier, AppError> {
+    use logisticos_types::TenantId;
+    let authority = CarrierAuthority::from_permissions(&claims.permissions);
+    let existing   = state.carrier_svc.get(id).await?;
+
+    let claim_tenant = TenantId::from_uuid(claims.tenant_id);
+    if existing.tenant_id.inner() != claim_tenant.inner() {
+        return Err(AppError::NotFound { resource: "Carrier", id: id.to_string() });
+    }
+
+    let own = match authority {
+        CarrierAuthority::OwnOnly => own_carrier_id(state, claims).await,
+        _ => None,
+    };
+    authorize_carrier_read(authority, id, own)?;
+    Ok(existing)
+}
 
 /// Liveness/readiness/metrics, deliberately kept out of `router()`.
 ///
@@ -78,6 +158,11 @@ async fn health() -> impl IntoResponse {
 #[derive(Debug, Deserialize)]
 struct ListQuery { limit: Option<i64>, offset: Option<i64> }
 
+/// GET /v1/carriers
+///
+/// Tenant operators get the full roster. A partner (`carriers:manage-own`) gets
+/// a single-element list holding only its own carrier — the roster exposes
+/// every competitor's rate cards and SLA standing.
 async fn list_carriers(
     State(state): State<AppState>,
     claims: AuthClaims,
@@ -86,7 +171,19 @@ async fn list_carriers(
     use logisticos_types::TenantId;
     claims.require_permission(permissions::CARRIERS_READ)?;
     let tenant_id = TenantId::from_uuid(claims.tenant_id);
-    let carriers = state.carrier_svc.list(&tenant_id, q.limit.unwrap_or(50), q.offset.unwrap_or(0)).await?;
+
+    let carriers = if CarrierAuthority::from_permissions(&claims.permissions)
+        == CarrierAuthority::OwnOnly
+    {
+        state.carrier_svc
+            .get_by_email(&tenant_id, &claims.email)
+            .await
+            .map(|c| vec![c])
+            .unwrap_or_default()
+    } else {
+        state.carrier_svc.list(&tenant_id, q.limit.unwrap_or(50), q.offset.unwrap_or(0)).await?
+    };
+
     let count = carriers.len();
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"carriers": carriers, "count": count}))))
 }
@@ -123,42 +220,51 @@ async fn get_carrier(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::CARRIERS_READ)?;
-    let carrier = state.carrier_svc.get(id).await?;
+    let carrier = load_readable_carrier(&state, &claims, id).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(carrier)))
 }
 
+/// PUT /v1/carriers/:id
+///
+/// Open to `carriers:manage` (any carrier in the tenant) and to
+/// `carriers:manage-own` (a partner editing its own profile, contact details
+/// and rate cards). `compliance_status` is rejected for the latter — that field
+/// is the KYB verdict and a partner must not self-certify.
 async fn update_carrier(
     State(state): State<AppState>,
     claims: AuthClaims,
     Path(id): Path<Uuid>,
     Json(cmd): Json<UpdateCarrierCommand>,
 ) -> impl IntoResponse {
-    use logisticos_types::TenantId;
-    claims.require_permission(permissions::CARRIERS_MANAGE)?;
-    // Tenant guard: refuse cross-tenant updates even if a leaked admin
-    // token was used. Same shape as get_carrier returning 404 instead of
-    // 403 to avoid leaking carrier existence to other tenants.
-    let existing = state.carrier_svc.get(id).await?;
-    let claim_tenant = TenantId::from_uuid(claims.tenant_id);
-    if existing.tenant_id.inner() != claim_tenant.inner() {
-        return Err(AppError::NotFound { resource: "Carrier", id: id.to_string() });
+    claims.require_any_permission(&[
+        permissions::CARRIERS_MANAGE,
+        permissions::CARRIERS_MANAGE_OWN,
+    ])?;
+    // Tenant guard + partner self-scope. Returns 404 rather than 403 so a
+    // caller cannot probe which carrier ids exist outside their scope.
+    load_writable_carrier(&state, &claims, id).await?;
+
+    if cmd.compliance_status.is_some()
+        && !CarrierAuthority::from_permissions(&claims.permissions).allows_compliance_override()
+    {
+        return Err(AppError::Forbidden { resource: permissions::CARRIERS_MANAGE.to_owned() });
     }
+
     let carrier = state.carrier_svc.update(id, cmd).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(carrier)))
 }
 
+/// POST /v1/carriers/:id/activate
+///
+/// Full `carriers:manage` only. A partner self-activating would walk straight
+/// past the admin review flow for `pending_verification` carriers.
 async fn activate_carrier(
     State(state): State<AppState>,
     claims: AuthClaims,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-    use logisticos_types::TenantId;
     claims.require_permission(permissions::CARRIERS_MANAGE)?;
-    let existing = state.carrier_svc.get(id).await?;
-    let claim_tenant = TenantId::from_uuid(claims.tenant_id);
-    if existing.tenant_id.inner() != claim_tenant.inner() {
-        return Err(AppError::NotFound { resource: "Carrier", id: id.to_string() });
-    }
+    load_writable_carrier(&state, &claims, id).await?;
     let carrier = state.carrier_svc.activate(id).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(carrier)))
 }
@@ -166,19 +272,19 @@ async fn activate_carrier(
 #[derive(Debug, Deserialize)]
 struct SuspendBody { reason: String }
 
+/// POST /v1/carriers/:id/suspend
+///
+/// Full `carriers:manage` only. Suspension removes a carrier from rate-shop
+/// allocation, so leaving it open to `carriers:manage-own` would let one
+/// partner take a competitor out of the running.
 async fn suspend_carrier(
     State(state): State<AppState>,
     claims: AuthClaims,
     Path(id): Path<Uuid>,
     Json(body): Json<SuspendBody>,
 ) -> impl IntoResponse {
-    use logisticos_types::TenantId;
     claims.require_permission(permissions::CARRIERS_MANAGE)?;
-    let existing = state.carrier_svc.get(id).await?;
-    let claim_tenant = TenantId::from_uuid(claims.tenant_id);
-    if existing.tenant_id.inner() != claim_tenant.inner() {
-        return Err(AppError::NotFound { resource: "Carrier", id: id.to_string() });
-    }
+    load_writable_carrier(&state, &claims, id).await?;
     let carrier = state.carrier_svc.suspend(id, body.reason).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(carrier)))
 }
@@ -189,21 +295,23 @@ async fn suspend_carrier(
 /// plaintext key **exactly once** — it is not stored and cannot be retrieved
 /// again. The partner must copy it immediately.
 ///
-/// Only `carriers:manage` callers can generate keys (admin or tenant_admin).
-/// Tenant isolation is enforced the same way as `update_carrier`.
+/// Open to `carriers:manage` (any carrier in the tenant) and to
+/// `carriers:manage-own` (a partner rotating its own key from the portal).
+///
+/// The self-scope matters more here than anywhere else on this service: this
+/// key authenticates `POST /v1/webhooks/carrier/:id/tracking`, which carries no
+/// JWT. Minting a key for another carrier would hand the caller that carrier's
+/// entire inbound tracking channel.
 async fn generate_api_key(
     State(state): State<AppState>,
     claims: AuthClaims,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-    use logisticos_types::TenantId;
-    claims.require_permission(permissions::CARRIERS_MANAGE)?;
-    // Tenant guard — same pattern as update_carrier.
-    let existing = state.carrier_svc.get(id).await?;
-    let claim_tenant = TenantId::from_uuid(claims.tenant_id);
-    if existing.tenant_id.inner() != claim_tenant.inner() {
-        return Err(AppError::NotFound { resource: "Carrier", id: id.to_string() });
-    }
+    claims.require_any_permission(&[
+        permissions::CARRIERS_MANAGE,
+        permissions::CARRIERS_MANAGE_OWN,
+    ])?;
+    load_writable_carrier(&state, &claims, id).await?;
     let raw_key = state.carrier_svc.generate_api_key(id).await?;
     Ok::<_, AppError>((
         StatusCode::OK,
@@ -250,6 +358,7 @@ async fn sla_summary(
     Query(q): Query<SlaSummaryQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::CARRIERS_READ)?;
+    load_readable_carrier(&state, &claims, id).await?;
     let rows = state.carrier_svc.sla_zone_summary(id, q.from, q.to).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"zones": rows}))))
 }
@@ -266,6 +375,7 @@ async fn sla_history(
     Query(q): Query<SlaHistoryQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::CARRIERS_READ)?;
+    load_readable_carrier(&state, &claims, id).await?;
     let records = state.carrier_svc
         .sla_history(id, q.limit.unwrap_or(50), q.offset.unwrap_or(0))
         .await?;
@@ -282,6 +392,7 @@ async fn breach_reasons(
     Query(q): Query<SlaSummaryQuery>,
 ) -> impl IntoResponse {
     claims.require_permission(permissions::CARRIERS_READ)?;
+    load_readable_carrier(&state, &claims, id).await?;
     let rows = state.carrier_svc.breach_reasons(id, q.from, q.to).await?;
     Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"data": rows}))))
 }
@@ -342,14 +453,11 @@ async fn upload_compliance_document(
     Path(id): Path<Uuid>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
-    use logisticos_types::TenantId;
     claims.require_permission(permissions::CARRIERS_READ)?;
-    // Tenant guard
-    let existing = state.carrier_svc.get(id).await?;
-    let claim_tenant = TenantId::from_uuid(claims.tenant_id);
-    if existing.tenant_id.inner() != claim_tenant.inner() {
-        return Err(AppError::NotFound { resource: "Carrier", id: id.to_string() });
-    }
+    // This mutates compliance_status to `under_review`, so it takes the write
+    // scope: a partner may submit documents for its own carrier only. Left
+    // open, it would let one partner knock a competitor back into review.
+    load_writable_carrier(&state, &claims, id).await?;
 
     let mut doc_type  = String::new();
     let mut filename  = String::from("unknown");

@@ -85,6 +85,27 @@ impl AuthClaims {
             Err(logisticos_errors::AppError::Forbidden { resource: permission.to_owned() })
         }
     }
+
+    /// Returns `Ok(())` if the token carries **at least one** of the given
+    /// permissions. Used where a broad permission and a narrower self-scoped
+    /// variant both open the same route (e.g. `carriers:manage` vs
+    /// `carriers:manage-own`) — the handler is then responsible for applying
+    /// the narrower scope's row-level restriction.
+    ///
+    /// The 403 names the first (broadest) permission so the error stays stable
+    /// for callers that were only ever going to hold that one.
+    pub fn require_any_permission(
+        &self,
+        permissions: &[&'static str],
+    ) -> Result<(), logisticos_errors::AppError> {
+        if permissions.iter().any(|p| self.0.has_permission(p)) {
+            Ok(())
+        } else {
+            Err(logisticos_errors::AppError::Forbidden {
+                resource: permissions.first().copied().unwrap_or("").to_owned(),
+            })
+        }
+    }
 }
 
 impl std::ops::Deref for AuthClaims {
