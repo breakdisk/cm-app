@@ -47,6 +47,9 @@ export interface OrderListItem {
   order_id: string;
   status: string;
   grand_total_cents: number;
+  goods_total_cents: number;
+  delivery_fee_cents: number;
+  tip_cents: number;
   stops_total: number;
   /** Comma-joined shop names. Empty if an order somehow has no legs. */
   vendor_names: string;
