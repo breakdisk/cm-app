@@ -16,6 +16,7 @@ import { useLocalSearchParams } from "expo-router";
 
 import { trackOrder, pollIntervalMs, type TrackResponse } from "@/api/tracking";
 import { MapSurface } from "@/components/map/MapSurface";
+import { Receipt } from "@/components/Receipt";
 import { theme } from "@/theme";
 
 /** What each status means to someone waiting, not to the state machine. */
@@ -39,8 +40,6 @@ const EVENT_LABEL: Record<string, string> = {
   "order.cancelled":     "Cancelled",
   "order.escalated":     "We're looking into a delay",
 };
-
-const peso = (c: number) => `₱${(c / 100).toFixed(2)}`;
 
 /** The steps every order passes through, so the list shows what is still to come. */
 const FUTURE_STEPS: { key: TrackResponse["status"][]; label: string }[] = [
@@ -128,28 +127,17 @@ export default function Track() {
             </View>
           )}
 
-        <View
-          style={{
-            backgroundColor: theme.surface,
-            borderColor: theme.border,
-            borderWidth: 1,
-            borderRadius: theme.radius.md,
-            padding: 14,
-            gap: 8,
-          }}
-        >
-          <Row label="Total" value={peso(order.grand_total_cents)} />
-          <Row
-            label="Stops collected"
-            value={`${order.stops_collected} of ${order.stops_total}`}
-          />
-          {/* Cash on delivery: say the number, so nobody is surprised at the door. */}
-          {order.status !== "delivered" && (
-            <Text style={{ color: theme.amber, fontSize: 12, marginTop: 2 }}>
-              Please have {peso(order.grand_total_cents)} in cash ready.
-            </Text>
-          )}
-        </View>
+        <Text style={{ color: theme.muted, fontSize: 13 }}>
+          {order.stops_collected} of {order.stops_total} stops collected
+        </Text>
+
+        <Receipt
+          goods_total_cents={order.goods_total_cents}
+          delivery_fee_cents={order.delivery_fee_cents}
+          tip_cents={order.tip_cents}
+          grand_total_cents={order.grand_total_cents}
+          settled={order.status === "delivered"}
+        />
 
         {error && (
           <Text style={{ color: theme.faint, fontSize: 12 }}>{error}</Text>
@@ -197,14 +185,5 @@ export default function Track() {
         </View>
       </ScrollView>
     </SafeAreaView>
-  );
-}
-
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-      <Text style={{ color: theme.muted, fontSize: 13 }}>{label}</Text>
-      <Text style={{ color: theme.text, fontSize: 13, fontWeight: "700" }}>{value}</Text>
-    </View>
   );
 }

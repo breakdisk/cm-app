@@ -38,6 +38,9 @@ export interface TrackResponse {
     | "delivered"
     | "cancelled";
   grand_total_cents: number;
+  goods_total_cents: number;
+  delivery_fee_cents: number;
+  tip_cents: number;
   stops_total: number;
   stops_collected: number;
   delivered_at: string | null;
