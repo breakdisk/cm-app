@@ -143,8 +143,14 @@ pub trait CourierTelemetry: Send + Sync {
 }
 ```
 
-Reuses `SERVICES__SERVICE_TOKEN` and `SERVICES__FIELD_OPS_URL`, already required
-for checkout.
+**Auth reuses the per-call minted token, not a static secret.** `FieldOpsDispatch`
+already holds an `Arc<JwtService>` built from `AUTH__JWT_SECRET` (shared with
+field-ops) and mints a 60-second, role-less, permission-less token **per call**,
+carrying the caller's tenant. A static service token cannot work here for two
+reasons already documented in that file: it expires, and it would carry one fixed
+tenant — which would offer every tenant's orders to one tenant's couriers. The new
+telemetry call mints exactly the same way, so no new configuration is introduced;
+`field_ops_url` and `AUTH__JWT_SECRET` already exist.
 
 ### Two rules the handler enforces
 
