@@ -12,6 +12,7 @@ use crate::{
     domain::repositories::CredentialsRepository,
     infrastructure::{
         db::PgCredentialsRepository,
+        omnideliv_client::OmniDelivClient,
         order_intake_client::OrderIntakeClient,
     },
 };
@@ -58,6 +59,9 @@ pub async fn run() -> anyhow::Result<()> {
     // Wire dependencies.
     let creds_repo:   Arc<dyn CredentialsRepository> =
         Arc::new(PgCredentialsRepository::new(pool.clone()));
+    // Kept before the service takes ownership: the sweep needs the same
+    // repository, and `ConnectorService::new` consumes the Arc.
+    let creds_repo_for_worker = Arc::clone(&creds_repo);
     let order_intake  = Arc::new(OrderIntakeClient::new(cfg.order_intake.internal_url.clone()));
     let connector_svc = Arc::new(ConnectorService::new(creds_repo, order_intake));
 
@@ -72,10 +76,38 @@ pub async fn run() -> anyhow::Result<()> {
     let public_url = std::env::var("PUBLIC_URL")
         .unwrap_or_else(|_| format!("http://{}:{}", cfg.app.host, cfg.app.port));
 
+    // Absent when this deployment runs no OmniDeliv tier. Logged either way:
+    // "catalog sync is off" needs to be visible at boot, not discovered by a
+    // merchant pressing a button and getting a 501.
+    let omnideliv = cfg.omnideliv.as_ref().map(|c| {
+        tracing::info!(url = %c.internal_url, "catalog sync enabled");
+        Arc::new(OmniDelivClient::new(c.internal_url.clone(), Arc::clone(&jwt)))
+    });
+    if omnideliv.is_none() {
+        tracing::info!("catalog sync disabled — OMNIDELIV__INTERNAL_URL is not set");
+    }
+
+    // The scheduled half of the ingest port. Only runs where an OmniDeliv tier
+    // is configured, and only touches connectors that opted in by setting
+    // `sync_interval_mins` — a vendor who never asked for it is never swept,
+    // because a nightly sync owns name, price and listing, and would silently
+    // undo console edits.
+    if let Some(client) = omnideliv.clone() {
+        let worker = crate::application::sync_worker::SyncWorker::new(
+            Arc::clone(&creds_repo_for_worker),
+            client,
+            reqwest::Client::new(),
+            cfg.omnideliv.as_ref().map_or(60, |c| c.sync_tick_secs),
+        );
+        tokio::spawn(worker.run());
+    }
+
     let state = AppState {
         svc:        connector_svc,
         jwt:        Arc::clone(&jwt),
         public_url,
+        omnideliv,
+        http:       reqwest::Client::new(),
     };
 
     let app = router(state)

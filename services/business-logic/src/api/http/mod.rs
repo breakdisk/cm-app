@@ -10,11 +10,11 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
-    routing::{delete, get, patch, post, put},
+    routing::{get, patch, post},
     Router,
 };
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use uuid::Uuid;
 
 use logisticos_auth::middleware::AuthClaims;
@@ -37,6 +37,19 @@ pub struct AppState {
 
 // ── Router ────────────────────────────────────────────────────────────────────
 
+
+/// Liveness/readiness/metrics, deliberately kept out of `router()`.
+///
+/// `router()` is mounted behind `require_auth` in bootstrap, and a probe cannot
+/// present a JWT — so a health route in there answers 401 forever. That is what
+/// this service was doing.
+pub fn observability_router() -> Router<AppState> {
+    Router::new()
+        .route("/health",  get(health))
+        .route("/ready",   get(health))
+        .route("/metrics", get(|| async { "" }))
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/v1/rules",                    get(list_rules).post(create_rule))
@@ -47,8 +60,6 @@ pub fn router() -> Router<AppState> {
         .route("/v1/rules/:id/executions",     get(list_executions))
         // MCP endpoint — consumed by the AI layer for rule management
         .route("/mcp",                         post(mcp_handler))
-        .route("/health",                      get(health))
-        .route("/ready",                       get(health))
 }
 
 // ── GET /v1/rules ─────────────────────────────────────────────────────────────
@@ -88,7 +99,7 @@ async fn list_rules(
             "total":       total,
             "page":        page,
             "per_page":    per_page,
-            "total_pages": (total + per_page - 1) / per_page,
+            "total_pages": total.div_ceil(per_page),
         })),
     ))
 }

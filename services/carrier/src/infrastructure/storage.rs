@@ -1,6 +1,6 @@
-/// S3-compatible object storage adapter for carrier label files.
-/// Mirrors the pattern in services/pod/src/infrastructure/external/storage.rs
-/// with an additional `put_bytes` method for server-side label upload.
+//! S3-compatible object storage adapter for carrier label files.
+//! Mirrors the pattern in services/pod/src/infrastructure/external/storage.rs
+//! with an additional `put_bytes` method for server-side label upload.
 
 use async_trait::async_trait;
 

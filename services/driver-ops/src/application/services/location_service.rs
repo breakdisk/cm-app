@@ -172,8 +172,4 @@ impl LocationService {
         Ok(driver)
     }
 
-    async fn load_driver_by_user_id(&self, user_id: &DriverId) -> AppResult<Driver> {
-        self.driver_repo.find_by_user_id(user_id.inner()).await.map_err(AppError::Internal)?
-            .ok_or_else(|| AppError::NotFound { resource: "Driver", id: user_id.inner().to_string() })
-    }
 }

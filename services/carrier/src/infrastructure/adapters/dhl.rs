@@ -1,8 +1,8 @@
-/// DHL Express — MyDHL+ REST API
-/// Docs: https://developer.dhl.com/api-reference/mydhlapiexpress
-/// Auth: HTTP Basic (API key : API secret), per DHL developer portal credentials.
-/// Sandbox base URL: https://api-sandbox.dhl.com
-/// Production base URL: https://api.dhl.com
+//! DHL Express — MyDHL+ REST API
+//! Docs: https://developer.dhl.com/api-reference/mydhlapiexpress
+//! Auth: HTTP Basic (API key : API secret), per DHL developer portal credentials.
+//! Sandbox base URL: https://api-sandbox.dhl.com
+//! Production base URL: https://api.dhl.com
 
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine};

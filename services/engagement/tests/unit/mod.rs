@@ -28,6 +28,9 @@ fn make_notification(channel: NotificationChannel, recipient: &str) -> Notificat
         sent_at: None,
         delivered_at: None,
         retry_count: 0,
+        // Channel-specific payload (a push deep link, say). None here:
+        // these fixtures are about routing, not payload.
+        extra_data: None,
     }
 }
 
@@ -73,6 +76,9 @@ mod notification_construction {
             sent_at: None,
             delivered_at: None,
             retry_count: 0,
+            // Channel-specific payload (a push deep link, say). None here:
+            // these fixtures are about routing, not payload.
+            extra_data: None,
         };
 
         assert_eq!(n.tenant_id, tenant_id);
@@ -340,6 +346,9 @@ mod channel_config {
             twilio_vault_key: Some("secret/tenants/abc/twilio".to_string()),
             sendgrid_vault_key: None,
             firebase_vault_key: None,
+            // The social channels default to disabled. Spelled this way so
+            // adding an eighth does not break a test about the first four.
+            ..Default::default()
         };
 
         assert!(cfg.whatsapp_enabled);
@@ -359,6 +368,9 @@ mod channel_config {
             twilio_vault_key: Some("secret/tenants/xyz/twilio".to_string()),
             sendgrid_vault_key: None,
             firebase_vault_key: None,
+            // The social channels default to disabled. Spelled this way so
+            // adding an eighth does not break a test about the first four.
+            ..Default::default()
         };
 
         let key = cfg.twilio_vault_key.unwrap();

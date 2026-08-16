@@ -11,7 +11,7 @@ use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 
 use crate::{
-    api::http::{router, AppState},
+    api::http::{observability_router, router, AppState},
     application::services::{
         build_context, enrich_segments, execute_actions, ActionExecutor, RuleRepository, SegmentChecker,
     },
@@ -329,6 +329,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     let app = router()
         .layer(axum::middleware::from_fn_with_state(Arc::clone(&jwt), logisticos_auth::middleware::require_auth))
+        .merge(observability_router())
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state);
 
@@ -371,7 +372,7 @@ async fn run_consumer(
                             if rule.conditions_met(&ctx) {
                                 tracing::info!(rule_id = %rule.id, rule_name = %rule.name, topic = %topic, "Rule fired");
 
-                                let outcome = match execute_actions(&rule, &ctx, executor.as_ref()).await {
+                                let outcome = match execute_actions(rule, &ctx, executor.as_ref()).await {
                                     Ok(()) => "success",
                                     Err(e) => {
                                         tracing::error!(rule_id = %rule.id, err = %e, "Rule action failed");

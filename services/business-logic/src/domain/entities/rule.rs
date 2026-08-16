@@ -113,10 +113,10 @@ impl RuleCondition {
                 ctx.service_type.as_deref() == Some(equals.as_str())
             }
             RuleCondition::ShipmentValue { greater_than } => {
-                ctx.shipment_value_cents.map_or(false, |v| v > *greater_than)
+                ctx.shipment_value_cents.is_some_and(|v| v > *greater_than)
             }
             RuleCondition::Zone { in_zones } => {
-                ctx.zone.as_ref().map_or(false, |z| in_zones.contains(z))
+                ctx.zone.as_ref().is_some_and(|z| in_zones.contains(z))
             }
             RuleCondition::TimeOfDay { hour_from, hour_to } => {
                 ctx.current_hour >= *hour_from && ctx.current_hour <= *hour_to
@@ -125,7 +125,7 @@ impl RuleCondition {
                 days.contains(&ctx.current_day)
             }
             RuleCondition::AttemptCount { lte } => {
-                ctx.attempt_count.map_or(false, |a| a <= *lte)
+                ctx.attempt_count.is_some_and(|a| a <= *lte)
             }
             RuleCondition::CustomerSegment { segment_id } => {
                 ctx.customer_segment_ids.contains(segment_id)

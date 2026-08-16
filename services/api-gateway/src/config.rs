@@ -58,6 +58,12 @@ pub struct ServicesConfig {
     pub webhooks_url:             Option<String>,
     #[serde(default)]
     pub connectors_url:           Option<String>,  // http://connectors:8021
+    /// Field-Ops platform tier (ADR-0015) — courier identity, assignment/claim, GPS ingest.
+    #[serde(default)]
+    pub field_ops_url:            Option<String>,  // http://field-ops:8090
+    /// OmniDeliv product tier (ADR-0009) — vendor catalog, baskets, orders.
+    #[serde(default)]
+    pub omnideliv_url:            Option<String>,  // http://omnideliv:8091
 }
 
 #[derive(Debug, Deserialize, Clone)]

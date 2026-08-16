@@ -6,7 +6,17 @@ import { useShipments, useShipmentById } from '../useShipments';
 import * as shipmentsService from '../../services/api/shipments';
 
 // Mock the API services
-jest.mock('../../services/api/shipments');
+// A factory, not a bare automock: automocking loads the real module to
+// derive its shape, which reaches the api client and therefore axios,
+// whose fetch adapter probes ReadableStream at import and throws against
+// Expo's polyfill.
+jest.mock('../../services/api/shipments', () => ({
+  createShipment: jest.fn(),
+  getShipment:    jest.fn(),
+  listShipments:  jest.fn(),
+  cancelShipment: jest.fn(),
+  parseAddress:   jest.fn(),
+}));
 
 const mockShipmentsService = shipmentsService as jest.Mocked<typeof shipmentsService>;
 

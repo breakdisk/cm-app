@@ -4,7 +4,6 @@
 
 use redis::aio::MultiplexedConnection;
 use redis::AsyncCommands;
-use std::time::Duration;
 
 const RULE_TTL: u64 = 300; // 5 minutes
 

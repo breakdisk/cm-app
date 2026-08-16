@@ -62,16 +62,41 @@ impl VehicleRepository for InMemoryVehicleRepo {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Mirrors `bootstrap::run`, including the auth layer.
+///
+/// The suite previously built the router without it, which is why the tests
+/// could not have caught that production had the same omission — and, once they
+/// finally compiled, why every request came back 500 AUTH_NOT_CONFIGURED rather
+/// than the 401 the unauthenticated cases expect.
 fn make_app(repo: InMemoryVehicleRepo) -> Router {
     let svc = Arc::new(FleetService::new(Arc::new(repo)));
-    logisticos_fleet::api::http::router().with_state(AppState { fleet_svc: svc })
+    let jwt: logisticos_auth::middleware::AuthState =
+        Arc::new(JwtService::new(TEST_SECRET, 3600, 86_400));
+    logisticos_fleet::api::http::router()
+        .layer(axum::middleware::from_fn_with_state(
+            jwt,
+            logisticos_auth::middleware::require_auth,
+        ))
+        .with_state(AppState { fleet_svc: svc })
 }
 
+/// One secret, shared by the router and every token the tests mint. They must
+/// agree or validation fails for reasons unrelated to what is being tested.
+const TEST_SECRET: &str = "test-secret-key-for-logisticos-testing";
+
 fn make_jwt(tid: Uuid) -> String {
-    let svc = JwtService::new("test-secret-key-for-logisticos-testing");
-    let c = Claims::new(Uuid::new_v4(), tid,
-        vec!["fleet:read".into(), "fleet:manage".into()]);
-    svc.encode(&c).unwrap()
+    let svc = JwtService::new(TEST_SECRET, 3600, 86_400);
+    let c = Claims::new(
+        Uuid::new_v4(),
+        tid,
+        "demo".into(),
+        "enterprise".into(),
+        "fleet-test@example.com".into(),
+        vec!["fleet_manager".into()],
+        vec!["fleet:read".into(), "fleet:manage".into()],
+        3600,
+    );
+    svc.issue_access_token(c).unwrap()
 }
 
 fn bearer(t: &str) -> String { format!("Bearer {}", t) }
@@ -97,13 +122,13 @@ fn mk(tid: Uuid) -> Vehicle {
 #[tokio::test]
 async fn list_vehicles_empty() {
     let tid = Uuid::new_v4();
-    let req = Request::builder().method(Method::GET).uri("/v1/vehicles")
+    let req = Request::builder().method(Method::GET).uri("/v1/fleet/vehicles")
         .header(header::AUTHORIZATION, bearer(&make_jwt(tid)))
         .body(Body::empty()).unwrap();
     let (s, b) = call(make_app(Default::default()), req).await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(b["vehicles"].as_array().unwrap().len(), 0);
-    assert_eq!(b["count"], 0);
+    assert_eq!(b["data"].as_array().unwrap().len(), 0);
+    assert_eq!(b["total"], 0);
 }
 
 #[tokio::test]
@@ -114,17 +139,17 @@ async fn list_vehicles_scoped_to_tenant() {
     repo.save(&mk(tid)).await.unwrap();
     repo.save(&mk(tid)).await.unwrap();
     repo.save(&mk(other)).await.unwrap();
-    let req = Request::builder().method(Method::GET).uri("/v1/vehicles")
+    let req = Request::builder().method(Method::GET).uri("/v1/fleet/vehicles")
         .header(header::AUTHORIZATION, bearer(&make_jwt(tid)))
         .body(Body::empty()).unwrap();
     let (s, b) = call(make_app(repo), req).await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(b["vehicles"].as_array().unwrap().len(), 2);
+    assert_eq!(b["data"].as_array().unwrap().len(), 2);
 }
 
 #[tokio::test]
 async fn list_vehicles_requires_auth() {
-    let req = Request::builder().method(Method::GET).uri("/v1/vehicles")
+    let req = Request::builder().method(Method::GET).uri("/v1/fleet/vehicles")
         .body(Body::empty()).unwrap();
     let r = make_app(Default::default()).oneshot(req).await.unwrap();
     assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
@@ -141,15 +166,22 @@ async fn create_vehicle_returns_201() {
         "plate_number": "XYZ 9999", "vehicle_type": "van",
         "make": "Toyota", "model": "HiAce", "year": 2023, "color": "Silver"
     });
-    let req = Request::builder().method(Method::POST).uri("/v1/vehicles")
+    let req = Request::builder().method(Method::POST).uri("/v1/fleet/vehicles")
         .header(header::AUTHORIZATION, bearer(&make_jwt(tid)))
         .header(header::CONTENT_TYPE, "application/json")
         .body(jbody(&payload)).unwrap();
     let (s, b) = call(make_app(Default::default()), req).await;
     assert_eq!(s, StatusCode::CREATED);
-    assert_eq!(b["plate_number"], "XYZ 9999");
-    assert_eq!(b["status"], "active");
-    assert_eq!(b["vehicle_type"], "van");
+    assert_eq!(b["data"]["plate"], "XYZ 9999");
+    // "idle", not "active". The wire status is a projection, not the domain
+    // enum: `Active` with a driver reads "active", `Active` without one reads
+    // "idle", and a vehicle this new has nobody assigned. See
+    // `VehicleApiResponse::from`.
+    assert_eq!(b["data"]["status"], "idle");
+    // Asymmetric on purpose: `VehicleType` serialises PascalCase and keeps
+    // snake_case `alias`es so rows written by the old serde still read. So the
+    // request above may say "van" and the response says "Van".
+    assert_eq!(b["data"]["type"], "Van");
 }
 
 #[tokio::test]
@@ -160,7 +192,7 @@ async fn create_vehicle_persisted_in_repo() {
         "plate_number": "NEW 001", "vehicle_type": "motorcycle",
         "make": "Honda", "model": "Click", "year": 2024, "color": "Black"
     });
-    let req = Request::builder().method(Method::POST).uri("/v1/vehicles")
+    let req = Request::builder().method(Method::POST).uri("/v1/fleet/vehicles")
         .header(header::AUTHORIZATION, bearer(&make_jwt(tid)))
         .header(header::CONTENT_TYPE, "application/json")
         .body(jbody(&payload)).unwrap();
@@ -173,14 +205,24 @@ async fn create_vehicle_persisted_in_repo() {
 async fn create_vehicle_requires_manage_permission() {
     // Only fleet:read — no manage
     let tid = Uuid::new_v4();
-    let svc = JwtService::new("test-secret-key-for-logisticos-testing");
-    let claims = Claims::new(Uuid::new_v4(), tid, vec!["fleet:read".into()]);
-    let token = svc.encode(&claims).unwrap();
+    let svc = JwtService::new(TEST_SECRET, 3600, 86_400);
+    let claims = Claims::new(
+        Uuid::new_v4(),
+        tid,
+        "demo".into(),
+        "enterprise".into(),
+        "fleet-test@example.com".into(),
+        vec!["fleet_viewer".into()],
+        // Read only — no fleet:manage. That absence is the subject of this test.
+        vec!["fleet:read".into()],
+        3600,
+    );
+    let token = svc.issue_access_token(claims).unwrap();
     let payload = serde_json::json!({
         "plate_number": "NOPE 01", "vehicle_type": "car",
         "make": "Toyota", "model": "Vios", "year": 2022, "color": "Red"
     });
-    let req = Request::builder().method(Method::POST).uri("/v1/vehicles")
+    let req = Request::builder().method(Method::POST).uri("/v1/fleet/vehicles")
         .header(header::AUTHORIZATION, format!("Bearer {}", token))
         .header(header::CONTENT_TYPE, "application/json")
         .body(jbody(&payload)).unwrap();
@@ -199,20 +241,20 @@ async fn get_vehicle_by_id() {
     let repo: InMemoryVehicleRepo = Default::default();
     repo.save(&v).await.unwrap();
     let req = Request::builder().method(Method::GET)
-        .uri(format!("/v1/vehicles/{}", vid))
+        .uri(format!("/v1/fleet/vehicles/{}", vid))
         .header(header::AUTHORIZATION, bearer(&make_jwt(tid)))
         .body(Body::empty()).unwrap();
     let (s, b) = call(make_app(repo), req).await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(b["id"], vid.to_string());
-    assert_eq!(b["plate_number"], "ABC 1234");
+    assert_eq!(b["data"]["id"], vid.to_string());
+    assert_eq!(b["data"]["plate"], "ABC 1234");
 }
 
 #[tokio::test]
 async fn get_vehicle_not_found() {
     let tid = Uuid::new_v4();
     let req = Request::builder().method(Method::GET)
-        .uri(format!("/v1/vehicles/{}", Uuid::new_v4()))
+        .uri(format!("/v1/fleet/vehicles/{}", Uuid::new_v4()))
         .header(header::AUTHORIZATION, bearer(&make_jwt(tid)))
         .body(Body::empty()).unwrap();
     let (s, _) = call(make_app(Default::default()), req).await;
@@ -226,7 +268,7 @@ async fn get_vehicle_cross_tenant_forbidden() {
     let repo: InMemoryVehicleRepo = Default::default();
     repo.save(&v).await.unwrap();
     let req = Request::builder().method(Method::GET)
-        .uri(format!("/v1/vehicles/{}", vid))
+        .uri(format!("/v1/fleet/vehicles/{}", vid))
         .header(header::AUTHORIZATION, bearer(&make_jwt(other)))
         .body(Body::empty()).unwrap();
     let (s, _) = call(make_app(repo), req).await;
@@ -244,19 +286,19 @@ async fn decommission_vehicle_sets_status() {
     let repo: InMemoryVehicleRepo = Default::default();
     repo.save(&v).await.unwrap();
     let req = Request::builder().method(Method::DELETE)
-        .uri(format!("/v1/vehicles/{}", vid))
+        .uri(format!("/v1/fleet/vehicles/{}", vid))
         .header(header::AUTHORIZATION, bearer(&make_jwt(tid)))
         .body(Body::empty()).unwrap();
     let (s, b) = call(make_app(repo), req).await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(b["status"], "decommissioned");
+    assert_eq!(b["data"]["status"], "offline");  // Decommissioned projects to "offline" on the wire.
 }
 
 #[tokio::test]
 async fn decommission_vehicle_not_found() {
     let tid = Uuid::new_v4();
     let req = Request::builder().method(Method::DELETE)
-        .uri(format!("/v1/vehicles/{}", Uuid::new_v4()))
+        .uri(format!("/v1/fleet/vehicles/{}", Uuid::new_v4()))
         .header(header::AUTHORIZATION, bearer(&make_jwt(tid)))
         .body(Body::empty()).unwrap();
     let (s, _) = call(make_app(Default::default()), req).await;
@@ -276,13 +318,13 @@ async fn assign_driver_success() {
     repo.save(&v).await.unwrap();
     let payload = serde_json::json!({ "driver_id": did });
     let req = Request::builder().method(Method::POST)
-        .uri(format!("/v1/vehicles/{}/assign-driver", vid))
+        .uri(format!("/v1/fleet/vehicles/{}/assign-driver", vid))
         .header(header::AUTHORIZATION, bearer(&make_jwt(tid)))
         .header(header::CONTENT_TYPE, "application/json")
         .body(jbody(&payload)).unwrap();
     let (s, b) = call(make_app(repo), req).await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(b["assigned_driver_id"], did.to_string());
+    assert_eq!(b["data"]["driver_id"], did.to_string());
 }
 
 #[tokio::test]
@@ -294,7 +336,7 @@ async fn assign_driver_fails_when_decommissioned() {
     repo.save(&v).await.unwrap();
     let payload = serde_json::json!({ "driver_id": Uuid::new_v4() });
     let req = Request::builder().method(Method::POST)
-        .uri(format!("/v1/vehicles/{}/assign-driver", vid))
+        .uri(format!("/v1/fleet/vehicles/{}/assign-driver", vid))
         .header(header::AUTHORIZATION, bearer(&make_jwt(tid)))
         .header(header::CONTENT_TYPE, "application/json")
         .body(jbody(&payload)).unwrap();
@@ -314,12 +356,12 @@ async fn unassign_driver_clears_assignment() {
     let repo: InMemoryVehicleRepo = Default::default();
     repo.save(&v).await.unwrap();
     let req = Request::builder().method(Method::POST)
-        .uri(format!("/v1/vehicles/{}/unassign-driver", vid))
+        .uri(format!("/v1/fleet/vehicles/{}/unassign-driver", vid))
         .header(header::AUTHORIZATION, bearer(&make_jwt(tid)))
         .body(Body::empty()).unwrap();
     let (s, b) = call(make_app(repo), req).await;
     assert_eq!(s, StatusCode::OK);
-    assert!(b["assigned_driver_id"].is_null());
+    assert!(b["data"]["driver_id"].is_null());
 }
 
 #[tokio::test]
@@ -329,12 +371,12 @@ async fn unassign_driver_on_vehicle_with_no_driver() {
     let repo: InMemoryVehicleRepo = Default::default();
     repo.save(&v).await.unwrap();
     let req = Request::builder().method(Method::POST)
-        .uri(format!("/v1/vehicles/{}/unassign-driver", vid))
+        .uri(format!("/v1/fleet/vehicles/{}/unassign-driver", vid))
         .header(header::AUTHORIZATION, bearer(&make_jwt(tid)))
         .body(Body::empty()).unwrap();
     let (s, b) = call(make_app(repo), req).await;
     assert_eq!(s, StatusCode::OK);
-    assert!(b["assigned_driver_id"].is_null());
+    assert!(b["data"]["driver_id"].is_null());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -352,14 +394,21 @@ async fn schedule_maintenance_endpoint() {
         "scheduled_date": "2026-04-15"
     });
     let req = Request::builder().method(Method::POST)
-        .uri(format!("/v1/vehicles/{}/maintenance", vid))
+        .uri(format!("/v1/fleet/vehicles/{}/maintenance", vid))
         .header(header::AUTHORIZATION, bearer(&make_jwt(tid)))
         .header(header::CONTENT_TYPE, "application/json")
         .body(jbody(&payload)).unwrap();
-    let (s, b) = call(make_app(repo), req).await;
+    let (s, b) = call(make_app(repo.clone()), req).await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(b["status"], "under_maintenance");
-    assert_eq!(b["next_maintenance_due"], "2026-04-15");
+    assert_eq!(b["data"]["status"], "maintenance");
+    // The due date is no longer on the wire — `VehicleApiResponse` exposes
+    // `next_service_km`, not a date. Asserted against the stored vehicle
+    // instead, which is the fact that matters: scheduling recorded the date.
+    let stored = repo.find_by_id(&VehicleId::from_uuid(vid)).await.unwrap().unwrap();
+    assert_eq!(
+        stored.next_maintenance_due.map(|d| d.to_string()).as_deref(),
+        Some("2026-04-15"),
+    );
 }
 
 #[tokio::test]
@@ -372,13 +421,16 @@ async fn schedule_maintenance_records_stored() {
         "description": "Oil change", "scheduled_date": "2026-05-01"
     });
     let req = Request::builder().method(Method::POST)
-        .uri(format!("/v1/vehicles/{}/maintenance", vid))
+        .uri(format!("/v1/fleet/vehicles/{}/maintenance", vid))
         .header(header::AUTHORIZATION, bearer(&make_jwt(tid)))
         .header(header::CONTENT_TYPE, "application/json")
         .body(jbody(&payload)).unwrap();
-    let (s, b) = call(make_app(repo.clone()), req).await;
+    let (s, _b) = call(make_app(repo.clone()), req).await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(b["maintenance_history"].as_array().unwrap().len(), 1);
+    // `maintenance_history` is not part of the wire projection. Asserted on the
+    // stored vehicle, which is where the record actually has to land.
+    let stored = repo.find_by_id(&VehicleId::from_uuid(vid)).await.unwrap().unwrap();
+    assert_eq!(stored.maintenance_history.len(), 1);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -397,15 +449,20 @@ async fn complete_maintenance_endpoint() {
         "odometer_km": 35000, "cost_cents": 450000, "notes": "Changed oil and filters"
     });
     let req = Request::builder().method(Method::POST)
-        .uri(format!("/v1/vehicles/{}/maintenance/complete", vid))
+        .uri(format!("/v1/fleet/vehicles/{}/maintenance/complete", vid))
         .header(header::AUTHORIZATION, bearer(&make_jwt(tid)))
         .header(header::CONTENT_TYPE, "application/json")
         .body(jbody(&payload)).unwrap();
-    let (s, b) = call(make_app(repo), req).await;
+    let (s, b) = call(make_app(repo.clone()), req).await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(b["status"], "active");
-    assert_eq!(b["odometer_km"], 35000);
-    assert!(b["next_maintenance_due"].is_null());
+    // "idle": completing maintenance returns the vehicle to `Active`, and an
+    // unassigned Active vehicle projects as "idle".
+    assert_eq!(b["data"]["status"], "idle");
+    // Odometer and due-date are not on the wire; both are checked where they
+    // are actually written.
+    let stored = repo.find_by_id(&VehicleId::from_uuid(vid)).await.unwrap().unwrap();
+    assert_eq!(stored.odometer_km, 35_000);
+    assert!(stored.next_maintenance_due.is_none());
 }
 
 #[tokio::test]
@@ -418,7 +475,7 @@ async fn complete_maintenance_fails_when_no_pending() {
         "odometer_km": 10000, "cost_cents": 100000
     });
     let req = Request::builder().method(Method::POST)
-        .uri(format!("/v1/vehicles/{}/maintenance/complete", vid))
+        .uri(format!("/v1/fleet/vehicles/{}/maintenance/complete", vid))
         .header(header::AUTHORIZATION, bearer(&make_jwt(tid)))
         .header(header::CONTENT_TYPE, "application/json")
         .body(jbody(&payload)).unwrap();
@@ -434,13 +491,13 @@ async fn complete_maintenance_fails_when_no_pending() {
 async fn maintenance_alerts_empty_when_no_vehicles() {
     let tid = Uuid::new_v4();
     let req = Request::builder().method(Method::GET)
-        .uri("/v1/vehicles/maintenance-alerts?within_days=7")
+        .uri("/v1/fleet/vehicles/maintenance-alerts?within_days=7")
         .header(header::AUTHORIZATION, bearer(&make_jwt(tid)))
         .body(Body::empty()).unwrap();
     let (s, b) = call(make_app(Default::default()), req).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(b["count"], 0);
-    assert_eq!(b["alerts"].as_array().unwrap().len(), 0);
+    assert_eq!(b["data"].as_array().unwrap().len(), 0);
 }
 
 #[tokio::test]
@@ -455,13 +512,13 @@ async fn maintenance_alerts_returns_vehicles_due_soon() {
     repo.save(&v1).await.unwrap();
     repo.save(&v2).await.unwrap();
     let req = Request::builder().method(Method::GET)
-        .uri("/v1/vehicles/maintenance-alerts?within_days=7")
+        .uri("/v1/fleet/vehicles/maintenance-alerts?within_days=7")
         .header(header::AUTHORIZATION, bearer(&make_jwt(tid)))
         .body(Body::empty()).unwrap();
     let (s, b) = call(make_app(repo), req).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(b["count"], 1);
-    assert_eq!(b["alerts"].as_array().unwrap().len(), 1);
+    assert_eq!(b["data"].as_array().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -474,7 +531,7 @@ async fn maintenance_alerts_default_window_is_seven_days() {
     repo.save(&v).await.unwrap();
     // No within_days param — defaults to 7
     let req = Request::builder().method(Method::GET)
-        .uri("/v1/vehicles/maintenance-alerts")
+        .uri("/v1/fleet/vehicles/maintenance-alerts")
         .header(header::AUTHORIZATION, bearer(&make_jwt(tid)))
         .body(Body::empty()).unwrap();
     let (s, b) = call(make_app(repo), req).await;

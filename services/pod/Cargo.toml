@@ -1,4 +1,8 @@
 [package]
+# Never published. Also what lets cargo-deny treat this as private and skip
+# the licence check — these crates carry no SPDX expression because they are
+# proprietary, not because anyone forgot.
+publish = false
 name        = "logisticos-pod"
 description = "Proof of Delivery — Signature, photo, GPS, OTP verification"
 version.workspace      = true
@@ -42,3 +46,13 @@ reqwest.workspace      = true
 aws-sdk-s3.workspace   = true
 aws-config.workspace   = true
 rand.workspace         = true
+
+# The unit suite only. `tests/integration/mod.rs` has ~29 compile errors against
+# the current API — the POP/telemetry work moved a lot here — and wants its own pass.
+#
+# Cargo discovers tests/*.rs and tests/<dir>/main.rs — but NOT tests/<dir>/mod.rs,
+# so without a stanza the suite is not a target: never compiled, never run, and
+# `cargo test` reports a clean pass.
+[[test]]
+name = "unit"
+path = "tests/unit/mod.rs"

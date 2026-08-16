@@ -1,4 +1,8 @@
 [package]
+# Never published. Also what lets cargo-deny treat this as private and skip
+# the licence check — these crates carry no SPDX expression because they are
+# proprietary, not because anyone forgot.
+publish = false
 name        = "logisticos-marketing"
 description = "Marketing Automation Engine — Campaigns, loyalty, referrals"
 version.workspace      = true
@@ -37,3 +41,17 @@ rdkafka.workspace    = true
 reqwest.workspace    = true
 tracing.workspace    = true
 async-trait.workspace = true
+
+# The unit suite only. `tests/integration/mod.rs` is deliberately NOT a target
+# yet: it builds an `AppState`, and two of that struct's fields are concrete
+# `Arc<PgAbTestRepository>` / `Arc<PgJourneyRepository>` rather than trait
+# objects, so the HTTP layer cannot be exercised without a live Postgres.
+# `campaign_svc` beside them takes a trait and is mocked freely — these two
+# deviate from the pattern this service already uses. Extracting traits for them
+# is the fix, and it is a production change rather than a test one, so it wants
+# its own commit.
+#
+# Cargo discovers tests/*.rs and tests/<dir>/main.rs — but NOT tests/<dir>/mod.rs.
+[[test]]
+name = "unit"
+path = "tests/unit/mod.rs"

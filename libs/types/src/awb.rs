@@ -6,7 +6,7 @@
 //! - `CM`       — platform prefix, always fixed
 //! - `{TTT}`    — 3-char tenant code (e.g. `PH1`, `SG2`, `AE3`)
 //! - `{S}`      — service code: `S`=Standard, `E`=Express, `D`=SameDay,
-//!                `B`=Balikbayan, `N`=iNternational
+//!   `B`=Balikbayan, `N`=iNternational
 //! - `{NNNNNNN}` — 7-digit zero-padded sequence (per tenant+service)
 //! - `{C}`      — Luhn mod-34 check character
 //!
@@ -56,16 +56,6 @@ fn luhn_checksum(payload: &str) -> Result<char, AwbError> {
 
     let check_val = (BASE - (sum % BASE)) % BASE;
     Ok(value_char(check_val))
-}
-
-fn luhn_valid(full: &str) -> bool {
-    let len = full.len();
-    if len < 2 {
-        return false;
-    }
-    let (payload, check_str) = full.split_at(len - 1);
-    let check_char = check_str.chars().next().unwrap();
-    matches!(luhn_checksum(payload), Ok(c) if c == check_char)
 }
 
 // ── ServiceCode ───────────────────────────────────────────────────────────────
@@ -212,7 +202,7 @@ impl Awb {
     /// Generate a new master AWB from components.
     /// `sequence` must be 1..=9_999_999.
     pub fn generate(tenant: &TenantCode, service: ServiceCode, sequence: u32) -> Self {
-        debug_assert!(sequence >= 1 && sequence <= 9_999_999, "sequence out of range");
+        debug_assert!((1..=9_999_999).contains(&sequence), "sequence out of range");
         // checksum over the compact payload (no dashes, no prefix)
         let compact_payload = format!("{}{}{:07}", tenant.as_str(), service.as_char(), sequence);
         let check = luhn_checksum(&compact_payload).expect("charset always valid for generated AWB");

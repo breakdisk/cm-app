@@ -63,16 +63,20 @@ pub async fn get_self(
 }
 
 /// PUT /v1/tenants/:id — partial profile update (name, owner_email). The
-/// caller must hold TENANT_MANAGE *and* the path id must match their own
+/// caller must hold TENANT_UPDATE_SELF *and* the path id must match their own
 /// tenant_id (cross-tenant edits are NotFound rather than Forbidden so we
 /// don't leak existence to other tenants).
+///
+/// Was TENANT_MANAGE, which no role grants, so this returned 403 to everyone.
+/// It is not simply granted, because the same constant gates the tier upgrade
+/// and the platform-wide pricing matrix below.
 pub async fn update_tenant(
     AuthClaims(claims): AuthClaims,
     Path(id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
     Json(cmd): Json<UpdateTenantCommand>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    require_permission!(claims, logisticos_auth::rbac::permissions::TENANT_MANAGE);
+    require_permission!(claims, logisticos_auth::rbac::permissions::TENANT_UPDATE_SELF);
     if claims.tenant_id != id {
         return Err(AppError::NotFound { resource: "Tenant", id: id.to_string() });
     }

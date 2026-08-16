@@ -72,7 +72,7 @@ fn verify_hmac_sha256(secret: &str, body: &[u8], signature_header: &str, prefix:
 }
 
 fn hex_decode(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 { return None; }
+    if !s.len().is_multiple_of(2) { return None; }
     s.as_bytes()
         .chunks(2)
         .map(|pair| {

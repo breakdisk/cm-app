@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn full_customs_happy_path_records_clearer() {
         let mut m = sea_manifest();
-        m.file_customs("BRK-123", Some(150_00), None).unwrap();
+        m.file_customs("BRK-123", Some(15_000), None).unwrap();
         assert!(m.has_duties());
         m.hold().unwrap();
         assert_eq!(m.customs_status, CustomsStatus::Hold);

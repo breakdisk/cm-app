@@ -10,9 +10,8 @@ use logisticos_types::TenantId;
 
 use crate::domain::{
     entities::{
-        BookingStatus, Carrier, CarrierId, CarrierStatus, ComplianceStatus,
-        ListingStatus, MarketplaceBooking, PerformanceGrade, SizeClass,
-        SlaCommitment, SlaRecord, SlaStatus, VehicleListing, ZoneSlaRow,
+        BookingStatus, Carrier, CarrierId, ComplianceStatus,
+        ListingStatus, MarketplaceBooking, SizeClass, SlaRecord, SlaStatus, VehicleListing, ZoneSlaRow,
     },
     repositories::{CarrierRepository, MarketplaceRepository, SlaRecordRepository},
 };

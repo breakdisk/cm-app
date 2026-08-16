@@ -1,20 +1,20 @@
-/// TNT Express — FedEx acquired TNT in 2016.
-/// TNT Connect APIs are being sunset; new integrations use FedEx APIs with
-/// TNT-specific service codes (e.g. "FEDEX_TNT_EXPRESS").
-///
-/// This adapter wraps `FedexAdapter` transparently, overriding carrier_code
-/// and carrier_name so that TNT appears as a distinct carrier in rate quotes
-/// and bookings while routing through the FedEx infrastructure.
-///
-/// TNT-specific service codes on FedEx infrastructure:
-///   - 09DOC  — TNT Express Documents (same-day / overnight)
-///   - ECONOMY_SELECT — TNT Economy Express
-///   - FEDEX_INTERNATIONAL_PRIORITY — replaces TNT Express
-///
-/// Docs: https://developer.fedex.com/api/en-us/catalog/ship/v1/docs.html
-/// Auth: Same FedEx OAuth2 credentials; use the FedEx account that has TNT lanes activated.
-/// Sandbox base URL: https://apis-sandbox.fedex.com
-/// Production base URL: https://apis.fedex.com
+//! TNT Express — FedEx acquired TNT in 2016.
+//! TNT Connect APIs are being sunset; new integrations use FedEx APIs with
+//! TNT-specific service codes (e.g. "FEDEX_TNT_EXPRESS").
+//!
+//! This adapter wraps `FedexAdapter` transparently, overriding carrier_code
+//! and carrier_name so that TNT appears as a distinct carrier in rate quotes
+//! and bookings while routing through the FedEx infrastructure.
+//!
+//! TNT-specific service codes on FedEx infrastructure:
+//!   - 09DOC  — TNT Express Documents (same-day / overnight)
+//!   - ECONOMY_SELECT — TNT Economy Express
+//!   - FEDEX_INTERNATIONAL_PRIORITY — replaces TNT Express
+//!
+//! Docs: https://developer.fedex.com/api/en-us/catalog/ship/v1/docs.html
+//! Auth: Same FedEx OAuth2 credentials; use the FedEx account that has TNT lanes activated.
+//! Sandbox base URL: https://apis-sandbox.fedex.com
+//! Production base URL: https://apis.fedex.com
 
 use async_trait::async_trait;
 use std::sync::Arc;

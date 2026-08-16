@@ -445,17 +445,12 @@ mod jwt_tests {
     #[test]
     fn validate_access_token_fails_on_tampered_token() {
         let svc = make_service();
-        let claims = make_claims(3600);
-        let mut token = svc.issue_access_token(claims).expect("token creation failed");
 
-        // Corrupt the signature portion (last segment of the JWT).
-        let dot_pos = token.rfind('.').unwrap();
-        token.push_str("tampered");
-        let _ = token; // suppress unused warning — we already modified it in-place via push_str
-
-        // Re-derive: manipulate the token to corrupt signature
-        let svc2 = make_service();
-        let original = svc2.issue_access_token(make_claims(3600)).unwrap();
+        // Keep the header and payload, replace the signature. An abandoned
+        // first attempt used to sit above this — it computed a dot position it
+        // never used and appended to a token it then threw away. Nothing caught
+        // it because this suite had never compiled.
+        let original = svc.issue_access_token(make_claims(3600)).expect("token creation failed");
         let parts: Vec<&str> = original.splitn(3, '.').collect();
         assert_eq!(parts.len(), 3);
         let tampered = format!("{}.{}.invalidsignatureXXXXXXXXXXXX", parts[0], parts[1]);
@@ -467,7 +462,12 @@ mod jwt_tests {
     #[test]
     fn validate_access_token_fails_on_expired_token() {
         let svc = make_service();
-        let claims = make_claims(-1); // expiry = 1 second in the past
+        // Beyond the clock-skew leeway, not just past `exp`. JwtService allows
+        // CLOCK_SKEW_LEEWAY_SECS (60) of drift because tokens are minted by
+        // identity and validated in twenty other containers — so a token one
+        // second stale is *supposed* to pass, and this test used to assert the
+        // opposite and fail.
+        let claims = make_claims(-(logisticos_auth::jwt::JwtService::CLOCK_SKEW_LEEWAY_SECS as i64) - 10);
         let token = svc.issue_access_token(claims).expect("token creation failed");
         let result = svc.validate_access_token(&token);
         assert!(result.is_err(), "Expired token should fail validation");

@@ -1,4 +1,8 @@
 [package]
+# Never published. Also what lets cargo-deny treat this as private and skip
+# the licence check — these crates carry no SPDX expression because they are
+# proprietary, not because anyone forgot.
+publish = false
 name        = "logisticos-carrier"
 description = "Carrier and Partner Management — Onboarding, SLA, auto-allocation"
 version.workspace      = true
@@ -47,3 +51,13 @@ aws-config.workspace  = true
 [build-dependencies]
 tonic-build.workspace       = true
 protoc-bin-vendored         = "3"
+
+# The unit suite only. `tests/integration/mod.rs` has 14 compile errors of its
+# own against the current API and wants its own pass.
+#
+# Cargo discovers tests/*.rs and tests/<dir>/main.rs — but NOT tests/<dir>/mod.rs,
+# so without a stanza the suite is not a target: never compiled, never run, and
+# `cargo test` reports a clean pass.
+[[test]]
+name = "unit"
+path = "tests/unit/mod.rs"

@@ -17,6 +17,10 @@ impl Platform {
         }
     }
 
+    /// Inherent `from_str` rather than `FromStr`: it is infallible-by-default
+    /// (unknown input maps to a variant rather than erroring), which is not
+    /// the contract `FromStr` implies.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "shopify"     => Some(Platform::Shopify),
@@ -36,6 +40,15 @@ pub struct ConnectorCredentials {
     pub webhook_secret: String,
     pub config:         serde_json::Value,
     pub is_active:      bool,
+    /// When the scheduled sweep last claimed this connection. `None` means it
+    /// never has — which is not the same as "synced long ago", and is the state
+    /// a merchant most needs to see: credentials accepted, nothing pulled yet.
+    pub last_synced_at: Option<DateTime<Utc>>,
+    /// How often the sweep is meant to claim it, so the console can say whether
+    /// a gap is overdue rather than just old. `None` is a real state, not a
+    /// missing value: the sweep skips rows where this is NULL, so the
+    /// connection is manual-sync-only.
+    pub sync_interval_mins: Option<i32>,
     pub created_at:     DateTime<Utc>,
 }
 
@@ -64,6 +77,19 @@ impl ConnectorCredentials {
 
     pub fn woo_consumer_secret(&self) -> Option<&str> {
         self.config_str("consumer_secret")
+    }
+
+    /// Which OmniDeliv store this shop's catalog syncs into.
+    ///
+    /// Config rather than derived, because there is no derivation available: a
+    /// connector is keyed on (tenant, merchant, platform) and an OmniDeliv
+    /// vendor is a storefront, and the two are separate objects a person has to
+    /// associate. Absent means this merchant has a Shopify connection for
+    /// orders but no storefront to sync a menu into, which is the normal state
+    /// for a parcel merchant and not an error.
+    pub fn omnideliv_vendor_id(&self) -> Option<uuid::Uuid> {
+        self.config_str("omnideliv_vendor_id")
+            .and_then(|s| uuid::Uuid::parse_str(s).ok())
     }
 
     pub fn default_service_type(&self) -> &str {

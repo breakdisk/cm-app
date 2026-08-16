@@ -1,0 +1,33 @@
+{
+  "expo": {
+    "name": "OmniDeliv",
+    "slug": "omnideliv",
+    "scheme": "omnideliv",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#050810",
+    "plugins": [
+      "expo-router",
+      "expo-secure-store"
+    ],
+    "ios": {
+      "bundleIdentifier": "net.cargomarket.omnideliv",
+      "supportsTablet": false
+    },
+    "android": {
+      "package": "net.cargomarket.omnideliv",
+      "allowBackup": false
+    },
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "7248eb1b-8d22-4042-af9c-d0182476e746"
+      }
+    },
+    "owner": "cargomarket"
+  }
+}

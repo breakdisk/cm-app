@@ -154,6 +154,10 @@ mod route_rules {
         );
     }
 
+    /// Folds to a constant, and is kept for the same reason as the geo hub
+    /// bounds tests: the thing under test is the constants table itself. A
+    /// tier edit that puts Growth above Business is exactly what this catches.
+    #[allow(clippy::assertions_on_constants)]
     #[test]
     fn tier_constants_are_ordered_correctly() {
         assert!(MAX_STOPS_STARTER < MAX_STOPS_GROWTH);
@@ -292,7 +296,7 @@ mod driver_availability {
         let driver_b = make_available_driver(DriverId::new(), 3.0,  2);  // score: 2.7
         let driver_c = make_available_driver(DriverId::new(), 1.0,  8);  // score: 3.1
 
-        let candidates = vec![driver_a.clone(), driver_b.clone(), driver_c.clone()];
+        let candidates = [driver_a.clone(), driver_b.clone(), driver_c.clone()];
 
         let best = candidates.iter()
             .min_by(|a, b| {

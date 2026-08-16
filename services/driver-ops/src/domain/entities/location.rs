@@ -26,6 +26,6 @@ impl DriverLocation {
 
     /// Business rule: reject suspiciously fast movements (> 200 km/h = likely GPS noise).
     pub fn is_plausible_speed(&self) -> bool {
-        self.speed_kmh.map_or(true, |s| s <= 200.0)
+        self.speed_kmh.is_none_or(|s| s <= 200.0)
     }
 }

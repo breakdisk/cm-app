@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::consumer::StreamConsumer;
 use rdkafka::ClientConfig;
 use sqlx::postgres::PgPoolOptions;
 
@@ -71,8 +71,22 @@ pub async fn run() -> anyhow::Result<()> {
 
     let state = AppState { profile_svc, segment_svc, consent_svc, jwt: Arc::clone(&jwt), kafka };
 
+    // Merged *outside* the auth layer: a probe cannot present a JWT, so an
+    // authenticated /health is a permanently failing one. This service had no
+    // health route at all, so its container has been reporting unhealthy on a
+    // 404/401 — see the platform-wide audit in the accompanying commit.
+    let observability = axum::Router::new()
+        .route("/health",  axum::routing::get(|| async {
+            axum::Json(serde_json::json!({"status": "ok", "service": "cdp"}))
+        }))
+        .route("/ready",   axum::routing::get(|| async {
+            axum::Json(serde_json::json!({"status": "ready"}))
+        }))
+        .route("/metrics", axum::routing::get(|| async { "" }));
+
     let app = http::router()
         .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth))
+        .merge(observability)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state);
 

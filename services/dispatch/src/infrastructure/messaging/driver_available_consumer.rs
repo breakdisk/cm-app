@@ -30,7 +30,7 @@ pub async fn start_driver_available_consumer(
 ) -> anyhow::Result<()> {
     let consumer: StreamConsumer = ClientConfig::new()
         .set("bootstrap.servers", brokers)
-        .set("group.id", &format!("{}-driver-available", group_id))
+        .set("group.id", format!("{}-driver-available", group_id))
         .set("auto.offset.reset", "latest") // only care about real-time availability, not replays
         .set("enable.auto.commit", "false")
         .create()?;

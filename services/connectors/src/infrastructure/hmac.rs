@@ -52,7 +52,6 @@ fn verify_hmac_base64(secret: &[u8], body: &[u8], expected_b64: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::Engine as _;
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
 

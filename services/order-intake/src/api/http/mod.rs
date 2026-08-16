@@ -643,8 +643,11 @@ fn default_address_limit() -> i64 { 20 }
 
 /// `GET /v1/address/lookup` — JWT-authenticated (any role).
 ///
-/// Example requests:
-/// ```
+/// Example requests — `text`, because an untagged fence defaults to `rust` and
+/// rustdoc then tries to compile these URLs. That is what had order-intake's
+/// whole doc-test job failing.
+///
+/// ```text
 /// GET /v1/address/lookup?country_code=PH&postal_code=1600
 /// GET /v1/address/lookup?country_code=PH&city=Mak&limit=10
 /// GET /v1/address/lookup?country_code=PH&q=Makati

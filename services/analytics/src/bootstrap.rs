@@ -77,8 +77,22 @@ pub async fn run() -> anyhow::Result<()> {
             HeaderName::from_static("authorization"),
         ]);
 
+    // Merged *outside* the auth layer: a probe cannot present a JWT, so an
+    // authenticated /health is a permanently failing one. This service had no
+    // health route at all, so its container has been reporting unhealthy on a
+    // 404/401 — see the platform-wide audit in the accompanying commit.
+    let observability = axum::Router::new()
+        .route("/health",  axum::routing::get(|| async {
+            axum::Json(serde_json::json!({"status": "ok", "service": "analytics"}))
+        }))
+        .route("/ready",   axum::routing::get(|| async {
+            axum::Json(serde_json::json!({"status": "ready"}))
+        }))
+        .route("/metrics", axum::routing::get(|| async { "" }));
+
     let app = http::router()
         .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth))
+        .merge(observability)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state);

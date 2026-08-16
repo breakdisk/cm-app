@@ -71,6 +71,7 @@ pub struct CampaignRecipient {
 
 /// Targeting rule: recipients are customers matching these CDP criteria.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct TargetingRule {
     /// Minimum CLV score (0-100). None = no minimum.
     pub min_clv_score:       Option<f32>,
@@ -91,18 +92,6 @@ pub struct TargetingRule {
     pub segment_id:          Option<Uuid>,
 }
 
-impl Default for TargetingRule {
-    fn default() -> Self {
-        Self {
-            min_clv_score:    None,
-            last_active_days: None,
-            customer_ids:     Vec::new(),
-            recipients:       Vec::new(),
-            estimated_reach:  0,
-            segment_id:       None,
-        }
-    }
-}
 
 /// Daily message-volume aggregation returned by the weekly-stats endpoint.
 #[derive(Debug, Clone, Serialize)]

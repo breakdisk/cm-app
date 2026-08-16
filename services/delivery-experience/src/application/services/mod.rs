@@ -39,7 +39,7 @@ impl TrackingService {
         self.repo
             .find_by_tracking_number(tracking_number)
             .await
-            .map_err(|e| AppError::Internal(e))?
+            .map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound {
                 resource: "tracking",
                 id: tracking_number.to_owned(),
@@ -51,7 +51,7 @@ impl TrackingService {
         self.repo
             .find_by_shipment_id(shipment_id)
             .await
-            .map_err(|e| AppError::Internal(e))?
+            .map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound {
                 resource: "shipment",
                 id: shipment_id.to_string(),
@@ -65,7 +65,7 @@ impl TrackingService {
         self.repo
             .list_by_tenant(tenant_id, limit, offset)
             .await
-            .map_err(|e| AppError::Internal(e))
+            .map_err(AppError::Internal)
     }
 
     /// Customer-initiated reschedule — verifies the tracking number exists, validates inputs, then delegates.
@@ -80,7 +80,7 @@ impl TrackingService {
         self.repo
             .find_by_tracking_number(tracking_number)
             .await
-            .map_err(|e| AppError::Internal(e))?
+            .map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound {
                 resource: "tracking",
                 id: tracking_number.to_owned(),
@@ -112,7 +112,7 @@ impl TrackingService {
         self.repo
             .reschedule(tracking_number, preferred_date, preferred_time_slot, reason)
             .await
-            .map_err(|e| AppError::Internal(e))
+            .map_err(AppError::Internal)
     }
 
     /// Customer confirms they received their package.
@@ -125,7 +125,7 @@ impl TrackingService {
         let record = self.repo
             .find_by_tracking_number(tracking_number)
             .await
-            .map_err(|e| AppError::Internal(e))?
+            .map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound {
                 resource: "tracking",
                 id: tracking_number.to_owned(),
@@ -146,13 +146,13 @@ impl TrackingService {
         self.repo
             .confirm_customer_receipt(tracking_number)
             .await
-            .map_err(|e| AppError::Internal(e))
+            .map_err(AppError::Internal)
     }
 
     /// Customer requests their shipment receipt to be emailed.
     ///
     /// Persists the request to `tracking.receipt_email_requests` (audit trail
-    /// + idempotency) and then publishes a `receipt.email.requested` Kafka
+    /// and idempotency) and then publishes a `receipt.email.requested` Kafka
     /// event which engagement consumes to actually send the mail. A publish
     /// failure is logged but does not fail the request — the DB row remains
     /// as evidence and can be retried by a future poller.
@@ -169,7 +169,7 @@ impl TrackingService {
         let record = self.repo
             .find_by_tracking_number(tracking_number)
             .await
-            .map_err(|e| AppError::Internal(e))?
+            .map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound {
                 resource: "tracking",
                 id: tracking_number.to_owned(),
@@ -178,7 +178,7 @@ impl TrackingService {
         self.repo
             .record_receipt_email_request(tracking_number, email)
             .await
-            .map_err(|e| AppError::Internal(e))?;
+            .map_err(AppError::Internal)?;
 
         if let Some(publisher) = &self.publisher {
             use logisticos_events::{envelope::Event, payloads::ReceiptEmailRequested, topics};
@@ -240,6 +240,6 @@ impl TrackingService {
         self.repo
             .save_feedback(tracking_number, rating, &tags, comments.as_deref())
             .await
-            .map_err(|e| AppError::Internal(e))
+            .map_err(AppError::Internal)
     }
 }

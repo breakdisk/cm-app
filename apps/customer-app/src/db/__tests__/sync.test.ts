@@ -1,8 +1,26 @@
 import { savePendingShipment, getOfflineShipments, getShipmentByAwb, getSyncMetadata } from '../sync';
 
 // Mock the API calls and database
-jest.mock('../../services/api/shipments');
-jest.mock('../../services/api/auth');
+// Factories, not bare automocks. Automocking loads the real module to derive
+// its shape, and both of these reach the api client, which imports axios, whose
+// fetch adapter probes ReadableStream at import time and throws against Expo's
+// stream polyfill. The suite never got to a test.
+jest.mock('../../services/api/shipments', () => ({
+  createShipment: jest.fn(),
+  getShipment:    jest.fn(),
+  listShipments:  jest.fn(),
+  cancelShipment: jest.fn(),
+  parseAddress:   jest.fn(),
+}));
+jest.mock('../../services/api/auth', () => ({
+  DEFAULT_PROVIDER_SLUG:  '',
+  verifyPhone:            jest.fn(),
+  verifyOTP:              jest.fn(),
+  getStoredProviderSlug:  jest.fn(async () => ''),
+  logout:                 jest.fn(),
+  getStoredToken:         jest.fn(async () => null),
+  getStoredCustomerId:    jest.fn(async () => null),
+}));
 
 describe('Database Sync Module', () => {
   describe('savePendingShipment', () => {

@@ -1,7 +1,7 @@
-/// Tool: book_carrier_shipment
-///
-/// Book a shipment with a specific 3PL carrier.
-/// Returns the carrier booking reference, tracking number, and label URL.
+//! Tool: book_carrier_shipment
+//!
+//! Book a shipment with a specific 3PL carrier.
+//! Returns the carrier booking reference, tracking number, and label URL.
 
 use serde_json::{json, Value};
 use std::sync::Arc;

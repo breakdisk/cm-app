@@ -30,6 +30,8 @@ fn row_to_creds(r: &sqlx::postgres::PgRow) -> ConnectorCredentials {
         webhook_secret: r.get("webhook_secret"),
         config:         r.get("config"),
         is_active:      r.get("is_active"),
+        last_synced_at: r.get::<Option<DateTime<Utc>>, _>("last_synced_at"),
+        sync_interval_mins: r.get("sync_interval_mins"),
         created_at:     r.get::<DateTime<Utc>, _>("created_at"),
     }
 }
@@ -43,7 +45,12 @@ impl CredentialsRepository for PgCredentialsRepository {
     ) -> AppResult<Option<ConnectorCredentials>> {
         let row = sqlx::query(
             r#"SELECT id, tenant_id, merchant_id, tenant_slug, platform,
-                      webhook_secret, config, is_active, created_at
+                      webhook_secret, config, is_active,
+                      -- row_to_creds reads both; a SELECT that omits them
+                      -- compiles fine and panics at runtime on the missing
+                      -- column, which is how this broke once already.
+                      last_synced_at, sync_interval_mins,
+                      created_at
                FROM connectors.credentials
                WHERE tenant_id = $1 AND platform = $2 AND is_active = true
                LIMIT 1"#,
@@ -55,6 +62,63 @@ impl CredentialsRepository for PgCredentialsRepository {
         .map_err(AppError::Database)?;
 
         Ok(row.as_ref().map(row_to_creds))
+    }
+
+    async fn claim_due_syncs(&self, limit: i64) -> AppResult<Vec<ConnectorCredentials>> {
+        // One statement: pick the due rows, lock them, stamp them, return them.
+        //
+        // `FOR UPDATE SKIP LOCKED` is what makes a second replica's sweep step
+        // over rows this one already holds rather than blocking on them or —
+        // far worse — reading them before the stamp lands and syncing the same
+        // vendor twice.
+        //
+        // The stamp goes on at *claim* time, not on completion. A sync that
+        // hangs or panics must not leave its connector permanently due and
+        // re-claimed on every tick; it waits out its interval like any other.
+        let rows = sqlx::query(
+            r#"
+            UPDATE connectors.credentials c
+               SET last_synced_at = NOW()
+              FROM (
+                    SELECT id
+                      FROM connectors.credentials
+                     WHERE is_active = true
+                       AND sync_interval_mins IS NOT NULL
+                       AND (last_synced_at IS NULL
+                            OR last_synced_at < NOW()
+                               - (sync_interval_mins || ' minutes')::interval)
+                     ORDER BY last_synced_at NULLS FIRST
+                     LIMIT $1
+                       FOR UPDATE SKIP LOCKED
+                   ) due
+             WHERE c.id = due.id
+         RETURNING c.id, c.tenant_id, c.merchant_id, c.tenant_slug, c.platform,
+                   c.webhook_secret, c.config, c.is_active,
+                   -- Returned post-UPDATE, so this is the stamp just written.
+                   c.last_synced_at, c.sync_interval_mins,
+                   c.created_at
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+
+        Ok(rows.iter().map(row_to_creds).collect())
+    }
+
+    async fn record_sync_result(&self, id: Uuid, error: Option<&str>) -> AppResult<()> {
+        sqlx::query(
+            "UPDATE connectors.credentials
+                SET last_sync_error = $2, updated_at = NOW()
+              WHERE id = $1",
+        )
+        .bind(id)
+        .bind(error)
+        .execute(&self.pool)
+        .await
+        .map_err(AppError::Database)?;
+        Ok(())
     }
 
     async fn upsert(&self, creds: &ConnectorCredentials) -> AppResult<()> {
@@ -104,7 +168,12 @@ impl CredentialsRepository for PgCredentialsRepository {
     async fn list_for_tenant(&self, tenant_id: Uuid) -> AppResult<Vec<ConnectorCredentials>> {
         let rows = sqlx::query(
             r#"SELECT id, tenant_id, merchant_id, tenant_slug, platform,
-                      webhook_secret, config, is_active, created_at
+                      webhook_secret, config, is_active,
+                      -- row_to_creds reads both; a SELECT that omits them
+                      -- compiles fine and panics at runtime on the missing
+                      -- column, which is how this broke once already.
+                      last_synced_at, sync_interval_mins,
+                      created_at
                FROM connectors.credentials
                WHERE tenant_id = $1 AND is_active = true
                ORDER BY platform"#,

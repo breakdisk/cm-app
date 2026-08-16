@@ -888,7 +888,7 @@ mod cross_border_tests {
             tenant_id: Uuid::new_v4(),
             master_awbs: vec!["CM-PH1-B0009012Z".into()],
             cleared_by: by,
-            duties_total_cents: Some(150_00),
+            duties_total_cents: Some(15_000),
             customs_filing_ref: Some("BRK-123".into()),
             tenant_code: "PH1".into(),
             details: Vec::new(),
@@ -897,7 +897,7 @@ mod cross_border_tests {
         let json = serde_json::to_string(&p).unwrap();
         let back: ContainerCustomsCleared = serde_json::from_str(&json).unwrap();
         assert_eq!(back.cleared_by, by);
-        assert_eq!(back.duties_total_cents, Some(150_00));
+        assert_eq!(back.duties_total_cents, Some(15_000));
         assert_eq!(back.master_awbs.len(), 1);
     }
 

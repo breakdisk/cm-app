@@ -15,6 +15,13 @@ name: Deploy Production
 
 on:
   push:
+    # DORMANT — deliberately. This repo's default branch is `master`; `main`
+    # has never existed, so this push trigger has never fired and production
+    # has only ever been deployed by hand (GHCR image + `docker compose up -d`
+    # on the VPS). Left as-is rather than repointed to `master` alongside the
+    # CI workflows: those only report, this one ships, and making every merge
+    # to master an automatic production deploy is a release-process decision,
+    # not a typo fix. Use workflow_dispatch until that decision is made.
     branches:
       - main
   workflow_dispatch:

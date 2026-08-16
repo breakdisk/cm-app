@@ -2,7 +2,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
-    routing::{delete, get, post, put},
+    routing::{get, post},
     Router,
 };
 use chrono::Utc;
@@ -15,7 +15,7 @@ use logisticos_errors::AppError;
 use logisticos_events::{envelope::Event, topics};
 
 use crate::application::services::{
-    CreateSegmentCommand, ProfileService, SegmentService, UpdatePreferencesCommand,
+    CreateSegmentCommand, UpdatePreferencesCommand,
     UpdateSegmentCommand, UpsertProfileCommand,
 };
 use crate::domain::entities::{ProfileType, SegmentFilter};

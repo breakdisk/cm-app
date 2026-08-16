@@ -9,7 +9,6 @@
 use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{propagation::TraceContextPropagator, runtime, trace as sdktrace, Resource};
-use tracing::Level;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 pub struct TracingConfig<'a> {

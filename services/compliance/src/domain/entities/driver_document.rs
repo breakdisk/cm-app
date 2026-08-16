@@ -25,6 +25,10 @@ impl DocumentStatus {
         }
     }
 
+    /// Inherent `from_str` rather than `FromStr`: it is infallible-by-default
+    /// (unknown input maps to a variant rather than erroring), which is not
+    /// the contract `FromStr` implies.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> anyhow::Result<Self> {
         match s {
             "submitted"    => Ok(Self::Submitted),

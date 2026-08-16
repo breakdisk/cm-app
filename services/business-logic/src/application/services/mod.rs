@@ -1,19 +1,8 @@
-/// Rules Engine execution service.
-///
-/// On each domain event:
-///   1. Load active rules for the tenant + topic from the repository
-///   2. For each rule (ordered by priority), evaluate conditions against event payload
-///   3. If conditions pass, execute the action
-///   4. Log the rule fire to the audit log
-use std::sync::Arc;
-use chrono::Utc;
-use rdkafka::message::BorrowedMessage;
-use rdkafka::Message;
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::domain::entities::rule::{
-    AutomationRule, RuleAction, RuleCondition, RuleContext, RuleTrigger,
+    AutomationRule, RuleAction, RuleContext, RuleTrigger,
 };
 
 /// External services the rules engine can invoke.
@@ -76,7 +65,7 @@ impl RuleRepository {
 
     /// Get active rules matching a Kafka topic, ordered by priority (lower = higher priority).
     pub async fn rules_for_topic(&self, tenant_id: Uuid, topic: &str) -> Vec<AutomationRule> {
-        let event_type = topic_to_event_type(topic);
+        let _event_type = topic_to_event_type(topic);
         let rules = self.rules.read().await;
         let mut matching: Vec<AutomationRule> = rules
             .iter()

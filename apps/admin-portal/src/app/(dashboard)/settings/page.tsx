@@ -934,7 +934,7 @@ function ApiKeysTab() {
 
       {justCreated && (
         <GlassCard>
-          <h3 className="text-sm font-semibold text-white mb-3">New API key — copy it now, you won't see it again</h3>
+          <h3 className="text-sm font-semibold text-white mb-3">New API key — copy it now, you won&apos;t see it again</h3>
           <div className="space-y-3">
             <div className="flex items-center gap-3 bg-black/50 border border-[#00FF88]/30 rounded-lg p-4">
               <span className="flex-1 font-mono text-[#00FF88] text-sm break-all">{justCreated.raw_key}</span>
@@ -953,7 +953,7 @@ function ApiKeysTab() {
               onClick={() => setJustCreated(null)}
               className="px-3 py-1.5 text-xs text-white/60 border border-white/10 rounded"
             >
-              I've saved it
+              I&apos;ve saved it
             </button>
           </div>
         </GlassCard>

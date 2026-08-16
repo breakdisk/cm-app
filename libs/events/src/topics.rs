@@ -106,6 +106,14 @@ pub const AGENT_ESCALATION_RESOLVED: &str = "logisticos.ai.escalation.resolved";
 // Inbound channel messages (customer → platform)
 pub const WHATSAPP_INBOUND:          &str = "logisticos.engagement.whatsapp.inbound";
 
+// ── OmniDeliv (hyperlocal delivery product) ─────────────────────────────────
+//
+// Namespaced under `omnideliv.` rather than `logisticos.` because it is a
+// product tier, not the platform (ADR-0009). Engagement consumes these the same
+// way it consumes logistics events — a product's customers are still customers.
+pub const OMNIDELIV_ORDER_PLACED:    &str = "omnideliv.order.placed";
+pub const OMNIDELIV_ORDER_DELIVERED: &str = "omnideliv.order.delivered";
+
 #[cfg(test)]
 mod tests {
     use super::*;

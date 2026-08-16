@@ -1,11 +1,11 @@
-/// Aramex REST API v1
-/// Docs: https://www.aramex.com/developer/apis
-/// Auth: API key passed as `ClientInfo` in every request body (Aramex-specific pattern).
-/// Base URL: https://ws.aramex.net/ShippingAPI.V2
-/// Sandbox URL: https://ws.sandbox.aramex.net/ShippingAPI.V2
-///
-/// Aramex is the dominant express carrier across the Middle East, SE Asia (Philippines),
-/// and Africa — a key partner for LogisticOS's target markets.
+//! Aramex REST API v1
+//! Docs: https://www.aramex.com/developer/apis
+//! Auth: API key passed as `ClientInfo` in every request body (Aramex-specific pattern).
+//! Base URL: https://ws.aramex.net/ShippingAPI.V2
+//! Sandbox URL: https://ws.sandbox.aramex.net/ShippingAPI.V2
+//!
+//! Aramex is the dominant express carrier across the Middle East, SE Asia (Philippines),
+//! and Africa — a key partner for LogisticOS's target markets.
 
 use async_trait::async_trait;
 use base64::Engine as _;

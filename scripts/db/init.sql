@@ -64,3 +64,20 @@ CREATE TABLE IF NOT EXISTS identity.tenants (
 
 -- All other services can read tenants for validation
 GRANT SELECT ON identity.tenants TO order_svc, dispatch_svc, driver_svc, payments_svc, cdp_svc;
+
+-- ── OmniDeliv AI (product tier) and Field-Ops (platform tier) ──
+--
+-- These two use their own databases rather than schemas in `logisticos`,
+-- matching how every service is actually deployed (see DATABASE__URL in
+-- docker-compose.yml: postgres://.../svc_<name>). This file is the initdb hook,
+-- so it only runs on a fresh volume — an existing database needs these created
+-- by hand, the same way svc_payments and svc_business_logic were.
+--
+-- CREATE DATABASE cannot run inside a transaction block or a DO block, so these
+-- are plain statements. psql runs this file statement-by-statement, which is
+-- why that works here and would not in a migration.
+CREATE DATABASE svc_omnideliv;
+CREATE DATABASE svc_field_ops;
+
+ALTER DATABASE svc_omnideliv SET search_path TO omnideliv, public;
+ALTER DATABASE svc_field_ops SET search_path TO field_ops, public;

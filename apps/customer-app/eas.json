@@ -15,11 +15,15 @@
         "simulator": true
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "http://75.119.138.135:8000",
-        "EXPO_PUBLIC_IDENTITY_URL": "http://75.119.138.135:8001",
-        "EXPO_PUBLIC_COMPLIANCE_URL": "http://75.119.138.135:8017",
-        "EXPO_PUBLIC_ORDER_INTAKE_URL": "http://75.119.138.135:8004",
-        "EXPO_PUBLIC_DELIVERY_URL": "http://75.119.138.135:8007"
+        "EXPO_PUBLIC_API_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_IDENTITY_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_COMPLIANCE_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_ORDER_INTAKE_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_DELIVERY_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_PAYMENTS_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_ENGAGEMENT_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_AI_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_TENANT_SLUG": "demo"
       }
     },
     "preview": {
@@ -29,12 +33,15 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "http://75.119.138.135:8000",
-        "EXPO_PUBLIC_IDENTITY_URL": "http://75.119.138.135:8001",
-        "EXPO_PUBLIC_COMPLIANCE_URL": "http://75.119.138.135:8017",
-        "EXPO_PUBLIC_ORDER_INTAKE_URL": "http://75.119.138.135:8004",
-        "EXPO_PUBLIC_DELIVERY_URL": "http://75.119.138.135:8007",
-        "EXPO_PUBLIC_TENANT_SLUG": "cargomarket-ph"
+        "EXPO_PUBLIC_API_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_IDENTITY_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_COMPLIANCE_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_ORDER_INTAKE_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_DELIVERY_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_TENANT_SLUG": "cargomarket-ph",
+        "EXPO_PUBLIC_PAYMENTS_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_ENGAGEMENT_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_AI_URL": "https://os-api.cargomarket.net"
       }
     },
     "production": {
@@ -46,12 +53,15 @@
         "credentialsSource": "remote"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://api.cargomarket.net",
-        "EXPO_PUBLIC_IDENTITY_URL": "https://api.cargomarket.net",
-        "EXPO_PUBLIC_COMPLIANCE_URL": "https://api.cargomarket.net",
-        "EXPO_PUBLIC_ORDER_INTAKE_URL": "https://api.cargomarket.net",
-        "EXPO_PUBLIC_DELIVERY_URL": "https://api.cargomarket.net",
-        "EXPO_PUBLIC_TENANT_SLUG": "cargomarket-ph"
+        "EXPO_PUBLIC_API_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_IDENTITY_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_COMPLIANCE_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_ORDER_INTAKE_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_DELIVERY_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_TENANT_SLUG": "cargomarket-ph",
+        "EXPO_PUBLIC_PAYMENTS_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_ENGAGEMENT_URL": "https://os-api.cargomarket.net",
+        "EXPO_PUBLIC_AI_URL": "https://os-api.cargomarket.net"
       }
     }
   },

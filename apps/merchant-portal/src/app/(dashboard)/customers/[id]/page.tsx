@@ -295,7 +295,7 @@ export default function CustomerDetailPage() {
       {/* Ticket success banner */}
       {ticketSuccess && openTicketId && (
         <motion.div variants={variants.fadeInUp}>
-          <GlassCard padding="sm" className="border-amber-signal/20">
+          <GlassCard className="border-amber-signal/20">
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-2 text-xs text-amber-signal">
                 <TicketCheck size={14} />

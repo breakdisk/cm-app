@@ -34,11 +34,23 @@ pub struct KafkaConfig {
     pub group_id: String,
 }
 
-/// Anthropic API credentials.
+/// Anthropic API credentials and model selection.
+///
+/// Model and token budget used to be compile-time constants inside the Claude
+/// client. Moving that client into `logisticos-agent-runtime` — which is shared
+/// across products and must not carry one product's model choice — pushed the
+/// decision out here, where it also becomes deployment-tunable.
 #[derive(Debug, Deserialize, Clone)]
 pub struct AnthropicConfig {
     pub api_key: String,
+    #[serde(default = "default_claude_model")]
+    pub model: String,
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u32,
 }
+
+fn default_claude_model() -> String { "claude-opus-4-6".to_string() }
+fn default_max_tokens() -> u32 { 4096 }
 
 /// Internal service URLs for tool execution.
 #[derive(Debug, Deserialize, Clone)]

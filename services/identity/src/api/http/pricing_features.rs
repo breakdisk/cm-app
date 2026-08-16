@@ -5,7 +5,6 @@ use logisticos_auth::middleware::AuthClaims;
 use logisticos_auth::require_permission;
 use logisticos_errors::AppError;
 use crate::api::http::AppState;
-use crate::domain::repositories::PricingFeatureRepository;
 
 #[derive(Debug, Serialize)]
 pub struct PricingFeatureDto {

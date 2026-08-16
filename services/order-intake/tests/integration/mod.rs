@@ -237,10 +237,10 @@ impl ShipmentRepository for InMemoryShipmentRepository {
                 .filter(|s| {
                     filter
                         .merchant_id
-                        .map_or(true, |mid| s.merchant_id.inner() == mid)
+                        .is_none_or(|mid| s.merchant_id.inner() == mid)
                 })
                 .filter(|s| {
-                    filter.status.as_ref().map_or(true, |st| {
+                    filter.status.as_ref().is_none_or(|st| {
                         format!("{:?}", s.status).to_lowercase() == st.to_lowercase()
                     })
                 })
@@ -1375,7 +1375,13 @@ mod e2e_flow {
                     "line1": "Address Three", "city": "Antipolo",
                     "province": "Rizal", "postal_code": "1870", "country_code": "PH"
                 },
-                "service_type": "same_day",
+                // Deliberately not "same_day". This test is about AWB
+                // uniqueness across a bulk create, and same_day is refused
+                // after the 14:00 UTC cutoff — which made the test pass in the
+                // morning and fail in the evening, for a reason that has
+                // nothing to do with what it checks. The cutoff has its own
+                // test directly below.
+                "service_type": "standard",
                 "weight_grams": 750u32
             }
         ]);
@@ -1408,7 +1414,11 @@ mod e2e_flow {
         }
         assert_eq!(tracking_numbers.len(), 3, "all tracking numbers must be unique");
 
-        let store = repo.shipments.lock().unwrap();
+        // Reuses the guard above rather than locking again. `shipments` is a
+        // std::sync::Mutex, which is not reentrant, and the first guard is
+        // still alive here — shadowing the binding does not drop it. A second
+        // lock() on the same thread deadlocks, so this test could only ever
+        // hang or fail, never pass.
         assert_eq!(store.len(), 3, "all three shipments should be persisted");
     }
 

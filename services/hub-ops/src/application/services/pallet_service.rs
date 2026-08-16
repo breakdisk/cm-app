@@ -417,6 +417,8 @@ impl PalletService {
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
+    // Arity mirrors the record's field count; a params struct would move it, not remove it.
+    #[allow(clippy::too_many_arguments)]
     async fn emit_weight_discrepancy(
         &self,
         piece_awb:       &ChildAwb,

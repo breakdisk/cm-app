@@ -1,4 +1,8 @@
 [package]
+# Never published. Also what lets cargo-deny treat this as private and skip
+# the licence check — these crates carry no SPDX expression because they are
+# proprietary, not because anyone forgot.
+publish = false
 name        = "logisticos-delivery-experience"
 description = "Customer Delivery Experience — Live tracking, ETA, portal"
 version.workspace      = true
@@ -37,3 +41,13 @@ rdkafka.workspace      = true
 tracing.workspace      = true
 async-trait.workspace  = true
 reqwest.workspace      = true
+
+# The unit suite only. `tests/integration/mod.rs` has 26 compile errors against
+# the current API and wants its own pass.
+#
+# Cargo discovers tests/*.rs and tests/<dir>/main.rs — but NOT tests/<dir>/mod.rs,
+# so without a stanza the suite is not a target: never compiled, never run, and
+# `cargo test` reports a clean pass over nothing.
+[[test]]
+name = "unit"
+path = "tests/unit/mod.rs"

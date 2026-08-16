@@ -279,7 +279,7 @@ function SegmentBuilderModal({ initial, onClose, onSaved }: BuilderProps) {
               )}
             </div>
           ) : (
-            <p className="text-xs text-gray-500">Click "Preview audience" to see estimated matches.</p>
+            <p className="text-xs text-gray-500">Click &quot;Preview audience&quot; to see estimated matches.</p>
           )}
         </div>
 

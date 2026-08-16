@@ -12,10 +12,7 @@ import { NeonBadge } from "@/components/ui/neon-badge";
 import { LiveMetric } from "@/components/ui/live-metric";
 import { Truck, Plus, MapPin, X } from "lucide-react";
 import { authFetch } from "@/lib/auth/auth-fetch";
-
-// ── API ────────────────────────────────────────────────────────────────────────
-
-const DRIVER_OPS_URL = process.env.NEXT_PUBLIC_DRIVER_OPS_URL ?? "http://localhost:8006";
+import { API_BASE } from "@/lib/api/endpoints";
 
 type RiderStatus = "active" | "idle" | "offline";
 
@@ -39,7 +36,7 @@ const RIDERS_SEED: Rider[] = [
 
 async function fetchRiders(): Promise<Rider[]> {
   try {
-    const res = await authFetch(`${DRIVER_OPS_URL}/v1/drivers`);
+    const res = await authFetch(`${API_BASE}/v1/drivers`);
     if (!res.ok) return RIDERS_SEED;
     const json = await res.json();
     const list = json.data ?? json.drivers ?? json ?? [];
@@ -78,7 +75,7 @@ function AddRiderModal({ onClose, onAdded }: { onClose: () => void; onAdded: (r:
     setSaving(true);
     setErr(null);
     try {
-      const res = await authFetch(`${DRIVER_OPS_URL}/v1/drivers`, {
+      const res = await authFetch(`${API_BASE}/v1/drivers`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: name.trim(), vehicle_type: type }),

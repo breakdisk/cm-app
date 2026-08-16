@@ -1,4 +1,8 @@
 [package]
+# Never published. Also what lets cargo-deny treat this as private and skip
+# the licence check — these crates carry no SPDX expression because they are
+# proprietary, not because anyone forgot.
+publish = false
 name        = "logisticos-connectors"
 description = "E-commerce connector service — Shopify & WooCommerce bidirectional integration"
 version.workspace      = true
@@ -36,3 +40,8 @@ subtle.workspace      = true
 hmac.workspace        = true
 base64.workspace      = true
 reqwest = { workspace = true, features = ["json"] }
+
+[dev-dependencies]
+# The omnideliv client has async paths worth asserting (an empty batch must not
+# be sent). The crate itself gets tokio from the workspace without the macros.
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

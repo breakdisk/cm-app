@@ -28,6 +28,12 @@ pub struct McpRegistry {
     servers: HashMap<String, McpServerEntry>,
 }
 
+impl Default for McpRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl McpRegistry {
     pub fn new() -> Self {
         Self { servers: HashMap::new() }

@@ -117,6 +117,8 @@ impl ComplianceService {
     }
 
     /// Driver submits a document. Returns the created DriverDocument.
+    // Arity mirrors the record's field count; a params struct would move it, not remove it.
+    #[allow(clippy::too_many_arguments)]
     pub async fn submit_document(
         &self,
         profile_id:       Uuid,

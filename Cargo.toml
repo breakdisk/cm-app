@@ -12,14 +12,18 @@ members = [
     "libs/events",
     "libs/geo",
     "libs/ai-client",
+    "libs/agent-runtime",
 
     # Microservices
     "services/identity",
     "services/cdp",
     "services/engagement",
     "services/order-intake",
+    "services/omnideliv",
+    "services/omnideliv/crates/mesh",
     "services/dispatch",
     "services/driver-ops",
+    "services/field-ops",
     "services/compliance",
     "services/delivery-experience",
     "services/fleet",
@@ -41,7 +45,12 @@ version      = "0.1.0"
 edition      = "2021"
 authors      = ["LogisticOS Team"]
 license      = "UNLICENSED"
-rust-version = "1.91"
+# Floor is set by the AWS SDK, which requires 1.94.1 as of aws-config 1.10 /
+# aws-sdk-s3 1.141 — the versions that moved off the vulnerable rustls 0.21
+# stack. Pinned to 1.97 because that is the toolchain the workspace is
+# actually verified against (cargo check, clippy -D warnings) and the one the
+# service Dockerfiles build with; keep those two in step.
+rust-version = "1.97"
 
 [workspace.dependencies]
 # Async runtime
@@ -64,7 +73,7 @@ prost        = { version = "0.12" }
 rmcp         = { version = "3.0.1", features = ["server", "transport-streamable-http-server"] }
 
 # Database
-sqlx         = { version = "0.7", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "migrate"] }
+sqlx         = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "migrate"] }
 redis        = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
 
 # Serialization
@@ -101,7 +110,7 @@ config       = { version = "0.14" }
 dotenvy      = { version = "0.15" }
 
 # Validation
-validator    = { version = "0.18", features = ["derive"] }
+validator    = { version = "0.21", features = ["derive"] }
 
 # Async traits
 async-trait  = { version = "0.1" }
@@ -110,11 +119,22 @@ async-trait  = { version = "0.1" }
 rdkafka      = { version = "0.36", default-features = false, features = ["naive-runtime", "cmake-build"] }
 
 # HTTP client
-reqwest      = { version = "0.11", features = ["json", "rustls-tls"] }
+# `default-features = false` matters: reqwest's defaults include `default-tls`,
+# which pulls native-tls and openssl — both on this workspace's own ban list in
+# deny.toml, and both redundant beside the rustls stack we actually use.
+reqwest      = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # Object storage (S3-compatible)
-aws-sdk-s3    = { version = "1", features = ["behavior-version-latest"] }
-aws-sdk-sesv2 = { version = "1", features = ["behavior-version-latest"] }
+# `default-features = false` here is a security fix, not tidying. These SDKs'
+# default feature set includes `rustls`, which despite the name is the *legacy*
+# hyper-0.14 connector: it pulls rustls 0.21 and rustls-webpki 0.101.7, carrying
+# RUSTSEC-2026-0098/0099/0104 (name constraints wrongly accepted, and a reachable
+# panic parsing CRLs). The modern TLS stack is a separate feature,
+# `default-https-client` → rustls-aws-lc → rustls 0.23, which is kept below.
+# Everything else here is that same default list, restated so dropping the
+# default does not silently remove sigv4a/http-1x/rt-tokio too.
+aws-sdk-s3    = { version = "1", default-features = false, features = ["behavior-version-latest", "sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
+aws-sdk-sesv2 = { version = "1", default-features = false, features = ["behavior-version-latest", "sigv4a", "default-https-client", "rt-tokio"] }
 aws-config    = { version = "1" }
 
 # Geo / Spatial
@@ -130,6 +150,8 @@ logisticos-types   = { path = "libs/types" }
 logisticos-events  = { path = "libs/events" }
 logisticos-geo     = { path = "libs/geo" }
 logisticos-ai      = { path = "libs/ai-client" }
+logisticos-agent-runtime = { path = "libs/agent-runtime" }
+omnideliv-mesh   = { path = "services/omnideliv/crates/mesh" }
 
 [profile.release]
 opt-level     = 3

@@ -42,7 +42,7 @@ impl CustomsDutyConsumer {
     ) -> anyhow::Result<Self> {
         let consumer: StreamConsumer = ClientConfig::new()
             .set("bootstrap.servers", brokers)
-            .set("group.id", &format!("{}-customs-duty", group_id))
+            .set("group.id", format!("{}-customs-duty", group_id))
             .set("auto.offset.reset", "earliest")
             .set("enable.auto.commit", "false")
             .create()?;

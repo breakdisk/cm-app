@@ -40,6 +40,8 @@ struct GoogleJwtClaims {
 #[derive(Debug, Deserialize)]
 struct GoogleTokenResponse {
     access_token: String,
+    // Part of the wire/row contract; declared so the shape is documented, not consumed here.
+    #[allow(dead_code)]
     expires_in: u64,
 }
 
@@ -130,17 +132,14 @@ impl FcmClient {
         match self.fetch_push_tokens(driver_user_id).await {
             Err(e) => {
                 tracing::warn!(driver_id = %driver_user_id, err = %e, "FCM: failed to fetch push tokens for instruction");
-                return;
             }
             Ok(tokens) if tokens.is_empty() => {
                 tracing::debug!(driver_id = %driver_user_id, "FCM: no tokens registered, skipping instruction push");
-                return;
             }
             Ok(tokens) => {
                 match self.get_access_token().await {
                     Err(e) => {
                         tracing::warn!(err = %e, "FCM: failed to obtain Google access token");
-                        return;
                     }
                     Ok(access_token) => {
                         for token in tokens {
@@ -263,17 +262,14 @@ impl FcmClient {
         match self.fetch_push_tokens(driver_user_id).await {
             Err(e) => {
                 tracing::warn!(driver_id = %driver_user_id, err = %e, "FCM: failed to fetch push tokens");
-                return;
             }
             Ok(tokens) if tokens.is_empty() => {
                 tracing::debug!(driver_id = %driver_user_id, "FCM: no tokens registered, skipping push");
-                return;
             }
             Ok(tokens) => {
                 match self.get_access_token().await {
                     Err(e) => {
                         tracing::warn!(err = %e, "FCM: failed to obtain Google access token");
-                        return;
                     }
                     Ok(access_token) => {
                         for token in tokens {

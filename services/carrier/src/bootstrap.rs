@@ -249,6 +249,7 @@ pub async fn run() -> anyhow::Result<()> {
     let app = http::router()
         .merge(mcp_router())
         .layer(axum::middleware::from_fn_with_state(jwt, logisticos_auth::middleware::require_auth))
+        .merge(http::observability_router())
         .merge(http::webhook_router())
         .layer(axum::middleware::from_fn(propagate_request_id))
         .layer(tower_http::trace::TraceLayer::new_for_http())

@@ -1,8 +1,8 @@
-/// Tool: cancel_carrier_shipment
-///
-/// Cancel a booked shipment with a carrier using the booking_ref returned by
-/// book_carrier_shipment.  Note: DHL does not support REST cancellation;
-/// that carrier will return an instructive error.
+//! Tool: cancel_carrier_shipment
+//!
+//! Cancel a booked shipment with a carrier using the booking_ref returned by
+//! book_carrier_shipment.  Note: DHL does not support REST cancellation;
+//! that carrier will return an instructive error.
 
 use serde_json::{json, Value};
 use std::sync::Arc;

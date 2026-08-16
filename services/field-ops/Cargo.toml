@@ -1,0 +1,44 @@
+[package]
+# Never published. Also what lets cargo-deny treat this as private and skip
+# the licence check — these crates carry no SPDX expression because they are
+# proprietary, not because anyone forgot.
+publish = false
+name        = "logisticos-field-ops"
+description = "Field-Ops platform tier — courier identity, assignment, GPS ingest"
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+rust-version.workspace = true
+
+[[bin]]
+name = "field_ops"
+path = "src/main.rs"
+
+[dependencies]
+logisticos-common.workspace  = true
+logisticos-errors.workspace  = true
+logisticos-auth.workspace    = true
+logisticos-tracing.workspace = true
+logisticos-types.workspace   = true
+logisticos-events.workspace  = true
+tokio.workspace       = true
+axum.workspace        = true
+tower-http.workspace  = true
+sqlx.workspace        = true
+serde.workspace       = true
+serde_json.workspace  = true
+thiserror.workspace   = true
+anyhow.workspace      = true
+uuid.workspace        = true
+chrono.workspace      = true
+config.workspace      = true
+dotenvy.workspace     = true
+validator.workspace   = true
+rdkafka.workspace     = true
+tracing.workspace     = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tokio      = { version = "1", features = ["macros", "rt-multi-thread"] }
+uuid       = { version = "1", features = ["v4"] }
+serde_json = "1"

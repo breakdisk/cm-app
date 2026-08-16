@@ -92,7 +92,8 @@ impl Money {
     pub fn zero(currency: Currency) -> Self {
         Self { amount: 0, currency }
     }
-    pub fn add(self, other: Money) -> Result<Money, &'static str> {
+    /// Fallible add: `None` of the std `Add` impl, because currencies must match.
+    pub fn checked_add(self, other: Money) -> Result<Money, &'static str> {
         if self.currency != other.currency {
             return Err("Currency mismatch");
         }
@@ -343,7 +344,7 @@ pub struct PaginatedResponse<T> {
 
 impl<T> PaginatedResponse<T> {
     pub fn new(data: Vec<T>, total: u64, pagination: &Pagination) -> Self {
-        let total_pages = (total + pagination.per_page - 1) / pagination.per_page;
+        let total_pages = total.div_ceil(pagination.per_page);
         Self { data, total, page: pagination.page, per_page: pagination.per_page, total_pages }
     }
 }

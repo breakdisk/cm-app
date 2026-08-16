@@ -13,5 +13,5 @@ pub async fn health() -> Json<HealthResponse> {
     })
 }
 pub async fn ready() -> Json<ReadyResponse> {
-    Json(ReadyResponse { status: "ready".into(), checks: ReadyChecks { database: CheckStatus::Ok, kafka: CheckStatus::Ok, redis: CheckStatus::Ok } })
+    Json(ReadyResponse { status: "ready", checks: ReadyChecks { database: CheckStatus::Ok, kafka: CheckStatus::Ok, redis: CheckStatus::Ok } })
 }

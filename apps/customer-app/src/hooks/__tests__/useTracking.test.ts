@@ -5,7 +5,15 @@ import { store } from '../../store';
 import { useTracking } from '../useTracking';
 import * as trackingService from '../../services/api/tracking';
 
-jest.mock('../../services/api/tracking');
+// A factory, not a bare automock: automocking loads the real module to
+// derive its shape, which reaches the api client and therefore axios,
+// whose fetch adapter probes ReadableStream at import and throws against
+// Expo's polyfill.
+jest.mock('../../services/api/tracking', () => ({
+  getTracking:                jest.fn(),
+  subscribeToTrackingUpdates: jest.fn(() => () => {}),
+  trackingApi: { getByTrackingNumber: jest.fn() },
+}));
 
 const mockTrackingService = trackingService as jest.Mocked<typeof trackingService>;
 

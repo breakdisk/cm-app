@@ -19,7 +19,6 @@ use chrono::{Duration, NaiveTime, TimeZone, Utc};
 use logisticos_errors::{AppError, AppResult};
 use logisticos_events::{envelope::Event, producer::KafkaProducer, topics};
 use logisticos_types::{MerchantId, Money, TenantId};
-use uuid::Uuid;
 
 use crate::{
     application::commands::{ConfirmCodBatchCommand, CreateCodBatchCommand},

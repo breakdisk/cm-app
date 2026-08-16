@@ -275,7 +275,11 @@ pub struct ConfirmDocumentRequest {
     /// Key returned by `upload-url` — client passes it back after a successful
     /// direct PUT to R2.
     pub s3_key:             String,
-    /// MIME type the client used for the PUT — stored for audit / presign GET.
+    /// MIME type the client used for the PUT. Accepted and discarded: there
+    /// is no `content_type` column on the documents table, so despite what
+    /// this comment used to claim, nothing persists it. Kept in the request
+    /// type because clients already send it and removing it would 422 them.
+    #[allow(dead_code)]
     pub content_type:       String,
     pub issue_date:         Option<String>,
     pub expiry_date:        Option<String>,

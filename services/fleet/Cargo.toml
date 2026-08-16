@@ -1,4 +1,8 @@
 [package]
+# Never published. Also what lets cargo-deny treat this as private and skip
+# the licence check — these crates carry no SPDX expression because they are
+# proprietary, not because anyone forgot.
+publish = false
 name        = "logisticos-fleet"
 description = "Fleet Management — Vehicle tracking, telematics, maintenance"
 version.workspace      = true
@@ -36,3 +40,18 @@ validator.workspace  = true
 rdkafka.workspace    = true
 tracing.workspace    = true
 async-trait.workspace = true
+
+# The integration suite drives the real Axum router via ServiceExt::oneshot.
+[dev-dependencies]
+tower = { workspace = true }
+
+# Cargo discovers tests/*.rs and tests/<dir>/main.rs — but NOT tests/<dir>/mod.rs,
+# which is the layout used here. Without these stanzas the suite is not a target:
+# it never compiles, never runs, and `cargo test` reports a clean pass.
+[[test]]
+name = "integration"
+path = "tests/integration/mod.rs"
+
+[[test]]
+name = "unit"
+path = "tests/unit/mod.rs"

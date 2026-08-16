@@ -14,7 +14,6 @@ use rdkafka::{
     message::BorrowedMessage,
     Message,
 };
-use serde::Deserialize;
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -85,7 +84,7 @@ async fn handle_trigger(
             let tenant = tenant_id.clone();
             let trig   = payload.clone();
             tokio::spawn(async move {
-                match runner.run(tenant, AgentType::Dispatch, trig, user_msg).await {
+                match runner.run(tenant, AgentType::Dispatch.into(), trig, user_msg).await {
                     Ok(s) => tracing::info!(session_id = %s.id, status = ?s.status, "Dispatch agent completed"),
                     Err(e) => tracing::error!(err = %e, "Dispatch agent failed"),
                 }
@@ -109,7 +108,7 @@ async fn handle_trigger(
             let tenant = tenant_id.clone();
             let trig   = payload.clone();
             tokio::spawn(async move {
-                match runner.run(tenant, AgentType::Recovery, trig, user_msg).await {
+                match runner.run(tenant, AgentType::Recovery.into(), trig, user_msg).await {
                     Ok(s) => tracing::info!(session_id = %s.id, status = ?s.status, "Recovery agent completed"),
                     Err(e) => tracing::error!(err = %e, "Recovery agent failed"),
                 }
@@ -131,7 +130,7 @@ async fn handle_trigger(
             let tenant = tenant_id.clone();
             let trig   = payload.clone();
             tokio::spawn(async move {
-                match runner.run(tenant, AgentType::Reconciliation, trig, user_msg).await {
+                match runner.run(tenant, AgentType::Reconciliation.into(), trig, user_msg).await {
                     Ok(s) => tracing::info!(session_id = %s.id, status = ?s.status, "Reconciliation agent completed"),
                     Err(e) => tracing::error!(err = %e, "Reconciliation agent failed"),
                 }

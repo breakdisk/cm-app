@@ -229,6 +229,10 @@ pub async fn run() -> anyhow::Result<()> {
 
     let app = Router::new()
         .merge(protected)
+        // Outside `protected` for the same reason the webhooks are: a probe
+        // cannot present a JWT, so /health inside the authenticated router
+        // answered 401 and the container reported unhealthy on it.
+        .merge(crate::api::http::observability_router(http_state.clone()))
         .merge(public_routes)
         .merge(internal_routes)
         .layer(tower_http::trace::TraceLayer::new_for_http())
@@ -249,81 +253,6 @@ pub async fn run() -> anyhow::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// HTTP router for direct notification dispatch
-// ---------------------------------------------------------------------------
-
-fn build_router(svc: Arc<NotificationService>) -> axum::Router {
-    use axum::{extract::State, http::StatusCode, response::Json, routing::post, Router};
-    use serde::Deserialize;
-    use crate::domain::entities::notification::NotificationPriority;
-    use crate::domain::entities::template::{NotificationChannel, NotificationTemplate};
-
-    #[derive(Debug, Deserialize)]
-    struct SendRequest {
-        customer_id:  uuid::Uuid,
-        tenant_id:    uuid::Uuid,
-        channel:      String,
-        template_id:  String,
-        recipient:    String,
-        variables:    serde_json::Value,
-    }
-
-    Router::new()
-        .route("/v1/notifications", post(
-            |State(svc): State<Arc<NotificationService>>, Json(req): Json<SendRequest>| async move {
-                let channel = match req.channel.as_str() {
-                    "whatsapp"  => NotificationChannel::WhatsApp,
-                    "sms"       => NotificationChannel::Sms,
-                    "email"     => NotificationChannel::Email,
-                    "push"      => NotificationChannel::Push,
-                    "messenger" => NotificationChannel::Messenger,
-                    "telegram"  => NotificationChannel::Telegram,
-                    "x"         => NotificationChannel::X,
-                    "viber"     => NotificationChannel::Viber,
-                    "wechat"    => NotificationChannel::WeChat,
-                    "line"      => NotificationChannel::Line,
-                    "slack"     => NotificationChannel::Slack,
-                    _           => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid channel"}))),
-                };
-
-                // Minimal template inline — production loads from DB template registry.
-                let template = NotificationTemplate {
-                    id:          uuid::Uuid::new_v4(),
-                    tenant_id:   Some(req.tenant_id),
-                    template_id: req.template_id.clone(),
-                    channel,
-                    language:    "en".into(),
-                    subject:     None,
-                    body:        req.variables.get("body").and_then(|v| v.as_str()).unwrap_or("{{body}}").to_owned(),
-                    variables:   req.variables.as_object()
-                        .map(|o| o.keys().cloned().collect())
-                        .unwrap_or_default(),
-                    is_active: true,
-                };
-
-                let mut notification = match NotificationService::build_from_template(
-                    &template,
-                    req.tenant_id,
-                    req.customer_id,
-                    req.recipient,
-                    &req.variables,
-                    NotificationPriority::Normal,
-                ) {
-                    Ok(n) => n,
-                    Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e.to_string()}))),
-                };
-
-                match svc.dispatch(&mut notification).await {
-                    Ok(_)  => (StatusCode::OK, Json(serde_json::json!({"id": notification.id, "status": "sent"}))),
-                    Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))),
-                }
-            }
-        ))
-        .route("/health", axum::routing::get(|| async { (StatusCode::OK, "ok") }))
-        .with_state(svc)
-}
-
-// ---------------------------------------------------------------------------
 // Kafka consumer loop
 // ---------------------------------------------------------------------------
 
@@ -339,6 +268,10 @@ async fn run_kafka_consumer(
     use logisticos_events::topics;
 
     consumer.subscribe(&[
+        // OmniDeliv order bookends. Without these a customer who orders dinner
+        // hears nothing at all — no confirmation, no delivery notice.
+        topics::OMNIDELIV_ORDER_PLACED,
+        topics::OMNIDELIV_ORDER_DELIVERED,
         topics::SHIPMENT_CREATED,
         topics::DRIVER_ASSIGNED,
         topics::PICKUP_COMPLETED,
@@ -394,10 +327,10 @@ async fn run_kafka_consumer(
                                     topics::CONTAINER_ARRIVED_AT_PORT
                                     | topics::CONTAINER_CUSTOMS_HOLD
                                     | topics::CONTAINER_CUSTOMS_CLEARED => {
-                                        handle_hub_milestone(topic, &json, &svc, &cache).await;
+                                        handle_hub_milestone(topic, &json, &db, &svc, &cache).await;
                                     }
                                     _ => {
-                                        process_event(topic, &json, &svc, &cache).await;
+                                        process_event(topic, &json, &db, &svc, &cache).await;
                                     }
                                 }
                             }

@@ -93,8 +93,26 @@ impl InvoiceType {
 /// ).unwrap();
 /// assert_eq!(num.as_str(), "IN-PH1-2026-04-00001");
 /// ```
+/// `try_from` rather than a derived `Deserialize`, and that is load-bearing.
+///
+/// The accessors below (`invoice_type`, `tenant_code`, `period`, `sequence`)
+/// index into the string and unwrap, which is sound *only* because `parse`
+/// validated the shape first. A derived `Deserialize` builds
+/// `InvoiceNumber("anything")` straight from JSON without running `parse`, so
+/// any invoice number arriving over the wire — an API body, a Kafka payload, a
+/// JSONB column — could break that invariant and panic the service on the next
+/// accessor call. Routing deserialization through the constructor turns that
+/// panic into a deserialization error, which is a thing callers already handle.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String")]
 pub struct InvoiceNumber(String);
+
+impl TryFrom<String> for InvoiceNumber {
+    type Error = InvoiceNumberError;
+    fn try_from(raw: String) -> Result<Self, Self::Error> {
+        Self::parse(&raw)
+    }
+}
 
 impl InvoiceNumber {
     /// Generate an invoice number from components.
@@ -144,13 +162,21 @@ impl InvoiceNumber {
         &self.0
     }
 
+    // The four accessors below index into the string and expect. That is total,
+    // not optimistic: every path into this type goes through `parse`, which has
+    // already established five dash-separated segments, a known prefix, and
+    // numeric year/month/sequence. `expect` rather than `unwrap` so that if the
+    // invariant is ever broken the panic names the cause instead of pointing at
+    // a line number.
+    const INVARIANT: &'static str = "InvoiceNumber is validated by parse(); see its Deserialize impl";
+
     pub fn invoice_type(&self) -> InvoiceType {
-        let prefix = self.0.split('-').next().unwrap();
-        InvoiceType::from_prefix(prefix).unwrap()
+        let prefix = self.0.split('-').next().expect("split always yields one segment");
+        InvoiceType::from_prefix(prefix).expect(Self::INVARIANT)
     }
 
     pub fn tenant_code(&self) -> &str {
-        self.0.split('-').nth(1).unwrap()
+        self.0.split('-').nth(1).expect(Self::INVARIANT)
     }
 
     /// The billing period as (year, month).
@@ -158,13 +184,13 @@ impl InvoiceNumber {
         let mut parts = self.0.split('-');
         parts.next(); // prefix
         parts.next(); // tenant
-        let year:  i32 = parts.next().unwrap().parse().unwrap();
-        let month: u32 = parts.next().unwrap().parse().unwrap();
+        let year:  i32 = parts.next().expect(Self::INVARIANT).parse().expect(Self::INVARIANT);
+        let month: u32 = parts.next().expect(Self::INVARIANT).parse().expect(Self::INVARIANT);
         (year, month)
     }
 
     pub fn sequence(&self) -> u32 {
-        self.0.split('-').last().unwrap().parse().unwrap()
+        self.0.rsplit('-').next().expect(Self::INVARIANT).parse().expect(Self::INVARIANT)
     }
 
     /// Redis key used to generate the sequence counter for this document type/tenant/period.
@@ -450,5 +476,38 @@ mod tests {
     fn charge_type_remittance() {
         assert!(ChargeType::CodHandlingFee.is_remittance_charge());
         assert!(!ChargeType::BaseFreight.is_remittance_charge());
+    }
+
+    /// The accessors index into the string and expect. That is only sound while
+    /// every path in goes through `parse` — and a derived `Deserialize` would
+    /// not, so a malformed number off the wire would panic the service on the
+    /// next `invoice_type()` call rather than being rejected at the boundary.
+    ///
+    /// Break `#[serde(try_from = "String")]` and this test goes red.
+    #[test]
+    fn deserialize_rejects_a_malformed_number_instead_of_building_one() {
+        for bad in [
+            r#""nonsense""#,                 // no structure at all
+            r#""XX-PH1-2026-04-00001""#,     // unknown prefix
+            r#""IN-PH1-2026-13-00001""#,     // month 13
+            r#""IN-PH1-2026-04-00000""#,     // sequence 0
+            r#""IN-PH1""#,                   // too few segments
+        ] {
+            let parsed: Result<InvoiceNumber, _> = serde_json::from_str(bad);
+            assert!(parsed.is_err(), "{bad} should not deserialize into an InvoiceNumber");
+        }
+    }
+
+    /// And a well-formed one still round-trips, so the guard has not simply
+    /// broken deserialization for everybody.
+    #[test]
+    fn a_valid_number_still_round_trips() {
+        let n = InvoiceNumber::parse("IN-PH1-2026-04-00001").expect("valid");
+        let json = serde_json::to_string(&n).expect("serialize");
+        let back: InvoiceNumber = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, n);
+        assert_eq!(back.period(), (2026, 4));
+        assert_eq!(back.sequence(), 1);
+        assert_eq!(back.tenant_code(), "PH1");
     }
 }

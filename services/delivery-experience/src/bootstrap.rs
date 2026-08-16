@@ -93,7 +93,38 @@ pub async fn run() -> anyhow::Result<()> {
             HeaderName::from_static("authorization"),
         ]);
 
-    let app = http::router()
+    // `get_by_shipment_id` and `list_shipments` extract `AuthClaims`, which
+    // reads `Claims` from request extensions — and only `require_auth` puts
+    // them there. Nothing mounted it here, so both returned
+    // 500 AUTH_NOT_CONFIGURED on every call.
+    //
+    // Layered over the authenticated half only: the public half is how a
+    // customer with a tracking number and no account reaches their delivery,
+    // and requiring a token there would break the tracking page outright.
+    let jwt_secret = std::env::var("AUTH__JWT_SECRET").unwrap_or_default();
+    let jwt: logisticos_auth::middleware::AuthState =
+        Arc::new(logisticos_auth::jwt::JwtService::new(&jwt_secret, 3600, 86_400));
+
+    // Outside the auth layer for the same reason the public tracking routes are:
+    // a probe cannot present a JWT. This service had no /health either, so the
+    // container has been reporting unhealthy on a 404.
+    let observability = axum::Router::new()
+        .route("/health",  axum::routing::get(|| async {
+            axum::Json(serde_json::json!({"status": "ok", "service": "delivery-experience"}))
+        }))
+        .route("/ready",   axum::routing::get(|| async {
+            axum::Json(serde_json::json!({"status": "ready"}))
+        }))
+        .route("/metrics", axum::routing::get(|| async { "" }));
+
+    let app = http::public_router()
+        .merge(http::authenticated_router().layer(
+            axum::middleware::from_fn_with_state(
+                jwt,
+                logisticos_auth::middleware::require_auth,
+            ),
+        ))
+        .merge(observability)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(cors)
         .with_state(state);

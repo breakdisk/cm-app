@@ -6,7 +6,7 @@ use logisticos_auth::middleware::AuthClaims;
 use logisticos_auth::require_permission;
 use logisticos_errors::AppError;
 use logisticos_types::{Coordinates, DriverId, TenantId};
-use crate::{api::http::AppState, application::commands::QuickDispatchCommand, infrastructure::db::DispatchQueueRepository};
+use crate::{api::http::AppState, application::commands::QuickDispatchCommand};
 
 pub async fn quick_dispatch(
     AuthClaims(claims): AuthClaims,

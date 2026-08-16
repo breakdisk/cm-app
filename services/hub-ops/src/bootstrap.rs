@@ -213,7 +213,11 @@ impl InductionRepository for PgInductionRepository {
 
 struct PgContainerRepository { pool: sqlx::PgPool }
 
+/// Fields mirror the SELECT list so `sqlx::FromRow` can populate the row;
+/// callers read only some of them. Dropping the unread ones would mean
+/// narrowing the query, which is a behaviour change, not a lint fix.
 #[derive(sqlx::FromRow)]
+#[allow(dead_code)]
 struct ContainerRow {
     id:               Uuid,
     tenant_id:        Uuid,
@@ -246,12 +250,6 @@ impl PgContainerRepository {
         Ok(rows.into_iter().map(|(sid,)| sid).collect())
     }
 
-    async fn master_awbs(&self, id: Uuid) -> anyhow::Result<Vec<String>> {
-        let row: Option<(Vec<String>,)> = sqlx::query_as(
-            "SELECT master_awbs FROM hub_ops.containers WHERE id = $1"
-        ).bind(id).fetch_optional(&self.pool).await?;
-        Ok(row.map(|(awbs,)| awbs).unwrap_or_default())
-    }
 
     async fn mark_departed(
         &self,
@@ -803,8 +801,10 @@ async fn check_pop_status(
 // Shipment dims HTTP client — calls order-intake internal endpoint
 // ---------------------------------------------------------------------------
 
-/// Per-shipment dimension record returned by order-intake.
+/// Per-shipment dimension record returned by order-intake. `shipment_id` is
+/// part of the response contract; the caller keys off its own request list.
 #[derive(Debug)]
+#[allow(dead_code)]
 struct ShipmentDims {
     shipment_id: Uuid,
     weight_g:    u32,
@@ -934,19 +934,19 @@ async fn depart_container(
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
 
     let container = s.containers.find_by_id(container_id).await
-        .map_err(|e| AppError::Internal(e))?
+        .map_err(AppError::Internal)?
         .ok_or_else(|| AppError::NotFound { resource: "container", id: container_id.to_string() })?;
 
     // Billing clearance guard — only applies to sea/air containers where Balikbayan
     // boxes are loaded (Track A billing). Road containers for last-mile skip this.
     if !s.payments_url.is_empty() {
         let shipment_ids = s.containers.shipment_ids_for_container(container_id).await
-            .map_err(|e| AppError::Internal(e))?;
+            .map_err(AppError::Internal)?;
 
         if !shipment_ids.is_empty() {
             let (all_cleared, blocked_shipments, unpaid_invoice_ids) =
                 check_billing_clearance(&s.payments_url, &shipment_ids).await
-                    .map_err(|e| AppError::Internal(e))?;
+                    .map_err(AppError::Internal)?;
 
             if !all_cleared {
                 tracing::warn!(
@@ -1176,7 +1176,7 @@ async fn load_loose_piece_handler(
     claims.require_permission(permissions::SHIPMENT_UPDATE)?;
 
     let shipment_ids = s.containers
-        .resolve_awbs_to_shipment_ids(&[req.master_awb.clone()])
+        .resolve_awbs_to_shipment_ids(std::slice::from_ref(&req.master_awb))
         .await
         .map_err(AppError::internal)?;
 

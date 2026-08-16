@@ -378,7 +378,7 @@ impl DriverAssignmentService {
         let queue_item = self.queue_repo
             .find_by_shipment(cmd.shipment_id)
             .await
-            .map_err(|e| AppError::Internal(e.into()))?
+            .map_err(AppError::Internal)?
             .ok_or_else(|| AppError::NotFound {
                 resource: "Shipment in dispatch queue",
                 id: cmd.shipment_id.to_string(),
@@ -528,7 +528,7 @@ impl DriverAssignmentService {
 
         // 8. Mark queue item as dispatched
         self.queue_repo.mark_dispatched(cmd.shipment_id).await
-            .map_err(|e| AppError::Internal(e.into()))?;
+            .map_err(AppError::Internal)?;
 
         tracing::info!(
             shipment_id = %cmd.shipment_id,
@@ -587,7 +587,7 @@ impl DriverAssignmentService {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
     #[test]
     fn task_assigned_event_has_required_fields() {

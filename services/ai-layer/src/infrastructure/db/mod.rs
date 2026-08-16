@@ -57,8 +57,13 @@ fn map_row(r: &sqlx::postgres::PgRow) -> AgentSession {
     AgentSession {
         id,
         tenant_id: TenantId::from_uuid(tenant_id),
-        agent_type: serde_json::from_value(serde_json::Value::String(agent_type_str))
-            .unwrap_or(AgentType::OnDemand),
+        // The column stores the `AgentType` serde string. Round-tripping it
+        // through the enum (rather than building an `AgentRole` straight from
+        // the raw string) is what restores the role's tool allowlist — a role
+        // reconstructed without it would be silently unrestricted.
+        role: serde_json::from_value::<AgentType>(serde_json::Value::String(agent_type_str))
+            .unwrap_or(AgentType::OnDemand)
+            .into(),
         status: serde_json::from_value(serde_json::Value::String(status_str))
             .unwrap_or(SessionStatus::Failed),
         trigger:          r.get("trigger_data"),
@@ -68,6 +73,7 @@ fn map_row(r: &sqlx::postgres::PgRow) -> AgentSession {
         escalation_reason: r.get("escalation_reason"),
         confidence_score: r.get("confidence_score"),
         model_used:       r.get("model_used"),
+        parent_session_id: r.get("parent_session_id"),
         started_at:       r.get("started_at"),
         completed_at:     r.get("completed_at"),
     }
@@ -76,8 +82,7 @@ fn map_row(r: &sqlx::postgres::PgRow) -> AgentSession {
 #[async_trait]
 impl SessionRepository for PgSessionRepository {
     async fn save(&self, s: &AgentSession) -> anyhow::Result<()> {
-        let agent_type = serde_json::to_value(&s.agent_type)?
-            .as_str().unwrap_or("on_demand").to_owned();
+        let agent_type = s.role.key().to_owned();
         let status = serde_json::to_value(&s.status)?
             .as_str().unwrap_or("running").to_owned();
         let messages = serde_json::to_value(&s.messages)?;
@@ -88,8 +93,8 @@ impl SessionRepository for PgSessionRepository {
             INSERT INTO ai.agent_sessions (
                 id, tenant_id, agent_type, status, trigger_data, messages, actions,
                 outcome, escalation_reason, confidence_score, model_used,
-                started_at, completed_at
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                parent_session_id, started_at, completed_at
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
             ON CONFLICT (id) DO UPDATE SET
                 status            = EXCLUDED.status,
                 messages          = EXCLUDED.messages,
@@ -111,6 +116,9 @@ impl SessionRepository for PgSessionRepository {
         .bind(&s.escalation_reason)
         .bind(s.confidence_score)
         .bind(&s.model_used)
+        // Immutable after insert — a session cannot be re-parented, so it is
+        // deliberately absent from the ON CONFLICT update list.
+        .bind(s.parent_session_id)
         .bind(s.started_at)
         .bind(s.completed_at)
         .execute(&self.pool)
@@ -123,7 +131,7 @@ impl SessionRepository for PgSessionRepository {
             r#"
             SELECT id, tenant_id, agent_type, status, trigger_data,
                    messages, actions, outcome, escalation_reason,
-                   confidence_score, model_used, started_at, completed_at
+                   confidence_score, model_used, parent_session_id, started_at, completed_at
             FROM ai.agent_sessions WHERE id = $1
             "#,
         )
@@ -139,7 +147,7 @@ impl SessionRepository for PgSessionRepository {
             r#"
             SELECT id, tenant_id, agent_type, status, trigger_data,
                    messages, actions, outcome, escalation_reason,
-                   confidence_score, model_used, started_at, completed_at
+                   confidence_score, model_used, parent_session_id, started_at, completed_at
             FROM ai.agent_sessions
             WHERE tenant_id = $1
             ORDER BY started_at DESC
@@ -160,7 +168,7 @@ impl SessionRepository for PgSessionRepository {
             r#"
             SELECT id, tenant_id, agent_type, status, trigger_data,
                    messages, actions, outcome, escalation_reason,
-                   confidence_score, model_used, started_at, completed_at
+                   confidence_score, model_used, parent_session_id, started_at, completed_at
             FROM ai.agent_sessions
             WHERE tenant_id = $1 AND status = 'human_escalated'
             ORDER BY started_at DESC
@@ -261,5 +269,19 @@ impl SessionRepository for PgSessionRepository {
             by_type_today,
             hourly_24h: hourly,
         })
+    }
+}
+
+/// The agent runtime persists through `SessionStore`; the product's dashboard
+/// queries stay on `SessionRepository`. One Postgres-backed type serves both —
+/// this impl just narrows the surface the runner sees.
+#[async_trait]
+impl logisticos_agent_runtime::store::SessionStore for PgSessionRepository {
+    async fn save(&self, session: &AgentSession) -> anyhow::Result<()> {
+        SessionRepository::save(self, session).await
+    }
+
+    async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<AgentSession>> {
+        SessionRepository::find_by_id(self, id).await
     }
 }

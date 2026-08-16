@@ -241,7 +241,7 @@ async fn activate_campaign(
         let mut offset = 0usize;
         let mut plan: Vec<(String, Vec<crate::domain::entities::CampaignRecipient>)> = Vec::new();
         for variant in &ab_test.variants {
-            let count = ((variant.weight_pct as usize * total + 99) / 100).min(total - offset);
+            let count = (variant.weight_pct as usize * total).div_ceil(100).min(total - offset);
             if count == 0 { continue; }
             let slice = recipients[offset..offset + count].to_vec();
             offset += count;
@@ -308,6 +308,9 @@ async fn weekly_stats_handler(
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
+/// `shipment_id` rides along for the template context that business-logic
+/// sends; this handler routes on customer and rule only.
+#[allow(dead_code)]
 struct TriggerForRecipientBody {
     customer_id:  Uuid,
     tenant_id:    Uuid,

@@ -45,6 +45,8 @@ impl ServiceLevel {
         }
     }
 
+    // Inherent `from_str` is total (unknown input maps to a variant); `FromStr` implies fallible.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> anyhow::Result<Self> {
         match s {
             "same_day"  => Ok(Self::SameDay),

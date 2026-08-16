@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 import { authFetch } from "@/lib/auth/auth-fetch";
+import { API_BASE, trackingPageUrl } from "@/lib/api/endpoints";
 import QRCodeSVG from "react-qr-code";
 import { addressLookupApi, type AddressCode } from "@/lib/api/addresses";
 
@@ -68,8 +69,8 @@ const STATUS_FILTERS: Array<{ label: string; value: ShipmentStatus | "all" }> = 
 
 // ── Summary stats ──────────────────────────────────────────────────────────────
 
-const DELIVERED_STATUSES: ReadonlySet<ShipmentStatus> = new Set(["delivered", "partial_delivery"]);
-const FAILED_STATUSES:    ReadonlySet<ShipmentStatus> = new Set(["failed", "cancelled", "returned"]);
+const DELIVERED_STATUSES: ReadonlySet<ShipmentStatus> = new Set<ShipmentStatus>(["delivered", "partial_delivery"]);
+const FAILED_STATUSES:    ReadonlySet<ShipmentStatus> = new Set<ShipmentStatus>(["failed", "cancelled", "returned"]);
 
 function computeStats(shipments: Shipment[]) {
   const total     = shipments.length;
@@ -86,8 +87,7 @@ function computeStats(shipments: Shipment[]) {
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 
-const ORDER_INTAKE_URL        = process.env.NEXT_PUBLIC_API_URL                ?? "http://localhost:8000";
-const DELIVERY_EXPERIENCE_URL = process.env.NEXT_PUBLIC_DELIVERY_EXPERIENCE_URL ?? "http://localhost:8007";
+const ORDER_INTAKE_URL = API_BASE;
 
 // ── New Shipment Modal ────────────────────────────────────────────────────────
 
@@ -491,7 +491,7 @@ function DeliveryReceiptModal({ shipment, onClose }: { shipment: Shipment; onClo
     // enriched payload: TrackingRecord fields + `pop` (POP evidence) + `pod`
     // (POD evidence with all photo URLs) + `events` alias for status_history.
     // This replaces the previous two-fetch pattern (tracking + separate pod call).
-    authFetch(`${DELIVERY_EXPERIENCE_URL}/v1/tracking/${shipment.id}`)
+    authFetch(`${API_BASE}/v1/tracking/${shipment.id}`)
       .then(r => r.ok ? r.json() : null)
       .then(json => {
         const data = json?.data ?? json;
@@ -527,7 +527,10 @@ function DeliveryReceiptModal({ shipment, onClose }: { shipment: Shipment; onClo
   }
 
   function shareTrackingLink() {
-    const url = `${DELIVERY_EXPERIENCE_URL}/track/${shipment.tracking_number}`;
+    // Goes to a customer, so it must be a page a human can open — not the
+    // delivery-experience JSON endpoint this used to point at, and not a
+    // localhost address, which is what it actually shipped as.
+    const url = trackingPageUrl(shipment.tracking_number);
     if (navigator.share) {
       navigator.share({ title: "Track your shipment", url }).catch(() => {});
     } else {
@@ -542,7 +545,7 @@ function DeliveryReceiptModal({ shipment, onClose }: { shipment: Shipment; onClo
     setSendStatus("sending");
     try {
       const res = await authFetch(
-        `${DELIVERY_EXPERIENCE_URL}/v1/tracking/${shipment.tracking_number}/send-receipt`,
+        `${API_BASE}/v1/tracking/${shipment.tracking_number}/send-receipt`,
         { method: "POST", body: JSON.stringify({ email: sendEmail.trim() }) },
       );
       setSendStatus(res.ok ? "sent" : "error");
@@ -1563,7 +1566,13 @@ function ShipmentsContent() {
   function toggleSelect(id: string) {
     setSelected((prev) => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      // An if/else, not a ternary evaluated for effect — the expression form
+      // reads as though it produces the next value, and it does not.
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
       return next;
     });
   }

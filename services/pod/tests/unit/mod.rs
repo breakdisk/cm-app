@@ -20,6 +20,13 @@ fn make_pod(geofence_verified: bool) -> ProofOfDelivery {
         14.5995, // capture_lat (Manila)
         120.9842, // capture_lng
         geofence_verified,
+        // Four parameters the POP/telemetry work added since this helper was
+        // written. Chosen as the ordinary delivery: inside the boundary, no
+        // device clock reading, both proofs required.
+        false, // out_of_bounds_handover
+        None,  // device_timestamp
+        true,  // requires_photo
+        true,  // requires_signature
     )
 }
 

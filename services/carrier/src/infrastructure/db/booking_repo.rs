@@ -1,5 +1,5 @@
-/// Append-only repository for carrier.carrier_bookings.
-/// Writes one row per successful 3PL API booking (MCP or allocation worker).
+//! Append-only repository for carrier.carrier_bookings.
+//! Writes one row per successful 3PL API booking (MCP or allocation worker).
 
 use sqlx::PgPool;
 use uuid::Uuid;

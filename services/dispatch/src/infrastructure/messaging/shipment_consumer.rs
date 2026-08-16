@@ -37,7 +37,7 @@ pub async fn start_shipment_consumer(
 ) -> anyhow::Result<()> {
     let consumer: StreamConsumer = ClientConfig::new()
         .set("bootstrap.servers", brokers)
-        .set("group.id", &format!("{}-shipment", group_id))
+        .set("group.id", format!("{}-shipment", group_id))
         .set("auto.offset.reset", "earliest")
         .set("enable.auto.commit", "false")
         .create()?;

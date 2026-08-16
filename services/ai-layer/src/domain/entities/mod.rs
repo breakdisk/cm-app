@@ -1,9 +1,14 @@
-/// Core domain types for the Agentic Runtime.
-use chrono::{DateTime, Utc};
+/// Logistics agent identity.
+///
+/// The session entities, the agent loop and the RBAC gate now live in
+/// `libs/agent-runtime`, shared with other products. `AgentType` stays here
+/// because it is irreducibly a LogisticOS concept; it converts into the
+/// runtime's product-agnostic `AgentRole` at session construction.
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
-use logisticos_types::TenantId;
+pub use logisticos_agent_runtime::{
+    AgentAction, AgentMessage, AgentRole, AgentSession, MessageRole, SessionStatus, ToolDefinition,
+};
 
 // ---------------------------------------------------------------------------
 // Agent identity
@@ -126,144 +131,44 @@ impl AgentType {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Agent session — tracks a single agent run from trigger to completion
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionStatus {
-    Running,
-    Completed,
-    Failed,
-    HumanEscalated,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentSession {
-    pub id:               Uuid,
-    pub tenant_id:        TenantId,
-    pub agent_type:       AgentType,
-    pub status:           SessionStatus,
-
-    /// The event or request that triggered this session.
-    pub trigger:          serde_json::Value,
-
-    /// Full message history for this agent run (user + assistant + tool messages).
-    pub messages:         Vec<AgentMessage>,
-
-    /// Actions taken during this session (tool calls and their results).
-    pub actions:          Vec<AgentAction>,
-
-    /// Final outcome summary written by the agent.
-    pub outcome:          Option<String>,
-
-    /// Human escalation reason (if status == HumanEscalated).
-    pub escalation_reason: Option<String>,
-
-    pub confidence_score: Option<f32>,  // 0.0 – 1.0, agent's self-reported confidence
-    pub model_used:       String,
-
-    pub started_at:       DateTime<Utc>,
-    pub completed_at:     Option<DateTime<Utc>>,
-}
-
-impl AgentSession {
-    pub fn new(tenant_id: TenantId, agent_type: AgentType, trigger: serde_json::Value) -> Self {
-        Self {
-            id:               Uuid::new_v4(),
-            tenant_id,
-            agent_type,
-            status:           SessionStatus::Running,
-            trigger,
-            messages:         Vec::new(),
-            actions:          Vec::new(),
-            outcome:          None,
-            escalation_reason: None,
-            confidence_score: None,
-            model_used:       "claude-opus-4-6".into(),
-            started_at:       Utc::now(),
-            completed_at:     None,
-        }
+impl AgentType {
+    /// The stable string this variant persists as — the value stored in the
+    /// `agent_type` column and carried as the `AgentRole` key.
+    ///
+    /// Derived from the serde representation rather than hand-written so the
+    /// two can never drift apart.
+    pub fn key(&self) -> String {
+        serde_json::to_value(self)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .expect("AgentType must serialise to a string")
     }
 
-    pub fn complete(&mut self, outcome: String, confidence: f32) {
-        self.status = SessionStatus::Completed;
-        self.outcome = Some(outcome);
-        self.confidence_score = Some(confidence);
-        self.completed_at = Some(Utc::now());
-    }
-
-    pub fn fail(&mut self, reason: String) {
-        self.status = SessionStatus::Failed;
-        self.escalation_reason = Some(reason);
-        self.completed_at = Some(Utc::now());
-    }
-
-    pub fn escalate(&mut self, reason: String) {
-        self.status = SessionStatus::HumanEscalated;
-        self.escalation_reason = Some(reason);
-        self.completed_at = Some(Utc::now());
-    }
-
-    /// Put a finished session back into `Running` so another user turn can be
-    /// appended. Multi-turn chat is the only caller: every turn re-enters the
-    /// agent loop on the same session, keeping one row and one audit trail per
-    /// conversation instead of one per message.
-    pub fn reopen(&mut self) {
-        self.status = SessionStatus::Running;
-        self.completed_at = None;
+    /// True when `role` is this variant's runtime form.
+    ///
+    /// `AgentSession` now holds an opaque `AgentRole` instead of this enum, so
+    /// the "is this a customer-support session?" guards compare through here.
+    pub fn matches_role(&self, role: &AgentRole) -> bool {
+        role.key() == self.key()
     }
 }
 
-// ---------------------------------------------------------------------------
-// Messages in the agent conversation (Claude API format)
-// ---------------------------------------------------------------------------
+impl From<AgentType> for AgentRole {
+    fn from(t: AgentType) -> Self {
+        let key = t.key();
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MessageRole {
-    User,
-    Assistant,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentMessage {
-    pub role:    MessageRole,
-    pub content: serde_json::Value,  // string or array of content blocks
-}
-
-// ---------------------------------------------------------------------------
-// Agent action — immutable audit log entry for each tool call
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentAction {
-    pub id:            Uuid,
-    pub session_id:    Uuid,
-    pub tool_name:     String,
-    pub tool_input:    serde_json::Value,
-    pub tool_result:   Option<serde_json::Value>,
-    pub succeeded:     bool,
-    pub executed_at:   DateTime<Utc>,
-}
-
-impl AgentAction {
-    pub fn new(session_id: Uuid, tool_name: String, tool_input: serde_json::Value) -> Self {
-        Self {
-            id:          Uuid::new_v4(),
-            session_id,
-            tool_name,
-            tool_input,
-            tool_result: None,
-            succeeded:   false,
-            executed_at: Utc::now(),
+        match t.allowed_tools() {
+            None => AgentRole::unrestricted(key, t.display_name(), t.system_context()),
+            Some(allowed) => {
+                AgentRole::restricted(key, t.display_name(), t.system_context(), allowed.iter().copied())
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use uuid::Uuid;
     use super::*;
 
     /// The customer-facing agent talks to end customers, so its reachable tool
@@ -328,8 +233,9 @@ mod tests {
     fn completing_an_escalation_keeps_the_escalation_reason() {
         let mut escalated = AgentSession::new(
             logisticos_types::TenantId::from_uuid(Uuid::new_v4()),
-            AgentType::CustomerSupport,
+            AgentType::CustomerSupport.into(),
             serde_json::json!({}),
+            "test-model",
         );
         escalated.escalate("customer asked for a human".into());
         escalated.complete("Resolved by human (op-1): refunded".into(), 1.0);
@@ -340,8 +246,9 @@ mod tests {
         // An ordinary chat that was never escalated must not look resolved-by-human.
         let mut plain = AgentSession::new(
             logisticos_types::TenantId::from_uuid(Uuid::new_v4()),
-            AgentType::CustomerSupport,
+            AgentType::CustomerSupport.into(),
             serde_json::json!({}),
+            "test-model",
         );
         plain.complete("Here's your tracking update.".into(), 0.9);
 
@@ -353,8 +260,9 @@ mod tests {
     fn reopen_puts_a_completed_session_back_in_running() {
         let mut session = AgentSession::new(
             logisticos_types::TenantId::from_uuid(Uuid::new_v4()),
-            AgentType::CustomerSupport,
+            AgentType::CustomerSupport.into(),
             serde_json::json!({}),
+            "test-model",
         );
         session.complete("done".into(), 0.9);
         assert_eq!(session.status, SessionStatus::Completed);
@@ -367,15 +275,41 @@ mod tests {
         // The prior outcome survives — the next turn appends to this history.
         assert_eq!(session.outcome.as_deref(), Some("done"));
     }
-}
 
-// ---------------------------------------------------------------------------
-// Tool definition (MCP tool schema for Claude's tool_use feature)
-// ---------------------------------------------------------------------------
+    /// `AgentRole.key` is the persisted `agent_type` column value. If this
+    /// drifts from the enum's serde representation, existing rows stop loading.
+    #[test]
+    fn agent_role_key_matches_the_persisted_enum_string() {
+        for agent in [
+            AgentType::Dispatch,
+            AgentType::Recovery,
+            AgentType::Reconciliation,
+            AgentType::Anomaly,
+            AgentType::MerchantSupport,
+            AgentType::CustomerSupport,
+            AgentType::OnDemand,
+        ] {
+            let serialised = serde_json::to_value(&agent).unwrap();
+            let expected = serialised.as_str().expect("AgentType serialises to a string");
+            let role: AgentRole = agent.clone().into();
+            assert_eq!(role.key(), expected, "{agent:?} key must match its serde string");
+        }
+    }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolDefinition {
-    pub name:        String,
-    pub description: String,
-    pub input_schema: serde_json::Value,  // JSON Schema object
+    /// The customer-facing agent must stay the narrowest role on the platform
+    /// after conversion — the same guarantee the pre-extraction test made.
+    #[test]
+    fn customer_support_role_stays_restricted_after_conversion() {
+        let role: AgentRole = AgentType::CustomerSupport.into();
+        for forbidden in [
+            "assign_driver", "generate_invoice", "reconcile_cod", "send_driver_instruction",
+            "get_cod_balance", "get_delivery_metrics", "get_driver_location", "get_churn_score",
+            "schedule_dock", "get_available_drivers", "send_notification",
+        ] {
+            assert!(!role.permits(forbidden), "{forbidden} must not be reachable from customer chat");
+        }
+        for allowed in ["get_shipment", "reschedule_delivery", "escalate_to_human"] {
+            assert!(role.permits(allowed), "{allowed} should be allowed");
+        }
+    }
 }

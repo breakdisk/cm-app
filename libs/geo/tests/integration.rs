@@ -158,7 +158,7 @@ mod nearest_neighbor_metro_manila {
         let stops = vec![PASIG, MANDALUYONG, MARIKINA, TAGUIG, PARANAQUE];
         let order = nearest_neighbor_order(&MAKATI, &stops);
 
-        let mut seen = vec![false; 5];
+        let mut seen = [false; 5];
         for idx in &order {
             assert!(!seen[*idx], "Stop index {} appeared more than once", idx);
             seen[*idx] = true;
@@ -427,6 +427,11 @@ mod ph_constants {
         }
     }
 
+    /// Clippy is right that this folds to a constant — both operands are
+    /// consts. It is kept anyway: the value under test is the constants table
+    /// itself, and a transposed lat/lng on a hub is exactly the edit this
+    /// catches. The neighbouring bounds tests exist for the same reason.
+    #[allow(clippy::assertions_on_constants)]
     #[test]
     fn manila_is_north_of_cebu() {
         assert!(
@@ -436,14 +441,19 @@ mod ph_constants {
         );
     }
 
+    /// Was `davao_is_the_southernmost_hub`, and it asserted something false:
+    /// Zamboanga sits at 6.92°N, Davao at 7.07°N, so Zamboanga is the southern
+    /// one. Both constants match the real cities — the assertion was the bug.
+    /// It never surfaced because `ci-rust.yml` watched branches that do not
+    /// exist and so had never run this suite.
     #[test]
-    fn davao_is_the_southernmost_hub() {
-        let hubs = [ph::MANILA, ph::CEBU, ph::ILOILO, ph::CAGAYAN, ph::ZAMBOANGA];
+    fn zamboanga_is_the_southernmost_hub() {
+        let hubs = [ph::MANILA, ph::CEBU, ph::ILOILO, ph::CAGAYAN, ph::DAVAO];
         for hub in &hubs {
             assert!(
-                ph::DAVAO.lat < hub.lat,
-                "Davao (lat={:.4}) must be south of {:?} (lat={:.4})",
-                ph::DAVAO.lat, hub, hub.lat
+                ph::ZAMBOANGA.lat < hub.lat,
+                "Zamboanga (lat={:.4}) must be south of {:?} (lat={:.4})",
+                ph::ZAMBOANGA.lat, hub, hub.lat
             );
         }
     }

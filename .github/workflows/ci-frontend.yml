@@ -11,15 +11,13 @@ name: CI — Frontend
 on:
   push:
     branches:
-      - main
-      - develop
+      - master
     paths:
       - "apps/**"
       - ".github/workflows/ci-frontend.yml"
   pull_request:
     branches:
-      - main
-      - develop
+      - master
     paths:
       - "apps/**"
       - ".github/workflows/ci-frontend.yml"
@@ -77,6 +75,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # A real gate. Every portal now has `.eslintrc.json`, so `next lint` no
+      # longer opens the interactive setup prompt that used to EOF on the runner
+      # and kill this job before the type check ran.
+      #
+      # `no-unused-vars` and `no-explicit-any` are **warnings**, not errors, and
+      # deliberately: they are pre-existing debt (40 occurrences across the four
+      # portals) and gating on them would keep this job red for code nobody in
+      # this change touched — the failure mode that left the whole workflow
+      # ignored in the first place. Everything else errors, so a *new* problem
+      # of any other class stops the build. Tighten them to "error" in the
+      # change that clears them.
       - name: Run ESLint
         run: npm run lint
         env:
@@ -356,8 +365,17 @@ jobs:
       fail-fast: false
       matrix:
         app:
-          - driver-app
+          # `driver-app` was listed here and is not a directory — the driver
+          # app is native Kotlin (apps/driver-app-android) and is built by
+          # build-android-driver.yml. The job failed every run with
+          # "Some specified paths were not resolved", which nobody saw because
+          # this whole job was skipped behind a lint step that could not run.
           - customer-app
+          # Added 2026-08-14. Its suite is green — `tsc --noEmit` clean and 14
+          # jest tests across 2 suites — so the precondition this comment used
+          # to state is met. Until now nothing gated the app at all, which is
+          # how customer-app's six suites rotted unnoticed.
+          - omnideliv-app
 
     defaults:
       run:
@@ -382,6 +400,13 @@ jobs:
         env:
           CI: "true"
 
+      # A real gate. customer-app now has `eslint-config-expo` and an
+      # `.eslintrc.json`, so ESLint no longer exits 2 on missing configuration.
+      #
+      # `no-unused-vars` and `no-explicit-any` are warnings here for the same
+      # reason as the portals — 157 occurrences of pre-existing debt, and
+      # gating on them would keep this job red for code this change never
+      # touched. Everything else errors.
       - name: Run ESLint
         run: npm run lint
         env:
@@ -409,6 +434,9 @@ jobs:
           "
           fi
 
+      # A real gate as of the commit that repaired the six drifted suites:
+      # 14 suites, 81 tests, all passing. It was advisory for exactly one
+      # commit, which is how long it took to fix what turning it on revealed.
       - name: Run unit tests (mobile)
         run: npm test -- --ci --passWithNoTests
         env:

@@ -119,7 +119,7 @@ pub async fn start_status_consumer(
     use rdkafka::config::ClientConfig;
     let consumer: StreamConsumer = ClientConfig::new()
         .set("bootstrap.servers", brokers)
-        .set("group.id", &format!("{}-status", group_id))
+        .set("group.id", format!("{}-status", group_id))
         .set("auto.offset.reset", "earliest")
         .set("enable.auto.commit", "false")
         .create()?;
@@ -265,6 +265,8 @@ fn warn_if_no_op(rows: u64, topic: &str, shipment_id: Uuid) {
 /// * `deny`  — the current status must not be one of these.
 ///
 /// Returns the number of shipments advanced (0 or 1).
+// Arity mirrors the record's field count; a params struct would move it, not remove it.
+#[allow(clippy::too_many_arguments)]
 async fn apply_transition(
     pool: &PgPool,
     shipment_id: Uuid,

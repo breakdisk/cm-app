@@ -64,7 +64,6 @@ impl CarrierCommandHandler {
     }
 
     pub async fn handle_delivery_outcome(&self, cmd: RecordDeliveryOutcomeCommand) -> AppResult<()> {
-        use crate::domain::repositories::{CarrierRepository, SlaRecordRepository};
 
         // This mirrors `handle_delivery_completed/failed` in messaging.rs but is
         // exposed here for callers that bypass Kafka (e.g. synchronous test flows

@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::Validate;
-use logisticos_types::Address;
 
 #[derive(Debug, Deserialize, Validate)]
 pub struct CreateRouteCommand {

@@ -1,0 +1,29 @@
+[package]
+# Never published. Also what lets cargo-deny treat this as private and skip
+# the licence check — these crates carry no SPDX expression because they are
+# proprietary, not because anyone forgot.
+publish = false
+name        = "logisticos-agent-runtime"
+description = "Product-agnostic Claude agent loop: session, RBAC gate, tool dispatch, audit"
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+rust-version.workspace = true
+
+[dependencies]
+logisticos-errors.workspace = true
+logisticos-types.workspace  = true
+serde.workspace             = true
+serde_json.workspace        = true
+uuid.workspace              = true
+chrono.workspace            = true
+tracing.workspace           = true
+reqwest.workspace           = true
+async-trait.workspace       = true
+anyhow.workspace            = true
+
+[features]
+testing = []
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

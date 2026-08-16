@@ -234,6 +234,8 @@ async fn update_carrier_metrics(
 /// This is fire-and-forget relative to the dispatch/SLA-record path — failures
 /// are logged and the event is committed so we don't re-process indefinitely.
 /// A retry strategy (dead-letter queue) should be added when Kafka is hardened.
+// Arity mirrors the record's field count; a params struct would move it, not remove it.
+#[allow(clippy::too_many_arguments)]
 pub async fn start_allocation_booking_worker(
     brokers: String,
     group_id: String,

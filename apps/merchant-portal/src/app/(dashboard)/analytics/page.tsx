@@ -148,7 +148,7 @@ export default function AnalyticsPage() {
 
       {error && (
         <motion.div variants={variants.fadeInUp}>
-          <GlassCard padding="sm">
+          <GlassCard>
             <p className="text-xs text-red-signal font-mono">{error}</p>
           </GlassCard>
         </motion.div>

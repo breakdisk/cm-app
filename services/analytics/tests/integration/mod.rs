@@ -34,10 +34,16 @@ use logisticos_analytics::domain::entities::{DailyBucket, DeliveryKpis, DriverPe
 /// Replaces `AnalyticsDb` in tests.  All methods delegate to closures
 /// stored at construction time so each test can inject its own data without
 /// shared mutable state.
+/// A stubbed query over a tenant and a date range.
+type RangeQuery<T> = Box<dyn Fn(Uuid, NaiveDate, NaiveDate) -> anyhow::Result<T> + Send + Sync>;
+/// The same, plus a row limit.
+type LimitedRangeQuery<T> =
+    Box<dyn Fn(Uuid, NaiveDate, NaiveDate, i64) -> anyhow::Result<T> + Send + Sync>;
+
 struct MockAnalyticsDb {
-    kpis_result:        Box<dyn Fn(Uuid, NaiveDate, NaiveDate) -> anyhow::Result<DeliveryKpis> + Send + Sync>,
-    timeseries_result:  Box<dyn Fn(Uuid, NaiveDate, NaiveDate) -> anyhow::Result<Vec<DailyBucket>> + Send + Sync>,
-    driver_perf_result: Box<dyn Fn(Uuid, NaiveDate, NaiveDate, i64) -> anyhow::Result<Vec<DriverPerformance>> + Send + Sync>,
+    kpis_result:        RangeQuery<DeliveryKpis>,
+    timeseries_result:  RangeQuery<Vec<DailyBucket>>,
+    driver_perf_result: LimitedRangeQuery<Vec<DriverPerformance>>,
 }
 
 impl MockAnalyticsDb {
@@ -394,7 +400,10 @@ mod kpi_endpoint {
 
         let (status, body) = send(
             app, Method::GET,
-            "/v1/analytics/kpis?from=2026-01-01&to=2026-01-31",
+            // Built from the same bindings the setup uses, rather than a
+            // hardcoded string beside them — the two were free to drift, and
+            // the compiler only noticed because the bindings went unread.
+            &format!("/v1/analytics/kpis?from={from}&to={to}"),
             &token,
         ).await;
 

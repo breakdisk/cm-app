@@ -197,6 +197,8 @@ services:
       SERVICES__MARKETING_URL: http://marketing:8014
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
+      SERVICES__FIELD_OPS_URL: http://field-ops:8090
+      SERVICES__OMNIDELIV_URL: http://omnideliv:8091
       SERVICES__COMPLIANCE_URL: http://compliance:8017
       SERVICES__WEBHOOKS_URL: http://webhooks:8018
       SERVICES__CONNECTORS_URL: http://connectors:8021
@@ -236,6 +238,19 @@ services:
       DATABASE__MAX_CONNECTIONS: "5"
       KAFKA__BROKERS: kafka:29092
       KAFKA__GROUP_ID: identity-dev
+      # ⚠ ACCEPTS THE FIXED OTP 123456 FOR ANY PHONE NUMBER.
+      #
+      # Anyone who can reach this API can sign in as any customer while this is
+      # "true". It is set deliberately because real SMS delivery does not work
+      # here — TWILIO_SMS_FROM is +15005550006, Twilio's magic test number that
+      # never delivers — so removing it locks every OTP app out entirely.
+      #
+      # Until 2026-08-14 this was not a flag at all: the shortcut keyed off
+      # APP__ENV != "production", which is open when the variable is unset and
+      # open on this box, which runs "development". Making it an explicit
+      # variable is the point — DELETE THIS LINE the moment a real Twilio
+      # sending number is configured, and the bypass is closed.
+      AUTH__ALLOW_DEV_OTP: "true"
       AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       AUTH__JWT_EXPIRY_SECONDS: "3600"
       AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
@@ -257,6 +272,8 @@ services:
       SERVICES__MARKETING_URL: http://marketing:8014
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
+      SERVICES__FIELD_OPS_URL: http://field-ops:8090
+      SERVICES__OMNIDELIV_URL: http://omnideliv:8091
       RUST_LOG: info
     depends_on:
       postgres:
@@ -307,6 +324,8 @@ services:
       SERVICES__MARKETING_URL: http://marketing:8014
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
+      SERVICES__FIELD_OPS_URL: http://field-ops:8090
+      SERVICES__OMNIDELIV_URL: http://omnideliv:8091
       RUST_LOG: info
     depends_on:
       postgres:
@@ -357,6 +376,8 @@ services:
       SERVICES__MARKETING_URL: http://marketing:8014
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
+      SERVICES__FIELD_OPS_URL: http://field-ops:8090
+      SERVICES__OMNIDELIV_URL: http://omnideliv:8091
       MAILHOG_SMTP: mailhog:1025
       TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-dev-placeholder}
       TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-dev-placeholder}
@@ -422,6 +443,8 @@ services:
       SERVICES__MARKETING_URL: http://marketing:8014
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
+      SERVICES__FIELD_OPS_URL: http://field-ops:8090
+      SERVICES__OMNIDELIV_URL: http://omnideliv:8091
       # Mapbox Forward Geocoding v6 — bootstraps the MapboxGeocoder
       # AddressNormalizer. When unset or empty, order-intake falls back to
       # PassthroughNormalizer (coordinates: None) and dispatch will reject
@@ -478,6 +501,8 @@ services:
       SERVICES__MARKETING_URL: http://marketing:8014
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
+      SERVICES__FIELD_OPS_URL: http://field-ops:8090
+      SERVICES__OMNIDELIV_URL: http://omnideliv:8091
       RUST_LOG: info
     depends_on:
       postgres:
@@ -529,6 +554,8 @@ services:
       SERVICES__MARKETING_URL: http://marketing:8014
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
+      SERVICES__FIELD_OPS_URL: http://field-ops:8090
+      SERVICES__OMNIDELIV_URL: http://omnideliv:8091
       # FCM push notifications — set secrets via Dokploy env vars or VPS .env
       # IDENTITY__INTERNAL_URL: where driver-ops fetches FCM push tokens
       # FCM__PROJECT_ID: Firebase project ID (from Firebase console)
@@ -586,6 +613,8 @@ services:
       SERVICES__MARKETING_URL: http://marketing:8014
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
+      SERVICES__FIELD_OPS_URL: http://field-ops:8090
+      SERVICES__OMNIDELIV_URL: http://omnideliv:8091
       # Pod service internal URL for POP/POD evidence enrichment in tracking responses.
       # Must match the pod service name on the logisticos compose network.
       POD_INTERNAL_URL: http://pod:8011
@@ -639,6 +668,8 @@ services:
       SERVICES__MARKETING_URL: http://marketing:8014
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
+      SERVICES__FIELD_OPS_URL: http://field-ops:8090
+      SERVICES__OMNIDELIV_URL: http://omnideliv:8091
       RUST_LOG: info
     depends_on:
       postgres:
@@ -689,6 +720,8 @@ services:
       SERVICES__MARKETING_URL: http://marketing:8014
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
+      SERVICES__FIELD_OPS_URL: http://field-ops:8090
+      SERVICES__OMNIDELIV_URL: http://omnideliv:8091
       RUST_LOG: info
     depends_on:
       postgres:
@@ -739,6 +772,8 @@ services:
       SERVICES__MARKETING_URL: http://marketing:8014
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
+      SERVICES__FIELD_OPS_URL: http://field-ops:8090
+      SERVICES__OMNIDELIV_URL: http://omnideliv:8091
       RUST_LOG: info
     depends_on:
       postgres:
@@ -789,6 +824,8 @@ services:
       SERVICES__MARKETING_URL: http://marketing:8014
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
+      SERVICES__FIELD_OPS_URL: http://field-ops:8090
+      SERVICES__OMNIDELIV_URL: http://omnideliv:8091
       S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
       S3_BUCKET: ${S3_BUCKET:-logisticos-pod-photos}
       POP_S3_BUCKET: ${POP_S3_BUCKET:-logisticos-pop-photos}
@@ -860,6 +897,8 @@ services:
       SERVICES__MARKETING_URL: http://marketing:8014
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
+      SERVICES__FIELD_OPS_URL: http://field-ops:8090
+      SERVICES__OMNIDELIV_URL: http://omnideliv:8091
       RUST_LOG: info
     depends_on:
       postgres:
@@ -910,6 +949,8 @@ services:
       SERVICES__MARKETING_URL: http://marketing:8014
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
+      SERVICES__FIELD_OPS_URL: http://field-ops:8090
+      SERVICES__OMNIDELIV_URL: http://omnideliv:8091
       CLICKHOUSE_URL: http://clickhouse:8123
       CLICKHOUSE_DB: logisticos
       CLICKHOUSE_USER: default
@@ -964,6 +1005,8 @@ services:
       SERVICES__MARKETING_URL: http://marketing:8014
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
+      SERVICES__FIELD_OPS_URL: http://field-ops:8090
+      SERVICES__OMNIDELIV_URL: http://omnideliv:8091
       RUST_LOG: info
     depends_on:
       postgres:
@@ -1014,6 +1057,8 @@ services:
       SERVICES__MARKETING_URL: http://marketing:8014
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
+      SERVICES__FIELD_OPS_URL: http://field-ops:8090
+      SERVICES__OMNIDELIV_URL: http://omnideliv:8091
       RUST_LOG: info
     depends_on:
       postgres:
@@ -1064,6 +1109,8 @@ services:
       SERVICES__MARKETING_URL: http://marketing:8014
       SERVICES__BUSINESS_LOGIC_URL: http://business-logic:8015
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
+      SERVICES__FIELD_OPS_URL: http://field-ops:8090
+      SERVICES__OMNIDELIV_URL: http://omnideliv:8091
       ANTHROPIC__API_KEY: ${ANTHROPIC_API_KEY:-dev-placeholder}
       MCP_DISPATCH_URL: http://dispatch:8005/mcp
       MCP_ORDER_URL: http://order-intake:8004/mcp
@@ -1180,6 +1227,11 @@ services:
       DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_connectors
       DATABASE__MAX_CONNECTIONS: "5"
       ORDER_INTAKE__INTERNAL_URL: http://order-intake:8004
+      # Catalog sync target. Without this the connectors service still boots and
+      # still takes orders — it just answers "no OmniDeliv tier configured" to
+      # every catalog sync, which is a silent no-op for the whole Shopify/Woo
+      # product path rather than a startup failure anyone would notice.
+      OMNIDELIV__INTERNAL_URL: http://omnideliv:8091
       AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       PUBLIC_URL: ${CONNECTORS_PUBLIC_URL:-http://localhost:8021}
       RUST_LOG: info,sqlx=warn
@@ -1230,5 +1282,86 @@ services:
       - tools
     ports:
       - 5540:5540
+    networks:
+      - logisticos
+
+  # ── Field-Ops: platform tier owning couriers (ADR-0015) ──────
+  field-ops:
+    image: ghcr.io/breakdisk/logisticos-service-field-ops:latest
+    container_name: logisticos-field-ops
+    restart: unless-stopped
+    ports:
+      - 8090:8090
+    environment:
+      APP__HOST: "0.0.0.0"
+      APP__PORT: "8090"
+      APP__ENV: development
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_field_ops
+      DATABASE__MAX_CONNECTIONS: "5"
+      KAFKA__BROKERS: kafka:29092
+      AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
+      # A claim older than this is reclaimable, so a crashed client cannot hold
+      # a courier hostage.
+      CLAIM_TTL_SECS: "120"
+      RUST_LOG: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    networks:
+      - logisticos
+
+  # ── OmniDeliv AI: hyperlocal multi-vertical delivery ─────────
+  omnideliv:
+    image: ghcr.io/breakdisk/logisticos-service-omnideliv:latest
+    container_name: logisticos-omnideliv
+    restart: unless-stopped
+    ports:
+      - 8091:8091
+    environment:
+      APP__HOST: "0.0.0.0"
+      APP__PORT: "8091"
+      APP__ENV: development
+      DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_omnideliv
+      DATABASE__MAX_CONNECTIONS: "10"
+      KAFKA__BROKERS: kafka:29092
+      AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
+      # How stale a vendor's stock declaration may be before the mesh stops
+      # trusting it and proposes substitutes defensively.
+      STOCK_FRESHNESS_MINS: "30"
+      # Product photos. Absent, the service still boots and serves catalogs —
+      # only the photo routes report themselves unconfigured. minio is on this
+      # network with no published port, which is why bytes go through the
+      # service rather than a presigned URL the browser could not reach.
+      STORAGE__ENDPOINT: http://minio:9000
+      STORAGE__BUCKET: omnideliv-catalog
+      STORAGE__ACCESS_KEY: minioadmin
+      STORAGE__SECRET_KEY: minioadmin
+      STORAGE__REGION: us-east-1
+      STORAGE__FORCE_PATH_STYLE: "true"
+      MESH_DEADLINE_SECS: "${OMNIDELIV_MESH_DEADLINE_SECS:-45}"
+      # Checkout offers every placed order to field-ops. WITHOUT SERVICE_TOKEN
+      # every checkout fails: field-ops authenticates its operational routes and
+      # the 401 surfaces to the customer as "no courier available".
+      FIELD_OPS_URL: http://field-ops:8090
+      # The mesh. Without a key the agent path fails; browse and checkout still
+      # work, which is the whole point of the non-AI fallback.
+      CLAUDE_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CLAUDE_MODEL: claude-opus-4-6
+      CLAUDE_MAX_TOKENS: "8192"
+      # Slice-one placeholders: the mesh tool box is built once at startup, so
+      # these stand in for per-request tenant and delivery address.
+      DEFAULT_TENANT_ID: ${OMNIDELIV_DEFAULT_TENANT_ID:-00000000-0000-0000-0000-000000000001}
+      DEFAULT_LAT: "14.5995"
+      DEFAULT_LNG: "120.9842"
+      RUST_LOG: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      field-ops:
+        condition: service_started
     networks:
       - logisticos

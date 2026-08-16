@@ -21,6 +21,8 @@ pub struct PickupAddress {
 }
 
 impl PickupAddress {
+    // Arity mirrors the record's field count; a params struct would move it, not remove it.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         user_id: UserId,
         tenant_id: TenantId,
