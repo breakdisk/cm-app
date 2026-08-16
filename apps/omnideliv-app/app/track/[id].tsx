@@ -14,10 +14,8 @@ import { ActivityIndicator, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams } from "expo-router";
 
-import { trackOrder, type TrackResponse } from "@/api/tracking";
+import { trackOrder, pollIntervalMs, type TrackResponse } from "@/api/tracking";
 import { theme } from "@/theme";
-
-const POLL_MS = 8000;
 
 /** What each status means to someone waiting, not to the state machine. */
 const SAY: Record<TrackResponse["status"], { title: string; sub: string; tone: string }> = {
@@ -56,16 +54,18 @@ export default function Track() {
       setOrder(next);
       setError(null);
 
-      // Stop polling once nothing more will change. A screen left open on a
-      // delivered order should not keep waking the radio all evening.
-      if (next.status !== "delivered" && next.status !== "cancelled") {
-        timer.current = setTimeout(() => void poll(), POLL_MS);
+      // The schedule this screen should always have used: 5s while the courier
+      // is moving and the map wants freshness, 15s otherwise, and nothing at
+      // all once the order is terminal.
+      const next_ms = pollIntervalMs(next.status);
+      if (next_ms !== null) {
+        timer.current = setTimeout(() => void poll(), next_ms);
       }
     } catch {
       // Keep the last known state on screen and keep trying: a dropped request
       // in a lift is not a reason to blank the page.
       setError("Couldn't refresh just now — still trying.");
-      timer.current = setTimeout(() => void poll(), POLL_MS);
+      timer.current = setTimeout(() => void poll(), 15_000);
     }
   }, [id]);
 
