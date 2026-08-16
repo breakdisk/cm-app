@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Pressable, Text, TextInput, View } from "react-native";
+import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 
@@ -27,7 +27,17 @@ export default function OmniIntentCanvas() {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: theme.canvas }}>
-      <View style={{ flex: 1, padding: 20, gap: 16 }}>
+      {/* Scrolls rather than clips. This was a fixed-height View, which was
+          survivable while the canvas held an input and two links; the money
+          panel adds up to two more rows, and on a short viewport — or any
+          viewport with the keyboard open — Sign out fell off the bottom with
+          no way to reach it. `keyboardShouldPersistTaps` so the pills and
+          links still take a tap while the intent field has focus. */}
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ padding: 20, gap: 16 }}
+        keyboardShouldPersistTaps="handled"
+      >
         <Text style={{ color: theme.muted, fontSize: 14 }}>{greeting()}.</Text>
 
         <View
@@ -117,7 +127,7 @@ export default function OmniIntentCanvas() {
         >
           <Text style={{ color: theme.faint, fontSize: 12 }}>Sign out</Text>
         </Pressable>
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
