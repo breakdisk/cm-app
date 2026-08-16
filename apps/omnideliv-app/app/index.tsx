@@ -4,6 +4,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 
 import { IntentPills } from "@/components/IntentPills";
+import { MoneyPanel } from "@/components/MoneyPanel";
 import { signOut } from "@/api/auth";
 import { theme } from "@/theme";
 
@@ -80,6 +81,8 @@ export default function OmniIntentCanvas() {
           </Text>
           <IntentPills />
         </View>
+
+        <MoneyPanel />
 
         {/* The way back to an order in flight. Checkout used to be a one-way
             door: it handed you a tracking screen and nothing linked back, so
