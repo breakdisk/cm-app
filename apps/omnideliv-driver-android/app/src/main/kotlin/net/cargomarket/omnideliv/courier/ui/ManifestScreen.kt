@@ -300,19 +300,6 @@ private fun DropoffCard(dropoff: Dropoff, codCents: Long) {
     }
 }
 
-@Composable
-private fun Badge(text: String, color: androidx.compose.ui.graphics.Color) {
-    Box(
-        Modifier
-            .clip(RoundedCornerShape(5.dp))
-            .background(Tokens.Surface)
-            .border(1.dp, color, RoundedCornerShape(5.dp))
-            .padding(horizontal = 7.dp, vertical = 3.dp),
-    ) {
-        Text(text, color = color, fontSize = 9.sp, fontWeight = FontWeight.Bold)
-    }
-}
-
 /**
  * The graduated control.
  *
@@ -383,12 +370,6 @@ private fun GeofenceChip(advice: GeofenceAdvice) {
     Text(text, color = color, fontSize = 12.sp)
 }
 
-/** Cents to a peso string. Integer maths only — no float touches money. */
-private fun pesos(cents: Long): String = "₱${cents / 100}.${(cents % 100).toString().padStart(2, '0')}"
-
-private fun verticalColor(vertical: String) = when (vertical.lowercase()) {
-    "pharmacy" -> Tokens.Plasma
-    "florist" -> Tokens.Plasma
-    "grocery" -> Tokens.Cyan
-    else -> Tokens.Amber
-}
+// `pesos`, `verticalColor` and `Badge` now live in Atoms.kt — the offer
+// inbox draws the same money and the same badges, and two formatters is how
+// one screen starts rounding differently from another.

@@ -5,13 +5,16 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.StateFlow
 import net.cargomarket.omnideliv.courier.data.TokenStore
-import net.cargomarket.omnideliv.courier.ui.ManifestScreen
+import net.cargomarket.omnideliv.courier.ui.ManifestRoute
+import net.cargomarket.omnideliv.courier.ui.ShiftScreen
 import net.cargomarket.omnideliv.courier.ui.SignInScreen
 import javax.inject.Inject
 
@@ -19,13 +22,20 @@ import javax.inject.Inject
  * Seven screens, no more: sign-in, shift, manifest, stop detail, proof capture,
  * delivered, earnings.
  *
- * Sign-in and manifest are wired. Shift, proof capture and earnings are not yet
- * built — their domain rules are (`OfferCard`, `ProofEncoding`, `Earnings`), so
- * what remains is the screens rather than the logic.
+ * Wired: sign-in, shift, manifest. Stop detail is folded into the manifest's
+ * focus card rather than being its own destination — a separate screen would put
+ * a navigation between a courier and the button they came to press. Proof
+ * capture and earnings are not built; their domain rules are (`ProofEncoding`,
+ * `Earnings`), so what is missing is screens, not logic.
  */
 object Routes {
-    const val MANIFEST = "manifest"
+    const val SHIFT = "shift"
+    const val MANIFEST = "manifest/{orderId}"
+
+    fun manifest(orderId: String) = "manifest/$orderId"
 }
+
+const val ARG_ORDER_ID = "orderId"
 
 /**
  * Exposes the session as observable state.
@@ -62,7 +72,29 @@ fun CourierNavHost(session: SessionViewModel = hiltViewModel()) {
     }
 
     val nav = rememberNavController()
-    NavHost(navController = nav, startDestination = Routes.MANIFEST) {
-        composable(Routes.MANIFEST) { ManifestScreen() }
+    NavHost(navController = nav, startDestination = Routes.SHIFT) {
+        composable(Routes.SHIFT) {
+            ShiftScreen(
+                onClaimed = { orderId ->
+                    nav.navigate(Routes.manifest(orderId)) {
+                        // The shift screen is not somewhere to go back to while
+                        // holding a job: field-ops permits one live claim, so an
+                        // offer list behind a claimed job can only offer work the
+                        // courier is forbidden to take.
+                        popUpTo(Routes.SHIFT) { inclusive = true }
+                    }
+                },
+            )
+        }
+
+        composable(
+            route = Routes.MANIFEST,
+            arguments = listOf(navArgument(ARG_ORDER_ID) { type = NavType.StringType }),
+        ) { entry ->
+            // Read here rather than inside the screen so the screen stays a pure
+            // function of its arguments and can be previewed without navigation.
+            val orderId = entry.arguments?.getString(ARG_ORDER_ID).orEmpty()
+            ManifestRoute(orderId = orderId)
+        }
     }
 }
