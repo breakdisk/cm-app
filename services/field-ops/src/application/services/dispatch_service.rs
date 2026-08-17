@@ -94,6 +94,22 @@ pub enum RemitOutcome {
     ExceedsCashHeld { cash_held_cents: i64 },
 }
 
+/// Who is asking where a courier is.
+///
+/// A caller identity, not a permission check: the handler translates the JWT
+/// into one of these and this layer decides what it may see. Keeping the
+/// decision here rather than in the handler makes it unit-testable without
+/// minting tokens.
+#[derive(Debug, Clone, Copy)]
+pub enum PositionReader {
+    /// A courier, by `user_id`. May read only an assignment addressed to them.
+    Courier(Uuid),
+    /// A product service holding `field-ops:read-position`. May read any
+    /// assignment in its own tenant — it needs this to render customer
+    /// tracking and has no courier identity of its own.
+    Service,
+}
+
 impl DispatchService {
     pub fn new(
         couriers: Arc<dyn CourierRepository>,
@@ -599,6 +615,40 @@ impl DispatchService {
         Ok(())
     }
 
+    /// `position_for_assignment`, gated on who is asking.
+    ///
+    /// The unguarded version below is capability-based: any valid tenant JWT
+    /// plus the assignment UUID reads a live courier position. That was safe
+    /// only while assignment ids never reached a client, and the OmniDeliv
+    /// driver app is the first thing to put them in couriers' phones — at which
+    /// point one courier who learns an id can follow another around the city.
+    ///
+    /// `None` for an unauthorized reader, identical to an unknown assignment
+    /// and to a courier with no fix yet. All three are a 404, so the response
+    /// cannot be used to learn which assignment ids exist.
+    pub async fn position_for_assignment_as(
+        &self,
+        tenant_id: Uuid,
+        reader: PositionReader,
+        assignment_id: Uuid,
+    ) -> anyhow::Result<Option<(Uuid, CourierLocation, Option<f64>)>> {
+        if let PositionReader::Courier(user_id) = reader {
+            // Addressed-to, not status-gated — unlike the milestone calls. The
+            // position returned is the assignment's own courier's, so a courier
+            // reading a stale offer of theirs learns only where they already
+            // are. Requiring `Claimed` would buy nothing and would break a
+            // legitimate read between claiming and the first GPS fix.
+            if self
+                .assignment_for_courier(tenant_id, user_id, assignment_id)
+                .await?
+                .is_none()
+            {
+                return Ok(None);
+            }
+        }
+        self.position_for_assignment(tenant_id, assignment_id).await
+    }
+
     /// Where the courier holding this assignment is, with enough recent history
     /// to smooth a speed.
     ///
@@ -609,7 +659,11 @@ impl DispatchService {
     /// `None` for an unknown assignment and `None` for a courier with no fix on
     /// record. Both are a 404 to the caller: distinguishing them would confirm
     /// that an assignment id is real to someone who guessed it.
-    pub async fn position_for_assignment(
+    ///
+    /// **Unauthorized.** Everything reaching this must have gone through
+    /// `position_for_assignment_as`, which is why this stays private to the
+    /// service rather than being called from a handler.
+    async fn position_for_assignment(
         &self,
         tenant_id: Uuid,
         assignment_id: Uuid,
@@ -998,6 +1052,118 @@ mod payout_rules {
 #[cfg(test)]
 mod position_lookup {
     use super::*;
+
+    // ── Reader authorization ─────────────────────────────────────────────
+    //
+    // The route was capability-based: any valid tenant JWT plus the assignment
+    // UUID read a live courier position. Safe only while ids never reached a
+    // client, which the driver app ends.
+
+    /// A courier with a fix on record. `position_for_assignment` reads
+    /// `recent()` rather than `latest()` — it needs a short history to smooth a
+    /// speed — so a mock that only answers `latest` reports "no position" and
+    /// makes an authorization test pass for the wrong reason.
+    struct HeldFix;
+    #[async_trait::async_trait]
+    impl LocationRepository for HeldFix {
+        async fn record(&self, _: &CourierLocation) -> anyhow::Result<()> { Ok(()) }
+        async fn latest(&self, tenant_id: Uuid, courier_id: Uuid)
+            -> anyhow::Result<Option<CourierLocation>> {
+            Ok(Some(CourierLocation::new(tenant_id, courier_id, 14.5547, 121.0244, None)))
+        }
+        async fn recent(&self, tenant_id: Uuid, courier_id: Uuid, _: i64)
+            -> anyhow::Result<Vec<CourierLocation>> {
+            Ok(vec![CourierLocation::new(tenant_id, courier_id, 14.5547, 121.0244, None)])
+        }
+    }
+
+    struct TwoCouriers { by_user: Vec<(Uuid, Courier)> }
+    #[async_trait::async_trait]
+    impl CourierRepository for TwoCouriers {
+        async fn find_by_id(&self, _: Uuid, id: Uuid) -> anyhow::Result<Option<Courier>> {
+            Ok(self.by_user.iter().find(|(_, c)| c.id == id).map(|(_, c)| c.clone()))
+        }
+        async fn find_by_user(&self, _: Uuid, user_id: Uuid) -> anyhow::Result<Option<Courier>> {
+            Ok(self.by_user.iter().find(|(u, _)| *u == user_id).map(|(_, c)| c.clone()))
+        }
+        async fn save(&self, _: &Courier) -> anyhow::Result<()> { Ok(()) }
+        async fn find_available_near(&self, _: Uuid, _: f64, _: f64, _: f64, _: i64)
+            -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
+    }
+
+    /// (service, assignment_id, holder_user, other_user)
+    fn reader_fixture() -> (DispatchService, Uuid, Uuid, Uuid) {
+        let holder_user = Uuid::new_v4();
+        let other_user  = Uuid::new_v4();
+        let holder = Courier::new(TENANT, holder_user, "A".into(), "B".into(), "+63".into());
+        let other  = Courier::new(TENANT, other_user,  "C".into(), "D".into(), "+63".into());
+
+        let mut a = CourierAssignment::offer_with_earnings(
+            TENANT, holder.id, ProductKey::new("omnideliv".to_string()),
+            Uuid::new_v4(), 3_500, 0, 0,
+        );
+        a.status = crate::domain::entities::AssignmentStatus::Claimed;
+        let id = a.id;
+
+        let assignments = Arc::new(Assignments::default());
+        assignments.0.lock().unwrap().push(a);
+
+        let svc = DispatchService::new(
+            Arc::new(TwoCouriers { by_user: vec![(holder_user, holder), (other_user, other)] }),
+            assignments,
+            Arc::new(HeldFix),
+            Arc::new(NoLedgers),
+            Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
+            PayBounds::default(),
+        );
+        (svc, id, holder_user, other_user)
+    }
+
+    #[tokio::test]
+    async fn the_courier_the_assignment_is_addressed_to_can_read_the_position() {
+        let (svc, id, holder, _) = reader_fixture();
+        let seen = svc
+            .position_for_assignment_as(TENANT, PositionReader::Courier(holder), id)
+            .await
+            .unwrap();
+        assert!(seen.is_some());
+    }
+
+    /// The leak this closes. Without it, one courier who learns an assignment
+    /// id can follow another courier around the city.
+    #[tokio::test]
+    async fn a_courier_cannot_read_another_couriers_position() {
+        let (svc, id, _, other) = reader_fixture();
+        let seen = svc
+            .position_for_assignment_as(TENANT, PositionReader::Courier(other), id)
+            .await
+            .unwrap();
+        assert!(seen.is_none(), "a courier the job is not addressed to gets nothing");
+    }
+
+    /// omnideliv renders customer tracking and is not a courier; its minted
+    /// token carries the permission instead.
+    #[tokio::test]
+    async fn the_product_service_can_read_any_assignment_in_its_tenant() {
+        let (svc, id, _, _) = reader_fixture();
+        let seen = svc
+            .position_for_assignment_as(TENANT, PositionReader::Service, id)
+            .await
+            .unwrap();
+        assert!(seen.is_some());
+    }
+
+    /// Indistinguishable from "not yours": a caller must not be able to use the
+    /// response to learn which assignment ids are real.
+    #[tokio::test]
+    async fn an_unknown_assignment_reads_the_same_as_a_forbidden_one() {
+        let (svc, _, holder, _) = reader_fixture();
+        let seen = svc
+            .position_for_assignment_as(TENANT, PositionReader::Courier(holder), Uuid::new_v4())
+            .await
+            .unwrap();
+        assert!(seen.is_none());
+    }
     use crate::domain::entities::{Courier, CourierLocation};
     use crate::domain::repositories::CourierRepository;
     use crate::infrastructure::db::{ClaimOutcome, CourierLedgerRepository, LocationRepository};

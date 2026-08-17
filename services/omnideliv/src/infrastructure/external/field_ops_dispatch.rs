@@ -57,9 +57,16 @@ impl FieldOpsDispatch {
 
     /// A single-purpose token scoped to one tenant.
     ///
-    /// No roles and no permissions: field-ops' offer route reads `tenant_id`
-    /// and nothing else, and granting more than the callee checks would be a
-    /// standing invitation to widen the blast radius later.
+    /// No roles, and exactly one permission. The offer route reads `tenant_id`
+    /// and nothing else, but the assignment-position route is no longer open to
+    /// any tenant token: it now admits either the courier the assignment is
+    /// addressed to, or a service holding `field-ops:read-position`. OmniDeliv
+    /// is the latter — it reads positions to render customer tracking and has
+    /// no courier identity of its own.
+    ///
+    /// Granting more than the callee checks would be a standing invitation to
+    /// widen the blast radius later, so this list stays pinned by a test that
+    /// asserts the *exact* set rather than merely that it is non-empty.
     fn mint(&self, tenant_id: Uuid) -> anyhow::Result<String> {
         let claims = Claims::new(
             OMNIDELIV_SERVICE_USER,
@@ -68,7 +75,7 @@ impl FieldOpsDispatch {
             "internal".to_string(),
             "omnideliv@service.internal".to_string(),
             Vec::new(),
-            Vec::new(),
+            vec!["field-ops:read-position".to_string()],
             SERVICE_TOKEN_TTL_SECS,
         );
         self.jwt
@@ -270,15 +277,19 @@ mod tests {
         assert!(other.validate_access_token(&token).is_err());
     }
 
-    /// Granting no roles keeps the token's authority to exactly what the callee
-    /// reads. A future reviewer widening this should have to change a test.
+    /// The token's authority is exactly what the callees read: `tenant_id` for
+    /// the offer route, plus one permission for the position route.
+    ///
+    /// Asserted as an **exact set**, never merely non-empty — "not empty" would
+    /// stop guarding anything the moment a second permission is added for an
+    /// unrelated reason. A future reviewer widening this has to change a test.
     #[test]
-    fn the_service_token_grants_no_roles_or_permissions() {
+    fn the_service_token_grants_no_roles_and_exactly_one_permission() {
         let d = dispatch();
         let c = d.jwt.validate_access_token(&d.mint(Uuid::new_v4()).unwrap()).unwrap().claims;
 
         assert!(c.roles.is_empty());
-        assert!(c.permissions.is_empty());
+        assert_eq!(c.permissions, vec!["field-ops:read-position".to_string()]);
         assert_eq!(c.user_id, OMNIDELIV_SERVICE_USER);
     }
 }

@@ -507,9 +507,19 @@ async fn assignment_position(
     claims: AuthClaims,
     Path(assignment_id): Path<Uuid>,
 ) -> Result<Json<PositionResponse>, StatusCode> {
+    // A product service carries the permission and has no courier identity; a
+    // courier carries no permission and is checked against the assignment.
+    // Anything else resolves to `Courier(user_id)` and is refused by that check,
+    // so a new caller type cannot fall through to unrestricted access.
+    let reader = if claims.has_permission("field-ops:read-position") {
+        crate::application::services::dispatch_service::PositionReader::Service
+    } else {
+        crate::application::services::dispatch_service::PositionReader::Courier(claims.user_id)
+    };
+
     let (courier_id, fix, smoothed) = st
         .dispatch
-        .position_for_assignment(claims.tenant_id, assignment_id)
+        .position_for_assignment_as(claims.tenant_id, reader, assignment_id)
         .await
         .map_err(|e| {
             tracing::error!(err = %e, %assignment_id, "position lookup failed");
