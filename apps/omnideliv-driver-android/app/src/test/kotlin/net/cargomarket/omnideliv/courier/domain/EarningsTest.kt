@@ -19,8 +19,8 @@ class EarningsTest {
             unsyncedEarningsCents = 0,
             unsyncedCount = 0,
         )
-        assertEquals(3_500 - 38_900, v.confirmedBalanceCents)
-        assertEquals(38_900, v.cashHeldCents)
+        assertEquals(3_500L - 38_900L, v.confirmedBalanceCents)
+        assertEquals(38_900L, v.cashHeldCents)
     }
 
     @Test
@@ -34,8 +34,8 @@ class EarningsTest {
             unsyncedEarningsCents = 0,
             unsyncedCount = 0,
         )
-        assertEquals(0, v.cashHeldCents)
-        assertEquals(3_500, v.confirmedBalanceCents)
+        assertEquals(0L, v.cashHeldCents)
+        assertEquals(3_500L, v.confirmedBalanceCents)
     }
 
     /** Over-remitting happens. A negative "held" would subtract from the next debt. */
@@ -46,7 +46,7 @@ class EarningsTest {
             unsyncedEarningsCents = 0,
             unsyncedCount = 0,
         )
-        assertEquals(0, v.cashHeldCents)
+        assertEquals(0L, v.cashHeldCents)
     }
 
     /** Counting earnings would make a well-paid courier look like they owed less. */
@@ -61,8 +61,8 @@ class EarningsTest {
             unsyncedEarningsCents = 0,
             unsyncedCount = 0,
         )
-        assertEquals(10_000, v.cashHeldCents)
-        assertEquals(45_000, v.confirmedBalanceCents)
+        assertEquals(10_000L, v.cashHeldCents)
+        assertEquals(45_000L, v.confirmedBalanceCents)
     }
 
     /**
@@ -77,8 +77,8 @@ class EarningsTest {
             unsyncedEarningsCents = 4_200,
             unsyncedCount = 1,
         )
-        assertEquals(3_500, v.confirmedBalanceCents)
-        assertEquals(4_200, v.pendingCents)
+        assertEquals(3_500L, v.confirmedBalanceCents)
+        assertEquals(4_200L, v.pendingCents)
         assertEquals(1, v.pendingCount)
         // Deliberately no `total` on EarningsView: the type cannot express the
         // sum, so no screen can render one by accident.
@@ -97,12 +97,12 @@ class EarningsTest {
             unsyncedEarningsCents = 0,
             unsyncedCount = 0,
         )
-        assertEquals(2_000, v.confirmedBalanceCents)
-        assertEquals(3_000, v.cashHeldCents)
+        assertEquals(2_000L, v.confirmedBalanceCents)
+        assertEquals(3_000L, v.cashHeldCents)
 
         val r = cashoutEligibility(v)
         assertInstanceOf(CashoutEligibility.HoldingCash::class.java, r)
-        assertEquals(3_000, (r as CashoutEligibility.HoldingCash).cents)
+        assertEquals(3_000L, (r as CashoutEligibility.HoldingCash).cents)
     }
 
     @Test
@@ -125,7 +125,7 @@ class EarningsTest {
     @Test
     fun `an empty ledger is a zero, not an error`() {
         val v = buildEarnings(emptyList(), 0, 0)
-        assertEquals(0, v.confirmedBalanceCents)
-        assertEquals(0, v.cashHeldCents)
+        assertEquals(0L, v.confirmedBalanceCents)
+        assertEquals(0L, v.cashHeldCents)
     }
 }

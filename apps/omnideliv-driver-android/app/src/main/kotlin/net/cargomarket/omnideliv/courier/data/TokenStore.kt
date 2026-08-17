@@ -3,6 +3,7 @@ package net.cargomarket.omnideliv.courier.data
 import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -14,7 +15,7 @@ import javax.inject.Singleton
  * device would otherwise hand it over in clear text.
  */
 @Singleton
-class TokenStore @Inject constructor(context: Context) {
+class TokenStore @Inject constructor(@ApplicationContext context: Context) {
 
     private val prefs by lazy {
         val key = MasterKey.Builder(context)

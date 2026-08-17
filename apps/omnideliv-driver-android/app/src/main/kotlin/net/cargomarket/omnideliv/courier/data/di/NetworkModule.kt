@@ -1,11 +1,9 @@
 package net.cargomarket.omnideliv.courier.data.di
 
-import android.content.Context
 import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
-import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import kotlinx.serialization.json.Json
 import net.cargomarket.omnideliv.courier.BuildConfig
@@ -21,9 +19,8 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object NetworkModule {
 
-    @Provides
-    @Singleton
-    fun tokenStore(@ApplicationContext context: Context): TokenStore = TokenStore(context)
+    // No @Provides for TokenStore. It carries its own `@Inject constructor`, and
+    // declaring both is a duplicate binding Hilt rejects at build time.
 
     @Provides
     @Singleton

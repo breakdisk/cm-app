@@ -161,7 +161,7 @@ private fun Rail(entries: List<RailEntry>) {
                 Modifier
                     .weight(1f)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(if (isCurrent) Tokens.Surface else Tokens.Surface)
+                    .background(if (isCurrent) Tokens.SurfaceRaised else Tokens.Surface)
                     .border(
                         width = 1.dp,
                         color = if (isCurrent) Tokens.Signal else Tokens.Border,

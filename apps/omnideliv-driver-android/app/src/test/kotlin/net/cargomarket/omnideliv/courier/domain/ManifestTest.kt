@@ -119,6 +119,6 @@ class ManifestTest {
     @Test
     fun `earnings are the trip and the tip, never the cash collected`() {
         val m = manifest().copy(tripCents = 3_500, tipCents = 1_000, codAmountCents = 38_900)
-        assertEquals(4_500, m.courierEarningsCents())
+        assertEquals(4_500L, m.courierEarningsCents())
     }
 }

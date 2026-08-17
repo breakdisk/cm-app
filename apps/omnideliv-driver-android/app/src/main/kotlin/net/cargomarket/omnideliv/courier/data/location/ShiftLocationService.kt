@@ -3,6 +3,8 @@ package net.cargomarket.omnideliv.courier.data.location
 import android.app.Notification
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import dagger.hilt.android.AndroidEntryPoint
@@ -28,7 +30,20 @@ class ShiftLocationService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(NOTIFICATION_ID, buildNotification())
+        // The type argument is mandatory from Android 14. This service declares
+        // `foregroundServiceType="location"` in the manifest, and on API 34+ the
+        // two-argument call throws MissingForegroundServiceTypeException — which
+        // would crash the app the moment a courier goes on shift. Below 34 the
+        // three-argument overload does not exist, hence the branch.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIFICATION_ID,
+                buildNotification(),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION,
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification())
+        }
         // START_STICKY: the system restarting this after a memory kill is
         // exactly what should happen mid-shift. The alternative loses telemetry
         // silently and the courier has no way to notice.

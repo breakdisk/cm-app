@@ -60,6 +60,10 @@ dependencies {
     implementation(libs.bundles.compose)
     debugImplementation(libs.compose.ui.tooling)
     implementation(libs.material)
+    // NotificationCompat, used directly by the shift service. It arrives
+    // transitively via Compose today, but a direct API use on a transitive
+    // dependency breaks the day that chain changes.
+    implementation(libs.androidx.core.ktx)
 
     implementation(libs.hilt.android)
     implementation(libs.hilt.navigation.compose)
