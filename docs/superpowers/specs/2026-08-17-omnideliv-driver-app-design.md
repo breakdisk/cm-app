@@ -242,15 +242,52 @@ deliberately grants no roles and no permissions, with a test pinning it — upda
 that test to pin **exactly this one permission**, so the widening stays on the
 record instead of silently loosening.
 
-### H2 — Verify assignment ownership on `collected` and `delivered`
+### H2 — Verify assignment ownership *and status* on `collected` and `delivered`
 
 Thread `claims.user_id` through both, refuse an assignment the caller does not
 hold, return **404** — matching the repo convention that a foreign id reads as
 nonexistent rather than forbidden, so ids cannot be probed.
 
+**Ownership alone is not enough, and this is the part the first draft missed.**
+`offer_to_nearest` fans out to `default_fanout()` = 5 couriers, creating five
+`Offered` rows for one job, each carrying the full `trip_cents`. `try_claim`
+flips only the winner's row; nothing expires the other four, and every loser can
+still read their assignment id from `GET /assignments/mine`. A check on
+`courier_id` alone therefore passes for all five.
+
+A losing courier could then `POST /delivered` on their own row: the assignment
+completes, `credit_courier` pays them — its idempotency guard is keyed on
+`(courier_id, external_ref)`, so the winner's entry does not catch a *different*
+courier — and `CourierEvent::Delivered` publishes, **advancing the customer's
+order to delivered while the real courier is still carrying it**. That last part
+is damage even when the money nets out, which today it does because
+`cod_amount_cents` is the order total and offsets the trip credit. The code
+already documents COD going to 0 for prepaid orders, at which point it is
+`trip_cents` of free money per offer merely received.
+
+So each milestone states the status it requires:
+
+| Milestone | Required status | On anything else |
+|---|---|---|
+| `arrived`, `collected` | `Claimed` | 404 |
+| `delivered` | `Claimed` | `Completed` → **202**, else 404 |
+
+`Completed` returning success rather than 404 is deliberate: an at-least-once
+offline queue retrying a delivery whose response was lost has not made an error,
+and a 404 would make the app's dead-letter rule park a milestone that already
+landed. It also stops the duplicate `Delivered` at this service rather than
+relying on the consumer to absorb it — which H3 still does, for duplicates
+arriving by other routes.
+
 **`claim` keeps returning `200 {won:false}`.** It deliberately gives the same
 answer for "not yours" and "you lost the race"; converting it to 404 would
 destroy that property.
+
+**Not fixed here, and worth its own decision:** nothing ever expires a losing
+offer. `CourierAssignment::release` and `is_stale` exist with no callers outside
+their own tests, so those four rows sit `Offered` forever and keep appearing in
+their couriers' inboxes. The status gate makes them harmless; it does not make
+them tidy.
 
 ### H3 — Make a retried delivery a true no-op
 
