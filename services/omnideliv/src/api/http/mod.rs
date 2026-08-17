@@ -1,5 +1,6 @@
 pub mod baskets;
 pub mod catalog;
+pub mod courier_jobs;
 pub mod health;
 pub mod mesh;
 pub mod orders;
@@ -58,6 +59,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .merge(orders::routes())
                 .merge(tracking::routes())
                 .merge(vendors::routes())
+                .merge(courier_jobs::routes())
                 .layer(auth_layer)
                 .with_state(state),
         )
