@@ -41,11 +41,26 @@ class OfferCardTest {
         assertEquals("1 stop · 0.9 km", card("""{"v":1,"stops":1,"distance_m":900}""")!!.headline())
     }
 
-    /** Distance rounds to the nearest hundred metres rather than truncating. */
+    /**
+     * Distance rounds to the nearest hundred metres rather than truncating —
+     * truncating would understate every distance a courier is offered, which is
+     * the direction that matters when they are deciding whether it is worth it.
+     *
+     * Asserted on the whole headline, not a substring: an earlier version of
+     * this test expected only "4.3 km" and failed because `headline()` leads
+     * with the stop count. Checking the number without the string around it is
+     * how a correct implementation reads as broken.
+     */
     @Test
     fun `distance rounds rather than truncates`() {
-        assertEquals("4.3 km", card("""{"v":1,"stops":2,"distance_m":4250}""")!!.headline())
-        assertEquals("4.2 km", card("""{"v":1,"stops":2,"distance_m":4249}""")!!.headline())
+        assertEquals(
+            "2 stops · 4.3 km",
+            card("""{"v":1,"stops":2,"distance_m":4250}""")!!.headline(),
+        )
+        assertEquals(
+            "2 stops · 4.2 km",
+            card("""{"v":1,"stops":2,"distance_m":4249}""")!!.headline(),
+        )
     }
 
     /**
