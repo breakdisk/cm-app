@@ -393,6 +393,9 @@ impl DispatchService {
                         external_ref: a.external_ref,
                         courier_id: a.courier_id,
                         assignment_id: a.id,
+                        // The caller *is* the courier — the ownership check
+                        // above refused anyone else before the CAS ran.
+                        courier_user_id: Some(user_id),
                     })
                     .await;
                 }

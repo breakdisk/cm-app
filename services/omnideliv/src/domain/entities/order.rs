@@ -158,11 +158,20 @@ pub struct Order {
     /// re-offering to a guessed point.
     pub delivery_lat:       Option<f64>,
     pub delivery_lng:       Option<f64>,
-    /// Who to hand it to, snapshotted at checkout.
+    /// Which identity user is carrying this order.
     ///
-    /// `None` for orders placed before migration 0019, and for any path that
-    /// does not know a contact — the courier's manifest renders a dropoff
-    /// without a name rather than refusing to load.
+    /// `courier_task_id` is a field-ops *assignment* id and field-ops'
+    /// `courier_id` is its own key for the person; neither can be compared
+    /// against the `user_id` in a courier's JWT. The driver manifest
+    /// authorizes on exactly that comparison, and resolving it per request
+    /// would put a polled endpoint on another service's availability.
+    ///
+    /// `None` for orders claimed before migration 0020.
+    pub courier_user_id:    Option<Uuid>,
+    /// Who to hand it to, snapshotted at checkout. `None` for orders placed
+    /// before migration 0019, and for any path that does not know a contact
+    /// — the manifest renders a dropoff without a name rather than
+    /// refusing to load.
     pub customer_name:      Option<String>,
     /// Snapshotted rather than resolved on read: the manifest is polled, and a
     /// cross-service identity lookup per refresh would put a courier's screen
@@ -244,6 +253,7 @@ impl Order {
             // Set by `with_customer_contact` rather than taken here. This
             // constructor already carries ten arguments; two more that only one
             // of its six call sites can supply would be noise at the other five.
+            courier_user_id: None,
             customer_name: None,
             customer_phone: None,
             legs,
@@ -286,9 +296,25 @@ impl Order {
         self.advance(OrderStatus::AwaitingCourier, &[OrderStatus::Placed])
     }
 
-    pub fn courier_claimed(&mut self, assignment_id: Uuid) -> Result<(), TransitionError> {
+    /// A courier took the job.
+    ///
+    /// `courier_user_id` is `None` for events published before field-ops
+    /// carried it. Those orders cannot authorize a manifest read, and the
+    /// manifest refuses them rather than falling open — "we do not know who is
+    /// carrying this" must never read as "anyone may look".
+    pub fn courier_claimed(
+        &mut self,
+        assignment_id: Uuid,
+        courier_user_id: Option<Uuid>,
+    ) -> Result<(), TransitionError> {
         self.advance(OrderStatus::Collecting, &[OrderStatus::Placed, OrderStatus::AwaitingCourier])?;
         self.courier_task_id = Some(assignment_id);
+        // Never overwrite a known courier with `None`: Kafka is at-least-once,
+        // so a replayed pre-migration `Assigned` must not erase the identity a
+        // later message established.
+        if courier_user_id.is_some() {
+            self.courier_user_id = courier_user_id;
+        }
         Ok(())
     }
 
@@ -509,7 +535,7 @@ mod tests {
         assert!(o.courier_offered().is_ok());
         assert_eq!(o.status, OrderStatus::AwaitingCourier);
 
-        assert!(o.courier_claimed(Uuid::new_v4()).is_ok());
+        assert!(o.courier_claimed(Uuid::new_v4(), None).is_ok());
         assert_eq!(o.status, OrderStatus::Collecting);
 
         o.legs[0].mark_picked_up();
@@ -548,7 +574,7 @@ mod tests {
     fn collection_is_refused_while_a_leg_is_pending() {
         let mut o = order(vec![leg(10_000, 1000), leg(5_000, 1000)], 4_900, 0, 3_500);
         o.courier_offered().unwrap();
-        o.courier_claimed(Uuid::new_v4()).unwrap();
+        o.courier_claimed(Uuid::new_v4(), None).unwrap();
 
         o.legs[0].mark_picked_up();
         assert!(o.all_legs_collected().is_err(), "one leg is still pending");
@@ -563,7 +589,7 @@ mod tests {
     fn a_failed_leg_does_not_block_collection() {
         let mut o = order(vec![leg(10_000, 1000), leg(5_000, 1000)], 4_900, 0, 3_500);
         o.courier_offered().unwrap();
-        o.courier_claimed(Uuid::new_v4()).unwrap();
+        o.courier_claimed(Uuid::new_v4(), None).unwrap();
 
         o.legs[0].mark_picked_up();
         o.legs[1].mark_failed();
@@ -576,7 +602,7 @@ mod tests {
     fn an_order_with_no_collected_legs_cannot_be_delivered() {
         let mut o = order(vec![leg(10_000, 1000)], 4_900, 0, 3_500);
         o.courier_offered().unwrap();
-        o.courier_claimed(Uuid::new_v4()).unwrap();
+        o.courier_claimed(Uuid::new_v4(), None).unwrap();
         o.legs[0].mark_failed();
 
         assert!(o.all_legs_collected().is_err(), "nothing was collected");
@@ -597,7 +623,7 @@ mod tests {
     fn a_delivered_order_cannot_be_cancelled() {
         let mut o = order(vec![leg(10_000, 1000)], 4_900, 0, 3_500);
         o.courier_offered().unwrap();
-        o.courier_claimed(Uuid::new_v4()).unwrap();
+        o.courier_claimed(Uuid::new_v4(), None).unwrap();
         o.legs[0].mark_picked_up();
         o.all_legs_collected().unwrap();
         o.delivered().unwrap();
@@ -614,7 +640,7 @@ mod tests {
         let mut o = order(vec![leg(10_000, 1000)], 4_900, 0, 3_500);
         let assignment = Uuid::new_v4();
 
-        assert!(o.courier_claimed(assignment).is_ok());
+        assert!(o.courier_claimed(assignment, None).is_ok());
         assert_eq!(o.status, OrderStatus::Collecting);
         assert_eq!(o.courier_task_id, Some(assignment));
     }

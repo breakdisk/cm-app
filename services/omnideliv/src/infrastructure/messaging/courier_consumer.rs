@@ -40,7 +40,13 @@ pub const TOPIC_COURIER: &str = "fieldops.courier";
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum CourierEvent {
-    Assigned  { tenant_id: Uuid, product: String, external_ref: Uuid, courier_id: Uuid, assignment_id: Uuid },
+    Assigned  { tenant_id: Uuid, product: String, external_ref: Uuid, courier_id: Uuid, assignment_id: Uuid,
+                /// Mirrors field-ops exactly, `serde(default)` included. Without
+                /// the default, an `Assigned` published before that field
+                /// existed — and they are still inside the retention window —
+                /// fails to deserialize, and a failed deserialize takes down
+                /// every message on the partition, not just that one.
+                #[serde(default)] courier_user_id: Option<Uuid> },
     Collected { tenant_id: Uuid, product: String, external_ref: Uuid, courier_id: Uuid, vendor_id: Uuid,
                 device_timestamp: Option<chrono::DateTime<chrono::Utc>> },
     Delivered { tenant_id: Uuid, product: String, external_ref: Uuid, courier_id: Uuid,
@@ -115,8 +121,8 @@ impl CourierMilestoneHandler {
         };
 
         match event {
-            CourierEvent::Assigned { assignment_id, .. } => {
-                order.courier_claimed(assignment_id)?;
+            CourierEvent::Assigned { assignment_id, courier_user_id, .. } => {
+                order.courier_claimed(assignment_id, courier_user_id)?;
                 self.append(tenant_id, order_id, event_type::COURIER_CLAIMED, None, None,
                             serde_json::json!({ "assignment_id": assignment_id })).await;
             }
@@ -268,7 +274,7 @@ mod tests {
             121.0244,
         );
 
-        o.courier_claimed(Uuid::new_v4()).unwrap();
+        o.courier_claimed(Uuid::new_v4(), None).unwrap();
         o.legs[0].mark_picked_up();
         o.all_legs_collected().unwrap();
         o.delivered().unwrap();
@@ -303,6 +309,60 @@ mod tests {
         assert!(apply_delivered(&mut order).unwrap(), "the first one changes state");
         assert_eq!(order.status, OrderStatus::Delivered);
         assert!(order.delivered_at.is_some());
+    }
+
+    /// Backward compatibility, and it is load-bearing. Messages published
+    /// before `courier_user_id` existed are still inside the retention window;
+    /// without `serde(default)` they fail to deserialize, and a failed
+    /// deserialize takes down every message on that partition, not just the
+    /// old one.
+    #[test]
+    fn an_assigned_event_without_a_courier_user_still_parses() {
+        let raw = serde_json::json!({
+            "event": "assigned",
+            "tenant_id": Uuid::nil(), "product": "omnideliv",
+            "external_ref": Uuid::nil(), "courier_id": Uuid::nil(),
+            "assignment_id": Uuid::nil()
+        });
+        let parsed: CourierEvent = serde_json::from_value(raw).expect("must parse without the field");
+        match parsed {
+            CourierEvent::Assigned { courier_user_id, .. } => assert!(courier_user_id.is_none()),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_assigned_event_carrying_a_courier_user_reads_it() {
+        let user = Uuid::from_u128(77);
+        let raw = serde_json::json!({
+            "event": "assigned",
+            "tenant_id": Uuid::nil(), "product": "omnideliv",
+            "external_ref": Uuid::nil(), "courier_id": Uuid::nil(),
+            "assignment_id": Uuid::nil(), "courier_user_id": user
+        });
+        let parsed: CourierEvent = serde_json::from_value(raw).expect("must parse");
+        match parsed {
+            CourierEvent::Assigned { courier_user_id, .. } => {
+                assert_eq!(courier_user_id, Some(user));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// Kafka is at-least-once, so a replayed pre-migration `Assigned` must not
+    /// erase an identity a later message already established.
+    #[test]
+    fn a_replayed_event_without_a_courier_does_not_erase_a_known_one() {
+        let mut o = delivered_order();
+        o.status = OrderStatus::Placed;
+        let user = Uuid::from_u128(9);
+
+        o.courier_claimed(Uuid::new_v4(), Some(user)).unwrap();
+        assert_eq!(o.courier_user_id, Some(user));
+
+        // The replay: same transition, no user id.
+        o.courier_claimed(Uuid::new_v4(), None).unwrap();
+        assert_eq!(o.courier_user_id, Some(user), "a replay must not blank the courier");
     }
 
     #[test]

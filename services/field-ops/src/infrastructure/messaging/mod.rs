@@ -14,7 +14,17 @@ pub const TOPIC_COURIER: &str = "fieldops.courier";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum CourierEvent {
-    Assigned  { tenant_id: Uuid, product: String, external_ref: Uuid, courier_id: Uuid, assignment_id: Uuid },
+    Assigned  { tenant_id: Uuid, product: String, external_ref: Uuid, courier_id: Uuid, assignment_id: Uuid,
+                /// The identity user behind the courier, so a consuming product
+                /// can authorize that user against this job without asking us
+                /// on every read. `courier_id` is this tier's own key and is a
+                /// different uuid, so it cannot be compared to a JWT's subject.
+                ///
+                /// `Option` + `serde(default)`: messages published before this
+                /// field existed are still inside the retention window, and a
+                /// variant the consumer cannot deserialize fails *every*
+                /// message on the partition, not just the new kind.
+                #[serde(default)] courier_user_id: Option<Uuid> },
     Collected { tenant_id: Uuid, product: String, external_ref: Uuid, courier_id: Uuid, vendor_id: Uuid,
                 device_timestamp: Option<chrono::DateTime<chrono::Utc>> },
     Delivered { tenant_id: Uuid, product: String, external_ref: Uuid, courier_id: Uuid,
@@ -92,7 +102,8 @@ mod tests {
 
         let events = [
             CourierEvent::Assigned { tenant_id: tenant, product: "omnideliv".into(),
-                                     external_ref: job, courier_id: courier, assignment_id: Uuid::new_v4() },
+                                     external_ref: job, courier_id: courier, assignment_id: Uuid::new_v4(),
+                                     courier_user_id: Some(Uuid::new_v4()) },
             CourierEvent::Collected { tenant_id: tenant, product: "omnideliv".into(),
                                       external_ref: job, courier_id: courier, vendor_id: Uuid::new_v4(),
                                       device_timestamp: None },
