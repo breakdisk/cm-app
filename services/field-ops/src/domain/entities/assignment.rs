@@ -68,6 +68,13 @@ pub struct CourierAssignment {
     /// Cash to collect at the door, also declared by the product. 0 when there
     /// is nothing to collect — a prepaid order, once that rail exists.
     pub cod_amount_cents: i64,
+    /// What the offering product wants a courier to see *before* they claim.
+    ///
+    /// Opaque, exactly like `external_ref`: this tier stores it, returns it and
+    /// never reads a key of it. It carries no customer identity and no street
+    /// addresses, because `offer_to_nearest` fans out and everything here
+    /// reaches couriers who will not get the job.
+    pub offer_card:   Option<serde_json::Value>,
     pub status:       AssignmentStatus,
     pub offered_at:   DateTime<Utc>,
     pub claimed_at:   Option<DateTime<Utc>>,
@@ -79,6 +86,29 @@ pub struct CourierAssignment {
 impl CourierAssignment {
     pub fn offer(tenant_id: Uuid, courier_id: Uuid, product: ProductKey, external_ref: Uuid) -> Self {
         Self::offer_with_earnings(tenant_id, courier_id, product, external_ref, 0, 0, 0)
+    }
+
+    /// Offer a job at a stated rate, with a card the courier can judge it by.
+    ///
+    /// Separate from `offer_with_earnings` rather than a widened signature so
+    /// every existing caller keeps compiling and keeps meaning what it meant.
+    #[allow(clippy::too_many_arguments)]
+    pub fn offer_with_card(
+        tenant_id: Uuid,
+        courier_id: Uuid,
+        product: ProductKey,
+        external_ref: Uuid,
+        trip_cents: i64,
+        tip_cents: i64,
+        cod_amount_cents: i64,
+        offer_card: Option<serde_json::Value>,
+    ) -> Self {
+        let mut a = Self::offer_with_earnings(
+            tenant_id, courier_id, product, external_ref,
+            trip_cents, tip_cents, cod_amount_cents,
+        );
+        a.offer_card = offer_card;
+        a
     }
 
     /// Offer a job at a stated rate. The zero-earning `offer` above exists for
@@ -102,6 +132,7 @@ impl CourierAssignment {
             trip_cents,
             tip_cents,
             cod_amount_cents,
+            offer_card: None,
             status: AssignmentStatus::Offered,
             offered_at: now,
             claimed_at: None,
@@ -216,5 +247,57 @@ mod tests {
         let a = CourierAssignment::offer(
             Uuid::new_v4(), Uuid::new_v4(), ProductKey::new("ride_hailing"), Uuid::new_v4());
         assert_eq!(a.product.as_str(), "ride_hailing");
+    }
+}
+
+#[cfg(test)]
+mod offer_card_opacity {
+    use super::*;
+
+    /// The card is a blob this tier stores and returns. The moment field-ops
+    /// reads a key of it, it knows what a product's job *is* and stops being
+    /// product-agnostic -- the property ADR-0015 says defines a platform tier.
+    #[test]
+    fn the_card_round_trips_without_being_interpreted() {
+        let card = serde_json::json!({
+            "v": 1, "stops": 3, "pickups": 2, "distance_m": 4200,
+            "vendors": ["Kuya's Lutong Bahay", "Mercury Drug"],
+            "verticals": ["restaurant", "pharmacy"],
+            "temperature": ["hot", "chilled"],
+            "deadline_hint_mins": 38
+        });
+
+        let a = CourierAssignment::offer_with_card(
+            Uuid::from_u128(1), Uuid::new_v4(),
+            ProductKey::new("omnideliv".to_string()), Uuid::new_v4(),
+            3_500, 0, 38_900, Some(card.clone()),
+        );
+
+        assert_eq!(a.offer_card.as_ref(), Some(&card));
+    }
+
+    /// A product that supplies nothing still gets an offer. The card is an
+    /// affordance for the courier, never a precondition for dispatch -- a
+    /// second product must be able to use this tier without writing one.
+    #[test]
+    fn an_offer_without_a_card_is_legal() {
+        let a = CourierAssignment::offer_with_card(
+            Uuid::from_u128(1), Uuid::new_v4(),
+            ProductKey::new("logisticos".to_string()), Uuid::new_v4(),
+            0, 0, 0, None,
+        );
+        assert!(a.offer_card.is_none());
+    }
+
+    /// The earnings constructor is what every pre-existing caller uses. It must
+    /// keep meaning what it meant: no card, not an empty one.
+    #[test]
+    fn the_earnings_constructor_leaves_the_card_absent() {
+        let a = CourierAssignment::offer_with_earnings(
+            Uuid::from_u128(1), Uuid::new_v4(),
+            ProductKey::new("omnideliv".to_string()), Uuid::new_v4(),
+            3_500, 0, 0,
+        );
+        assert!(a.offer_card.is_none());
     }
 }

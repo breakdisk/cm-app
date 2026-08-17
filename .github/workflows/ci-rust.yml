@@ -210,6 +210,12 @@ jobs:
       - name: Check agent-runtime boundary
         run: ./scripts/check-runtime-boundary.sh
 
+      # Same shape, same reason: field-ops stores `offer_card` and returns it
+      # whole. One convenient `->>` in a query and the platform tier has started
+      # interpreting a product's job, which is what ADR-0015 forbids.
+      - name: Check offer_card opacity
+        run: ./scripts/check-offer-card-opacity.sh
+
       # Also grep-only, also fails fast. A consumer subscribing to a topic that
       # does not exist yet gets UnknownTopicOrPartition and never recovers, so
       # whether the feature works depends on whether the publisher or the

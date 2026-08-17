@@ -158,9 +158,55 @@ pub struct Order {
     /// re-offering to a guessed point.
     pub delivery_lat:       Option<f64>,
     pub delivery_lng:       Option<f64>,
+    /// Which identity user is carrying this order.
+    ///
+    /// `courier_task_id` is a field-ops *assignment* id and field-ops'
+    /// `courier_id` is its own key for the person; neither can be compared
+    /// against the `user_id` in a courier's JWT. The driver manifest
+    /// authorizes on exactly that comparison, and resolving it per request
+    /// would put a polled endpoint on another service's availability.
+    ///
+    /// `None` for orders claimed before migration 0020.
+    pub courier_user_id:    Option<Uuid>,
+    /// Who to hand it to, snapshotted at checkout. `None` for orders placed
+    /// before migration 0019, and for any path that does not know a contact
+    /// — the manifest renders a dropoff without a name rather than
+    /// refusing to load.
+    pub customer_name:      Option<String>,
+    /// Snapshotted rather than resolved on read: the manifest is polled, and a
+    /// cross-service identity lookup per refresh would put a courier's screen
+    /// on identity's availability.
+    pub customer_phone:     Option<String>,
     pub legs:               Vec<VendorLeg>,
     pub placed_at:          DateTime<Utc>,
     pub delivered_at:       Option<DateTime<Utc>>,
+}
+
+/// Namespaces identity mints from a phone number for OTP-only sign-in.
+///
+/// Nothing can be delivered to these addresses. They exist because the platform
+/// keys accounts on an email while the thing actually verified was a phone.
+///
+/// A literal list rather than a suffix pattern, so a future
+/// `@partner.logisticos.app` cannot silently start yielding phone numbers.
+const PHONE_DERIVED_DOMAINS: &[&str] =
+    &["@customer.logisticos.app", "@driver.logisticos.app"];
+
+/// The phone behind a login address, or `None` if that address is a real
+/// mailbox somebody chose.
+///
+/// Never a plain `split('@')`: that would put the local part of
+/// `maria.reyes@gmail.com` on a courier's screen as a number to dial.
+pub fn phone_from_login(email: &str) -> Option<String> {
+    let local = PHONE_DERIVED_DOMAINS
+        .iter()
+        .find_map(|d| email.strip_suffix(*d))?;
+    // The minted namespace is digits by construction. Anything else in it did
+    // not come from the OTP path and must not be trusted as a number.
+    if local.is_empty() || !local.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(local.to_string())
 }
 
 impl Order {
@@ -204,10 +250,31 @@ impl Order {
             // callers to leave empty.
             delivery_lat: Some(delivery_lat),
             delivery_lng: Some(delivery_lng),
+            // Set by `with_customer_contact` rather than taken here. This
+            // constructor already carries ten arguments; two more that only one
+            // of its six call sites can supply would be noise at the other five.
+            courier_user_id: None,
+            customer_name: None,
+            customer_phone: None,
             legs,
             placed_at: Utc::now(),
             delivered_at: None,
         }
+    }
+
+    /// Record who the courier is delivering to.
+    ///
+    /// Separate from `place` because only checkout knows it — every other path
+    /// that builds an order (recovery, replay, tests) has no authenticated
+    /// caller to take it from, and would otherwise have to pass `None, None`.
+    pub fn with_customer_contact(
+        mut self,
+        name: Option<String>,
+        phone: Option<String>,
+    ) -> Self {
+        self.customer_name = name;
+        self.customer_phone = phone;
+        self
     }
 
     /// Kafka is at-least-once, so a repeat of the transition we already made is
@@ -229,9 +296,25 @@ impl Order {
         self.advance(OrderStatus::AwaitingCourier, &[OrderStatus::Placed])
     }
 
-    pub fn courier_claimed(&mut self, assignment_id: Uuid) -> Result<(), TransitionError> {
+    /// A courier took the job.
+    ///
+    /// `courier_user_id` is `None` for events published before field-ops
+    /// carried it. Those orders cannot authorize a manifest read, and the
+    /// manifest refuses them rather than falling open — "we do not know who is
+    /// carrying this" must never read as "anyone may look".
+    pub fn courier_claimed(
+        &mut self,
+        assignment_id: Uuid,
+        courier_user_id: Option<Uuid>,
+    ) -> Result<(), TransitionError> {
         self.advance(OrderStatus::Collecting, &[OrderStatus::Placed, OrderStatus::AwaitingCourier])?;
         self.courier_task_id = Some(assignment_id);
+        // Never overwrite a known courier with `None`: Kafka is at-least-once,
+        // so a replayed pre-migration `Assigned` must not erase the identity a
+        // later message established.
+        if courier_user_id.is_some() {
+            self.courier_user_id = courier_user_id;
+        }
         Ok(())
     }
 
@@ -452,7 +535,7 @@ mod tests {
         assert!(o.courier_offered().is_ok());
         assert_eq!(o.status, OrderStatus::AwaitingCourier);
 
-        assert!(o.courier_claimed(Uuid::new_v4()).is_ok());
+        assert!(o.courier_claimed(Uuid::new_v4(), None).is_ok());
         assert_eq!(o.status, OrderStatus::Collecting);
 
         o.legs[0].mark_picked_up();
@@ -491,7 +574,7 @@ mod tests {
     fn collection_is_refused_while_a_leg_is_pending() {
         let mut o = order(vec![leg(10_000, 1000), leg(5_000, 1000)], 4_900, 0, 3_500);
         o.courier_offered().unwrap();
-        o.courier_claimed(Uuid::new_v4()).unwrap();
+        o.courier_claimed(Uuid::new_v4(), None).unwrap();
 
         o.legs[0].mark_picked_up();
         assert!(o.all_legs_collected().is_err(), "one leg is still pending");
@@ -506,7 +589,7 @@ mod tests {
     fn a_failed_leg_does_not_block_collection() {
         let mut o = order(vec![leg(10_000, 1000), leg(5_000, 1000)], 4_900, 0, 3_500);
         o.courier_offered().unwrap();
-        o.courier_claimed(Uuid::new_v4()).unwrap();
+        o.courier_claimed(Uuid::new_v4(), None).unwrap();
 
         o.legs[0].mark_picked_up();
         o.legs[1].mark_failed();
@@ -519,7 +602,7 @@ mod tests {
     fn an_order_with_no_collected_legs_cannot_be_delivered() {
         let mut o = order(vec![leg(10_000, 1000)], 4_900, 0, 3_500);
         o.courier_offered().unwrap();
-        o.courier_claimed(Uuid::new_v4()).unwrap();
+        o.courier_claimed(Uuid::new_v4(), None).unwrap();
         o.legs[0].mark_failed();
 
         assert!(o.all_legs_collected().is_err(), "nothing was collected");
@@ -540,7 +623,7 @@ mod tests {
     fn a_delivered_order_cannot_be_cancelled() {
         let mut o = order(vec![leg(10_000, 1000)], 4_900, 0, 3_500);
         o.courier_offered().unwrap();
-        o.courier_claimed(Uuid::new_v4()).unwrap();
+        o.courier_claimed(Uuid::new_v4(), None).unwrap();
         o.legs[0].mark_picked_up();
         o.all_legs_collected().unwrap();
         o.delivered().unwrap();
@@ -557,8 +640,73 @@ mod tests {
         let mut o = order(vec![leg(10_000, 1000)], 4_900, 0, 3_500);
         let assignment = Uuid::new_v4();
 
-        assert!(o.courier_claimed(assignment).is_ok());
+        assert!(o.courier_claimed(assignment, None).is_ok());
         assert_eq!(o.status, OrderStatus::Collecting);
         assert_eq!(o.courier_task_id, Some(assignment));
+    }
+}
+
+#[cfg(test)]
+mod customer_contact {
+    use super::*;
+
+    /// Identity mints `<digits>@customer.logisticos.app` for OTP sign-ins, so
+    /// the phone a courier needs is already in the caller's own token.
+    #[test]
+    fn a_phone_derived_address_yields_the_phone() {
+        assert_eq!(
+            phone_from_login("639170000123@customer.logisticos.app"),
+            Some("639170000123".to_string())
+        );
+        assert_eq!(
+            phone_from_login("639170000123@driver.logisticos.app"),
+            Some("639170000123".to_string())
+        );
+    }
+
+    /// The case that makes this a function rather than a `split('@')`. A real
+    /// mailbox is not a phone, and "maria.reyes" on a courier's screen as a
+    /// number to dial is worse than no number at all.
+    #[test]
+    fn a_real_address_yields_nothing() {
+        assert_eq!(phone_from_login("maria.reyes@gmail.com"), None);
+        assert_eq!(phone_from_login("merchant@demo.com"), None);
+        assert_eq!(phone_from_login("admin@logisticos.app"), None);
+    }
+
+    /// The minted namespace is digits by construction. Anything else in it did
+    /// not come from the OTP path.
+    #[test]
+    fn a_non_numeric_local_part_in_the_minted_namespace_yields_nothing() {
+        assert_eq!(phone_from_login("admin@customer.logisticos.app"), None);
+        assert_eq!(phone_from_login("@customer.logisticos.app"), None);
+        assert_eq!(phone_from_login("6391-7000@customer.logisticos.app"), None);
+    }
+
+    fn an_order() -> Order {
+        let leg = VendorLeg::settle(Uuid::from_u128(1), Uuid::new_v4(), 10_000, 1_500);
+        Order::place(
+            Uuid::from_u128(1), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(),
+            vec![leg], 4_900, 0, 3_500, 14.5547, 121.0244,
+        )
+    }
+
+    #[test]
+    fn an_order_carries_the_contact_it_was_placed_with() {
+        let o = an_order().with_customer_contact(
+            Some("Maria Reyes".to_string()),
+            Some("639170000123".to_string()),
+        );
+        assert_eq!(o.customer_name.as_deref(), Some("Maria Reyes"));
+        assert_eq!(o.customer_phone.as_deref(), Some("639170000123"));
+    }
+
+    /// Orders placed before migration 0019 have no contact, and the manifest
+    /// must render without one rather than refuse to load.
+    #[test]
+    fn an_order_without_a_contact_is_legal() {
+        let o = an_order();
+        assert!(o.customer_phone.is_none());
+        assert!(o.customer_name.is_none());
     }
 }

@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::domain::entities::{Courier, CourierAssignment, CourierLocation, ProductKey};
+use crate::domain::entities::{
+    AssignmentStatus, Courier, CourierAssignment, CourierLocation, ProductKey,
+};
 use crate::domain::repositories::CourierRepository;
 use crate::domain::entities::CourierLedger;
 use crate::infrastructure::db::{
@@ -92,6 +94,22 @@ pub enum RemitOutcome {
     ExceedsCashHeld { cash_held_cents: i64 },
 }
 
+/// Who is asking where a courier is.
+///
+/// A caller identity, not a permission check: the handler translates the JWT
+/// into one of these and this layer decides what it may see. Keeping the
+/// decision here rather than in the handler makes it unit-testable without
+/// minting tokens.
+#[derive(Debug, Clone, Copy)]
+pub enum PositionReader {
+    /// A courier, by `user_id`. May read only an assignment addressed to them.
+    Courier(Uuid),
+    /// A product service holding `field-ops:read-position`. May read any
+    /// assignment in its own tenant — it needs this to render customer
+    /// tracking and has no courier identity of its own.
+    Service,
+}
+
 impl DispatchService {
     pub fn new(
         couriers: Arc<dyn CourierRepository>,
@@ -120,6 +138,10 @@ impl DispatchService {
         trip_cents: i64,
         tip_cents: i64,
         cod_amount_cents: i64,
+        // Opaque: stored on each assignment and never inspected here. Cloned per
+        // offer because the fan-out gives every candidate their own row, and a
+        // courier reading their offer must see the same card as the rest.
+        offer_card: Option<serde_json::Value>,
     ) -> anyhow::Result<Vec<CourierAssignment>> {
         // Checked before anything is offered or stored. Rejecting rather than
         // clamping is deliberate: clamping would credit the courier a different
@@ -141,9 +163,9 @@ impl DispatchService {
             // a String precisely so the set of products is not fixed at compile
             // time, and that ownership is worth one small allocation per offer
             // in a fan-out that is already doing a database write each turn.
-            let a = CourierAssignment::offer_with_earnings(
+            let a = CourierAssignment::offer_with_card(
                 tenant_id, c.id, product.clone(), external_ref, trip_cents, tip_cents,
-                cod_amount_cents);
+                cod_amount_cents, offer_card.clone());
             self.assignments.save(&a).await?;
             offers.push(a);
         }
@@ -375,6 +397,9 @@ impl DispatchService {
                         external_ref: a.external_ref,
                         courier_id: a.courier_id,
                         assignment_id: a.id,
+                        // The caller *is* the courier — the ownership check
+                        // above refused anyone else before the CAS ran.
+                        courier_user_id: Some(user_id),
                     })
                     .await;
                 }
@@ -383,17 +408,63 @@ impl DispatchService {
         }
     }
 
+    /// The courier is at a stop.
+    ///
+    /// Published, never persisted: it changes no assignment state, and a
+    /// milestone that only informs does not need a row. Gated on a live claim
+    /// like `mark_collected` — being *offered* a job is not carrying it.
+    pub async fn mark_arrived(
+        &self,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        assignment_id: Uuid,
+        stop_ref: Uuid,
+        device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> anyhow::Result<bool> {
+        let Some(a) = self.assignment_for_courier(tenant_id, user_id, assignment_id).await? else {
+            return Ok(false);
+        };
+        if a.status != AssignmentStatus::Claimed {
+            return Ok(false);
+        }
+
+        self.emit(CourierEvent::Arrived {
+            tenant_id,
+            product: a.product.as_str().to_string(),
+            external_ref: a.external_ref,
+            courier_id: a.courier_id,
+            stop_ref,
+            device_timestamp,
+        })
+        .await;
+        Ok(true)
+    }
+
     /// A vendor's goods are in the bag.
+    ///
+    /// `user_id` is the authenticated caller and the assignment must be
+    /// **theirs**. Assignment ids are handed to the dispatching product, so
+    /// they are not secret; without this check any authenticated user in the
+    /// tenant could report milestones against another courier's job. `claim`
+    /// has had this since it was hardened — these two had not.
     pub async fn mark_collected(
         &self,
         tenant_id: Uuid,
+        user_id: Uuid,
         assignment_id: Uuid,
         vendor_id: Uuid,
         device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
     ) -> anyhow::Result<bool> {
-        let Some(a) = self.assignments.find_by_id(tenant_id, assignment_id).await? else {
+        let Some(a) = self.assignment_for_courier(tenant_id, user_id, assignment_id).await? else {
             return Ok(false);
         };
+        // Being offered a job is not carrying it. `offer_to_nearest` addresses
+        // one job to several couriers and only the winner's row is claimed;
+        // the losers keep a readable assignment id and must not be able to
+        // report milestones against it.
+        if a.status != AssignmentStatus::Claimed {
+            return Ok(false);
+        }
 
         self.emit(CourierEvent::Collected {
             tenant_id,
@@ -409,15 +480,39 @@ impl DispatchService {
 
     /// The job is done. Completing the assignment frees the courier for the
     /// next one, which is why it is persisted rather than only published.
+    ///
+    /// The most consequential call on this service: it completes the
+    /// assignment, credits the courier and debits the cash they are holding. So
+    /// it is gated twice — `assignment_for_courier` proves the caller is the
+    /// courier this job is addressed to, and the status check below proves they
+    /// actually claimed it.
     pub async fn mark_delivered(
         &self,
         tenant_id: Uuid,
+        user_id: Uuid,
         assignment_id: Uuid,
         device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
     ) -> anyhow::Result<bool> {
-        let Some(mut a) = self.assignments.find_by_id(tenant_id, assignment_id).await? else {
+        let Some(mut a) = self.assignment_for_courier(tenant_id, user_id, assignment_id).await? else {
             return Ok(false);
         };
+
+        // An at-least-once client retrying a delivery whose response was lost
+        // has not made an error: the milestone already landed. Accept it
+        // without re-completing, re-crediting or re-publishing — so the
+        // duplicate stops here rather than relying on the consumer to absorb
+        // it, and an offline queue is not told to park a milestone that
+        // succeeded.
+        if a.status == AssignmentStatus::Completed {
+            return Ok(true);
+        }
+        // Being offered a job is not carrying it. `offer_to_nearest` addresses
+        // one job to several couriers and only the winner's row is claimed; the
+        // losers keep a readable assignment id, and without this they could
+        // complete and be paid for a job they never took.
+        if a.status != AssignmentStatus::Claimed {
+            return Ok(false);
+        }
 
         a.complete();
         self.assignments.save(&a).await?;
@@ -445,6 +540,36 @@ impl DispatchService {
         Ok(true)
     }
 
+    /// The assignment, if it is *addressed to* this courier — in any status.
+    ///
+    /// `None` covers all three refusals — not a courier, no such assignment,
+    /// someone else's assignment — because the handler turns every one of them
+    /// into the same 404. Distinguishing them would let a caller probe which
+    /// assignment ids exist.
+    ///
+    /// Deliberately says nothing about status, and the name says so. Being
+    /// *offered* a job is not holding it: `offer_to_nearest` addresses one job
+    /// to `fanout` couriers and only the winner's row is ever claimed, so a
+    /// check on identity alone passes for all of them. Each caller states the
+    /// status it requires.
+    async fn assignment_for_courier(
+        &self,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        assignment_id: Uuid,
+    ) -> anyhow::Result<Option<CourierAssignment>> {
+        let Some(courier) = self.couriers.find_by_user(tenant_id, user_id).await? else {
+            return Ok(None);
+        };
+        let Some(a) = self.assignments.find_by_id(tenant_id, assignment_id).await? else {
+            return Ok(None);
+        };
+        if a.courier_id != courier.id {
+            return Ok(None);
+        }
+        Ok(Some(a))
+    }
+
     /// Credit the courier for a completed job.
     ///
     /// The amounts come from the assignment, which is where the offering
@@ -464,7 +589,18 @@ impl DispatchService {
         // Already credited — a retried delivery must not pay twice. Keyed on
         // the job rather than the assignment so a re-offer of the same job
         // cannot double-pay either.
-        if ledger.entries.iter().any(|e| e.external_ref == Some(a.external_ref)) {
+        //
+        // Asked of the *store*, not of `ledger.entries`. The ledger in hand is
+        // only the current period's, and `current_period()` is the ISO week: an
+        // offline queue retrying a lost response across the Sunday→Monday
+        // boundary gets a fresh, empty ledger, and a guard that scanned only it
+        // would find nothing and pay a second time — crediting the trip again
+        // and re-debiting cash the courier already handed over.
+        if self
+            .ledgers
+            .entry_exists_for_job(a.tenant_id, a.courier_id, a.external_ref)
+            .await?
+        {
             return Ok(());
         }
 
@@ -518,6 +654,40 @@ impl DispatchService {
         Ok(())
     }
 
+    /// `position_for_assignment`, gated on who is asking.
+    ///
+    /// The unguarded version below is capability-based: any valid tenant JWT
+    /// plus the assignment UUID reads a live courier position. That was safe
+    /// only while assignment ids never reached a client, and the OmniDeliv
+    /// driver app is the first thing to put them in couriers' phones — at which
+    /// point one courier who learns an id can follow another around the city.
+    ///
+    /// `None` for an unauthorized reader, identical to an unknown assignment
+    /// and to a courier with no fix yet. All three are a 404, so the response
+    /// cannot be used to learn which assignment ids exist.
+    pub async fn position_for_assignment_as(
+        &self,
+        tenant_id: Uuid,
+        reader: PositionReader,
+        assignment_id: Uuid,
+    ) -> anyhow::Result<Option<(Uuid, CourierLocation, Option<f64>)>> {
+        if let PositionReader::Courier(user_id) = reader {
+            // Addressed-to, not status-gated — unlike the milestone calls. The
+            // position returned is the assignment's own courier's, so a courier
+            // reading a stale offer of theirs learns only where they already
+            // are. Requiring `Claimed` would buy nothing and would break a
+            // legitimate read between claiming and the first GPS fix.
+            if self
+                .assignment_for_courier(tenant_id, user_id, assignment_id)
+                .await?
+                .is_none()
+            {
+                return Ok(None);
+            }
+        }
+        self.position_for_assignment(tenant_id, assignment_id).await
+    }
+
     /// Where the courier holding this assignment is, with enough recent history
     /// to smooth a speed.
     ///
@@ -528,7 +698,11 @@ impl DispatchService {
     /// `None` for an unknown assignment and `None` for a courier with no fix on
     /// record. Both are a 404 to the caller: distinguishing them would confirm
     /// that an assignment id is real to someone who guessed it.
-    pub async fn position_for_assignment(
+    ///
+    /// **Unauthorized.** Everything reaching this must have gone through
+    /// `position_for_assignment_as`, which is why this stays private to the
+    /// service rather than being called from a handler.
+    async fn position_for_assignment(
         &self,
         tenant_id: Uuid,
         assignment_id: Uuid,
@@ -683,6 +857,7 @@ mod claim_authorization {
             -> anyhow::Result<Option<CourierLedger>> { Ok(None) }
         async fn save(&self, _: &CourierLedger) -> anyhow::Result<()> { Ok(()) }
         async fn find_all_open(&self, _: &str) -> anyhow::Result<Vec<CourierLedger>> { Ok(vec![]) }
+        async fn entry_exists_for_job(&self, _: Uuid, _: Uuid, _: Uuid) -> anyhow::Result<bool> { Ok(false) }
     }
 
     fn courier() -> Courier {
@@ -788,6 +963,7 @@ mod payout_rules {
         async fn find_all_open(&self, _: &str) -> anyhow::Result<Vec<CourierLedger>> {
             Ok(self.0.lock().unwrap().clone())
         }
+        async fn entry_exists_for_job(&self, _: Uuid, _: Uuid, _: Uuid) -> anyhow::Result<bool> { Ok(false) }
     }
 
     struct NoCouriers;
@@ -915,6 +1091,118 @@ mod payout_rules {
 #[cfg(test)]
 mod position_lookup {
     use super::*;
+
+    // ── Reader authorization ─────────────────────────────────────────────
+    //
+    // The route was capability-based: any valid tenant JWT plus the assignment
+    // UUID read a live courier position. Safe only while ids never reached a
+    // client, which the driver app ends.
+
+    /// A courier with a fix on record. `position_for_assignment` reads
+    /// `recent()` rather than `latest()` — it needs a short history to smooth a
+    /// speed — so a mock that only answers `latest` reports "no position" and
+    /// makes an authorization test pass for the wrong reason.
+    struct HeldFix;
+    #[async_trait::async_trait]
+    impl LocationRepository for HeldFix {
+        async fn record(&self, _: &CourierLocation) -> anyhow::Result<()> { Ok(()) }
+        async fn latest(&self, tenant_id: Uuid, courier_id: Uuid)
+            -> anyhow::Result<Option<CourierLocation>> {
+            Ok(Some(CourierLocation::new(tenant_id, courier_id, 14.5547, 121.0244, None)))
+        }
+        async fn recent(&self, tenant_id: Uuid, courier_id: Uuid, _: i64)
+            -> anyhow::Result<Vec<CourierLocation>> {
+            Ok(vec![CourierLocation::new(tenant_id, courier_id, 14.5547, 121.0244, None)])
+        }
+    }
+
+    struct TwoCouriers { by_user: Vec<(Uuid, Courier)> }
+    #[async_trait::async_trait]
+    impl CourierRepository for TwoCouriers {
+        async fn find_by_id(&self, _: Uuid, id: Uuid) -> anyhow::Result<Option<Courier>> {
+            Ok(self.by_user.iter().find(|(_, c)| c.id == id).map(|(_, c)| c.clone()))
+        }
+        async fn find_by_user(&self, _: Uuid, user_id: Uuid) -> anyhow::Result<Option<Courier>> {
+            Ok(self.by_user.iter().find(|(u, _)| *u == user_id).map(|(_, c)| c.clone()))
+        }
+        async fn save(&self, _: &Courier) -> anyhow::Result<()> { Ok(()) }
+        async fn find_available_near(&self, _: Uuid, _: f64, _: f64, _: f64, _: i64)
+            -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
+    }
+
+    /// (service, assignment_id, holder_user, other_user)
+    fn reader_fixture() -> (DispatchService, Uuid, Uuid, Uuid) {
+        let holder_user = Uuid::new_v4();
+        let other_user  = Uuid::new_v4();
+        let holder = Courier::new(TENANT, holder_user, "A".into(), "B".into(), "+63".into());
+        let other  = Courier::new(TENANT, other_user,  "C".into(), "D".into(), "+63".into());
+
+        let mut a = CourierAssignment::offer_with_earnings(
+            TENANT, holder.id, ProductKey::new("omnideliv".to_string()),
+            Uuid::new_v4(), 3_500, 0, 0,
+        );
+        a.status = crate::domain::entities::AssignmentStatus::Claimed;
+        let id = a.id;
+
+        let assignments = Arc::new(Assignments::default());
+        assignments.0.lock().unwrap().push(a);
+
+        let svc = DispatchService::new(
+            Arc::new(TwoCouriers { by_user: vec![(holder_user, holder), (other_user, other)] }),
+            assignments,
+            Arc::new(HeldFix),
+            Arc::new(NoLedgers),
+            Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
+            PayBounds::default(),
+        );
+        (svc, id, holder_user, other_user)
+    }
+
+    #[tokio::test]
+    async fn the_courier_the_assignment_is_addressed_to_can_read_the_position() {
+        let (svc, id, holder, _) = reader_fixture();
+        let seen = svc
+            .position_for_assignment_as(TENANT, PositionReader::Courier(holder), id)
+            .await
+            .unwrap();
+        assert!(seen.is_some());
+    }
+
+    /// The leak this closes. Without it, one courier who learns an assignment
+    /// id can follow another courier around the city.
+    #[tokio::test]
+    async fn a_courier_cannot_read_another_couriers_position() {
+        let (svc, id, _, other) = reader_fixture();
+        let seen = svc
+            .position_for_assignment_as(TENANT, PositionReader::Courier(other), id)
+            .await
+            .unwrap();
+        assert!(seen.is_none(), "a courier the job is not addressed to gets nothing");
+    }
+
+    /// omnideliv renders customer tracking and is not a courier; its minted
+    /// token carries the permission instead.
+    #[tokio::test]
+    async fn the_product_service_can_read_any_assignment_in_its_tenant() {
+        let (svc, id, _, _) = reader_fixture();
+        let seen = svc
+            .position_for_assignment_as(TENANT, PositionReader::Service, id)
+            .await
+            .unwrap();
+        assert!(seen.is_some());
+    }
+
+    /// Indistinguishable from "not yours": a caller must not be able to use the
+    /// response to learn which assignment ids are real.
+    #[tokio::test]
+    async fn an_unknown_assignment_reads_the_same_as_a_forbidden_one() {
+        let (svc, _, holder, _) = reader_fixture();
+        let seen = svc
+            .position_for_assignment_as(TENANT, PositionReader::Courier(holder), Uuid::new_v4())
+            .await
+            .unwrap();
+        assert!(seen.is_none());
+    }
     use crate::domain::entities::{Courier, CourierLocation};
     use crate::domain::repositories::CourierRepository;
     use crate::infrastructure::db::{ClaimOutcome, CourierLedgerRepository, LocationRepository};
@@ -939,6 +1227,7 @@ mod position_lookup {
             -> anyhow::Result<Option<CourierLedger>> { Ok(None) }
         async fn save(&self, _: &CourierLedger) -> anyhow::Result<()> { Ok(()) }
         async fn find_all_open(&self, _: &str) -> anyhow::Result<Vec<CourierLedger>> { Ok(vec![]) }
+        async fn entry_exists_for_job(&self, _: Uuid, _: Uuid, _: Uuid) -> anyhow::Result<bool> { Ok(false) }
     }
 
     #[derive(Default)]
@@ -1033,5 +1322,449 @@ mod position_lookup {
 
         assert_eq!(courier_id, a.courier_id, "must be the assignment's courier, never trusted from elsewhere");
         assert_eq!(loc.id, newest.id, "must be recent()'s first element — the newest fix");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Milestone authorization
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod milestone_authorization {
+    use super::*;
+    use crate::domain::entities::{AssignmentStatus, Courier, CourierLocation};
+    use crate::domain::repositories::CourierRepository;
+    use crate::infrastructure::db::{ClaimOutcome, LocationRepository};
+    use std::sync::Mutex;
+
+    const TENANT: Uuid = Uuid::from_u128(1);
+
+    struct Couriers { by_user: Vec<(Uuid, Courier)> }
+
+    #[async_trait::async_trait]
+    impl CourierRepository for Couriers {
+        async fn find_by_id(&self, _: Uuid, id: Uuid) -> anyhow::Result<Option<Courier>> {
+            Ok(self.by_user.iter().find(|(_, c)| c.id == id).map(|(_, c)| c.clone()))
+        }
+        async fn find_by_user(&self, _: Uuid, user_id: Uuid) -> anyhow::Result<Option<Courier>> {
+            Ok(self.by_user.iter().find(|(u, _)| *u == user_id).map(|(_, c)| c.clone()))
+        }
+        async fn save(&self, _: &Courier) -> anyhow::Result<()> { Ok(()) }
+        async fn find_available_near(&self, _: Uuid, _: f64, _: f64, _: f64, _: i64)
+            -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
+    }
+
+    #[derive(Default)]
+    struct Assignments { rows: Mutex<Vec<CourierAssignment>> }
+
+    #[async_trait::async_trait]
+    impl AssignmentRepository for Assignments {
+        async fn save(&self, a: &CourierAssignment) -> anyhow::Result<()> {
+            let mut rows = self.rows.lock().unwrap();
+            if let Some(row) = rows.iter_mut().find(|r| r.id == a.id) { *row = a.clone(); }
+            Ok(())
+        }
+        async fn try_claim(&self, _: Uuid, _: Uuid) -> anyhow::Result<ClaimOutcome> {
+            Ok(ClaimOutcome::Lost)
+        }
+        async fn find_by_id(&self, _: Uuid, id: Uuid) -> anyhow::Result<Option<CourierAssignment>> {
+            Ok(self.rows.lock().unwrap().iter().find(|a| a.id == id).cloned())
+        }
+        async fn find_offered_for_courier(&self, _: Uuid, _: Uuid)
+            -> anyhow::Result<Vec<CourierAssignment>> { Ok(vec![]) }
+    }
+
+    struct NoLocations;
+    #[async_trait::async_trait]
+    impl LocationRepository for NoLocations {
+        async fn record(&self, _: &CourierLocation) -> anyhow::Result<()> { Ok(()) }
+        async fn latest(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<CourierLocation>> { Ok(None) }
+        async fn recent(&self, _: Uuid, _: Uuid, _: i64) -> anyhow::Result<Vec<CourierLocation>> { Ok(vec![]) }
+    }
+
+    /// Records every entry written, so a test can assert nobody was paid.
+    #[derive(Default)]
+    struct RecordingLedgers { saved: Mutex<Vec<CourierLedger>> }
+
+    #[async_trait::async_trait]
+    impl crate::infrastructure::db::CourierLedgerRepository for RecordingLedgers {
+        async fn find_open(&self, _: Uuid, _: Uuid, _: &str)
+            -> anyhow::Result<Option<CourierLedger>> { Ok(None) }
+        async fn save(&self, ledger: &CourierLedger) -> anyhow::Result<()> {
+            self.saved.lock().unwrap().push(ledger.clone());
+            Ok(())
+        }
+        async fn find_all_open(&self, _: &str) -> anyhow::Result<Vec<CourierLedger>> { Ok(vec![]) }
+        async fn entry_exists_for_job(&self, _: Uuid, _: Uuid, _: Uuid) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+    }
+
+    /// Records which milestones reached the broker.
+    #[derive(Default)]
+    struct RecordingEvents { emitted: Mutex<Vec<&'static str>> }
+
+    #[async_trait::async_trait]
+    impl crate::infrastructure::messaging::CourierEvents for RecordingEvents {
+        async fn publish(&self, e: &CourierEvent) -> anyhow::Result<()> {
+            self.emitted.lock().unwrap().push(match e {
+                CourierEvent::Assigned  { .. } => "assigned",
+                CourierEvent::Arrived   { .. } => "arrived",
+                CourierEvent::Collected { .. } => "collected",
+                CourierEvent::Delivered { .. } => "delivered",
+            });
+            Ok(())
+        }
+    }
+
+    fn courier() -> Courier {
+        Courier::new(TENANT, Uuid::new_v4(), "A".into(), "B".into(), "+63".into())
+    }
+
+    /// One job, one courier it is addressed to, one who is not.
+    ///
+    /// A struct rather than a tuple because the status matters as much as the
+    /// identity here, and a positional 8-tuple destructured eight ways is how a
+    /// test ends up asserting against the wrong uuid.
+    struct Fixture {
+        svc:         DispatchService,
+        assignment:  Uuid,
+        /// The identity user the assignment is addressed to.
+        holder:      Uuid,
+        /// That user's *courier* id — a different uuid, which is the whole
+        /// point of the two-hop lookup being tested.
+        holder_courier: Uuid,
+        other:       Uuid,
+        assignments: Arc<Assignments>,
+        ledgers:     Arc<RecordingLedgers>,
+        events:      Arc<RecordingEvents>,
+    }
+
+    /// The normal case: the courier claimed the job and is working it.
+    fn fixture() -> Fixture { fixture_in(AssignmentStatus::Claimed) }
+
+    /// The same job in a chosen status.
+    ///
+    /// `Offered` is not hypothetical: `offer_to_nearest` addresses one job to
+    /// `fanout` couriers and only the winner's row is ever claimed, so at any
+    /// moment most assignments in this state are held by couriers who did not
+    /// get the job and can still read their id from `/assignments/mine`.
+    fn fixture_in(status: AssignmentStatus) -> Fixture {
+        let holder_user = Uuid::new_v4();
+        let other_user  = Uuid::new_v4();
+        let holder = courier();
+        let other  = courier();
+        let holder_courier = holder.id;
+
+        let mut a = CourierAssignment::offer_with_earnings(
+            TENANT, holder.id, ProductKey::new("omnideliv".to_string()),
+            Uuid::new_v4(), 3_500, 0, 38_900,
+        );
+        a.status = status;
+        let id = a.id;
+
+        let assignments = Arc::new(Assignments::default());
+        assignments.rows.lock().unwrap().push(a);
+
+        let ledgers = Arc::new(RecordingLedgers::default());
+        let events  = Arc::new(RecordingEvents::default());
+
+        let svc = DispatchService::new(
+            Arc::new(Couriers { by_user: vec![(holder_user, holder), (other_user, other)] }),
+            assignments.clone(),
+            Arc::new(NoLocations),
+            ledgers.clone(),
+            events.clone(),
+            PayBounds::default(),
+        );
+        Fixture {
+            svc, assignment: id, holder: holder_user, holder_courier,
+            other: other_user, assignments, ledgers, events,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_holder_can_mark_collected() {
+        let f = fixture();
+        assert!(f.svc.mark_collected(TENANT, f.holder, f.assignment, Uuid::new_v4(), None)
+                     .await.unwrap());
+        assert_eq!(*f.events.emitted.lock().unwrap(), vec!["collected"]);
+    }
+
+    #[tokio::test]
+    async fn the_holder_can_mark_delivered_and_is_the_one_paid() {
+        let f = fixture();
+        assert!(f.svc.mark_delivered(TENANT, f.holder, f.assignment, None).await.unwrap());
+        assert_eq!(*f.events.emitted.lock().unwrap(), vec!["delivered"]);
+
+        let saved = f.ledgers.saved.lock().unwrap();
+        assert_eq!(saved.len(), 1);
+        // Identity and amount, not just a count. The count is 1 by construction
+        // — `find_open` always returns `None` — so it would pass even if the
+        // credit landed on the wrong courier or for the wrong sum.
+        assert_eq!(saved[0].courier_id, f.holder_courier,
+                   "the courier who did the job is the one credited");
+        assert_eq!(saved[0].balance_cents, 3_500 - 38_900,
+                   "earned 3500, now holding 38900 of the platform's cash");
+    }
+
+    /// The assignment ids are handed to the dispatching product, so they are
+    /// not secret. Another courier naming one must not be able to collect
+    /// against it.
+    #[tokio::test]
+    async fn another_courier_cannot_mark_collected() {
+        let f = fixture();
+        assert!(!f.svc.mark_collected(TENANT, f.other, f.assignment, Uuid::new_v4(), None)
+                      .await.unwrap());
+        assert!(f.events.emitted.lock().unwrap().is_empty(),
+                "no milestone may reach the broker for a job the caller does not hold");
+    }
+
+    /// The one that moves money: `mark_delivered` completes the assignment,
+    /// credits the courier ledger and debits COD.
+    #[tokio::test]
+    async fn another_courier_cannot_mark_delivered_or_trigger_a_credit() {
+        let f = fixture();
+
+        assert!(!f.svc.mark_delivered(TENANT, f.other, f.assignment, None).await.unwrap());
+        assert!(f.events.emitted.lock().unwrap().is_empty());
+        assert!(f.ledgers.saved.lock().unwrap().is_empty(),
+                "an unauthorized delivery must not credit anyone");
+
+        let rows = f.assignments.rows.lock().unwrap();
+        assert_eq!(rows[0].status, AssignmentStatus::Claimed,
+                   "the assignment must not be completed by a caller who does not hold it");
+    }
+
+    #[tokio::test]
+    async fn a_user_who_is_not_a_courier_is_refused_both_milestones() {
+        let f = fixture();
+        let stranger = Uuid::new_v4();
+        assert!(!f.svc.mark_collected(TENANT, stranger, f.assignment, Uuid::new_v4(), None)
+                      .await.unwrap());
+        assert!(!f.svc.mark_delivered(TENANT, stranger, f.assignment, None).await.unwrap());
+    }
+
+    /// The fan-out hole. `offer_to_nearest` addresses one job to five couriers,
+    /// each row carrying the full `trip_cents`; `try_claim` flips only the
+    /// winner's and nothing expires the rest. A loser keeps a readable
+    /// assignment id, and identity alone does not distinguish them from the
+    /// winner — so without the status gate they could complete a job they never
+    /// took, be paid for it, and publish `Delivered`, which advances the
+    /// customer's order while the real courier is still carrying it.
+    #[tokio::test]
+    async fn a_courier_who_only_received_an_offer_cannot_deliver_it() {
+        let f = fixture_in(AssignmentStatus::Offered);
+
+        assert!(!f.svc.mark_delivered(TENANT, f.holder, f.assignment, None).await.unwrap());
+        assert!(f.events.emitted.lock().unwrap().is_empty(),
+                "an unclaimed job must not publish a delivery");
+        assert!(f.ledgers.saved.lock().unwrap().is_empty(),
+                "being offered a job is not doing it — nobody is paid");
+        assert_eq!(f.assignments.rows.lock().unwrap()[0].status, AssignmentStatus::Offered,
+                   "the offer must not be completed out from under the claim");
+    }
+
+    #[tokio::test]
+    async fn a_courier_who_only_received_an_offer_cannot_mark_collected() {
+        let f = fixture_in(AssignmentStatus::Offered);
+        assert!(!f.svc.mark_collected(TENANT, f.holder, f.assignment, Uuid::new_v4(), None)
+                      .await.unwrap());
+        assert!(f.events.emitted.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_holder_can_mark_arrived() {
+        let f = fixture();
+        assert!(f.svc.mark_arrived(TENANT, f.holder, f.assignment, Uuid::new_v4(), None)
+                     .await.unwrap());
+        assert_eq!(*f.events.emitted.lock().unwrap(), vec!["arrived"]);
+    }
+
+    #[tokio::test]
+    async fn another_courier_cannot_mark_arrived() {
+        let f = fixture();
+        assert!(!f.svc.mark_arrived(TENANT, f.other, f.assignment, Uuid::new_v4(), None)
+                      .await.unwrap());
+        assert!(f.events.emitted.lock().unwrap().is_empty());
+    }
+
+    /// Same fan-out rule as every other milestone.
+    #[tokio::test]
+    async fn a_courier_who_only_received_an_offer_cannot_mark_arrived() {
+        let f = fixture_in(AssignmentStatus::Offered);
+        assert!(!f.svc.mark_arrived(TENANT, f.holder, f.assignment, Uuid::new_v4(), None)
+                      .await.unwrap());
+        assert!(f.events.emitted.lock().unwrap().is_empty());
+    }
+
+    /// An at-least-once client — which the driver app's offline queue is —
+    /// retries a delivery whose response was lost. That is not an error: the
+    /// milestone already landed. It must be accepted without paying again, and
+    /// the duplicate must not reach the broker.
+    #[tokio::test]
+    async fn redelivering_a_completed_job_is_accepted_without_paying_again() {
+        let f = fixture();
+
+        assert!(f.svc.mark_delivered(TENANT, f.holder, f.assignment, None).await.unwrap());
+        assert!(f.svc.mark_delivered(TENANT, f.holder, f.assignment, None).await.unwrap(),
+                "a retry reports success, so the queue does not park a milestone that landed");
+
+        assert_eq!(f.ledgers.saved.lock().unwrap().len(), 1, "paid exactly once");
+        assert_eq!(*f.events.emitted.lock().unwrap(), vec!["delivered"],
+                   "the duplicate stops here rather than relying on the consumer to absorb it");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Credit idempotency across a period boundary
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod credit_idempotency {
+    use super::*;
+    use crate::domain::entities::{AssignmentStatus, Courier, CourierLocation};
+    use crate::domain::repositories::CourierRepository;
+    use crate::infrastructure::db::{ClaimOutcome, LocationRepository};
+    use std::sync::Mutex;
+
+    const TENANT: Uuid = Uuid::from_u128(1);
+
+    struct Couriers { by_user: Vec<(Uuid, Courier)> }
+
+    #[async_trait::async_trait]
+    impl CourierRepository for Couriers {
+        async fn find_by_id(&self, _: Uuid, id: Uuid) -> anyhow::Result<Option<Courier>> {
+            Ok(self.by_user.iter().find(|(_, c)| c.id == id).map(|(_, c)| c.clone()))
+        }
+        async fn find_by_user(&self, _: Uuid, user_id: Uuid) -> anyhow::Result<Option<Courier>> {
+            Ok(self.by_user.iter().find(|(u, _)| *u == user_id).map(|(_, c)| c.clone()))
+        }
+        async fn save(&self, _: &Courier) -> anyhow::Result<()> { Ok(()) }
+        async fn find_available_near(&self, _: Uuid, _: f64, _: f64, _: f64, _: i64)
+            -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
+    }
+
+    #[derive(Default)]
+    struct Assignments { rows: Mutex<Vec<CourierAssignment>> }
+
+    #[async_trait::async_trait]
+    impl AssignmentRepository for Assignments {
+        async fn save(&self, a: &CourierAssignment) -> anyhow::Result<()> {
+            let mut rows = self.rows.lock().unwrap();
+            if let Some(row) = rows.iter_mut().find(|r| r.id == a.id) { *row = a.clone(); }
+            Ok(())
+        }
+        async fn try_claim(&self, _: Uuid, _: Uuid) -> anyhow::Result<ClaimOutcome> {
+            Ok(ClaimOutcome::Lost)
+        }
+        async fn find_by_id(&self, _: Uuid, id: Uuid) -> anyhow::Result<Option<CourierAssignment>> {
+            Ok(self.rows.lock().unwrap().iter().find(|a| a.id == id).cloned())
+        }
+        async fn find_offered_for_courier(&self, _: Uuid, _: Uuid)
+            -> anyhow::Result<Vec<CourierAssignment>> { Ok(vec![]) }
+    }
+
+    struct NoLocations;
+    #[async_trait::async_trait]
+    impl LocationRepository for NoLocations {
+        async fn record(&self, _: &CourierLocation) -> anyhow::Result<()> { Ok(()) }
+        async fn latest(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<CourierLocation>> { Ok(None) }
+        async fn recent(&self, _: Uuid, _: Uuid, _: i64) -> anyhow::Result<Vec<CourierLocation>> { Ok(vec![]) }
+    }
+
+    /// A ledger store that behaves like the real one across a period rollover:
+    /// entries persist forever, but `find_open` only ever returns the ledger for
+    /// the period it is asked about. That asymmetry is the whole bug — the old
+    /// guard scanned the ledger in hand, which after a rollover is empty.
+    #[derive(Default)]
+    struct PeriodAwareLedgers {
+        /// (tenant, courier, kind, external_ref) for every entry ever written.
+        all_entries: Mutex<Vec<(Uuid, Uuid, &'static str, Uuid)>>,
+        ledgers:     Mutex<Vec<CourierLedger>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::infrastructure::db::CourierLedgerRepository for PeriodAwareLedgers {
+        async fn find_open(&self, tenant_id: Uuid, courier_id: Uuid, period: &str)
+            -> anyhow::Result<Option<CourierLedger>> {
+            Ok(self.ledgers.lock().unwrap().iter()
+                .find(|l| l.tenant_id == tenant_id && l.courier_id == courier_id && l.period == period)
+                .cloned())
+        }
+        async fn save(&self, ledger: &CourierLedger) -> anyhow::Result<()> {
+            {
+                let mut all = self.all_entries.lock().unwrap();
+                for e in &ledger.entries {
+                    if let Some(r) = e.external_ref {
+                        let row = (ledger.tenant_id, ledger.courier_id, e.kind.as_str(), r);
+                        if !all.contains(&row) { all.push(row); }
+                    }
+                }
+            }
+            let mut ls = self.ledgers.lock().unwrap();
+            match ls.iter_mut().find(|l| l.id == ledger.id) {
+                Some(existing) => *existing = ledger.clone(),
+                None => ls.push(ledger.clone()),
+            }
+            Ok(())
+        }
+        async fn find_all_open(&self, _: &str) -> anyhow::Result<Vec<CourierLedger>> { Ok(vec![]) }
+        async fn entry_exists_for_job(&self, tenant_id: Uuid, courier_id: Uuid, external_ref: Uuid)
+            -> anyhow::Result<bool> {
+            Ok(self.all_entries.lock().unwrap().iter()
+                .any(|(t, c, _, r)| *t == tenant_id && *c == courier_id && *r == external_ref))
+        }
+    }
+
+    /// The delivery is credited once. Then the week rolls over — which is all
+    /// `current_period()` does — and the same job is credited again, which is
+    /// what an offline queue retrying a lost response does.
+    #[tokio::test]
+    async fn a_retry_across_a_period_boundary_does_not_pay_twice() {
+        let user = Uuid::new_v4();
+        let courier = Courier::new(TENANT, user, "A".into(), "B".into(), "+63".into());
+        let job = Uuid::new_v4();
+
+        let mut a = CourierAssignment::offer_with_earnings(
+            TENANT, courier.id, ProductKey::new("omnideliv".to_string()),
+            job, 3_500, 0, 38_900,
+        );
+        a.status = AssignmentStatus::Claimed;
+
+        let assignments = Arc::new(Assignments::default());
+        assignments.rows.lock().unwrap().push(a.clone());
+
+        let ledgers = Arc::new(PeriodAwareLedgers::default());
+        let svc = DispatchService::new(
+            Arc::new(Couriers { by_user: vec![(user, courier.clone())] }),
+            assignments.clone(),
+            Arc::new(NoLocations),
+            ledgers.clone(),
+            Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
+            PayBounds::default(),
+        );
+
+        svc.credit_courier(&a).await.unwrap();
+
+        let after_first: i64 = ledgers.ledgers.lock().unwrap()
+            .iter().map(|l| l.balance_cents).sum();
+        assert_eq!(after_first, 3_500 - 38_900, "earned 3500, holding 38900 of our cash");
+
+        // The week rolls over: nothing is open for the new period, so the ledger
+        // the old guard scanned would come back empty.
+        ledgers.ledgers.lock().unwrap()
+            .iter_mut().for_each(|l| l.period = "2026-W33".to_string());
+
+        svc.credit_courier(&a).await.unwrap();
+
+        let after_retry: i64 = ledgers.ledgers.lock().unwrap()
+            .iter().map(|l| l.balance_cents).sum();
+        assert_eq!(after_retry, after_first,
+                   "a retried delivery must not credit the trip or re-debit the COD");
+
+        let trips = ledgers.all_entries.lock().unwrap().iter()
+            .filter(|(_, _, kind, r)| *kind == "trip_earning" && *r == job).count();
+        assert_eq!(trips, 1, "exactly one trip earning for one job, ever");
     }
 }

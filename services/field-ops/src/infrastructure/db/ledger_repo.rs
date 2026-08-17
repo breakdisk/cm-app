@@ -23,6 +23,18 @@ pub trait CourierLedgerRepository: Send + Sync {
     /// decision about who gets paid belongs to the payout logic where it can be
     /// tested, not to a SQL predicate nobody reads.
     async fn find_all_open(&self, period: &str) -> anyhow::Result<Vec<CourierLedger>>;
+
+    /// Has this courier already been credited for this job, in **any** period?
+    ///
+    /// Scanning one period's entries is not enough: `current_period()` is the
+    /// ISO week, so a retry that crosses the Sunday→Monday boundary opens a
+    /// fresh ledger, finds nothing, and pays twice.
+    async fn entry_exists_for_job(
+        &self,
+        tenant_id: Uuid,
+        courier_id: Uuid,
+        external_ref: Uuid,
+    ) -> anyhow::Result<bool>;
 }
 
 pub struct PgCourierLedgerRepository { pool: PgPool }
@@ -160,12 +172,18 @@ impl CourierLedgerRepository for PgCourierLedgerRepository {
             sqlx::query(
                 r#"
                 INSERT INTO field_ops.courier_ledger_entries (
-                    id, ledger_id, kind, amount_cents, external_ref, reference, created_at
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7)
+                    id, ledger_id, tenant_id, courier_id,
+                    kind, amount_cents, external_ref, reference, created_at
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
                 ON CONFLICT (id) DO NOTHING
                 "#,
             )
-            .bind(e.id).bind(e.ledger_id).bind(e.kind.as_str()).bind(e.amount_cents)
+            // Denormalised from the ledger, not carried on the entry: they exist
+            // so `uq_courier_ledger_entry_job` can span periods, and the ledger
+            // is the only thing that knows them. Bind order matters — sqlx binds
+            // positionally and would not warn if `kind` and a uuid transposed.
+            .bind(e.id).bind(e.ledger_id).bind(l.tenant_id).bind(l.courier_id)
+            .bind(e.kind.as_str()).bind(e.amount_cents)
             .bind(e.external_ref).bind(&e.reference).bind(e.created_at)
             .execute(&mut *tx)
             .await?;
@@ -173,5 +191,28 @@ impl CourierLedgerRepository for PgCourierLedgerRepository {
 
         tx.commit().await?;
         Ok(())
+    }
+
+    async fn entry_exists_for_job(
+        &self,
+        tenant_id: Uuid,
+        courier_id: Uuid,
+        external_ref: Uuid,
+    ) -> anyhow::Result<bool> {
+        // Deliberately not scoped to a period. That scoping is the bug this
+        // exists to close: `current_period()` is the ISO week, so a retry that
+        // crosses the Sunday→Monday boundary would otherwise look like a first
+        // credit. `uq_courier_ledger_entry_job` (migration 0007) backstops it.
+        let found: Option<(i32,)> = sqlx::query_as(
+            "SELECT 1 FROM field_ops.courier_ledger_entries
+              WHERE tenant_id = $1 AND courier_id = $2 AND external_ref = $3
+              LIMIT 1",
+        )
+        .bind(tenant_id)
+        .bind(courier_id)
+        .bind(external_ref)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(found.is_some())
     }
 }

@@ -1,0 +1,87 @@
+# ============================================================
+# OmniDeliv Courier — Android CI
+# ============================================================
+# This app cannot be built on the development machine: there is no local Gradle
+# and no Android SDK. Every line of it lands unverified until this workflow
+# runs, which makes this the *only* gate rather than a safety net on top of
+# local checks. It is wired from the first commit for that reason.
+# ============================================================
+
+name: CI — OmniDeliv Courier
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "apps/omnideliv-driver-android/**"
+      - ".github/workflows/ci-omnideliv-courier.yml"
+  pull_request:
+    branches: [master]
+    paths:
+      - "apps/omnideliv-driver-android/**"
+      - ".github/workflows/ci-omnideliv-courier.yml"
+
+concurrency:
+  group: courier-android-${{ github.ref }}
+  # Not on master. A cancelled run on master leaves no record that the commit
+  # was ever built, and this repo has already been bitten by assuming a green
+  # dashboard meant a green build.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+jobs:
+  build:
+    name: Assemble + unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/omnideliv-driver-android
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make the wrapper executable
+        # Every .sh and the wrapper in this repo were committed from Windows as
+        # mode 100644. A non-executable gradlew fails with exit 126 before
+        # anything useful runs, and the log points at the shell rather than at
+        # the cause.
+        run: chmod +x ./gradlew
+
+      - name: Unit tests
+        # The real gate. These are the pure domain rules — sync ordering and
+        # dead-lettering, the geofence advisory, the proof-encoding ladder, the
+        # earnings split — and they are the only part of this app that can be
+        # verified without a device.
+        run: ./gradlew --no-daemon testDebugUnitTest
+
+      - name: Assemble debug
+        # Proves the Compose, Hilt, Room and Retrofit wiring actually compiles.
+        # Runs after the tests so a compile break and a logic break are
+        # distinguishable in the log.
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: courier-unit-test-report
+          path: apps/omnideliv-driver-android/app/build/reports/tests/
+          retention-days: 7
+
+      - name: Upload debug APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: omnideliv-courier-debug
+          path: apps/omnideliv-driver-android/app/build/outputs/apk/debug/*.apk
+          retention-days: 14

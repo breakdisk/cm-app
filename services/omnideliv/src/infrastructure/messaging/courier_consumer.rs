@@ -9,9 +9,29 @@ use std::sync::Arc;
 use serde::Deserialize;
 use uuid::Uuid;
 
+use crate::domain::entities::order::TransitionError;
 use crate::domain::entities::telemetry::event_type;
-use crate::domain::entities::{LegStatus, TelemetryEvent, VendorLedger};
+use crate::domain::entities::{LegStatus, Order, OrderStatus, TelemetryEvent, VendorLedger};
 use crate::domain::repositories::{OrderRepository, TelemetryRepository, VendorLedgerRepository};
+
+/// The state change for a `Delivered` milestone, separated from the I/O around
+/// it so the idempotence rule is testable without a broker or a database.
+///
+/// `Ok(false)` means the order was already delivered — a duplicate to ignore,
+/// not a failure. The `Collected` branch has early-returned on an
+/// already-picked-up leg since it was written; this is the same rule, and its
+/// absence here is what turned an ordinary retry into a failed message.
+///
+/// A duplicate is the normal case, not an exotic one: field-ops publishes on
+/// every accepted delivery, and the driver app's outbound queue is
+/// at-least-once by construction.
+fn apply_delivered(order: &mut Order) -> Result<bool, TransitionError> {
+    if order.status == OrderStatus::Delivered {
+        return Ok(false);
+    }
+    order.delivered()?;
+    Ok(true)
+}
 
 pub const TOPIC_COURIER: &str = "fieldops.courier";
 
@@ -20,7 +40,19 @@ pub const TOPIC_COURIER: &str = "fieldops.courier";
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum CourierEvent {
-    Assigned  { tenant_id: Uuid, product: String, external_ref: Uuid, courier_id: Uuid, assignment_id: Uuid },
+    Assigned  { tenant_id: Uuid, product: String, external_ref: Uuid, courier_id: Uuid, assignment_id: Uuid,
+                /// Mirrors field-ops exactly, `serde(default)` included. Without
+                /// the default, an `Assigned` published before that field
+                /// existed — and they are still inside the retention window —
+                /// fails to deserialize, and a failed deserialize takes down
+                /// every message on the partition, not just that one.
+                #[serde(default)] courier_user_id: Option<Uuid> },
+    /// Mirrors field-ops. `stop_ref` is the vendor id for a pickup and the
+    /// order id for the dropoff — this service is the only one that knows the
+    /// difference, which is why field-ops can stay product-agnostic.
+    Arrived   { tenant_id: Uuid, product: String, external_ref: Uuid, courier_id: Uuid,
+                stop_ref: Uuid,
+                device_timestamp: Option<chrono::DateTime<chrono::Utc>> },
     Collected { tenant_id: Uuid, product: String, external_ref: Uuid, courier_id: Uuid, vendor_id: Uuid,
                 device_timestamp: Option<chrono::DateTime<chrono::Utc>> },
     Delivered { tenant_id: Uuid, product: String, external_ref: Uuid, courier_id: Uuid,
@@ -31,6 +63,7 @@ impl CourierEvent {
     fn product(&self) -> &str {
         match self {
             CourierEvent::Assigned { product, .. }
+            | CourierEvent::Arrived { product, .. }
             | CourierEvent::Collected { product, .. }
             | CourierEvent::Delivered { product, .. } => product,
         }
@@ -39,6 +72,7 @@ impl CourierEvent {
     fn tenant_id(&self) -> Uuid {
         match self {
             CourierEvent::Assigned { tenant_id, .. }
+            | CourierEvent::Arrived { tenant_id, .. }
             | CourierEvent::Collected { tenant_id, .. }
             | CourierEvent::Delivered { tenant_id, .. } => *tenant_id,
         }
@@ -48,6 +82,7 @@ impl CourierEvent {
     fn order_id(&self) -> Uuid {
         match self {
             CourierEvent::Assigned { external_ref, .. }
+            | CourierEvent::Arrived { external_ref, .. }
             | CourierEvent::Collected { external_ref, .. }
             | CourierEvent::Delivered { external_ref, .. } => *external_ref,
         }
@@ -95,10 +130,20 @@ impl CourierMilestoneHandler {
         };
 
         match event {
-            CourierEvent::Assigned { assignment_id, .. } => {
-                order.courier_claimed(assignment_id)?;
+            CourierEvent::Assigned { assignment_id, courier_user_id, .. } => {
+                order.courier_claimed(assignment_id, courier_user_id)?;
                 self.append(tenant_id, order_id, event_type::COURIER_CLAIMED, None, None,
                             serde_json::json!({ "assignment_id": assignment_id })).await;
+            }
+
+            CourierEvent::Arrived { stop_ref, courier_id, device_timestamp, .. } => {
+                // No status change. Arrival is progress a tracking screen shows
+                // well and a lifecycle transition would show badly — a courier
+                // parked outside is not a collection. Recorded so the timeline
+                // can render it and so SLA maths has the device clock.
+                self.append(tenant_id, order_id, event_type::COURIER_ARRIVED,
+                            device_timestamp, Some(courier_id),
+                            serde_json::json!({ "stop_ref": stop_ref })).await;
             }
 
             CourierEvent::Collected { vendor_id, courier_id, device_timestamp, .. } => {
@@ -133,7 +178,13 @@ impl CourierMilestoneHandler {
             }
 
             CourierEvent::Delivered { courier_id, device_timestamp, .. } => {
-                order.delivered()?;
+                // A duplicate is a retry, not a failure — see `apply_delivered`.
+                // Returning early also skips the publish below, so a customer
+                // cannot be told twice that their order arrived.
+                if !apply_delivered(&mut order)? {
+                    return Ok(());
+                }
+
                 self.append(tenant_id, order_id, event_type::ORDER_DELIVERED,
                             device_timestamp, Some(courier_id), serde_json::json!({})).await;
 
@@ -219,6 +270,118 @@ mod tests {
         });
         let e: CourierEvent = serde_json::from_value(raw).expect("must parse");
         assert_eq!(e.product(), "logistics");
+    }
+
+    use crate::domain::entities::VendorLeg;
+
+    /// An order carried to Delivered entirely by legitimate transitions, so the
+    /// duplicate under test is the only irregular thing about it.
+    fn delivered_order() -> Order {
+        const TENANT: Uuid = Uuid::from_u128(1);
+
+        let leg = VendorLeg::settle(TENANT, Uuid::new_v4(), 10_000, 1_500);
+        let mut o = Order::place(
+            TENANT,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            vec![leg],
+            4_900,
+            0,
+            3_500,
+            14.5547,
+            121.0244,
+        );
+
+        o.courier_claimed(Uuid::new_v4(), None).unwrap();
+        o.legs[0].mark_picked_up();
+        o.all_legs_collected().unwrap();
+        o.delivered().unwrap();
+        o
+    }
+
+    /// The sibling branch, `Collected`, has had this since it was written. A
+    /// courier's offline queue retrying a delivery whose response was lost
+    /// republishes `Delivered`, and a consumer that errors on it turns an
+    /// ordinary retry into a failed message.
+    #[test]
+    fn a_second_delivered_on_a_delivered_order_is_ignored_not_an_error() {
+        let mut order = delivered_order();
+        assert_eq!(order.status, OrderStatus::Delivered);
+
+        let outcome = apply_delivered(&mut order);
+
+        assert!(outcome.is_ok(), "a duplicate Delivered must not error");
+        assert!(!outcome.unwrap(), "and must report that it changed nothing");
+        assert_eq!(order.status, OrderStatus::Delivered);
+    }
+
+    /// The first one still has to work — an idempotence guard that swallows
+    /// the real transition would pass the test above and break delivery.
+    #[test]
+    fn the_first_delivered_advances_the_order() {
+        let mut order = delivered_order();
+        // Rewind to the state field-ops' first Delivered actually arrives in.
+        order.status = OrderStatus::Delivering;
+        order.delivered_at = None;
+
+        assert!(apply_delivered(&mut order).unwrap(), "the first one changes state");
+        assert_eq!(order.status, OrderStatus::Delivered);
+        assert!(order.delivered_at.is_some());
+    }
+
+    /// Backward compatibility, and it is load-bearing. Messages published
+    /// before `courier_user_id` existed are still inside the retention window;
+    /// without `serde(default)` they fail to deserialize, and a failed
+    /// deserialize takes down every message on that partition, not just the
+    /// old one.
+    #[test]
+    fn an_assigned_event_without_a_courier_user_still_parses() {
+        let raw = serde_json::json!({
+            "event": "assigned",
+            "tenant_id": Uuid::nil(), "product": "omnideliv",
+            "external_ref": Uuid::nil(), "courier_id": Uuid::nil(),
+            "assignment_id": Uuid::nil()
+        });
+        let parsed: CourierEvent = serde_json::from_value(raw).expect("must parse without the field");
+        match parsed {
+            CourierEvent::Assigned { courier_user_id, .. } => assert!(courier_user_id.is_none()),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_assigned_event_carrying_a_courier_user_reads_it() {
+        let user = Uuid::from_u128(77);
+        let raw = serde_json::json!({
+            "event": "assigned",
+            "tenant_id": Uuid::nil(), "product": "omnideliv",
+            "external_ref": Uuid::nil(), "courier_id": Uuid::nil(),
+            "assignment_id": Uuid::nil(), "courier_user_id": user
+        });
+        let parsed: CourierEvent = serde_json::from_value(raw).expect("must parse");
+        match parsed {
+            CourierEvent::Assigned { courier_user_id, .. } => {
+                assert_eq!(courier_user_id, Some(user));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// Kafka is at-least-once, so a replayed pre-migration `Assigned` must not
+    /// erase an identity a later message already established.
+    #[test]
+    fn a_replayed_event_without_a_courier_does_not_erase_a_known_one() {
+        let mut o = delivered_order();
+        o.status = OrderStatus::Placed;
+        let user = Uuid::from_u128(9);
+
+        o.courier_claimed(Uuid::new_v4(), Some(user)).unwrap();
+        assert_eq!(o.courier_user_id, Some(user));
+
+        // The replay: same transition, no user id.
+        o.courier_claimed(Uuid::new_v4(), None).unwrap();
+        assert_eq!(o.courier_user_id, Some(user), "a replay must not blank the courier");
     }
 
     #[test]

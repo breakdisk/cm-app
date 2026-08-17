@@ -15,6 +15,9 @@ pub mod event_type {
     pub const LEG_PICKED_UP:     &str = "vendor_leg.picked_up";
     pub const LEG_FAILED:        &str = "vendor_leg.failed";
     pub const COURIER_CLAIMED:   &str = "courier.claimed";
+    /// The courier is at a stop. Not a lifecycle transition — the order
+    /// status is unchanged — but the event a customer most wants pushed.
+    pub const COURIER_ARRIVED:   &str = "courier.arrived";
     pub const ORDER_DELIVERED:   &str = "order.delivered";
     pub const ORDER_CANCELLED:   &str = "order.cancelled";
     /// Paid, but no courier accepted within the retry window.

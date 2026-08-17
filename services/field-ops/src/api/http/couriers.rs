@@ -30,6 +30,11 @@ pub struct OfferRequest {
     /// never asked to collect an amount nobody declared.
     #[serde(default)]
     pub cod_amount_cents: i64,
+    /// What the courier should see before claiming. Opaque to this service --
+    /// stored and returned verbatim, never read. Optional: a product that
+    /// supplies nothing still gets its job offered.
+    #[serde(default)]
+    pub offer_card: Option<serde_json::Value>,
 }
 
 fn default_radius_km() -> f64 { 5.0 }
@@ -83,6 +88,12 @@ struct OfferSummary {
     /// with this in front of them, so it is on the list, not behind a claim.
     trip_cents:    i64,
     tip_cents:     i64,
+    /// Cash the courier will be holding if they take this. On the list for the
+    /// same reason the pay is: it changes whether someone wants the job.
+    cod_amount_cents: i64,
+    /// The product's own summary, forwarded untouched. `None` when the product
+    /// supplied none; the app renders the offer without it rather than hiding it.
+    offer_card:    Option<serde_json::Value>,
     offered_at:    chrono::DateTime<chrono::Utc>,
 }
 
@@ -101,6 +112,14 @@ pub struct CollectedRequest {
     pub vendor_id: Uuid,
     /// Hardware clock at the scan. SLA maths uses this rather than server
     /// receipt time, so a slow upload is not billed to the courier.
+    pub device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ArrivedRequest {
+    /// Opaque to this tier. The product that offered the job knows whether it
+    /// names a vendor or a customer.
+    pub stop_ref: Uuid,
     pub device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
 }
 
@@ -130,6 +149,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/v1/field-ops/assignments/offer", post(offer))
         .route("/v1/field-ops/assignments/mine", get(my_offers))
         .route("/v1/field-ops/assignments/:id/claim", post(claim))
+        .route("/v1/field-ops/assignments/:id/arrived", post(arrived))
         .route("/v1/field-ops/assignments/:id/collected", post(collected))
         .route("/v1/field-ops/assignments/:id/delivered", post(delivered))
         .route("/v1/field-ops/assignments/:id/position", get(assignment_position))
@@ -156,7 +176,7 @@ async fn offer(
         .offer_to_nearest(
             claims.tenant_id, req.product, req.external_ref,
             req.lat, req.lng, req.radius_km, req.fanout,
-            req.trip_cents, req.tip_cents, req.cod_amount_cents,
+            req.trip_cents, req.tip_cents, req.cod_amount_cents, req.offer_card,
         )
         .await
         .map_err(|e| {
@@ -193,6 +213,8 @@ async fn my_offers(
                 external_ref:  a.external_ref,
                 trip_cents:    a.trip_cents,
                 tip_cents:     a.tip_cents,
+                cod_amount_cents: a.cod_amount_cents,
+                offer_card:    a.offer_card.clone(),
                 offered_at:    a.offered_at,
             })
             .collect(),
@@ -507,9 +529,19 @@ async fn assignment_position(
     claims: AuthClaims,
     Path(assignment_id): Path<Uuid>,
 ) -> Result<Json<PositionResponse>, StatusCode> {
+    // A product service carries the permission and has no courier identity; a
+    // courier carries no permission and is checked against the assignment.
+    // Anything else resolves to `Courier(user_id)` and is refused by that check,
+    // so a new caller type cannot fall through to unrestricted access.
+    let reader = if claims.has_permission("field-ops:read-position") {
+        crate::application::services::dispatch_service::PositionReader::Service
+    } else {
+        crate::application::services::dispatch_service::PositionReader::Courier(claims.user_id)
+    };
+
     let (courier_id, fix, smoothed) = st
         .dispatch
-        .position_for_assignment(claims.tenant_id, assignment_id)
+        .position_for_assignment_as(claims.tenant_id, reader, assignment_id)
         .await
         .map_err(|e| {
             tracing::error!(err = %e, %assignment_id, "position lookup failed");
@@ -530,6 +562,27 @@ async fn assignment_position(
     }))
 }
 
+async fn arrived(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+    Json(req): Json<ArrivedRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let found = st
+        .dispatch
+        .mark_arrived(claims.tenant_id, claims.user_id, id, req.stop_ref, req.device_timestamp)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "arrived failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    if !found {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(StatusCode::ACCEPTED)
+}
+
 async fn collected(
     State(st): State<Arc<AppState>>,
     claims: AuthClaims,
@@ -538,7 +591,7 @@ async fn collected(
 ) -> Result<StatusCode, StatusCode> {
     let found = st
         .dispatch
-        .mark_collected(claims.tenant_id, id, req.vendor_id, req.device_timestamp)
+        .mark_collected(claims.tenant_id, claims.user_id, id, req.vendor_id, req.device_timestamp)
         .await
         .map_err(|e| {
             tracing::error!(err = %e, "collected failed");
@@ -562,7 +615,7 @@ async fn delivered(
 ) -> Result<StatusCode, StatusCode> {
     let found = st
         .dispatch
-        .mark_delivered(claims.tenant_id, id, req.device_timestamp)
+        .mark_delivered(claims.tenant_id, claims.user_id, id, req.device_timestamp)
         .await
         .map_err(|e| {
             tracing::error!(err = %e, "delivered failed");

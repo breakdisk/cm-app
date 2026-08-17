@@ -18,18 +18,25 @@ use anyhow::{bail, Context};
 /// mis-selected original, not a product shot.
 pub const MAX_PHOTO_BYTES: usize = 5 * 1024 * 1024;
 
-/// What a browser may send. Checked against the *sniffed* bytes, not the
-/// client's Content-Type, which is caller-supplied and therefore a claim.
-const ALLOWED: &[(&str, &[u8])] = &[
+/// What a client may send, for the formats a plain prefix identifies. Checked
+/// against the *sniffed* bytes, not the caller's Content-Type, which is a claim.
+const ALLOWED_PREFIX: &[(&str, &[u8])] = &[
     ("image/jpeg", &[0xFF, 0xD8, 0xFF]),
     ("image/png", &[0x89, b'P', b'N', b'G']),
-    ("image/webp", b"RIFF"),
 ];
 
 /// Content type implied by the leading bytes, or `None` if it is not an image
 /// we accept.
+///
+/// WebP is deliberately not in the prefix table. It is a RIFF container — so
+/// are WAV and AVI — and the format is named by the four bytes at offset 8, not
+/// at 0. Matching `RIFF` alone accepted a WAV as `image/webp` and stored it
+/// under that content type, which is then what it is served back with.
 pub fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
-    ALLOWED
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    ALLOWED_PREFIX
         .iter()
         .find(|(_, magic)| bytes.starts_with(magic))
         .map(|(ct, _)| *ct)
@@ -150,6 +157,36 @@ mod tests {
         assert_eq!(sniff_image(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("image/jpeg"));
         assert_eq!(sniff_image(b"\x89PNG\r\n"), Some("image/png"));
         assert_eq!(sniff_image(b"RIFF____WEBP"), Some("image/webp"));
+    }
+
+    /// A minimal RIFF header: "RIFF", little-endian payload length, then the
+    /// four-byte form type that actually names the format.
+    fn riff(form_type: &[u8; 4], payload_len: u32) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(b"RIFF");
+        v.extend_from_slice(&payload_len.to_le_bytes());
+        v.extend_from_slice(form_type);
+        v.extend_from_slice(&[0u8; 8]);
+        v
+    }
+
+    /// RIFF is a container, not a format — WAV and AVI use it too. Matching
+    /// `RIFF` alone stored a WAV as `image/webp`, and that is then the content
+    /// type it is served back under. Proof photos are about to depend on this.
+    #[test]
+    fn a_riff_container_that_is_not_webp_is_refused() {
+        assert_eq!(sniff_image(&riff(b"WEBP", 32)), Some("image/webp"));
+        assert_eq!(sniff_image(&riff(b"WAVE", 32)), None);
+        assert_eq!(sniff_image(&riff(b"AVI ", 32)), None);
+    }
+
+    /// Four bytes of "RIFF" and nothing else must not index past the end.
+    #[test]
+    fn a_truncated_riff_header_does_not_panic() {
+        assert_eq!(sniff_image(b"RIFF"), None);
+        // One byte short of the form type: the check must not read past
+        // the end to find out.
+        assert_eq!(sniff_image(&riff(b"WEBP", 32)[..11]), None);
     }
 
     #[test]
