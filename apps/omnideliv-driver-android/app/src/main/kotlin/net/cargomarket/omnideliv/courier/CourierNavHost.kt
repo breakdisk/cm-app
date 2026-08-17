@@ -30,12 +30,21 @@ import javax.inject.Inject
  */
 object Routes {
     const val SHIFT = "shift"
-    const val MANIFEST = "manifest/{orderId}"
+    /**
+     * Carries both ids on purpose.
+     *
+     * The manifest is read by *order*, but every milestone is reported against
+     * the *assignment* — two different identifiers owned by two different
+     * services. Navigating with only the order id loses the one the money path
+     * needs, and there is no way to recover it from the manifest.
+     */
+    const val MANIFEST = "manifest/{orderId}/{assignmentId}"
 
-    fun manifest(orderId: String) = "manifest/$orderId"
+    fun manifest(orderId: String, assignmentId: String) = "manifest/$orderId/$assignmentId"
 }
 
 const val ARG_ORDER_ID = "orderId"
+const val ARG_ASSIGNMENT_ID = "assignmentId"
 
 /**
  * Exposes the session as observable state.
@@ -75,8 +84,8 @@ fun CourierNavHost(session: SessionViewModel = hiltViewModel()) {
     NavHost(navController = nav, startDestination = Routes.SHIFT) {
         composable(Routes.SHIFT) {
             ShiftScreen(
-                onClaimed = { orderId ->
-                    nav.navigate(Routes.manifest(orderId)) {
+                onClaimed = { orderId, assignmentId ->
+                    nav.navigate(Routes.manifest(orderId, assignmentId)) {
                         // The shift screen is not somewhere to go back to while
                         // holding a job: field-ops permits one live claim, so an
                         // offer list behind a claimed job can only offer work the
@@ -89,12 +98,17 @@ fun CourierNavHost(session: SessionViewModel = hiltViewModel()) {
 
         composable(
             route = Routes.MANIFEST,
-            arguments = listOf(navArgument(ARG_ORDER_ID) { type = NavType.StringType }),
+            arguments = listOf(
+                navArgument(ARG_ORDER_ID) { type = NavType.StringType },
+                navArgument(ARG_ASSIGNMENT_ID) { type = NavType.StringType },
+            ),
         ) { entry ->
             // Read here rather than inside the screen so the screen stays a pure
             // function of its arguments and can be previewed without navigation.
-            val orderId = entry.arguments?.getString(ARG_ORDER_ID).orEmpty()
-            ManifestRoute(orderId = orderId)
+            ManifestRoute(
+                orderId = entry.arguments?.getString(ARG_ORDER_ID).orEmpty(),
+                assignmentId = entry.arguments?.getString(ARG_ASSIGNMENT_ID).orEmpty(),
+            )
         }
     }
 }

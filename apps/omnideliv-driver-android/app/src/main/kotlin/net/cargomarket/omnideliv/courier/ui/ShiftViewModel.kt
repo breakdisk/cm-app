@@ -45,7 +45,7 @@ sealed interface ShiftState {
     ) : ShiftState
 
     /** A job was claimed. The host navigates to the manifest. */
-    data class Claimed(val externalRef: String) : ShiftState
+    data class Claimed(val externalRef: String, val assignmentId: String) : ShiftState
 }
 
 @HiltViewModel
@@ -127,7 +127,7 @@ class ShiftViewModel @Inject constructor(
                     val won = res.body()?.won == true
                     if (res.isSuccessful && won && row != null) {
                         goOffline()
-                        _state.value = ShiftState.Claimed(row.externalRef)
+                        _state.value = ShiftState.Claimed(row.externalRef, row.assignmentId)
                     } else {
                         val after = _state.value as? ShiftState.Online ?: return@fold
                         _state.value = after.copy(

@@ -47,7 +47,7 @@ import net.cargomarket.omnideliv.courier.domain.OfferCard
 @Composable
 fun ShiftScreen(
     vm: ShiftViewModel = hiltViewModel(),
-    onClaimed: (String) -> Unit = {},
+    onClaimed: (orderId: String, assignmentId: String) -> Unit = { _, _ -> },
 ) {
     val state by vm.state.collectAsState()
 
@@ -55,7 +55,7 @@ fun ShiftScreen(
     // successfully but was followed by a config change would otherwise lose the
     // navigation and strand the courier on an empty offer list holding a job.
     LaunchedEffect(state) {
-        (state as? ShiftState.Claimed)?.let { onClaimed(it.externalRef) }
+        (state as? ShiftState.Claimed)?.let { onClaimed(it.externalRef, it.assignmentId) }
     }
 
     Column(Modifier.fillMaxSize().background(Tokens.Base)) {
