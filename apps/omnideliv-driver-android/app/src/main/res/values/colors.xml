@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Platform base. Kept rather than a neutral #0A0A0A so this app still
+         looks like the rest of CargoMarket; neither is true OLED pixel-off. -->
+    <color name="base">#FF050810</color>
+</resources>

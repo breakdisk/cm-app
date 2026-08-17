@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Opaque, not glass.
+
+      The platform design system is glassmorphism — backdrop-blur, translucent
+      panels, neon glow — and that is right for the portals. It is wrong here:
+      translucency collapses contrast in direct sunlight, which is this app's
+      stated primary condition. Recorded as a deliberate divergence.
+
+      NoActionBar because Compose draws everything; the framework bar would sit
+      above the rail and steal vertical space the focus card needs.
+    -->
+    <style name="Theme.OmniDelivCourier" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="android:statusBarColor">@color/base</item>
+        <item name="android:navigationBarColor">@color/base</item>
+        <item name="android:windowBackground">@color/base</item>
+    </style>
+</resources>
