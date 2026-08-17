@@ -31,11 +31,13 @@ android {
             // fails to connect looks like a broken app.
             buildConfigField("String", "API_BASE_URL", "\"https://os-api.cargomarket.net/\"")
             buildConfigField("String", "TENANT_SLUG", "\"demo\"")
+            buildConfigField("String", "DEFAULT_COUNTRY_CODE", "\"63\"")
         }
         release {
             isMinifyEnabled = false
             buildConfigField("String", "API_BASE_URL", "\"https://os-api.cargomarket.net/\"")
             buildConfigField("String", "TENANT_SLUG", "\"cargomarket-ph\"")
+            buildConfigField("String", "DEFAULT_COUNTRY_CODE", "\"63\"")
         }
     }
 
