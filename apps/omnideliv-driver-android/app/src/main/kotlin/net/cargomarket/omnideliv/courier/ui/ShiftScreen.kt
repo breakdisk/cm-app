@@ -35,7 +35,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import net.cargomarket.omnideliv.courier.data.location.ShiftLocationService
 import net.cargomarket.omnideliv.courier.domain.OfferCard
 
 /**
@@ -52,6 +59,39 @@ fun ShiftScreen(
     onEarnings: () -> Unit = {},
 ) {
     val state by vm.state.collectAsState()
+    val context = LocalContext.current
+
+    // Going on duty is what starts location streaming, and it must not start
+    // without permission — a foreground location service that cannot read a
+    // location is a notification telling the courier something untrue.
+    val askLocation = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { allowed ->
+        if (allowed) {
+            ShiftLocationService.start(context)
+            vm.goOnline()
+        }
+    }
+
+    // The service is bound to duty, not to this screen. A courier who navigates
+    // to their manifest is still on shift and must still be tracked.
+    fun setDuty(on: Boolean) {
+        if (!on) {
+            ShiftLocationService.stop(context)
+            vm.goOffline()
+            return
+        }
+        val granted = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (granted) {
+            ShiftLocationService.start(context)
+            vm.goOnline()
+        } else {
+            askLocation.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+    }
 
     // Navigation is a side effect of state, not of the tap. A tap that claimed
     // successfully but was followed by a config change would otherwise lose the
@@ -64,7 +104,7 @@ fun ShiftScreen(
         DutyBar(
             online = state !is ShiftState.Offline,
             stale = (state as? ShiftState.Online)?.stale == true,
-            onToggle = { on -> if (on) vm.goOnline() else vm.goOffline() },
+            onToggle = { on -> setDuty(on) },
             onEarnings = onEarnings,
         )
 

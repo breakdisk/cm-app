@@ -3,5 +3,6 @@
     <string name="app_name">OmniDeliv Courier</string>
     <string name="shift_channel_name">Shift</string>
     <string name="shift_notification_title">On shift</string>
+    <string name="shift_notification_text">Sharing your location so customers can track their delivery</string>
     <string name="shift_notification_body">Sharing your location so customers see an accurate ETA.</string>
 </resources>
