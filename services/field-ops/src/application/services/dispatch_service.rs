@@ -138,6 +138,10 @@ impl DispatchService {
         trip_cents: i64,
         tip_cents: i64,
         cod_amount_cents: i64,
+        // Opaque: stored on each assignment and never inspected here. Cloned per
+        // offer because the fan-out gives every candidate their own row, and a
+        // courier reading their offer must see the same card as the rest.
+        offer_card: Option<serde_json::Value>,
     ) -> anyhow::Result<Vec<CourierAssignment>> {
         // Checked before anything is offered or stored. Rejecting rather than
         // clamping is deliberate: clamping would credit the courier a different
@@ -159,9 +163,9 @@ impl DispatchService {
             // a String precisely so the set of products is not fixed at compile
             // time, and that ownership is worth one small allocation per offer
             // in a fan-out that is already doing a database write each turn.
-            let a = CourierAssignment::offer_with_earnings(
+            let a = CourierAssignment::offer_with_card(
                 tenant_id, c.id, product.clone(), external_ref, trip_cents, tip_cents,
-                cod_amount_cents);
+                cod_amount_cents, offer_card.clone());
             self.assignments.save(&a).await?;
             offers.push(a);
         }

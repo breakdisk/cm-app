@@ -135,6 +135,7 @@ impl CourierDispatch for FieldOpsDispatch {
         trip_cents: i64,
         tip_cents: i64,
         cod_amount_cents: i64,
+        offer_card: Option<serde_json::Value>,
     ) -> anyhow::Result<Vec<Uuid>> {
         // Tenant is not sent in the body: field-ops reads it from the token, and
         // a caller-supplied tenant would let one tenant offer work to another's
@@ -156,6 +157,10 @@ impl CourierDispatch for FieldOpsDispatch {
                 "trip_cents":   trip_cents,
                 "tip_cents":    tip_cents,
                 "cod_amount_cents": cod_amount_cents,
+                // Forwarded untouched. field-ops stores it and hands it back to
+                // the courier without reading it; serialising `None` as JSON
+                // null is what its `#[serde(default)]` expects.
+                "offer_card":   offer_card,
             }))
             .send()
             .await?;

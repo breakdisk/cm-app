@@ -107,7 +107,23 @@ impl RecoveryService {
                         .dispatch
                         .offer(order.tenant_id, order.id, lat, lng, RETRY_RADIUS_KM,
                                order.courier_trip_cents, order.tip_cents,
-                               order.grand_total_cents)
+                               order.grand_total_cents,
+                               // A retried order is one nobody took, so it needs
+                               // a card more than a fresh one does -- but this
+                               // service holds no vendor names. Give what the
+                               // order itself knows: how many pickups and how
+                               // many are already collected. Omitting the names
+                               // is honest; omitting the card entirely would make
+                               // the retry the blindest offer on the platform.
+                               Some(serde_json::json!({
+                                   "v": 1,
+                                   "stops": order.legs.len() + 1,
+                                   "pickups": order.legs.len(),
+                                   "vendors": [],
+                                   "verticals": [],
+                                   "temperature": [],
+                                   "retry": true,
+                               })))
                         .await
                     {
                         Ok(ids) if ids.is_empty() => {
@@ -282,13 +298,18 @@ mod sweep_tests {
         calls: Mutex<Vec<(Uuid, f64, f64, f64)>>,
         cod:   Mutex<Vec<i64>>,
         fail:  bool,
+        /// What each re-offer told the courier about the job.
+        cards: std::sync::Mutex<Vec<Option<serde_json::Value>>>,
     }
     #[async_trait::async_trait]
     impl CourierDispatch for Dispatch {
+        #[allow(clippy::too_many_arguments)]
         async fn offer(&self, _t: Uuid, order_id: Uuid, lat: f64, lng: f64, radius_km: f64,
-                       _trip: i64, _tip: i64, cod: i64) -> anyhow::Result<Vec<Uuid>> {
+                       _trip: i64, _tip: i64, cod: i64,
+                       card: Option<serde_json::Value>) -> anyhow::Result<Vec<Uuid>> {
             self.calls.lock().unwrap().push((order_id, lat, lng, radius_km));
             self.cod.lock().unwrap().push(cod);
+            self.cards.lock().unwrap().push(card);
             if self.fail { anyhow::bail!("field-ops unreachable") }
             Ok(vec![Uuid::new_v4()])
         }

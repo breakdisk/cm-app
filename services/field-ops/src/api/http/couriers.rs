@@ -30,6 +30,11 @@ pub struct OfferRequest {
     /// never asked to collect an amount nobody declared.
     #[serde(default)]
     pub cod_amount_cents: i64,
+    /// What the courier should see before claiming. Opaque to this service --
+    /// stored and returned verbatim, never read. Optional: a product that
+    /// supplies nothing still gets its job offered.
+    #[serde(default)]
+    pub offer_card: Option<serde_json::Value>,
 }
 
 fn default_radius_km() -> f64 { 5.0 }
@@ -83,6 +88,12 @@ struct OfferSummary {
     /// with this in front of them, so it is on the list, not behind a claim.
     trip_cents:    i64,
     tip_cents:     i64,
+    /// Cash the courier will be holding if they take this. On the list for the
+    /// same reason the pay is: it changes whether someone wants the job.
+    cod_amount_cents: i64,
+    /// The product's own summary, forwarded untouched. `None` when the product
+    /// supplied none; the app renders the offer without it rather than hiding it.
+    offer_card:    Option<serde_json::Value>,
     offered_at:    chrono::DateTime<chrono::Utc>,
 }
 
@@ -165,7 +176,7 @@ async fn offer(
         .offer_to_nearest(
             claims.tenant_id, req.product, req.external_ref,
             req.lat, req.lng, req.radius_km, req.fanout,
-            req.trip_cents, req.tip_cents, req.cod_amount_cents,
+            req.trip_cents, req.tip_cents, req.cod_amount_cents, req.offer_card,
         )
         .await
         .map_err(|e| {
@@ -202,6 +213,8 @@ async fn my_offers(
                 external_ref:  a.external_ref,
                 trip_cents:    a.trip_cents,
                 tip_cents:     a.tip_cents,
+                cod_amount_cents: a.cod_amount_cents,
+                offer_card:    a.offer_card.clone(),
                 offered_at:    a.offered_at,
             })
             .collect(),
