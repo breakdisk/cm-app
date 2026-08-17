@@ -158,12 +158,41 @@ the opacity is one convenient `WHERE` clause from being gone.
 
 ### Contract 2 — the live manifest (omnideliv)
 
-`GET /v1/omnideliv/courier/jobs/{order_id}` — addresses, per-vendor line items,
-handling notes, customer detail, gate codes, COD amount.
+`GET /v1/omnideliv/courier/jobs/{order_id}`.
 
 Re-read on every screen open and on the adaptive poll. **Never cached as
 truth**, so a mid-route change simply appears rather than having to be
 reconciled against stale local state.
+
+**What it can serve today, and what has to be added.** Verified against the
+data model rather than assumed:
+
+| Field | Source | State |
+|---|---|---|
+| Pickup vendor name, address, lat/lng, vertical, prep time | `omnideliv.vendors` | exists |
+| Per-vendor line items — qty, item, chosen modifiers | `omnideliv.baskets.lines`, joined by `vendor_id` | exists (needs a catalog lookup for item names) |
+| Per-leg collected state | `VendorLeg.status` | exists |
+| Delivery point | `Order.delivery_lat/lng` | exists |
+| COD amount | `Order.grand_total_cents` | exists |
+| **Delivery street address, unit, gate code, notes** | — | **does not exist** |
+| **Customer name and phone** | — | **does not exist** |
+
+`CheckoutRequest` carries only `basket_id`, `tip_cents`, `delivery_lat`,
+`delivery_lng`; an order identifies its customer by a bare `customer_id` UUID.
+So without an addition the dropoff stop is a map pin and nothing else — and a
+courier who cannot find the door has no way to call.
+
+**Decision: snapshot the contact onto the order at checkout, server-side.**
+Identity mints `<digits>@customer.logisticos.app` for OTP sign-ins, so the
+phone is recoverable from `claims.email` at checkout with no cross-service
+call and no customer-app change. This also closes a gap already on the record:
+OmniDeliv's customer notifications are push-only *because the order carries no
+phone*, so this is the thing that eventually unblocks SMS and WhatsApp.
+
+**Deferred: a free-text delivery note** ("unit 12B, gate code 4417"). It needs
+a field on the customer's checkout screen, which is customer-app work outside
+this slice. The manifest returns it as `null` until that lands, and the app
+renders the dropoff without it rather than pretending.
 
 ### Authorization, with no new synchronous call
 
