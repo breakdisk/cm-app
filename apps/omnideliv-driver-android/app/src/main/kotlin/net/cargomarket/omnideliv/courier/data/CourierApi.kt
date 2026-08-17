@@ -1,6 +1,7 @@
 package net.cargomarket.omnideliv.courier.data
 
 import kotlinx.serialization.SerialName
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.Serializable
 import retrofit2.Response
 import retrofit2.http.Body
@@ -113,6 +114,18 @@ data class OfferDto(
     @SerialName("external_ref") val externalRef: String,
     @SerialName("trip_cents") val tripCents: Long,
     @SerialName("tip_cents") val tipCents: Long,
+    /**
+     * Cash this courier will be holding if they take the job. On the offer for
+     * the same reason the pay is: it changes whether someone wants it.
+     */
+    @SerialName("cod_amount_cents") val codAmountCents: Long = 0,
+    /**
+     * The product's own summary, forwarded by field-ops without being read.
+     * Kept as a raw [JsonElement] because this app is its only interpreter and
+     * the backend may ship a newer version than this build knows —
+     * `parseOfferCard` handles that without throwing.
+     */
+    @SerialName("offer_card") val offerCard: JsonElement? = null,
     @SerialName("offered_at") val offeredAt: String,
 )
 
