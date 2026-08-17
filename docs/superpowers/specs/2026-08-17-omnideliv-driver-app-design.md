@@ -228,10 +228,22 @@ destroy that property.
 Two independent bugs, both reachable only once something retries — which is
 exactly what an offline queue does.
 
-- **field-ops:** a partial unique index on
-  `(tenant_id, courier_id, external_ref, kind) WHERE external_ref IS NOT NULL`.
-  Enforced at the database so every crediting path is covered, not only the one
-  that has the guard today. The existing in-memory check becomes a fast path.
+- **field-ops:** two fixes, because one is not enough. The application guard
+  must ask the *store* whether this job was ever credited, rather than scanning
+  the single period's ledger it happens to hold; and a partial unique index
+  backstops every other crediting path.
+
+  The index cannot be written against the table as it stands.
+  `courier_ledger_entries` keys on `ledger_id`, and a ledger is per
+  `(tenant, courier, period)` — so an index on `ledger_id` is scoped *inside*
+  the very boundary the bug crosses. `tenant_id` and `courier_id` are therefore
+  denormalised onto the entry row and backfilled from the owning ledger, after
+  which the index is
+  `(tenant_id, courier_id, kind, external_ref) WHERE external_ref IS NOT NULL`.
+
+  The index creation **fails** if production already holds duplicates. That is
+  correct: they are real money, and which entry survives is a human decision,
+  not something a migration should quietly pick. Check before deploying.
 - **omnideliv:** make the `Delivered` consumer branch early-return on an
   already-delivered order, symmetric with the `Collected` branch that already
   gets this right.
