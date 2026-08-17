@@ -88,6 +88,14 @@ data class ManifestUiState(
     val loading: Boolean = true,
     /** Milestones recorded locally that the server has not accepted yet. */
     val pendingCount: Int = 0,
+    /**
+     * Stop refs this courier has already reported arriving at.
+     *
+     * Local to the session on purpose: arrival changes no server state that the
+     * manifest reports back, so there is nothing to read it from. Losing it on a
+     * restart costs one redundant tap, which is cheaper than inventing a field.
+     */
+    val arrivedStops: Set<String> = emptySet(),
 )
 
 @HiltViewModel
@@ -160,6 +168,23 @@ class ManifestViewModel @Inject constructor(
      * The device timestamp is taken inside `record`, at this instant, because
      * this call *is* the physical event.
      */
+    /** Report arriving at the stop currently in focus. */
+    fun arrived(assignmentId: String) {
+        val manifest = _state.value.manifest ?: return
+        val stopRef = when (val leg = manifest.currentLeg()) {
+            is Leg.ToPickup -> leg.stop.stopRef
+            is Leg.ToDropoff -> leg.dropoff.stopRef
+            Leg.Done -> return
+        }
+        if (stopRef in _state.value.arrivedStops) return
+
+        _state.value = _state.value.copy(arrivedStops = _state.value.arrivedStops + stopRef)
+        viewModelScope.launch {
+            outbound.record(MilestoneKind.ARRIVED, assignmentId, stopRef)
+            runCatching { outbound.drain() }
+        }
+    }
+
     fun advance(assignmentId: String) {
         val manifest = _state.value.manifest ?: return
         val (kind, stopRef) = when (val leg = manifest.currentLeg()) {
@@ -216,6 +241,14 @@ fun ManifestRoute(
         servedFromCache = state.servedFromCache,
         pendingCount = state.pendingCount,
         onAdvance = { vm.advance(assignmentId) },
+        arrivedHere = state.manifest?.currentLeg()?.let { leg ->
+            when (leg) {
+                is Leg.ToPickup -> leg.stop.stopRef in state.arrivedStops
+                is Leg.ToDropoff -> leg.dropoff.stopRef in state.arrivedStops
+                Leg.Done -> true
+            }
+        } ?: false,
+        onArrived = { vm.arrived(assignmentId) },
         onIssue = { /* the exception flow is its own spec */ },
     )
 }

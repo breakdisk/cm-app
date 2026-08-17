@@ -13,6 +13,7 @@ import androidx.navigation.navArgument
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.StateFlow
 import net.cargomarket.omnideliv.courier.data.TokenStore
+import net.cargomarket.omnideliv.courier.ui.EarningsScreen
 import net.cargomarket.omnideliv.courier.ui.ManifestRoute
 import net.cargomarket.omnideliv.courier.ui.ShiftScreen
 import net.cargomarket.omnideliv.courier.ui.SignInScreen
@@ -30,6 +31,7 @@ import javax.inject.Inject
  */
 object Routes {
     const val SHIFT = "shift"
+    const val EARNINGS = "earnings"
     /**
      * Carries both ids on purpose.
      *
@@ -82,8 +84,11 @@ fun CourierNavHost(session: SessionViewModel = hiltViewModel()) {
 
     val nav = rememberNavController()
     NavHost(navController = nav, startDestination = Routes.SHIFT) {
+        composable(Routes.EARNINGS) { EarningsScreen() }
+
         composable(Routes.SHIFT) {
             ShiftScreen(
+                onEarnings = { nav.navigate(Routes.EARNINGS) },
                 onClaimed = { orderId, assignmentId ->
                     nav.navigate(Routes.manifest(orderId, assignmentId)) {
                         // The shift screen is not somewhere to go back to while

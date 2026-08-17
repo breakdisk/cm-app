@@ -56,6 +56,9 @@ fun ManifestScreen(
     pendingCount: Int = 0,
     onAdvance: () -> Unit = {},
     onIssue: () -> Unit = {},
+    /** True once arrival at the current stop has been recorded. */
+    arrivedHere: Boolean = false,
+    onArrived: () -> Unit = {},
 ) {
     if (manifest == null) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -86,7 +89,7 @@ fun ManifestScreen(
             }
         }
         // Pinned in the bottom third and never moved by a re-sequence.
-        AdvanceControl(manifest, advice, onAdvance, onIssue)
+        AdvanceControl(manifest, advice, onAdvance, onIssue, arrivedHere, onArrived)
     }
 }
 
@@ -314,6 +317,8 @@ private fun AdvanceControl(
     advice: GeofenceAdvice,
     onAdvance: () -> Unit,
     onIssue: () -> Unit,
+    arrivedHere: Boolean,
+    onArrived: () -> Unit,
 ) {
     val label = when (manifest.currentLeg()) {
         is Leg.ToPickup -> "Picked up"
@@ -329,6 +334,26 @@ private fun AdvanceControl(
     ) {
         GeofenceChip(advice)
         Spacer(Modifier.height(8.dp))
+
+        // Arrival is its own tap, and it is not derived from the geofence: GPS
+        // cannot tell "parked outside" from "at the door", and it is the event
+        // the customer most wants pushed. Once recorded the button is spent —
+        // reporting it twice is noise, not information.
+        if (!arrivedHere && manifest.currentLeg() != Leg.Done) {
+            Button(
+                onClick = onArrived,
+                modifier = Modifier.fillMaxWidth().heightIn(min = Tokens.MinTarget),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Tokens.SurfaceRaised,
+                    contentColor = Tokens.Text,
+                ),
+            ) {
+                Text("I have arrived", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            }
+            Spacer(Modifier.height(7.dp))
+        }
+
         Button(
             onClick = onAdvance,
             enabled = manifest.currentLeg() != Leg.Done,

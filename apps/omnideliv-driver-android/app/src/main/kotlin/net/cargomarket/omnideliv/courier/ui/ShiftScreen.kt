@@ -22,6 +22,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -48,6 +49,7 @@ import net.cargomarket.omnideliv.courier.domain.OfferCard
 fun ShiftScreen(
     vm: ShiftViewModel = hiltViewModel(),
     onClaimed: (orderId: String, assignmentId: String) -> Unit = { _, _ -> },
+    onEarnings: () -> Unit = {},
 ) {
     val state by vm.state.collectAsState()
 
@@ -63,6 +65,7 @@ fun ShiftScreen(
             online = state !is ShiftState.Offline,
             stale = (state as? ShiftState.Online)?.stale == true,
             onToggle = { on -> if (on) vm.goOnline() else vm.goOffline() },
+            onEarnings = onEarnings,
         )
 
         when (val s = state) {
@@ -102,7 +105,12 @@ fun ShiftScreen(
 }
 
 @Composable
-private fun DutyBar(online: Boolean, stale: Boolean, onToggle: (Boolean) -> Unit) {
+private fun DutyBar(
+    online: Boolean,
+    stale: Boolean,
+    onToggle: (Boolean) -> Unit,
+    onEarnings: () -> Unit,
+) {
     Column(
         Modifier
             .fillMaxWidth()
@@ -125,6 +133,9 @@ private fun DutyBar(online: Boolean, stale: Boolean, onToggle: (Boolean) -> Unit
                     color = Tokens.TextMuted,
                     fontSize = 12.sp,
                 )
+            }
+            TextButton(onClick = onEarnings) {
+                Text("Earnings", color = Tokens.Cyan, fontSize = 13.sp)
             }
             Switch(
                 checked = online,
