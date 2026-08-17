@@ -25,6 +25,25 @@ interface CourierApi {
 
     // ── field-ops ────────────────────────────────────────────────────────────
 
+    // ── Auth ────────────────────────────────────────────────────────────────
+    //
+    // Phone OTP, auto-registering on first verify, because that is what the
+    // platform already does — a second bespoke auth flow is what ADR-0009
+    // rule 4 forbids. So there is no sign-up screen to build.
+
+    @POST("v1/auth/otp/send")
+    suspend fun sendOtp(@Body body: OtpSendRequest): Response<Unit>
+
+    @POST("v1/auth/otp/verify")
+    suspend fun verifyOtp(@Body body: OtpVerifyRequest): Response<AuthDto>
+
+    /**
+     * Register as a courier. Idempotent on the user, and registers **offline**
+     * so signing up does not drop somebody into the next proximity search.
+     */
+    @POST("v1/field-ops/couriers/register")
+    suspend fun registerCourier(@Body body: RegisterCourierRequest): Response<CourierDto>
+
     @GET("v1/field-ops/assignments/mine")
     suspend fun myOffers(): Response<MyOffersDto>
 
@@ -195,4 +214,53 @@ data class EarningEntryDto(
     @SerialName("amount_cents") val amountCents: Long,
     @SerialName("external_ref") val externalRef: String? = null,
     val at: String,
+)
+
+/**
+ * `role` is **driver**, not customer.
+ *
+ * The endpoint defaults to `driver`, which happens to be right here — but it is
+ * sent explicitly because the customer app has to send `customer` for the same
+ * endpoint, and a default that is correct for one caller by luck is the kind of
+ * thing that registers couriers as customers when the default moves.
+ */
+@Serializable
+data class OtpSendRequest(
+    val phone: String,
+    @SerialName("tenant_slug") val tenantSlug: String,
+    val role: String = "driver",
+)
+
+/**
+ * The field is `otp_code`, not `code`.
+ *
+ * `tenant_slug` is required — omitting it fails with a deserialisation error
+ * that reads like a server fault rather than a missing field.
+ */
+@Serializable
+data class OtpVerifyRequest(
+    val phone: String,
+    @SerialName("otp_code") val otpCode: String,
+    @SerialName("tenant_slug") val tenantSlug: String,
+    val role: String = "driver",
+)
+
+@Serializable
+data class AuthDto(
+    @SerialName("access_token") val accessToken: String,
+    @SerialName("refresh_token") val refreshToken: String? = null,
+    @SerialName("user_id") val userId: String? = null,
+)
+
+@Serializable
+data class RegisterCourierRequest(
+    @SerialName("first_name") val firstName: String,
+    @SerialName("last_name") val lastName: String,
+    val phone: String,
+)
+
+@Serializable
+data class CourierDto(
+    val id: String,
+    val status: String,
 )
