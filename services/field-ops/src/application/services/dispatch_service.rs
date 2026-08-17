@@ -534,7 +534,18 @@ impl DispatchService {
         // Already credited — a retried delivery must not pay twice. Keyed on
         // the job rather than the assignment so a re-offer of the same job
         // cannot double-pay either.
-        if ledger.entries.iter().any(|e| e.external_ref == Some(a.external_ref)) {
+        //
+        // Asked of the *store*, not of `ledger.entries`. The ledger in hand is
+        // only the current period's, and `current_period()` is the ISO week: an
+        // offline queue retrying a lost response across the Sunday→Monday
+        // boundary gets a fresh, empty ledger, and a guard that scanned only it
+        // would find nothing and pay a second time — crediting the trip again
+        // and re-debiting cash the courier already handed over.
+        if self
+            .ledgers
+            .entry_exists_for_job(a.tenant_id, a.courier_id, a.external_ref)
+            .await?
+        {
             return Ok(());
         }
 
@@ -1371,5 +1382,158 @@ mod milestone_authorization {
         assert_eq!(f.ledgers.saved.lock().unwrap().len(), 1, "paid exactly once");
         assert_eq!(*f.events.emitted.lock().unwrap(), vec!["delivered"],
                    "the duplicate stops here rather than relying on the consumer to absorb it");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Credit idempotency across a period boundary
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod credit_idempotency {
+    use super::*;
+    use crate::domain::entities::{AssignmentStatus, Courier, CourierLocation};
+    use crate::domain::repositories::CourierRepository;
+    use crate::infrastructure::db::{ClaimOutcome, LocationRepository};
+    use std::sync::Mutex;
+
+    const TENANT: Uuid = Uuid::from_u128(1);
+
+    struct Couriers { by_user: Vec<(Uuid, Courier)> }
+
+    #[async_trait::async_trait]
+    impl CourierRepository for Couriers {
+        async fn find_by_id(&self, _: Uuid, id: Uuid) -> anyhow::Result<Option<Courier>> {
+            Ok(self.by_user.iter().find(|(_, c)| c.id == id).map(|(_, c)| c.clone()))
+        }
+        async fn find_by_user(&self, _: Uuid, user_id: Uuid) -> anyhow::Result<Option<Courier>> {
+            Ok(self.by_user.iter().find(|(u, _)| *u == user_id).map(|(_, c)| c.clone()))
+        }
+        async fn save(&self, _: &Courier) -> anyhow::Result<()> { Ok(()) }
+        async fn find_available_near(&self, _: Uuid, _: f64, _: f64, _: f64, _: i64)
+            -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
+    }
+
+    #[derive(Default)]
+    struct Assignments { rows: Mutex<Vec<CourierAssignment>> }
+
+    #[async_trait::async_trait]
+    impl AssignmentRepository for Assignments {
+        async fn save(&self, a: &CourierAssignment) -> anyhow::Result<()> {
+            let mut rows = self.rows.lock().unwrap();
+            if let Some(row) = rows.iter_mut().find(|r| r.id == a.id) { *row = a.clone(); }
+            Ok(())
+        }
+        async fn try_claim(&self, _: Uuid, _: Uuid) -> anyhow::Result<ClaimOutcome> {
+            Ok(ClaimOutcome::Lost)
+        }
+        async fn find_by_id(&self, _: Uuid, id: Uuid) -> anyhow::Result<Option<CourierAssignment>> {
+            Ok(self.rows.lock().unwrap().iter().find(|a| a.id == id).cloned())
+        }
+        async fn find_offered_for_courier(&self, _: Uuid, _: Uuid)
+            -> anyhow::Result<Vec<CourierAssignment>> { Ok(vec![]) }
+    }
+
+    struct NoLocations;
+    #[async_trait::async_trait]
+    impl LocationRepository for NoLocations {
+        async fn record(&self, _: &CourierLocation) -> anyhow::Result<()> { Ok(()) }
+        async fn latest(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<CourierLocation>> { Ok(None) }
+        async fn recent(&self, _: Uuid, _: Uuid, _: i64) -> anyhow::Result<Vec<CourierLocation>> { Ok(vec![]) }
+    }
+
+    /// A ledger store that behaves like the real one across a period rollover:
+    /// entries persist forever, but `find_open` only ever returns the ledger for
+    /// the period it is asked about. That asymmetry is the whole bug — the old
+    /// guard scanned the ledger in hand, which after a rollover is empty.
+    #[derive(Default)]
+    struct PeriodAwareLedgers {
+        /// (tenant, courier, kind, external_ref) for every entry ever written.
+        all_entries: Mutex<Vec<(Uuid, Uuid, &'static str, Uuid)>>,
+        ledgers:     Mutex<Vec<CourierLedger>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::infrastructure::db::CourierLedgerRepository for PeriodAwareLedgers {
+        async fn find_open(&self, tenant_id: Uuid, courier_id: Uuid, period: &str)
+            -> anyhow::Result<Option<CourierLedger>> {
+            Ok(self.ledgers.lock().unwrap().iter()
+                .find(|l| l.tenant_id == tenant_id && l.courier_id == courier_id && l.period == period)
+                .cloned())
+        }
+        async fn save(&self, ledger: &CourierLedger) -> anyhow::Result<()> {
+            {
+                let mut all = self.all_entries.lock().unwrap();
+                for e in &ledger.entries {
+                    if let Some(r) = e.external_ref {
+                        let row = (ledger.tenant_id, ledger.courier_id, e.kind.as_str(), r);
+                        if !all.contains(&row) { all.push(row); }
+                    }
+                }
+            }
+            let mut ls = self.ledgers.lock().unwrap();
+            match ls.iter_mut().find(|l| l.id == ledger.id) {
+                Some(existing) => *existing = ledger.clone(),
+                None => ls.push(ledger.clone()),
+            }
+            Ok(())
+        }
+        async fn find_all_open(&self, _: &str) -> anyhow::Result<Vec<CourierLedger>> { Ok(vec![]) }
+        async fn entry_exists_for_job(&self, tenant_id: Uuid, courier_id: Uuid, external_ref: Uuid)
+            -> anyhow::Result<bool> {
+            Ok(self.all_entries.lock().unwrap().iter()
+                .any(|(t, c, _, r)| *t == tenant_id && *c == courier_id && *r == external_ref))
+        }
+    }
+
+    /// The delivery is credited once. Then the week rolls over — which is all
+    /// `current_period()` does — and the same job is credited again, which is
+    /// what an offline queue retrying a lost response does.
+    #[tokio::test]
+    async fn a_retry_across_a_period_boundary_does_not_pay_twice() {
+        let user = Uuid::new_v4();
+        let courier = Courier::new(TENANT, user, "A".into(), "B".into(), "+63".into());
+        let job = Uuid::new_v4();
+
+        let mut a = CourierAssignment::offer_with_earnings(
+            TENANT, courier.id, ProductKey::new("omnideliv".to_string()),
+            job, 3_500, 0, 38_900,
+        );
+        a.status = AssignmentStatus::Claimed;
+
+        let assignments = Arc::new(Assignments::default());
+        assignments.rows.lock().unwrap().push(a.clone());
+
+        let ledgers = Arc::new(PeriodAwareLedgers::default());
+        let svc = DispatchService::new(
+            Arc::new(Couriers { by_user: vec![(user, courier.clone())] }),
+            assignments.clone(),
+            Arc::new(NoLocations),
+            ledgers.clone(),
+            Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
+            PayBounds::default(),
+        );
+
+        svc.credit_courier(&a).await.unwrap();
+
+        let after_first: i64 = ledgers.ledgers.lock().unwrap()
+            .iter().map(|l| l.balance_cents).sum();
+        assert_eq!(after_first, 3_500 - 38_900, "earned 3500, holding 38900 of our cash");
+
+        // The week rolls over: nothing is open for the new period, so the ledger
+        // the old guard scanned would come back empty.
+        ledgers.ledgers.lock().unwrap()
+            .iter_mut().for_each(|l| l.period = "2026-W33".to_string());
+
+        svc.credit_courier(&a).await.unwrap();
+
+        let after_retry: i64 = ledgers.ledgers.lock().unwrap()
+            .iter().map(|l| l.balance_cents).sum();
+        assert_eq!(after_retry, after_first,
+                   "a retried delivery must not credit the trip or re-debit the COD");
+
+        let trips = ledgers.all_entries.lock().unwrap().iter()
+            .filter(|(_, _, kind, r)| *kind == "trip_earning" && *r == job).count();
+        assert_eq!(trips, 1, "exactly one trip earning for one job, ever");
     }
 }
