@@ -19,6 +19,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import net.cargomarket.omnideliv.courier.data.CourierApi
 import net.cargomarket.omnideliv.courier.data.OutboundRepository
+import net.cargomarket.omnideliv.courier.data.ProofEncoder
 import net.cargomarket.omnideliv.courier.data.DropoffDto
 import net.cargomarket.omnideliv.courier.data.LineDto
 import net.cargomarket.omnideliv.courier.data.ManifestDto
@@ -31,6 +32,7 @@ import net.cargomarket.omnideliv.courier.domain.MilestoneKind
 import net.cargomarket.omnideliv.courier.domain.Manifest
 import net.cargomarket.omnideliv.courier.domain.Stop
 import net.cargomarket.omnideliv.courier.domain.currentLeg
+import java.io.File
 import javax.inject.Inject
 import kotlin.coroutines.coroutineContext
 
@@ -96,12 +98,21 @@ data class ManifestUiState(
      * restart costs one redundant tap, which is cheaper than inventing a field.
      */
     val arrivedStops: Set<String> = emptySet(),
+    /**
+     * True while the courier is being asked for a delivery photo.
+     *
+     * Only the dropoff asks. A pickup is witnessed by the vendor handing the
+     * bag over; a doorstep is not witnessed by anyone, which is precisely why
+     * the photo exists.
+     */
+    val capturingProof: Boolean = false,
 )
 
 @HiltViewModel
 class ManifestViewModel @Inject constructor(
     private val api: CourierApi,
     private val outbound: OutboundRepository,
+    private val proofs: ProofEncoder,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ManifestUiState())
@@ -135,6 +146,45 @@ class ManifestViewModel @Inject constructor(
                 fetch(orderId)
                 delay(POLL_MS)
             }
+        }
+    }
+
+    /**
+     * A photo was taken. Encode it, record the delivery, and let the courier go.
+     *
+     * The advance happens once the row is **enqueued**, never once it is
+     * uploaded — that rule is why a delivery can be finished in a basement.
+     * An encode that fails still records the delivery, without a proof path:
+     * losing the evidence is bad, and losing the delivery is worse.
+     */
+    fun proofCaptured(assignmentId: String, file: File) {
+        val manifest = _state.value.manifest ?: return
+        val stopRef = (manifest.currentLeg() as? Leg.ToDropoff)?.dropoff?.stopRef ?: return
+        _state.value = _state.value.copy(capturingProof = false)
+
+        viewModelScope.launch {
+            val encoded = runCatching { proofs.encode(file) }.getOrNull()
+            outbound.record(
+                MilestoneKind.DELIVERED,
+                assignmentId,
+                stopRef,
+                proofPath = encoded?.file?.absolutePath,
+            )
+            runCatching { outbound.drain() }
+            fetch(manifest.orderId)
+        }
+    }
+
+    /** Deliver without a photo — a refused camera permission must not trap anyone. */
+    fun proofSkipped(assignmentId: String) {
+        val manifest = _state.value.manifest ?: return
+        val stopRef = (manifest.currentLeg() as? Leg.ToDropoff)?.dropoff?.stopRef ?: return
+        _state.value = _state.value.copy(capturingProof = false)
+
+        viewModelScope.launch {
+            outbound.record(MilestoneKind.DELIVERED, assignmentId, stopRef)
+            runCatching { outbound.drain() }
+            fetch(manifest.orderId)
         }
     }
 
@@ -193,6 +243,13 @@ class ManifestViewModel @Inject constructor(
             Leg.Done -> return
         }
 
+        // A delivery asks for a photo first. A pickup does not: the vendor
+        // handing the bag over is the witness, and a doorstep has none.
+        if (kind == MilestoneKind.DELIVERED) {
+            _state.value = _state.value.copy(capturingProof = true)
+            return
+        }
+
         viewModelScope.launch {
             outbound.record(kind, assignmentId, stopRef)
             // Best-effort. A failure here changes nothing: the row is on disk
@@ -229,6 +286,14 @@ fun ManifestRoute(
     vm: ManifestViewModel = hiltViewModel(),
 ) {
     val state by vm.state.collectAsState()
+
+    if (state.capturingProof) {
+        ProofScreen(
+            onCaptured = { file -> vm.proofCaptured(assignmentId, file) },
+            onSkip = { vm.proofSkipped(assignmentId) },
+        )
+        return
+    }
 
     // In an effect rather than in composition: composition can run many times
     // and must stay free of side effects. Keyed on the order, which is fixed for
