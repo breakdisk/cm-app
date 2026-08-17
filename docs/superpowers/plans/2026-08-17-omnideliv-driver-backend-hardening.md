@@ -52,6 +52,20 @@ Write the numbers down. Every task below adds tests; none may remove any.
 
 ## Task 1: Refuse `collected` and `delivered` from a courier who does not hold the assignment
 
+> **Amended after code review.** The helper below was written as
+> `held_assignment` and checked `courier_id` only. Review found that ownership
+> alone does not gate a milestone: `offer_to_nearest` fans out to five couriers,
+> only the winner's row is claimed, and every loser keeps a readable assignment
+> id — so a loser could `POST /delivered` on their own `Offered` row, be
+> credited, and advance the customer's order.
+>
+> As landed, the helper is named **`assignment_for_courier`**, documents itself
+> as *addressed to* rather than *held by*, and each caller states its own status
+> requirement: `Claimed` for `collected` and `arrived`; for `delivered`,
+> `Claimed` does the work and `Completed` returns success without re-crediting,
+> so an offline queue's retry is absorbed here rather than 404'd. See the spec's
+> H2 section. Later tasks call `assignment_for_courier`, not `held_assignment`.
+
 `claim` already does this. These two never got it, and `mark_delivered` completes the assignment, credits the courier ledger and debits COD — so today any authenticated user in the tenant can complete another courier's job by naming its id.
 
 **Files:**
@@ -1114,7 +1128,16 @@ Then add the authorizing wrapper next to `position_for_assignment`:
         assignment_id: Uuid,
     ) -> anyhow::Result<Option<(Uuid, CourierLocation, Option<f64>)>> {
         if let PositionReader::Courier(user_id) = reader {
-            if self.held_assignment(tenant_id, user_id, assignment_id).await?.is_none() {
+            // Addressed-to, not status-gated — unlike the milestone calls. The
+            // position this returns is the assignment's own courier's, so a
+            // courier reading a stale offer of theirs learns only where they
+            // already are. Requiring `Claimed` here would buy nothing and would
+            // break a legitimate read between claim and first fix.
+            if self
+                .assignment_for_courier(tenant_id, user_id, assignment_id)
+                .await?
+                .is_none()
+            {
                 return Ok(None);
             }
         }

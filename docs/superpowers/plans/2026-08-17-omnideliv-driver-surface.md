@@ -651,7 +651,21 @@ Add to the `milestone_authorization` module created by plan 1 Task 1 — it alre
         assert!(!svc.mark_arrived(TENANT, other, id, Uuid::new_v4(), None).await.unwrap());
         assert!(events.emitted.lock().unwrap().is_empty());
     }
+
+    /// The fan-out case. One job is offered to five couriers and only the
+    /// winner's row is claimed; the four losers keep a readable id.
+    #[tokio::test]
+    async fn a_courier_who_only_received_an_offer_cannot_mark_arrived() {
+        let (svc, id, holder, _, assignments, _, events) = offered_fixture();
+        assert!(!svc.mark_arrived(TENANT, holder, id, Uuid::new_v4(), None).await.unwrap());
+        assert!(events.emitted.lock().unwrap().is_empty());
+        assert_eq!(assignments.rows.lock().unwrap()[0].status, AssignmentStatus::Offered);
+    }
 ```
+
+> `offered_fixture()` is the same-status-chooser helper plan 1's Task 1 fix
+> added alongside `fixture()`. If it is named differently in the landed code,
+> use whatever that commit introduced rather than adding a second one.
 
 Extend `RecordingEvents`' match with `CourierEvent::Arrived { .. } => "arrived",`.
 
@@ -686,6 +700,9 @@ In `dispatch_service.rs`, next to `mark_collected`:
 ```rust
     /// The courier is at a stop. Published, never persisted: it changes no
     /// assignment state, and a milestone that only informs does not need a row.
+    ///
+    /// Gated on a live claim like `mark_collected`, for the same reason — see
+    /// `assignment_for_courier`. Being *offered* a job is not carrying it.
     pub async fn mark_arrived(
         &self,
         tenant_id: Uuid,
@@ -694,9 +711,15 @@ In `dispatch_service.rs`, next to `mark_collected`:
         stop_ref: Uuid,
         device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
     ) -> anyhow::Result<bool> {
-        let Some(a) = self.held_assignment(tenant_id, user_id, assignment_id).await? else {
+        let Some(a) = self.assignment_for_courier(tenant_id, user_id, assignment_id).await? else {
             return Ok(false);
         };
+        // `offer_to_nearest` addresses one job to five couriers and only the
+        // winner's row is claimed. The losers keep a readable assignment id and
+        // must not be able to report against it.
+        if a.status != AssignmentStatus::Claimed {
+            return Ok(false);
+        }
 
         self.emit(CourierEvent::Arrived {
             tenant_id,
