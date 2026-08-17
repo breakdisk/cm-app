@@ -25,6 +25,15 @@ pub enum CourierEvent {
                 /// variant the consumer cannot deserialize fails *every*
                 /// message on the partition, not just the new kind.
                 #[serde(default)] courier_user_id: Option<Uuid> },
+    /// The courier is at a stop. Published, never persisted: it changes no
+    /// assignment state, and a milestone that only informs does not need a row.
+    ///
+    /// `stop_ref` is opaque. The offering product sets it — OmniDeliv uses the
+    /// vendor id for a pickup and the order id for the dropoff — and this tier
+    /// never resolves it, exactly as it never resolves `external_ref`.
+    Arrived   { tenant_id: Uuid, product: String, external_ref: Uuid, courier_id: Uuid,
+                stop_ref: Uuid,
+                device_timestamp: Option<chrono::DateTime<chrono::Utc>> },
     Collected { tenant_id: Uuid, product: String, external_ref: Uuid, courier_id: Uuid, vendor_id: Uuid,
                 device_timestamp: Option<chrono::DateTime<chrono::Utc>> },
     Delivered { tenant_id: Uuid, product: String, external_ref: Uuid, courier_id: Uuid,
@@ -44,6 +53,7 @@ impl CourierEvent {
     pub fn key(&self) -> Uuid {
         match self {
             CourierEvent::Assigned { external_ref, .. }
+            | CourierEvent::Arrived { external_ref, .. }
             | CourierEvent::Collected { external_ref, .. }
             | CourierEvent::Delivered { external_ref, .. } => *external_ref,
         }

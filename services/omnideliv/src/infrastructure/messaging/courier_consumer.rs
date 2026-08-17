@@ -47,6 +47,12 @@ pub enum CourierEvent {
                 /// fails to deserialize, and a failed deserialize takes down
                 /// every message on the partition, not just that one.
                 #[serde(default)] courier_user_id: Option<Uuid> },
+    /// Mirrors field-ops. `stop_ref` is the vendor id for a pickup and the
+    /// order id for the dropoff — this service is the only one that knows the
+    /// difference, which is why field-ops can stay product-agnostic.
+    Arrived   { tenant_id: Uuid, product: String, external_ref: Uuid, courier_id: Uuid,
+                stop_ref: Uuid,
+                device_timestamp: Option<chrono::DateTime<chrono::Utc>> },
     Collected { tenant_id: Uuid, product: String, external_ref: Uuid, courier_id: Uuid, vendor_id: Uuid,
                 device_timestamp: Option<chrono::DateTime<chrono::Utc>> },
     Delivered { tenant_id: Uuid, product: String, external_ref: Uuid, courier_id: Uuid,
@@ -57,6 +63,7 @@ impl CourierEvent {
     fn product(&self) -> &str {
         match self {
             CourierEvent::Assigned { product, .. }
+            | CourierEvent::Arrived { product, .. }
             | CourierEvent::Collected { product, .. }
             | CourierEvent::Delivered { product, .. } => product,
         }
@@ -65,6 +72,7 @@ impl CourierEvent {
     fn tenant_id(&self) -> Uuid {
         match self {
             CourierEvent::Assigned { tenant_id, .. }
+            | CourierEvent::Arrived { tenant_id, .. }
             | CourierEvent::Collected { tenant_id, .. }
             | CourierEvent::Delivered { tenant_id, .. } => *tenant_id,
         }
@@ -74,6 +82,7 @@ impl CourierEvent {
     fn order_id(&self) -> Uuid {
         match self {
             CourierEvent::Assigned { external_ref, .. }
+            | CourierEvent::Arrived { external_ref, .. }
             | CourierEvent::Collected { external_ref, .. }
             | CourierEvent::Delivered { external_ref, .. } => *external_ref,
         }
@@ -125,6 +134,16 @@ impl CourierMilestoneHandler {
                 order.courier_claimed(assignment_id, courier_user_id)?;
                 self.append(tenant_id, order_id, event_type::COURIER_CLAIMED, None, None,
                             serde_json::json!({ "assignment_id": assignment_id })).await;
+            }
+
+            CourierEvent::Arrived { stop_ref, courier_id, device_timestamp, .. } => {
+                // No status change. Arrival is progress a tracking screen shows
+                // well and a lifecycle transition would show badly — a courier
+                // parked outside is not a collection. Recorded so the timeline
+                // can render it and so SLA maths has the device clock.
+                self.append(tenant_id, order_id, event_type::COURIER_ARRIVED,
+                            device_timestamp, Some(courier_id),
+                            serde_json::json!({ "stop_ref": stop_ref })).await;
             }
 
             CourierEvent::Collected { vendor_id, courier_id, device_timestamp, .. } => {

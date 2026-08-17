@@ -404,6 +404,38 @@ impl DispatchService {
         }
     }
 
+    /// The courier is at a stop.
+    ///
+    /// Published, never persisted: it changes no assignment state, and a
+    /// milestone that only informs does not need a row. Gated on a live claim
+    /// like `mark_collected` — being *offered* a job is not carrying it.
+    pub async fn mark_arrived(
+        &self,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        assignment_id: Uuid,
+        stop_ref: Uuid,
+        device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> anyhow::Result<bool> {
+        let Some(a) = self.assignment_for_courier(tenant_id, user_id, assignment_id).await? else {
+            return Ok(false);
+        };
+        if a.status != AssignmentStatus::Claimed {
+            return Ok(false);
+        }
+
+        self.emit(CourierEvent::Arrived {
+            tenant_id,
+            product: a.product.as_str().to_string(),
+            external_ref: a.external_ref,
+            courier_id: a.courier_id,
+            stop_ref,
+            device_timestamp,
+        })
+        .await;
+        Ok(true)
+    }
+
     /// A vendor's goods are in the bag.
     ///
     /// `user_id` is the authenticated caller and the assignment must be
@@ -1373,6 +1405,7 @@ mod milestone_authorization {
         async fn publish(&self, e: &CourierEvent) -> anyhow::Result<()> {
             self.emitted.lock().unwrap().push(match e {
                 CourierEvent::Assigned  { .. } => "assigned",
+                CourierEvent::Arrived   { .. } => "arrived",
                 CourierEvent::Collected { .. } => "collected",
                 CourierEvent::Delivered { .. } => "delivered",
             });
@@ -1532,6 +1565,31 @@ mod milestone_authorization {
     async fn a_courier_who_only_received_an_offer_cannot_mark_collected() {
         let f = fixture_in(AssignmentStatus::Offered);
         assert!(!f.svc.mark_collected(TENANT, f.holder, f.assignment, Uuid::new_v4(), None)
+                      .await.unwrap());
+        assert!(f.events.emitted.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_holder_can_mark_arrived() {
+        let f = fixture();
+        assert!(f.svc.mark_arrived(TENANT, f.holder, f.assignment, Uuid::new_v4(), None)
+                     .await.unwrap());
+        assert_eq!(*f.events.emitted.lock().unwrap(), vec!["arrived"]);
+    }
+
+    #[tokio::test]
+    async fn another_courier_cannot_mark_arrived() {
+        let f = fixture();
+        assert!(!f.svc.mark_arrived(TENANT, f.other, f.assignment, Uuid::new_v4(), None)
+                      .await.unwrap());
+        assert!(f.events.emitted.lock().unwrap().is_empty());
+    }
+
+    /// Same fan-out rule as every other milestone.
+    #[tokio::test]
+    async fn a_courier_who_only_received_an_offer_cannot_mark_arrived() {
+        let f = fixture_in(AssignmentStatus::Offered);
+        assert!(!f.svc.mark_arrived(TENANT, f.holder, f.assignment, Uuid::new_v4(), None)
                       .await.unwrap());
         assert!(f.events.emitted.lock().unwrap().is_empty());
     }

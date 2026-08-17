@@ -105,6 +105,14 @@ pub struct CollectedRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ArrivedRequest {
+    /// Opaque to this tier. The product that offered the job knows whether it
+    /// names a vendor or a customer.
+    pub stop_ref: Uuid,
+    pub device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct DeliveredRequest {
     pub device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -130,6 +138,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/v1/field-ops/assignments/offer", post(offer))
         .route("/v1/field-ops/assignments/mine", get(my_offers))
         .route("/v1/field-ops/assignments/:id/claim", post(claim))
+        .route("/v1/field-ops/assignments/:id/arrived", post(arrived))
         .route("/v1/field-ops/assignments/:id/collected", post(collected))
         .route("/v1/field-ops/assignments/:id/delivered", post(delivered))
         .route("/v1/field-ops/assignments/:id/position", get(assignment_position))
@@ -538,6 +547,27 @@ async fn assignment_position(
         recorded_at:        fix.recorded_at,
         age_seconds:        fix.age_seconds(chrono::Utc::now()),
     }))
+}
+
+async fn arrived(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Path(id): Path<Uuid>,
+    Json(req): Json<ArrivedRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let found = st
+        .dispatch
+        .mark_arrived(claims.tenant_id, claims.user_id, id, req.stop_ref, req.device_timestamp)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "arrived failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    if !found {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(StatusCode::ACCEPTED)
 }
 
 async fn collected(
