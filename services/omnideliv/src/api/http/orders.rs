@@ -42,7 +42,8 @@ async fn checkout(
     // tenant's checkout settle against another tenant's basket and vendors.
     let order = st
         .checkout
-        .place(claims.tenant_id, req.basket_id, req.tip_cents, req.delivery_lat, req.delivery_lng)
+        .place(claims.tenant_id, req.basket_id, req.tip_cents, req.delivery_lat, req.delivery_lng,
+               &claims.email)
         .await
         .map_err(|e| match e {
             // A basket awaiting review is the client's cue to show Screen C,

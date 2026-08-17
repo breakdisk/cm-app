@@ -103,6 +103,12 @@ impl CheckoutService {
     /// Order of operations matters. The basket is validated, vendors re-checked
     /// and legs computed *before* anything irreversible happens, so a failure
     /// here leaves no money moved and no courier dispatched.
+    ///
+    /// `customer_login` is the authenticated caller's login address, taken from
+    /// the validated token by the handler and never from the request body — a
+    /// client-supplied contact would let anyone put an arbitrary phone number
+    /// on an order, and that is a number a courier would then call.
+    #[allow(clippy::too_many_arguments)]
     pub async fn place(
         &self,
         tenant_id: Uuid,
@@ -110,6 +116,7 @@ impl CheckoutService {
         tip_cents: i64,
         delivery_lat: f64,
         delivery_lng: f64,
+        customer_login: &str,
     ) -> Result<Order, CheckoutError> {
         let basket: Basket = self
             .baskets
@@ -173,11 +180,21 @@ impl CheckoutService {
 
         let plan = ConsolidationPlan::sequence(tenant_id, basket.id, stops, 0, flat_fee_cents);
 
+        // The courier's only way to reach the customer. `phone_from_login`
+        // returns `None` for a real mailbox, so an account created any other
+        // way leaves the manifest without a number rather than showing the
+        // courier an email local-part to dial.
+        let customer_phone =
+            crate::domain::entities::order::phone_from_login(customer_login);
+
         let mut order = Order::place(
             tenant_id, basket.customer_id, basket.id, plan.id,
             legs, flat_fee_cents, tip_cents, courier_trip_cents,
             delivery_lat, delivery_lng,
-        );
+        )
+        // No display name on the OTP path — identity has none to give, and a
+        // fabricated one would be worse than an honest blank.
+        .with_customer_contact(None, customer_phone);
 
         // Only now does anything irreversible happen.
         let offered = self

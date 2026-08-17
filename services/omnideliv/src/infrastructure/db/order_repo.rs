@@ -46,8 +46,8 @@ impl OrderRepository for PgOrderRepository {
                 id, tenant_id, customer_id, basket_id, plan_id, status,
                 goods_total_cents, delivery_fee_cents, tip_cents, grand_total_cents,
                 courier_trip_cents, courier_task_id, placed_at, delivered_at,
-                delivery_lat, delivery_lng
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+                delivery_lat, delivery_lng, customer_name, customer_phone
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
             ON CONFLICT (id) DO UPDATE SET
                 status          = EXCLUDED.status,
                 courier_task_id = EXCLUDED.courier_task_id,
@@ -56,7 +56,13 @@ impl OrderRepository for PgOrderRepository {
                 -- migration 0013 carries NULL coordinates, and saving it after a
                 -- status change must not erase a destination that was set since.
                 delivery_lat    = COALESCE(EXCLUDED.delivery_lat, omnideliv.orders.delivery_lat),
-                delivery_lng    = COALESCE(EXCLUDED.delivery_lng, omnideliv.orders.delivery_lng)
+                delivery_lng    = COALESCE(EXCLUDED.delivery_lng, omnideliv.orders.delivery_lng),
+                -- Same reasoning, same trap: the recovery sweep and the courier
+                -- consumer both save orders they loaded, and neither knows a
+                -- contact. A plain assignment would erase the customer's phone
+                -- on the first status change after checkout.
+                customer_name   = COALESCE(EXCLUDED.customer_name, omnideliv.orders.customer_name),
+                customer_phone  = COALESCE(EXCLUDED.customer_phone, omnideliv.orders.customer_phone)
             "#,
         )
         .bind(o.id).bind(o.tenant_id).bind(o.customer_id).bind(o.basket_id).bind(o.plan_id)
@@ -65,6 +71,7 @@ impl OrderRepository for PgOrderRepository {
         .bind(o.grand_total_cents).bind(o.courier_trip_cents)
         .bind(o.courier_task_id).bind(o.placed_at).bind(o.delivered_at)
         .bind(o.delivery_lat).bind(o.delivery_lng)
+        .bind(&o.customer_name).bind(&o.customer_phone)
         .execute(&mut *tx).await?;
 
         for l in &o.legs {
@@ -116,6 +123,8 @@ impl OrderRepository for PgOrderRepository {
                 status:             order_status(&status)?,
                 delivery_lat:       r.get("delivery_lat"),
                 delivery_lng:       r.get("delivery_lng"),
+                customer_name:      r.get("customer_name"),
+                customer_phone:     r.get("customer_phone"),
                 goods_total_cents:  r.get("goods_total_cents"),
                 delivery_fee_cents: r.get("delivery_fee_cents"),
                 tip_cents:          r.get("tip_cents"),
@@ -229,6 +238,8 @@ impl OrderRepository for PgOrderRepository {
             status:             order_status(&status)?,
             delivery_lat:       r.get("delivery_lat"),
             delivery_lng:       r.get("delivery_lng"),
+            customer_name:      r.get("customer_name"),
+            customer_phone:     r.get("customer_phone"),
             goods_total_cents:  r.get("goods_total_cents"),
             delivery_fee_cents: r.get("delivery_fee_cents"),
             tip_cents:          r.get("tip_cents"),
