@@ -193,6 +193,10 @@ impl CourierLedgerRepository for PgCourierLedgerRepository {
         _courier_id: Uuid,
         _external_ref: Uuid,
     ) -> anyhow::Result<bool> {
-        Ok(false)
+        // Deliberately unimplemented until the hardening plan's Task 2 adds the
+        // cross-period query and the unique index behind it. `credit_courier`
+        // propagates this with `?`, so wiring it early fails a delivery loudly
+        // rather than quietly reporting "not yet credited" and paying twice.
+        anyhow::bail!("entry_exists_for_job is not implemented until hardening Task 2")
     }
 }

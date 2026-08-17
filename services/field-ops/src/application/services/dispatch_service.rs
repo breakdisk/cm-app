@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::domain::entities::{Courier, CourierAssignment, CourierLocation, ProductKey};
+use crate::domain::entities::{
+    AssignmentStatus, Courier, CourierAssignment, CourierLocation, ProductKey,
+};
 use crate::domain::repositories::CourierRepository;
 use crate::domain::entities::CourierLedger;
 use crate::infrastructure::db::{
@@ -398,9 +400,16 @@ impl DispatchService {
         vendor_id: Uuid,
         device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
     ) -> anyhow::Result<bool> {
-        let Some(a) = self.held_assignment(tenant_id, user_id, assignment_id).await? else {
+        let Some(a) = self.assignment_for_courier(tenant_id, user_id, assignment_id).await? else {
             return Ok(false);
         };
+        // Being offered a job is not carrying it. `offer_to_nearest` addresses
+        // one job to several couriers and only the winner's row is claimed;
+        // the losers keep a readable assignment id and must not be able to
+        // report milestones against it.
+        if a.status != AssignmentStatus::Claimed {
+            return Ok(false);
+        }
 
         self.emit(CourierEvent::Collected {
             tenant_id,
@@ -416,6 +425,12 @@ impl DispatchService {
 
     /// The job is done. Completing the assignment frees the courier for the
     /// next one, which is why it is persisted rather than only published.
+    ///
+    /// The most consequential call on this service: it completes the
+    /// assignment, credits the courier and debits the cash they are holding. So
+    /// it is gated twice — `assignment_for_courier` proves the caller is the
+    /// courier this job is addressed to, and the status check below proves they
+    /// actually claimed it.
     pub async fn mark_delivered(
         &self,
         tenant_id: Uuid,
@@ -423,9 +438,26 @@ impl DispatchService {
         assignment_id: Uuid,
         device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
     ) -> anyhow::Result<bool> {
-        let Some(mut a) = self.held_assignment(tenant_id, user_id, assignment_id).await? else {
+        let Some(mut a) = self.assignment_for_courier(tenant_id, user_id, assignment_id).await? else {
             return Ok(false);
         };
+
+        // An at-least-once client retrying a delivery whose response was lost
+        // has not made an error: the milestone already landed. Accept it
+        // without re-completing, re-crediting or re-publishing — so the
+        // duplicate stops here rather than relying on the consumer to absorb
+        // it, and an offline queue is not told to park a milestone that
+        // succeeded.
+        if a.status == AssignmentStatus::Completed {
+            return Ok(true);
+        }
+        // Being offered a job is not carrying it. `offer_to_nearest` addresses
+        // one job to several couriers and only the winner's row is claimed; the
+        // losers keep a readable assignment id, and without this they could
+        // complete and be paid for a job they never took.
+        if a.status != AssignmentStatus::Claimed {
+            return Ok(false);
+        }
 
         a.complete();
         self.assignments.save(&a).await?;
@@ -453,13 +485,19 @@ impl DispatchService {
         Ok(true)
     }
 
-    /// The assignment, if and only if this user is the courier holding it.
+    /// The assignment, if it is *addressed to* this courier — in any status.
     ///
     /// `None` covers all three refusals — not a courier, no such assignment,
     /// someone else's assignment — because the handler turns every one of them
     /// into the same 404. Distinguishing them would let a caller probe which
     /// assignment ids exist.
-    async fn held_assignment(
+    ///
+    /// Deliberately says nothing about status, and the name says so. Being
+    /// *offered* a job is not holding it: `offer_to_nearest` addresses one job
+    /// to `fanout` couriers and only the winner's row is ever claimed, so a
+    /// check on identity alone passes for all of them. Each caller states the
+    /// status it requires.
+    async fn assignment_for_courier(
         &self,
         tenant_id: Uuid,
         user_id: Uuid,
@@ -1166,22 +1204,46 @@ mod milestone_authorization {
         Courier::new(TENANT, Uuid::new_v4(), "A".into(), "B".into(), "+63".into())
     }
 
-    /// (service, assignment_id, holder_user, other_user, assignments, ledgers, events)
-    #[allow(clippy::type_complexity)]
-    fn fixture() -> (
-        DispatchService, Uuid, Uuid, Uuid,
-        Arc<Assignments>, Arc<RecordingLedgers>, Arc<RecordingEvents>,
-    ) {
+    /// One job, one courier it is addressed to, one who is not.
+    ///
+    /// A struct rather than a tuple because the status matters as much as the
+    /// identity here, and a positional 8-tuple destructured eight ways is how a
+    /// test ends up asserting against the wrong uuid.
+    struct Fixture {
+        svc:         DispatchService,
+        assignment:  Uuid,
+        /// The identity user the assignment is addressed to.
+        holder:      Uuid,
+        /// That user's *courier* id — a different uuid, which is the whole
+        /// point of the two-hop lookup being tested.
+        holder_courier: Uuid,
+        other:       Uuid,
+        assignments: Arc<Assignments>,
+        ledgers:     Arc<RecordingLedgers>,
+        events:      Arc<RecordingEvents>,
+    }
+
+    /// The normal case: the courier claimed the job and is working it.
+    fn fixture() -> Fixture { fixture_in(AssignmentStatus::Claimed) }
+
+    /// The same job in a chosen status.
+    ///
+    /// `Offered` is not hypothetical: `offer_to_nearest` addresses one job to
+    /// `fanout` couriers and only the winner's row is ever claimed, so at any
+    /// moment most assignments in this state are held by couriers who did not
+    /// get the job and can still read their id from `/assignments/mine`.
+    fn fixture_in(status: AssignmentStatus) -> Fixture {
         let holder_user = Uuid::new_v4();
         let other_user  = Uuid::new_v4();
         let holder = courier();
         let other  = courier();
+        let holder_courier = holder.id;
 
         let mut a = CourierAssignment::offer_with_earnings(
             TENANT, holder.id, ProductKey::new("omnideliv".to_string()),
             Uuid::new_v4(), 3_500, 0, 38_900,
         );
-        a.status = AssignmentStatus::Claimed;
+        a.status = status;
         let id = a.id;
 
         let assignments = Arc::new(Assignments::default());
@@ -1198,22 +1260,35 @@ mod milestone_authorization {
             events.clone(),
             PayBounds::default(),
         );
-        (svc, id, holder_user, other_user, assignments, ledgers, events)
+        Fixture {
+            svc, assignment: id, holder: holder_user, holder_courier,
+            other: other_user, assignments, ledgers, events,
+        }
     }
 
     #[tokio::test]
     async fn the_holder_can_mark_collected() {
-        let (svc, id, holder, _, _, _, events) = fixture();
-        assert!(svc.mark_collected(TENANT, holder, id, Uuid::new_v4(), None).await.unwrap());
-        assert_eq!(*events.emitted.lock().unwrap(), vec!["collected"]);
+        let f = fixture();
+        assert!(f.svc.mark_collected(TENANT, f.holder, f.assignment, Uuid::new_v4(), None)
+                     .await.unwrap());
+        assert_eq!(*f.events.emitted.lock().unwrap(), vec!["collected"]);
     }
 
     #[tokio::test]
-    async fn the_holder_can_mark_delivered() {
-        let (svc, id, holder, _, _, ledgers, events) = fixture();
-        assert!(svc.mark_delivered(TENANT, holder, id, None).await.unwrap());
-        assert_eq!(*events.emitted.lock().unwrap(), vec!["delivered"]);
-        assert_eq!(ledgers.saved.lock().unwrap().len(), 1, "the holder is paid");
+    async fn the_holder_can_mark_delivered_and_is_the_one_paid() {
+        let f = fixture();
+        assert!(f.svc.mark_delivered(TENANT, f.holder, f.assignment, None).await.unwrap());
+        assert_eq!(*f.events.emitted.lock().unwrap(), vec!["delivered"]);
+
+        let saved = f.ledgers.saved.lock().unwrap();
+        assert_eq!(saved.len(), 1);
+        // Identity and amount, not just a count. The count is 1 by construction
+        // — `find_open` always returns `None` — so it would pass even if the
+        // credit landed on the wrong courier or for the wrong sum.
+        assert_eq!(saved[0].courier_id, f.holder_courier,
+                   "the courier who did the job is the one credited");
+        assert_eq!(saved[0].balance_cents, 3_500 - 38_900,
+                   "earned 3500, now holding 38900 of the platform's cash");
     }
 
     /// The assignment ids are handed to the dispatching product, so they are
@@ -1221,9 +1296,10 @@ mod milestone_authorization {
     /// against it.
     #[tokio::test]
     async fn another_courier_cannot_mark_collected() {
-        let (svc, id, _, other, _, _, events) = fixture();
-        assert!(!svc.mark_collected(TENANT, other, id, Uuid::new_v4(), None).await.unwrap());
-        assert!(events.emitted.lock().unwrap().is_empty(),
+        let f = fixture();
+        assert!(!f.svc.mark_collected(TENANT, f.other, f.assignment, Uuid::new_v4(), None)
+                      .await.unwrap());
+        assert!(f.events.emitted.lock().unwrap().is_empty(),
                 "no milestone may reach the broker for a job the caller does not hold");
     }
 
@@ -1231,23 +1307,69 @@ mod milestone_authorization {
     /// credits the courier ledger and debits COD.
     #[tokio::test]
     async fn another_courier_cannot_mark_delivered_or_trigger_a_credit() {
-        let (svc, id, _, other, assignments, ledgers, events) = fixture();
+        let f = fixture();
 
-        assert!(!svc.mark_delivered(TENANT, other, id, None).await.unwrap());
-        assert!(events.emitted.lock().unwrap().is_empty());
-        assert!(ledgers.saved.lock().unwrap().is_empty(),
+        assert!(!f.svc.mark_delivered(TENANT, f.other, f.assignment, None).await.unwrap());
+        assert!(f.events.emitted.lock().unwrap().is_empty());
+        assert!(f.ledgers.saved.lock().unwrap().is_empty(),
                 "an unauthorized delivery must not credit anyone");
 
-        let rows = assignments.rows.lock().unwrap();
+        let rows = f.assignments.rows.lock().unwrap();
         assert_eq!(rows[0].status, AssignmentStatus::Claimed,
                    "the assignment must not be completed by a caller who does not hold it");
     }
 
     #[tokio::test]
     async fn a_user_who_is_not_a_courier_is_refused_both_milestones() {
-        let (svc, id, _, _, _, _, _) = fixture();
+        let f = fixture();
         let stranger = Uuid::new_v4();
-        assert!(!svc.mark_collected(TENANT, stranger, id, Uuid::new_v4(), None).await.unwrap());
-        assert!(!svc.mark_delivered(TENANT, stranger, id, None).await.unwrap());
+        assert!(!f.svc.mark_collected(TENANT, stranger, f.assignment, Uuid::new_v4(), None)
+                      .await.unwrap());
+        assert!(!f.svc.mark_delivered(TENANT, stranger, f.assignment, None).await.unwrap());
+    }
+
+    /// The fan-out hole. `offer_to_nearest` addresses one job to five couriers,
+    /// each row carrying the full `trip_cents`; `try_claim` flips only the
+    /// winner's and nothing expires the rest. A loser keeps a readable
+    /// assignment id, and identity alone does not distinguish them from the
+    /// winner — so without the status gate they could complete a job they never
+    /// took, be paid for it, and publish `Delivered`, which advances the
+    /// customer's order while the real courier is still carrying it.
+    #[tokio::test]
+    async fn a_courier_who_only_received_an_offer_cannot_deliver_it() {
+        let f = fixture_in(AssignmentStatus::Offered);
+
+        assert!(!f.svc.mark_delivered(TENANT, f.holder, f.assignment, None).await.unwrap());
+        assert!(f.events.emitted.lock().unwrap().is_empty(),
+                "an unclaimed job must not publish a delivery");
+        assert!(f.ledgers.saved.lock().unwrap().is_empty(),
+                "being offered a job is not doing it — nobody is paid");
+        assert_eq!(f.assignments.rows.lock().unwrap()[0].status, AssignmentStatus::Offered,
+                   "the offer must not be completed out from under the claim");
+    }
+
+    #[tokio::test]
+    async fn a_courier_who_only_received_an_offer_cannot_mark_collected() {
+        let f = fixture_in(AssignmentStatus::Offered);
+        assert!(!f.svc.mark_collected(TENANT, f.holder, f.assignment, Uuid::new_v4(), None)
+                      .await.unwrap());
+        assert!(f.events.emitted.lock().unwrap().is_empty());
+    }
+
+    /// An at-least-once client — which the driver app's offline queue is —
+    /// retries a delivery whose response was lost. That is not an error: the
+    /// milestone already landed. It must be accepted without paying again, and
+    /// the duplicate must not reach the broker.
+    #[tokio::test]
+    async fn redelivering_a_completed_job_is_accepted_without_paying_again() {
+        let f = fixture();
+
+        assert!(f.svc.mark_delivered(TENANT, f.holder, f.assignment, None).await.unwrap());
+        assert!(f.svc.mark_delivered(TENANT, f.holder, f.assignment, None).await.unwrap(),
+                "a retry reports success, so the queue does not park a milestone that landed");
+
+        assert_eq!(f.ledgers.saved.lock().unwrap().len(), 1, "paid exactly once");
+        assert_eq!(*f.events.emitted.lock().unwrap(), vec!["delivered"],
+                   "the duplicate stops here rather than relying on the consumer to absorb it");
     }
 }
