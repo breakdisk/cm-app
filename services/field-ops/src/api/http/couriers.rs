@@ -538,7 +538,7 @@ async fn collected(
 ) -> Result<StatusCode, StatusCode> {
     let found = st
         .dispatch
-        .mark_collected(claims.tenant_id, id, req.vendor_id, req.device_timestamp)
+        .mark_collected(claims.tenant_id, claims.user_id, id, req.vendor_id, req.device_timestamp)
         .await
         .map_err(|e| {
             tracing::error!(err = %e, "collected failed");
@@ -562,7 +562,7 @@ async fn delivered(
 ) -> Result<StatusCode, StatusCode> {
     let found = st
         .dispatch
-        .mark_delivered(claims.tenant_id, id, req.device_timestamp)
+        .mark_delivered(claims.tenant_id, claims.user_id, id, req.device_timestamp)
         .await
         .map_err(|e| {
             tracing::error!(err = %e, "delivered failed");

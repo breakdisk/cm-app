@@ -384,14 +384,21 @@ impl DispatchService {
     }
 
     /// A vendor's goods are in the bag.
+    ///
+    /// `user_id` is the authenticated caller and the assignment must be
+    /// **theirs**. Assignment ids are handed to the dispatching product, so
+    /// they are not secret; without this check any authenticated user in the
+    /// tenant could report milestones against another courier's job. `claim`
+    /// has had this since it was hardened — these two had not.
     pub async fn mark_collected(
         &self,
         tenant_id: Uuid,
+        user_id: Uuid,
         assignment_id: Uuid,
         vendor_id: Uuid,
         device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
     ) -> anyhow::Result<bool> {
-        let Some(a) = self.assignments.find_by_id(tenant_id, assignment_id).await? else {
+        let Some(a) = self.held_assignment(tenant_id, user_id, assignment_id).await? else {
             return Ok(false);
         };
 
@@ -412,10 +419,11 @@ impl DispatchService {
     pub async fn mark_delivered(
         &self,
         tenant_id: Uuid,
+        user_id: Uuid,
         assignment_id: Uuid,
         device_timestamp: Option<chrono::DateTime<chrono::Utc>>,
     ) -> anyhow::Result<bool> {
-        let Some(mut a) = self.assignments.find_by_id(tenant_id, assignment_id).await? else {
+        let Some(mut a) = self.held_assignment(tenant_id, user_id, assignment_id).await? else {
             return Ok(false);
         };
 
@@ -443,6 +451,30 @@ impl DispatchService {
         })
         .await;
         Ok(true)
+    }
+
+    /// The assignment, if and only if this user is the courier holding it.
+    ///
+    /// `None` covers all three refusals — not a courier, no such assignment,
+    /// someone else's assignment — because the handler turns every one of them
+    /// into the same 404. Distinguishing them would let a caller probe which
+    /// assignment ids exist.
+    async fn held_assignment(
+        &self,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        assignment_id: Uuid,
+    ) -> anyhow::Result<Option<CourierAssignment>> {
+        let Some(courier) = self.couriers.find_by_user(tenant_id, user_id).await? else {
+            return Ok(None);
+        };
+        let Some(a) = self.assignments.find_by_id(tenant_id, assignment_id).await? else {
+            return Ok(None);
+        };
+        if a.courier_id != courier.id {
+            return Ok(None);
+        }
+        Ok(Some(a))
     }
 
     /// Credit the courier for a completed job.
@@ -683,6 +715,7 @@ mod claim_authorization {
             -> anyhow::Result<Option<CourierLedger>> { Ok(None) }
         async fn save(&self, _: &CourierLedger) -> anyhow::Result<()> { Ok(()) }
         async fn find_all_open(&self, _: &str) -> anyhow::Result<Vec<CourierLedger>> { Ok(vec![]) }
+        async fn entry_exists_for_job(&self, _: Uuid, _: Uuid, _: Uuid) -> anyhow::Result<bool> { Ok(false) }
     }
 
     fn courier() -> Courier {
@@ -788,6 +821,7 @@ mod payout_rules {
         async fn find_all_open(&self, _: &str) -> anyhow::Result<Vec<CourierLedger>> {
             Ok(self.0.lock().unwrap().clone())
         }
+        async fn entry_exists_for_job(&self, _: Uuid, _: Uuid, _: Uuid) -> anyhow::Result<bool> { Ok(false) }
     }
 
     struct NoCouriers;
@@ -939,6 +973,7 @@ mod position_lookup {
             -> anyhow::Result<Option<CourierLedger>> { Ok(None) }
         async fn save(&self, _: &CourierLedger) -> anyhow::Result<()> { Ok(()) }
         async fn find_all_open(&self, _: &str) -> anyhow::Result<Vec<CourierLedger>> { Ok(vec![]) }
+        async fn entry_exists_for_job(&self, _: Uuid, _: Uuid, _: Uuid) -> anyhow::Result<bool> { Ok(false) }
     }
 
     #[derive(Default)]
@@ -1033,5 +1068,186 @@ mod position_lookup {
 
         assert_eq!(courier_id, a.courier_id, "must be the assignment's courier, never trusted from elsewhere");
         assert_eq!(loc.id, newest.id, "must be recent()'s first element — the newest fix");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Milestone authorization
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod milestone_authorization {
+    use super::*;
+    use crate::domain::entities::{AssignmentStatus, Courier, CourierLocation};
+    use crate::domain::repositories::CourierRepository;
+    use crate::infrastructure::db::{ClaimOutcome, LocationRepository};
+    use std::sync::Mutex;
+
+    const TENANT: Uuid = Uuid::from_u128(1);
+
+    struct Couriers { by_user: Vec<(Uuid, Courier)> }
+
+    #[async_trait::async_trait]
+    impl CourierRepository for Couriers {
+        async fn find_by_id(&self, _: Uuid, id: Uuid) -> anyhow::Result<Option<Courier>> {
+            Ok(self.by_user.iter().find(|(_, c)| c.id == id).map(|(_, c)| c.clone()))
+        }
+        async fn find_by_user(&self, _: Uuid, user_id: Uuid) -> anyhow::Result<Option<Courier>> {
+            Ok(self.by_user.iter().find(|(u, _)| *u == user_id).map(|(_, c)| c.clone()))
+        }
+        async fn save(&self, _: &Courier) -> anyhow::Result<()> { Ok(()) }
+        async fn find_available_near(&self, _: Uuid, _: f64, _: f64, _: f64, _: i64)
+            -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
+    }
+
+    #[derive(Default)]
+    struct Assignments { rows: Mutex<Vec<CourierAssignment>> }
+
+    #[async_trait::async_trait]
+    impl AssignmentRepository for Assignments {
+        async fn save(&self, a: &CourierAssignment) -> anyhow::Result<()> {
+            let mut rows = self.rows.lock().unwrap();
+            if let Some(row) = rows.iter_mut().find(|r| r.id == a.id) { *row = a.clone(); }
+            Ok(())
+        }
+        async fn try_claim(&self, _: Uuid, _: Uuid) -> anyhow::Result<ClaimOutcome> {
+            Ok(ClaimOutcome::Lost)
+        }
+        async fn find_by_id(&self, _: Uuid, id: Uuid) -> anyhow::Result<Option<CourierAssignment>> {
+            Ok(self.rows.lock().unwrap().iter().find(|a| a.id == id).cloned())
+        }
+        async fn find_offered_for_courier(&self, _: Uuid, _: Uuid)
+            -> anyhow::Result<Vec<CourierAssignment>> { Ok(vec![]) }
+    }
+
+    struct NoLocations;
+    #[async_trait::async_trait]
+    impl LocationRepository for NoLocations {
+        async fn record(&self, _: &CourierLocation) -> anyhow::Result<()> { Ok(()) }
+        async fn latest(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<CourierLocation>> { Ok(None) }
+        async fn recent(&self, _: Uuid, _: Uuid, _: i64) -> anyhow::Result<Vec<CourierLocation>> { Ok(vec![]) }
+    }
+
+    /// Records every entry written, so a test can assert nobody was paid.
+    #[derive(Default)]
+    struct RecordingLedgers { saved: Mutex<Vec<CourierLedger>> }
+
+    #[async_trait::async_trait]
+    impl crate::infrastructure::db::CourierLedgerRepository for RecordingLedgers {
+        async fn find_open(&self, _: Uuid, _: Uuid, _: &str)
+            -> anyhow::Result<Option<CourierLedger>> { Ok(None) }
+        async fn save(&self, ledger: &CourierLedger) -> anyhow::Result<()> {
+            self.saved.lock().unwrap().push(ledger.clone());
+            Ok(())
+        }
+        async fn find_all_open(&self, _: &str) -> anyhow::Result<Vec<CourierLedger>> { Ok(vec![]) }
+        async fn entry_exists_for_job(&self, _: Uuid, _: Uuid, _: Uuid) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+    }
+
+    /// Records which milestones reached the broker.
+    #[derive(Default)]
+    struct RecordingEvents { emitted: Mutex<Vec<&'static str>> }
+
+    #[async_trait::async_trait]
+    impl crate::infrastructure::messaging::CourierEvents for RecordingEvents {
+        async fn publish(&self, e: &CourierEvent) -> anyhow::Result<()> {
+            self.emitted.lock().unwrap().push(match e {
+                CourierEvent::Assigned  { .. } => "assigned",
+                CourierEvent::Collected { .. } => "collected",
+                CourierEvent::Delivered { .. } => "delivered",
+            });
+            Ok(())
+        }
+    }
+
+    fn courier() -> Courier {
+        Courier::new(TENANT, Uuid::new_v4(), "A".into(), "B".into(), "+63".into())
+    }
+
+    /// (service, assignment_id, holder_user, other_user, assignments, ledgers, events)
+    #[allow(clippy::type_complexity)]
+    fn fixture() -> (
+        DispatchService, Uuid, Uuid, Uuid,
+        Arc<Assignments>, Arc<RecordingLedgers>, Arc<RecordingEvents>,
+    ) {
+        let holder_user = Uuid::new_v4();
+        let other_user  = Uuid::new_v4();
+        let holder = courier();
+        let other  = courier();
+
+        let mut a = CourierAssignment::offer_with_earnings(
+            TENANT, holder.id, ProductKey::new("omnideliv".to_string()),
+            Uuid::new_v4(), 3_500, 0, 38_900,
+        );
+        a.status = AssignmentStatus::Claimed;
+        let id = a.id;
+
+        let assignments = Arc::new(Assignments::default());
+        assignments.rows.lock().unwrap().push(a);
+
+        let ledgers = Arc::new(RecordingLedgers::default());
+        let events  = Arc::new(RecordingEvents::default());
+
+        let svc = DispatchService::new(
+            Arc::new(Couriers { by_user: vec![(holder_user, holder), (other_user, other)] }),
+            assignments.clone(),
+            Arc::new(NoLocations),
+            ledgers.clone(),
+            events.clone(),
+            PayBounds::default(),
+        );
+        (svc, id, holder_user, other_user, assignments, ledgers, events)
+    }
+
+    #[tokio::test]
+    async fn the_holder_can_mark_collected() {
+        let (svc, id, holder, _, _, _, events) = fixture();
+        assert!(svc.mark_collected(TENANT, holder, id, Uuid::new_v4(), None).await.unwrap());
+        assert_eq!(*events.emitted.lock().unwrap(), vec!["collected"]);
+    }
+
+    #[tokio::test]
+    async fn the_holder_can_mark_delivered() {
+        let (svc, id, holder, _, _, ledgers, events) = fixture();
+        assert!(svc.mark_delivered(TENANT, holder, id, None).await.unwrap());
+        assert_eq!(*events.emitted.lock().unwrap(), vec!["delivered"]);
+        assert_eq!(ledgers.saved.lock().unwrap().len(), 1, "the holder is paid");
+    }
+
+    /// The assignment ids are handed to the dispatching product, so they are
+    /// not secret. Another courier naming one must not be able to collect
+    /// against it.
+    #[tokio::test]
+    async fn another_courier_cannot_mark_collected() {
+        let (svc, id, _, other, _, _, events) = fixture();
+        assert!(!svc.mark_collected(TENANT, other, id, Uuid::new_v4(), None).await.unwrap());
+        assert!(events.emitted.lock().unwrap().is_empty(),
+                "no milestone may reach the broker for a job the caller does not hold");
+    }
+
+    /// The one that moves money: `mark_delivered` completes the assignment,
+    /// credits the courier ledger and debits COD.
+    #[tokio::test]
+    async fn another_courier_cannot_mark_delivered_or_trigger_a_credit() {
+        let (svc, id, _, other, assignments, ledgers, events) = fixture();
+
+        assert!(!svc.mark_delivered(TENANT, other, id, None).await.unwrap());
+        assert!(events.emitted.lock().unwrap().is_empty());
+        assert!(ledgers.saved.lock().unwrap().is_empty(),
+                "an unauthorized delivery must not credit anyone");
+
+        let rows = assignments.rows.lock().unwrap();
+        assert_eq!(rows[0].status, AssignmentStatus::Claimed,
+                   "the assignment must not be completed by a caller who does not hold it");
+    }
+
+    #[tokio::test]
+    async fn a_user_who_is_not_a_courier_is_refused_both_milestones() {
+        let (svc, id, _, _, _, _, _) = fixture();
+        let stranger = Uuid::new_v4();
+        assert!(!svc.mark_collected(TENANT, stranger, id, Uuid::new_v4(), None).await.unwrap());
+        assert!(!svc.mark_delivered(TENANT, stranger, id, None).await.unwrap());
     }
 }

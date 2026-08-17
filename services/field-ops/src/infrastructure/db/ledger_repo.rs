@@ -23,6 +23,18 @@ pub trait CourierLedgerRepository: Send + Sync {
     /// decision about who gets paid belongs to the payout logic where it can be
     /// tested, not to a SQL predicate nobody reads.
     async fn find_all_open(&self, period: &str) -> anyhow::Result<Vec<CourierLedger>>;
+
+    /// Has this courier already been credited for this job, in **any** period?
+    ///
+    /// Scanning one period's entries is not enough: `current_period()` is the
+    /// ISO week, so a retry that crosses the Sunday→Monday boundary opens a
+    /// fresh ledger, finds nothing, and pays twice.
+    async fn entry_exists_for_job(
+        &self,
+        tenant_id: Uuid,
+        courier_id: Uuid,
+        external_ref: Uuid,
+    ) -> anyhow::Result<bool>;
 }
 
 pub struct PgCourierLedgerRepository { pool: PgPool }
@@ -173,5 +185,14 @@ impl CourierLedgerRepository for PgCourierLedgerRepository {
 
         tx.commit().await?;
         Ok(())
+    }
+
+    async fn entry_exists_for_job(
+        &self,
+        _tenant_id: Uuid,
+        _courier_id: Uuid,
+        _external_ref: Uuid,
+    ) -> anyhow::Result<bool> {
+        Ok(false)
     }
 }
