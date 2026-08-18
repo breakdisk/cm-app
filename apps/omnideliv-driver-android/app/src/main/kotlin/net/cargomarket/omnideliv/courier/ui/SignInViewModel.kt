@@ -55,7 +55,7 @@ class SignInViewModel @Inject constructor(
 
     fun onSendCode() {
         val current = _step.value as? SignInStep.EnteringPhone ?: return
-        val phone = normalizePhone(current.input) ?: return
+        val phone = normalizePhone(current.input, BuildConfig.DEFAULT_COUNTRY_CODE) ?: return
         _step.value = SignInStep.Working(current)
 
         viewModelScope.launch {

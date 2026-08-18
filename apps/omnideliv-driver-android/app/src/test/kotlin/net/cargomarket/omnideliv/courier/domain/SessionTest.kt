@@ -2,6 +2,7 @@ package net.cargomarket.omnideliv.courier.domain
 
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -9,56 +10,114 @@ import org.junit.jupiter.api.Test
 class SessionTest {
 
     /**
-     * The four shapes a Filipino courier actually types. All are the same
-     * person, and identity stores one of them — so all four must reduce to it or
-     * the same courier gets two accounts.
+     * The shapes a courier types when they have not named a country. All are the
+     * same person and identity stores one of them, so all must reduce to it or
+     * the same courier ends up with two accounts.
      */
     @Test
-    fun `every form a courier types reduces to the same digits`() {
+    fun `national forms reduce to the default country`() {
         val expected = "639171234567"
         for (typed in listOf(
             "09171234567",
             "9171234567",
-            "+639171234567",
             "639171234567",
             "0917 123 4567",
-            "+63 917-123-4567",
             "(0917) 123 4567",
         )) {
-            assertEquals(expected, normalizePhone(typed), "failed for `$typed`")
+            assertEquals(expected, normalizePhone(typed, "63"), "failed for `$typed`")
         }
     }
 
     /**
-     * A wrong number is worse than a rejected one: the OTP reaches somebody
-     * else's handset and the courier waits for a phone that will never ring. So
-     * anything ambiguous is refused rather than guessed at.
+     * The bug this test exists for. The validator required exactly ten national
+     * digits beginning `9` — a Philippine mobile pattern — so every UAE prefix
+     * was refused and a courier in Dubai could not sign in at all.
      */
     @Test
-    fun `anything that cannot be a PH mobile is refused`() {
+    fun `gulf prefixes are accepted, not just philippine ones`() {
+        assertEquals("971551234567", normalizePhone("0551234567", "971"), "du 055")
+        assertEquals("971581234567", normalizePhone("0581234567", "971"), "du 058")
+        assertEquals("971501234567", normalizePhone("0501234567", "971"), "Etisalat 050")
+        assertEquals("971521234567", normalizePhone("052 123 4567", "971"), "Etisalat 052")
+    }
+
+    /**
+     * The worst part of the old rule: a courier who typed their number
+     * *completely correctly*, country code and all, was still refused. An
+     * explicit `+` names the country and must win over any default.
+     */
+    @Test
+    fun `an explicit country code wins over the build default`() {
+        assertEquals("971551234567", normalizePhone("+971 55 123 4567", "63"))
+        assertEquals("639171234567", normalizePhone("+63 917 123 4567", "971"))
+        assertEquals("14155552671", normalizePhone("+1 415 555 2671", "63"))
+        assertEquals("442071838750", normalizePhone("+44 20 7183 8750", "63"))
+    }
+
+    /** `00` is how the same thing is written across the Gulf and much of Europe. */
+    @Test
+    fun `a double-zero prefix is international too`() {
+        assertEquals("971551234567", normalizePhone("00971551234567", "63"))
+        assertEquals("639171234567", normalizePhone("0063 917 123 4567", "971"))
+    }
+
+    /**
+     * Still refuses rather than guesses. A wrong number sends the OTP to
+     * somebody else's handset while the courier waits for a phone that will
+     * never ring.
+     */
+    @Test
+    fun `anything that cannot be a phone number is refused`() {
         for (bad in listOf(
-            "",                 // nothing
-            "0917123456",       // one digit short
-            "091712345678",     // one digit long
-            "08171234567",      // landline trunk, not a mobile
-            "8171234567",       // does not start 9
-            "639871234567890",  // far too long
-            "63917123456",      // 63 + only 9 digits
-            "abcdefghijk",      // no digits at all
-            "00639171234567",   // double trunk prefix
-            "1234567890",       // ten digits, wrong first digit
+            "",              // nothing
+            "abcdef",        // no digits
+            "12345",         // too short even with a country code
+            "+1234567",      // explicitly international and still too short
+            "0",             // a lone trunk zero
+            "+9715512345678901234", // past the E.164 ceiling
         )) {
-            assertNull(normalizePhone(bad), "should have refused `$bad`")
+            assertNull(normalizePhone(bad, "971"), "should have refused `$bad`")
         }
     }
 
-    /** Every accepted number is exactly 63 followed by ten digits starting 9. */
+    /** E.164 permits at most fifteen digits, country code included. */
     @Test
-    fun `an accepted number is always twelve digits starting 639`() {
-        val n = normalizePhone("0917 123 4567")!!
-        assertEquals(12, n.length)
-        assertTrue(n.startsWith("639"))
-        assertTrue(n.all(Char::isDigit))
+    fun `the e164 bounds are enforced at both ends`() {
+        assertNotNull(normalizePhone("+" + "1".repeat(E164_MIN_DIGITS), "63"))
+        assertNull(normalizePhone("+" + "1".repeat(E164_MIN_DIGITS - 1), "63"))
+        assertNotNull(normalizePhone("+" + "1".repeat(E164_MAX_DIGITS), "63"))
+        assertNull(normalizePhone("+" + "1".repeat(E164_MAX_DIGITS + 1), "63"))
+    }
+
+    /** Never carries a leading `+` or a trunk zero — identity stores bare digits. */
+    @Test
+    fun `output is always bare digits`() {
+        for (typed in listOf("+971 55 123 4567", "0551234567", "00971551234567")) {
+            val n = normalizePhone(typed, "971")!!
+            assertTrue(n.all(Char::isDigit), "`$typed` produced `$n`")
+            assertTrue(n.startsWith("971"))
+        }
+    }
+
+    /**
+     * The button must agree with the request. If these disagreed it would enable
+     * on a number the send call then refuses, or stay dead on one that works.
+     */
+    /**
+     * The default is load bearing: the same digits become a different courier
+     * depending on which country is assumed.
+     *
+     * Note what is *not* claimed here. Without a table of the world's numbering
+     * plans, `0551234567` under `63` is still a structurally valid E.164 — it is
+     * simply the wrong person. That is why the default is build config rather
+     * than something this function could validate its way out of.
+     */
+    @Test
+    fun `the default country changes who the number belongs to`() {
+        val typed = "0551234567"
+        assertEquals("971551234567", normalizePhone(typed, "971"))
+        assertEquals("63551234567", normalizePhone(typed, "63"))
+        assertTrue(canSubmit(SignInStep.EnteringPhone(typed), "971"))
     }
 
     @Test
@@ -82,7 +141,7 @@ class SessionTest {
 
     @Test
     fun `submit is blocked until the input could work`() {
-        assertFalse(canSubmit(SignInStep.EnteringPhone("0917")))
+        assertFalse(canSubmit(SignInStep.EnteringPhone("091")))
         assertTrue(canSubmit(SignInStep.EnteringPhone("09171234567")))
 
         assertFalse(canSubmit(SignInStep.EnteringCode("639171234567", "123")))

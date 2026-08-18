@@ -15,44 +15,95 @@ package net.cargomarket.omnideliv.courier.domain
 const val OTP_LENGTH = 6
 
 /**
- * The Philippine country calling code, without a `+`.
+ * The country assumed when a courier types a national number.
  *
- * OmniDeliv launches in PH and identity stores bare digits. This is a constant
- * rather than a parameter because a second country is a product decision with
- * consequences beyond a prefix — a courier in another country needs a different
- * tenant, tariff and payout rail long before they need a different dial code.
+ * Overridden per build (`DEFAULT_COUNTRY_CODE` in `build.gradle.kts`) because it
+ * belongs to the tenant, not to this file: `cargomarket-ph` is 63, a Gulf tenant
+ * is 971. Only ever a *default* — a courier who types `+971…` gets 971 on any
+ * build, which is what makes one APK usable outside its launch market.
  */
-const val PH_COUNTRY_CODE = "63"
+const val DEFAULT_COUNTRY_CODE = "63"
+
+/**
+ * Shortest and longest an E.164 subscriber number can be, country code included.
+ *
+ * From the ITU recommendation. Checked instead of a per-country pattern because
+ * this app has no business owning a table of the world's numbering plans — and a
+ * pattern that is merely out of date rejects real couriers, which is the failure
+ * that matters here.
+ */
+const val E164_MIN_DIGITS = 8
+const val E164_MAX_DIGITS = 15
+
+/**
+ * Shortest national part accepted when a country code has to be supplied.
+ *
+ * Without this, a three-digit country code plus five typed digits clears the
+ * E.164 floor and `12345` is accepted as a phone number. Six is below every real
+ * mobile plan and above obvious nonsense — deliberately loose, because refusing
+ * a real courier is the costlier mistake.
+ */
+const val MIN_NATIONAL_DIGITS = 6
 
 /**
  * Reduce whatever a courier typed to the digits identity stores, or `null` if it
- * cannot be one.
+ * cannot be a phone number.
  *
- * Accepts the four forms a Filipino courier actually types — `09171234567`,
- * `9171234567`, `+639171234567`, `639171234567` — and rejects everything else
- * rather than guessing. A wrong number here is worse than a rejected one: the
- * OTP goes to somebody else's handset and the courier is told to check a phone
- * that will never ring.
+ * Two shapes are accepted, and the distinction is the whole design:
+ *
+ * - **Explicitly international** — `+971 55 123 4567`, or `00971…`. The courier
+ *   has stated their country, so it is used, whatever [defaultCountryCode] says.
+ * - **National** — `0551234567`, or `551234567`. No country was stated, so
+ *   [defaultCountryCode] supplies one.
+ *
+ * The previous version was Philippines-only: it required exactly ten national
+ * digits beginning `9`, which is a PH mobile pattern. That rejected every UAE
+ * prefix (`050`, `055`, `058`), every other country, **and full `+971…` E.164
+ * input** — a courier could not sign in even by typing their number completely
+ * correctly. A hardcoded numbering plan is a launch decision leaking into an
+ * identity check.
+ *
+ * Still refuses rather than guesses when the result cannot be a phone number.
+ * A wrong number sends the OTP to somebody else's handset while the courier
+ * waits for a phone that will never ring.
  */
-fun normalizePhone(raw: String): String? {
-    // Strip anything a human might use as separators, including the leading +.
-    val digits = raw.filter(Char::isDigit)
+fun normalizePhone(
+    raw: String,
+    defaultCountryCode: String = DEFAULT_COUNTRY_CODE,
+): String? {
+    val trimmed = raw.trim()
+    val digits = trimmed.filter(Char::isDigit)
+    if (digits.isEmpty()) return null
 
-    val national = when {
-        // 639171234567 — already national, 63 followed by a 10-digit mobile.
-        digits.length == 12 && digits.startsWith(PH_COUNTRY_CODE) ->
-            digits.removePrefix(PH_COUNTRY_CODE)
-        // 09171234567 — the form printed on every Philippine SIM.
-        digits.length == 11 && digits.startsWith("0") -> digits.removePrefix("0")
-        // 9171234567 — typed without the trunk zero.
-        digits.length == 10 -> digits
-        else -> return null
+    val e164 = when {
+        // "+971…" — the courier named their country.
+        trimmed.startsWith("+") -> digits
+
+        // "00971…" — the other way to write it, common across the Gulf and EU.
+        digits.startsWith("00") -> digits.removePrefix("00")
+
+        // "0551234567" — national with a trunk zero, which is never part of the
+        // international form and is always dropped.
+        digits.startsWith("0") -> {
+            val national = digits.trimStart('0')
+            if (national.length < MIN_NATIONAL_DIGITS) return null
+            defaultCountryCode + national
+        }
+
+        // Already carries the default country code, typed without a plus. Length
+        // is checked so a national number that merely starts with those digits
+        // is not mistaken for one that includes them.
+        digits.startsWith(defaultCountryCode) &&
+            digits.length >= defaultCountryCode.length + E164_MIN_DIGITS - 2 -> digits
+
+        // "551234567" — national, no trunk zero.
+        else -> {
+            if (digits.length < MIN_NATIONAL_DIGITS) return null
+            defaultCountryCode + digits
+        }
     }
 
-    // Every PH mobile number is ten digits beginning 9. Checked after stripping
-    // so `00917…` and `63917…` fail here rather than being silently accepted.
-    if (national.length != 10 || !national.startsWith("9")) return null
-    return PH_COUNTRY_CODE + national
+    return if (e164.length in E164_MIN_DIGITS..E164_MAX_DIGITS) e164 else null
 }
 
 /**
@@ -86,9 +137,18 @@ sealed interface SignInStep {
     data class Working(val previous: SignInStep) : SignInStep
 }
 
-/** Can the courier submit what is on screen? */
-fun canSubmit(step: SignInStep): Boolean = when (step) {
-    is SignInStep.EnteringPhone -> normalizePhone(step.input) != null
+/**
+ * Can the courier submit what is on screen?
+ *
+ * Takes the same country default the send call will use. If these two disagreed
+ * the button would enable on a number the request then refuses, or stay dead on
+ * one that would have worked.
+ */
+fun canSubmit(
+    step: SignInStep,
+    defaultCountryCode: String = DEFAULT_COUNTRY_CODE,
+): Boolean = when (step) {
+    is SignInStep.EnteringPhone -> normalizePhone(step.input, defaultCountryCode) != null
     is SignInStep.EnteringCode -> isPlausibleOtp(step.input)
     is SignInStep.Working -> false
 }
