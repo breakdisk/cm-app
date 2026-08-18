@@ -2,7 +2,6 @@ package net.cargomarket.omnideliv.courier.data
 
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -27,8 +26,14 @@ import org.junit.jupiter.api.Test
  */
 class WireContractTest {
 
-    /** The exact configuration the app ships — `ignoreUnknownKeys` is what hid bug 2. */
-    private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
+    /**
+     * The configuration the app actually ships, not a copy of it.
+     *
+     * A test that built its own `Json` could pass while the app failed — which
+     * is how the auth envelope survived, since `ignoreUnknownKeys` is what
+     * silently discarded `data`.
+     */
+    private val json = CourierJson
 
     @Test
     fun `otp verify parses the enveloped response from identity`() {
@@ -69,7 +74,10 @@ class WireContractTest {
         )
         assertTrue(send.contains("\"phone_number\""), "identity ignores `phone`: $send")
         assertTrue(send.contains("\"tenant_slug\""), "omitting tenant_slug fails deserialisation")
-        assertTrue(send.contains("\"role\""))
+        // Sent explicitly. kotlinx omits defaults unless encodeDefaults is on,
+        // so without it `role` never left the device and sign-in depended on
+        // identity happening to default the same way.
+        assertTrue(send.contains("\"role\""), "role must be explicit: $send")
 
         val verify = json.encodeToString(
             OtpVerifyRequest(phone = "971581206817", otpCode = "123456", tenantSlug = "demo"),
@@ -88,7 +96,7 @@ class WireContractTest {
         val offers = """
             {"offers":[{"assignment_id":"a1","product":"omnideliv","external_ref":"o1",
             "trip_cents":3500,"tip_cents":0,"cod_amount_cents":38900,
-            "offer_card":{"v":1,"stops":3}}]}
+            "offer_card":{"v":1,"stops":3},"offered_at":"2026-08-18T07:00:00Z"}]}
         """.trimIndent()
         val parsed = json.decodeFromString<MyOffersDto>(offers)
         assertEquals(1, parsed.offers.size)
