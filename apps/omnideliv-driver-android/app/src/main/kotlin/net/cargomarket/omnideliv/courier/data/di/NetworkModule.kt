@@ -24,13 +24,8 @@ object NetworkModule {
 
     @Provides
     @Singleton
-    fun json(): Json = Json {
-        // The server adds fields over time — `offer_card`, `courier_user_id` —
-        // and an app that refused an unknown one would break on every backend
-        // deploy rather than ignoring what it does not yet render.
-        ignoreUnknownKeys = true
-        explicitNulls = false
-    }
+    // One definition, shared with the wire-contract tests — see CourierJson.
+    fun json(): Json = net.cargomarket.omnideliv.courier.data.CourierJson
 
     @Provides
     @Singleton

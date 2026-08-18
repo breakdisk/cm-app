@@ -95,7 +95,7 @@ class SignInViewModel @Inject constructor(
 
             outcome.fold(
                 onSuccess = { res ->
-                    val body = res.body()
+                    val body = res.body()?.data
                     if (res.isSuccessful && body != null) {
                         // Token first, and it has to be: `registerCourier` is
                         // an authenticated route, so the interceptor needs a
@@ -109,7 +109,7 @@ class SignInViewModel @Inject constructor(
                         // is idempotent and runs on every sign-in precisely so
                         // that state is self-healing — signing in again fixes it,
                         // with no support path required.
-                        tokens.signIn(body.accessToken, body.userId)
+                        tokens.signIn(body.accessToken, body.driverId)
                         ensureCourierProfile(current.phone)
                     } else {
                         _step.value = current.copy(error = signInError(res.code()))

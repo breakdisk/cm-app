@@ -35,10 +35,12 @@ interface CourierApi {
     // rule 4 forbids. So there is no sign-up screen to build.
 
     @POST("v1/auth/otp/send")
-    suspend fun sendOtp(@Body body: OtpSendRequest): Response<Unit>
+    // Response body is `{"data":{"message":"OTP sent."}}`; only the status
+    // matters, and JsonElement accepts any shape without a DTO to drift.
+    suspend fun sendOtp(@Body body: OtpSendRequest): Response<kotlinx.serialization.json.JsonElement>
 
     @POST("v1/auth/otp/verify")
-    suspend fun verifyOtp(@Body body: OtpVerifyRequest): Response<AuthDto>
+    suspend fun verifyOtp(@Body body: OtpVerifyRequest): Response<AuthEnvelope>
 
     /**
      * Register as a courier. Idempotent on the user, and registers **offline**
@@ -269,11 +271,33 @@ data class OtpVerifyRequest(
     val role: String = "driver",
 )
 
+/**
+ * Identity wraps its auth responses in `{"data": ...}`; field-ops and omnideliv
+ * do not.
+ *
+ * Modelled explicitly rather than unwrapped by an interceptor, because only two
+ * endpoints on this client have the envelope — a global unwrapper would then be
+ * wrong for every other call. Getting this wrong cost a release: `AuthDto` read
+ * the body directly, `access_token` was therefore missing, kotlinx threw, and
+ * `runCatching` reported it to the courier as "we could not reach the server".
+ */
+@Serializable
+data class AuthEnvelope(val data: AuthDto)
+
 @Serializable
 data class AuthDto(
     @SerialName("access_token") val accessToken: String,
     @SerialName("refresh_token") val refreshToken: String? = null,
-    @SerialName("user_id") val userId: String? = null,
+    /**
+     * The field is `driver_id`, and there is no `user_id` in this response.
+     *
+     * It doubles as the courier id: `register_courier` sets `courier.id =
+     * user_id` — the ADR-0015 collapse to one identity per field worker — so
+     * this is exactly what the position-ingest route expects.
+     */
+    @SerialName("driver_id") val driverId: String? = null,
+    @SerialName("tenant_id") val tenantId: String? = null,
+    @SerialName("expires_in") val expiresIn: Int? = null,
 )
 
 @Serializable
