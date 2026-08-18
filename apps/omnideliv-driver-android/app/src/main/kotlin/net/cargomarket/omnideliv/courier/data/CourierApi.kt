@@ -240,7 +240,16 @@ data class EarningEntryDto(
  */
 @Serializable
 data class OtpSendRequest(
-    val phone: String,
+    /**
+     * `phone_number`, not `phone`.
+     *
+     * Identity declares the field `phone_number` with `#[serde(default)]`, so a
+     * body carrying `phone` deserialises to `None` and the service answers
+     * "phone_number or email is required" — a 400 the app rendered as "that
+     * number does not look right". Every number failed, including correct ones,
+     * and the message blamed the courier for it.
+     */
+    @SerialName("phone_number") val phone: String,
     @SerialName("tenant_slug") val tenantSlug: String,
     val role: String = "driver",
 )
@@ -253,7 +262,8 @@ data class OtpSendRequest(
  */
 @Serializable
 data class OtpVerifyRequest(
-    val phone: String,
+    /** `phone_number` — see [OtpSendRequest]. */
+    @SerialName("phone_number") val phone: String,
     @SerialName("otp_code") val otpCode: String,
     @SerialName("tenant_slug") val tenantSlug: String,
     val role: String = "driver",
