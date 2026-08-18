@@ -7,6 +7,9 @@ import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.POST
+import okhttp3.MultipartBody
+import retrofit2.http.Multipart
+import retrofit2.http.Part
 import retrofit2.http.Path
 
 /**
@@ -78,6 +81,17 @@ interface CourierApi {
     suspend fun earnings(): Response<EarningsDto>
 
     // ── omnideliv ────────────────────────────────────────────────────────────
+
+    /**
+     * The delivery photo. Multipart because the bucket is cluster-internal —
+     * a presigned URL would point somewhere a courier's phone cannot reach.
+     */
+    @Multipart
+    @POST("v1/omnideliv/courier/jobs/{orderId}/proof")
+    suspend fun uploadProof(
+        @Path("orderId") orderId: String,
+        @Part file: MultipartBody.Part,
+    ): Response<Unit>
 
     @GET("v1/omnideliv/courier/jobs/{orderId}")
     suspend fun manifest(@Path("orderId") orderId: String): Response<ManifestDto>
@@ -226,7 +240,16 @@ data class EarningEntryDto(
  */
 @Serializable
 data class OtpSendRequest(
-    val phone: String,
+    /**
+     * `phone_number`, not `phone`.
+     *
+     * Identity declares the field `phone_number` with `#[serde(default)]`, so a
+     * body carrying `phone` deserialises to `None` and the service answers
+     * "phone_number or email is required" — a 400 the app rendered as "that
+     * number does not look right". Every number failed, including correct ones,
+     * and the message blamed the courier for it.
+     */
+    @SerialName("phone_number") val phone: String,
     @SerialName("tenant_slug") val tenantSlug: String,
     val role: String = "driver",
 )
@@ -239,7 +262,8 @@ data class OtpSendRequest(
  */
 @Serializable
 data class OtpVerifyRequest(
-    val phone: String,
+    /** `phone_number` — see [OtpSendRequest]. */
+    @SerialName("phone_number") val phone: String,
     @SerialName("otp_code") val otpCode: String,
     @SerialName("tenant_slug") val tenantSlug: String,
     val role: String = "driver",

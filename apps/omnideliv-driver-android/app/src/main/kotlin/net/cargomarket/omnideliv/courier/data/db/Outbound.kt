@@ -83,6 +83,16 @@ interface OutboundDao {
     @Query("UPDATE outbound SET attempts = :attempts WHERE id = :id")
     suspend fun recordAttempt(id: Long, attempts: Int)
 
+    /**
+     * Forget a proof the server will never accept.
+     *
+     * Deliberately does not park the row. Evidence missing is bad; a delivery
+     * that never reaches the platform is worse — so a permanently rejected
+     * photo is dropped and the milestone still goes.
+     */
+    @Query("UPDATE outbound SET proofPath = NULL WHERE id = :id")
+    suspend fun clearProof(id: Long)
+
     @Query("UPDATE outbound SET state = 'PARKED', parkedReason = :reason WHERE id = :id")
     suspend fun park(id: Long, reason: String)
 }

@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use axum::{extract::{Path, State}, http::StatusCode, routing::get, Json, Router};
+use axum::{extract::{Path, State}, http::StatusCode, routing::{get, post}, Json, Router};
 use logisticos_auth::middleware::AuthClaims;
 use serde::Serialize;
 use uuid::Uuid;
@@ -88,7 +88,99 @@ pub struct ManifestResponse {
 }
 
 pub fn routes() -> Router<Arc<AppState>> {
-    Router::new().route("/v1/omnideliv/courier/jobs/:order_id", get(manifest))
+    Router::new()
+        .route("/v1/omnideliv/courier/jobs/:order_id", get(manifest))
+        // A separate path, not another method on the one above: two `.route()`
+        // calls on the *same* path panic at startup in axum.
+        .route("/v1/omnideliv/courier/jobs/:order_id/proof", post(upload_proof))
+}
+
+/// `POST /v1/omnideliv/courier/jobs/:order_id/proof` — multipart, field `file`.
+///
+/// The delivery photo. Until this existed the app captured a proof, encoded it
+/// and queued it with nowhere to send it — evidence that died on the phone.
+///
+/// Bytes go through the service rather than a presigned URL, for the same reason
+/// the catalog photos do: the bucket is `minio` on the internal network with no
+/// published port and no Traefik route, so a presigned URL points somewhere a
+/// courier's phone cannot reach.
+///
+/// Authorised by the same rule as the manifest read, and every refusal is a 404
+/// — a courier must not be able to discover which orders exist, or attach
+/// evidence to somebody else's delivery.
+async fn upload_proof(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Path(order_id): Path<Uuid>,
+    mut multipart: axum::extract::Multipart,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let storage = st.photos.clone().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "photo storage is not configured".to_string(),
+    ))?;
+
+    let order = st
+        .orders
+        .find_by_id(claims.tenant_id, order_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, %order_id, "proof order lookup failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "lookup failed".to_string())
+        })?
+        .ok_or((StatusCode::NOT_FOUND, "no such job".to_string()))?;
+
+    if !may_read_manifest(order.courier_user_id, claims.user_id) {
+        // 404, not 403 — see the module note.
+        return Err((StatusCode::NOT_FOUND, "no such job".to_string()));
+    }
+
+    let mut bytes: Option<Vec<u8>> = None;
+    while let Some(field) = multipart.next_field().await.map_err(|e| {
+        (StatusCode::BAD_REQUEST, format!("could not read the upload: {e}"))
+    })? {
+        if field.name() == Some("file") {
+            let data = field.bytes().await.map_err(|e| {
+                (StatusCode::BAD_REQUEST, format!("could not read the file: {e}"))
+            })?;
+            bytes = Some(data.to_vec());
+        }
+    }
+
+    let bytes = bytes.ok_or((
+        StatusCode::BAD_REQUEST,
+        "expected a multipart field named 'file'".to_string(),
+    ))?;
+
+    if bytes.len() > crate::infrastructure::storage::MAX_PHOTO_BYTES {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("proof is {} KB; the ceiling is {} KB",
+                bytes.len() / 1024,
+                crate::infrastructure::storage::MAX_PHOTO_BYTES / 1024),
+        ));
+    }
+
+    // Sniffed from the bytes, never taken from the caller's Content-Type, which
+    // is a claim. The app sends WebP; the sniffer accepts JPEG and PNG too,
+    // because a courier on a device where the encoder failed still has evidence
+    // worth keeping.
+    let content_type = crate::infrastructure::storage::sniff_image(&bytes).ok_or((
+        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        "that file is not a JPEG, PNG or WebP".to_string(),
+    ))?;
+
+    // Tenant-prefixed so one tenant's keys cannot collide with another's, and
+    // keyed on the order so a re-upload replaces rather than accumulates —
+    // an at-least-once queue will send the same proof twice.
+    let key = format!("{}/proofs/{}.webp", claims.tenant_id, order_id);
+
+    storage.put(&key, bytes, content_type).await.map_err(|e| {
+        tracing::error!(err = %e, %order_id, "proof upload failed");
+        (StatusCode::INTERNAL_SERVER_ERROR, "could not store the proof".to_string())
+    })?;
+
+    tracing::info!(%order_id, courier = %claims.user_id, %key, "delivery proof stored");
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `GET /v1/omnideliv/courier/jobs/:order_id`
