@@ -7,6 +7,9 @@ import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.POST
+import okhttp3.MultipartBody
+import retrofit2.http.Multipart
+import retrofit2.http.Part
 import retrofit2.http.Path
 
 /**
@@ -78,6 +81,17 @@ interface CourierApi {
     suspend fun earnings(): Response<EarningsDto>
 
     // ── omnideliv ────────────────────────────────────────────────────────────
+
+    /**
+     * The delivery photo. Multipart because the bucket is cluster-internal —
+     * a presigned URL would point somewhere a courier's phone cannot reach.
+     */
+    @Multipart
+    @POST("v1/omnideliv/courier/jobs/{orderId}/proof")
+    suspend fun uploadProof(
+        @Path("orderId") orderId: String,
+        @Part file: MultipartBody.Part,
+    ): Response<Unit>
 
     @GET("v1/omnideliv/courier/jobs/{orderId}")
     suspend fun manifest(@Path("orderId") orderId: String): Response<ManifestDto>

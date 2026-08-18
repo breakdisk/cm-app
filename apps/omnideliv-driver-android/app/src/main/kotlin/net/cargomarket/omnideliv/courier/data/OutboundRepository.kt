@@ -1,6 +1,9 @@
 package net.cargomarket.omnideliv.courier.data
 
 import kotlinx.coroutines.flow.Flow
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
+import okhttp3.RequestBody.Companion.asRequestBody
 import net.cargomarket.omnideliv.courier.data.db.OutboundDao
 import net.cargomarket.omnideliv.courier.data.db.OutboundEntity
 import net.cargomarket.omnideliv.courier.data.db.toDomain
@@ -73,6 +76,23 @@ class OutboundRepository @Inject constructor(
         var drainedEverything = true
 
         for (item in queue) {
+            // Evidence before the milestone. If the milestone went first and the
+            // upload then failed, the row would be marked synced and the photo
+            // lost — the delivery is recorded either way, so the only orderable
+            // outcome worth protecting is the proof.
+            if (item.proofPath != null) {
+                when (uploadProof(item.stopRef, item.proofPath)) {
+                    ProofOutcome.Sent -> dao.clearProof(item.id)
+                    // Permanently refused: the server will not take this file on
+                    // any retry. Drop it and let the delivery through rather than
+                    // blocking a courier's queue behind an unloved image.
+                    ProofOutcome.Rejected -> dao.clearProof(item.id)
+                    // No response, or a server fault. Retry the whole row so the
+                    // proof and its milestone stay together.
+                    ProofOutcome.Retry -> return false
+                }
+            }
+
             val sent = runCatching {
                 send(item.kind, item.assignmentId, item.stopRef, item.deviceTimestamp)
             }
@@ -108,6 +128,44 @@ class OutboundRepository @Inject constructor(
             }
         }
         return drainedEverything
+    }
+
+    private enum class ProofOutcome { Sent, Rejected, Retry }
+
+    /**
+     * Push one delivery photo.
+     *
+     * `stopRef` on a DELIVERED row is the **order id** — that is the contract
+     * the manifest sets, and the proof route is keyed on the order so an
+     * at-least-once queue replaces rather than accumulates.
+     */
+    private suspend fun uploadProof(orderId: String?, path: String): ProofOutcome {
+        if (orderId.isNullOrBlank()) return ProofOutcome.Rejected
+        val file = java.io.File(path)
+        // The file is gone — the cache was cleared, or the encode never landed.
+        // Nothing to retry forever over.
+        if (!file.exists()) return ProofOutcome.Rejected
+
+        val part = MultipartBody.Part.createFormData(
+            "file",
+            file.name,
+            file.asRequestBody("image/webp".toMediaType()),
+        )
+
+        val result = runCatching { api.uploadProof(orderId, part) }
+        val code = result.getOrNull()?.code() ?: return ProofOutcome.Retry
+
+        return when {
+            code in 200..299 -> {
+                // Delete on success: a proof that reached the server has no
+                // reason to keep occupying a courier's cache.
+                file.delete()
+                ProofOutcome.Sent
+            }
+            // 4xx will not change on retry.
+            code in 400..499 -> ProofOutcome.Rejected
+            else -> ProofOutcome.Retry
+        }
     }
 
     private suspend fun send(
