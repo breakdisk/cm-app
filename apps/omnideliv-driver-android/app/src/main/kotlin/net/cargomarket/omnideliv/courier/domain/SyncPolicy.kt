@@ -49,6 +49,14 @@ sealed interface SyncDecision {
 
     /** Stop trying. Carries why, for the support surface. */
     data class Park(val reason: String) : SyncDecision
+
+    /**
+     * Stop the whole pass, change nothing, and come back later.
+     *
+     * Neither the row nor the queue is at fault: the *caller* was refused. No
+     * attempt is spent, because the payload was never judged.
+     */
+    data class Halt(val reason: String) : SyncDecision
 }
 
 /**
@@ -75,6 +83,19 @@ const val MAX_SYNC_ATTEMPTS = 5
  * 408 and 429 are the exceptions inside 4xx — both explicitly mean *try again*.
  */
 fun decideAfterFailure(attempts: Int, httpStatus: Int?): SyncDecision {
+    // Checked before everything else, including the attempt budget. A 401 says
+    // the *caller* was refused; the milestone itself was never read, let alone
+    // rejected, so neither parking it nor spending one of its five attempts is
+    // an honest reading of what happened.
+    //
+    // The access token lives an hour and this app holds no refresh token, so a
+    // shift longer than that meets one — and a background drain meets it
+    // unattended, at three in the morning, with nobody to sign in again for
+    // hours. Parking there would discard a delivery the courier really made
+    // along with the credit for it.
+    if (httpStatus == 401 || httpStatus == 403) {
+        return SyncDecision.Halt("session refused with $httpStatus; the milestone was never judged")
+    }
     if (httpStatus != null && httpStatus in 400..499 && httpStatus != 408 && httpStatus != 429) {
         return SyncDecision.Park("server refused with $httpStatus; retrying cannot change that")
     }
