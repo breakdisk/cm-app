@@ -70,6 +70,13 @@ jobs:
         # distinguishable in the log.
         run: ./gradlew --no-daemon assembleDebug
 
+      - name: Assemble preview
+        # The installable cargomarket-ph build. `release` points at the live
+        # tenant but is unsigned — this app keeps no signing material in the
+        # tree — so `preview` is debug-signed and tenant-correct, and is the
+        # only APK here a courier in PH can actually use.
+        run: ./gradlew --no-daemon assemblePreview
+
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4
@@ -84,4 +91,13 @@ jobs:
         with:
           name: omnideliv-courier-debug
           path: apps/omnideliv-driver-android/app/build/outputs/apk/debug/*.apk
+          retention-days: 14
+
+      - name: Upload preview APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: omnideliv-courier-preview
+          path: apps/omnideliv-driver-android/app/build/outputs/apk/preview/*.apk
+          if-no-files-found: error
           retention-days: 14

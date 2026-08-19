@@ -49,6 +49,19 @@ interface CourierApi {
     @POST("v1/field-ops/couriers/register")
     suspend fun registerCourier(@Body body: RegisterCourierRequest): Response<CourierDto>
 
+    /**
+     * Go on or off duty.
+     *
+     * The courier is resolved from the token — there is no id in the path,
+     * because a courier may only start their own shift.
+     *
+     * This is what puts them into the proximity search. Without it a courier
+     * keeps the `offline` that registration gave them and no order can ever
+     * reach them, however convincingly the toggle reads.
+     */
+    @POST("v1/field-ops/couriers/me/status")
+    suspend fun setStatus(@Body body: SetStatusRequest): Response<Unit>
+
     @GET("v1/field-ops/assignments/mine")
     suspend fun myOffers(): Response<MyOffersDto>
 
@@ -122,6 +135,9 @@ data class CollectedRequest(
 data class DeliveredRequest(
     @SerialName("device_timestamp") val deviceTimestamp: String,
 )
+
+@Serializable
+data class SetStatusRequest(val available: Boolean)
 
 @Serializable
 data class PositionRequest(

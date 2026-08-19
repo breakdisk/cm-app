@@ -39,6 +39,24 @@ android {
             buildConfigField("String", "TENANT_SLUG", "\"cargomarket-ph\"")
             buildConfigField("String", "DEFAULT_COUNTRY_CODE", "\"63\"")
         }
+
+        // The build a real courier can actually be handed today.
+        //
+        // `release` is the only variant that points at the live tenant, and
+        // this app deliberately carries no signing material, so `assembleRelease`
+        // produces an unsigned APK that no phone will install. `preview` is
+        // `debug` — debug keystore, therefore installable — aimed at
+        // cargomarket-ph. The slug is baked into the build, so an APK built for
+        // `demo` searches `demo` forever and a courier registered from it lands
+        // in the wrong tenant, which is indistinguishable from dispatch being
+        // broken.
+        create("preview") {
+            initWith(getByName("debug"))
+            matchingFallbacks += listOf("debug")
+            buildConfigField("String", "API_BASE_URL", "\"https://os-api.cargomarket.net/\"")
+            buildConfigField("String", "TENANT_SLUG", "\"cargomarket-ph\"")
+            buildConfigField("String", "DEFAULT_COUNTRY_CODE", "\"63\"")
+        }
     }
 
     // No signingConfigs block, deliberately. The sibling app has its release
