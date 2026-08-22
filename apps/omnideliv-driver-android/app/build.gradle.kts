@@ -73,6 +73,15 @@ android {
         compose = true
         buildConfig = true
     }
+
+    testOptions {
+        unitTests {
+            // Robolectric reads the merged manifest and resources; without this
+            // it starts against an empty package and every Context lookup fails
+            // in a way that points nowhere near the cause.
+            isIncludeAndroidResources = true
+        }
+    }
 }
 
 dependencies {
@@ -110,6 +119,18 @@ dependencies {
 
     testImplementation(libs.bundles.testing.unit)
     testImplementation(libs.okhttp.mockwebserver)
+
+    // The outbound queue's durability suite runs on the JVM under Robolectric
+    // rather than on a device: this repo's Android CI has no emulator, and an
+    // androidTest that never executes is the failure mode this project has
+    // been bitten by most. Room needs a real SQLite and WorkManager needs a
+    // real Context, and Robolectric supplies both.
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.workmanager.test)
+    testImplementation(libs.room.testing)
+    testImplementation(libs.junit4)
+    testRuntimeOnly(libs.junit5.vintage)
     androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation(libs.androidx.test.runner)

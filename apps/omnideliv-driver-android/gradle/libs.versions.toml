@@ -24,6 +24,10 @@ retrofit-serialization-converter = "1.0.0"
 turbine = "1.1.0"
 mockk = "1.13.12"
 junit5 = "5.10.3"
+# 4.13 is the version the sibling app already resolves in this repo's CI.
+# It supports up to API 34, hence the @Config(sdk = [34]) on the suite.
+robolectric = "4.13"
+junit4 = "4.13.2"
 androidx-core-ktx = "1.13.1"
 androidx-test-core = "1.6.1"
 androidx-test-junit = "1.2.1"
@@ -74,6 +78,11 @@ androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = 
 
 junit5-api = { group = "org.junit.jupiter", name = "junit-jupiter-api", version.ref = "junit5" }
 junit5-engine = { group = "org.junit.jupiter", name = "junit-jupiter-engine", version.ref = "junit5" }
+# Robolectric is a JUnit 4 runner and this suite is Jupiter; the vintage
+# engine is what lets both run in the same task.
+junit5-vintage = { group = "org.junit.vintage", name = "junit-vintage-engine", version.ref = "junit5" }
+junit4 = { group = "junit", name = "junit", version.ref = "junit4" }
+robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
 turbine = { group = "app.cash.turbine", name = "turbine", version.ref = "turbine" }
 okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "okhttp" }
