@@ -68,7 +68,12 @@ impl Route {
         // Greedy nearest-neighbor from first stop
         if self.stops.len() <= 2 { return; }
         let mut sorted = Vec::with_capacity(self.stops.len());
-        let mut remaining = self.stops.drain(..).collect::<Vec<_>>();
+        // `mem::take`, not `drain(..).collect()`: they do the same thing here —
+        // empty the field and hand the elements over — but a stable clippy
+        // newer than this repo's last green run rejects the drain form
+        // (`clippy::drain_collect`), and lint is `-D warnings`, so it failed
+        // the whole workspace and skipped every downstream test job.
+        let mut remaining = std::mem::take(&mut self.stops);
         sorted.push(remaining.remove(0));
 
         while !remaining.is_empty() {
