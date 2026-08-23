@@ -363,6 +363,45 @@ impl DispatchService {
             .await
     }
 
+    /// A courier starts or ends their shift.
+    ///
+    /// This is the write that `find_available_near` reads. Without it a courier
+    /// stays on the `offline` that `register` gave them, the proximity search
+    /// skips them forever, and every order fans out to nobody — which is
+    /// exactly what the platform did until this existed.
+    ///
+    /// Only the flag moves. Nothing here touches a live assignment: going off
+    /// duty mid-job must not abandon the parcel a courier is carrying, and the
+    /// supply query asks the `claimed` unique index directly rather than
+    /// trusting this column, so a courier holding a job is excluded whatever it
+    /// says.
+    ///
+    /// A deactivated courier can still flip their own flag and still will not
+    /// be dispatched — `is_dispatchable` requires `is_active`, which belongs to
+    /// whoever deactivated them, not to the courier.
+    ///
+    /// Returns `false` when the caller holds no courier row in this tenant, so
+    /// the route can answer 404 without confirming whether an id exists — the
+    /// same shape as `claim` and `offers_for_user`.
+    pub async fn set_availability(
+        &self,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        available: bool,
+    ) -> anyhow::Result<bool> {
+        let Some(mut courier) = self.couriers.find_by_user(tenant_id, user_id).await? else {
+            return Ok(false);
+        };
+
+        if available {
+            courier.go_available();
+        } else {
+            courier.go_offline();
+        }
+        self.couriers.save(&courier).await?;
+        Ok(true)
+    }
+
     /// A courier accepts an offer. Returns `false` when another courier got
     /// there first — the caller should show "already taken", not an error.
     ///
@@ -1766,5 +1805,166 @@ mod credit_idempotency {
         let trips = ledgers.all_entries.lock().unwrap().iter()
             .filter(|(_, _, kind, r)| *kind == "trip_earning" && *r == job).count();
         assert_eq!(trips, 1, "exactly one trip earning for one job, ever");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Availability
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod availability {
+    use super::*;
+    use crate::domain::entities::{Courier, CourierLocation, CourierStatus};
+    use crate::domain::repositories::CourierRepository;
+    use crate::infrastructure::db::{ClaimOutcome, CourierLedgerRepository, LocationRepository};
+    use std::sync::Mutex;
+
+    const TENANT: Uuid = Uuid::from_u128(7);
+
+    struct Couriers(Mutex<Vec<(Uuid, Courier)>>);
+
+    #[async_trait::async_trait]
+    impl CourierRepository for Couriers {
+        async fn find_by_id(&self, _: Uuid, id: Uuid) -> anyhow::Result<Option<Courier>> {
+            Ok(self.0.lock().unwrap().iter().find(|(_, c)| c.id == id).map(|(_, c)| c.clone()))
+        }
+        async fn find_by_user(&self, _: Uuid, user_id: Uuid) -> anyhow::Result<Option<Courier>> {
+            Ok(self.0.lock().unwrap().iter().find(|(u, _)| *u == user_id).map(|(_, c)| c.clone()))
+        }
+        async fn save(&self, courier: &Courier) -> anyhow::Result<()> {
+            let mut rows = self.0.lock().unwrap();
+            if let Some((_, slot)) = rows.iter_mut().find(|(_, c)| c.id == courier.id) {
+                *slot = courier.clone();
+            }
+            Ok(())
+        }
+        async fn find_available_near(&self, _: Uuid, _: f64, _: f64, _: f64, _: i64)
+            -> anyhow::Result<Vec<Courier>> {
+            Ok(self.0.lock().unwrap().iter()
+                .filter(|(_, c)| c.is_dispatchable())
+                .map(|(_, c)| c.clone())
+                .collect())
+        }
+    }
+
+    struct NoAssignments;
+    #[async_trait::async_trait]
+    impl AssignmentRepository for NoAssignments {
+        async fn save(&self, _: &CourierAssignment) -> anyhow::Result<()> { Ok(()) }
+        async fn try_claim(&self, _: Uuid, _: Uuid) -> anyhow::Result<ClaimOutcome> {
+            Ok(ClaimOutcome::Lost)
+        }
+        async fn find_by_id(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<CourierAssignment>> {
+            Ok(None)
+        }
+        async fn find_offered_for_courier(&self, _: Uuid, _: Uuid)
+            -> anyhow::Result<Vec<CourierAssignment>> { Ok(vec![]) }
+    }
+
+    struct NoLocations;
+    #[async_trait::async_trait]
+    impl LocationRepository for NoLocations {
+        async fn record(&self, _: &CourierLocation) -> anyhow::Result<()> { Ok(()) }
+        async fn latest(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<CourierLocation>> { Ok(None) }
+        async fn recent(&self, _: Uuid, _: Uuid, _: i64) -> anyhow::Result<Vec<CourierLocation>> { Ok(vec![]) }
+    }
+
+    struct NoLedgers;
+    #[async_trait::async_trait]
+    impl CourierLedgerRepository for NoLedgers {
+        async fn find_open(&self, _: Uuid, _: Uuid, _: &str)
+            -> anyhow::Result<Option<CourierLedger>> { Ok(None) }
+        async fn save(&self, _: &CourierLedger) -> anyhow::Result<()> { Ok(()) }
+        async fn find_all_open(&self, _: &str) -> anyhow::Result<Vec<CourierLedger>> { Ok(vec![]) }
+        async fn entry_exists_for_job(&self, _: Uuid, _: Uuid, _: Uuid) -> anyhow::Result<bool> { Ok(false) }
+    }
+
+    /// A freshly registered courier, exactly as `register` leaves them: offline.
+    fn fixture() -> (DispatchService, Arc<Couriers>, Uuid) {
+        let user = Uuid::new_v4();
+        let courier = Courier::new(
+            TENANT, user, "Ave".into(), "Test".into(), "+639170000009".into(),
+        );
+        let couriers = Arc::new(Couriers(Mutex::new(vec![(user, courier)])));
+        let svc = DispatchService::new(
+            couriers.clone(),
+            Arc::new(NoAssignments),
+            Arc::new(NoLocations),
+            Arc::new(NoLedgers),
+            Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
+            PayBounds::default(),
+        );
+        (svc, couriers, user)
+    }
+
+    fn only(couriers: &Couriers) -> Courier {
+        couriers.0.lock().unwrap()[0].1.clone()
+    }
+
+    /// The whole point. `register` leaves a courier `offline` and, before this
+    /// existed, nothing in the service ever moved them off it — so
+    /// `find_available_near` skipped every courier in the tenant and every
+    /// order fanned out to nobody.
+    #[tokio::test]
+    async fn going_on_duty_puts_the_courier_into_supply() {
+        let (svc, couriers, user) = fixture();
+        assert!(!only(&couriers).is_dispatchable(), "registration must not opt anyone in");
+
+        assert!(svc.set_availability(TENANT, user, true).await.unwrap());
+
+        assert!(only(&couriers).is_dispatchable());
+        assert_eq!(
+            svc.couriers.find_available_near(TENANT, 0.0, 0.0, 5.0, 5).await.unwrap().len(),
+            1,
+            "a courier on duty is what a proximity search is supposed to find",
+        );
+    }
+
+    #[tokio::test]
+    async fn going_off_duty_takes_them_out_of_supply() {
+        let (svc, couriers, user) = fixture();
+        svc.set_availability(TENANT, user, true).await.unwrap();
+
+        assert!(svc.set_availability(TENANT, user, false).await.unwrap());
+
+        assert_eq!(only(&couriers).status, CourierStatus::Offline);
+        assert!(svc.couriers.find_available_near(TENANT, 0.0, 0.0, 5.0, 5).await.unwrap().is_empty());
+    }
+
+    /// The app calls this every time the toggle is flipped, and a courier
+    /// re-opening the app while already on duty must not be an error.
+    #[tokio::test]
+    async fn going_on_duty_twice_is_not_an_error() {
+        let (svc, couriers, user) = fixture();
+
+        assert!(svc.set_availability(TENANT, user, true).await.unwrap());
+        assert!(svc.set_availability(TENANT, user, true).await.unwrap());
+
+        assert!(only(&couriers).is_dispatchable());
+    }
+
+    /// A deactivated courier is deactivated by someone who meant it. Going on
+    /// duty is a courier's own decision about their shift and must not
+    /// undo it.
+    #[tokio::test]
+    async fn a_deactivated_courier_stays_out_of_supply() {
+        let (svc, couriers, user) = fixture();
+        couriers.0.lock().unwrap()[0].1.is_active = false;
+
+        svc.set_availability(TENANT, user, true).await.unwrap();
+
+        assert!(!only(&couriers).is_dispatchable());
+        assert!(svc.couriers.find_available_near(TENANT, 0.0, 0.0, 5.0, 5).await.unwrap().is_empty());
+    }
+
+    /// Same shape as `claim` and `offers_for_user`: the caller is resolved from
+    /// the token, and a user with no courier row in this tenant is simply not a
+    /// courier. `false` so the route can answer 404 without leaking whether the
+    /// id exists.
+    #[tokio::test]
+    async fn a_user_who_is_not_a_courier_is_refused() {
+        let (svc, _, _) = fixture();
+        assert!(!svc.set_availability(TENANT, Uuid::new_v4(), true).await.unwrap());
     }
 }

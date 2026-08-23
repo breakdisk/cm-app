@@ -67,17 +67,11 @@ fun ShiftScreen(
     val askLocation = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { allowed ->
-        if (allowed) {
-            ShiftLocationService.start(context)
-            vm.goOnline()
-        }
+        if (allowed) vm.goOnline()
     }
 
-    // The service is bound to duty, not to this screen. A courier who navigates
-    // to their manifest is still on shift and must still be tracked.
     fun setDuty(on: Boolean) {
         if (!on) {
-            ShiftLocationService.stop(context)
             vm.goOffline()
             return
         }
@@ -86,11 +80,26 @@ fun ShiftScreen(
         ) == PackageManager.PERMISSION_GRANTED
 
         if (granted) {
-            ShiftLocationService.start(context)
             vm.goOnline()
         } else {
             askLocation.launch(Manifest.permission.ACCESS_FINE_LOCATION)
         }
+    }
+
+    // Location streaming follows the *state*, not the tap.
+    //
+    // Going on duty is now a request the server can refuse, and starting the
+    // service on the tap would leave it reporting a courier's location while
+    // they are not on shift at all. Keyed on the boolean rather than on `state`
+    // so a routine offer-list refresh does not restart the service every six
+    // seconds.
+    //
+    // `!is Offline` rather than `is Online`, because a courier who has claimed
+    // a job is working and must still be tracked — that is the whole point of
+    // the manifest screen having a live position behind it.
+    val onShift = state !is ShiftState.Offline
+    LaunchedEffect(onShift) {
+        if (onShift) ShiftLocationService.start(context) else ShiftLocationService.stop(context)
     }
 
     // Navigation is a side effect of state, not of the tap. A tap that claimed
@@ -111,7 +120,7 @@ fun ShiftScreen(
         when (val s = state) {
             is ShiftState.Offline -> Centered(
                 "You are off duty",
-                "Go on duty to start receiving offers.",
+                s.notice ?: "Go on duty to start receiving offers.",
             )
 
             is ShiftState.Online -> {

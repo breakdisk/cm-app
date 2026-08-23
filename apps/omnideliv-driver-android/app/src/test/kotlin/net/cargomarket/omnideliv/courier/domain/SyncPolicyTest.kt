@@ -120,4 +120,39 @@ class SyncPolicyTest {
         assertEquals(0, pendingCount(queue))
         assertTrue(drainOrder(queue).isEmpty())
     }
+
+    /**
+     * A 401 refuses the *caller*, not the payload — and parking on it would
+     * discard a delivery the courier really made, along with the credit for
+     * it.
+     *
+     * This is not hypothetical. The access token lives one hour
+     * (`AUTH__JWT_EXPIRY_SECONDS: 3600`) and this app stores no refresh token,
+     * so every shift longer than an hour meets one. A background drain firing
+     * unattended is what turns that from "the screen looks stale" into
+     * "yesterday's deliveries were thrown away while the courier slept".
+     *
+     * Halt rather than Retry so the attempt budget is not spent either: five
+     * unattended passes against an expired token would otherwise park the row
+     * by the back door.
+     */
+    @Test
+    fun `an expired session halts the pass rather than parking the delivery`() {
+        assertInstanceOf(SyncDecision.Halt::class.java, decideAfterFailure(1, 401))
+        assertInstanceOf(SyncDecision.Halt::class.java, decideAfterFailure(1, 403))
+        // Past the budget it still halts. The budget counts refusals of the
+        // payload; this was never one.
+        assertInstanceOf(SyncDecision.Halt::class.java, decideAfterFailure(MAX_SYNC_ATTEMPTS, 401))
+    }
+
+    /**
+     * The neighbours stay put. 404 is what a stale assignment id returns after
+     * the hardening work, and it must still park rather than halt — otherwise
+     * one dead row stops the queue forever instead of stepping aside.
+     */
+    @Test
+    fun `a refusal of the payload still parks`() {
+        assertInstanceOf(SyncDecision.Park::class.java, decideAfterFailure(1, 404))
+        assertInstanceOf(SyncDecision.Park::class.java, decideAfterFailure(1, 400))
+    }
 }

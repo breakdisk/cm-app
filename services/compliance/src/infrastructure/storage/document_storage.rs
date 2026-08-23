@@ -253,7 +253,14 @@ impl DocumentStorage {
         key: &str,
         file_bytes: Vec<u8>,
         content_type: &str,
-    ) -> Result<(), aws_sdk_s3::error::SdkError<aws_sdk_s3::operation::put_object::PutObjectError>> {
+    //
+    // The error is boxed. `SdkError<PutObjectError>` is 368 bytes, which a
+    // stable clippy newer than this repo's last green run rejects outright
+    // (`clippy::result_large_err`) — every caller of a `Result` pays that size
+    // on the success path too. Boxing is invisible here: both call sites end in
+    // `.context(...)?`, and `Box<E>` implements `Error` whenever `E` does.
+    ) -> Result<(), Box<aws_sdk_s3::error::SdkError<aws_sdk_s3::operation::put_object::PutObjectError>>>
+    {
         self.client.put_object()
             .bucket(&self.bucket)
             .key(key)
@@ -262,6 +269,7 @@ impl DocumentStorage {
             .send()
             .await
             .map(|_| ())
+            .map_err(Box::new)
     }
 
     /// Confirm that a key exists in the bucket (HeadObject).  Used by

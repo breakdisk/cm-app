@@ -154,6 +154,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/v1/field-ops/assignments/:id/delivered", post(delivered))
         .route("/v1/field-ops/assignments/:id/position", get(assignment_position))
         .route("/v1/field-ops/couriers/register", post(register))
+        .route("/v1/field-ops/couriers/me/status", post(set_status))
         .route("/v1/field-ops/couriers/me/earnings", get(my_earnings))
         .route("/v1/field-ops/couriers/me/remit", post(remit))
         .route("/v1/field-ops/admin/payouts/run", post(run_payout))
@@ -185,6 +186,43 @@ async fn offer(
         })?;
 
     Ok(Json(OfferResponse { assignment_ids: offers.iter().map(|a| a.id).collect() }))
+}
+
+/// `POST /v1/field-ops/couriers/me/status` — go on or off duty.
+///
+/// The courier is resolved from the token. There is deliberately no id in the
+/// path: a courier may only start their own shift, and an id a caller could
+/// name would let one courier put another into the dispatch pool.
+///
+/// 404 when the caller holds no courier row in this tenant, matching `claim`
+/// and the milestone routes — a foreign or absent id reads as nonexistent
+/// rather than forbidden, so ids cannot be probed.
+#[derive(Debug, Deserialize)]
+pub struct SetStatusRequest {
+    /// `true` to go on duty. A boolean rather than the status string because
+    /// `assigned` and `on_break` are the service's to set, not a courier's.
+    pub available: bool,
+}
+
+async fn set_status(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Json(req): Json<SetStatusRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let updated = st
+        .dispatch
+        .set_availability(claims.tenant_id, claims.user_id, req.available)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "setting courier availability failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    if updated {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
 }
 
 /// `GET /v1/field-ops/assignments/mine` — what this courier has been offered.

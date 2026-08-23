@@ -1,6 +1,8 @@
 package net.cargomarket.omnideliv.courier.data
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.asRequestBody
@@ -9,6 +11,7 @@ import net.cargomarket.omnideliv.courier.data.db.OutboundEntity
 import net.cargomarket.omnideliv.courier.data.db.toDomain
 import net.cargomarket.omnideliv.courier.domain.MilestoneKind
 import net.cargomarket.omnideliv.courier.domain.SyncDecision
+import net.cargomarket.omnideliv.courier.domain.SyncScheduler
 import net.cargomarket.omnideliv.courier.domain.decideAfterFailure
 import net.cargomarket.omnideliv.courier.domain.drainOrder
 import java.time.Instant
@@ -28,9 +31,22 @@ import javax.inject.Singleton
 class OutboundRepository @Inject constructor(
     private val dao: OutboundDao,
     private val api: CourierApi,
+    private val scheduler: SyncScheduler,
 ) {
 
     val pendingCount: Flow<Int> get() = dao.pendingCount()
+
+    /**
+     * One drain at a time, whoever asked for it.
+     *
+     * There are two callers now — the manifest screen, for immediate feedback
+     * while a courier is looking at it, and the background worker. Both read
+     * the same rows, so without this the same delivery is sent twice: a
+     * duplicate credit attempt against the courier ledger, and a duplicate
+     * milestone against an order's state machine. Both run in this process, so
+     * an in-process lock is the whole boundary.
+     */
+    private val drainLock = Mutex()
 
     /**
      * Record a milestone.
@@ -46,15 +62,23 @@ class OutboundRepository @Inject constructor(
         stopRef: String?,
         proofPath: String? = null,
         atMillis: Long = System.currentTimeMillis(),
-    ): Long = dao.insert(
-        OutboundEntity(
-            kind = kind.name,
-            assignmentId = assignmentId,
-            stopRef = stopRef,
-            deviceTimestamp = isoFromMillis(atMillis),
-            proofPath = proofPath,
-        ),
-    )
+    ): Long {
+        val id = dao.insert(
+            OutboundEntity(
+                kind = kind.name,
+                assignmentId = assignmentId,
+                stopRef = stopRef,
+                deviceTimestamp = isoFromMillis(atMillis),
+                proofPath = proofPath,
+            ),
+        )
+        // Recording is what makes a drain due, so recording is what asks for
+        // one. Asked here rather than at the four call sites because a fifth
+        // added later would otherwise queue a delivery that nothing ever sends
+        // — which is the state this app shipped in.
+        scheduler.kick()
+        return id
+    }
 
     /**
      * Send everything pending, oldest physical event first, stopping at the
@@ -67,7 +91,13 @@ class OutboundRepository @Inject constructor(
      *
      * @return true if the queue drained completely.
      */
-    suspend fun drain(): Boolean {
+    suspend fun drain(): Boolean = drainLock.withLock { drainPass() }
+
+    /**
+     * One pass over the queue. Never run concurrently with itself — see
+     * [drainLock].
+     */
+    private suspend fun drainPass(): Boolean {
         // Re-read once. Parking a row does not change the order of the rest, so
         // there is no reason to re-query — and recursing to "start again after a
         // park" would be quadratic and stack-deep on a shift with several bad
@@ -104,12 +134,18 @@ class OutboundRepository @Inject constructor(
             }
 
             val attempts = item.attempts + 1
-            dao.recordAttempt(item.id, attempts)
 
             // A null status means the request threw — no response at all, which
             // is transient by definition and must never read as a rejection.
             when (val decision = decideAfterFailure(attempts, status)) {
+                // The session was refused, not the milestone. Leave the queue
+                // exactly as it was found — no attempt spent, nothing parked —
+                // and stop. Once the courier signs in again every row still
+                // goes, in the order it happened.
+                is SyncDecision.Halt -> return false
+
                 is SyncDecision.Retry -> {
+                    dao.recordAttempt(item.id, attempts)
                     // Stop here rather than skipping ahead. The server's state
                     // machine refuses a delivery for an order it has not seen
                     // collected, so pushing past a stuck row would send
@@ -119,6 +155,7 @@ class OutboundRepository @Inject constructor(
                 }
 
                 is SyncDecision.Park -> {
+                    dao.recordAttempt(item.id, attempts)
                     dao.park(item.id, decision.reason)
                     // A parked row no longer blocks: that is the entire purpose
                     // of parking. Carry on with the rest, but the queue did not

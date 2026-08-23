@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -45,5 +46,22 @@
             android:name=".data.location.ShiftLocationService"
             android:exported="false"
             android:foregroundServiceType="location" />
+
+        <!-- WorkManager initialises itself from androidx.startup by default,
+             which runs before Hilt has injected anything and therefore without
+             the worker factory the drain worker needs. Removing the default
+             initializer hands initialisation to CourierApp, which supplies the
+             factory. Leaving it in place is how a worker fails to instantiate
+             in the background with nothing on screen to say so. -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
     </application>
 </manifest>

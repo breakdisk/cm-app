@@ -4,14 +4,34 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
+import androidx.hilt.work.HiltWorkerFactory
+import androidx.work.Configuration
 import dagger.hilt.android.HiltAndroidApp
+import net.cargomarket.omnideliv.courier.data.sync.WorkManagerSyncScheduler
+import javax.inject.Inject
 
 @HiltAndroidApp
-class CourierApp : Application() {
+class CourierApp : Application(), Configuration.Provider {
+
+    /**
+     * Lets WorkManager construct workers that have constructor dependencies.
+     * Without it the drain worker cannot be given the outbound repository and
+     * every run fails at instantiation — silently, in the background, which is
+     * the worst place for it.
+     */
+    @Inject lateinit var workerFactory: HiltWorkerFactory
+
+    override val workManagerConfiguration: Configuration
+        get() = Configuration.Builder()
+            .setWorkerFactory(workerFactory)
+            .build()
 
     override fun onCreate() {
         super.onCreate()
         createShiftChannel()
+        // After super.onCreate, so injection has run and WorkManager can
+        // initialise on demand against the configuration above.
+        WorkManagerSyncScheduler.scheduleSafetyNet(this)
     }
 
     /**

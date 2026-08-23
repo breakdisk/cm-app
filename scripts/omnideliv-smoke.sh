@@ -27,6 +27,22 @@ echo "1/6  health"
 curl -sf "$OMNIDELIV/health" >/dev/null && echo "     omnideliv healthy"
 curl -sf "$FIELD_OPS/health" >/dev/null && echo "     field-ops healthy"
 
+# The courier goes on duty *before* checkout, because checkout is what fans the
+# offer out and `find_available_near` only considers couriers whose status is
+# `available`. Until this endpoint existed nothing in production ever set it:
+# registration leaves a courier `offline`, `go_available()` had one caller and
+# it was a test, and every order therefore fanned out to nobody while the app
+# read "On duty". Seeding used to paper over it by writing the column directly.
+if [ -n "${COURIER_TOKEN:-}" ]; then
+  echo "1b/6 courier goes on duty"
+  curl -sf -X POST -H "Authorization: Bearer $COURIER_TOKEN" -H "Content-Type: application/json"     "$FIELD_OPS/v1/field-ops/couriers/me/status" -d '{"available":true}' >/dev/null || {
+      echo "     going on duty failed — is field-ops new enough to have"
+      echo "     POST /v1/field-ops/couriers/me/status? A 404 here means the"
+      echo "     deployed image predates it, and no offer can reach this courier."
+      exit 1; }
+  echo "     available"
+fi
+
 echo "2/6  catalog search"
 # Not /v1/omnideliv/vendors: that endpoint does not exist yet (Plan 9 Task 4).
 # Searching a known vendor's catalog proves the same thing this step is for —
@@ -140,8 +156,31 @@ if [ -n "${COURIER_TOKEN:-}" ]; then
     | grep -o '"balance_cents":[0-9-]*' | head -1 | cut -d: -f2)
   COURIER_BEFORE=${COURIER_BEFORE:-0}
 
+  # Arrival first, as the app reports it. `stop_ref` is the vendor id for a
+  # pickup stop and the order id for the dropoff; field-ops never resolves it,
+  # which is what keeps that tier product-agnostic.
+  curl -sf -X POST -H "Authorization: Bearer $COURIER_TOKEN" -H "Content-Type: application/json"     "$FIELD_OPS/v1/field-ops/assignments/$ASSIGNMENT/arrived"     -d "{\"stop_ref\":\"$VENDOR\",\"device_timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" >/dev/null || {
+      echo "     arrival call failed"; exit 1; }
+
   curl -sf -X POST -H "Authorization: Bearer $COURIER_TOKEN" -H "Content-Type: application/json"     "$FIELD_OPS/v1/field-ops/assignments/$ASSIGNMENT/collected"     -d "{\"vendor_id\":\"$VENDOR\"}" >/dev/null || {
       echo "     collection call failed"; exit 1; }
+
+  # Evidence before the milestone, in that order, because that is the order the
+  # app's outbound queue uses: if the milestone went first and the upload then
+  # failed, the row would be marked synced and the photo lost.
+  #
+  # Sixteen bytes that are a WebP as far as the sniffer is concerned: `RIFF` at
+  # 0 and `WEBP` at 8. That sniff is the check being exercised here — it used to
+  # match `RIFF` alone, which is also WAV and AVI.
+  PROOF=$(mktemp)
+  printf 'RIFF\x10\x00\x00\x00WEBPVP8 ' > "$PROOF"
+  curl -sf -X POST -H "Authorization: Bearer $COURIER_TOKEN"     -F "file=@$PROOF;type=image/webp"     "$GW/v1/omnideliv/courier/jobs/$ORDER/proof" >/dev/null || {
+      echo "     proof upload failed — the photo has nowhere to go."
+      echo "     A 404 means this omnideliv image predates the proof route;"
+      echo "     a 415 means the WebP sniff rejected the fixture."
+      rm -f "$PROOF"; exit 1; }
+  rm -f "$PROOF"
+  echo "     proof stored"
 
   curl -sf -X POST -H "Authorization: Bearer $COURIER_TOKEN" -H "Content-Type: application/json"     "$FIELD_OPS/v1/field-ops/assignments/$ASSIGNMENT/delivered" -d "{}" >/dev/null || {
       echo "     delivery call failed"; exit 1; }

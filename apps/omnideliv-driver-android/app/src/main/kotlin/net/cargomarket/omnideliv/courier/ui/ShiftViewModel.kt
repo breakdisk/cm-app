@@ -12,6 +12,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import net.cargomarket.omnideliv.courier.data.CourierApi
 import net.cargomarket.omnideliv.courier.data.OfferDto
+import net.cargomarket.omnideliv.courier.data.SetStatusRequest
 import net.cargomarket.omnideliv.courier.domain.OfferCard
 import net.cargomarket.omnideliv.courier.domain.parseOfferCard
 import javax.inject.Inject
@@ -32,8 +33,13 @@ data class OfferRow(
 }
 
 sealed interface ShiftState {
-    /** Off duty. Nothing is polled and no offers arrive. */
-    data object Offline : ShiftState
+    /**
+     * Off duty. Nothing is polled and no offers arrive.
+     *
+     * [notice] carries why, when this is the result of a failed attempt to go
+     * on duty rather than a courier's own choice.
+     */
+    data class Offline(val notice: String? = null) : ShiftState
 
     /** On duty, listing whatever is currently offered. */
     data class Online(
@@ -53,33 +59,91 @@ class ShiftViewModel @Inject constructor(
     private val api: CourierApi,
 ) : ViewModel() {
 
-    private val _state = MutableStateFlow<ShiftState>(ShiftState.Offline)
+    private val _state = MutableStateFlow<ShiftState>(ShiftState.Offline())
     val state: StateFlow<ShiftState> = _state.asStateFlow()
 
     private var poller: Job? = null
 
     /**
+     * A go-on-duty request is in flight.
+     *
+     * The state is still `Offline` while the server is being asked, so the
+     * state check alone would let a second tap start a second request and a
+     * second poller.
+     */
+    private var goingOnDuty = false
+
+    /**
      * Go on duty.
      *
-     * Polling starts here rather than at app launch, so a courier who opened the
-     * app to check their earnings is not offered work and does not spend battery
-     * or data on a shift they have not started.
+     * The server is told first, and the screen only says "on duty" once it has
+     * agreed. This app shipped with a toggle that set a local flag and nothing
+     * else: field-ops kept the `offline` that registration gave the courier,
+     * `find_available_near` skipped them, and every order fanned out to nobody
+     * while the phone read *Watching for offers*. A toggle that lies about this
+     * is worse than no toggle, because the courier waits on it.
+     *
+     * Polling starts here rather than at app launch, so a courier who opened
+     * the app to check their earnings is not offered work and does not spend
+     * battery or data on a shift they have not started.
      */
     fun goOnline() {
-        if (_state.value !is ShiftState.Offline) return
-        _state.value = ShiftState.Online()
-        poller = viewModelScope.launch {
-            while (coroutineContext.isActive) {
-                refresh()
-                delay(POLL_MS)
+        if (_state.value !is ShiftState.Offline || goingOnDuty) return
+        goingOnDuty = true
+
+        viewModelScope.launch {
+            val accepted = runCatching { api.setStatus(SetStatusRequest(available = true)) }
+                .getOrNull()
+                ?.isSuccessful == true
+            goingOnDuty = false
+
+            if (!accepted) {
+                // Stay off duty, and say so. Anything else strands the courier
+                // on an empty list that can never fill.
+                _state.value = ShiftState.Offline(
+                    "Could not go on duty. Check your connection and try again.",
+                )
+                return@launch
+            }
+
+            _state.value = ShiftState.Online()
+            poller = viewModelScope.launch {
+                while (coroutineContext.isActive) {
+                    refresh()
+                    delay(POLL_MS)
+                }
             }
         }
     }
 
+    /**
+     * Go off duty.
+     *
+     * Optimistic, unlike going on: a courier who has finished must not be held
+     * on shift by a bad signal. If the call fails they stay `available` on the
+     * server for a while, but the location service stops with the shift and
+     * `find_available_near` ignores any fix older than ten minutes — so supply
+     * self-heals within that window without the app having to retry.
+     */
     fun goOffline() {
+        stopPolling()
+        _state.value = ShiftState.Offline()
+        viewModelScope.launch {
+            runCatching { api.setStatus(SetStatusRequest(available = false)) }
+        }
+    }
+
+    /**
+     * Stop listening for offers without reporting off duty.
+     *
+     * The distinction is the point: a courier who just claimed a job is not
+     * shopping for another, but they are very much working. Reporting them
+     * offline here would take them out of supply for good the moment the job
+     * ended.
+     */
+    private fun stopPolling() {
         poller?.cancel()
         poller = null
-        _state.value = ShiftState.Offline
     }
 
     private suspend fun refresh() {
@@ -126,7 +190,7 @@ class ShiftViewModel @Inject constructor(
                 onSuccess = { res ->
                     val won = res.body()?.won == true
                     if (res.isSuccessful && won && row != null) {
-                        goOffline()
+                        stopPolling()
                         _state.value = ShiftState.Claimed(row.externalRef, row.assignmentId)
                     } else {
                         val after = _state.value as? ShiftState.Online ?: return@fold
@@ -162,7 +226,7 @@ class ShiftViewModel @Inject constructor(
     )
 
     override fun onCleared() {
-        poller?.cancel()
+        stopPolling()
         super.onCleared()
     }
 
