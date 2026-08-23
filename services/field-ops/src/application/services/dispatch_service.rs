@@ -21,8 +21,6 @@ pub struct DispatchService {
     pay_bounds:  PayBounds,
 }
 
-/// The outcome of one payout run, in enough detail to reconcile.
-
 /// What a payout run will do with one courier's ledger, and why.
 ///
 /// Extracted from the middle of `run_payout` so the ops screen can show the
@@ -97,6 +95,7 @@ mod payout_disposition_tests {
 }
 
 #[derive(Debug, Default, Clone)]
+/// The outcome of one payout run, in enough detail to reconcile.
 pub struct PayoutRun {
     pub period: String,
     pub batch:  String,
