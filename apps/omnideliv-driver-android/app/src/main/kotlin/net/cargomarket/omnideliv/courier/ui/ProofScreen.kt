@@ -5,12 +5,16 @@ import android.content.Context
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import net.cargomarket.omnideliv.courier.domain.zoomAfterPinch
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -81,7 +85,33 @@ fun ProofScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val capture = remember { ImageCapture.Builder().build() }
 
-    Box(Modifier.fillMaxSize().background(Tokens.Base)) {
+    // `bindToLifecycle` returns the Camera and this used to discard it, so
+    // there was no `cameraControl` to zoom with — a courier photographing a
+    // door number or a gate code from arm's length could not get closer.
+    var camera by remember { mutableStateOf<Camera?>(null) }
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Tokens.Base)
+            // Pinch anywhere on the preview. Bounds come from the lens itself:
+            // a phone with an ultra-wide reports a minimum below 1.0, and
+            // assuming 1.0 would make its widest setting unreachable.
+            .pointerInput(camera) {
+                detectTransformGestures { _, _, pinch, _ ->
+                    val control = camera ?: return@detectTransformGestures
+                    val state = control.cameraInfo.zoomState.value ?: return@detectTransformGestures
+                    control.cameraControl.setZoomRatio(
+                        zoomAfterPinch(
+                            current = state.zoomRatio,
+                            scale = pinch,
+                            min = state.minZoomRatio,
+                            max = state.maxZoomRatio,
+                        ),
+                    )
+                }
+            },
+    ) {
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
@@ -92,7 +122,7 @@ fun ProofScreen(
                         val preview = Preview.Builder().build()
                             .also { it.setSurfaceProvider(view.surfaceProvider) }
                         provider.unbindAll()
-                        provider.bindToLifecycle(
+                        camera = provider.bindToLifecycle(
                             lifecycleOwner,
                             CameraSelector.DEFAULT_BACK_CAMERA,
                             preview,

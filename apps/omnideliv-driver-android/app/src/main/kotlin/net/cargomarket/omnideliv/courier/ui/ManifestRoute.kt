@@ -283,6 +283,7 @@ class ManifestViewModel @Inject constructor(
 fun ManifestRoute(
     orderId: String,
     assignmentId: String,
+    onFinished: () -> Unit,
     vm: ManifestViewModel = hiltViewModel(),
 ) {
     val state by vm.state.collectAsState()
@@ -306,6 +307,10 @@ fun ManifestRoute(
         servedFromCache = state.servedFromCache,
         pendingCount = state.pendingCount,
         onAdvance = { vm.advance(assignmentId) },
+        // The job is over. Going back on duty is the only thing left, and until
+        // this existed there was nothing to tap: the button was disabled and
+        // the shift screen had been popped off the back stack at claim time.
+        onFinish = onFinished,
         arrivedHere = state.manifest?.currentLeg()?.let { leg ->
             when (leg) {
                 is Leg.ToPickup -> leg.stop.stopRef in state.arrivedStops
