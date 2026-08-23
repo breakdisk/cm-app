@@ -692,8 +692,8 @@ jobs:
         run: cargo install cargo-deny --locked --quiet
 
       - name: Run cargo audit (RustSec CVE check)
-        # Two advisories are ignored, both because there is no fixed version to
-        # upgrade to. Neither is a blanket exemption — check-audit-ignores.sh
+        # Three advisories are ignored, each because no fixed version is
+        # reachable from where the crate actually sits.
         # below re-derives the justification on every run and fails when it
         # stops holding:
         #
@@ -713,7 +713,8 @@ jobs:
             --deny unsound \
             --deny yanked \
             --ignore RUSTSEC-2023-0071 \
-            --ignore RUSTSEC-2026-0253
+            --ignore RUSTSEC-2026-0253 \
+            --ignore RUSTSEC-2026-0258
 
       # An --ignore never expires on its own: once upstream ships a fix, the flag
       # keeps suppressing the finding and the job stays green for a reason that

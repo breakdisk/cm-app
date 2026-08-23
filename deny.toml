@@ -40,6 +40,14 @@ yanked = "deny"
 #   RUSTSEC-2026-0253  lru panic-safety UAF — compiled, inside aws-sdk-s3's
 #                      internals. No released lru fixes it and aws-sdk-s3 pins
 #                      the major. Unsoundness, not a reachable vulnerability.
+#   RUSTSEC-2026-0258  h2 unbounded empty DATA frames (HTTP/2 DoS). The fix is
+#                      h2 >= 0.4.16 and there is none in the 0.3 line at all.
+#                      The public edge was on 0.4 and IS fixed — the lockfile
+#                      now carries 0.4.18. What remains is h2 0.3.27, reachable
+#                      only through tonic 0.11 -> axum 0.6 -> hyper 0.14, i.e.
+#                      the internal gRPC transport, which sits behind Istio
+#                      mTLS and takes no traffic from the internet. Escaping it
+#                      means a tonic/hyper-1.x migration across ~20 services.
 #
 # scripts/check-audit-ignores.sh re-derives both justifications on every CI run
 # and fails when either stops holding, so neither entry can quietly outlive it.
@@ -53,6 +61,7 @@ yanked = "deny"
 ignore = [
   "RUSTSEC-2023-0071",
   "RUSTSEC-2026-0253",
+  "RUSTSEC-2026-0258",
 ]
 
 # ─────────────────────────────────────────────────────────────
