@@ -14,8 +14,11 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import retrofit2.Retrofit
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.RecordedRequest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The access token lives one hour and a shift is longer than that.
@@ -180,12 +183,36 @@ class RefreshAuthenticatorTest {
      * once — and identity rotates the refresh token, so a second refresh with
      * the one already spent is refused and signs the courier out mid-shift.
      * Exactly one refresh per expiry.
+     *
+     * Answered by a [Dispatcher] rather than a queue, and that is the whole
+     * point of this version. The first attempt enqueued 401, 401, refresh, 200,
+     * 200 — which silently assumes both initial requests reach the server
+     * before the refresh does. Two real threads give no such guarantee: if the
+     * refresh arrives second it is served the 401 meant for the other request,
+     * and everything after it is off by one. It passed locally and in one CI
+     * run, then failed in the next and blocked an APK build.
+     *
+     * A dispatcher answers by what the request *is*, so arrival order stops
+     * mattering and the assertion — one refresh, both callers served — is the
+     * only thing under test.
      */
     @Test
     fun `concurrent unauthorized requests refresh once between them`() {
-        repeat(2) { server.enqueue(MockResponse().setResponseCode(401)) }
-        server.enqueue(refreshBody("fresh-token", "next-refresh"))
-        repeat(2) { server.enqueue(MockResponse().setResponseCode(200).setBody("{}")) }
+        val refreshes = AtomicInteger(0)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path?.contains("/v1/auth/refresh") == true) {
+                    refreshes.incrementAndGet()
+                    return refreshBody("fresh-token", "next-refresh")
+                }
+                // The dead token is refused; the one the refresh minted is not.
+                return if (request.getHeader("Authorization") == "Bearer fresh-token") {
+                    MockResponse().setResponseCode(200).setBody("{}")
+                } else {
+                    MockResponse().setResponseCode(401)
+                }
+            }
+        }
 
         val start = CountDownLatch(1)
         val done = CountDownLatch(2)
@@ -201,6 +228,7 @@ class RefreshAuthenticatorTest {
         assertTrue(done.await(10, TimeUnit.SECONDS), "both calls must finish")
 
         assertEquals(listOf(200, 200), codes.sorted())
-        assertEquals(1, tokens.updates, "the refresh token may only be spent once")
+        assertEquals(1, refreshes.get(), "the refresh token may only be spent once")
+        assertEquals(1, tokens.updates, "and only stored once")
     }
 }
