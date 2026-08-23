@@ -115,7 +115,12 @@ export default function CouriersPage() {
   }
 
   return (
-    <motion.div {...variants.fadeUp} className="space-y-5">
+    <motion.div
+      variants={variants.fadeInUp}
+      initial="hidden"
+      animate="visible"
+      className="space-y-5 p-4 sm:p-6"
+    >
       <header className="flex items-start justify-between gap-4">
         <div>
           <h1 className="flex items-center gap-2 text-xl font-semibold text-white">
