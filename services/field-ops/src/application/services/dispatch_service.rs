@@ -430,6 +430,21 @@ impl DispatchService {
             ClaimOutcome::Lost => Ok(false),
             ClaimOutcome::Won => {
                 if let Some(a) = self.assignments.find_by_id(tenant_id, assignment_id).await? {
+                    // Retire the same job's offers to everyone else. Best
+                    // effort: the claim has already succeeded and the courier
+                    // is on their way, so a failure here must not turn a won
+                    // job into an error. The cost of missing it is a stale row
+                    // in somebody's inbox, which is what this fixes rather than
+                    // something it may create.
+                    if let Err(e) = self
+                        .assignments
+                        .expire_other_offers(tenant_id, &a.product, a.external_ref, a.id)
+                        .await
+                    {
+                        tracing::warn!(err = %e, job = %a.external_ref,
+                            "could not expire the losing offers for this job");
+                    }
+
                     self.emit(CourierEvent::Assigned {
                         tenant_id,
                         product: a.product.as_str().to_string(),
@@ -879,6 +894,16 @@ mod claim_authorization {
                 .filter(|a| a.courier_id == courier_id && a.status == AssignmentStatus::Offered)
                 .cloned().collect())
         }
+        /// This fake does not model the fan-out, so there is nothing to retire.
+        /// Explicit rather than a trait default: a default would silently do
+        /// nothing for a real repository that forgot to implement it.
+        async fn expire_other_offers(
+            &self,
+            _: Uuid,
+            _: &ProductKey,
+            _: Uuid,
+            _: Uuid,
+        ) -> anyhow::Result<u64> { Ok(0) }
     }
 
     struct NoLocations;
@@ -1029,6 +1054,16 @@ mod payout_rules {
         async fn find_by_id(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<CourierAssignment>> { Ok(None) }
         async fn find_offered_for_courier(&self, _: Uuid, _: Uuid)
             -> anyhow::Result<Vec<CourierAssignment>> { Ok(vec![]) }
+        /// This fake does not model the fan-out, so there is nothing to retire.
+        /// Explicit rather than a trait default: a default would silently do
+        /// nothing for a real repository that forgot to implement it.
+        async fn expire_other_offers(
+            &self,
+            _: Uuid,
+            _: &ProductKey,
+            _: Uuid,
+            _: Uuid,
+        ) -> anyhow::Result<u64> { Ok(0) }
     }
 
     fn svc(ledgers: Arc<Ledgers>) -> DispatchService {
@@ -1280,6 +1315,16 @@ mod position_lookup {
         }
         async fn find_offered_for_courier(&self, _: Uuid, _: Uuid)
             -> anyhow::Result<Vec<CourierAssignment>> { Ok(vec![]) }
+        /// This fake does not model the fan-out, so there is nothing to retire.
+        /// Explicit rather than a trait default: a default would silently do
+        /// nothing for a real repository that forgot to implement it.
+        async fn expire_other_offers(
+            &self,
+            _: Uuid,
+            _: &ProductKey,
+            _: Uuid,
+            _: Uuid,
+        ) -> anyhow::Result<u64> { Ok(0) }
     }
 
     /// Empty for every courier — the "no fix on record" case.
@@ -1411,6 +1456,16 @@ mod milestone_authorization {
         }
         async fn find_offered_for_courier(&self, _: Uuid, _: Uuid)
             -> anyhow::Result<Vec<CourierAssignment>> { Ok(vec![]) }
+        /// This fake does not model the fan-out, so there is nothing to retire.
+        /// Explicit rather than a trait default: a default would silently do
+        /// nothing for a real repository that forgot to implement it.
+        async fn expire_other_offers(
+            &self,
+            _: Uuid,
+            _: &ProductKey,
+            _: Uuid,
+            _: Uuid,
+        ) -> anyhow::Result<u64> { Ok(0) }
     }
 
     struct NoLocations;
@@ -1702,6 +1757,16 @@ mod credit_idempotency {
         }
         async fn find_offered_for_courier(&self, _: Uuid, _: Uuid)
             -> anyhow::Result<Vec<CourierAssignment>> { Ok(vec![]) }
+        /// This fake does not model the fan-out, so there is nothing to retire.
+        /// Explicit rather than a trait default: a default would silently do
+        /// nothing for a real repository that forgot to implement it.
+        async fn expire_other_offers(
+            &self,
+            _: Uuid,
+            _: &ProductKey,
+            _: Uuid,
+            _: Uuid,
+        ) -> anyhow::Result<u64> { Ok(0) }
     }
 
     struct NoLocations;
@@ -1860,6 +1925,16 @@ mod availability {
         }
         async fn find_offered_for_courier(&self, _: Uuid, _: Uuid)
             -> anyhow::Result<Vec<CourierAssignment>> { Ok(vec![]) }
+        /// This fake does not model the fan-out, so there is nothing to retire.
+        /// Explicit rather than a trait default: a default would silently do
+        /// nothing for a real repository that forgot to implement it.
+        async fn expire_other_offers(
+            &self,
+            _: Uuid,
+            _: &ProductKey,
+            _: Uuid,
+            _: Uuid,
+        ) -> anyhow::Result<u64> { Ok(0) }
     }
 
     struct NoLocations;
@@ -1966,5 +2041,249 @@ mod availability {
     async fn a_user_who_is_not_a_courier_is_refused() {
         let (svc, _, _) = fixture();
         assert!(!svc.set_availability(TENANT, Uuid::new_v4(), true).await.unwrap());
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Losing offers
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod losing_offers {
+    use super::*;
+    use crate::domain::entities::{AssignmentStatus, Courier, CourierLocation};
+    use crate::domain::repositories::CourierRepository;
+    use crate::infrastructure::db::{ClaimOutcome, CourierLedgerRepository, LocationRepository};
+    use std::sync::Mutex;
+
+    const TENANT: Uuid = Uuid::from_u128(11);
+
+    struct Couriers(Vec<(Uuid, Courier)>);
+
+    #[async_trait::async_trait]
+    impl CourierRepository for Couriers {
+        async fn find_by_id(&self, _: Uuid, id: Uuid) -> anyhow::Result<Option<Courier>> {
+            Ok(self.0.iter().find(|(_, c)| c.id == id).map(|(_, c)| c.clone()))
+        }
+        async fn find_by_user(&self, _: Uuid, user_id: Uuid) -> anyhow::Result<Option<Courier>> {
+            Ok(self.0.iter().find(|(u, _)| *u == user_id).map(|(_, c)| c.clone()))
+        }
+        async fn save(&self, _: &Courier) -> anyhow::Result<()> { Ok(()) }
+        async fn find_available_near(&self, _: Uuid, _: f64, _: f64, _: f64, _: i64)
+            -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
+    }
+
+    #[derive(Default)]
+    struct Assignments(Mutex<Vec<CourierAssignment>>);
+
+    #[async_trait::async_trait]
+    impl AssignmentRepository for Assignments {
+        async fn save(&self, a: &CourierAssignment) -> anyhow::Result<()> {
+            let mut rows = self.0.lock().unwrap();
+            match rows.iter_mut().find(|r| r.id == a.id) {
+                Some(slot) => *slot = a.clone(),
+                None => rows.push(a.clone()),
+            }
+            Ok(())
+        }
+        async fn try_claim(&self, _: Uuid, id: Uuid) -> anyhow::Result<ClaimOutcome> {
+            let mut rows = self.0.lock().unwrap();
+            // Mirrors the partial unique index: one live claim per courier.
+            let holder = rows.iter().find(|r| r.id == id).map(|r| r.courier_id);
+            if let Some(courier) = holder {
+                if rows.iter().any(|r| r.courier_id == courier && r.status == AssignmentStatus::Claimed) {
+                    return Ok(ClaimOutcome::Lost);
+                }
+            }
+            match rows.iter_mut().find(|r| r.id == id && r.status == AssignmentStatus::Offered) {
+                Some(r) => { r.status = AssignmentStatus::Claimed; Ok(ClaimOutcome::Won) }
+                None => Ok(ClaimOutcome::Lost),
+            }
+        }
+        async fn find_by_id(&self, _: Uuid, id: Uuid) -> anyhow::Result<Option<CourierAssignment>> {
+            Ok(self.0.lock().unwrap().iter().find(|r| r.id == id).cloned())
+        }
+        async fn find_offered_for_courier(&self, _: Uuid, courier_id: Uuid)
+            -> anyhow::Result<Vec<CourierAssignment>> {
+            Ok(self.0.lock().unwrap().iter()
+                .filter(|r| r.courier_id == courier_id && r.status == AssignmentStatus::Offered)
+                .cloned().collect())
+        }
+        async fn expire_other_offers(
+            &self,
+            _: Uuid,
+            product: &ProductKey,
+            external_ref: Uuid,
+            winner: Uuid,
+        ) -> anyhow::Result<u64> {
+            let mut rows = self.0.lock().unwrap();
+            let mut n = 0;
+            for r in rows.iter_mut() {
+                if r.id != winner
+                    && r.external_ref == external_ref
+                    && r.product.as_str() == product.as_str()
+                    && r.status == AssignmentStatus::Offered
+                {
+                    r.status = AssignmentStatus::Expired;
+                    n += 1;
+                }
+            }
+            Ok(n)
+        }
+    }
+
+    struct NoLocations;
+    #[async_trait::async_trait]
+    impl LocationRepository for NoLocations {
+        async fn record(&self, _: &CourierLocation) -> anyhow::Result<()> { Ok(()) }
+        async fn latest(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<CourierLocation>> { Ok(None) }
+        async fn recent(&self, _: Uuid, _: Uuid, _: i64) -> anyhow::Result<Vec<CourierLocation>> { Ok(vec![]) }
+    }
+
+    struct NoLedgers;
+    #[async_trait::async_trait]
+    impl CourierLedgerRepository for NoLedgers {
+        async fn find_open(&self, _: Uuid, _: Uuid, _: &str)
+            -> anyhow::Result<Option<CourierLedger>> { Ok(None) }
+        async fn save(&self, _: &CourierLedger) -> anyhow::Result<()> { Ok(()) }
+        async fn find_all_open(&self, _: &str) -> anyhow::Result<Vec<CourierLedger>> { Ok(vec![]) }
+        async fn entry_exists_for_job(&self, _: Uuid, _: Uuid, _: Uuid) -> anyhow::Result<bool> { Ok(false) }
+    }
+
+    /// One job fanned out to five couriers, exactly as `offer_to_nearest` does.
+    fn fanout() -> (DispatchService, Arc<Assignments>, Vec<(Uuid, Uuid)>) {
+        let job = Uuid::new_v4();
+        let product = ProductKey::new("omnideliv");
+        let assignments = Arc::new(Assignments::default());
+        let mut couriers = Vec::new();
+        let mut ids = Vec::new();
+
+        for i in 0..5u128 {
+            let user = Uuid::from_u128(100 + i);
+            let courier = Courier::new(
+                TENANT, user, format!("C{i}"), "Test".into(), format!("+639170000{i:03}"),
+            );
+            let a = CourierAssignment::offer_with_earnings(
+                TENANT, courier.id, product.clone(), job, 3_500, 0, 0,
+            );
+            assignments.0.lock().unwrap().push(a.clone());
+            ids.push((user, a.id));
+            couriers.push((user, courier));
+        }
+
+        let svc = DispatchService::new(
+            Arc::new(Couriers(couriers)),
+            assignments.clone(),
+            Arc::new(NoLocations),
+            Arc::new(NoLedgers),
+            Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
+            PayBounds::default(),
+        );
+        (svc, assignments, ids)
+    }
+
+    /// `offer_to_nearest` fans out to five couriers and `try_claim` flips only
+    /// the winner. Nothing ever expired the other four, so they sat `Offered`
+    /// forever and kept appearing in their couriers' inboxes — a job the app
+    /// polls every six seconds, renders, and can only ever answer "That job was
+    /// taken" for.
+    #[tokio::test]
+    async fn claiming_a_job_expires_the_offers_made_to_everyone_else() {
+        let (svc, rows, ids) = fanout();
+        let (winner_user, winner_id) = ids[0];
+
+        assert!(svc.claim(TENANT, winner_user, winner_id).await.unwrap());
+
+        let stored = rows.0.lock().unwrap();
+        let winner = stored.iter().find(|r| r.id == winner_id).unwrap();
+        assert_eq!(winner.status, AssignmentStatus::Claimed);
+
+        for (_, id) in ids.iter().skip(1) {
+            let loser = stored.iter().find(|r| r.id == *id).unwrap();
+            assert_eq!(
+                loser.status,
+                AssignmentStatus::Expired,
+                "a losing offer must not stay in its courier's inbox",
+            );
+        }
+    }
+
+    /// The inbox is what a courier actually sees.
+    #[tokio::test]
+    async fn a_losing_courier_sees_no_offer_afterwards() {
+        let (svc, _, ids) = fanout();
+        let (winner_user, winner_id) = ids[0];
+        let (loser_user, _) = ids[1];
+
+        assert!(!svc.offers_for_user(TENANT, loser_user).await.unwrap().is_empty());
+        svc.claim(TENANT, winner_user, winner_id).await.unwrap();
+
+        assert!(
+            svc.offers_for_user(TENANT, loser_user).await.unwrap().is_empty(),
+            "the offer is gone, so the app stops showing a job nobody can take",
+        );
+    }
+
+    /// Only this job's siblings. Expiring by courier rather than by job would
+    /// empty every inbox in the tenant on any claim.
+    #[tokio::test]
+    async fn an_unrelated_offer_is_left_alone() {
+        let (svc, rows, ids) = fanout();
+        let (winner_user, winner_id) = ids[0];
+        let (loser_user, _) = ids[1];
+
+        let other_courier = rows.0.lock().unwrap()[1].courier_id;
+        let other = CourierAssignment::offer_with_earnings(
+            TENANT, other_courier, ProductKey::new("omnideliv"), Uuid::new_v4(), 4_000, 0, 0,
+        );
+        rows.0.lock().unwrap().push(other.clone());
+
+        svc.claim(TENANT, winner_user, winner_id).await.unwrap();
+
+        let remaining = svc.offers_for_user(TENANT, loser_user).await.unwrap();
+        assert_eq!(remaining.len(), 1, "the unrelated job must survive");
+        assert_eq!(remaining[0].id, other.id);
+    }
+
+    /// Two couriers must not both hold one job — and before this change they
+    /// could.
+    ///
+    /// `try_claim` is a CAS on `id` (`WHERE id = $1 AND status = 'offered'`)
+    /// and the only unique index is per **courier**, not per job. So each of
+    /// the five couriers in a fan-out could claim their *own* sibling row and
+    /// every one of them would win: five `Claimed` rows, five
+    /// `CourierEvent::Assigned` for the same `external_ref`, and five couriers
+    /// whose milestone calls all pass the status gate, because their row really
+    /// is `Claimed`.
+    ///
+    /// The status gate from the hardening work stopped a *loser* posting
+    /// milestones on an `Offered` row. It could not help here: a second claimer
+    /// was not a loser, they held a claim of their own.
+    ///
+    /// Retiring the siblings at the moment of the win is what leaves the second
+    /// claim no `offered` row to swap.
+    #[tokio::test]
+    async fn a_second_courier_cannot_claim_a_job_already_taken() {
+        let (svc, rows, ids) = fanout();
+        let (first_user, first_id) = ids[0];
+        let (second_user, second_id) = ids[1];
+
+        assert!(svc.claim(TENANT, first_user, first_id).await.unwrap());
+        assert!(
+            !svc.claim(TENANT, second_user, second_id).await.unwrap(),
+            "a job already held must not be claimable through a sibling offer",
+        );
+
+        let stored = rows.0.lock().unwrap();
+        assert_eq!(
+            stored.iter().filter(|r| r.status == AssignmentStatus::Claimed).count(),
+            1,
+            "exactly one courier may hold a job",
+        );
+        assert_eq!(
+            stored.iter().find(|r| r.id == first_id).unwrap().status,
+            AssignmentStatus::Claimed,
+            "and it is the one who actually won it",
+        );
     }
 }
