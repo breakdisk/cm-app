@@ -10,18 +10,89 @@ use crate::infrastructure::storage::PRESIGN_TTL_SECS;
 
 // ── Shared helpers used by multiple handlers ───────────────────────────────
 
+/// Which kind of compliance subject the caller is.
+///
+/// The `/me/*` routes are shared by customers doing KYC and by field workers
+/// uploading a licence, so this cannot be a constant — and it used to be two
+/// different constants in the same function: `resolve_profile` looked a profile
+/// up as `"driver"` and created it as `"customer"`.
+///
+/// The consequence was silent and total. A field worker with no profile got a
+/// `customer`-typed one, the next lookup missed again, and every document they
+/// uploaded hung off a profile the admin queue — which filters
+/// `entity_type = 'driver'` — could never show. On 2026-08-23 production held
+/// **17 profiles, every one of them `customer`, and zero `driver`**, which is
+/// why the compliance console had never displayed a single row.
+///
+/// Roles, not permissions: a driver's claim to be a driver is their role, and
+/// `drivers:read` is held by admins who are not drivers themselves.
+pub fn entity_kind_for(roles: &[String]) -> &'static str {
+    if roles.iter().any(|r| r == "driver" || r == "courier") {
+        "driver"
+    } else {
+        "customer"
+    }
+}
+
+#[cfg(test)]
+mod entity_kind_tests {
+    use super::entity_kind_for;
+
+    fn roles(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn a_driver_is_a_driver() {
+        assert_eq!(entity_kind_for(&roles(&["driver"])), "driver");
+    }
+
+    /// OmniDeliv calls them couriers and field-ops calls the table `couriers`,
+    /// but compliance has one entity type for people who carry things.
+    #[test]
+    fn a_courier_is_also_a_driver_to_compliance() {
+        assert_eq!(entity_kind_for(&roles(&["courier"])), "driver");
+    }
+
+    #[test]
+    fn a_customer_doing_kyc_is_a_customer() {
+        assert_eq!(entity_kind_for(&roles(&["customer"])), "customer");
+        assert_eq!(entity_kind_for(&[]), "customer");
+    }
+
+    /// One person can hold both roles. Being a driver is the stronger claim:
+    /// their documents are what gate them from working.
+    #[test]
+    fn holding_both_roles_resolves_to_driver() {
+        assert_eq!(entity_kind_for(&roles(&["customer", "driver"])), "driver");
+    }
+
+    /// The bug, stated so it cannot come back: whatever this returns, the
+    /// lookup and the create must be given the *same* answer.
+    #[test]
+    fn the_answer_is_stable_for_the_same_roles() {
+        let r = roles(&["driver"]);
+        assert_eq!(entity_kind_for(&r), entity_kind_for(&r));
+    }
+}
+
+
 async fn resolve_profile(
     state: &AppState,
     tenant_id: Uuid,
     user_id: Uuid,
+    entity_kind: &str,
 ) -> Result<ComplianceProfile, AppError> {
+    // One `entity_kind` for both halves. This used to look up "driver" and
+    // create "customer", so a field worker's profile was never found and never
+    // the type the admin queue filters on.
     match state.compliance.profiles
-        .find_by_entity(tenant_id, "driver", user_id)
+        .find_by_entity(tenant_id, entity_kind, user_id)
         .await?
     {
         Some(p) => Ok(p),
         None => Ok(state.compliance
-            .ensure_profile(tenant_id, "customer", user_id, "PH")
+            .ensure_profile(tenant_id, entity_kind, user_id, "PH")
             .await?),
     }
 }
@@ -182,7 +253,7 @@ pub async fn upload_document(
 ) -> Result<Json<serde_json::Value>, AppError> {
     use base64::Engine as _;
 
-    let profile = resolve_profile(&state, claims.tenant_id, claims.user_id).await?;
+    let profile = resolve_profile(&state, claims.tenant_id, claims.user_id, entity_kind_for(&claims.roles)).await?;
     let document_type_id = resolve_document_type_id(
         &state,
         req.document_type_id,
@@ -312,7 +383,7 @@ pub async fn confirm_document(
         AppError::Validation("Document not found in storage — the upload may have failed or the URL expired".into())
     })?;
 
-    let profile = resolve_profile(&state, claims.tenant_id, claims.user_id).await?;
+    let profile = resolve_profile(&state, claims.tenant_id, claims.user_id, entity_kind_for(&claims.roles)).await?;
     let document_type_id = resolve_document_type_id(
         &state,
         req.document_type_id,
