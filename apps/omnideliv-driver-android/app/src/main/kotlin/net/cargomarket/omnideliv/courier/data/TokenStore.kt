@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import dagger.hilt.android.qualifiers.ApplicationContext
+import net.cargomarket.omnideliv.courier.domain.SessionTokens
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -26,7 +27,7 @@ import javax.inject.Singleton
  * the gate.
  */
 @Singleton
-class TokenStore @Inject constructor(@ApplicationContext context: Context) {
+class TokenStore @Inject constructor(@ApplicationContext context: Context) : SessionTokens {
 
     private val prefs by lazy {
         val key = MasterKey.Builder(context)
@@ -55,7 +56,16 @@ class TokenStore @Inject constructor(@ApplicationContext context: Context) {
      * current value directly. Writes still go through [signIn]/[signOut], so the
      * flow can never disagree with what is on disk.
      */
-    val accessToken: String? get() = _token.value
+    override val accessToken: String? get() = _token.value
+
+    /**
+     * Proves identity once the access token has expired.
+     *
+     * Stored from the moment of sign-in. Identity has always returned it; this
+     * app used to drop it, which is why a shift longer than the one-hour token
+     * ended in a wall of 401s.
+     */
+    override val refreshToken: String? get() = prefs.getString(KEY_REFRESH, null)
 
     /** The courier's own id, needed for the position ingest route. */
     var courierId: String?
@@ -69,20 +79,38 @@ class TokenStore @Inject constructor(@ApplicationContext context: Context) {
      * signed in rather than signed out — the recoverable direction. The reverse
      * order would show a signed-in UI backed by nothing.
      */
-    fun signIn(accessToken: String, courierId: String?) {
+    fun signIn(accessToken: String, refreshToken: String?, courierId: String?) {
         val editor = prefs.edit().putString(KEY_ACCESS, accessToken)
+        if (refreshToken != null) editor.putString(KEY_REFRESH, refreshToken)
         if (courierId != null) editor.putString(KEY_COURIER, courierId)
         editor.apply()
         _token.value = accessToken
     }
 
-    fun signOut() {
+    /**
+     * Store a refreshed pair, keeping everything else.
+     *
+     * Not [signIn]: the courier id came from the OTP verify response and the
+     * refresh response has no `driver_id`, so routing it through sign-in would
+     * quietly erase the id every milestone call needs.
+     *
+     * Disk before the flow, for the same reason as [signIn].
+     */
+    override fun update(accessToken: String, refreshToken: String?) {
+        val editor = prefs.edit().putString(KEY_ACCESS, accessToken)
+        if (refreshToken != null) editor.putString(KEY_REFRESH, refreshToken)
+        editor.apply()
+        _token.value = accessToken
+    }
+
+    override fun signOut() {
         prefs.edit().clear().apply()
         _token.value = null
     }
 
     private companion object {
         const val KEY_ACCESS = "access_token"
+        const val KEY_REFRESH = "refresh_token"
         const val KEY_COURIER = "courier_id"
     }
 }

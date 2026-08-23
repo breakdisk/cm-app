@@ -109,7 +109,7 @@ class SignInViewModel @Inject constructor(
                         // is idempotent and runs on every sign-in precisely so
                         // that state is self-healing — signing in again fixes it,
                         // with no support path required.
-                        tokens.signIn(body.accessToken, body.driverId)
+                        tokens.signIn(body.accessToken, body.refreshToken, body.driverId)
                         ensureCourierProfile(current.phone)
                     } else {
                         _step.value = current.copy(error = signInError(res.code()))
