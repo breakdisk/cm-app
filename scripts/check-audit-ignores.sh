@@ -98,6 +98,53 @@ else
   ok "RUSTSEC-2026-0253 (lru) — still reported, still no fixed version."
 fi
 
+# ── RUSTSEC-2026-0258 — h2: unbounded empty DATA frames (HTTP/2 DoS) ────────
+# The fix is h2 >= 0.4.16, and there is none in the 0.3 line at all. The public
+# edge runs axum 0.7 -> hyper 1 -> h2 0.4 and IS fixed: the lockfile carries
+# 0.4.18. What remains is h2 0.3.27, and the only path to it is
+# tonic 0.11 -> axum 0.6 -> hyper 0.14 — the internal gRPC transport, which sits
+# behind Istio mTLS and takes no traffic from the internet.
+#
+# Two expiry conditions, because "no fix exists" is not the whole justification
+# here — "it is not on the public edge" does half the work:
+#   1. Still reported. A tonic upgrade would drop h2 0.3 entirely.
+#   2. hyper 0.14 is still reachable ONLY through tonic. The day anything else
+#      pulls it — a service pinning axum 0.6, say — an unpatched HTTP/2 stack is
+#      serving something, and this ignore stops being honest.
+if ! printf '%s\n' "$REPORTED" | grep -qx "RUSTSEC-2026-0258"; then
+  fail "RUSTSEC-2026-0258 is no longer reported — tonic likely moved off h2 0.3.
+      Remove the ignore from ci-rust.yml, deny.toml and this script."
+else
+  # Only the first two levels matter: who depends on hyper 0.14 directly, and
+  # who depends on them. The justification is that every such path passes
+  # through tonic. Anything deeper is downstream *of* tonic — the OTLP exporter,
+  # for instance — which is a gRPC client, not another HTTP/2 server.
+  #
+  # An earlier version of this check compared every crate name in the whole
+  # reverse tree and failed on opentelemetry-otlp, which is exactly that case.
+  H2_TREE="$(cargo tree -i hyper@0.14 --all-features --depth 2 2>&1 | grep -vE 'Downloading|Downloaded')"
+
+  # Crate names at those two levels, hyper itself excluded. Expected: axum (0.6),
+  # hyper-timeout (a tonic-only helper), and tonic.
+  NEAR="$(echo "$H2_TREE" | grep -oE '[a-z0-9_-]+ v[0-9]+' | awk '{print $1}' | grep -vx hyper | sort -u)"
+  UNEXPECTED="$(echo "$NEAR" | grep -vxE 'axum|hyper-timeout|tonic' || true)"
+
+  if echo "$H2_TREE" | grep -q 'tonic v0' && [ -z "$UNEXPECTED" ]; then
+    ok "RUSTSEC-2026-0258 (h2 0.3) — still reported, still gRPC-only, still no 0.3 fix."
+  else
+    fail "RUSTSEC-2026-0258 is ignored on the grounds that unpatched h2 0.3 is
+      reachable only through tonic's gRPC transport. That no longer holds:
+
+$(echo "$H2_TREE" | head -8)
+
+      Unexpected direct dependents: ${UNEXPECTED:-<tonic missing>}
+
+      An unpatched HTTP/2 stack may now be serving traffic. Either put it back
+      behind tonic, upgrade tonic to a hyper-1.x release, or drop the ignore and
+      treat the DoS as real."
+  fi
+fi
+
 # ── The list lives in three places and they must agree ──────────────────────
 # cargo-audit takes --ignore flags in ci-rust.yml; cargo-deny reads deny.toml
 # and knows nothing about those flags; this script hard-codes the justifications.
@@ -111,7 +158,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # What this script vouches for — keep in sync with the blocks above.
 VOUCHED="RUSTSEC-2023-0071
-RUSTSEC-2026-0253"
+RUSTSEC-2026-0253
+RUSTSEC-2026-0258"
 
 IN_WORKFLOW="$(grep -oE '\-\-ignore RUSTSEC-[0-9]{4}-[0-9]{4}' "$ROOT/.github/workflows/ci-rust.yml" \
   | sed 's/--ignore //' | sort -u)"
