@@ -26,8 +26,7 @@ import {
   Zap,
   Menu,
   X,
-  Container,
-} from "lucide-react";
+  Container, Bike } from "lucide-react";
 import { cn } from "@/lib/design-system/cn";
 import { DriverRosterProvider } from "@/context/driver-roster-context";
 import { usePermissions, clearPermissionsCache } from "@/hooks/usePermissions";
@@ -56,6 +55,10 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Dispatch Console", href: "/dispatch",    icon: Map,        requiredPermission: "dispatch:view"      },
   { label: "Shipments",        href: "/shipments",   icon: Package,    requiredPermission: "shipments:read"     },
   { label: "Drivers",          href: "/drivers",     icon: Users,      requiredPermission: "drivers:read"       },
+  // Separate from Drivers on purpose: those are driver-ops employees on
+  // routes; these are field-ops gig couriers (ADR-0015). Two services, two
+  // identity rows, no link between them even for the same human.
+  { label: "OmniDeliv Couriers", href: "/couriers", icon: Bike,      requiredPermission: "drivers:read"       },
   { label: "Compliance",       href: "/compliance",  icon: ShieldCheck,requiredPermission: "compliance:review"  },
   { label: "Fleet",            href: "/fleet",       icon: Truck,      requiredPermission: "fleet:read"         },
   { label: "Hubs",             href: "/hubs",        icon: Building2,  requiredPermission: "dispatch:view"      },

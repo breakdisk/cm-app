@@ -16,6 +16,18 @@ pub trait CourierRepository: Send + Sync {
     async fn find_by_user(&self, tenant_id: Uuid, user_id: Uuid) -> anyhow::Result<Option<Courier>>;
     async fn save(&self, courier: &Courier) -> anyhow::Result<()>;
 
+    /// Every courier in the tenant, newest first. The ops roster.
+    ///
+    /// Deliberately unfiltered by status: the surface that manages couriers has
+    /// to show the suspended and the offline ones, which is precisely what a
+    /// dispatch-shaped query hides.
+    async fn list_for_tenant(
+        &self,
+        tenant_id: Uuid,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<Courier>>;
+
     /// Dispatchable couriers within `radius_km` of a point, nearest first.
     async fn find_available_near(
         &self,

@@ -31,6 +31,8 @@ import androidx.compose.ui.unit.sp
 import net.cargomarket.omnideliv.courier.domain.Dropoff
 import net.cargomarket.omnideliv.courier.domain.GeofenceAdvice
 import net.cargomarket.omnideliv.courier.domain.Leg
+import net.cargomarket.omnideliv.courier.domain.PrimaryAction
+import net.cargomarket.omnideliv.courier.domain.primaryAction
 import net.cargomarket.omnideliv.courier.domain.Line
 import net.cargomarket.omnideliv.courier.domain.Manifest
 import net.cargomarket.omnideliv.courier.domain.RailEntry
@@ -55,6 +57,8 @@ fun ManifestScreen(
     servedFromCache: Boolean = false,
     pendingCount: Int = 0,
     onAdvance: () -> Unit = {},
+    /** Leave a finished job. The only exit once every leg is done. */
+    onFinish: () -> Unit = {},
     onIssue: () -> Unit = {},
     /** True once arrival at the current stop has been recorded. */
     arrivedHere: Boolean = false,
@@ -89,7 +93,7 @@ fun ManifestScreen(
             }
         }
         // Pinned in the bottom third and never moved by a re-sequence.
-        AdvanceControl(manifest, advice, onAdvance, onIssue, arrivedHere, onArrived)
+        AdvanceControl(manifest, advice, onAdvance, onFinish, onIssue, arrivedHere, onArrived)
     }
 }
 
@@ -316,15 +320,12 @@ private fun AdvanceControl(
     manifest: Manifest,
     advice: GeofenceAdvice,
     onAdvance: () -> Unit,
+    onFinish: () -> Unit,
     onIssue: () -> Unit,
     arrivedHere: Boolean,
     onArrived: () -> Unit,
 ) {
-    val label = when (manifest.currentLeg()) {
-        is Leg.ToPickup -> "Picked up"
-        is Leg.ToDropoff -> "Delivered"
-        Leg.Done -> "Done"
-    }
+    val action = primaryAction(manifest.currentLeg())
 
     Column(
         Modifier
@@ -354,9 +355,17 @@ private fun AdvanceControl(
             Spacer(Modifier.height(7.dp))
         }
 
+        // Never disabled. On the last leg this button is the only way off this
+        // screen — the shift screen was popped when the job was claimed — and
+        // disabling it stranded the courier at the end of every job.
         Button(
-            onClick = onAdvance,
-            enabled = manifest.currentLeg() != Leg.Done,
+            onClick = {
+                when (action.kind) {
+                    PrimaryAction.Kind.Advance -> onAdvance()
+                    PrimaryAction.Kind.Finish -> onFinish()
+                }
+            },
+            enabled = action.enabled,
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = Tokens.MinTarget),
@@ -366,7 +375,7 @@ private fun AdvanceControl(
                 contentColor = Tokens.SignalInk,
             ),
         ) {
-            Text(label, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Text(action.label, fontSize = 16.sp, fontWeight = FontWeight.Bold)
         }
         Spacer(Modifier.height(7.dp))
         Button(

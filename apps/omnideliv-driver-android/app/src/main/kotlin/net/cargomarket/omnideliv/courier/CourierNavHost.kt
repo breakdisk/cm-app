@@ -113,6 +113,15 @@ fun CourierNavHost(session: SessionViewModel = hiltViewModel()) {
             ManifestRoute(
                 orderId = entry.arguments?.getString(ARG_ORDER_ID).orEmpty(),
                 assignmentId = entry.arguments?.getString(ARG_ASSIGNMENT_ID).orEmpty(),
+                // Back to the shift screen, with the finished manifest removed
+                // from the stack: a completed job is not somewhere to return to,
+                // and its milestone buttons would all be refused by the server.
+                onFinished = {
+                    nav.navigate(Routes.SHIFT) {
+                        popUpTo(Routes.MANIFEST) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                },
             )
         }
     }
