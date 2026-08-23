@@ -159,6 +159,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/v1/field-ops/couriers/me/remit", post(remit))
         .route("/v1/field-ops/admin/couriers", get(list_couriers))
         .route("/v1/field-ops/admin/couriers/:id/active", post(set_courier_active))
+        .route("/v1/field-ops/admin/payouts/preview", get(preview_payout))
         .route("/v1/field-ops/admin/payouts/run", post(run_payout))
         .route("/v1/field-ops/couriers/supply", get(supply))
         .route("/v1/field-ops/couriers/:id/position", post(position))
@@ -225,6 +226,80 @@ async fn set_status(
     } else {
         Err(StatusCode::NOT_FOUND)
     }
+}
+
+/// What the next payout run would do, before anyone presses the button.
+///
+/// Gated on `payments:read`. The run itself is gated by nothing but
+/// `require_auth` today and says so in its own comment; a *preview* is
+/// read-only, so this is the half that can be locked down without changing the
+/// behaviour of an endpoint other things already call.
+#[derive(Debug, Deserialize)]
+pub struct PayoutPreviewQuery {
+    /// Defaults to the current ISO week, the same period the run defaults to.
+    pub period: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PayoutPreviewRow {
+    pub courier_id:      Uuid,
+    pub balance_cents:   i64,
+    pub cash_held_cents: i64,
+    /// `pay` | `holding_cash` | `nothing_owed` — computed by the same function
+    /// the run uses, never re-derived in the client.
+    pub disposition:     &'static str,
+    /// What this courier would actually receive. Zero unless `disposition` is
+    /// `pay`.
+    pub payable_cents:   i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PayoutPreviewResponse {
+    pub period:        String,
+    pub rows:          Vec<PayoutPreviewRow>,
+    /// The batch total, so ops sees the number before authorising it.
+    pub payable_cents: i64,
+}
+
+async fn preview_payout(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Query(q): Query<PayoutPreviewQuery>,
+) -> Result<Json<PayoutPreviewResponse>, StatusCode> {
+    if !claims.has_permission(logisticos_auth::rbac::permissions::PAYMENTS_READ) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let period = q.period.unwrap_or_else(crate::application::services::current_period);
+    let previewed = st
+        .dispatch
+        .preview_payout(claims.tenant_id, &period)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "payout preview failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let rows: Vec<PayoutPreviewRow> = previewed
+        .into_iter()
+        .map(|(l, d)| {
+            let (disposition, payable) = match d {
+                crate::application::services::PayoutDisposition::Pay(a) => ("pay", a),
+                crate::application::services::PayoutDisposition::HoldingCash(_) => ("holding_cash", 0),
+                crate::application::services::PayoutDisposition::NothingOwed => ("nothing_owed", 0),
+            };
+            PayoutPreviewRow {
+                courier_id:      l.courier_id,
+                balance_cents:   l.balance_cents,
+                cash_held_cents: l.cash_held_cents(),
+                disposition,
+                payable_cents:   payable,
+            }
+        })
+        .collect();
+
+    let payable_cents = rows.iter().map(|r| r.payable_cents).sum();
+    Ok(Json(PayoutPreviewResponse { period, rows, payable_cents }))
 }
 
 /// The ops roster.

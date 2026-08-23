@@ -22,6 +22,80 @@ pub struct DispatchService {
 }
 
 /// The outcome of one payout run, in enough detail to reconcile.
+
+/// What a payout run will do with one courier's ledger, and why.
+///
+/// Extracted from the middle of `run_payout` so the ops screen can show the
+/// answer *before* anyone presses the button. The rule was previously inline in
+/// the loop, which meant a UI could only re-derive it — and a screen that
+/// disagrees with the money rail about who is getting paid is worse than a
+/// screen that shows nothing at all.
+///
+/// One definition, two callers: the run and the preview.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayoutDisposition {
+    /// Owed money and holding none of ours.
+    Pay(i64),
+
+    /// Owed money, but still holding platform cash. Paid next run, once they
+    /// remit — a courier cannot be handed a payout while the till is short.
+    HoldingCash(i64),
+
+    /// Zero or negative balance. Nothing to pay.
+    NothingOwed,
+}
+
+/// `cash_held` is a positive debt: what the courier owes the platform from COD.
+pub fn payout_disposition(balance_cents: i64, cash_held_cents: i64) -> PayoutDisposition {
+    // Cash first, deliberately. A courier can be owed a large trip balance and
+    // still be holding more of the platform's money than that; paying them then
+    // settles the smaller debt and leaves the larger one outstanding.
+    if cash_held_cents > 0 {
+        return PayoutDisposition::HoldingCash(cash_held_cents);
+    }
+    if balance_cents <= 0 {
+        return PayoutDisposition::NothingOwed;
+    }
+    PayoutDisposition::Pay(balance_cents)
+}
+
+#[cfg(test)]
+mod payout_disposition_tests {
+    use super::{payout_disposition, PayoutDisposition};
+
+    #[test]
+    fn a_courier_owed_money_and_holding_none_is_paid() {
+        assert_eq!(payout_disposition(3_500, 0), PayoutDisposition::Pay(3_500));
+    }
+
+    /// The rule the whole payout rail is built around: never hand money to
+    /// someone who is still holding the platform's.
+    #[test]
+    fn holding_cash_blocks_a_payout_however_much_is_owed() {
+        assert_eq!(
+            payout_disposition(50_000, 100),
+            PayoutDisposition::HoldingCash(100),
+        );
+    }
+
+    #[test]
+    fn nothing_owed_is_not_a_payout() {
+        assert_eq!(payout_disposition(0, 0), PayoutDisposition::NothingOwed);
+        assert_eq!(payout_disposition(-2_500, 0), PayoutDisposition::NothingOwed);
+    }
+
+    /// A courier in debt *and* holding cash is reported as holding cash: it is
+    /// the actionable half. "Remit, then we will settle" is a thing ops can say;
+    /// "your balance is negative" is not.
+    #[test]
+    fn holding_cash_is_reported_ahead_of_a_negative_balance() {
+        assert_eq!(
+            payout_disposition(-1_000, 4_000),
+            PayoutDisposition::HoldingCash(4_000),
+        );
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct PayoutRun {
     pub period: String,
@@ -223,17 +297,19 @@ impl DispatchService {
         let mut run = PayoutRun { period: period.to_string(), batch: batch.to_string(), ..Default::default() };
 
         for mut ledger in self.ledgers.find_all_open(period).await? {
-            let held = ledger.cash_held_cents();
-            if held > 0 {
-                run.skipped_holding_cash.push((ledger.courier_id, held));
-                continue;
-            }
-            if ledger.balance_cents <= 0 {
-                run.skipped_nothing_owed.push(ledger.courier_id);
-                continue;
-            }
-
-            let amount = ledger.balance_cents;
+            // The same call the ops preview makes. Two copies of this rule is
+            // how a screen ends up promising a payout the run then refuses.
+            let amount = match payout_disposition(ledger.balance_cents, ledger.cash_held_cents()) {
+                PayoutDisposition::HoldingCash(held) => {
+                    run.skipped_holding_cash.push((ledger.courier_id, held));
+                    continue;
+                }
+                PayoutDisposition::NothingOwed => {
+                    run.skipped_nothing_owed.push(ledger.courier_id);
+                    continue;
+                }
+                PayoutDisposition::Pay(amount) => amount,
+            };
             ledger.record_payout(amount, Some(batch.to_string()));
 
             // A failed save must not be reported as paid. Continue rather than
@@ -361,6 +437,31 @@ impl DispatchService {
         self.assignments
             .find_offered_for_courier(tenant_id, courier.id)
             .await
+    }
+
+    /// What a payout run *would* do, without doing it.
+    ///
+    /// Same source and same rule as `run_payout` — `find_all_open` and
+    /// `payout_disposition` — so the preview cannot promise a payout the run
+    /// then refuses. Ops was previously firing a money batch blind.
+    pub async fn preview_payout(
+        &self,
+        tenant_id: Uuid,
+        period: &str,
+    ) -> anyhow::Result<Vec<(CourierLedger, PayoutDisposition)>> {
+        Ok(self
+            .ledgers
+            .find_all_open(period)
+            .await?
+            .into_iter()
+            // `find_all_open` spans tenants — it is what the payout worker runs
+            // on. An ops screen must never show one tenant another's ledgers.
+            .filter(|l| l.tenant_id == tenant_id)
+            .map(|l| {
+                let d = payout_disposition(l.balance_cents, l.cash_held_cents());
+                (l, d)
+            })
+            .collect())
     }
 
     /// The ops roster: every courier in the tenant.
