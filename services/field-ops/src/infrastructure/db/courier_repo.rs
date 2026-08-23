@@ -106,6 +106,32 @@ impl CourierRepository for PgCourierRepository {
         Ok(())
     }
 
+    async fn list_for_tenant(
+        &self,
+        tenant_id: Uuid,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<Courier>> {
+        // No status filter and no join to the location table. This is the ops
+        // roster: it must show the suspended, the offline and the never-seen,
+        // which is exactly what `find_available_near` is built to exclude.
+        let rows = sqlx::query(
+            r#"
+            SELECT * FROM field_ops.couriers
+             WHERE tenant_id = $1
+             ORDER BY created_at DESC
+             LIMIT $2 OFFSET $3
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.iter().map(map_row).collect()
+    }
+
     async fn find_available_near(
         &self,
         tenant_id: Uuid,

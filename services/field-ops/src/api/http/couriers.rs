@@ -157,6 +157,8 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/v1/field-ops/couriers/me/status", post(set_status))
         .route("/v1/field-ops/couriers/me/earnings", get(my_earnings))
         .route("/v1/field-ops/couriers/me/remit", post(remit))
+        .route("/v1/field-ops/admin/couriers", get(list_couriers))
+        .route("/v1/field-ops/admin/couriers/:id/active", post(set_courier_active))
         .route("/v1/field-ops/admin/payouts/run", post(run_payout))
         .route("/v1/field-ops/couriers/supply", get(supply))
         .route("/v1/field-ops/couriers/:id/position", post(position))
@@ -215,6 +217,128 @@ async fn set_status(
         .await
         .map_err(|e| {
             tracing::error!(err = %e, "setting courier availability failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    if updated {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
+}
+
+/// The ops roster.
+///
+/// Unlike `couriers/supply`, which is a count for a product deciding whether it
+/// can promise a delivery, this is a list for the humans who run the fleet — so
+/// it deliberately includes the suspended, the offline and the never-seen.
+///
+/// Gated on `drivers:read`, which `admin` and `tenant_admin` both hold by
+/// default. A permission no role can be granted produces a clean 403 that reads
+/// as "you lack access" and sends everyone hunting in the wrong place.
+#[derive(Debug, Deserialize)]
+pub struct RosterQuery {
+    #[serde(default = "default_roster_limit")]
+    pub limit: i64,
+    #[serde(default)]
+    pub offset: i64,
+}
+
+fn default_roster_limit() -> i64 { 50 }
+
+#[derive(Debug, Serialize)]
+pub struct CourierRow {
+    pub id:           Uuid,
+    pub user_id:      Uuid,
+    pub first_name:   String,
+    pub last_name:    String,
+    pub phone:        String,
+    pub status:       String,
+    pub is_active:    bool,
+    pub vehicle_type: Option<String>,
+    pub zone:         Option<String>,
+    pub last_lat:     Option<f64>,
+    pub last_lng:     Option<f64>,
+    pub last_seen_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Both flags matter and neither implies the other: a courier is offered
+    /// work only when `is_active` **and** `status = available`.
+    pub dispatchable: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RosterResponse {
+    pub couriers: Vec<CourierRow>,
+}
+
+async fn list_couriers(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Query(q): Query<RosterQuery>,
+) -> Result<Json<RosterResponse>, StatusCode> {
+    if !claims.has_permission(logisticos_auth::rbac::permissions::DRIVER_READ) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let couriers = st
+        .dispatch
+        .list_couriers(claims.tenant_id, q.limit, q.offset)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "listing couriers failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(RosterResponse {
+        couriers: couriers
+            .into_iter()
+            .map(|c| CourierRow {
+                dispatchable: c.is_dispatchable(),
+                id:           c.id,
+                user_id:      c.user_id,
+                first_name:   c.first_name,
+                last_name:    c.last_name,
+                phone:        c.phone,
+                status:       c.status.as_str().to_string(),
+                is_active:    c.is_active,
+                vehicle_type: c.vehicle_type,
+                zone:         c.zone,
+                last_lat:     c.last_lat,
+                last_lng:     c.last_lng,
+                last_seen_at: c.last_seen_at,
+            })
+            .collect(),
+    }))
+}
+
+/// Suspend or reinstate a courier.
+///
+/// Not the same lever as the courier's own duty toggle, and deliberately so:
+/// `is_dispatchable` requires both, so a suspended courier can go on duty all
+/// day and still never be offered a job. Reinstating does not clock them on.
+///
+/// 404 for a courier in another tenant — this service has no row-level
+/// security, so a foreign id must read as absent rather than forbidden.
+#[derive(Debug, Deserialize)]
+pub struct SetActiveRequest {
+    pub active: bool,
+}
+
+async fn set_courier_active(
+    State(st): State<Arc<AppState>>,
+    claims: AuthClaims,
+    Path(courier_id): Path<Uuid>,
+    Json(req): Json<SetActiveRequest>,
+) -> Result<StatusCode, StatusCode> {
+    if !claims.has_permission(logisticos_auth::rbac::permissions::DRIVER_MANAGE) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let updated = st
+        .dispatch
+        .set_courier_active(claims.tenant_id, courier_id, req.active)
+        .await
+        .map_err(|e| {
+            tracing::error!(err = %e, "suspending or reinstating a courier failed");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 

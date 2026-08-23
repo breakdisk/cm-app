@@ -363,6 +363,42 @@ impl DispatchService {
             .await
     }
 
+    /// The ops roster: every courier in the tenant.
+    pub async fn list_couriers(
+        &self,
+        tenant_id: Uuid,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<Courier>> {
+        self.couriers.list_for_tenant(tenant_id, limit.clamp(1, 200), offset.max(0)).await
+    }
+
+    /// Suspend or reinstate a courier. Ops' lever, not the courier's.
+    ///
+    /// Deliberately separate from [`set_availability`]: `is_dispatchable`
+    /// requires **both** flags, so a suspended courier can flip themselves on
+    /// duty all day and still never be offered a job — and reinstating them
+    /// does not silently clock them on.
+    ///
+    /// Returns `false` when no such courier exists **in this tenant**. This
+    /// service has no row-level security — the tenant bound into each query is
+    /// the whole of it — so a foreign id must read as absent rather than
+    /// forbidden, matching every other route here.
+    pub async fn set_courier_active(
+        &self,
+        tenant_id: Uuid,
+        courier_id: Uuid,
+        active: bool,
+    ) -> anyhow::Result<bool> {
+        let Some(mut courier) = self.couriers.find_by_id(tenant_id, courier_id).await? else {
+            return Ok(false);
+        };
+        courier.is_active = active;
+        courier.updated_at = chrono::Utc::now();
+        self.couriers.save(&courier).await?;
+        Ok(true)
+    }
+
     /// A courier starts or ends their shift.
     ///
     /// This is the write that `find_available_near` reads. Without it a courier
@@ -864,6 +900,9 @@ mod claim_authorization {
         async fn save(&self, _: &Courier) -> anyhow::Result<()> { Ok(()) }
         async fn find_available_near(&self, _: Uuid, _: f64, _: f64, _: f64, _: i64)
             -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
+        /// Not modelled by this fake — the roster is asserted in `courier_admin`.
+        async fn list_for_tenant(&self, _: Uuid, _: i64, _: i64)
+            -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
     }
 
     #[derive(Default)]
@@ -1038,6 +1077,9 @@ mod payout_rules {
         async fn save(&self, _: &Courier) -> anyhow::Result<()> { Ok(()) }
         async fn find_available_near(&self, _: Uuid, _: f64, _: f64, _: f64, _: i64)
             -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
+        /// Not modelled by this fake — the roster is asserted in `courier_admin`.
+        async fn list_for_tenant(&self, _: Uuid, _: i64, _: i64)
+            -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
     }
     struct NoLoc;
     #[async_trait::async_trait]
@@ -1202,6 +1244,9 @@ mod position_lookup {
         async fn save(&self, _: &Courier) -> anyhow::Result<()> { Ok(()) }
         async fn find_available_near(&self, _: Uuid, _: f64, _: f64, _: f64, _: i64)
             -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
+        /// Not modelled by this fake — the roster is asserted in `courier_admin`.
+        async fn list_for_tenant(&self, _: Uuid, _: i64, _: i64)
+            -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
     }
 
     /// (service, assignment_id, holder_user, other_user)
@@ -1291,6 +1336,9 @@ mod position_lookup {
         async fn find_by_user(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<Courier>> { Ok(None) }
         async fn save(&self, _: &Courier) -> anyhow::Result<()> { Ok(()) }
         async fn find_available_near(&self, _: Uuid, _: f64, _: f64, _: f64, _: i64)
+            -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
+        /// Not modelled by this fake — the roster is asserted in `courier_admin`.
+        async fn list_for_tenant(&self, _: Uuid, _: i64, _: i64)
             -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
     }
 
@@ -1435,6 +1483,9 @@ mod milestone_authorization {
         }
         async fn save(&self, _: &Courier) -> anyhow::Result<()> { Ok(()) }
         async fn find_available_near(&self, _: Uuid, _: f64, _: f64, _: f64, _: i64)
+            -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
+        /// Not modelled by this fake — the roster is asserted in `courier_admin`.
+        async fn list_for_tenant(&self, _: Uuid, _: i64, _: i64)
             -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
     }
 
@@ -1737,6 +1788,9 @@ mod credit_idempotency {
         async fn save(&self, _: &Courier) -> anyhow::Result<()> { Ok(()) }
         async fn find_available_near(&self, _: Uuid, _: f64, _: f64, _: f64, _: i64)
             -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
+        /// Not modelled by this fake — the roster is asserted in `courier_admin`.
+        async fn list_for_tenant(&self, _: Uuid, _: i64, _: i64)
+            -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
     }
 
     #[derive(Default)]
@@ -1911,6 +1965,9 @@ mod availability {
                 .map(|(_, c)| c.clone())
                 .collect())
         }
+        /// Not modelled by this fake — the roster is asserted in `courier_admin`.
+        async fn list_for_tenant(&self, _: Uuid, _: i64, _: i64)
+            -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
     }
 
     struct NoAssignments;
@@ -2070,6 +2127,9 @@ mod losing_offers {
         }
         async fn save(&self, _: &Courier) -> anyhow::Result<()> { Ok(()) }
         async fn find_available_near(&self, _: Uuid, _: f64, _: f64, _: f64, _: i64)
+            -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
+        /// Not modelled by this fake — the roster is asserted in `courier_admin`.
+        async fn list_for_tenant(&self, _: Uuid, _: i64, _: i64)
             -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
     }
 
@@ -2284,6 +2344,168 @@ mod losing_offers {
             stored.iter().find(|r| r.id == first_id).unwrap().status,
             AssignmentStatus::Claimed,
             "and it is the one who actually won it",
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Courier administration
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod courier_admin {
+    use super::*;
+    use crate::domain::entities::{Courier, CourierLocation, CourierStatus};
+    use crate::domain::repositories::CourierRepository;
+    use crate::infrastructure::db::{ClaimOutcome, CourierLedgerRepository, LocationRepository};
+    use std::sync::Mutex;
+
+    const TENANT: Uuid = Uuid::from_u128(21);
+    const OTHER_TENANT: Uuid = Uuid::from_u128(22);
+
+    struct Couriers(Mutex<Vec<Courier>>);
+
+    #[async_trait::async_trait]
+    impl CourierRepository for Couriers {
+        async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<Courier>> {
+            Ok(self.0.lock().unwrap().iter()
+                .find(|c| c.id == id && c.tenant_id == tenant_id).cloned())
+        }
+        async fn find_by_user(&self, tenant_id: Uuid, user_id: Uuid) -> anyhow::Result<Option<Courier>> {
+            Ok(self.0.lock().unwrap().iter()
+                .find(|c| c.user_id == user_id && c.tenant_id == tenant_id).cloned())
+        }
+        async fn save(&self, courier: &Courier) -> anyhow::Result<()> {
+            let mut rows = self.0.lock().unwrap();
+            match rows.iter_mut().find(|c| c.id == courier.id) {
+                Some(slot) => *slot = courier.clone(),
+                None => rows.push(courier.clone()),
+            }
+            Ok(())
+        }
+        async fn find_available_near(&self, _: Uuid, _: f64, _: f64, _: f64, _: i64)
+            -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
+        async fn list_for_tenant(&self, tenant_id: Uuid, limit: i64, offset: i64)
+            -> anyhow::Result<Vec<Courier>> {
+            Ok(self.0.lock().unwrap().iter()
+                .filter(|c| c.tenant_id == tenant_id)
+                .skip(offset as usize)
+                .take(limit as usize)
+                .cloned()
+                .collect())
+        }
+    }
+
+    struct NoAssignments;
+    #[async_trait::async_trait]
+    impl AssignmentRepository for NoAssignments {
+        async fn save(&self, _: &CourierAssignment) -> anyhow::Result<()> { Ok(()) }
+        async fn try_claim(&self, _: Uuid, _: Uuid) -> anyhow::Result<ClaimOutcome> { Ok(ClaimOutcome::Lost) }
+        async fn find_by_id(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<CourierAssignment>> { Ok(None) }
+        async fn find_offered_for_courier(&self, _: Uuid, _: Uuid)
+            -> anyhow::Result<Vec<CourierAssignment>> { Ok(vec![]) }
+        async fn expire_other_offers(&self, _: Uuid, _: &ProductKey, _: Uuid, _: Uuid)
+            -> anyhow::Result<u64> { Ok(0) }
+    }
+
+    struct NoLocations;
+    #[async_trait::async_trait]
+    impl LocationRepository for NoLocations {
+        async fn record(&self, _: &CourierLocation) -> anyhow::Result<()> { Ok(()) }
+        async fn latest(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<CourierLocation>> { Ok(None) }
+        async fn recent(&self, _: Uuid, _: Uuid, _: i64) -> anyhow::Result<Vec<CourierLocation>> { Ok(vec![]) }
+    }
+
+    struct NoLedgers;
+    #[async_trait::async_trait]
+    impl CourierLedgerRepository for NoLedgers {
+        async fn find_open(&self, _: Uuid, _: Uuid, _: &str)
+            -> anyhow::Result<Option<CourierLedger>> { Ok(None) }
+        async fn save(&self, _: &CourierLedger) -> anyhow::Result<()> { Ok(()) }
+        async fn find_all_open(&self, _: &str) -> anyhow::Result<Vec<CourierLedger>> { Ok(vec![]) }
+        async fn entry_exists_for_job(&self, _: Uuid, _: Uuid, _: Uuid) -> anyhow::Result<bool> { Ok(false) }
+    }
+
+    fn fixture() -> (DispatchService, Arc<Couriers>, Uuid) {
+        let mut mine = Courier::new(
+            TENANT, Uuid::new_v4(), "Ana".into(), "Cruz".into(), "+639170000021".into(),
+        );
+        mine.go_available();
+        let id = mine.id;
+
+        // A courier belonging to somebody else entirely. field-ops has no
+        // row-level security — the tenant bound into each query is the whole of
+        // the isolation — so every list has to prove it.
+        let theirs = Courier::new(
+            OTHER_TENANT, Uuid::new_v4(), "Ben".into(), "Reyes".into(), "+639170000022".into(),
+        );
+
+        let couriers = Arc::new(Couriers(Mutex::new(vec![mine, theirs])));
+        let svc = DispatchService::new(
+            couriers.clone(),
+            Arc::new(NoAssignments),
+            Arc::new(NoLocations),
+            Arc::new(NoLedgers),
+            Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
+            PayBounds::default(),
+        );
+        (svc, couriers, id)
+    }
+
+    #[tokio::test]
+    async fn ops_can_list_the_couriers_in_their_tenant() {
+        let (svc, _, id) = fixture();
+
+        let listed = svc.list_couriers(TENANT, 50, 0).await.unwrap();
+
+        assert_eq!(listed.len(), 1, "another tenant's courier must never appear");
+        assert_eq!(listed[0].id, id);
+    }
+
+    /// Suspension is ops' lever, and it is deliberately not the courier's own
+    /// duty toggle: `is_dispatchable` requires **both**, so a suspended courier
+    /// can flip themselves on duty all day and still never be offered a job.
+    #[tokio::test]
+    async fn suspending_a_courier_takes_them_out_of_dispatch_without_touching_duty() {
+        let (svc, couriers, id) = fixture();
+
+        assert!(svc.set_courier_active(TENANT, id, false).await.unwrap());
+
+        let stored = couriers.0.lock().unwrap().iter().find(|c| c.id == id).unwrap().clone();
+        assert!(!stored.is_active);
+        assert!(!stored.is_dispatchable(), "a suspended courier is not dispatchable");
+        assert_eq!(
+            stored.status,
+            CourierStatus::Available,
+            "their own duty flag is theirs; ops suspends, it does not clock them off",
+        );
+    }
+
+    #[tokio::test]
+    async fn reinstating_puts_a_courier_back_into_dispatch() {
+        let (svc, couriers, id) = fixture();
+        svc.set_courier_active(TENANT, id, false).await.unwrap();
+
+        assert!(svc.set_courier_active(TENANT, id, true).await.unwrap());
+
+        let stored = couriers.0.lock().unwrap().iter().find(|c| c.id == id).unwrap().clone();
+        assert!(stored.is_dispatchable());
+    }
+
+    /// The tenant comes from the validated JWT, and this service has no
+    /// row-level security — so an id from another tenant must read as absent,
+    /// not as forbidden, exactly like every other route here.
+    #[tokio::test]
+    async fn a_courier_from_another_tenant_cannot_be_suspended() {
+        let (svc, couriers, _) = fixture();
+        let theirs = couriers.0.lock().unwrap()
+            .iter().find(|c| c.tenant_id == OTHER_TENANT).unwrap().id;
+
+        assert!(!svc.set_courier_active(TENANT, theirs, false).await.unwrap());
+
+        assert!(
+            couriers.0.lock().unwrap().iter().find(|c| c.id == theirs).unwrap().is_active,
+            "the other tenant's courier must be untouched",
         );
     }
 }
