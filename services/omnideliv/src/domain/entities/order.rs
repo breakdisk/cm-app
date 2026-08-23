@@ -209,6 +209,85 @@ pub fn phone_from_login(email: &str) -> Option<String> {
     Some(local.to_string())
 }
 
+
+/// The number a courier can actually call, from whatever identity gave us.
+///
+/// Two sources, in order of trust:
+///
+/// 1. `claims.phone` — identity's own `users.phone_number` column, carried on
+///    the token. Authoritative when present.
+/// 2. The minted OTP login `<digits>@customer.logisticos.app`, decoded by
+///    [`phone_from_login`]. The only thing available before identity put the
+///    number on the token, and still the fallback for tokens issued then.
+///
+/// Why both. The original design assumed the login *was* the phone, because the
+/// OTP path mints that address. Production disagreed: on 2026-08-23 all 34
+/// orders had a null `customer_phone`, and the newest was placed by
+/// `testdriverone@gmail.com` — a real mailbox — whose identity row holds
+/// `+971553604321` all along. `phone_from_login` was behaving correctly; it was
+/// simply never asked the one place that knew.
+///
+/// Never a plain `split('@')` on a real mailbox: that puts the local part of
+/// `maria.reyes@gmail.com` on a courier's screen as a number to dial.
+pub fn contact_phone(claims_phone: Option<&str>, login: &str) -> Option<String> {
+    let from_claims = claims_phone
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_owned);
+
+    from_claims.or_else(|| phone_from_login(login))
+}
+
+#[cfg(test)]
+mod contact_phone_tests {
+    use super::{contact_phone, phone_from_login};
+
+    #[test]
+    fn the_token_phone_wins_when_identity_has_one() {
+        assert_eq!(
+            contact_phone(Some("+971553604321"), "testdriverone@gmail.com"),
+            Some("+971553604321".to_string()),
+        );
+    }
+
+    /// The case that made this necessary. A real mailbox yields nothing from
+    /// the login, and before the token carried a number there was nothing else
+    /// to fall back to — so the courier got a blank where the phone should be.
+    #[test]
+    fn a_real_mailbox_alone_yields_nothing() {
+        assert_eq!(contact_phone(None, "testdriverone@gmail.com"), None);
+        assert_eq!(phone_from_login("testdriverone@gmail.com"), None);
+    }
+
+    /// Tokens minted before identity carried the phone still work.
+    #[test]
+    fn the_minted_login_is_still_decoded_when_the_token_is_silent() {
+        assert_eq!(
+            contact_phone(None, "639170000123@customer.logisticos.app"),
+            Some("639170000123".to_string()),
+        );
+    }
+
+    /// An empty or whitespace claim is not a phone number. Treating it as one
+    /// would suppress the fallback and put a blank on the manifest.
+    #[test]
+    fn a_blank_claim_falls_through_to_the_login() {
+        assert_eq!(
+            contact_phone(Some(""), "639170000123@customer.logisticos.app"),
+            Some("639170000123".to_string()),
+        );
+        assert_eq!(
+            contact_phone(Some("   "), "639170000123@customer.logisticos.app"),
+            Some("639170000123".to_string()),
+        );
+    }
+
+    #[test]
+    fn nothing_anywhere_is_still_nothing() {
+        assert_eq!(contact_phone(None, "merchant@demo.com"), None);
+    }
+}
+
 impl Order {
     #[allow(clippy::too_many_arguments)]
     pub fn place(

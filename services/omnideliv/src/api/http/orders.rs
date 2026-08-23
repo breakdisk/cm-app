@@ -43,7 +43,7 @@ async fn checkout(
     let order = st
         .checkout
         .place(claims.tenant_id, req.basket_id, req.tip_cents, req.delivery_lat, req.delivery_lng,
-               &claims.email)
+               &claims.email, claims.phone.as_deref())
         .await
         .map_err(|e| match e {
             // A basket awaiting review is the client's cue to show Screen C,

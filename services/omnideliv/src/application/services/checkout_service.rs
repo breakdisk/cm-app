@@ -157,10 +157,13 @@ impl CheckoutService {
     /// and legs computed *before* anything irreversible happens, so a failure
     /// here leaves no money moved and no courier dispatched.
     ///
-    /// `customer_login` is the authenticated caller's login address, taken from
-    /// the validated token by the handler and never from the request body — a
-    /// client-supplied contact would let anyone put an arbitrary phone number
-    /// on an order, and that is a number a courier would then call.
+    /// `customer_login` and `customer_phone_claim` both come from the validated
+    /// token and never from the request body — a client-supplied contact would
+    /// let anyone put an arbitrary phone number on an order, and that is a
+    /// number a courier would then call.
+    ///
+    /// The phone claim is preferred; the login is only decoded when the token
+    /// predates identity carrying the number.
     #[allow(clippy::too_many_arguments)]
     pub async fn place(
         &self,
@@ -170,6 +173,7 @@ impl CheckoutService {
         delivery_lat: f64,
         delivery_lng: f64,
         customer_login: &str,
+        customer_phone_claim: Option<&str>,
     ) -> Result<Order, CheckoutError> {
         let basket: Basket = self
             .baskets
@@ -246,8 +250,10 @@ impl CheckoutService {
         // returns `None` for a real mailbox, so an account created any other
         // way leaves the manifest without a number rather than showing the
         // courier an email local-part to dial.
-        let customer_phone =
-            crate::domain::entities::order::phone_from_login(customer_login);
+        let customer_phone = crate::domain::entities::order::contact_phone(
+            customer_phone_claim,
+            customer_login,
+        );
 
         let mut order = Order::place(
             tenant_id, basket.customer_id, basket.id, plan.id,

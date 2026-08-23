@@ -42,6 +42,20 @@ pub struct Claims {
     /// tier-based checks when the vec is empty.
     #[serde(default)]
     pub enabled_features: Vec<String>,
+
+    /// The subject's own phone number, from `identity.users.phone_number`.
+    ///
+    /// Carried on the token so a service that needs to put a courier in touch
+    /// with a customer does not have to call identity on the money path.
+    /// OmniDeliv's checkout used to infer this from the login address, which
+    /// only works for the minted `<digits>@customer.logisticos.app` form — every
+    /// customer who signed in any other way left the courier with no number to
+    /// dial, while identity had it in a column all along.
+    ///
+    /// `#[serde(default)]` so tokens minted before this decode as `None`; the
+    /// login-derived fallback still covers them until they expire.
+    #[serde(default)]
+    pub phone: Option<String>,
 }
 
 impl Claims {
@@ -75,6 +89,7 @@ impl Claims {
             permissions,
             onboarding: false,
             enabled_features: Vec::new(),
+            phone: None,
         }
     }
 
@@ -83,6 +98,13 @@ impl Claims {
     #[must_use]
     pub fn with_features(mut self, features: Vec<String>) -> Self {
         self.enabled_features = features;
+        self
+    }
+
+    /// Attach the subject's phone number. Chainable, like [`Self::with_features`],
+    /// so no existing `Claims::new` call site has to change.
+    pub fn with_phone(mut self, phone: Option<String>) -> Self {
+        self.phone = phone.filter(|p| !p.trim().is_empty());
         self
     }
 
