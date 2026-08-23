@@ -139,6 +139,15 @@ data class DeliveredRequest(
 @Serializable
 data class SetStatusRequest(val available: Boolean)
 
+/**
+ * Spend the refresh token for a new session.
+ *
+ * Identity retires the old token on every exchange, so this is single-use —
+ * see [net.cargomarket.omnideliv.courier.data.RefreshAuthenticator].
+ */
+@Serializable
+data class RefreshRequest(@SerialName("refresh_token") val refreshToken: String)
+
 @Serializable
 data class PositionRequest(
     val lat: Double,
