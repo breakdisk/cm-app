@@ -15,12 +15,23 @@ export interface CheckoutResponse {
  * A 503 means no courier could be found: nothing was charged, so retrying later
  * is safe and the basket is still good.
  */
+/**
+ * `deliveryNote` is the customer's instruction to the courier — "unit 12B, gate
+ * code 4417". An order carries no street address, only a point, so this is the
+ * only place anyone can say where the door actually is.
+ *
+ * Sent as `null` when blank rather than `""`: the server treats both as absent,
+ * and an empty string would render a blank line on the courier's manifest that
+ * looks like a rendering fault.
+ */
 export async function checkout(
   basketId: string,
   tipCents: number,
   lat: number,
-  lng: number
+  lng: number,
+  deliveryNote?: string
 ): Promise<CheckoutResponse> {
+  const note = deliveryNote?.trim();
   return apiFetch<CheckoutResponse>("/v1/omnideliv/orders/checkout", {
     method: "POST",
     body: JSON.stringify({
@@ -28,6 +39,7 @@ export async function checkout(
       tip_cents: tipCents,
       delivery_lat: lat,
       delivery_lng: lng,
+      delivery_note: note ? note : null,
     }),
   });
 }

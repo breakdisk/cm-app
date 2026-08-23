@@ -34,6 +34,8 @@ export default function Review() {
   const [basket, setBasket] = useState<BasketView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tip, setTip] = useState("0");
+  // The courier reads this at the door. See `checkout` in api/orders.ts.
+  const [note, setNote] = useState("");
   const [placing, setPlacing] = useState(false);
 
   const load = useCallback(async () => {
@@ -79,7 +81,7 @@ export default function Review() {
     try {
       const point = currentDeliveryPoint();
       const tipCents = Math.max(0, Math.round(parseFloat(tip || "0") * 100));
-      const res = await checkout(basketId, tipCents, point.lat, point.lng);
+      const res = await checkout(basketId, tipCents, point.lat, point.lng, note);
       router.replace(`/track/${res.order_id}`);
     } catch (e) {
       // Each of these is a different thing for the customer to do, which is why
@@ -275,6 +277,32 @@ export default function Review() {
                   : `${basket.lines_awaiting_review} swaps need your OK`}
               </Text>
             )}
+
+            <View style={{ gap: 6 }}>
+              <Text style={{ color: theme.muted, fontSize: 12 }}>
+                Delivery note (optional)
+              </Text>
+              <TextInput
+                value={note}
+                onChangeText={setNote}
+                placeholder="Unit 12B, gate code 4417, ring twice"
+                placeholderTextColor={theme.muted}
+                multiline
+                maxLength={280}
+                accessibilityLabel="Delivery note for the courier"
+                style={{
+                  color: theme.text,
+                  fontSize: 14,
+                  minHeight: 64,
+                  textAlignVertical: "top",
+                  paddingVertical: 8,
+                  paddingHorizontal: 10,
+                  borderRadius: theme.radius.sm,
+                  borderWidth: 1,
+                  borderColor: theme.border,
+                }}
+              />
+            </View>
 
             <View
               style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}

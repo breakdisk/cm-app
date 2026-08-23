@@ -15,6 +15,10 @@ pub struct CheckoutRequest {
     pub tip_cents: i64,
     pub delivery_lat: f64,
     pub delivery_lng: f64,
+    /// "Unit 12B, gate code 4417." Optional, and the only free text a client
+    /// controls that a courier is asked to act on — bounded server-side.
+    #[serde(default)]
+    pub delivery_note: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -43,7 +47,7 @@ async fn checkout(
     let order = st
         .checkout
         .place(claims.tenant_id, req.basket_id, req.tip_cents, req.delivery_lat, req.delivery_lng,
-               &claims.email, claims.phone.as_deref())
+               &claims.email, claims.phone.as_deref(), req.delivery_note.as_deref())
         .await
         .map_err(|e| match e {
             // A basket awaiting review is the client's cue to show Screen C,

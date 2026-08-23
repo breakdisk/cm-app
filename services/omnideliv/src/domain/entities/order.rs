@@ -177,6 +177,12 @@ pub struct Order {
     /// cross-service identity lookup per refresh would put a courier's screen
     /// on identity's availability.
     pub customer_phone:     Option<String>,
+    /// The customer's instruction to the courier — "unit 12B, gate code 4417".
+    ///
+    /// An order has no street address, so this is the only place anyone can say
+    /// where the door actually is. Cleaned by `clean_delivery_note` before it
+    /// gets here; never trusted raw from the request body.
+    pub delivery_note:      Option<String>,
     pub legs:               Vec<VendorLeg>,
     pub placed_at:          DateTime<Utc>,
     pub delivered_at:       Option<DateTime<Utc>>,
@@ -288,6 +294,78 @@ mod contact_phone_tests {
     }
 }
 
+
+/// The longest delivery note a customer may leave.
+///
+/// This lands on a courier's phone, on a screen read one-handed at a door. It
+/// is "unit 12B, gate code 4417, ring twice", not an essay — and it is the one
+/// free-text field a client controls that a courier is asked to act on, so it
+/// is bounded at the boundary rather than trusted and truncated later.
+pub const MAX_DELIVERY_NOTE_CHARS: usize = 280;
+
+/// Clean a customer's delivery note, or decide there isn't one.
+///
+/// Unlike the phone, this genuinely does come from the request body — the
+/// customer is the only one who knows their gate code. That makes bounding it
+/// the caller's job, not a formality.
+///
+/// Characters, not bytes: `chars().count()` so a note in Tagalog or with emoji
+/// is measured the way a person would measure it, and a multi-byte character
+/// near the limit cannot be cut in half.
+pub fn clean_delivery_note(raw: Option<&str>) -> Option<String> {
+    let trimmed = raw?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.chars().take(MAX_DELIVERY_NOTE_CHARS).collect())
+}
+
+#[cfg(test)]
+mod delivery_note_tests {
+    use super::{clean_delivery_note, MAX_DELIVERY_NOTE_CHARS};
+
+    #[test]
+    fn a_real_note_survives() {
+        assert_eq!(
+            clean_delivery_note(Some("Unit 12B, gate code 4417")),
+            Some("Unit 12B, gate code 4417".to_string()),
+        );
+    }
+
+    /// A blank note is no note. Storing `""` would render an empty line on the
+    /// manifest that looks like a rendering fault.
+    #[test]
+    fn blank_and_whitespace_are_no_note_at_all() {
+        assert_eq!(clean_delivery_note(None), None);
+        assert_eq!(clean_delivery_note(Some("")), None);
+        assert_eq!(clean_delivery_note(Some("   \n\t ")), None);
+    }
+
+    #[test]
+    fn surrounding_whitespace_is_trimmed() {
+        assert_eq!(clean_delivery_note(Some("  ring twice  ")), Some("ring twice".to_string()));
+    }
+
+    /// Bounded at the boundary. The client is not trusted to have limited it.
+    #[test]
+    fn an_overlong_note_is_cut_to_the_limit() {
+        let long = "x".repeat(MAX_DELIVERY_NOTE_CHARS + 50);
+        let cleaned = clean_delivery_note(Some(&long)).unwrap();
+        assert_eq!(cleaned.chars().count(), MAX_DELIVERY_NOTE_CHARS);
+    }
+
+    /// Characters, not bytes. Cutting at a byte offset would split a multi-byte
+    /// character and produce a note that is not valid text at all.
+    #[test]
+    fn a_multibyte_note_is_measured_in_characters() {
+        let note = "ñ".repeat(MAX_DELIVERY_NOTE_CHARS + 10);
+        let cleaned = clean_delivery_note(Some(&note)).unwrap();
+        assert_eq!(cleaned.chars().count(), MAX_DELIVERY_NOTE_CHARS);
+        // Still valid UTF-8 by construction — this would panic on a byte slice.
+        assert!(cleaned.ends_with('ñ'));
+    }
+}
+
 impl Order {
     #[allow(clippy::too_many_arguments)]
     pub fn place(
@@ -335,6 +413,7 @@ impl Order {
             courier_user_id: None,
             customer_name: None,
             customer_phone: None,
+            delivery_note: None,
             legs,
             placed_at: Utc::now(),
             delivered_at: None,
@@ -353,6 +432,14 @@ impl Order {
     ) -> Self {
         self.customer_name = name;
         self.customer_phone = phone;
+        self
+    }
+
+    /// Attach the customer's note for the courier. Chainable, and separate from
+    /// the contact pair because it comes from a different place: the contact is
+    /// taken from the validated token, this is the one field the customer types.
+    pub fn with_delivery_note(mut self, note: Option<String>) -> Self {
+        self.delivery_note = note;
         self
     }
 

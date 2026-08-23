@@ -174,6 +174,7 @@ impl CheckoutService {
         delivery_lng: f64,
         customer_login: &str,
         customer_phone_claim: Option<&str>,
+        delivery_note: Option<&str>,
     ) -> Result<Order, CheckoutError> {
         let basket: Basket = self
             .baskets
@@ -262,7 +263,10 @@ impl CheckoutService {
         )
         // No display name on the OTP path — identity has none to give, and a
         // fabricated one would be worse than an honest blank.
-        .with_customer_contact(None, customer_phone);
+        .with_customer_contact(None, customer_phone)
+        // The one field the customer types. Cleaned and bounded here rather
+        // than trusted: it reaches a courier's screen verbatim.
+        .with_delivery_note(crate::domain::entities::order::clean_delivery_note(delivery_note));
 
         // Only now does anything irreversible happen.
         // The longest prep time is the earliest the courier can expect to leave
