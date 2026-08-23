@@ -22,6 +22,26 @@ pub trait AssignmentRepository: Send + Sync {
 
     async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<CourierAssignment>>;
 
+    /// Retire the offers this job made to everyone who did not win it.
+    ///
+    /// `offer_to_nearest` fans out to several couriers and `try_claim` flips
+    /// exactly one row. Nothing used to clear the rest, so each loser kept an
+    /// `Offered` row for a job that was already gone — forever, and visible in
+    /// their inbox. The status gate makes those rows harmless; it does not make
+    /// them disappear, and the app polls that inbox every six seconds.
+    ///
+    /// Scoped by `(product, external_ref)` rather than by courier: expiring by
+    /// courier would empty every other job they had been offered.
+    ///
+    /// Returns how many rows were retired.
+    async fn expire_other_offers(
+        &self,
+        tenant_id: Uuid,
+        product: &ProductKey,
+        external_ref: Uuid,
+        winner: Uuid,
+    ) -> anyhow::Result<u64>;
+
     /// Open offers made to one courier, newest first.
     ///
     /// Without this a courier has no way to discover work: `offer` returns the
@@ -141,6 +161,37 @@ impl AssignmentRepository for PgAssignmentRepository {
         .await?;
 
         rows.iter().map(map_row).collect()
+    }
+
+    async fn expire_other_offers(
+        &self,
+        tenant_id: Uuid,
+        product: &ProductKey,
+        external_ref: Uuid,
+        winner: Uuid,
+    ) -> anyhow::Result<u64> {
+        // `status = 'offered'` in the predicate, not just in the target: a row
+        // that has since been claimed, completed or released belongs to a
+        // different story and must not be rewritten by this one.
+        let result = sqlx::query(
+            r#"
+            UPDATE field_ops.courier_assignments
+               SET status = 'expired'
+             WHERE tenant_id    = $1
+               AND product      = $2
+               AND external_ref = $3
+               AND id          <> $4
+               AND status       = 'offered'
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(product.as_str())
+        .bind(external_ref)
+        .bind(winner)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected())
     }
 
     async fn try_claim(&self, tenant_id: Uuid, assignment_id: Uuid) -> anyhow::Result<ClaimOutcome> {
