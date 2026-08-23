@@ -46,8 +46,9 @@ impl OrderRepository for PgOrderRepository {
                 id, tenant_id, customer_id, basket_id, plan_id, status,
                 goods_total_cents, delivery_fee_cents, tip_cents, grand_total_cents,
                 courier_trip_cents, courier_task_id, placed_at, delivered_at,
-                delivery_lat, delivery_lng, customer_name, customer_phone, courier_user_id
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+                delivery_lat, delivery_lng, customer_name, customer_phone, courier_user_id,
+                delivery_note
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
             ON CONFLICT (id) DO UPDATE SET
                 status          = EXCLUDED.status,
                 courier_task_id = EXCLUDED.courier_task_id,
@@ -62,6 +63,7 @@ impl OrderRepository for PgOrderRepository {
                 -- contact. A plain assignment would erase the customer's phone
                 -- on the first status change after checkout.
                 customer_name   = COALESCE(EXCLUDED.customer_name, omnideliv.orders.customer_name),
+                delivery_note   = COALESCE(EXCLUDED.delivery_note, omnideliv.orders.delivery_note),
                 customer_phone  = COALESCE(EXCLUDED.customer_phone, omnideliv.orders.customer_phone),
                 courier_user_id = COALESCE(EXCLUDED.courier_user_id, omnideliv.orders.courier_user_id)
             "#,
@@ -73,6 +75,7 @@ impl OrderRepository for PgOrderRepository {
         .bind(o.courier_task_id).bind(o.placed_at).bind(o.delivered_at)
         .bind(o.delivery_lat).bind(o.delivery_lng)
         .bind(&o.customer_name).bind(&o.customer_phone).bind(o.courier_user_id)
+        .bind(&o.delivery_note)
         .execute(&mut *tx).await?;
 
         for l in &o.legs {
@@ -126,6 +129,7 @@ impl OrderRepository for PgOrderRepository {
                 delivery_lng:       r.get("delivery_lng"),
                 courier_user_id:    r.get("courier_user_id"),
                 customer_name:      r.get("customer_name"),
+            delivery_note:      r.get("delivery_note"),
                 customer_phone:     r.get("customer_phone"),
                 goods_total_cents:  r.get("goods_total_cents"),
                 delivery_fee_cents: r.get("delivery_fee_cents"),
@@ -242,6 +246,7 @@ impl OrderRepository for PgOrderRepository {
             delivery_lng:       r.get("delivery_lng"),
             courier_user_id:    r.get("courier_user_id"),
             customer_name:      r.get("customer_name"),
+            delivery_note:      r.get("delivery_note"),
             customer_phone:     r.get("customer_phone"),
             goods_total_cents:  r.get("goods_total_cents"),
             delivery_fee_cents: r.get("delivery_fee_cents"),

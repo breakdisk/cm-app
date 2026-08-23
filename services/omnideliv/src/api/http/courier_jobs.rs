@@ -317,7 +317,7 @@ async fn manifest(
             lng,
             customer_name:  order.customer_name.clone(),
             customer_phone: order.customer_phone.clone(),
-            notes:          None,
+            notes:          order.delivery_note.clone(),
         },
     }))
 }

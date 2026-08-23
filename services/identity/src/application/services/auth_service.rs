@@ -144,7 +144,7 @@ impl AuthService {
             tier_str,
             user.email.clone(), user.roles.clone(), permissions,
             self.jwt.access_expiry_seconds(),
-        ).with_features(enabled_features);
+        ).with_features(enabled_features).with_phone(user.phone_number.clone());
         let refresh_claims = logisticos_auth::claims::RefreshClaims::new(
             user.id.inner(), tenant.id.inner(), self.jwt.refresh_expiry_seconds(),
         );
@@ -203,7 +203,7 @@ impl AuthService {
             tier_str,
             user.email.clone(), user.roles.clone(), permissions, self.jwt.access_expiry_seconds())
             .with_onboarding(onboarding_required)
-            .with_features(enabled_features);
+            .with_features(enabled_features).with_phone(user.phone_number.clone());
         let refresh_claims = logisticos_auth::claims::RefreshClaims::new(user.id.inner(), tenant.id.inner(), self.jwt.refresh_expiry_seconds());
 
         Ok(LoginResult {
@@ -603,7 +603,7 @@ impl AuthService {
             tier_str,
             user.email.clone(), user.roles.clone(), permissions,
             self.jwt.access_expiry_seconds(),
-        ).with_features(enabled_features);
+        ).with_features(enabled_features).with_phone(user.phone_number.clone());
         let refresh_claims = logisticos_auth::claims::RefreshClaims::new(
             user.id.inner(), tenant.id.inner(), self.jwt.refresh_expiry_seconds(),
         );
@@ -916,7 +916,7 @@ impl AuthService {
             self.jwt.access_expiry_seconds(),
         )
         .with_onboarding(onboarding_required)
-        .with_features(enabled_features);
+        .with_features(enabled_features).with_phone(user.phone_number.clone());
         let refresh_claims = logisticos_auth::claims::RefreshClaims::new(
             user.id.inner(),
             tenant.id.inner(),

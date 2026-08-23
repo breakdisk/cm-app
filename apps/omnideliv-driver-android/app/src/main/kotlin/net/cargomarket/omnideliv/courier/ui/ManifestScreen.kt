@@ -28,7 +28,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.ui.platform.LocalContext
 import net.cargomarket.omnideliv.courier.domain.Dropoff
+import net.cargomarket.omnideliv.courier.domain.navigationUri
 import net.cargomarket.omnideliv.courier.domain.GeofenceAdvice
 import net.cargomarket.omnideliv.courier.domain.Leg
 import net.cargomarket.omnideliv.courier.domain.PrimaryAction
@@ -244,6 +248,12 @@ private fun PickupCard(stop: Stop) {
         Spacer(Modifier.height(4.dp))
         Text(stop.address, color = Tokens.TextMuted, fontSize = 13.sp)
 
+        // A vendor has a real address, unlike a dropoff — but the courier still
+        // has to get there, and typing it into a map app one-handed on a bike
+        // is not a plan.
+        Spacer(Modifier.height(10.dp))
+        NavigateButton(stop.lat, stop.lng, stop.vendorName)
+
         Spacer(Modifier.height(12.dp))
         Column(
             Modifier
@@ -273,6 +283,38 @@ private fun LineRow(line: Line) {
     }
 }
 
+/**
+ * Hand this stop to whatever map app the courier uses.
+ *
+ * An order carries no street address, so the coordinates *are* the
+ * destination — and until this existed they were unactionable text. `geo:`
+ * lets the platform choose the app; Waze is as likely as Maps on a bike.
+ *
+ * Wrapped in runCatching: a device with no map app at all resolves nothing,
+ * and a courier mid-delivery must not meet a crash for tapping a convenience.
+ */
+@Composable
+private fun NavigateButton(lat: Double, lng: Double, label: String?) {
+    val context = LocalContext.current
+    Button(
+        onClick = {
+            runCatching {
+                context.startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(navigationUri(lat, lng, label))),
+                )
+            }
+        },
+        modifier = Modifier.fillMaxWidth().heightIn(min = Tokens.MinTarget),
+        shape = RoundedCornerShape(12.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = Tokens.SurfaceRaised,
+            contentColor = Tokens.Cyan,
+        ),
+    ) {
+        Text("Navigate", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
 @Composable
 private fun DropoffCard(dropoff: Dropoff, codCents: Long) {
     Column(Modifier.fillMaxWidth().padding(top = 4.dp)) {
@@ -296,6 +338,9 @@ private fun DropoffCard(dropoff: Dropoff, codCents: Long) {
             fontSize = 13.sp,
             fontFamily = FontFamily.Monospace,
         )
+        Spacer(Modifier.height(10.dp))
+        NavigateButton(dropoff.lat, dropoff.lng, dropoff.customerName ?: "Customer")
+
         dropoff.customerPhone?.let {
             Spacer(Modifier.height(8.dp))
             Text("Call $it", color = Tokens.Cyan, fontSize = 14.sp, fontWeight = FontWeight.Bold)

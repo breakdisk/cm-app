@@ -177,6 +177,12 @@ pub struct Order {
     /// cross-service identity lookup per refresh would put a courier's screen
     /// on identity's availability.
     pub customer_phone:     Option<String>,
+    /// The customer's instruction to the courier — "unit 12B, gate code 4417".
+    ///
+    /// An order has no street address, so this is the only place anyone can say
+    /// where the door actually is. Cleaned by `clean_delivery_note` before it
+    /// gets here; never trusted raw from the request body.
+    pub delivery_note:      Option<String>,
     pub legs:               Vec<VendorLeg>,
     pub placed_at:          DateTime<Utc>,
     pub delivered_at:       Option<DateTime<Utc>>,
@@ -207,6 +213,157 @@ pub fn phone_from_login(email: &str) -> Option<String> {
         return None;
     }
     Some(local.to_string())
+}
+
+
+/// The number a courier can actually call, from whatever identity gave us.
+///
+/// Two sources, in order of trust:
+///
+/// 1. `claims.phone` — identity's own `users.phone_number` column, carried on
+///    the token. Authoritative when present.
+/// 2. The minted OTP login `<digits>@customer.logisticos.app`, decoded by
+///    [`phone_from_login`]. The only thing available before identity put the
+///    number on the token, and still the fallback for tokens issued then.
+///
+/// Why both. The original design assumed the login *was* the phone, because the
+/// OTP path mints that address. Production disagreed: on 2026-08-23 all 34
+/// orders had a null `customer_phone`, and the newest was placed by
+/// `testdriverone@gmail.com` — a real mailbox — whose identity row holds
+/// `+971553604321` all along. `phone_from_login` was behaving correctly; it was
+/// simply never asked the one place that knew.
+///
+/// Never a plain `split('@')` on a real mailbox: that puts the local part of
+/// `maria.reyes@gmail.com` on a courier's screen as a number to dial.
+pub fn contact_phone(claims_phone: Option<&str>, login: &str) -> Option<String> {
+    let from_claims = claims_phone
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_owned);
+
+    from_claims.or_else(|| phone_from_login(login))
+}
+
+#[cfg(test)]
+mod contact_phone_tests {
+    use super::{contact_phone, phone_from_login};
+
+    #[test]
+    fn the_token_phone_wins_when_identity_has_one() {
+        assert_eq!(
+            contact_phone(Some("+971553604321"), "testdriverone@gmail.com"),
+            Some("+971553604321".to_string()),
+        );
+    }
+
+    /// The case that made this necessary. A real mailbox yields nothing from
+    /// the login, and before the token carried a number there was nothing else
+    /// to fall back to — so the courier got a blank where the phone should be.
+    #[test]
+    fn a_real_mailbox_alone_yields_nothing() {
+        assert_eq!(contact_phone(None, "testdriverone@gmail.com"), None);
+        assert_eq!(phone_from_login("testdriverone@gmail.com"), None);
+    }
+
+    /// Tokens minted before identity carried the phone still work.
+    #[test]
+    fn the_minted_login_is_still_decoded_when_the_token_is_silent() {
+        assert_eq!(
+            contact_phone(None, "639170000123@customer.logisticos.app"),
+            Some("639170000123".to_string()),
+        );
+    }
+
+    /// An empty or whitespace claim is not a phone number. Treating it as one
+    /// would suppress the fallback and put a blank on the manifest.
+    #[test]
+    fn a_blank_claim_falls_through_to_the_login() {
+        assert_eq!(
+            contact_phone(Some(""), "639170000123@customer.logisticos.app"),
+            Some("639170000123".to_string()),
+        );
+        assert_eq!(
+            contact_phone(Some("   "), "639170000123@customer.logisticos.app"),
+            Some("639170000123".to_string()),
+        );
+    }
+
+    #[test]
+    fn nothing_anywhere_is_still_nothing() {
+        assert_eq!(contact_phone(None, "merchant@demo.com"), None);
+    }
+}
+
+
+/// The longest delivery note a customer may leave.
+///
+/// This lands on a courier's phone, on a screen read one-handed at a door. It
+/// is "unit 12B, gate code 4417, ring twice", not an essay — and it is the one
+/// free-text field a client controls that a courier is asked to act on, so it
+/// is bounded at the boundary rather than trusted and truncated later.
+pub const MAX_DELIVERY_NOTE_CHARS: usize = 280;
+
+/// Clean a customer's delivery note, or decide there isn't one.
+///
+/// Unlike the phone, this genuinely does come from the request body — the
+/// customer is the only one who knows their gate code. That makes bounding it
+/// the caller's job, not a formality.
+///
+/// Characters, not bytes: `chars().count()` so a note in Tagalog or with emoji
+/// is measured the way a person would measure it, and a multi-byte character
+/// near the limit cannot be cut in half.
+pub fn clean_delivery_note(raw: Option<&str>) -> Option<String> {
+    let trimmed = raw?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.chars().take(MAX_DELIVERY_NOTE_CHARS).collect())
+}
+
+#[cfg(test)]
+mod delivery_note_tests {
+    use super::{clean_delivery_note, MAX_DELIVERY_NOTE_CHARS};
+
+    #[test]
+    fn a_real_note_survives() {
+        assert_eq!(
+            clean_delivery_note(Some("Unit 12B, gate code 4417")),
+            Some("Unit 12B, gate code 4417".to_string()),
+        );
+    }
+
+    /// A blank note is no note. Storing `""` would render an empty line on the
+    /// manifest that looks like a rendering fault.
+    #[test]
+    fn blank_and_whitespace_are_no_note_at_all() {
+        assert_eq!(clean_delivery_note(None), None);
+        assert_eq!(clean_delivery_note(Some("")), None);
+        assert_eq!(clean_delivery_note(Some("   \n\t ")), None);
+    }
+
+    #[test]
+    fn surrounding_whitespace_is_trimmed() {
+        assert_eq!(clean_delivery_note(Some("  ring twice  ")), Some("ring twice".to_string()));
+    }
+
+    /// Bounded at the boundary. The client is not trusted to have limited it.
+    #[test]
+    fn an_overlong_note_is_cut_to_the_limit() {
+        let long = "x".repeat(MAX_DELIVERY_NOTE_CHARS + 50);
+        let cleaned = clean_delivery_note(Some(&long)).unwrap();
+        assert_eq!(cleaned.chars().count(), MAX_DELIVERY_NOTE_CHARS);
+    }
+
+    /// Characters, not bytes. Cutting at a byte offset would split a multi-byte
+    /// character and produce a note that is not valid text at all.
+    #[test]
+    fn a_multibyte_note_is_measured_in_characters() {
+        let note = "ñ".repeat(MAX_DELIVERY_NOTE_CHARS + 10);
+        let cleaned = clean_delivery_note(Some(&note)).unwrap();
+        assert_eq!(cleaned.chars().count(), MAX_DELIVERY_NOTE_CHARS);
+        // Still valid UTF-8 by construction — this would panic on a byte slice.
+        assert!(cleaned.ends_with('ñ'));
+    }
 }
 
 impl Order {
@@ -256,6 +413,7 @@ impl Order {
             courier_user_id: None,
             customer_name: None,
             customer_phone: None,
+            delivery_note: None,
             legs,
             placed_at: Utc::now(),
             delivered_at: None,
@@ -274,6 +432,14 @@ impl Order {
     ) -> Self {
         self.customer_name = name;
         self.customer_phone = phone;
+        self
+    }
+
+    /// Attach the customer's note for the courier. Chainable, and separate from
+    /// the contact pair because it comes from a different place: the contact is
+    /// taken from the validated token, this is the one field the customer types.
+    pub fn with_delivery_note(mut self, note: Option<String>) -> Self {
+        self.delivery_note = note;
         self
     }
 

@@ -18,6 +18,7 @@ import {
   Receipt, RefreshCw, Search, CheckCircle2, Clock, AlertCircle, FileText,
 } from "lucide-react";
 import { authFetch } from "@/lib/auth/auth-fetch";
+import { CourierPayouts } from "@/components/finance/courier-payouts";
 
 // Route through the api-gateway — same pattern as every other admin-portal
 // data page. `NEXT_PUBLIC_API_URL` is the only backend URL baked into the
@@ -315,6 +316,13 @@ export default function FinancePage() {
             );
           })}
         </GlassCard>
+      </motion.div>
+
+      {/* OmniDeliv couriers are paid from a weekly ledger in field-ops, not
+          invoiced through payments — a different money rail with a different
+          failure mode, so it gets its own section rather than a column here. */}
+      <motion.div variants={variants.fadeInUp}>
+        <CourierPayouts />
       </motion.div>
     </motion.div>
   );
