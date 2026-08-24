@@ -43,6 +43,42 @@ export interface AdminCourier {
    * it cannot drift.
    */
   dispatchable:  boolean;
+  /**
+   * Which of the independent reasons is withholding work, or `null` when
+   * nothing is: `"suspended"`, `"off_duty"`, `"compliance"`.
+   *
+   * Read this rather than re-deriving it from `is_active`/`status`. The server
+   * also weighs compliance, and whether compliance *blocks* depends on a
+   * deployment flag this client cannot see — a client-side copy of the rule
+   * would confidently disagree with the dispatcher.
+   *
+   * It deliberately does **not** cover a stale GPS fix: the proximity search
+   * only considers a position from the last ten minutes, and that lives in the
+   * query rather than on the row. `last_seen_at` is what shows it, and it is
+   * the one reason this client legitimately derives itself.
+   */
+  block_reason:  "suspended" | "off_duty" | "compliance" | null;
+  /**
+   * What the compliance service last said, verbatim — `compliant`,
+   * `pending_submission`, `under_review`, `expiring_soon`, `expired`,
+   * `suspended`, `rejected`.
+   *
+   * `null` means compliance has never spoken about this courier, which is not
+   * the same as clearing them. Every courier registered before compliance was
+   * wired is in that state, and telling the two apart is how ops knows who
+   * still needs onboarding.
+   */
+  compliance_status: string | null;
+  /**
+   * Whether compliance permits assigning them. `true` for an unknown courier —
+   * unknown fails open, or switching enforcement on would take the whole live
+   * fleet off the road at once.
+   *
+   * This can be `false` while `dispatchable` is still `true`: that is the
+   * observe-only rollout, and it is the single most important thing this screen
+   * can show, because it is the preview of what enforcement will do.
+   */
+  compliance_assignable: boolean;
 }
 
 async function okJson(r: Response) {

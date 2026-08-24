@@ -75,7 +75,7 @@ async fn a_job_credited_in_one_week_cannot_be_credited_again_in_the_next() {
     let pool = pool().await;
 
     let tenant = Uuid::new_v4();
-    let couriers = PgCourierRepository::new(pool.clone());
+    let couriers = PgCourierRepository::new(pool.clone(), false);
     let ledgers = PgCourierLedgerRepository::new(pool.clone());
 
     let courier = Courier::new(
@@ -140,7 +140,7 @@ async fn two_different_jobs_in_one_week_are_both_credited() {
     let pool = pool().await;
 
     let tenant = Uuid::new_v4();
-    let couriers = PgCourierRepository::new(pool.clone());
+    let couriers = PgCourierRepository::new(pool.clone(), false);
     let ledgers = PgCourierLedgerRepository::new(pool.clone());
 
     let courier = Courier::new(

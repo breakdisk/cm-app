@@ -26,6 +26,33 @@ pub struct Config {
     pub database: DatabaseConfig,
     pub kafka:    KafkaConfig,
 
+    /// Whether a courier compliance verdict actually blocks dispatch.
+    ///
+    /// Ships **false**, and that is a rollout decision, not timidity. No
+    /// courier in production has a compliance profile — nothing has ever
+    /// published `driver.registered`, so none was ever created — and a new
+    /// profile starts at `pending_submission`, which compliance does not
+    /// consider assignable. Turning this on the same day profiles start being
+    /// created would take the live fleet off the road as their profiles
+    /// appeared, one courier at a time, with the cause several services away.
+    ///
+    /// With it false the verdict is still consumed, stored and shown on the ops
+    /// roster, and `offer_to_nearest` logs every courier it *would* have
+    /// refused. Flip it once that log is quiet and the roster shows the fleet
+    /// cleared.
+    #[serde(default)]
+    pub enforce_compliance: bool,
+
+    /// The jurisdiction a newly registered courier's compliance profile is
+    /// opened under; decides which documents they are required to hold.
+    ///
+    /// Configuration rather than a constant, for the same reason the courier
+    /// app's default country code is: it belongs to the tenant, and a launch
+    /// market baked into platform code is how "PH" ends up demanding an LTO
+    /// licence from a courier in Dubai.
+    #[serde(default = "default_jurisdiction")]
+    pub default_jurisdiction: String,
+
     /// A courier's claim is released if no heartbeat arrives within this window,
     /// so a crashed client cannot hold a courier hostage forever.
     #[serde(default = "default_claim_ttl_secs")]
@@ -56,6 +83,10 @@ fn default_max_trip_cents() -> i64 { 200_000 }
 fn default_max_tip_cents() -> i64 { 500_000 }
 
 fn default_claim_ttl_secs() -> i64 { 120 }
+
+/// Matches the fallback the compliance service's own lazy profile creation
+/// uses, so a courier onboarded through either path lands in one jurisdiction.
+fn default_jurisdiction() -> String { "PH".to_owned() }
 
 impl Config {
     pub fn load() -> anyhow::Result<Self> {

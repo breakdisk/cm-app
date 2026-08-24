@@ -7,10 +7,19 @@ use crate::domain::repositories::CourierRepository;
 
 pub struct PgCourierRepository {
     pool: PgPool,
+    /// Whether `find_available_near` applies the compliance term.
+    ///
+    /// Held here rather than passed per call because it is a deployment
+    /// rollout flag with exactly one correct value per process. A parameter
+    /// would mean every call site gets to choose, and a gate one call site can
+    /// opt out of is not a gate.
+    enforce_compliance: bool,
 }
 
 impl PgCourierRepository {
-    pub fn new(pool: PgPool) -> Self { Self { pool } }
+    pub fn new(pool: PgPool, enforce_compliance: bool) -> Self {
+        Self { pool, enforce_compliance }
+    }
 }
 
 fn map_row(r: &sqlx::postgres::PgRow) -> anyhow::Result<Courier> {
@@ -37,6 +46,9 @@ fn map_row(r: &sqlx::postgres::PgRow) -> anyhow::Result<Courier> {
         last_lng:     r.get("last_lng"),
         last_seen_at: r.get("last_seen_at"),
         is_active:    r.get("is_active"),
+        compliance_status:     r.get("compliance_status"),
+        compliance_assignable: r.get("compliance_assignable"),
+        compliance_updated_at: r.get("compliance_updated_at"),
         created_at:   r.get("created_at"),
         updated_at:   r.get("updated_at"),
     })
@@ -104,6 +116,43 @@ impl CourierRepository for PgCourierRepository {
         .await?;
 
         Ok(())
+    }
+
+    async fn update_compliance(
+        &self,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        status: &str,
+        assignable: bool,
+    ) -> anyhow::Result<bool> {
+        // A dedicated write, and deliberately NOT part of `save`.
+        //
+        // `save` is an upsert built from an in-memory Courier, and the courier
+        // lifecycle constructs fresh ones — `register_courier` makes a
+        // `Courier::new()` whose compliance fields are the unknown defaults. If
+        // `save` carried these columns, a courier re-registering, or any
+        // read-modify-write that raced the compliance consumer, would quietly
+        // reset a courier who had been blocked back to assignable. The two
+        // writers own disjoint columns instead, so neither can undo the other.
+        let res = sqlx::query(
+            r#"
+            UPDATE field_ops.couriers
+               SET compliance_status     = $3,
+                   compliance_assignable = $4,
+                   compliance_updated_at = NOW(),
+                   updated_at            = NOW()
+             WHERE tenant_id = $1
+               AND user_id   = $2
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(status)
+        .bind(assignable)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(res.rows_affected() > 0)
     }
 
     async fn list_for_tenant(
@@ -190,6 +239,22 @@ impl CourierRepository for PgCourierRepository {
                     WHERE a.courier_id = c.id
                       AND a.status = 'claimed'
                )
+               -- Compliance gate. Filtered here rather than after the query
+               -- because this statement has a LIMIT: dropping blocked couriers
+               -- in Rust would spend the fan-out on them and offer the job to
+               -- fewer couriers than asked for, while eligible ones just
+               -- outside the LIMIT went unoffered.
+               --
+               -- `$6` is the rollout flag, false on first deploy, so this
+               -- reduces to `NOT false OR ...` = true and the predicate is a
+               -- no-op until it is turned on.
+               --
+               -- `compliance_assignable` is NOT NULL DEFAULT true, so a courier
+               -- compliance has never spoken about passes. That is required,
+               -- not lenient: no courier has a compliance profile today, and
+               -- failing closed on unknown would stop the entire live fleet the
+               -- moment this flag flips.
+               AND (NOT $6::boolean OR c.compliance_assignable)
                AND ST_DWithin(
                        geography(ST_SetSRID(ST_MakePoint(cl.lng, cl.lat), 4326)),
                        ST_SetSRID(ST_MakePoint($4, $3), 4326)::geography,
@@ -204,6 +269,7 @@ impl CourierRepository for PgCourierRepository {
         .bind(lat)
         .bind(lng)
         .bind(limit)
+        .bind(self.enforce_compliance)
         .fetch_all(&self.pool)
         .await?;
 

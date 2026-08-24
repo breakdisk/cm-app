@@ -4,12 +4,39 @@
 //! consuming product does with it — `external_ref` is opaque, which is what
 //! keeps this a platform tier rather than a LogisticOS or OmniDeliv service.
 
+pub mod compliance_consumer;
+
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub const TOPIC_COURIER: &str = "fieldops.courier";
+
+/// The topic the compliance service consumes registrations on.
+///
+/// Owned by compliance, not by this tier: it subscribes to `driver` looking for
+/// `driver.registered`, and until now **nothing in the platform ever published
+/// it**. That consumer has been running against a topic with no producer since
+/// the service shipped, which is why no field worker has ever had a compliance
+/// profile created for them.
+pub const TOPIC_DRIVER: &str = "driver";
+
+/// Wire contract with the compliance service's `driver.registered` consumer.
+///
+/// `tenant_id` is duplicated inside the payload even though the envelope
+/// already carries it. That is compliance's shape, and its struct declares the
+/// field without `#[serde(default)]` — omitting it here would fail
+/// deserialisation on their side, which surfaces as a warning log on their
+/// consumer and total silence on ours.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriverRegisteredPayload {
+    /// The identity user. Compliance stores this as the profile's `entity_id`,
+    /// and ADR-0015 makes it equal to `courier.id`.
+    pub driver_id:    Uuid,
+    pub tenant_id:    Uuid,
+    pub jurisdiction: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
@@ -65,6 +92,20 @@ impl CourierEvent {
 #[async_trait::async_trait]
 pub trait CourierEvents: Send + Sync {
     async fn publish(&self, event: &CourierEvent) -> anyhow::Result<()>;
+
+    /// Announce a newly registered courier so compliance opens a profile.
+    ///
+    /// A separate method rather than a `CourierEvent` variant because it is a
+    /// different contract in every respect: a different topic, owned by another
+    /// service, and the full `Event<T>` envelope rather than the bare tagged
+    /// enum the milestone stream uses. Folding it into `CourierEvent` would
+    /// mean one of the two shapes had to bend.
+    async fn publish_registered(
+        &self,
+        tenant_id:    Uuid,
+        user_id:      Uuid,
+        jurisdiction: &str,
+    ) -> anyhow::Result<()>;
 }
 
 pub struct KafkaCourierEvents {
@@ -84,6 +125,25 @@ impl CourierEvents for KafkaCourierEvents {
             .publish_raw(TOPIC_COURIER, &event.key().to_string(), &serde_json::to_string(event)?)
             .await
     }
+
+    async fn publish_registered(
+        &self,
+        tenant_id:    Uuid,
+        user_id:      Uuid,
+        jurisdiction: &str,
+    ) -> anyhow::Result<()> {
+        let event = logisticos_events::envelope::Event::new(
+            "logisticos/field-ops",
+            "driver.registered",
+            tenant_id,
+            DriverRegisteredPayload {
+                driver_id: user_id,
+                tenant_id,
+                jurisdiction: jurisdiction.to_owned(),
+            },
+        );
+        self.producer.publish_event(TOPIC_DRIVER, &event).await
+    }
 }
 
 /// Drops every event. For a deployment with no broker, where losing milestones
@@ -93,6 +153,10 @@ pub struct NoopCourierEvents;
 #[async_trait::async_trait]
 impl CourierEvents for NoopCourierEvents {
     async fn publish(&self, _event: &CourierEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn publish_registered(&self, _: Uuid, _: Uuid, _: &str) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -124,6 +188,42 @@ mod tests {
         for e in &events {
             assert_eq!(e.key(), job);
         }
+    }
+
+    /// Field names compliance's `DriverRegisteredPayload` declares. It has no
+    /// `#[serde(default)]` on any of them, so a rename here does not fail a
+    /// build — it makes their consumer log a deserialisation warning and create
+    /// no profile, which looks exactly like no courier ever registering.
+    #[test]
+    fn a_registration_payload_matches_the_shape_compliance_declares() {
+        let v = serde_json::to_value(DriverRegisteredPayload {
+            driver_id:    Uuid::nil(),
+            tenant_id:    Uuid::nil(),
+            jurisdiction: "PH".into(),
+        })
+        .expect("serialise");
+
+        assert!(v.get("driver_id").is_some(),   "compliance reads data.driver_id");
+        assert!(v.get("tenant_id").is_some(),   "compliance reads data.tenant_id");
+        assert!(v.get("jurisdiction").is_some(), "compliance reads data.jurisdiction");
+    }
+
+    /// The event type string compliance matches on verbatim. Anything else and
+    /// it takes the `Unrecognised driver event type` branch and drops the
+    /// message.
+    #[test]
+    fn the_registration_envelope_is_typed_driver_registered() {
+        let e = logisticos_events::envelope::Event::new(
+            "logisticos/field-ops",
+            "driver.registered",
+            Uuid::nil(),
+            DriverRegisteredPayload {
+                driver_id: Uuid::nil(), tenant_id: Uuid::nil(), jurisdiction: "PH".into(),
+            },
+        );
+        let v = serde_json::to_value(&e).expect("serialise");
+        assert_eq!(v["event_type"], "driver.registered");
+        assert_eq!(v["data"]["jurisdiction"], "PH");
     }
 
     /// The consumer matches on the tagged `event` field, so these names are a

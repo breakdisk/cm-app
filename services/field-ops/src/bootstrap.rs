@@ -5,12 +5,14 @@ use logisticos_auth::jwt::JwtService;
 use sqlx::postgres::PgPoolOptions;
 
 use crate::api::http::{router, AppState};
-use crate::application::services::{DispatchService, PayBounds};
+use crate::application::services::{CompliancePolicy, DispatchService, PayBounds};
 use crate::config::Config;
 use crate::infrastructure::db::{
     PgAssignmentRepository, PgCourierLedgerRepository, PgCourierRepository, PgLocationRepository,
 };
-use crate::infrastructure::messaging::{CourierEvents, KafkaCourierEvents, NoopCourierEvents};
+use crate::infrastructure::messaging::{
+    compliance_consumer, CourierEvents, KafkaCourierEvents, NoopCourierEvents,
+};
 
 pub async fn run() -> anyhow::Result<()> {
     let cfg = Config::load().context("Failed to load field-ops config")?;
@@ -60,8 +62,25 @@ pub async fn run() -> anyhow::Result<()> {
             }
         };
 
+    // One repository instance, shared by the HTTP path and the compliance
+    // consumer. Not two: the enforcement flag is baked into it at construction,
+    // and a second instance is a second chance to construct it with the other
+    // value.
+    let couriers = Arc::new(PgCourierRepository::new(pool.clone(), cfg.enforce_compliance));
+
+    tracing::info!(
+        enforce_compliance   = cfg.enforce_compliance,
+        default_jurisdiction = %cfg.default_jurisdiction,
+        "courier compliance policy",
+    );
+    if !cfg.enforce_compliance {
+        tracing::warn!(
+            "compliance verdicts are being recorded but NOT withholding work: couriers the compliance service refuses will still be offered jobs. Set ENFORCE_COMPLIANCE=true once the fleet is onboarded.",
+        );
+    }
+
     let dispatch = Arc::new(DispatchService::new(
-        Arc::new(PgCourierRepository::new(pool.clone())),
+        couriers.clone(),
         Arc::new(PgAssignmentRepository::new(pool.clone())),
         Arc::new(PgLocationRepository::new(pool.clone())),
         Arc::new(PgCourierLedgerRepository::new(pool.clone())),
@@ -71,7 +90,37 @@ pub async fn run() -> anyhow::Result<()> {
             max_trip_cents: cfg.max_trip_cents,
             max_tip_cents:  cfg.max_tip_cents,
         },
+        CompliancePolicy {
+            enforce:      cfg.enforce_compliance,
+            jurisdiction: cfg.default_jurisdiction.clone(),
+        },
     ));
+
+    // Compliance verdicts. Spawned, never awaited into the startup path: a
+    // broker that will not connect must not stop the service starting, for the
+    // same reason the producer above degrades to a no-op. A courier who cannot
+    // be dispatched at all is a worse outage than one whose compliance status
+    // is stale.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    {
+        let brokers  = cfg.kafka.brokers.clone();
+        let couriers = couriers.clone();
+        tokio::spawn(async move {
+            if let Err(e) = compliance_consumer::start_compliance_consumer(
+                &brokers,
+                "field-ops-compliance",
+                couriers,
+                shutdown_rx,
+            )
+            .await
+            {
+                tracing::error!(
+                    err = %e,
+                    "compliance consumer stopped — courier compliance status will go stale",
+                );
+            }
+        });
+    }
 
     let state = Arc::new(AppState { dispatch, jwt });
 
@@ -79,6 +128,10 @@ pub async fn run() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!(%addr, "field-ops listening");
     axum::serve(listener, router(state)).await?;
+
+    // Only reached on a clean server shutdown; tells the consumer to stop
+    // rather than leaving it to be killed mid-message.
+    let _ = shutdown_tx.send(true);
 
     Ok(())
 }

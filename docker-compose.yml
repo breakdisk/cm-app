@@ -1303,6 +1303,23 @@ services:
       # A claim older than this is reclaimable, so a crashed client cannot hold
       # a courier hostage.
       CLAIM_TTL_SECS: "120"
+      # Whether a compliance verdict actually withholds work from a courier.
+      #
+      # OFF, deliberately. No courier in production has a compliance profile —
+      # nothing published `driver.registered` until field-ops started doing it —
+      # and a new profile begins at `pending_submission`, which compliance does
+      # not consider assignable. Switching this on before the fleet has uploaded
+      # and had documents approved takes couriers off the road one at a time as
+      # their profiles appear.
+      #
+      # Verdicts are consumed, stored and shown on the admin couriers page
+      # regardless; only the blocking is gated. Watch the "Compliance blocked"
+      # tile there, and the `enforce_compliance is off` warnings in this
+      # service's log, then flip it.
+      ENFORCE_COMPLIANCE: "false"
+      # Which document set a new courier's compliance profile requires. Belongs
+      # to the tenant, not to the code — "PH" demands an LTO licence.
+      DEFAULT_JURISDICTION: "PH"
       RUST_LOG: info
     depends_on:
       postgres:

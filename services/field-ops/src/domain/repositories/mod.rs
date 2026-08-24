@@ -28,7 +28,30 @@ pub trait CourierRepository: Send + Sync {
         offset: i64,
     ) -> anyhow::Result<Vec<Courier>>;
 
+    /// Record what the compliance service last said about a courier.
+    ///
+    /// Keyed on `user_id` rather than the courier id: the compliance profile's
+    /// `entity_id` is the identity user, and while ADR-0015 collapses the two
+    /// (`courier.id = user_id`) that is an invariant of *registration*, not
+    /// something an inbound event from another service should be made to
+    /// depend on.
+    ///
+    /// Returns whether a row was updated. A `false` is expected and not an
+    /// error: compliance publishes for driver-ops drivers on the same topic,
+    /// and most of them are not couriers.
+    async fn update_compliance(
+        &self,
+        tenant_id: Uuid,
+        user_id: Uuid,
+        status: &str,
+        assignable: bool,
+    ) -> anyhow::Result<bool>;
+
     /// Dispatchable couriers within `radius_km` of a point, nearest first.
+    ///
+    /// Whether the compliance term is applied is fixed at construction, not
+    /// passed per call: it is a deployment rollout flag, and threading it
+    /// through every call site invites one of them to pass the wrong value.
     async fn find_available_near(
         &self,
         tenant_id: Uuid,
