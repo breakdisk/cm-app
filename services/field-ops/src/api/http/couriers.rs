@@ -336,8 +336,26 @@ pub struct CourierRow {
     pub last_lng:     Option<f64>,
     pub last_seen_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Both flags matter and neither implies the other: a courier is offered
-    /// work only when `is_active` **and** `status = available`.
+    /// work only when `is_active` **and** `status = available` — and, once
+    /// enforcement is on, when compliance clears them too.
     pub dispatchable: bool,
+    /// Which of the several independent reasons is keeping this courier from
+    /// being offered work: `suspended`, `off_duty`, `compliance`, or absent
+    /// when nothing is. They look identical from outside, and answering "why is
+    /// this courier not getting jobs?" is the whole job of this screen.
+    ///
+    /// Note it does **not** cover a stale GPS fix. `find_available_near` joins
+    /// on a position recorded in the last 10 minutes, so a courier who is
+    /// active, on duty and cleared can still never be found. That reason lives
+    /// in the query, not on the row, and `last_seen_at` is what shows it.
+    pub block_reason: Option<&'static str>,
+    /// What compliance last said, verbatim. `None` means compliance has never
+    /// spoken about this courier — which is not the same as clearing them, and
+    /// is the state every courier registered before this shipped is in.
+    pub compliance_status: Option<String>,
+    /// Whether compliance permits assigning them. True for an unknown courier:
+    /// unknown fails open.
+    pub compliance_assignable: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -363,11 +381,23 @@ async fn list_couriers(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
+    // Read from the service rather than re-read from config here: the roster
+    // must answer with the same policy the dispatcher applies, and a second
+    // source for that flag is how a screen starts promising work the dispatcher
+    // then withholds.
+    let enforce_compliance = st.dispatch.enforces_compliance();
+
     Ok(Json(RosterResponse {
         couriers: couriers
             .into_iter()
             .map(|c| CourierRow {
-                dispatchable: c.is_dispatchable(),
+                // Asked with the deployment's real setting, so the column says
+                // what will actually happen rather than what a future rollout
+                // would do. `block_reason` carries the nuance.
+                dispatchable: c.is_dispatchable(enforce_compliance),
+                block_reason: c.dispatch_block(enforce_compliance).map(|b| b.code()),
+                compliance_status:     c.compliance_status.clone(),
+                compliance_assignable: c.compliance_assignable,
                 id:           c.id,
                 user_id:      c.user_id,
                 first_name:   c.first_name,

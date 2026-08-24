@@ -13,7 +13,15 @@
  *
  * The column that earns its place is **Dispatchable**, because it is the
  * question ops actually asks — "why is this person not getting jobs?" — and it
- * has two independent answers that look identical from the outside.
+ * has four independent answers that look identical from the outside: suspended
+ * by ops, off duty, a GPS fix older than the ten minutes the proximity search
+ * will consider, and now compliance.
+ *
+ * Compliance ships in observe-only mode, so `dispatchable` and
+ * `compliance_assignable` can disagree — a courier compliance has refused is
+ * still being offered work. That disagreement is not a bug to paper over; it is
+ * the rollout, and this screen is where anyone can see what enforcing it would
+ * cost before the flag is turned on.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
@@ -41,20 +49,58 @@ function DutyPill({ status }: { status: string }) {
 }
 
 /**
+ * What compliance last said about this courier.
+ *
+ * `null` is its own state and reads as such: compliance has never seen them.
+ * That is not a clearance, and rendering it as one would hide exactly the
+ * couriers who still need onboarding.
+ */
+function CompliancePill({ c }: { c: AdminCourier }) {
+  const base = "rounded-full px-2 py-0.5 text-[11px] font-medium";
+
+  if (c.compliance_status === null) {
+    return (
+      <span className={`${base} bg-white/5 text-white/40`} title="No compliance profile has been opened for this courier yet. They are not blocked — unknown couriers are still offered work.">
+        not onboarded
+      </span>
+    );
+  }
+  const tone = c.compliance_assignable
+    ? (c.compliance_status === "compliant"
+        ? "bg-emerald-400/10 text-emerald-300"
+        : "bg-amber-400/10 text-amber-300")
+    : "bg-rose-400/10 text-rose-300";
+
+  return <span className={`${base} ${tone}`}>{c.compliance_status.replace(/_/g, " ")}</span>;
+}
+
+/**
  * Why this courier is or is not being offered work.
  *
  * Never colour alone, and never just "no": the whole point of the column is to
- * say *which* of the three independent reasons applies, because ops cannot tell
- * them apart from the courier's complaint.
+ * say *which* of the independent reasons applies, because ops cannot tell them
+ * apart from the courier's complaint.
+ *
+ * The server's `block_reason` is the authority for everything it can see. It
+ * weighs compliance too, and whether compliance blocks depends on a deployment
+ * flag this client is not told — so re-deriving the rule here from `is_active`
+ * and `status` would produce a screen that disagrees with the dispatcher.
  */
 function DispatchCell({ c }: { c: AdminCourier }) {
   const age = fixAgeMinutes(c.last_seen_at);
 
-  if (!c.is_active) {
+  if (c.block_reason === "suspended") {
     return <span className="text-[12px] text-rose-300">suspended by ops</span>;
   }
-  if (c.status !== "available") {
+  if (c.block_reason === "off_duty") {
     return <span className="text-[12px] text-white/40">not on duty</span>;
+  }
+  if (c.block_reason === "compliance") {
+    return (
+      <span className="text-[12px] text-rose-300">
+        blocked · {(c.compliance_status ?? "unknown").replace(/_/g, " ")}
+      </span>
+    );
   }
   // The third reason, and the one nobody guesses: the proximity search only
   // considers a fix from the last ten minutes, so a courier who is on duty and
@@ -64,6 +110,17 @@ function DispatchCell({ c }: { c: AdminCourier }) {
   }
   if (age > 10) {
     return <span className="text-[12px] text-amber-300">on duty · last fix {age}m ago (stale)</span>;
+  }
+  // Observe-only. Compliance has refused this courier and they are being
+  // offered work anyway, because enforcement is not switched on yet. This is
+  // the preview of what flipping the flag will do, and the only place anyone
+  // can see it before it happens.
+  if (!c.compliance_assignable) {
+    return (
+      <span className="text-[12px] text-amber-300" title="Compliance has refused this courier, but enforcement is off in this deployment so they are still being offered work. Turning enforcement on will stop them.">
+        receiving offers · compliance would block
+      </span>
+    );
   }
   return <span className="text-[12px] text-emerald-300">receiving offers</span>;
 }
@@ -94,6 +151,11 @@ export default function CouriersPage() {
     total: couriers.length,
     dispatchable: couriers.filter((c) => c.dispatchable).length,
     suspended: couriers.filter((c) => !c.is_active).length,
+    // Counted from `compliance_assignable`, not from `dispatchable`: while
+    // enforcement is off these two disagree on purpose, and this tile is the
+    // number that says how many couriers flipping the flag would stop.
+    complianceBlocked: couriers.filter((c) => !c.compliance_assignable).length,
+    notOnboarded: couriers.filter((c) => c.compliance_status === null).length,
   }), [couriers]);
 
   async function toggle(c: AdminCourier) {
@@ -139,11 +201,13 @@ export default function CouriersPage() {
         </button>
       </header>
 
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         {[
           ["Couriers", counts.total, "text-white"],
           ["Receiving offers", counts.dispatchable, "text-emerald-300"],
           ["Suspended", counts.suspended, "text-rose-300"],
+          ["Compliance blocked", counts.complianceBlocked, "text-amber-300"],
+          ["Not onboarded", counts.notOnboarded, "text-white/60"],
         ].map(([label, value, tone]) => (
           <GlassCard key={String(label)} className="p-4">
             <div className="text-[11px] uppercase tracking-wide text-white/40">{label}</div>
@@ -160,24 +224,25 @@ export default function CouriersPage() {
 
       <GlassCard className="overflow-hidden p-0">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[860px] text-left text-[13px]">
+          <table className="w-full min-w-[980px] text-left text-[13px]">
             <thead className="bg-white/[0.03] text-[11px] uppercase tracking-wide text-white/40">
               <tr>
                 <th className="px-4 py-3">Courier</th>
                 <th className="px-4 py-3">Phone</th>
                 <th className="px-4 py-3">Duty</th>
                 <th className="px-4 py-3">Dispatchable</th>
+                <th className="px-4 py-3">Compliance</th>
                 <th className="px-4 py-3">Zone</th>
                 <th className="px-4 py-3 text-right">Ops</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5">
               {loading && couriers.length === 0 && (
-                <tr><td colSpan={6} className="px-4 py-8 text-center text-white/40">Loading…</td></tr>
+                <tr><td colSpan={7} className="px-4 py-8 text-center text-white/40">Loading…</td></tr>
               )}
               {!loading && couriers.length === 0 && !error && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-white/40">
+                  <td colSpan={7} className="px-4 py-8 text-center text-white/40">
                     No couriers yet. They appear here after signing in to the OmniDeliv
                     courier app, which registers them.
                   </td>
@@ -192,6 +257,7 @@ export default function CouriersPage() {
                   <td className="px-4 py-3 font-mono text-white/60">{c.phone}</td>
                   <td className="px-4 py-3"><DutyPill status={c.status} /></td>
                   <td className="px-4 py-3"><DispatchCell c={c} /></td>
+                  <td className="px-4 py-3"><CompliancePill c={c} /></td>
                   <td className="px-4 py-3 text-white/50">{c.zone ?? "—"}</td>
                   <td className="px-4 py-3 text-right">
                     <button

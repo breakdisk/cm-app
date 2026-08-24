@@ -117,6 +117,18 @@ create_topic "logisticos.carrier.allocated"
 # Compliance (internal)
 create_topic "compliance"
 
+# `driver` is where compliance looks for `driver.registered` to open a profile
+# for a new field worker. It sat here as a consumer with NO producer anywhere in
+# the platform from the day the compliance service shipped, so no field worker
+# ever had a profile created for them and the review queue was permanently
+# empty. field-ops now publishes it on courier registration.
+#
+# Note the topic guard in check-kafka-topics.sh does not cover this one: it
+# scans for `topics::CONSTANT` inside `subscribe(&[...])`, and both compliance
+# and field-ops subscribe using their own crate-local constants. Adding it here
+# is manual until that guard reads local constants too.
+create_topic "driver"
+
 # Field-ops (platform tier) — courier milestones, consumed by every product that
 # dispatches through it. Listed here rather than left to auto-create: the topic
 # is only created by the first PUBLISH, so a consumer that starts first logs

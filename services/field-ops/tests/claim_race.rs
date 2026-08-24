@@ -56,7 +56,7 @@ async fn two_products_racing_for_one_courier_produce_exactly_one_winner() {
         .expect("migrate");
 
     let tenant = Uuid::new_v4();
-    let couriers = PgCourierRepository::new(pool.clone());
+    let couriers = PgCourierRepository::new(pool.clone(), false);
     let assignments = PgAssignmentRepository::new(pool.clone());
 
     let mut courier = Courier::new(
@@ -106,7 +106,7 @@ async fn an_unregistered_product_is_rejected_by_the_foreign_key() {
         .expect("migrate");
 
     let tenant = Uuid::new_v4();
-    let couriers = PgCourierRepository::new(pool.clone());
+    let couriers = PgCourierRepository::new(pool.clone(), false);
     let assignments = PgAssignmentRepository::new(pool.clone());
 
     let courier = Courier::new(

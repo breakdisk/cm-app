@@ -3,7 +3,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::domain::entities::{
-    AssignmentStatus, Courier, CourierAssignment, CourierLocation, ProductKey,
+    AssignmentStatus, Courier, CourierAssignment, CourierLocation, DispatchBlock, ProductKey,
 };
 use crate::domain::repositories::CourierRepository;
 use crate::domain::entities::CourierLedger;
@@ -19,6 +19,28 @@ pub struct DispatchService {
     ledgers:     Arc<dyn CourierLedgerRepository>,
     events:      Arc<dyn CourierEvents>,
     pay_bounds:  PayBounds,
+    compliance:  CompliancePolicy,
+}
+
+/// How this deployment treats a courier's compliance verdict.
+///
+/// A struct rather than a bare `bool` so the two halves cannot drift apart:
+/// the repository filters in SQL and this service reports what was filtered,
+/// and both have to be told the same thing.
+#[derive(Debug, Clone)]
+pub struct CompliancePolicy {
+    /// Whether a non-assignable verdict actually withholds work. False on
+    /// first deploy — see `Config::enforce_compliance`.
+    pub enforce: bool,
+    /// The jurisdiction a new courier's compliance profile is opened under.
+    pub jurisdiction: String,
+}
+
+impl Default for CompliancePolicy {
+    /// Observe-only, PH. The safe posture: consume verdicts, withhold no work.
+    fn default() -> Self {
+        Self { enforce: false, jurisdiction: "PH".to_owned() }
+    }
 }
 
 /// What a payout run will do with one courier's ledger, and why.
@@ -191,8 +213,18 @@ impl DispatchService {
         ledgers: Arc<dyn CourierLedgerRepository>,
         events: Arc<dyn CourierEvents>,
         pay_bounds: PayBounds,
+        compliance: CompliancePolicy,
     ) -> Self {
-        Self { couriers, assignments, locations, ledgers, events, pay_bounds }
+        Self { couriers, assignments, locations, ledgers, events, pay_bounds, compliance }
+    }
+
+    /// Whether this deployment lets a compliance verdict withhold work.
+    ///
+    /// Exposed so the ops roster renders the same rule the dispatcher applies.
+    /// A screen that reads the flag from its own source is a screen that can
+    /// disagree with the dispatcher about who is going to get a job.
+    pub fn enforces_compliance(&self) -> bool {
+        self.compliance.enforce
     }
 
     /// Offer a job to the nearest dispatchable couriers. Offering is not
@@ -229,6 +261,30 @@ impl DispatchService {
             .couriers
             .find_available_near(tenant_id, lat, lng, radius_km, fanout)
             .await?;
+
+        // Observe-only reporting.
+        //
+        // When enforcement is ON the repository has already dropped these in
+        // SQL and this loop sees nothing. When it is OFF — the shipping
+        // default — they are still here and still get offered, and this is the
+        // only place that says so. Without it "we are not enforcing yet" is
+        // indistinguishable from "the consumer is dead and nothing is blocked",
+        // which is exactly how this gate stayed unnoticed for a whole service.
+        //
+        // Asked with `true` deliberately: the question is what enforcement
+        // *would* do, not what this deployment is doing.
+        if !self.compliance.enforce {
+            for c in &candidates {
+                if let Some(DispatchBlock::Compliance(status)) = c.dispatch_block(true) {
+                    tracing::warn!(
+                        courier_id = %c.id,
+                        %status,
+                        %external_ref,
+                        "offering work to a courier compliance would refuse: enforce_compliance is off",
+                    );
+                }
+            }
+        }
 
         let mut offers = Vec::with_capacity(candidates.len());
         for c in candidates {
@@ -272,6 +328,29 @@ impl DispatchService {
         // the invariant `drivers_id_is_user_id` enforces on the sibling table.
         c.id = user_id;
         self.couriers.save(&c).await?;
+
+        // Open a compliance profile for them.
+        //
+        // Published only on a genuine first registration — the early return
+        // above means a courier signing up twice does not republish, and
+        // compliance's handler is idempotent anyway, so the two guards agree.
+        //
+        // Best-effort, deliberately. A courier whose profile failed to open is
+        // in the same unknown state as every courier alive today, and unknown
+        // fails open: they can still work. Failing the registration instead
+        // would mean a broker outage stops people signing up, which is a worse
+        // trade than a profile that has to be backfilled.
+        if let Err(e) = self
+            .events
+            .publish_registered(tenant_id, user_id, &self.compliance.jurisdiction)
+            .await
+        {
+            tracing::error!(
+                %user_id, %tenant_id, err = %e,
+                "courier registered but driver.registered was not published: no compliance profile will be opened for them until this is replayed",
+            );
+        }
+
         Ok(c)
     }
 
@@ -991,6 +1070,12 @@ mod claim_authorization {
 
     #[async_trait::async_trait]
     impl CourierRepository for Couriers {
+
+        /// No compliance state in this fake. `false` is the honest answer —
+        /// "no row matched" — and matches what the real repository returns for
+        /// a user who is not a courier.
+        async fn update_compliance(&self, _: Uuid, _: Uuid, _: &str, _: bool)
+            -> anyhow::Result<bool> { Ok(false) }
         async fn find_by_id(&self, _: Uuid, id: Uuid) -> anyhow::Result<Option<Courier>> {
             Ok(self.by_user.iter().find(|(_, c)| c.id == id).map(|(_, c)| c.clone()))
         }
@@ -1090,6 +1175,7 @@ mod claim_authorization {
             Arc::new(NoLedgers),
             Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
             PayBounds::default(),
+            CompliancePolicy::default(),
         );
         (svc, id, owner_user, other_user, assignments)
     }
@@ -1172,6 +1258,12 @@ mod payout_rules {
     struct NoCouriers;
     #[async_trait::async_trait]
     impl CourierRepository for NoCouriers {
+
+        /// No compliance state in this fake. `false` is the honest answer —
+        /// "no row matched" — and matches what the real repository returns for
+        /// a user who is not a courier.
+        async fn update_compliance(&self, _: Uuid, _: Uuid, _: &str, _: bool)
+            -> anyhow::Result<bool> { Ok(false) }
         async fn find_by_id(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<Courier>> { Ok(None) }
         async fn find_by_user(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<Courier>> { Ok(None) }
         async fn save(&self, _: &Courier) -> anyhow::Result<()> { Ok(()) }
@@ -1213,6 +1305,7 @@ mod payout_rules {
             Arc::new(NoCouriers), Arc::new(NoAssign), Arc::new(NoLoc), ledgers,
             Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
             PayBounds::default(),
+            CompliancePolicy::default(),
         )
     }
 
@@ -1335,6 +1428,12 @@ mod position_lookup {
     struct TwoCouriers { by_user: Vec<(Uuid, Courier)> }
     #[async_trait::async_trait]
     impl CourierRepository for TwoCouriers {
+
+        /// No compliance state in this fake. `false` is the honest answer —
+        /// "no row matched" — and matches what the real repository returns for
+        /// a user who is not a courier.
+        async fn update_compliance(&self, _: Uuid, _: Uuid, _: &str, _: bool)
+            -> anyhow::Result<bool> { Ok(false) }
         async fn find_by_id(&self, _: Uuid, id: Uuid) -> anyhow::Result<Option<Courier>> {
             Ok(self.by_user.iter().find(|(_, c)| c.id == id).map(|(_, c)| c.clone()))
         }
@@ -1373,6 +1472,7 @@ mod position_lookup {
             Arc::new(NoLedgers),
             Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
             PayBounds::default(),
+            CompliancePolicy::default(),
         );
         (svc, id, holder_user, other_user)
     }
@@ -1432,6 +1532,12 @@ mod position_lookup {
     struct NoCouriers;
     #[async_trait::async_trait]
     impl CourierRepository for NoCouriers {
+
+        /// No compliance state in this fake. `false` is the honest answer —
+        /// "no row matched" — and matches what the real repository returns for
+        /// a user who is not a courier.
+        async fn update_compliance(&self, _: Uuid, _: Uuid, _: &str, _: bool)
+            -> anyhow::Result<bool> { Ok(false) }
         async fn find_by_id(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<Courier>> { Ok(None) }
         async fn find_by_user(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<Courier>> { Ok(None) }
         async fn save(&self, _: &Courier) -> anyhow::Result<()> { Ok(()) }
@@ -1515,6 +1621,7 @@ mod position_lookup {
             Arc::new(NoCouriers), assignments, locations, Arc::new(NoLedgers),
             Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
             PayBounds::default(),
+            CompliancePolicy::default(),
         )
     }
 
@@ -1575,6 +1682,12 @@ mod milestone_authorization {
 
     #[async_trait::async_trait]
     impl CourierRepository for Couriers {
+
+        /// No compliance state in this fake. `false` is the honest answer —
+        /// "no row matched" — and matches what the real repository returns for
+        /// a user who is not a courier.
+        async fn update_compliance(&self, _: Uuid, _: Uuid, _: &str, _: bool)
+            -> anyhow::Result<bool> { Ok(false) }
         async fn find_by_id(&self, _: Uuid, id: Uuid) -> anyhow::Result<Option<Courier>> {
             Ok(self.by_user.iter().find(|(_, c)| c.id == id).map(|(_, c)| c.clone()))
         }
@@ -1647,7 +1760,11 @@ mod milestone_authorization {
 
     /// Records which milestones reached the broker.
     #[derive(Default)]
-    struct RecordingEvents { emitted: Mutex<Vec<&'static str>> }
+    struct RecordingEvents {
+        emitted: Mutex<Vec<&'static str>>,
+        /// `(tenant, user, jurisdiction)` for each `driver.registered`.
+        registered: Mutex<Vec<(Uuid, Uuid, String)>>,
+    }
 
     #[async_trait::async_trait]
     impl crate::infrastructure::messaging::CourierEvents for RecordingEvents {
@@ -1658,6 +1775,12 @@ mod milestone_authorization {
                 CourierEvent::Collected { .. } => "collected",
                 CourierEvent::Delivered { .. } => "delivered",
             });
+            Ok(())
+        }
+
+        async fn publish_registered(&self, tenant: Uuid, user: Uuid, jurisdiction: &str)
+            -> anyhow::Result<()> {
+            self.registered.lock().unwrap().push((tenant, user, jurisdiction.to_owned()));
             Ok(())
         }
     }
@@ -1721,6 +1844,7 @@ mod milestone_authorization {
             ledgers.clone(),
             events.clone(),
             PayBounds::default(),
+            CompliancePolicy::default(),
         );
         Fixture {
             svc, assignment: id, holder: holder_user, holder_courier,
@@ -1879,6 +2003,12 @@ mod credit_idempotency {
 
     #[async_trait::async_trait]
     impl CourierRepository for Couriers {
+
+        /// No compliance state in this fake. `false` is the honest answer —
+        /// "no row matched" — and matches what the real repository returns for
+        /// a user who is not a courier.
+        async fn update_compliance(&self, _: Uuid, _: Uuid, _: &str, _: bool)
+            -> anyhow::Result<bool> { Ok(false) }
         async fn find_by_id(&self, _: Uuid, id: Uuid) -> anyhow::Result<Option<Courier>> {
             Ok(self.by_user.iter().find(|(_, c)| c.id == id).map(|(_, c)| c.clone()))
         }
@@ -2001,6 +2131,7 @@ mod credit_idempotency {
             ledgers.clone(),
             Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
             PayBounds::default(),
+            CompliancePolicy::default(),
         );
 
         svc.credit_courier(&a).await.unwrap();
@@ -2028,6 +2159,220 @@ mod credit_idempotency {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Registration opens a compliance profile
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod registration_compliance {
+    use super::*;
+    use crate::domain::entities::{Courier, CourierLocation};
+    use crate::domain::repositories::CourierRepository;
+    use crate::infrastructure::db::{ClaimOutcome, CourierLedgerRepository, LocationRepository};
+    use std::sync::Mutex;
+
+    const TENANT: Uuid = Uuid::from_u128(11);
+
+    /// Inserts as well as updates, unlike the `availability` fake — this module
+    /// tests the path that *creates* a courier, and a `save` that only updated
+    /// existing rows would make every assertion here vacuous.
+    #[derive(Default)]
+    struct Couriers(Mutex<Vec<Courier>>);
+
+    #[async_trait::async_trait]
+    impl CourierRepository for Couriers {
+        async fn find_by_id(&self, _: Uuid, id: Uuid) -> anyhow::Result<Option<Courier>> {
+            Ok(self.0.lock().unwrap().iter().find(|c| c.id == id).cloned())
+        }
+        async fn find_by_user(&self, t: Uuid, user_id: Uuid) -> anyhow::Result<Option<Courier>> {
+            Ok(self.0.lock().unwrap().iter()
+                .find(|c| c.user_id == user_id && c.tenant_id == t).cloned())
+        }
+        async fn save(&self, courier: &Courier) -> anyhow::Result<()> {
+            let mut rows = self.0.lock().unwrap();
+            match rows.iter_mut().find(|c| c.id == courier.id) {
+                Some(slot) => *slot = courier.clone(),
+                None       => rows.push(courier.clone()),
+            }
+            Ok(())
+        }
+        async fn update_compliance(&self, t: Uuid, user_id: Uuid, status: &str, assignable: bool)
+            -> anyhow::Result<bool> {
+            let mut rows = self.0.lock().unwrap();
+            match rows.iter_mut().find(|c| c.user_id == user_id && c.tenant_id == t) {
+                Some(c) => {
+                    c.set_compliance(status.to_owned(), assignable, chrono::Utc::now());
+                    Ok(true)
+                }
+                None => Ok(false),
+            }
+        }
+        async fn list_for_tenant(&self, _: Uuid, _: i64, _: i64) -> anyhow::Result<Vec<Courier>> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+        async fn find_available_near(&self, _: Uuid, _: f64, _: f64, _: f64, _: i64)
+            -> anyhow::Result<Vec<Courier>> { Ok(vec![]) }
+    }
+
+    /// Records `driver.registered` publications, and can be made to fail.
+    #[derive(Default)]
+    struct Events {
+        registered: Mutex<Vec<(Uuid, Uuid, String)>>,
+        fail:       bool,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::infrastructure::messaging::CourierEvents for Events {
+        async fn publish(&self, _: &CourierEvent) -> anyhow::Result<()> { Ok(()) }
+        async fn publish_registered(&self, t: Uuid, u: Uuid, j: &str) -> anyhow::Result<()> {
+            if self.fail {
+                anyhow::bail!("broker down");
+            }
+            self.registered.lock().unwrap().push((t, u, j.to_owned()));
+            Ok(())
+        }
+    }
+
+    struct NoAssign;
+    #[async_trait::async_trait]
+    impl AssignmentRepository for NoAssign {
+        async fn save(&self, _: &CourierAssignment) -> anyhow::Result<()> { Ok(()) }
+        async fn try_claim(&self, _: Uuid, _: Uuid) -> anyhow::Result<ClaimOutcome> {
+            Ok(ClaimOutcome::Lost)
+        }
+        async fn find_by_id(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<CourierAssignment>> {
+            Ok(None)
+        }
+        async fn find_offered_for_courier(&self, _: Uuid, _: Uuid)
+            -> anyhow::Result<Vec<CourierAssignment>> { Ok(vec![]) }
+        async fn expire_other_offers(&self, _: Uuid, _: &ProductKey, _: Uuid, _: Uuid)
+            -> anyhow::Result<u64> { Ok(0) }
+    }
+
+    struct NoLoc;
+    #[async_trait::async_trait]
+    impl LocationRepository for NoLoc {
+        async fn record(&self, _: &CourierLocation) -> anyhow::Result<()> { Ok(()) }
+        async fn latest(&self, _: Uuid, _: Uuid) -> anyhow::Result<Option<CourierLocation>> { Ok(None) }
+        async fn recent(&self, _: Uuid, _: Uuid, _: i64) -> anyhow::Result<Vec<CourierLocation>> {
+            Ok(vec![])
+        }
+    }
+
+    struct NoLedgers;
+    #[async_trait::async_trait]
+    impl CourierLedgerRepository for NoLedgers {
+        async fn find_open(&self, _: Uuid, _: Uuid, _: &str)
+            -> anyhow::Result<Option<CourierLedger>> { Ok(None) }
+        async fn save(&self, _: &CourierLedger) -> anyhow::Result<()> { Ok(()) }
+        async fn find_all_open(&self, _: &str) -> anyhow::Result<Vec<CourierLedger>> { Ok(vec![]) }
+        async fn entry_exists_for_job(&self, _: Uuid, _: Uuid, _: Uuid) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+    }
+
+    fn svc_with(events: Arc<Events>, jurisdiction: &str) -> (DispatchService, Arc<Couriers>) {
+        let couriers = Arc::new(Couriers::default());
+        let svc = DispatchService::new(
+            couriers.clone(),
+            Arc::new(NoAssign),
+            Arc::new(NoLoc),
+            Arc::new(NoLedgers),
+            events,
+            PayBounds::default(),
+            CompliancePolicy { enforce: false, jurisdiction: jurisdiction.to_owned() },
+        );
+        (svc, couriers)
+    }
+
+    async fn register(svc: &DispatchService, user: Uuid) {
+        svc.register_courier(TENANT, user, "Ave".into(), "Test".into(), "+639170000009".into())
+            .await
+            .expect("register");
+    }
+
+    /// The gap this closes. Compliance has subscribed to `driver.registered`
+    /// since the day it shipped and **nothing in the platform ever published
+    /// it**, so no field worker has ever had a compliance profile opened and
+    /// the review queue was permanently empty from both ends.
+    #[tokio::test]
+    async fn registering_a_courier_announces_them_to_compliance() {
+        let events = Arc::new(Events::default());
+        let (svc, _) = svc_with(events.clone(), "PH");
+        let user = Uuid::new_v4();
+
+        register(&svc, user).await;
+
+        let sent = events.registered.lock().unwrap().clone();
+        assert_eq!(sent, vec![(TENANT, user, "PH".to_owned())]);
+    }
+
+    /// Compliance's handler is idempotent, and so is this: the early return for
+    /// an existing courier must not republish. Two guards agreeing is cheap;
+    /// finding out they disagree via duplicate audit rows is not.
+    #[tokio::test]
+    async fn signing_up_twice_announces_once() {
+        let events = Arc::new(Events::default());
+        let (svc, _) = svc_with(events.clone(), "PH");
+        let user = Uuid::new_v4();
+
+        register(&svc, user).await;
+        register(&svc, user).await;
+
+        assert_eq!(events.registered.lock().unwrap().len(), 1);
+    }
+
+    /// The jurisdiction decides which documents the courier must hold, so it is
+    /// configuration rather than a constant — a hard-coded "PH" demands an LTO
+    /// licence from a courier in Dubai.
+    #[tokio::test]
+    async fn the_jurisdiction_comes_from_configuration() {
+        let events = Arc::new(Events::default());
+        let (svc, _) = svc_with(events.clone(), "UAE");
+        let user = Uuid::new_v4();
+
+        register(&svc, user).await;
+
+        assert_eq!(events.registered.lock().unwrap()[0].2, "UAE");
+    }
+
+    /// Best-effort, deliberately. A courier whose profile failed to open is in
+    /// the same unknown state as every courier alive today, and unknown fails
+    /// open — so they can still work. Failing the registration would mean a
+    /// broker outage stops people signing up at all, which is the worse trade.
+    #[tokio::test]
+    async fn a_broker_outage_does_not_stop_someone_signing_up() {
+        let events = Arc::new(Events { fail: true, ..Default::default() });
+        let (svc, couriers) = svc_with(events, "PH");
+        let user = Uuid::new_v4();
+
+        svc.register_courier(TENANT, user, "Ave".into(), "Test".into(), "+63917".into())
+            .await
+            .expect("registration must survive a publish failure");
+
+        assert_eq!(couriers.0.lock().unwrap().len(), 1, "the courier row is still written");
+    }
+
+    /// The identity user is what compliance stores as the profile's `entity_id`
+    /// and what its status-changed events carry back. Announcing the courier id
+    /// instead would work today only because ADR-0015 collapses the two, and
+    /// would break silently the moment it did not.
+    #[tokio::test]
+    async fn the_announced_id_is_the_one_compliance_will_send_back() {
+        let events = Arc::new(Events::default());
+        let (svc, couriers) = svc_with(events.clone(), "PH");
+        let user = Uuid::new_v4();
+
+        register(&svc, user).await;
+
+        let announced = events.registered.lock().unwrap()[0].1;
+        assert!(
+            couriers.update_compliance(TENANT, announced, "compliant", true).await.unwrap(),
+            "a verdict addressed to the announced id must find the courier row",
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Availability
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -2041,10 +2386,20 @@ mod availability {
 
     const TENANT: Uuid = Uuid::from_u128(7);
 
-    struct Couriers(Mutex<Vec<(Uuid, Courier)>>);
+    /// The in-memory stand-in for the supply query. The second field is the
+    /// enforcement flag the real repository holds, so this fake applies the
+    /// same rule the SQL does rather than a looser one — a fake that cannot be
+    /// made to enforce is a fake that can never fail the way production does.
+    struct Couriers(Mutex<Vec<(Uuid, Courier)>>, bool);
 
     #[async_trait::async_trait]
     impl CourierRepository for Couriers {
+
+        /// No compliance state in this fake. `false` is the honest answer —
+        /// "no row matched" — and matches what the real repository returns for
+        /// a user who is not a courier.
+        async fn update_compliance(&self, _: Uuid, _: Uuid, _: &str, _: bool)
+            -> anyhow::Result<bool> { Ok(false) }
         async fn find_by_id(&self, _: Uuid, id: Uuid) -> anyhow::Result<Option<Courier>> {
             Ok(self.0.lock().unwrap().iter().find(|(_, c)| c.id == id).map(|(_, c)| c.clone()))
         }
@@ -2060,8 +2415,10 @@ mod availability {
         }
         async fn find_available_near(&self, _: Uuid, _: f64, _: f64, _: f64, _: i64)
             -> anyhow::Result<Vec<Courier>> {
+            // Mirrors the WHERE clause in PgCourierRepository: active, on
+            // duty, and — when enforced — compliance-cleared.
             Ok(self.0.lock().unwrap().iter()
-                .filter(|(_, c)| c.is_dispatchable())
+                .filter(|(_, c)| c.is_dispatchable(self.1))
                 .map(|(_, c)| c.clone())
                 .collect())
         }
@@ -2114,11 +2471,22 @@ mod availability {
 
     /// A freshly registered courier, exactly as `register` leaves them: offline.
     fn fixture() -> (DispatchService, Arc<Couriers>, Uuid) {
+        fixture_with(false)
+    }
+
+    /// The same fixture with the compliance gate turned on. Both the fake
+    /// repository and the service get the flag, because in production the SQL
+    /// and the service are configured from the one setting.
+    fn fixture_enforcing() -> (DispatchService, Arc<Couriers>, Uuid) {
+        fixture_with(true)
+    }
+
+    fn fixture_with(enforce: bool) -> (DispatchService, Arc<Couriers>, Uuid) {
         let user = Uuid::new_v4();
         let courier = Courier::new(
             TENANT, user, "Ave".into(), "Test".into(), "+639170000009".into(),
         );
-        let couriers = Arc::new(Couriers(Mutex::new(vec![(user, courier)])));
+        let couriers = Arc::new(Couriers(Mutex::new(vec![(user, courier)]), enforce));
         let svc = DispatchService::new(
             couriers.clone(),
             Arc::new(NoAssignments),
@@ -2126,8 +2494,16 @@ mod availability {
             Arc::new(NoLedgers),
             Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
             PayBounds::default(),
+            CompliancePolicy { enforce, jurisdiction: "PH".into() },
         );
         (svc, couriers, user)
+    }
+
+    /// Set what compliance says about the fixture's only courier.
+    fn set_compliance(couriers: &Couriers, status: &str, assignable: bool) {
+        couriers.0.lock().unwrap()[0]
+            .1
+            .set_compliance(status.to_owned(), assignable, chrono::Utc::now());
     }
 
     fn only(couriers: &Couriers) -> Courier {
@@ -2141,11 +2517,11 @@ mod availability {
     #[tokio::test]
     async fn going_on_duty_puts_the_courier_into_supply() {
         let (svc, couriers, user) = fixture();
-        assert!(!only(&couriers).is_dispatchable(), "registration must not opt anyone in");
+        assert!(!only(&couriers).is_dispatchable(false), "registration must not opt anyone in");
 
         assert!(svc.set_availability(TENANT, user, true).await.unwrap());
 
-        assert!(only(&couriers).is_dispatchable());
+        assert!(only(&couriers).is_dispatchable(false));
         assert_eq!(
             svc.couriers.find_available_near(TENANT, 0.0, 0.0, 5.0, 5).await.unwrap().len(),
             1,
@@ -2173,7 +2549,7 @@ mod availability {
         assert!(svc.set_availability(TENANT, user, true).await.unwrap());
         assert!(svc.set_availability(TENANT, user, true).await.unwrap());
 
-        assert!(only(&couriers).is_dispatchable());
+        assert!(only(&couriers).is_dispatchable(false));
     }
 
     /// A deactivated courier is deactivated by someone who meant it. Going on
@@ -2186,7 +2562,7 @@ mod availability {
 
         svc.set_availability(TENANT, user, true).await.unwrap();
 
-        assert!(!only(&couriers).is_dispatchable());
+        assert!(!only(&couriers).is_dispatchable(false));
         assert!(svc.couriers.find_available_near(TENANT, 0.0, 0.0, 5.0, 5).await.unwrap().is_empty());
     }
 
@@ -2198,6 +2574,119 @@ mod availability {
     async fn a_user_who_is_not_a_courier_is_refused() {
         let (svc, _, _) = fixture();
         assert!(!svc.set_availability(TENANT, Uuid::new_v4(), true).await.unwrap());
+    }
+
+    // ── The compliance gate ────────────────────────────────────────────────
+
+    /// The gate, end to end at the service level: a courier compliance has
+    /// refused is on duty, active, and in range, and still is not found.
+    #[tokio::test]
+    async fn an_uncleared_courier_is_not_in_supply_when_enforcing() {
+        let (svc, couriers, user) = fixture_enforcing();
+        svc.set_availability(TENANT, user, true).await.unwrap();
+        assert_eq!(
+            svc.couriers.find_available_near(TENANT, 0.0, 0.0, 5.0, 5).await.unwrap().len(),
+            1,
+            "precondition: on duty and findable before compliance refuses them",
+        );
+
+        set_compliance(&couriers, "pending_submission", false);
+
+        assert!(
+            svc.couriers.find_available_near(TENANT, 0.0, 0.0, 5.0, 5).await.unwrap().is_empty(),
+            "a courier compliance refuses must not be offered work",
+        );
+    }
+
+    /// The shipping default, and the half most worth pinning: observe-only
+    /// must change **nothing** about who gets work. If this test ever fails,
+    /// the first deploy takes the live fleet off the road.
+    #[tokio::test]
+    async fn observe_only_mode_still_offers_work_to_an_uncleared_courier() {
+        let (svc, couriers, user) = fixture();
+        svc.set_availability(TENANT, user, true).await.unwrap();
+        set_compliance(&couriers, "rejected", false);
+
+        assert_eq!(
+            svc.couriers.find_available_near(TENANT, 0.0, 0.0, 5.0, 5).await.unwrap().len(),
+            1,
+            "with enforcement off, compliance must not withhold a single job",
+        );
+        assert!(!svc.enforces_compliance());
+    }
+
+    /// Every courier in production is in this state: no compliance profile has
+    /// ever been created for them, because nothing ever published
+    /// `driver.registered`. Enforcement must not touch them, or turning the
+    /// flag on is a fleet-wide outage rather than a policy change.
+    #[tokio::test]
+    async fn a_courier_compliance_has_never_seen_still_gets_work_when_enforcing() {
+        let (svc, couriers, user) = fixture_enforcing();
+        svc.set_availability(TENANT, user, true).await.unwrap();
+
+        assert_eq!(only(&couriers).compliance_status, None, "precondition: unknown");
+        assert_eq!(
+            svc.couriers.find_available_near(TENANT, 0.0, 0.0, 5.0, 5).await.unwrap().len(),
+            1,
+            "unknown must fail open",
+        );
+    }
+
+    /// Compliance owns the assignability rule and this tier stores its answer.
+    /// `expired` is assignable there — a grace period — so an expired courier
+    /// keeps working, and a tier that guessed from the status string would
+    /// strand them.
+    #[tokio::test]
+    async fn an_expired_but_still_assignable_courier_keeps_working() {
+        let (svc, couriers, user) = fixture_enforcing();
+        svc.set_availability(TENANT, user, true).await.unwrap();
+        set_compliance(&couriers, "expired", true);
+
+        assert_eq!(
+            svc.couriers.find_available_near(TENANT, 0.0, 0.0, 5.0, 5).await.unwrap().len(),
+            1,
+        );
+    }
+
+    /// Clearing someone puts them back in supply without ops touching anything
+    /// — the reinstatement path has to work or approving a document achieves
+    /// nothing visible.
+    #[tokio::test]
+    async fn clearing_a_blocked_courier_returns_them_to_supply() {
+        let (svc, couriers, user) = fixture_enforcing();
+        svc.set_availability(TENANT, user, true).await.unwrap();
+        set_compliance(&couriers, "suspended", false);
+        assert!(svc.couriers.find_available_near(TENANT, 0.0, 0.0, 5.0, 5).await.unwrap().is_empty());
+
+        set_compliance(&couriers, "compliant", true);
+
+        assert_eq!(
+            svc.couriers.find_available_near(TENANT, 0.0, 0.0, 5.0, 5).await.unwrap().len(),
+            1,
+        );
+    }
+
+    /// Compliance clearing someone does not clock them on, and does not undo a
+    /// suspension. Three independent levers, and this pins that none of them
+    /// silently subsumes another — the same trap `is_active` vs `status`
+    /// already carries.
+    #[tokio::test]
+    async fn compliance_is_a_third_independent_lever() {
+        let (svc, couriers, user) = fixture_enforcing();
+        set_compliance(&couriers, "compliant", true);
+
+        assert!(
+            svc.couriers.find_available_near(TENANT, 0.0, 0.0, 5.0, 5).await.unwrap().is_empty(),
+            "being cleared must not put an off-duty courier on duty",
+        );
+
+        svc.set_availability(TENANT, user, true).await.unwrap();
+        couriers.0.lock().unwrap()[0].1.is_active = false;
+
+        assert!(
+            svc.couriers.find_available_near(TENANT, 0.0, 0.0, 5.0, 5).await.unwrap().is_empty(),
+            "being cleared must not undo an ops suspension",
+        );
     }
 }
 
@@ -2219,6 +2708,12 @@ mod losing_offers {
 
     #[async_trait::async_trait]
     impl CourierRepository for Couriers {
+
+        /// No compliance state in this fake. `false` is the honest answer —
+        /// "no row matched" — and matches what the real repository returns for
+        /// a user who is not a courier.
+        async fn update_compliance(&self, _: Uuid, _: Uuid, _: &str, _: bool)
+            -> anyhow::Result<bool> { Ok(false) }
         async fn find_by_id(&self, _: Uuid, id: Uuid) -> anyhow::Result<Option<Courier>> {
             Ok(self.0.iter().find(|(_, c)| c.id == id).map(|(_, c)| c.clone()))
         }
@@ -2338,6 +2833,7 @@ mod losing_offers {
             Arc::new(NoLedgers),
             Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
             PayBounds::default(),
+            CompliancePolicy::default(),
         );
         (svc, assignments, ids)
     }
@@ -2467,6 +2963,12 @@ mod courier_admin {
 
     #[async_trait::async_trait]
     impl CourierRepository for Couriers {
+
+        /// No compliance state in this fake. `false` is the honest answer —
+        /// "no row matched" — and matches what the real repository returns for
+        /// a user who is not a courier.
+        async fn update_compliance(&self, _: Uuid, _: Uuid, _: &str, _: bool)
+            -> anyhow::Result<bool> { Ok(false) }
         async fn find_by_id(&self, tenant_id: Uuid, id: Uuid) -> anyhow::Result<Option<Courier>> {
             Ok(self.0.lock().unwrap().iter()
                 .find(|c| c.id == id && c.tenant_id == tenant_id).cloned())
@@ -2548,6 +3050,7 @@ mod courier_admin {
             Arc::new(NoLedgers),
             Arc::new(crate::infrastructure::messaging::NoopCourierEvents),
             PayBounds::default(),
+            CompliancePolicy::default(),
         );
         (svc, couriers, id)
     }
@@ -2573,7 +3076,7 @@ mod courier_admin {
 
         let stored = couriers.0.lock().unwrap().iter().find(|c| c.id == id).unwrap().clone();
         assert!(!stored.is_active);
-        assert!(!stored.is_dispatchable(), "a suspended courier is not dispatchable");
+        assert!(!stored.is_dispatchable(false), "a suspended courier is not dispatchable");
         assert_eq!(
             stored.status,
             CourierStatus::Available,
@@ -2589,7 +3092,7 @@ mod courier_admin {
         assert!(svc.set_courier_active(TENANT, id, true).await.unwrap());
 
         let stored = couriers.0.lock().unwrap().iter().find(|c| c.id == id).unwrap().clone();
-        assert!(stored.is_dispatchable());
+        assert!(stored.is_dispatchable(false));
     }
 
     /// The tenant comes from the validated JWT, and this service has no
