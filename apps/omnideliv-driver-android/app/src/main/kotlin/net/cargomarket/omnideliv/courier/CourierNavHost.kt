@@ -13,6 +13,7 @@ import androidx.navigation.navArgument
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.StateFlow
 import net.cargomarket.omnideliv.courier.data.TokenStore
+import net.cargomarket.omnideliv.courier.ui.ComplianceScreen
 import net.cargomarket.omnideliv.courier.ui.EarningsScreen
 import net.cargomarket.omnideliv.courier.ui.ManifestRoute
 import net.cargomarket.omnideliv.courier.ui.ShiftScreen
@@ -23,15 +24,24 @@ import javax.inject.Inject
  * Seven screens, no more: sign-in, shift, manifest, stop detail, proof capture,
  * delivered, earnings.
  *
- * Wired: sign-in, shift, manifest. Stop detail is folded into the manifest's
- * focus card rather than being its own destination — a separate screen would put
- * a navigation between a courier and the button they came to press. Proof
- * capture and earnings are not built; their domain rules are (`ProofEncoding`,
- * `Earnings`), so what is missing is screens, not logic.
+ * Wired: sign-in, shift, manifest, proof capture, earnings, compliance
+ * documents. Stop detail is folded into the manifest's focus card rather than
+ * being its own destination — a separate screen would put a navigation between
+ * a courier and the button they came to press. The compliance screen folds its
+ * submission form and camera in for the same reason.
  */
 object Routes {
     const val SHIFT = "shift"
     const val EARNINGS = "earnings"
+
+    /**
+     * The courier's compliance documents.
+     *
+     * A destination rather than a dialog because submitting involves the
+     * camera, and a camera inside a dialog on top of the shift screen keeps the
+     * location service and the offer poll alive behind it for no reason.
+     */
+    const val COMPLIANCE = "compliance"
     /**
      * Carries both ids on purpose.
      *
@@ -86,9 +96,14 @@ fun CourierNavHost(session: SessionViewModel = hiltViewModel()) {
     NavHost(navController = nav, startDestination = Routes.SHIFT) {
         composable(Routes.EARNINGS) { EarningsScreen() }
 
+        composable(Routes.COMPLIANCE) {
+            ComplianceScreen(onBack = { nav.popBackStack() })
+        }
+
         composable(Routes.SHIFT) {
             ShiftScreen(
                 onEarnings = { nav.navigate(Routes.EARNINGS) },
+                onCompliance = { nav.navigate(Routes.COMPLIANCE) },
                 onClaimed = { orderId, assignmentId ->
                     nav.navigate(Routes.manifest(orderId, assignmentId)) {
                         // The shift screen is not somewhere to go back to while
