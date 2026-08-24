@@ -57,6 +57,7 @@ fun ShiftScreen(
     vm: ShiftViewModel = hiltViewModel(),
     onClaimed: (orderId: String, assignmentId: String) -> Unit = { _, _ -> },
     onEarnings: () -> Unit = {},
+    onCompliance: () -> Unit = {},
 ) {
     val state by vm.state.collectAsState()
     val context = LocalContext.current
@@ -115,6 +116,7 @@ fun ShiftScreen(
             stale = (state as? ShiftState.Online)?.stale == true,
             onToggle = { on -> setDuty(on) },
             onEarnings = onEarnings,
+            onCompliance = onCompliance,
         )
 
         when (val s = state) {
@@ -159,6 +161,7 @@ private fun DutyBar(
     stale: Boolean,
     onToggle: (Boolean) -> Unit,
     onEarnings: () -> Unit,
+    onCompliance: () -> Unit,
 ) {
     Column(
         Modifier
@@ -183,9 +186,6 @@ private fun DutyBar(
                     fontSize = 12.sp,
                 )
             }
-            TextButton(onClick = onEarnings) {
-                Text("Earnings", color = Tokens.Cyan, fontSize = 13.sp)
-            }
             Switch(
                 checked = online,
                 onCheckedChange = onToggle,
@@ -196,6 +196,19 @@ private fun DutyBar(
                     uncheckedTrackColor = Tokens.Surface,
                 ),
             )
+        }
+
+        // Their own row rather than squeezed beside the duty switch. Two text
+        // links and a switch on one line leaves each of them under the 48 dp
+        // touch target on a small phone, and this is a screen used one-handed
+        // on a motorbike seat.
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            TextButton(onClick = onEarnings) {
+                Text("Earnings", color = Tokens.Cyan, fontSize = 13.sp)
+            }
+            TextButton(onClick = onCompliance) {
+                Text("Documents", color = Tokens.Cyan, fontSize = 13.sp)
+            }
         }
 
         // Honest about a failed poll rather than showing a frozen list as live.

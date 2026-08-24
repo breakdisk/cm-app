@@ -7,6 +7,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import kotlinx.serialization.json.Json
 import net.cargomarket.omnideliv.courier.BuildConfig
+import net.cargomarket.omnideliv.courier.data.ComplianceApi
 import net.cargomarket.omnideliv.courier.data.CourierApi
 import net.cargomarket.omnideliv.courier.data.RefreshApi
 import net.cargomarket.omnideliv.courier.data.RefreshAuthenticator
@@ -102,4 +103,17 @@ object NetworkModule {
     @Provides
     @Singleton
     fun courierApi(retrofit: Retrofit): CourierApi = retrofit.create(CourierApi::class.java)
+
+    /**
+     * Same Retrofit, same client, same bearer.
+     *
+     * A separate interface rather than more methods on [CourierApi] because
+     * compliance is a different service with a different path prefix
+     * (`api/v1/`) and a response envelope the other two do not use — folding it
+     * in would put three contracts behind one type.
+     */
+    @Provides
+    @Singleton
+    fun complianceApi(retrofit: Retrofit): ComplianceApi =
+        retrofit.create(ComplianceApi::class.java)
 }

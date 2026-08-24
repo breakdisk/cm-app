@@ -57,6 +57,15 @@ fun ProofScreen(
     onCaptured: (File) -> Unit,
     onSkip: () -> Unit,
     label: String = "Photo of the delivery",
+    // The permission copy is parameterised because this screen now serves two
+    // callers with genuinely different stakes. For a delivery, skipping means
+    // "recorded without a photo" — evidence missing beats a delivery that
+    // cannot be completed. For a document submission there is nothing to record
+    // without the photo, so its caller passes a way back instead of a way past.
+    rationaleTitle: String = "Camera access is needed for delivery proof",
+    rationaleBody: String =
+        "A photo at the door is what settles a dispute about whether an order arrived.",
+    skipLabel: String = "Continue without a photo",
 ) {
     val context = LocalContext.current
     var granted by remember { mutableStateOf(hasCamera(context)) }
@@ -71,6 +80,9 @@ fun ProofScreen(
 
     if (!granted) {
         PermissionPrompt(
+            title = rationaleTitle,
+            body = rationaleBody,
+            skipLabel = skipLabel,
             onAsk = { ask.launch(Manifest.permission.CAMERA) },
             // A refused permission must not trap a courier mid-delivery. The
             // proof is evidence, and evidence missing is a worse outcome than a
@@ -189,19 +201,24 @@ fun ProofScreen(
 }
 
 @Composable
-private fun PermissionPrompt(onAsk: () -> Unit, onSkip: () -> Unit) {
+private fun PermissionPrompt(
+    title: String,
+    body: String,
+    skipLabel: String,
+    onAsk: () -> Unit,
+    onSkip: () -> Unit,
+) {
     Box(Modifier.fillMaxSize().background(Tokens.Base), contentAlignment = Alignment.Center) {
         Column(Modifier.padding(24.dp)) {
             Text(
-                "Camera access is needed for delivery proof",
+                title,
                 color = Tokens.Text,
                 fontWeight = FontWeight.Bold,
                 fontSize = 17.sp,
             )
             Spacer(Modifier.height(6.dp))
             Text(
-                "A photo at the door is what settles a dispute about whether an " +
-                    "order arrived.",
+                body,
                 color = Tokens.TextMuted,
                 fontSize = 13.sp,
                 lineHeight = 18.sp,
@@ -226,7 +243,7 @@ private fun PermissionPrompt(onAsk: () -> Unit, onSkip: () -> Unit) {
                 ),
                 modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp),
             ) {
-                Text("Continue without a photo", fontSize = 13.sp)
+                Text(skipLabel, fontSize = 13.sp)
             }
         }
     }
