@@ -138,18 +138,54 @@ pub async fn get_my_profile(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     // Try driver profile first (driver-app callers), fall back to customer
-    // profile (customer-app KYC callers). Mirrors the fallback in upload_document.
+    // profile (customer-app KYC callers), and open one if neither exists.
+    //
+    // That last step used to be a 404, and it was a dead end rather than an
+    // error. This is the only route the courier app's compliance screen calls
+    // on load; a 404 leaves it with `failed = true` and an empty checklist, so
+    // there is no row to tap, no upload form behind it, and no way to reach
+    // `upload_document` — which is the one route that *would* have created the
+    // profile. The screen's own words were "try again shortly", which was never
+    // going to become true.
+    //
+    // Confirmed against production 2026-08-25: every courier alive was in this
+    // state, because `driver.registered` had no publisher until #138 and
+    // nothing has been backfilled.
+    //
+    // The two lookups are kept ahead of the create, and the order matters.
+    // Production held 17 profiles that were all `entity_type = 'customer'`,
+    // from the resolve_profile bug fixed earlier; going straight to
+    // `ensure_profile("driver", …)` would strand those rows and every document
+    // hanging off them behind a second, empty profile.
     let profile = match state.compliance.profiles
         .find_by_entity(claims.tenant_id, "driver", claims.user_id)
         .await?
     {
         Some(p) => p,
-        None => state.compliance.profiles
+        None => match state.compliance.profiles
             .find_by_entity(claims.tenant_id, "customer", claims.user_id)
             .await?
-            .ok_or(AppError::NotFound { resource: "ComplianceProfile", id: claims.user_id.to_string() })?,
+        {
+            Some(p) => p,
+            None => state.compliance
+                .ensure_profile(
+                    claims.tenant_id,
+                    entity_kind_for(&claims.roles),
+                    claims.user_id,
+                    "PH",
+                )
+                .await?,
+        },
     };
 
+    // Hardcoded "driver", not `profile.entity_type`, and knowingly so: a
+    // customer doing KYC is handed the driver requirements. `profile.entity_type`
+    // is the correct argument, but the seeded `passport` type is jurisdiction
+    // `GLOBAL` while `ensure_profile` opens every profile as `PH`, so
+    // `list_required_for("customer", "PH")` returns an empty list today —
+    // trading a wrong checklist for no checklist. Fixing it means fixing the
+    // jurisdiction match as well, and the customer KYC flow is not exercised
+    // here. Left as-is rather than half-changed.
     let required = state.compliance.doc_types
         .list_required_for("driver", &profile.jurisdiction)
         .await?;
