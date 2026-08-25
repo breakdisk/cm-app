@@ -1,5 +1,5 @@
 import type { AdminCourier } from "@/lib/api/couriers";
-import { complianceView, dispatchView } from "./compliance-view";
+import { complianceView, dispatchView, courierCounts } from "./compliance-view";
 import {
   LEGACY_OFF_DUTY,
   LEGACY_AVAILABLE,
@@ -92,5 +92,40 @@ describe("dispatchView", () => {
   it("shows the observe-only disagreement when compliance is known", () => {
     expect(dispatchView(CURRENT_OBSERVE_ONLY, NOW_MS).label)
       .toBe("receiving offers · compliance would block");
+  });
+});
+
+describe("courierCounts", () => {
+  const legacy = [LEGACY_OFF_DUTY, LEGACY_AVAILABLE, LEGACY_SUSPENDED];
+
+  it("counts what a legacy payload does support", () => {
+    const n = courierCounts(legacy);
+    expect(n.total).toBe(3);
+    expect(n.dispatchable).toBe(1);
+    expect(n.suspended).toBe(1);
+  });
+
+  it("returns null, not zero, for counts a legacy payload cannot support", () => {
+    const n = courierCounts(legacy);
+    expect(n.complianceBlocked).toBeNull();
+    expect(n.notOnboarded).toBeNull();
+  });
+
+  it("counts compliance once the server reports it", () => {
+    const n = courierCounts([CURRENT_COMPLIANT, CURRENT_NOT_ONBOARDED, CURRENT_OBSERVE_ONLY]);
+    expect(n.complianceBlocked).toBe(1);
+    expect(n.notOnboarded).toBe(1);
+  });
+
+  it("ignores couriers the server said nothing about when mixing payloads", () => {
+    const n = courierCounts([LEGACY_AVAILABLE, CURRENT_OBSERVE_ONLY]);
+    expect(n.complianceBlocked).toBe(1);
+    expect(n.notOnboarded).toBe(0);
+  });
+
+  it("is empty-safe", () => {
+    const n = courierCounts([]);
+    expect(n.total).toBe(0);
+    expect(n.complianceBlocked).toBeNull();
   });
 });

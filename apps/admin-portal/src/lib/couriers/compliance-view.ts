@@ -171,3 +171,44 @@ function derivedBlockReason(c: AdminCourier): "suspended" | "off_duty" | null {
   if (c.status !== "available") return "off_duty";
   return null;
 }
+
+export interface CourierCounts {
+  total:        number;
+  dispatchable: number;
+  suspended:    number;
+  /** `null` when no courier in the list carries a compliance verdict. */
+  complianceBlocked: number | null;
+  /** `null` when no courier in the list carries a compliance verdict. */
+  notOnboarded:      number | null;
+}
+
+/**
+ * The KPI tiles.
+ *
+ * `complianceBlocked` and `notOnboarded` are `null` — not `0` — when nothing in
+ * the list carries a compliance verdict. `0` is a claim, and the claim it makes
+ * ("nobody is blocked") is one this payload cannot support. The old code counted
+ * `!c.compliance_assignable`, which on an absent field is `!undefined`, so it
+ * reported every courier as blocked while `=== null` reported none as
+ * un-onboarded: both tiles read exactly backwards, and the "Compliance blocked"
+ * one is the number that is supposed to say what enforcing the flag would cost.
+ *
+ * Couriers the server said nothing about are excluded from the compliance counts
+ * rather than assumed either way, so a roster served by a mix of old and new
+ * instances mid-deploy reports only what is actually known.
+ */
+export function courierCounts(couriers: AdminCourier[]): CourierCounts {
+  const known = couriers.filter(hasComplianceFields);
+
+  return {
+    total:        couriers.length,
+    dispatchable: couriers.filter((c) => c.dispatchable).length,
+    suspended:    couriers.filter((c) => !c.is_active).length,
+    complianceBlocked: known.length === 0
+      ? null
+      : known.filter((c) => c.compliance_assignable === false).length,
+    notOnboarded: known.length === 0
+      ? null
+      : known.filter((c) => c.compliance_status === null).length,
+  };
+}
