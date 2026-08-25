@@ -1,7 +1,7 @@
 # Compliance — closing the review loop
 
 **Date:** 2026-08-25
-**Status:** approved, in implementation
+**Status:** shipped and verified in production 2026-08-25 (PRs #140-#143)
 **Follows:** PR #138 (`ddf2d67f`, courier compliance gate, observe-only) and
 PR #139 (`478b80bd`, courier document-upload screens)
 
@@ -71,7 +71,7 @@ split-brain is still open and is out of scope here.
 
 | Route | Permission | Notes |
 |---|---|---|
-| `GET /admin/documents/:doc_id/url` | `compliance:review` | doc → profile → tenant check, then `storage.presign_url`. Returns `{ url, expires_in }`. |
+| `GET /admin/documents/:doc_id/content` | `compliance:review` | doc → profile → tenant check, then `storage.get_object`. Streams the bytes, typed by magic number. **Shipped as `/content`; the design below said `/url` and that was wrong — see the correction under Outcome.** |
 | `GET /admin/document-types` | `compliance:review` | New `DocumentTypeRepository::list_all()`. Client caches `id → {code, name}`. |
 | `GET /admin/queue` *(changed)* | `compliance:review` | Rows gain `entity_id`, `entity_type`, `jurisdiction`, `overall_status` via one SQL join — no N+1. |
 
@@ -79,21 +79,22 @@ Two deliberate choices:
 
 - **The tenant-ownership check becomes a shared helper.** `approve_document` and
   `reject_document` each open-code the same doc → profile → tenant three-step;
-  the presign route would be the third copy. One `authorize_document` returning
+  the document route would be the third copy. One `authorize_document` returning
   `(doc, profile)`, used by all three, so the copies cannot drift.
 
-- **The presigned URL is fetched on click, not on panel render.** A reviewer
-  opening someone's licence is a privacy-relevant read under PDPA/GDPR and gets
-  an audit row (`doc_viewed`). Fetching on render would make that log noise
-  rather than evidence, and would mint presigned URLs for documents nobody
-  opened.
+- **The document is fetched on click, not on panel render.** A reviewer opening
+  someone's licence is a privacy-relevant read under PDPA/GDPR and gets an audit
+  row (`doc_viewed`). Fetching on render would make that log noise rather than
+  evidence.
 
 ## Frontend — `apps/admin-portal`
 
-- `lib/api/compliance.ts` — `fetchDocumentUrl`, `fetchDocumentTypes`, enriched
-  queue row type.
-- `document-detail-panel.tsx` — "View" becomes a button that presigns then
-  opens, fixing the dead `s3://` href. Document type renders its name.
+- `lib/api/compliance.ts` — `fetchDocumentBlobUrl`, `fetchDocumentTypes`,
+  enriched queue row type.
+- `document-detail-panel.tsx` — "View" becomes a button that fetches the bytes
+  into a blob and renders them inline, fixing the dead `s3://` href. An `<img>`
+  tag sends no `Authorization` header and a KYC document cannot be public, which
+  is why it is a blob and not a `src`. Document type renders its name.
 - `review-queue.tsx` — rows show the courier's name, resolved against
   `fetchCouriers()`, and the document type name.
 
@@ -103,8 +104,9 @@ Two deliberate choices:
 |---|---|
 | Roster fetch fails | Names fall back to the short entity id; queue still works |
 | Unknown document type id | Renders the short id, not blank |
-| `file_url` is not a presignable `s3://` URI (legacy rows, `#` mocks) | Button disabled, no broken tab |
-| Presign fails | Error surfaces; no silent blank tab |
+| `file_url` is not a stored `s3://` object (legacy rows, `#` mocks) | Button disabled, no broken tab |
+| The fetch fails | Error surfaces with a Retry; no silent blank tab |
+| The bytes are not an image (a PDF) | Falls back to an "Open document" link |
 
 ## Courier app — `apps/omnideliv-driver-android`
 
@@ -164,9 +166,47 @@ backfill happening organically.
 compliance is in the CI test matrix (fixed 2026-08-23) but has no handler-level
 mocks — its 16 tests are pure-function. So:
 
-- Rust: unit tests on the extracted authorization helper and the
-  presignable-URI predicate; `cargo check --all-targets` for the SQL join, which
-  cannot be unit-tested without a database.
+- Rust: unit tests on the extracted authorization helper, the stored-object
+  predicate and the content-type sniffer; `cargo check --all-targets` for the SQL
+  join, which cannot be unit-tested without a database.
+- End to end: `python scripts/e2e-compliance-loop.py` against a live deployment.
+  This is the only check that would have caught any of the three dead ends
+  below, and none of the others did.
 - Portal: `tsc --noEmit`, clearing `tsconfig.tsbuildinfo` first.
 - Android: `testDebugUnitTest`, counted from the XML results rather than from
   `BUILD SUCCESSFUL`.
+
+
+## Outcome — what shipped, and what this design got wrong
+
+Shipped across four PRs, all merged and deployed 2026-08-25: #140 (`4c9cb778`)
+the loop plus a CI fix its own run exposed, #141 (`5bde5913`), #142
+(`26d37a66`), #143 (`d1212299`) the e2e script.
+
+**Three dead ends, each of which compiled, passed review, passed CI and deployed
+clean. All three were found by running it, none by reading it.**
+
+1. The one this design was written to fix: `file_url` is `s3://bucket/key`,
+   rendered into an `<a href>`. The anchor rendered; clicking did nothing.
+2. **This design's own fix was equally unreachable.** A presigned URL signs
+   against `STORAGE__ENDPOINT`, which is `http://minio:9000` here — a
+   compose-network host with no published port and no Traefik route. The
+   reviewer's browser cannot resolve it. Replaced with the byte route in #142;
+   the OmniDeliv catalog-photo work had hit this wall first and explicitly
+   flagged compliance's presign flow as suspect without investigating it.
+3. `GET /me/profile` 404'd for anyone with no profile — every courier alive.
+   The app calls only that route on load, so PR #139's entire upload surface was
+   unreachable for its whole audience. Fixed in #141; see the correction above.
+
+Two further consequences worth keeping:
+
+- **Content type is now sniffed from the file's magic number.** This design said
+  PDF-vs-image "cannot be known up front" because there is no `content_type`
+  column. That was a failure of imagination — the bytes carry the answer, and
+  they are more trustworthy than a declared type would have been.
+- **The audit row now marks a real view** rather than the minting of a link that
+  may never have been opened.
+
+The governing lesson, recorded in memory as the session's takeaway: *if a
+feature has never been exercised against a live deployment, treat it as unbuilt
+regardless of what CI says.*
