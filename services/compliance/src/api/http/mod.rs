@@ -77,6 +77,12 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(admin_routes::document_content))
         .route("/api/v1/compliance/admin/profiles",
             get(admin_routes::list_profiles))
+        // Registered BEFORE `/profiles/:profile_id`. Axum matches literal
+        // segments ahead of parameters regardless of order, but keeping the
+        // more specific path first is what stops the next reader wondering
+        // whether `by-entity` is being swallowed as a `:profile_id`.
+        .route("/api/v1/compliance/admin/profiles/by-entity/:entity_type/:entity_id",
+            get(admin_routes::get_profile_by_entity))
         .route("/api/v1/compliance/admin/profiles/:profile_id",
             get(admin_routes::get_profile))
         .route("/api/v1/compliance/admin/documents/:doc_id/approve",
