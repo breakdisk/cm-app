@@ -45,8 +45,27 @@ impl ComplianceService {
         entity_id:    Uuid,
         jurisdiction: &str,
     ) -> anyhow::Result<ComplianceProfile> {
+        let (profile, _created) = self
+            .ensure_profile_inner(tenant_id, entity_type, entity_id, jurisdiction)
+            .await?;
+        Ok(profile)
+    }
+
+    /// `ensure_profile`, plus whether this call is the one that created it.
+    ///
+    /// The flag exists for `create_profile_for_driver`, which has to tell the
+    /// difference: a profile it just created has already been announced, and one
+    /// that was already there has *never* been announced if it predates the
+    /// announcement existing at all.
+    async fn ensure_profile_inner(
+        &self,
+        tenant_id:    Uuid,
+        entity_type:  &str,
+        entity_id:    Uuid,
+        jurisdiction: &str,
+    ) -> anyhow::Result<(ComplianceProfile, bool)> {
         if let Some(p) = self.profiles.find_by_entity(tenant_id, entity_type, entity_id).await? {
-            return Ok(p);
+            return Ok((p, false));
         }
         let profile = ComplianceProfile {
             id:               Uuid::new_v4(),
@@ -73,46 +92,87 @@ impl ComplianceService {
             notes:                 None,
             created_at:            Utc::now(),
         }).await?;
-        Ok(profile)
+
+        // Announce the new profile. This was the missing hop in the chain.
+        //
+        // `recompute_and_publish` cannot do it: it publishes only when the
+        // status *changes*, and a fresh profile is created at
+        // `PendingSubmission` and recomputes to `PendingSubmission`, so it
+        // short-circuits and says nothing. field-ops learns a courier's verdict
+        // from `compliance.status_changed` and from nothing else, so before this
+        // a courier could be announced, get a profile, and still read as
+        // `compliance_status: null` -- "not onboarded" -- on the ops roster
+        // forever. Confirmed in production 2026-08-25: a courier holding a real
+        // `pending_submission` profile displayed as never having been seen.
+        //
+        // Best-effort, matching field-ops' own `driver.registered` publish. A
+        // broker outage must not stop a courier opening their document
+        // checklist, and losing the announcement fails *open* -- the courier
+        // keeps getting work, which is the deliberate design of the unknown
+        // case. `scripts/backfill-courier-compliance-profiles.sh` is the repair.
+        self.announce(&profile).await;
+
+        Ok((profile, true))
     }
 
-    /// Called when driver.registered Kafka event is received.
-    /// Returns anyhow::Result<()> (consumer calls this and just logs errors).
+    /// Tell the platform what compliance currently says about this entity.
+    ///
+    /// Best-effort on purpose, matching field-ops' own `driver.registered`
+    /// publish. A broker outage must not stop a courier opening their document
+    /// checklist, and a lost announcement fails *open* -- the courier keeps
+    /// getting work, which is the deliberate design of the unknown case.
+    /// `scripts/backfill-courier-compliance-profiles.sh` is the repair, and it
+    /// works precisely because `create_profile_for_driver` re-announces.
+    async fn announce(&self, profile: &ComplianceProfile) {
+        if let Err(e) = self.producer
+            .publish_status_changed(profile.tenant_id, initial_announcement(profile))
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                entity_type = %profile.entity_type,
+                entity_id = %profile.entity_id,
+                "could not announce compliance profile; downstream tiers read this entity as unknown until a backfill replays it",
+            );
+        }
+    }
+
+    /// Called when the `driver.registered` Kafka event is received.
+    ///
+    /// Delegates to `ensure_profile` rather than repeating it. It used to be a
+    /// near-copy, and a copy is exactly how the announcement above would end up
+    /// on one creation path and not the other. The event path and the lazy
+    /// `/me` path must be indistinguishable downstream -- in production the
+    /// lazy one created every profile that exists, because nothing published
+    /// `driver.registered` until #138.
     pub async fn create_profile_for_driver(
         &self,
         tenant_id:    Uuid,
         driver_id:    Uuid,
         jurisdiction: &str,
     ) -> anyhow::Result<()> {
-        // Idempotent — skip if profile already exists
-        if self.profiles.find_by_entity(tenant_id, "driver", driver_id).await?.is_some() {
-            return Ok(());
+        let (profile, created) = self
+            .ensure_profile_inner(tenant_id, "driver", driver_id, jurisdiction)
+            .await?;
+
+        // An existing profile is re-announced rather than passed over.
+        //
+        // Without this the fix above could never reach anyone who already had a
+        // profile -- and in production that was everyone, because every profile
+        // in existence came from the lazy `/me` path before an announcement
+        // existed to send. `ensure_profile` short-circuits on a hit, so a
+        // backfill would have replayed `driver.registered` for them, found the
+        // row, said nothing, and left them reading as `null` on the ops roster
+        // permanently. The one chance to tell field-ops about a courier would
+        // have been spent on the run that had nothing to say.
+        //
+        // Safe to repeat: the event means "this driver exists", so restating the
+        // current verdict is a correct answer to it, and field-ops stores what
+        // it is told verbatim and idempotently. That is what makes the backfill
+        // script a repair tool for drift rather than only for absence.
+        if !created {
+            self.announce(&profile).await;
         }
-        let profile = ComplianceProfile {
-            id:               Uuid::new_v4(),
-            tenant_id,
-            entity_type:      "driver".into(),
-            entity_id:        driver_id,
-            overall_status:   ComplianceStatus::PendingSubmission,
-            jurisdiction:     jurisdiction.to_owned(),
-            last_reviewed_at: None,
-            reviewed_by:      None,
-            suspended_at:     None,
-            created_at:       Utc::now(),
-            updated_at:       Utc::now(),
-        };
-        self.profiles.save(&profile).await?;
-        self.audit.append(&ComplianceAuditLog {
-            id:                    Uuid::new_v4(),
-            tenant_id,
-            compliance_profile_id: profile.id,
-            document_id:           None,
-            event_type:            "profile_created".into(),
-            actor_id:              driver_id,
-            actor_type:            "system".into(),
-            notes:                 None,
-            created_at:            Utc::now(),
-        }).await?;
         Ok(())
     }
 
@@ -381,9 +441,86 @@ impl ComplianceService {
     }
 }
 
+/// What the platform is told when a compliance profile first opens.
+///
+/// A free function so the one thing that actually matters -- that a brand new
+/// profile is announced as *not assignable* -- is testable without a broker, a
+/// database or a service.
+///
+/// `old_status` is `"none"` rather than `""`: there was no previous status, and
+/// an empty string in an event log reads as a bug rather than as a fact.
+/// Nothing consumes the field today -- field-ops narrows the payload to four
+/// fields and this is not one of them -- so it exists for humans reading the
+/// topic.
+pub fn initial_announcement(profile: &ComplianceProfile) -> ComplianceStatusChangedPayload {
+    ComplianceStatusChangedPayload {
+        entity_type:   profile.entity_type.clone(),
+        entity_id:     profile.entity_id,
+        old_status:    "none".to_owned(),
+        new_status:    profile.overall_status.as_str().to_owned(),
+        // Never hardcoded. `is_assignable` is compliance's rule, and it is the
+        // whole reason field-ops stores the verdict verbatim instead of
+        // deriving it: `Expired` is assignable, deliberately, because there is a
+        // grace period. Reading it off the status keeps one authority.
+        is_assignable: profile.overall_status.is_assignable(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mock_profile(status: ComplianceStatus) -> ComplianceProfile {
+        ComplianceProfile {
+            id:               Uuid::new_v4(),
+            tenant_id:        Uuid::new_v4(),
+            entity_type:      "driver".into(),
+            entity_id:        Uuid::new_v4(),
+            overall_status:   status,
+            jurisdiction:     "PH".into(),
+            last_reviewed_at: None,
+            reviewed_by:      None,
+            suspended_at:     None,
+            created_at:       Utc::now(),
+            updated_at:       Utc::now(),
+        }
+    }
+
+    #[test]
+    fn a_new_profile_is_announced_as_not_assignable() {
+        let p = mock_profile(ComplianceStatus::PendingSubmission);
+        let a = initial_announcement(&p);
+        assert_eq!(a.new_status, "pending_submission");
+        assert!(!a.is_assignable, "a courier who has submitted nothing must not be assignable");
+    }
+
+    #[test]
+    fn the_announcement_carries_the_entity_not_the_profile_row() {
+        let p = mock_profile(ComplianceStatus::PendingSubmission);
+        let a = initial_announcement(&p);
+        // field-ops looks a courier up by this id. Sending `profile.id` would
+        // match no courier and the update would silently affect zero rows.
+        assert_eq!(a.entity_id, p.entity_id);
+        assert_ne!(a.entity_id, p.id);
+        assert_eq!(a.entity_type, "driver");
+    }
+
+    #[test]
+    fn assignability_is_read_from_the_status_never_assumed() {
+        // Expired is assignable on purpose -- there is a grace period. A builder
+        // that hardcoded `false` for anything non-compliant would strand every
+        // courier compliance deliberately permits.
+        assert!(initial_announcement(&mock_profile(ComplianceStatus::Expired)).is_assignable);
+        assert!(initial_announcement(&mock_profile(ComplianceStatus::Compliant)).is_assignable);
+        assert!(!initial_announcement(&mock_profile(ComplianceStatus::Suspended)).is_assignable);
+    }
+
+    #[test]
+    fn there_is_no_previous_status_to_report() {
+        let a = initial_announcement(&mock_profile(ComplianceStatus::PendingSubmission));
+        assert_eq!(a.old_status, "none");
+    }
+
 
     #[test]
     fn recompute_does_not_override_manual_suspension() {

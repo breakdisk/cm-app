@@ -156,3 +156,33 @@ export async function reinstateProfile(profileId: string): Promise<void> {
     method: "POST",
   }));
 }
+
+/**
+ * The profile belonging to a person, rather than the profile with a given id.
+ *
+ * Every surface that knows a *person* — the couriers roster, the drivers roster
+ * — holds their identity `user_id` and has never held a
+ * `compliance_profile_id`. Without this the Compliance column on those screens
+ * could state a status and offer no way to reach the documents behind it, and
+ * the console could not show them either: its queue lists documents pending
+ * review, so a courier who has submitted nothing appears in it nowhere at all.
+ *
+ * `null` for "this person has no compliance profile" rather than a throw. That
+ * is not an error — it is the ordinary state of everyone the platform has never
+ * announced, and it is exactly what "not onboarded" means on the roster.
+ *
+ * `entityType` is `"driver"` for couriers and driver-ops drivers alike:
+ * compliance has one entity type for people who carry things.
+ */
+export async function fetchProfileByEntity(
+  entityType: string,
+  entityId:   string,
+): Promise<{ profile: ComplianceProfile; documents: DriverDocument[] } | null> {
+  const r = await authFetch(
+    `${BASE}/api/v1/compliance/admin/profiles/by-entity/${entityType}/${entityId}`,
+  );
+  if (r.status === 404) return null;
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j?.error?.message ?? j?.message ?? `HTTP ${r.status}`);
+  return j.data ?? null;
+}

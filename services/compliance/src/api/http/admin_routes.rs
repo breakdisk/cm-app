@@ -89,8 +89,58 @@ pub async fn get_profile(
     if profile.tenant_id != claims.tenant_id {
         return Err(AppError::Forbidden { resource: "ComplianceProfile".to_owned() });
     }
-    let docs  = state.compliance.documents.list_by_profile(profile_id).await?;
-    let audit = state.compliance.audit.list_by_profile(profile_id, 100, 0).await?;
+    profile_detail(&state, profile).await
+}
+
+/// `GET /admin/profiles/by-entity/:entity_type/:entity_id` -- the same detail,
+/// found by who it belongs to rather than by its own row id.
+///
+/// The gap this closes: the couriers roster holds `user_id`, never
+/// `compliance_profile_id`, so the Compliance column it renders was a dead end.
+/// An admin could see that a courier was outstanding and had no way to reach
+/// the documents, because the only route in was keyed on an id that surface
+/// does not have and the review queue lists *documents pending review* -- so a
+/// courier who has submitted nothing appears in the console nowhere at all.
+///
+/// A query filter on `list_profiles` would have worked too, and is worse: it
+/// pages, so the answer depends on `limit`, and it makes an exact lookup look
+/// like a search. `find_by_entity` already existed on the repository with the
+/// (tenant, type, id) unique key; it simply had no route.
+///
+/// `entity_type` is a path segment rather than hardcoded `"driver"` because
+/// compliance holds `customer` KYC profiles on the same table, and the caller
+/// knows which it is asking about. 404 means this entity has no profile, which
+/// is a real and common answer -- it is what "not onboarded" means -- and the
+/// portal shows it as such rather than as an error.
+pub async fn get_profile_by_entity(
+    AuthClaims(claims): AuthClaims,
+    Path((entity_type, entity_id)): Path<(String, Uuid)>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    require_permission!(claims, permissions::COMPLIANCE_REVIEW);
+    // Tenant comes from the token and is part of the lookup key, so a foreign
+    // entity_id cannot resolve at all. There is no cross-tenant read to guard
+    // against here, unlike the by-id route where the row is found first and
+    // checked second.
+    let profile = state.compliance.profiles
+        .find_by_entity(claims.tenant_id, &entity_type, entity_id).await?
+        .ok_or(AppError::NotFound {
+            resource: "ComplianceProfile",
+            id: format!("{entity_type}/{entity_id}"),
+        })?;
+    profile_detail(&state, profile).await
+}
+
+/// The profile, its documents and its audit trail.
+///
+/// Shared by both lookups so the two cannot drift into returning different
+/// shapes for the same profile -- the console renders one component for both.
+async fn profile_detail(
+    state:   &AppState,
+    profile: ComplianceProfile,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let docs  = state.compliance.documents.list_by_profile(profile.id).await?;
+    let audit = state.compliance.audit.list_by_profile(profile.id, 100, 0).await?;
     Ok(Json(serde_json::json!({ "data": { "profile": profile, "documents": docs, "audit_log": audit } })))
 }
 
