@@ -131,6 +131,23 @@ A side effect worth having: `GET /me/profile` creates the profile lazily, so
 every courier who opens the app onto the shift screen gets one. That is the
 backfill happening organically.
 
+> **Correction, 2026-08-25, found by deploying and running it.** That paragraph
+> was false when written. `GET /me/profile` did **not** create anything — only
+> `upload_document` and `confirm_document` called `resolve_profile`; the read
+> path did two `find_by_entity` lookups and 404'd. Against production it 404'd
+> for every courier alive, because `driver.registered` had no publisher before
+> #138 and nothing was backfilled.
+>
+> It was a dead end, not an error: the courier app's compliance screen calls
+> only this route on load, so a 404 left it `failed = true` with an empty
+> checklist — no row to tap, no upload form behind it, and therefore no way to
+> reach the one route that would have created the profile. The screen said "try
+> again shortly", which was never going to become true.
+>
+> `get_my_profile` now falls through to `ensure_profile`, keeping both existing
+> lookups ahead of it so the 17 historical `customer`-typed profiles are not
+> stranded behind a new empty one. The paragraph above is true as of that fix.
+
 ## Explicitly out of scope
 
 - **Admin upload-on-behalf** (`POST /admin/profiles/:id/documents/upload`).
