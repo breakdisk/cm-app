@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { fetchProfile, fetchDocumentUrl, isStoredObject } from "@/lib/api/compliance";
+import { fetchProfile, fetchDocumentBlobUrl, isStoredObject } from "@/lib/api/compliance";
 import type { DriverDocument } from "@/lib/api/compliance";
 import { cn } from "@/lib/design-system/cn";
 import { entityLabel, initialsFor, typeLabel } from "@/lib/compliance/labels";
@@ -22,16 +22,17 @@ interface Props {
 }
 
 /**
- * What we know about one document's presigned link.
+ * What we know about one document's fetched bytes.
  *
- * `url` arrives on demand — the link is fetched when the reviewer asks to see
- * the document, not when the panel renders, because each fetch writes an audit
- * row and a per-render fetch would turn that log into noise.
+ * `url` is an object URL over a blob the panel fetched, and it arrives on
+ * demand — when the reviewer asks to see the document, not when the panel
+ * renders, because each fetch writes an audit row and a per-render fetch would
+ * turn that log into noise. Whoever sets it owns revoking it.
  *
- * `unrenderable` means the browser refused to draw it as an image. The stored
- * type may be a PDF — the documents table has no `content_type` column, so
- * there is nothing to check up front — and the honest response is to offer the
- * link rather than to leave a broken image where a licence should be.
+ * `unrenderable` means the browser refused to draw it as an image. The server
+ * sniffs the type from the file's own magic number, so a PDF arrives correctly
+ * typed and simply is not an image; offering it as a link beats leaving a broken
+ * image where a licence should be.
  */
 interface DocView {
   url?:          string;
@@ -68,17 +69,20 @@ export function DocumentDetailPanel({
 
   useEffect(() => {
     setDetail(null);
-    // Links are per-document and expire in fifteen minutes. Dropping them when
-    // the panel switches profiles keeps one courier's licence from lingering in
-    // memory behind another courier's row.
-    setViews({});
+    // Object URLs are held by the document, not the page. Release them when
+    // the panel switches profiles, or one courier's licence stays resident in
+    // memory behind another courier's row for as long as the tab is open.
+    setViews((prev) => {
+      Object.values(prev).forEach((v) => { if (v.url) URL.revokeObjectURL(v.url); });
+      return {};
+    });
     fetchProfile(profileId)
       .then(setDetail)
       .catch(() => setDetail({ profile: null, documents: [] }));
   }, [profileId, refreshKey]);
 
   /**
-   * Fetch the link for one document and show it inline.
+   * Fetch one document's bytes and show it inline.
    *
    * Inline rather than a new tab: the reviewer needs the licence and the
    * Approve / Reject buttons on screen at the same moment, and a decision taken
@@ -87,8 +91,13 @@ export function DocumentDetailPanel({
   async function showDocument(docId: string) {
     setViews((v) => ({ ...v, [docId]: { loading: true } }));
     try {
-      const url = await fetchDocumentUrl(docId);
-      setViews((v) => ({ ...v, [docId]: { url } }));
+      const url = await fetchDocumentBlobUrl(docId);
+      setViews((v) => {
+        // Release a previous blob for this same document before replacing it —
+        // a retry after a failed render would otherwise leak one per attempt.
+        if (v[docId]?.url) URL.revokeObjectURL(v[docId].url!);
+        return { ...v, [docId]: { url } };
+      });
     } catch (e) {
       setViews((v) => ({
         ...v,
