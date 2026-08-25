@@ -1,3 +1,13 @@
+/**
+ * `describe`/`it`/`expect` imported rather than taken from globals.
+ *
+ * `tsconfig.json` includes every `**\/*.ts`, test files among them, and this app
+ * has no `@types/jest`. Relying on the globals makes `tsc --noEmit` — the
+ * `lint-and-type-check` job every other CI job depends on — fail with
+ * "Cannot find name 'describe'". `@jest/globals` ships inside jest itself, so
+ * importing is a real type-check over the suite with no new dependency.
+ */
+import { describe, it, expect } from "@jest/globals";
 import type { AdminCourier } from "@/lib/api/couriers";
 import { complianceView, dispatchView, courierCounts } from "./compliance-view";
 import {

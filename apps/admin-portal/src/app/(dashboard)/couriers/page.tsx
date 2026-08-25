@@ -22,6 +22,14 @@
  * still being offered work. That disagreement is not a bug to paper over; it is
  * the rollout, and this screen is where anyone can see what enforcing it would
  * cost before the flag is turned on.
+ *
+ * A further answer turned out to be "the server did not say". The deployed
+ * field-ops predated the compliance gate and sent none of the three compliance
+ * fields, so this page threw on every row, and before it threw it reported an
+ * offline courier as an on-duty one with a stale GPS fix. The decisions now live
+ * in `lib/couriers/compliance-view.ts`, tested against that exact payload —
+ * portal and service are separate deploy units and the skew is structural, not
+ * a one-off missed `docker compose pull`.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
@@ -31,14 +39,7 @@ import { toast } from "sonner";
 import { variants } from "@/lib/design-system/tokens";
 import { GlassCard } from "@/components/ui/glass-card";
 import { fetchCouriers, setCourierActive, type AdminCourier } from "@/lib/api/couriers";
-
-/** Minutes since the last GPS fix, or null when there has never been one. */
-function fixAgeMinutes(iso: string | null): number | null {
-  if (!iso) return null;
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return null;
-  return Math.floor((Date.now() - t) / 60_000);
-}
+import { complianceView, dispatchView, courierCounts } from "@/lib/couriers/compliance-view";
 
 function DutyPill({ status }: { status: string }) {
   const base = "rounded-full px-2 py-0.5 text-[11px] font-medium";
@@ -49,80 +50,26 @@ function DutyPill({ status }: { status: string }) {
 }
 
 /**
- * What compliance last said about this courier.
+ * The Compliance column and the Dispatchable column, both rendered from
+ * `lib/couriers/compliance-view.ts`.
  *
- * `null` is its own state and reads as such: compliance has never seen them.
- * That is not a clearance, and rendering it as one would hide exactly the
- * couriers who still need onboarding.
+ * The decisions moved out of this file after they were found to be wrong
+ * against a live payload. They are consequential enough — "why is this person
+ * not getting jobs?" — to need tests, and a decision written inline in JSX
+ * cannot have any.
  */
 function CompliancePill({ c }: { c: AdminCourier }) {
-  const base = "rounded-full px-2 py-0.5 text-[11px] font-medium";
-
-  if (c.compliance_status === null) {
-    return (
-      <span className={`${base} bg-white/5 text-white/40`} title="No compliance profile has been opened for this courier yet. They are not blocked — unknown couriers are still offered work.">
-        not onboarded
-      </span>
-    );
-  }
-  const tone = c.compliance_assignable
-    ? (c.compliance_status === "compliant"
-        ? "bg-emerald-400/10 text-emerald-300"
-        : "bg-amber-400/10 text-amber-300")
-    : "bg-rose-400/10 text-rose-300";
-
-  return <span className={`${base} ${tone}`}>{c.compliance_status.replace(/_/g, " ")}</span>;
+  const v = complianceView(c);
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${v.tone}`} title={v.title}>
+      {v.label}
+    </span>
+  );
 }
 
-/**
- * Why this courier is or is not being offered work.
- *
- * Never colour alone, and never just "no": the whole point of the column is to
- * say *which* of the independent reasons applies, because ops cannot tell them
- * apart from the courier's complaint.
- *
- * The server's `block_reason` is the authority for everything it can see. It
- * weighs compliance too, and whether compliance blocks depends on a deployment
- * flag this client is not told — so re-deriving the rule here from `is_active`
- * and `status` would produce a screen that disagrees with the dispatcher.
- */
-function DispatchCell({ c }: { c: AdminCourier }) {
-  const age = fixAgeMinutes(c.last_seen_at);
-
-  if (c.block_reason === "suspended") {
-    return <span className="text-[12px] text-rose-300">suspended by ops</span>;
-  }
-  if (c.block_reason === "off_duty") {
-    return <span className="text-[12px] text-white/40">not on duty</span>;
-  }
-  if (c.block_reason === "compliance") {
-    return (
-      <span className="text-[12px] text-rose-300">
-        blocked · {(c.compliance_status ?? "unknown").replace(/_/g, " ")}
-      </span>
-    );
-  }
-  // The third reason, and the one nobody guesses: the proximity search only
-  // considers a fix from the last ten minutes, so a courier who is on duty and
-  // active is still invisible if their phone stopped reporting.
-  if (age === null) {
-    return <span className="text-[12px] text-amber-300">on duty · never sent a position</span>;
-  }
-  if (age > 10) {
-    return <span className="text-[12px] text-amber-300">on duty · last fix {age}m ago (stale)</span>;
-  }
-  // Observe-only. Compliance has refused this courier and they are being
-  // offered work anyway, because enforcement is not switched on yet. This is
-  // the preview of what flipping the flag will do, and the only place anyone
-  // can see it before it happens.
-  if (!c.compliance_assignable) {
-    return (
-      <span className="text-[12px] text-amber-300" title="Compliance has refused this courier, but enforcement is off in this deployment so they are still being offered work. Turning enforcement on will stop them.">
-        receiving offers · compliance would block
-      </span>
-    );
-  }
-  return <span className="text-[12px] text-emerald-300">receiving offers</span>;
+function DispatchCell({ c, nowMs }: { c: AdminCourier; nowMs: number }) {
+  const v = dispatchView(c, nowMs);
+  return <span className={`text-[12px] ${v.tone}`} title={v.title}>{v.label}</span>;
 }
 
 export default function CouriersPage() {
@@ -130,11 +77,19 @@ export default function CouriersPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * The clock the Dispatchable column reasons against, stamped when the roster
+   * arrives rather than read during render. `dispatchView` takes it as an
+   * argument so the GPS-age branch is testable at all; re-reading `Date.now()`
+   * per render would also make rows disagree with the data they came from.
+   */
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       setCouriers(await fetchCouriers());
+      setNowMs(Date.now());
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not load couriers");
@@ -147,16 +102,7 @@ export default function CouriersPage() {
     void load();
   }, [load]);
 
-  const counts = useMemo(() => ({
-    total: couriers.length,
-    dispatchable: couriers.filter((c) => c.dispatchable).length,
-    suspended: couriers.filter((c) => !c.is_active).length,
-    // Counted from `compliance_assignable`, not from `dispatchable`: while
-    // enforcement is off these two disagree on purpose, and this tile is the
-    // number that says how many couriers flipping the flag would stop.
-    complianceBlocked: couriers.filter((c) => !c.compliance_assignable).length,
-    notOnboarded: couriers.filter((c) => c.compliance_status === null).length,
-  }), [couriers]);
+  const counts = useMemo(() => courierCounts(couriers), [couriers]);
 
   async function toggle(c: AdminCourier) {
     const next = !c.is_active;
@@ -202,16 +148,30 @@ export default function CouriersPage() {
       </header>
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        {[
-          ["Couriers", counts.total, "text-white"],
-          ["Receiving offers", counts.dispatchable, "text-emerald-300"],
-          ["Suspended", counts.suspended, "text-rose-300"],
-          ["Compliance blocked", counts.complianceBlocked, "text-amber-300"],
-          ["Not onboarded", counts.notOnboarded, "text-white/60"],
-        ].map(([label, value, tone]) => (
-          <GlassCard key={String(label)} className="p-4">
+        {/*
+          A `null` count renders as an em dash, never as `0`. Zero is a claim,
+          and the claim it makes — nobody is blocked, nobody needs onboarding —
+          is one a field-ops without the compliance fields cannot support. The
+          dash also makes a lagging backend visible on the screen instead of
+          silently confident.
+        */}
+        {([
+          ["Couriers", counts.total, "text-white", undefined],
+          ["Receiving offers", counts.dispatchable, "text-emerald-300", undefined],
+          ["Suspended", counts.suspended, "text-rose-300", undefined],
+          ["Compliance blocked", counts.complianceBlocked, "text-amber-300",
+            "This deployment's field-ops reports nothing about compliance, so this cannot be counted."],
+          ["Not onboarded", counts.notOnboarded, "text-white/60",
+            "This deployment's field-ops reports nothing about compliance, so this cannot be counted."],
+        ] as [string, number | null, string, string | undefined][]).map(([label, value, tone, title]) => (
+          <GlassCard key={label} className="p-4">
             <div className="text-[11px] uppercase tracking-wide text-white/40">{label}</div>
-            <div className={`mt-1 text-2xl font-semibold ${tone}`}>{value}</div>
+            <div
+              className={`mt-1 text-2xl font-semibold ${value === null ? "text-white/25" : tone}`}
+              title={value === null ? title : undefined}
+            >
+              {value === null ? "—" : value}
+            </div>
           </GlassCard>
         ))}
       </div>
@@ -256,7 +216,7 @@ export default function CouriersPage() {
                   </td>
                   <td className="px-4 py-3 font-mono text-white/60">{c.phone}</td>
                   <td className="px-4 py-3"><DutyPill status={c.status} /></td>
-                  <td className="px-4 py-3"><DispatchCell c={c} /></td>
+                  <td className="px-4 py-3"><DispatchCell c={c} nowMs={nowMs} /></td>
                   <td className="px-4 py-3"><CompliancePill c={c} /></td>
                   <td className="px-4 py-3 text-white/50">{c.zone ?? "—"}</td>
                   <td className="px-4 py-3 text-right">
