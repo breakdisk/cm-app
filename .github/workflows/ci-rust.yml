@@ -167,13 +167,31 @@ jobs:
 
           # Otherwise build matrix from only changed services
           CHANGED="[]"
-          declare -a ALL=(
-            api-gateway identity cdp engagement order-intake omnideliv connectors field-ops dispatch
-            driver-ops delivery-experience fleet hub-ops carrier pod
-            payments analytics marketing business-logic ai-layer
-          )
 
-          for SVC in "${ALL[@]}"; do
+          # Derived from ALL_SERVICES, never written out a second time.
+          #
+          # This was a hand-maintained third list and it drifted. The 2026-08-23
+          # fix that added `compliance` and `webhooks` to the `filters:` block
+          # above and to ALL_SERVICES did not add them here, so the loop below
+          # never asked whether they had changed.
+          #
+          # The failure mode was worse than the one it was fixing. A
+          # compliance-only PR set `steps.filter.outputs.compliance` to `true`,
+          # the loop skipped it, CHANGED stayed empty, and the api-gateway
+          # fallback fired — so `CI — Rust` went green **with a passing
+          # `Test (api-gateway)` job in it**, which reads exactly like tests
+          # having run. In August 2026 a PR adding 6 tests to `services/compliance`
+          # merged with none of them ever executed on CI. The absent-job version
+          # at least showed nothing where a job should be.
+          # `tr` rather than a python round-trip: service names contain no
+          # spaces, so plain word-splitting is exact, and it cannot pick up the
+          # trailing CR that `mapfile -t` leaves behind when the producer emits
+          # CRLF. That failure is silent — the name simply never matches a
+          # filter key — which is the same shape of bug as the drift above.
+          ALL_LIST=$(echo "$ALL_SERVICES" | tr -d '[]"' | tr ',' ' ')
+
+          # Unquoted on purpose — word-splitting is how the list is iterated.
+          for SVC in $ALL_LIST; do
             # dorny/paths-filter outputs are available as JSON on steps.filter.outputs
             VAL=$(echo '${{ toJSON(steps.filter.outputs) }}' | python3 -c \
               "import sys,json; d=json.load(sys.stdin); print(d.get('$SVC','false'))" 2>/dev/null || echo "false")

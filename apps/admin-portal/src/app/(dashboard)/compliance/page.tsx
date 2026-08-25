@@ -15,13 +15,16 @@ import { DocumentDetailPanel } from "@/components/compliance/document-detail-pan
 import {
   fetchReviewQueue,
   fetchProfiles,
+  fetchDocumentTypes,
   approveDocument,
   rejectDocument,
   suspendProfile,
   reinstateProfile,
-  type DriverDocument,
+  type PendingReviewItem,
   type ComplianceProfile,
 } from "@/lib/api/compliance";
+import { fetchCouriers } from "@/lib/api/couriers";
+import { buildEntityNames, buildTypeNames } from "@/lib/compliance/labels";
 import { usePermissions } from "@/hooks/usePermissions";
 
 // -- Mock data (Storybook / local dev without backend) -------------------------
@@ -36,19 +39,21 @@ const MOCK_PROFILES: ComplianceProfile[] = [
   { id: "p7", entity_type: "driver", entity_id: "drv-007", overall_status: "under_review",       jurisdiction: "PH-NCR", last_reviewed_at: null,                    suspended_at: null },
 ];
 
-const MOCK_QUEUE: DriverDocument[] = [
-  { id: "doc-1", compliance_profile_id: "p2", document_type_id: "dt-license",    document_number: "LTO-2024-789012", expiry_date: "2027-06-30", file_url: "#", status: "submitted",    rejection_reason: null, reviewed_by: null, reviewed_at: null, submitted_at: "2026-03-25T10:00:00Z" },
-  { id: "doc-2", compliance_profile_id: "p7", document_type_id: "dt-insurance",  document_number: "INS-2026-003",    expiry_date: "2027-03-31", file_url: "#", status: "under_review", rejection_reason: null, reviewed_by: null, reviewed_at: null, submitted_at: "2026-03-24T15:30:00Z" },
-  { id: "doc-3", compliance_profile_id: "p2", document_type_id: "dt-vehicle-reg",document_number: "LTO-REG-456",     expiry_date: "2026-12-31", file_url: "#", status: "submitted",    rejection_reason: null, reviewed_by: null, reviewed_at: null, submitted_at: "2026-03-25T11:20:00Z" },
+const MOCK_QUEUE: PendingReviewItem[] = [
+  { id: "doc-1", compliance_profile_id: "p2", entity_id: "drv-002", entity_type: "driver", jurisdiction: "PH-NCR", overall_status: "under_review", document_type_id: "dt-license",    document_number: "LTO-2024-789012", expiry_date: "2027-06-30", file_url: "#", status: "submitted",    rejection_reason: null, reviewed_by: null, reviewed_at: null, submitted_at: "2026-03-25T10:00:00Z" },
+  { id: "doc-2", compliance_profile_id: "p7", entity_id: "drv-007", entity_type: "driver", jurisdiction: "PH-NCR", overall_status: "under_review", document_type_id: "dt-insurance",  document_number: "INS-2026-003",    expiry_date: "2027-03-31", file_url: "#", status: "under_review", rejection_reason: null, reviewed_by: null, reviewed_at: null, submitted_at: "2026-03-24T15:30:00Z" },
+  { id: "doc-3", compliance_profile_id: "p2", entity_id: "drv-002", entity_type: "driver", jurisdiction: "PH-NCR", overall_status: "under_review", document_type_id: "dt-vehicle-reg", document_number: "LTO-REG-456",     expiry_date: "2026-12-31", file_url: "#", status: "submitted",    rejection_reason: null, reviewed_by: null, reviewed_at: null, submitted_at: "2026-03-25T11:20:00Z" },
 ];
 
 export default function CompliancePage() {
-  const [queue,           setQueue]           = useState<DriverDocument[]>([]);
+  const [queue,           setQueue]           = useState<PendingReviewItem[]>([]);
   const [profiles,        setProfiles]        = useState<ComplianceProfile[]>([]);
   const [selectedProfile, setSelectedProfile] = useState<string | null>(null);
   const [loading,         setLoading]         = useState(true);
   const [error,           setError]           = useState<string | null>(null);
   const [panelRefreshKey, setPanelRefreshKey] = useState(0);
+  const [typeNames,       setTypeNames]       = useState<Map<string, string>>(new Map());
+  const [entityNames,     setEntityNames]     = useState<Map<string, string>>(new Map());
 
   const { hasPermission } = usePermissions();
   const canAdmin = hasPermission("compliance:admin");
@@ -71,6 +76,27 @@ export default function CompliancePage() {
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  /**
+   * The two lookups that turn uuids into words, fetched once rather than on the
+   * 30-second refresh: the document-type catalogue is seeded by migration and
+   * does not move, and a courier's name changes far more slowly than their
+   * document status.
+   *
+   * Both failures are swallowed on purpose. Neither is the reviewer's job — a
+   * roster this console cannot reach costs them names, not the queue, and
+   * `entityLabel` and `typeLabel` fall back to short ids. Surfacing it in the
+   * page's error banner would report the compliance service as broken when it
+   * is answering perfectly.
+   */
+  useEffect(() => {
+    fetchDocumentTypes()
+      .then((t) => setTypeNames(buildTypeNames(t)))
+      .catch(() => {});
+    fetchCouriers()
+      .then((c) => setEntityNames(buildEntityNames(c)))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const id = setInterval(refresh, 30_000);
@@ -177,6 +203,8 @@ export default function CompliancePage() {
           items={queue}
           selectedId={selectedProfile}
           onSelect={setSelectedProfile}
+          typeNames={typeNames}
+          entityNames={entityNames}
         />
 
         {selectedProfile ? (
@@ -187,6 +215,8 @@ export default function CompliancePage() {
             onReject={handleReject}
             onSuspend={canAdmin ? handleSuspend : undefined}
             onReinstate={canAdmin ? handleReinstate : undefined}
+            typeNames={typeNames}
+            entityNames={entityNames}
           />
         ) : (
           <GlassCard className="flex-1 flex items-center justify-center">

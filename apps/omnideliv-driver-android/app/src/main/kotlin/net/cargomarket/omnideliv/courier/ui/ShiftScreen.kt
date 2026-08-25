@@ -41,9 +41,13 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.hilt.navigation.compose.hiltViewModel
 import net.cargomarket.omnideliv.courier.data.location.ShiftLocationService
 import net.cargomarket.omnideliv.courier.domain.OfferCard
+import net.cargomarket.omnideliv.courier.domain.documentsBadge
+import net.cargomarket.omnideliv.courier.domain.documentsBadgeDescription
 
 /**
  * On duty, and what is on offer.
@@ -55,12 +59,31 @@ import net.cargomarket.omnideliv.courier.domain.OfferCard
 @Composable
 fun ShiftScreen(
     vm: ShiftViewModel = hiltViewModel(),
+    /**
+     * Read only for the count on the Documents link. [ShiftViewModel] is left
+     * alone deliberately — it is a polling offer machine, and this view model
+     * already computes exactly this number for the compliance screen itself.
+     */
+    complianceVm: ComplianceViewModel = hiltViewModel(),
     onClaimed: (orderId: String, assignmentId: String) -> Unit = { _, _ -> },
     onEarnings: () -> Unit = {},
     onCompliance: () -> Unit = {},
 ) {
     val state by vm.state.collectAsState()
+    val compliance by complianceVm.state.collectAsState()
     val context = LocalContext.current
+
+    // Once per entry, not on the offer poll: document status changes on a human
+    // reviewer's timescale, not a six-second one.
+    //
+    // A failure here is silent by design. The load already degrades to
+    // `failed = true`, the badge simply does not appear, and a compliance outage
+    // must not take the screen a courier works from with it.
+    //
+    // Worth having as a side effect: `GET /me/profile` opens the profile
+    // lazily, so every courier who reaches this screen gets one. That is the
+    // backfill happening on its own.
+    LaunchedEffect(Unit) { complianceVm.load() }
 
     // Going on duty is what starts location streaming, and it must not start
     // without permission — a foreground location service that cannot read a
@@ -117,6 +140,7 @@ fun ShiftScreen(
             onToggle = { on -> setDuty(on) },
             onEarnings = onEarnings,
             onCompliance = onCompliance,
+            outstandingDocuments = compliance.outstanding,
         )
 
         when (val s = state) {
@@ -162,6 +186,8 @@ private fun DutyBar(
     onToggle: (Boolean) -> Unit,
     onEarnings: () -> Unit,
     onCompliance: () -> Unit,
+    /** How many documents are the courier's move. Zero renders no badge. */
+    outstandingDocuments: Int = 0,
 ) {
     Column(
         Modifier
@@ -206,8 +232,28 @@ private fun DutyBar(
             TextButton(onClick = onEarnings) {
                 Text("Earnings", color = Tokens.Cyan, fontSize = 13.sp)
             }
-            TextButton(onClick = onCompliance) {
+            TextButton(
+                onClick = onCompliance,
+                // The whole control speaks, rather than the badge reading out a
+                // bare number next to a word.
+                modifier = Modifier.semantics {
+                    contentDescription = documentsBadgeDescription(outstandingDocuments)
+                },
+            ) {
                 Text("Documents", color = Tokens.Cyan, fontSize = 13.sp)
+                documentsBadge(outstandingDocuments)?.let { count ->
+                    Spacer(Modifier.size(6.dp))
+                    Text(
+                        text = count,
+                        color = Tokens.SignalInk,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(9.dp))
+                            .background(Tokens.Amber)
+                            .padding(horizontal = 6.dp, vertical = 1.dp),
+                    )
+                }
             }
         }
 

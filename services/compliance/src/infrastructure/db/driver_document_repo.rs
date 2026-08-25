@@ -3,7 +3,7 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 use crate::domain::{
     entities::{DriverDocument, DocumentStatus},
-    repositories::DriverDocumentRepository,
+    repositories::{DriverDocumentRepository, PendingReviewItem},
 };
 
 fn map_doc(r: &sqlx::postgres::PgRow) -> anyhow::Result<DriverDocument> {
@@ -97,12 +97,16 @@ impl DriverDocumentRepository for PgDriverDocumentRepository {
     }
 
     async fn list_pending_review(&self, tenant_id: Option<Uuid>, limit: i64, offset: i64)
-        -> anyhow::Result<Vec<DriverDocument>>
+        -> anyhow::Result<Vec<PendingReviewItem>>
     {
+        // The join was always here — it is how the tenant filter works. The
+        // four profile columns are new; before this, every one of them was read
+        // by the planner and thrown away, and the console rendered uuids.
         let rows = sqlx::query(
             r#"SELECT d.id, d.compliance_profile_id, d.document_type_id, d.document_number,
                       d.issue_date, d.expiry_date, d.file_url, d.status, d.rejection_reason,
-                      d.reviewed_by, d.reviewed_at, d.submitted_at, d.updated_at
+                      d.reviewed_by, d.reviewed_at, d.submitted_at, d.updated_at,
+                      p.entity_id, p.entity_type, p.jurisdiction, p.overall_status
                FROM compliance.driver_documents d
                JOIN compliance.compliance_profiles p ON p.id = d.compliance_profile_id
                WHERE d.status IN ('submitted', 'under_review')
@@ -115,7 +119,15 @@ impl DriverDocumentRepository for PgDriverDocumentRepository {
         .bind(offset)
         .fetch_all(&self.pool)
         .await?;
-        rows.iter().map(map_doc).collect()
+        rows.iter()
+            .map(|r| Ok(PendingReviewItem {
+                document:       map_doc(r)?,
+                entity_id:      r.get("entity_id"),
+                entity_type:    r.get("entity_type"),
+                jurisdiction:   r.get("jurisdiction"),
+                overall_status: r.get("overall_status"),
+            }))
+            .collect()
     }
 
     async fn save(&self, doc: &DriverDocument) -> anyhow::Result<()> {
