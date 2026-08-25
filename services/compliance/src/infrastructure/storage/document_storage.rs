@@ -286,7 +286,43 @@ impl DocumentStorage {
         Ok(())
     }
 
+    /// Read a stored document's bytes.
+    ///
+    /// The admin console views documents through this rather than through a
+    /// presigned URL, and it has to. `presign_url` signs against
+    /// `STORAGE__ENDPOINT`, which in this deployment is `http://minio:9000` — a
+    /// compose-network hostname with no published port and no Traefik route. A
+    /// reviewer's browser cannot resolve it, so the presigned URL named
+    /// somewhere that does not exist for them.
+    ///
+    /// That is the same wall the OmniDeliv catalog photos hit, and it was
+    /// resolved the same way: bytes through the service. Unlike a product
+    /// photo, a KYC document must stay behind auth, so the route that calls
+    /// this requires `compliance:review` and the portal fetches it into a blob
+    /// rather than pointing an `<img src>` at it.
+    pub async fn get_object(&self, s3_uri: &str) -> anyhow::Result<Vec<u8>> {
+        let key = s3_uri
+            .strip_prefix(&format!("s3://{}/", self.bucket))
+            .context("Invalid s3:// URI format")?;
+        let out = self.client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .send()
+            .await
+            .context("Failed to read document from storage")?;
+        let bytes = out.body.collect().await
+            .context("Failed to buffer document body")?
+            .into_bytes();
+        Ok(bytes.to_vec())
+    }
+
     /// Generate a 15-minute presigned GET URL for a stored document.
+    ///
+    /// ⚠ Only useful where `STORAGE__ENDPOINT` is publicly resolvable — R2, or
+    /// a MinIO with a real ingress. It is **not** on this deployment; see
+    /// [`Self::get_object`]. Left for the courier `/me` route and for a future
+    /// R2 move, not used by the admin console.
     pub async fn presign_url(&self, s3_uri: &str) -> anyhow::Result<String> {
         let key = s3_uri
             .strip_prefix(&format!("s3://{}/", self.bucket))

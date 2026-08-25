@@ -78,21 +78,35 @@ export async function fetchDocumentTypes(): Promise<DocumentType[]> {
 }
 
 /**
- * A link to the document itself, valid for fifteen minutes.
+ * The document itself, as an object URL the panel can render.
  *
- * Call this on a click, never on render. `file_url` holds an `s3://` URI that a
- * browser cannot open, so this is the only way a reviewer sees what they are
- * approving — and the server writes an audit row for each call, because reading
- * someone's identity document is a privacy-relevant act. One row per deliberate
- * open is evidence; one per render would be noise.
+ * Call this on a click, never on render: the server writes an audit row for each
+ * call, because reading someone's identity document is a privacy-relevant act.
+ * One row per deliberate open is evidence; one per render would be noise.
+ *
+ * **Why bytes and not a presigned link.** `file_url` holds an `s3://` URI a
+ * browser cannot open, and presigning it does not help here — the signature is
+ * against `STORAGE__ENDPOINT`, which is `http://minio:9000` on this deployment:
+ * a compose-network hostname with no published port and no ingress. A reviewer's
+ * browser cannot resolve it, so the "fixed" link named somewhere that does not
+ * exist for them. Same wall the OmniDeliv catalog photos hit, resolved the same
+ * way.
+ *
+ * And why a blob rather than pointing `<img src>` at the route: an `<img>` tag
+ * sends no `Authorization` header, and unlike a product photo a KYC document
+ * cannot be served unauthenticated.
+ *
+ * The caller owns the returned URL and must `URL.revokeObjectURL` it.
  */
-export async function fetchDocumentUrl(docId: string): Promise<string> {
-  const j = await okJson(
-    await authFetch(`${BASE}/api/v1/compliance/admin/documents/${docId}/url`),
-  );
-  const url = j.data?.url;
-  if (!url) throw new Error("The server returned no link for this document.");
-  return url;
+export async function fetchDocumentBlobUrl(docId: string): Promise<string> {
+  const r = await authFetch(`${BASE}/api/v1/compliance/admin/documents/${docId}/content`);
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error(j?.error?.message ?? j?.message ?? `HTTP ${r.status}`);
+  }
+  const blob = await r.blob();
+  if (blob.size === 0) throw new Error("The server returned an empty document.");
+  return URL.createObjectURL(blob);
 }
 
 /**

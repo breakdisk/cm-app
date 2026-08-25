@@ -135,17 +135,19 @@ pub async fn reject_document(
 /// per panel render is noise. It is written before the URL is minted and its
 /// failure is propagated — an unlogged view of a licence is not a thing this
 /// service should hand out.
-pub async fn document_url(
+pub async fn document_content(
     AuthClaims(claims): AuthClaims,
     Path(doc_id): Path<Uuid>,
     State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<axum::response::Response, AppError> {
+    use axum::response::IntoResponse;
+
     require_permission!(claims, permissions::COMPLIANCE_REVIEW);
     let (doc, profile) = authorize_document(&state, &claims, doc_id).await?;
 
     if !is_presignable(&doc.file_url) {
         return Err(AppError::Validation(
-            "This document is not stored in object storage and has no presigned link.".into(),
+            "This document is not held in object storage; open its URL directly.".into(),
         ));
     }
 
@@ -161,10 +163,45 @@ pub async fn document_url(
         created_at:            chrono::Utc::now(),
     }).await?;
 
-    let url = state.storage.presign_url(&doc.file_url).await?;
-    Ok(Json(serde_json::json!({
-        "data": { "url": url, "expires_in": crate::infrastructure::storage::PRESIGN_TTL_SECS }
-    })))
+    let bytes = state.storage.get_object(&doc.file_url).await.map_err(|e| {
+        tracing::error!(error = ?e, doc_id = %doc.id, "failed to read compliance document");
+        AppError::Validation("Could not read this document from storage.".into())
+    })?;
+
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, sniff_content_type(&bytes)),
+            // Someone's identity document. Not a thing to leave in a shared
+            // cache, and the response is already behind `compliance:review`.
+            (axum::http::header::CACHE_CONTROL, "private, no-store"),
+        ],
+        bytes,
+    ).into_response())
+}
+
+/// What kind of file this is, read from its own first bytes.
+///
+/// There is no `content_type` column — `confirm_document` accepts the field and
+/// discards it — so the type the courier declared at upload is not recoverable.
+/// Sniffing the magic number is what is left, and it is the more trustworthy of
+/// the two anyway: a declared type that disagrees with the bytes would mislead
+/// every human who opened it.
+///
+/// Only the four the storage layer accepts are recognised. Anything else is
+/// declared `application/octet-stream`, which makes the browser offer a download
+/// rather than render something wrong.
+pub(crate) fn sniff_content_type(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "image/png"
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "image/jpeg"
+    } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else if bytes.starts_with(b"%PDF-") {
+        "application/pdf"
+    } else {
+        "application/octet-stream"
+    }
 }
 
 /// `GET /admin/document-types` — the catalogue, so the console can name a
@@ -243,5 +280,40 @@ mod tests {
     #[test]
     fn the_scheme_must_start_the_url() {
         assert!(!is_presignable("https://proxy.test/?target=s3://bucket/key"));
+    }
+
+    use super::sniff_content_type;
+
+    /// The four the storage layer accepts, identified by their own first bytes.
+    /// The declared type is not recoverable — there is no `content_type`
+    /// column — so this is the only answer available, and the honest one.
+    #[test]
+    fn each_accepted_format_is_recognised_by_its_magic_number() {
+        assert_eq!(sniff_content_type(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]), "image/png");
+        assert_eq!(sniff_content_type(&[0xFF, 0xD8, 0xFF, 0xE0, 0x00]), "image/jpeg");
+        let webp: Vec<u8> = b"RIFF".iter().chain(&[0u8; 4]).chain(b"WEBPVP8 ").copied().collect();
+        assert_eq!(sniff_content_type(&webp), "image/webp");
+        assert_eq!(sniff_content_type(b"%PDF-1.7"), "application/pdf");
+    }
+
+    /// Anything unrecognised must not be guessed at. `octet-stream` makes the
+    /// browser offer a download instead of rendering something wrong, which is
+    /// the safe direction when the alternative is a reviewer looking at a blank
+    /// box and calling the document unreadable.
+    #[test]
+    fn an_unknown_format_is_not_guessed() {
+        assert_eq!(sniff_content_type(b"GIF89a"), "application/octet-stream");
+        assert_eq!(sniff_content_type(b""), "application/octet-stream");
+        assert_eq!(sniff_content_type(b"<!DOCTYPE html>"), "application/octet-stream");
+    }
+
+    /// `RIFF` alone is not WebP — it fronts WAV and AVI too. Reading bytes 8..12
+    /// is what separates them, and doing it on a short buffer must not panic.
+    #[test]
+    fn riff_alone_is_not_webp_and_a_short_buffer_does_not_panic() {
+        let wave: Vec<u8> = b"RIFF".iter().chain(&[0u8; 4]).chain(b"WAVE").copied().collect();
+        assert_eq!(sniff_content_type(&wave), "application/octet-stream");
+        assert_eq!(sniff_content_type(b"RIFF"), "application/octet-stream");
+        assert_eq!(sniff_content_type(&[b'R', b'I', b'F', b'F', 0, 0]), "application/octet-stream");
     }
 }
