@@ -30,10 +30,19 @@
  * in `lib/couriers/compliance-view.ts`, tested against that exact payload —
  * portal and service are separate deploy units and the skew is structural, not
  * a one-off missed `docker compose pull`.
+ *
+ * The Compliance cell links into the compliance console rather than growing a
+ * review UI here. It was a dead end otherwise: this roster holds `user_id` and
+ * has never held a `compliance_profile_id`, so it could state that a courier was
+ * outstanding and offer no way to reach the documents — and the console could
+ * not show them either, because its queue lists documents awaiting a decision
+ * and a courier who has submitted nothing has none. One implementation of
+ * approve/reject, two ways in.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { motion } from "framer-motion";
-import { Bike, RefreshCw, ShieldOff, ShieldCheck, AlertTriangle } from "lucide-react";
+import { Bike, RefreshCw, ShieldOff, ShieldCheck, AlertTriangle, FileText } from "lucide-react";
 import { toast } from "sonner";
 
 import { variants } from "@/lib/design-system/tokens";
@@ -60,10 +69,34 @@ function DutyPill({ status }: { status: string }) {
  */
 function CompliancePill({ c }: { c: AdminCourier }) {
   const v = complianceView(c);
-  return (
+  const pill = (
     <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${v.tone}`} title={v.title}>
       {v.label}
     </span>
+  );
+
+  // Nothing to open when this deployment reports no compliance at all — a link
+  // would promise documents that cannot exist to be found.
+  if (v.kind === "unsupported") return pill;
+
+  // `user_id`, not `id`. `entity_id` on a compliance profile is the identity
+  // user on both creation paths — `claims.user_id` on the lazy `/me` route, and
+  // the id field-ops puts in `driver.registered`. ADR-0015 makes the two equal
+  // for anyone registered since, and depending on that here would break
+  // silently for every courier who predates it.
+  return (
+    <Link
+      href={`/compliance?entity=${c.user_id}`}
+      className="inline-flex items-center gap-1 rounded-full transition-opacity hover:opacity-80 focus:outline-none focus:ring-1 focus:ring-cyan-300/40"
+      title={
+        v.kind === "not-onboarded"
+          ? "Open in the compliance console. No profile exists yet — the console says so and does not treat it as an error."
+          : "Open this courier's documents in the compliance console"
+      }
+    >
+      {pill}
+      <FileText className="h-3 w-3 text-white/30" />
+    </Link>
   );
 }
 
