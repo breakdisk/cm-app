@@ -34,8 +34,38 @@ APPLY="${1:-}"
 JURISDICTION="${DEFAULT_JURISDICTION:-PH}"
 TOPIC="driver"
 
-PG_CONTAINER="${PG_CONTAINER:-$(docker ps --format '{{.Names}}' | grep -i postgres | head -1)}"
-KAFKA_CONTAINER="${KAFKA_CONTAINER:-$(docker ps --format '{{.Names}}' | grep -i kafka | head -1)}"
+# Prefer the platform's own containers by exact name, and only then fall back to
+# a fuzzy match.
+#
+# `grep -i postgres | head -1` on its own is a live foot-gun on the VPS: Dokploy
+# runs its **own** control-plane Postgres, and its container sorts first, so the
+# script aimed a backfill at the orchestrator's database. It failed safely here
+# only because that database has no `logisticos` role — a box where the names
+# collide differently would have run the query somewhere real.
+#
+# The fallback deliberately excludes anything named `dokploy`. If more than one
+# candidate survives, say so and stop rather than picking: guessing which
+# database to write to is not a decision a script should make silently.
+pick_container() {
+    local exact="$1" pattern="$2" kind="$3"
+    if docker ps --format '{{.Names}}' | grep -qx "$exact"; then
+        echo "$exact"; return
+    fi
+    local matches
+    matches="$(docker ps --format '{{.Names}}' | grep -i "$pattern" | grep -vi dokploy || true)"
+    local n
+    n="$(printf '%s\n' "$matches" | grep -c . || true)"
+    if [ "$n" -gt 1 ]; then
+        echo "ERROR: several $kind containers match and none is named '$exact':" >&2
+        printf '  %s\n' $matches >&2
+        echo "Set ${kind^^}_CONTAINER=<name> explicitly." >&2
+        exit 1
+    fi
+    printf '%s' "$matches" | head -1
+}
+
+PG_CONTAINER="${PG_CONTAINER:-$(pick_container logisticos-postgres postgres pg)}"
+KAFKA_CONTAINER="${KAFKA_CONTAINER:-$(pick_container logisticos-kafka kafka kafka)}"
 # The internal listener, not localhost:9092 — see create-kafka-topics.sh for
 # why localhost hangs from inside the container on the VPS deployment.
 BOOTSTRAP="${KAFKA_BOOTSTRAP:-kafka:29092}"
