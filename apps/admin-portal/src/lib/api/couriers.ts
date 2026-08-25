@@ -56,8 +56,16 @@ export interface AdminCourier {
    * only considers a position from the last ten minutes, and that lives in the
    * query rather than on the row. `last_seen_at` is what shows it, and it is
    * the one reason this client legitimately derives itself.
+   *
+   * **Optional on the wire.** A field-ops built before the compliance gate does
+   * not send this key at all, and portal and service are separate deploy units —
+   * the skew is structural, not a one-off. `undefined` means "this build has no
+   * opinion" and is not the same claim as `null`. The compiler does not enforce
+   * the `?`: this app sets `"strict": false`, so `strictNullChecks` is off and
+   * `undefined` is assignable everywhere. `lib/couriers/compliance-view.ts` and
+   * its tests are the gate.
    */
-  block_reason:  "suspended" | "off_duty" | "compliance" | null;
+  block_reason?: "suspended" | "off_duty" | "compliance" | null;
   /**
    * What the compliance service last said, verbatim — `compliant`,
    * `pending_submission`, `under_review`, `expiring_soon`, `expired`,
@@ -67,8 +75,16 @@ export interface AdminCourier {
    * the same as clearing them. Every courier registered before compliance was
    * wired is in that state, and telling the two apart is how ops knows who
    * still needs onboarding.
+   *
+   * **Optional on the wire.** A field-ops built before the compliance gate does
+   * not send this key at all, and portal and service are separate deploy units —
+   * the skew is structural, not a one-off. `undefined` means "this build has no
+   * opinion" and is not the same claim as `null`. The compiler does not enforce
+   * the `?`: this app sets `"strict": false`, so `strictNullChecks` is off and
+   * `undefined` is assignable everywhere. `lib/couriers/compliance-view.ts` and
+   * its tests are the gate.
    */
-  compliance_status: string | null;
+  compliance_status?: string | null;
   /**
    * Whether compliance permits assigning them. `true` for an unknown courier —
    * unknown fails open, or switching enforcement on would take the whole live
@@ -77,8 +93,16 @@ export interface AdminCourier {
    * This can be `false` while `dispatchable` is still `true`: that is the
    * observe-only rollout, and it is the single most important thing this screen
    * can show, because it is the preview of what enforcement will do.
+   *
+   * **Optional on the wire.** A field-ops built before the compliance gate does
+   * not send this key at all, and portal and service are separate deploy units —
+   * the skew is structural, not a one-off. `undefined` means "this build has no
+   * opinion" and is not the same claim as `null`. The compiler does not enforce
+   * the `?`: this app sets `"strict": false`, so `strictNullChecks` is off and
+   * `undefined` is assignable everywhere. `lib/couriers/compliance-view.ts` and
+   * its tests are the gate.
    */
-  compliance_assignable: boolean;
+  compliance_assignable?: boolean;
 }
 
 async function okJson(r: Response) {
