@@ -1,9 +1,10 @@
 "use client";
 import { useEffect, useState } from "react";
-import { fetchProfile } from "@/lib/api/compliance";
+import { fetchProfile, fetchDocumentUrl, isStoredObject } from "@/lib/api/compliance";
 import type { DriverDocument } from "@/lib/api/compliance";
 import { cn } from "@/lib/design-system/cn";
-import { Check, X, ExternalLink, ShieldOff, ShieldCheck } from "lucide-react";
+import { entityLabel, initialsFor, typeLabel } from "@/lib/compliance/labels";
+import { Check, X, ExternalLink, Eye, Loader2, ShieldOff, ShieldCheck } from "lucide-react";
 
 interface Props {
   profileId:   string;
@@ -14,6 +15,29 @@ interface Props {
   /** Only present for users with compliance:admin permission. */
   onSuspend?:   (profileId: string, reason?: string) => void;
   onReinstate?: (profileId: string) => void;
+  /** `document_type_id → name`. Empty while the catalogue is loading. */
+  typeNames:   Map<string, string>;
+  /** `entity_id → person`. Empty when the roster could not be loaded. */
+  entityNames: Map<string, string>;
+}
+
+/**
+ * What we know about one document's presigned link.
+ *
+ * `url` arrives on demand — the link is fetched when the reviewer asks to see
+ * the document, not when the panel renders, because each fetch writes an audit
+ * row and a per-render fetch would turn that log into noise.
+ *
+ * `unrenderable` means the browser refused to draw it as an image. The stored
+ * type may be a PDF — the documents table has no `content_type` column, so
+ * there is nothing to check up front — and the honest response is to offer the
+ * link rather than to leave a broken image where a licence should be.
+ */
+interface DocView {
+  url?:          string;
+  loading?:      boolean;
+  error?:        string;
+  unrenderable?: boolean;
 }
 
 const STATUS_BADGE: Record<string, string> = {
@@ -32,19 +56,46 @@ export function DocumentDetailPanel({
   onReject,
   onSuspend,
   onReinstate,
+  typeNames,
+  entityNames,
 }: Props) {
   const [detail,          setDetail]          = useState<{ profile: any; documents: DriverDocument[] } | null>(null);
   const [rejectDocId,     setRejectDocId]     = useState<string | null>(null);
   const [rejectReason,    setRejectReason]    = useState("");
   const [suspendReason,   setSuspendReason]   = useState("");
   const [suspendOpen,     setSuspendOpen]     = useState(false);
+  const [views,           setViews]           = useState<Record<string, DocView>>({});
 
   useEffect(() => {
     setDetail(null);
+    // Links are per-document and expire in fifteen minutes. Dropping them when
+    // the panel switches profiles keeps one courier's licence from lingering in
+    // memory behind another courier's row.
+    setViews({});
     fetchProfile(profileId)
       .then(setDetail)
       .catch(() => setDetail({ profile: null, documents: [] }));
   }, [profileId, refreshKey]);
+
+  /**
+   * Fetch the link for one document and show it inline.
+   *
+   * Inline rather than a new tab: the reviewer needs the licence and the
+   * Approve / Reject buttons on screen at the same moment, and a decision taken
+   * in another tab is a decision taken from memory.
+   */
+  async function showDocument(docId: string) {
+    setViews((v) => ({ ...v, [docId]: { loading: true } }));
+    try {
+      const url = await fetchDocumentUrl(docId);
+      setViews((v) => ({ ...v, [docId]: { url } }));
+    } catch (e) {
+      setViews((v) => ({
+        ...v,
+        [docId]: { error: e instanceof Error ? e.message : "Could not load this document." },
+      }));
+    }
+  }
 
   if (!detail) {
     return (
@@ -72,17 +123,23 @@ export function DocumentDetailPanel({
   });
 
   const badgeClass = STATUS_BADGE[profile.overall_status] ?? STATUS_BADGE.pending_submission;
+  // The person, resolved against the roster this portal already holds.
+  // compliance itself only knows the uuid.
+  const who = entityLabel(entityNames, String(profile.entity_id ?? ""));
 
   return (
     <div className="flex-1 rounded-xl border border-cyan-glow/20 bg-cyan-surface/5 flex flex-col overflow-hidden">
       {/* Profile header */}
       <div className="px-4 py-3 border-b border-glass-border flex items-center gap-3">
         <div className="w-10 h-10 rounded-full bg-cyan-surface/20 border-2 border-cyan-glow/30 flex items-center justify-center text-sm font-bold text-cyan-neon flex-shrink-0">
-          {String(profile.entity_id ?? "").slice(0, 2).toUpperCase()}
+          {initialsFor(who)}
         </div>
-        <div>
-          <div className="text-sm font-semibold text-white truncate max-w-[200px]">
-            {profile.entity_id}
+        <div className="min-w-0">
+          <div
+            className="text-sm font-semibold text-white truncate max-w-[200px]"
+            title={String(profile.entity_id ?? "")}
+          >
+            {who}
           </div>
           <div className="text-xs font-mono text-white/35">{profile.jurisdiction}</div>
         </div>
@@ -165,6 +222,12 @@ export function DocumentDetailPanel({
         )}
         {sorted.map((doc) => {
           const isPending = doc.status === "submitted" || doc.status === "under_review";
+          const view      = views[doc.id] ?? {};
+          // Only objects this service stored can be presigned. A caller-hosted
+          // `http(s)://` URL is already a working link, and the seeded mocks use
+          // `#`, which is neither.
+          const stored    = isStoredObject(doc.file_url);
+          const plainLink = !stored && doc.file_url && doc.file_url !== "#";
 
           return (
             <div
@@ -181,9 +244,9 @@ export function DocumentDetailPanel({
                 <div className="w-16 h-12 rounded-lg bg-glass-100 border border-glass-border flex items-center justify-center text-xl flex-shrink-0">
                   🪪
                 </div>
-                <div className="flex-1">
-                  <div className="text-xs font-bold uppercase tracking-wider text-white/75">
-                    {doc.document_type_id.slice(0, 12)}
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-bold uppercase tracking-wider text-white/75 truncate">
+                    {typeLabel(typeNames, doc.document_type_id)}
                   </div>
                   <div className="text-xs font-mono text-white/40 mt-1">
                     {doc.document_number}
@@ -199,17 +262,74 @@ export function DocumentDetailPanel({
                     </div>
                   )}
                 </div>
-                {doc.file_url && doc.file_url !== "#" && (
+
+                {/* Seeing the document.
+                    `file_url` is an `s3://` URI, which a browser cannot open —
+                    this used to be an anchor pointing straight at it, so every
+                    decision on this panel was taken without sight of the
+                    document. The link is minted on demand and audited. */}
+                {stored && !view.url && (
+                  <button
+                    onClick={() => showDocument(doc.id)}
+                    disabled={view.loading}
+                    className="px-2.5 py-1.5 rounded-lg text-xs bg-glass-100 border border-glass-border text-white/50 flex items-center gap-1 hover:text-white/80 disabled:opacity-40 transition-colors flex-shrink-0"
+                  >
+                    {view.loading
+                      ? <Loader2 className="h-3 w-3 animate-spin" />
+                      : <Eye className="h-3 w-3" />}
+                    View
+                  </button>
+                )}
+                {plainLink && (
                   <a
                     href={doc.file_url}
                     target="_blank"
                     rel="noreferrer"
-                    className="px-2.5 py-1.5 rounded-lg text-xs bg-glass-100 border border-glass-border text-white/50 flex items-center gap-1 hover:text-white/80 transition-colors"
+                    className="px-2.5 py-1.5 rounded-lg text-xs bg-glass-100 border border-glass-border text-white/50 flex items-center gap-1 hover:text-white/80 transition-colors flex-shrink-0"
                   >
                     <ExternalLink className="h-3 w-3" /> View
                   </a>
                 )}
               </div>
+
+              {/* The document itself, next to the buttons that decide on it. */}
+              {view.url && !view.unrenderable && (
+                /* eslint-disable-next-line @next/next/no-img-element */
+                <img
+                  src={view.url}
+                  alt="Submitted document"
+                  onError={() =>
+                    setViews((v) => ({ ...v, [doc.id]: { ...v[doc.id], unrenderable: true } }))
+                  }
+                  className="mt-3 w-full max-h-80 object-contain rounded-lg border border-glass-border bg-black/30"
+                />
+              )}
+
+              {/* Not an image the browser will draw — a PDF, most likely. There
+                  is no content_type column to check beforehand, so this is
+                  found by trying. */}
+              {view.url && view.unrenderable && (
+                <a
+                  href={view.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-glass-border bg-glass-100 px-3 py-1.5 text-xs text-white/60 hover:text-white transition-colors"
+                >
+                  <ExternalLink className="h-3 w-3" /> Open document
+                </a>
+              )}
+
+              {view.error && (
+                <div className="mt-3 flex items-center gap-2 text-xs font-mono text-red-signal/80 bg-red-surface/10 border border-red-glow/20 rounded-lg px-2.5 py-1.5">
+                  <span className="flex-1">{view.error}</span>
+                  <button
+                    onClick={() => showDocument(doc.id)}
+                    className="underline hover:text-white transition-colors"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
 
               {/* Approve / Reject actions — panel calls parent callbacks; parent owns API call */}
               {isPending && !isSuspended && (

@@ -65,6 +65,15 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         // ── Admin back-office routes ────────────────────────────────────────
         .route("/api/v1/compliance/admin/queue",
             get(admin_routes::review_queue))
+        // The catalogue, so the console can name a document instead of printing
+        // a slice of its uuid.
+        .route("/api/v1/compliance/admin/document-types",
+            get(admin_routes::list_document_types))
+        // A link the reviewer can open. `file_url` is `s3://…`, which is inert
+        // in a browser, and the `/me` presigner refuses anyone but the owner —
+        // so without this route Approve and Reject are blind.
+        .route("/api/v1/compliance/admin/documents/:doc_id/url",
+            get(admin_routes::document_url))
         .route("/api/v1/compliance/admin/profiles",
             get(admin_routes::list_profiles))
         .route("/api/v1/compliance/admin/profiles/:profile_id",

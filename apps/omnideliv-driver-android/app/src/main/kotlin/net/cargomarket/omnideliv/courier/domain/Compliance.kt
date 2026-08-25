@@ -238,6 +238,38 @@ internal fun parseDate(raw: String?): LocalDate? {
 fun outstandingCount(items: List<ChecklistItem>): Int = items.count { it.state.needsCourier }
 
 /**
+ * What the shift screen's **Documents** link carries, or `null` for nothing.
+ *
+ * The gap this closes: that link used to be bare text. A courier whose licence
+ * was refused was told nothing at all until they happened to tap through, and
+ * a refusal is precisely the state that needs finding — it is their move, it
+ * carries a reason someone typed for them to read, and it is what will stop
+ * them working the day gating is switched on.
+ *
+ * A count, not a word. Anything longer competes with the duty switch beside it,
+ * and a number is the same in every language this app ships in.
+ */
+fun documentsBadge(outstanding: Int): String? =
+    if (outstanding > 0) outstanding.toString() else null
+
+/**
+ * The badge, spoken.
+ *
+ * A bare "3" beside a link is meaningless to a screen reader, so the whole
+ * control gets a description rather than the number carrying it alone.
+ *
+ * Says what is true and no more. Gating still ships off, so a courier with
+ * outstanding documents *is* being offered work; a badge implying otherwise
+ * describes a rule not in force, which they can disprove by simply waiting for
+ * the next offer. The forbidden-phrasings test covers this string too.
+ */
+fun documentsBadgeDescription(outstanding: Int): String = when {
+    outstanding <= 0 -> "Documents"
+    outstanding == 1 -> "Documents, 1 needs your attention"
+    else -> "Documents, $outstanding need your attention"
+}
+
+/**
  * One line saying where the courier stands, in words rather than a status code.
  *
  * Deliberately does not promise anything about whether they will be offered

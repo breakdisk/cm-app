@@ -69,4 +69,19 @@ impl DocumentTypeRepository for PgDocumentTypeRepository {
         .await?;
         Ok(row.map(|r| map_doc_type(&r)))
     }
+
+    async fn list_all(&self) -> anyhow::Result<Vec<DocumentType>> {
+        // No tenant predicate and no `is_required` filter: the table is a seeded
+        // catalogue shared by every tenant, and a reviewer looking at a document
+        // needs its name whether or not that type is currently required.
+        let rows = sqlx::query(
+            r#"SELECT id, code, jurisdiction, applicable_to, name, description,
+                      is_required, has_expiry, warn_days_before, grace_period_days, vehicle_classes
+               FROM compliance.document_types
+               ORDER BY jurisdiction, name"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.iter().map(map_doc_type).collect())
+    }
 }

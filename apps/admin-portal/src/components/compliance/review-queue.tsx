@@ -1,10 +1,15 @@
-import type { DriverDocument } from "@/lib/api/compliance";
+import type { PendingReviewItem } from "@/lib/api/compliance";
 import { cn } from "@/lib/design-system/cn";
+import { entityLabel, initialsFor, typeLabel } from "@/lib/compliance/labels";
 
 interface Props {
-  items:      DriverDocument[];
+  items:      PendingReviewItem[];
   selectedId: string | null;
   onSelect:   (profileId: string) => void;
+  /** `document_type_id → name`. Empty while the catalogue is loading. */
+  typeNames:  Map<string, string>;
+  /** `entity_id → person`. Empty when the roster could not be loaded. */
+  entityNames: Map<string, string>;
 }
 
 function timeAgo(iso: string): string {
@@ -16,11 +21,7 @@ function timeAgo(iso: string): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-function initials(id: string): string {
-  return id.slice(0, 2).toUpperCase();
-}
-
-export function ReviewQueue({ items, selectedId, onSelect }: Props) {
+export function ReviewQueue({ items, selectedId, onSelect, typeNames, entityNames }: Props) {
   return (
     <div className="w-72 flex-shrink-0 rounded-xl border border-glass-border bg-glass-100 flex flex-col overflow-hidden">
       {/* Header */}
@@ -40,40 +41,47 @@ export function ReviewQueue({ items, selectedId, onSelect }: Props) {
             No documents pending review
           </div>
         )}
-        {items.map((doc) => (
-          <button
-            key={doc.id}
-            onClick={() => onSelect(doc.compliance_profile_id)}
-            className={cn(
-              "w-full text-left px-4 py-3 border-b border-glass-border flex gap-3 items-start hover:bg-glass-200 transition-colors",
-              selectedId === doc.compliance_profile_id &&
-                "bg-cyan-surface/20 border-l-2 border-l-cyan-neon",
-            )}
-          >
-            {/* Avatar */}
-            <div className="w-8 h-8 rounded-full bg-cyan-surface/20 border border-cyan-glow/25 flex items-center justify-center text-xs font-bold text-cyan-neon flex-shrink-0">
-              {initials(doc.compliance_profile_id)}
-            </div>
+        {items.map((doc) => {
+          // The person, not the profile row. `entity_id` is who holds the
+          // licence; `compliance_profile_id` is only how compliance files it,
+          // and it is what this list used to show.
+          const who = entityLabel(entityNames, doc.entity_id);
 
-            {/* Info */}
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-semibold text-white/85 truncate">
-                Profile {doc.compliance_profile_id.slice(0, 8)}
+          return (
+            <button
+              key={doc.id}
+              onClick={() => onSelect(doc.compliance_profile_id)}
+              className={cn(
+                "w-full text-left px-4 py-3 border-b border-glass-border flex gap-3 items-start hover:bg-glass-200 transition-colors",
+                selectedId === doc.compliance_profile_id &&
+                  "bg-cyan-surface/20 border-l-2 border-l-cyan-neon",
+              )}
+            >
+              {/* Avatar */}
+              <div className="w-8 h-8 rounded-full bg-cyan-surface/20 border border-cyan-glow/25 flex items-center justify-center text-xs font-bold text-cyan-neon flex-shrink-0">
+                {initialsFor(who)}
               </div>
-              <div className="text-xs font-mono text-white/35 mt-0.5">
-                {doc.document_type_id.slice(0, 8)}
+
+              {/* Info */}
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-semibold text-white/85 truncate" title={doc.entity_id}>
+                  {who}
+                </div>
+                <div className="text-xs text-white/45 mt-0.5 truncate">
+                  {typeLabel(typeNames, doc.document_type_id)}
+                </div>
+                <span className="inline-block mt-1 text-2xs font-semibold px-1.5 py-0.5 rounded bg-cyan-surface/20 border border-cyan-glow/25 text-cyan-neon">
+                  {doc.status === "submitted" ? "New submission" : "Renewal"}
+                </span>
               </div>
-              <span className="inline-block mt-1 text-2xs font-semibold px-1.5 py-0.5 rounded bg-cyan-surface/20 border border-cyan-glow/25 text-cyan-neon">
-                {doc.status === "submitted" ? "New submission" : "Renewal"}
+
+              {/* Time */}
+              <span className="text-2xs font-mono text-white/20 flex-shrink-0">
+                {timeAgo(doc.submitted_at)}
               </span>
-            </div>
-
-            {/* Time */}
-            <span className="text-2xs font-mono text-white/20 flex-shrink-0">
-              {timeAgo(doc.submitted_at)}
-            </span>
-          </button>
-        ))}
+            </button>
+          );
+        })}
       </div>
     </div>
   );

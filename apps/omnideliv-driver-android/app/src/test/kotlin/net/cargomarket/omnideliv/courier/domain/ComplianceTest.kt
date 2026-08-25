@@ -314,6 +314,76 @@ class ComplianceTest {
         }
     }
 
+    /**
+     * The badge on the shift screen is read by couriers who never open the
+     * compliance screen at all, so the same rule binds it — and it is the more
+     * likely of the two to be reworded in a hurry.
+     */
+    @Test
+    fun no_badge_wording_claims_the_courier_cannot_work() {
+        val forbidden = listOf("cannot work", "can't work", "blocked", "not receiving")
+        for (n in 0..5) {
+            val spoken = documentsBadgeDescription(n).lowercase()
+            forbidden.forEach { phrase ->
+                assertFalse("$n said: $spoken", spoken.contains(phrase))
+            }
+        }
+    }
+
+    // ── The shift-screen badge ─────────────────────────────────────────────
+
+    /**
+     * Nothing outstanding shows nothing. A permanent dot beside a link teaches
+     * couriers to stop seeing it, which costs exactly the one case the badge
+     * exists for.
+     */
+    @Test
+    fun nothing_outstanding_shows_no_badge() {
+        assertEquals(null, documentsBadge(0))
+    }
+
+    @Test
+    fun outstanding_documents_show_their_count() {
+        assertEquals("1", documentsBadge(1))
+        assertEquals("4", documentsBadge(4))
+    }
+
+    /** A negative count is nonsense, and nonsense must not render as a badge. */
+    @Test
+    fun a_negative_count_shows_no_badge() {
+        assertEquals(null, documentsBadge(-1))
+    }
+
+    /** A bare "3" beside a word means nothing to a screen reader. */
+    @Test
+    fun the_badge_is_spoken_in_words() {
+        assertEquals("Documents", documentsBadgeDescription(0))
+        assertEquals("Documents, 1 needs your attention", documentsBadgeDescription(1))
+        assertEquals("Documents, 3 need your attention", documentsBadgeDescription(3))
+    }
+
+    /**
+     * The badge counts the courier's move, not the checklist. Four required
+     * documents of which one was refused is a badge of one — a badge of four
+     * would send them to resubmit three the server is holding as approved.
+     */
+    @Test
+    fun the_badge_counts_only_what_is_the_couriers_move() {
+        val types = listOf(
+            type(id = "t1", name = "Licence"),
+            type(id = "t2", name = "Insurance"),
+            type(id = "t3", name = "Registration"),
+        )
+        val docs = listOf(
+            doc(typeId = "t1", status = "rejected"),
+            doc(typeId = "t2", status = "approved", expiry = "2030-01-01"),
+            doc(typeId = "t3", status = "submitted"),
+        )
+        val items = buildChecklist(types, docs, TODAY)
+        assertEquals(1, outstandingCount(items))
+        assertEquals("1", documentsBadge(outstandingCount(items)))
+    }
+
     @Test
     fun a_suspended_courier_is_told_who_to_talk_to() {
         assertTrue(
