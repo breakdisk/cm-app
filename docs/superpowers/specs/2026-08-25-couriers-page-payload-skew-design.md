@@ -118,9 +118,24 @@ compliance_status?:     string | null;
 compliance_assignable?: boolean;
 ```
 
-That is what the wire actually is during skew. `tsc --noEmit` then forces every
-consumer to handle absence, which catches this class of bug at compile time
-instead of in a reviewer's browser.
+That is what the wire actually is during skew.
+
+⚠ **This is documentation, not a gate, and the difference matters.** The
+original design said `tsc --noEmit` would then force every consumer to handle
+absence. It will not: `apps/admin-portal/tsconfig.json` sets `"strict": false`,
+so `strictNullChecks` is off and `undefined` is assignable to every type.
+Verified rather than assumed — a probe file declaring `s?: string | null` and
+calling `p.s.replace(...)` type-checks clean.
+
+That is also *why this bug reached production*: the field was already typed
+`string | null` and the compiler said nothing about `.replace()` on it. Turning
+`strictNullChecks` on for this app is out of scope — it would surface a mountain
+of pre-existing errors and hold CI red for code this change never touches, the
+same reasoning `ci-frontend.yml` already applies to lint warnings.
+
+**The jest suite below is the only real gate.** The optional markers earn their
+place by telling the next reader what the wire actually carries, not by
+enforcing it.
 
 `buildEntityNames` in `labels.ts` reads only `id`, `user_id`, `first_name`,
 `last_name` and is unaffected.
