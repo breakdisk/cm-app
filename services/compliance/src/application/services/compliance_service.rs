@@ -45,8 +45,27 @@ impl ComplianceService {
         entity_id:    Uuid,
         jurisdiction: &str,
     ) -> anyhow::Result<ComplianceProfile> {
+        let (profile, _created) = self
+            .ensure_profile_inner(tenant_id, entity_type, entity_id, jurisdiction)
+            .await?;
+        Ok(profile)
+    }
+
+    /// `ensure_profile`, plus whether this call is the one that created it.
+    ///
+    /// The flag exists for `create_profile_for_driver`, which has to tell the
+    /// difference: a profile it just created has already been announced, and one
+    /// that was already there has *never* been announced if it predates the
+    /// announcement existing at all.
+    async fn ensure_profile_inner(
+        &self,
+        tenant_id:    Uuid,
+        entity_type:  &str,
+        entity_id:    Uuid,
+        jurisdiction: &str,
+    ) -> anyhow::Result<(ComplianceProfile, bool)> {
         if let Some(p) = self.profiles.find_by_entity(tenant_id, entity_type, entity_id).await? {
-            return Ok(p);
+            return Ok((p, false));
         }
         let profile = ComplianceProfile {
             id:               Uuid::new_v4(),
@@ -91,19 +110,31 @@ impl ComplianceService {
         // checklist, and losing the announcement fails *open* -- the courier
         // keeps getting work, which is the deliberate design of the unknown
         // case. `scripts/backfill-courier-compliance-profiles.sh` is the repair.
+        self.announce(&profile).await;
+
+        Ok((profile, true))
+    }
+
+    /// Tell the platform what compliance currently says about this entity.
+    ///
+    /// Best-effort on purpose, matching field-ops' own `driver.registered`
+    /// publish. A broker outage must not stop a courier opening their document
+    /// checklist, and a lost announcement fails *open* -- the courier keeps
+    /// getting work, which is the deliberate design of the unknown case.
+    /// `scripts/backfill-courier-compliance-profiles.sh` is the repair, and it
+    /// works precisely because `create_profile_for_driver` re-announces.
+    async fn announce(&self, profile: &ComplianceProfile) {
         if let Err(e) = self.producer
-            .publish_status_changed(tenant_id, initial_announcement(&profile))
+            .publish_status_changed(profile.tenant_id, initial_announcement(profile))
             .await
         {
             tracing::warn!(
                 error = %e,
                 entity_type = %profile.entity_type,
                 entity_id = %profile.entity_id,
-                "could not announce new compliance profile; downstream tiers read this entity as unknown until a backfill replays it",
+                "could not announce compliance profile; downstream tiers read this entity as unknown until a backfill replays it",
             );
         }
-
-        Ok(profile)
     }
 
     /// Called when the `driver.registered` Kafka event is received.
@@ -120,7 +151,28 @@ impl ComplianceService {
         driver_id:    Uuid,
         jurisdiction: &str,
     ) -> anyhow::Result<()> {
-        self.ensure_profile(tenant_id, "driver", driver_id, jurisdiction).await?;
+        let (profile, created) = self
+            .ensure_profile_inner(tenant_id, "driver", driver_id, jurisdiction)
+            .await?;
+
+        // An existing profile is re-announced rather than passed over.
+        //
+        // Without this the fix above could never reach anyone who already had a
+        // profile -- and in production that was everyone, because every profile
+        // in existence came from the lazy `/me` path before an announcement
+        // existed to send. `ensure_profile` short-circuits on a hit, so a
+        // backfill would have replayed `driver.registered` for them, found the
+        // row, said nothing, and left them reading as `null` on the ops roster
+        // permanently. The one chance to tell field-ops about a courier would
+        // have been spent on the run that had nothing to say.
+        //
+        // Safe to repeat: the event means "this driver exists", so restating the
+        // current verdict is a correct answer to it, and field-ops stores what
+        // it is told verbatim and idempotently. That is what makes the backfill
+        // script a repair tool for drift rather than only for absence.
+        if !created {
+            self.announce(&profile).await;
+        }
         Ok(())
     }
 
