@@ -79,3 +79,95 @@ export function complianceView(c: AdminCourier): ComplianceView {
 
   return { kind: "known", label: c.compliance_status.replace(/_/g, " "), tone };
 }
+
+export interface DispatchView {
+  label:  string;
+  tone:   string;
+  title?: string;
+}
+
+/** Minutes since the last GPS fix, or null when there has never been one. */
+export function fixAgeMinutes(iso: string | null | undefined, nowMs: number): number | null {
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return null;
+  return Math.floor((nowMs - t) / 60_000);
+}
+
+/**
+ * The proximity search only considers a position from the last ten minutes, so a
+ * courier who is active and on duty is still invisible to dispatch if their
+ * phone stopped reporting. That window lives in the query rather than on the
+ * row, which is why this one reason is always derived here.
+ */
+const STALE_FIX_MINUTES = 10;
+
+/**
+ * Why this courier is or is not being offered work.
+ *
+ * `block_reason` is the authority whenever the server sends it — it weighs
+ * compliance, and whether compliance *blocks* depends on a deployment flag this
+ * client is never told, so a client-side copy of that rule would confidently
+ * disagree with the dispatcher.
+ *
+ * **When the key is absent the server is not the authority, because it is not
+ * answering.** The old code fell straight through to the GPS branch and reported
+ * an `offline` courier as "on duty · last fix Nm ago (stale)" — a wrong answer,
+ * stated confidently, in the column that exists to prevent exactly that.
+ *
+ * So absence falls back to deriving the two reasons visible in the legacy
+ * payload, in `Courier::dispatch_block`'s own order. Compliance is deliberately
+ * not derived and not guessed: it is the one reason a client can never see, and
+ * a build that omits the field has no compliance term to report anyway.
+ */
+export function dispatchView(c: AdminCourier, nowMs: number): DispatchView {
+  const reason = c.block_reason ?? derivedBlockReason(c);
+
+  if (reason === "suspended") {
+    return { label: "suspended by ops", tone: "text-rose-300" };
+  }
+  if (reason === "off_duty") {
+    return { label: "not on duty", tone: "text-white/40" };
+  }
+  if (reason === "compliance") {
+    return {
+      label: `blocked \u00b7 ${(c.compliance_status ?? "unknown").replace(/_/g, " ")}`,
+      tone:  "text-rose-300",
+    };
+  }
+
+  const age = fixAgeMinutes(c.last_seen_at, nowMs);
+  if (age === null) {
+    return { label: "on duty \u00b7 never sent a position", tone: "text-amber-300" };
+  }
+  if (age > STALE_FIX_MINUTES) {
+    return { label: `on duty \u00b7 last fix ${age}m ago (stale)`, tone: "text-amber-300" };
+  }
+
+  // Observe-only: compliance has refused them and enforcement is off, so they
+  // are still getting work. Only sayable when the server told us — a payload
+  // without the field has no verdict to disagree with.
+  if (hasComplianceFields(c) && c.compliance_assignable === false) {
+    return {
+      label: "receiving offers \u00b7 compliance would block",
+      tone:  "text-amber-300",
+      title: "Compliance has refused this courier, but enforcement is off in this deployment so they are still being offered work. Turning enforcement on will stop them.",
+    };
+  }
+
+  return { label: "receiving offers", tone: "text-emerald-300" };
+}
+
+/**
+ * The two reasons a legacy payload still makes visible, in the server's order.
+ *
+ * `Courier::dispatch_block` checks `!is_active` before `status != Available`
+ * before compliance. Reproducing the first two exactly is what makes this
+ * fallback safe: it is not a second opinion, it is the same rule over the same
+ * two fields, and it stops where the payload stops knowing.
+ */
+function derivedBlockReason(c: AdminCourier): "suspended" | "off_duty" | null {
+  if (!c.is_active) return "suspended";
+  if (c.status !== "available") return "off_duty";
+  return null;
+}

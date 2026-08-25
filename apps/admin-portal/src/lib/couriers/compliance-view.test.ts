@@ -1,9 +1,14 @@
-import { complianceView } from "./compliance-view";
+import type { AdminCourier } from "@/lib/api/couriers";
+import { complianceView, dispatchView } from "./compliance-view";
 import {
   LEGACY_OFF_DUTY,
+  LEGACY_AVAILABLE,
+  LEGACY_SUSPENDED,
   CURRENT_NOT_ONBOARDED,
   CURRENT_COMPLIANT,
   CURRENT_OBSERVE_ONLY,
+  CURRENT_ENFORCED_BLOCK,
+  NOW_MS,
 } from "./fixtures";
 
 describe("complianceView", () => {
@@ -37,5 +42,55 @@ describe("complianceView", () => {
     expect(complianceView(CURRENT_COMPLIANT).tone).not.toBe(
       complianceView(CURRENT_OBSERVE_ONLY).tone,
     );
+  });
+});
+
+describe("dispatchView", () => {
+  it("does not throw on a payload with no block_reason", () => {
+    expect(() => dispatchView(LEGACY_OFF_DUTY, NOW_MS)).not.toThrow();
+  });
+
+  it("says an offline courier is off duty rather than guessing at their GPS", () => {
+    const v = dispatchView(LEGACY_OFF_DUTY, NOW_MS);
+    expect(v.label).toBe("not on duty");
+    expect(v.label).not.toMatch(/last fix|never sent/);
+  });
+
+  it("derives suspension from is_active when the server did not say", () => {
+    expect(dispatchView(LEGACY_SUSPENDED, NOW_MS).label).toBe("suspended by ops");
+  });
+
+  it("ranks suspension above duty, as the server does", () => {
+    const both = { ...LEGACY_SUSPENDED, status: "offline" } as AdminCourier;
+    expect(dispatchView(both, NOW_MS).label).toBe("suspended by ops");
+  });
+
+  it("prefers the server's block_reason over anything it could derive", () => {
+    expect(dispatchView(CURRENT_ENFORCED_BLOCK, NOW_MS).label).toBe("blocked · expired");
+  });
+
+  it("never claims compliance blocks on a payload that cannot know", () => {
+    for (const c of [LEGACY_OFF_DUTY, LEGACY_AVAILABLE, LEGACY_SUSPENDED]) {
+      expect(dispatchView(c, NOW_MS).label).not.toMatch(/compliance/i);
+    }
+  });
+
+  it("still flags a stale fix for an on-duty courier", () => {
+    const stale = { ...LEGACY_AVAILABLE, last_seen_at: "2026-08-23T08:00:00.000Z" } as AdminCourier;
+    expect(dispatchView(stale, NOW_MS).label).toMatch(/stale/);
+  });
+
+  it("flags a courier who has never sent a position", () => {
+    const never = { ...LEGACY_AVAILABLE, last_seen_at: null } as AdminCourier;
+    expect(dispatchView(never, NOW_MS).label).toMatch(/never sent a position/);
+  });
+
+  it("says a healthy legacy courier is receiving offers", () => {
+    expect(dispatchView(LEGACY_AVAILABLE, NOW_MS).label).toBe("receiving offers");
+  });
+
+  it("shows the observe-only disagreement when compliance is known", () => {
+    expect(dispatchView(CURRENT_OBSERVE_ONLY, NOW_MS).label)
+      .toBe("receiving offers · compliance would block");
   });
 });
