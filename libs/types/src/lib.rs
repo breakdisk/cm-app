@@ -108,6 +108,7 @@ pub enum Currency {
     SGD,
     MYR,
     IDR,
+    AED,
 }
 
 impl std::fmt::Display for Currency {
@@ -118,6 +119,7 @@ impl std::fmt::Display for Currency {
             Currency::SGD => write!(f, "SGD"),
             Currency::MYR => write!(f, "MYR"),
             Currency::IDR => write!(f, "IDR"),
+            Currency::AED => write!(f, "AED"),
         }
     }
 }
