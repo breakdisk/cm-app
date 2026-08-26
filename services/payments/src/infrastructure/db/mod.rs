@@ -7,6 +7,7 @@ pub mod merchant_billing_account_repo;
 pub mod partner_bonus_repo;
 pub mod withdrawal_request_repo;
 pub mod driver_ledger_repo;
+pub mod payment_intent_repo;
 
 pub use invoice_repo::PgInvoiceRepository;
 pub use cod_repo::PgCodRepository;
@@ -17,3 +18,4 @@ pub use merchant_billing_account_repo::PgMerchantBillingAccountRepository;
 pub use partner_bonus_repo::PgPartnerBonusRepo;
 pub use withdrawal_request_repo::PgWithdrawalRequestRepository;
 pub use driver_ledger_repo::PgDriverLedgerRepository;
+pub use payment_intent_repo::PgPaymentIntentRepository;

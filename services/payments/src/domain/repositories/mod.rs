@@ -1,7 +1,8 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use logisticos_types::{CustomerId, InvoiceId, MerchantId, TenantId};
 use uuid::Uuid;
-use crate::domain::entities::{Invoice, CodCollection, CodRemittanceBatch, Wallet, WalletTransaction, DriverLedger};
+use crate::domain::entities::{Invoice, CodCollection, CodRemittanceBatch, Wallet, WalletTransaction, DriverLedger, PaymentIntent};
 
 #[async_trait]
 pub trait InvoiceRepository: Send + Sync {
@@ -252,4 +253,15 @@ pub trait DriverLedgerRepository: Send + Sync {
     ) -> anyhow::Result<Vec<DriverLedger>> {
         Ok(Vec::new())
     }
+}
+
+#[async_trait]
+pub trait PaymentIntentRepository: Send + Sync {
+    async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<PaymentIntent>>;
+    /// Idempotent capture lookup — used by the webhook handler to avoid
+    /// creating a second record when NI redelivers the same transaction.
+    async fn find_by_gateway_payment_ref(&self, gateway_payment_ref: &str) -> anyhow::Result<Option<PaymentIntent>>;
+    async fn save(&self, intent: &PaymentIntent) -> anyhow::Result<()>;
+    /// Intents past `expires_at` still in `created`/`pending` — the sweep target.
+    async fn list_expired(&self, before: DateTime<Utc>) -> anyhow::Result<Vec<PaymentIntent>>;
 }
