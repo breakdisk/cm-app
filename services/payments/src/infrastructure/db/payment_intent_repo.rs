@@ -2,14 +2,14 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use sqlx::{PgPool, Row};
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::domain::entities::{PaymentIntent, PaymentIntentStatus};
 use crate::domain::repositories::PaymentIntentRepository;
 
 pub struct PgPaymentIntentRepository {
-    pub pool: PgPool,
+    pool: PgPool,
 }
 
 impl PgPaymentIntentRepository {
@@ -18,23 +18,46 @@ impl PgPaymentIntentRepository {
     }
 }
 
-fn row_to_intent(row: &sqlx::postgres::PgRow) -> PaymentIntent {
-    PaymentIntent {
-        id: row.get("id"),
-        tenant_id: row.get("tenant_id"),
-        purpose: row.get("purpose"),
-        reference_type: row.get("reference_type"),
-        reference_id: row.get("reference_id"),
-        amount_cents: row.get("amount_cents"),
-        currency: row.get("currency"),
-        status: PaymentIntentStatus::parse(row.get::<String, _>("status").as_str())
-            .expect("status CHECK constraint guarantees a known value"),
-        gateway: row.get("gateway"),
-        gateway_order_ref: row.get("gateway_order_ref"),
-        gateway_payment_ref: row.get("gateway_payment_ref"),
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
-        expires_at: row.get("expires_at"),
+#[derive(sqlx::FromRow)]
+struct PaymentIntentRow {
+    id: Uuid,
+    tenant_id: Uuid,
+    purpose: String,
+    reference_type: String,
+    reference_id: Uuid,
+    amount_cents: i64,
+    currency: String,
+    status: String,
+    gateway: String,
+    gateway_order_ref: Option<String>,
+    gateway_payment_ref: Option<String>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    expires_at: DateTime<Utc>,
+}
+
+impl TryFrom<PaymentIntentRow> for PaymentIntent {
+    type Error = anyhow::Error;
+
+    fn try_from(row: PaymentIntentRow) -> Result<Self, Self::Error> {
+        let status = PaymentIntentStatus::parse(&row.status)
+            .ok_or_else(|| anyhow::anyhow!("unknown payment_intents.status: {}", row.status))?;
+        Ok(PaymentIntent {
+            id: row.id,
+            tenant_id: row.tenant_id,
+            purpose: row.purpose,
+            reference_type: row.reference_type,
+            reference_id: row.reference_id,
+            amount_cents: row.amount_cents,
+            currency: row.currency,
+            status,
+            gateway: row.gateway,
+            gateway_order_ref: row.gateway_order_ref,
+            gateway_payment_ref: row.gateway_payment_ref,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            expires_at: row.expires_at,
+        })
     }
 }
 
@@ -46,14 +69,20 @@ const INTENT_COLS: &str = "id, tenant_id, purpose, reference_type, reference_id,
 impl PaymentIntentRepository for PgPaymentIntentRepository {
     async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<PaymentIntent>> {
         let query = format!("SELECT {INTENT_COLS} FROM payments.payment_intents WHERE id = $1");
-        let row = sqlx::query(&query).bind(id).fetch_optional(&self.pool).await?;
-        Ok(row.as_ref().map(row_to_intent))
+        let row = sqlx::query_as::<_, PaymentIntentRow>(&query)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(PaymentIntent::try_from).transpose()
     }
 
     async fn find_by_gateway_payment_ref(&self, gateway_payment_ref: &str) -> anyhow::Result<Option<PaymentIntent>> {
         let query = format!("SELECT {INTENT_COLS} FROM payments.payment_intents WHERE gateway_payment_ref = $1");
-        let row = sqlx::query(&query).bind(gateway_payment_ref).fetch_optional(&self.pool).await?;
-        Ok(row.as_ref().map(row_to_intent))
+        let row = sqlx::query_as::<_, PaymentIntentRow>(&query)
+            .bind(gateway_payment_ref)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(PaymentIntent::try_from).transpose()
     }
 
     async fn save(&self, intent: &PaymentIntent) -> anyhow::Result<()> {
@@ -93,7 +122,10 @@ impl PaymentIntentRepository for PgPaymentIntentRepository {
             "SELECT {INTENT_COLS} FROM payments.payment_intents \
              WHERE status IN ('created','pending') AND expires_at < $1"
         );
-        let rows = sqlx::query(&query).bind(before).fetch_all(&self.pool).await?;
-        Ok(rows.iter().map(row_to_intent).collect())
+        let rows = sqlx::query_as::<_, PaymentIntentRow>(&query)
+            .bind(before)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter().map(PaymentIntent::try_from).collect()
     }
 }
