@@ -82,6 +82,8 @@ pub const COD_COLLECTED:                  &str = "logisticos.payments.cod.collec
 pub const COD_REMITTED:                   &str = "logisticos.payments.cod.remitted";
 pub const WALLET_WITHDRAWAL_DISBURSED:    &str = "logisticos.payments.wallet.withdrawal_disbursed";
 pub const WALLET_WITHDRAWAL_REJECTED:     &str = "logisticos.payments.wallet.withdrawal_rejected";
+pub const PAYMENT_INTENT_CAPTURED:        &str = "logisticos.payments.intent.captured";
+pub const PAYMENT_INTENT_FAILED:          &str = "logisticos.payments.intent.failed";
 
 // Engagement
 pub const NOTIFICATION_QUEUED:       &str = "logisticos.engagement.notification.queued";
@@ -152,6 +154,7 @@ mod tests {
             INVOICE_GENERATED, PAYMENT_RECEIVED,
             COD_COLLECTED, WEIGHT_ADJUSTMENT_INVOICED,
             WALLET_WITHDRAWAL_DISBURSED, WALLET_WITHDRAWAL_REJECTED,
+            PAYMENT_INTENT_CAPTURED, PAYMENT_INTENT_FAILED,
             NOTIFICATION_QUEUED, CAMPAIGN_TRIGGERED, CAMPAIGN_COMPLETED, CUSTOMER_SEGMENT_UPDATED,
             TASK_ASSIGNED,
             RECEIPT_EMAIL_REQUESTED,
