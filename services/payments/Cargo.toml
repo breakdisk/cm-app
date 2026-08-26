@@ -41,6 +41,10 @@ rdkafka.workspace    = true
 tracing.workspace    = true
 async-trait          = "0.1"
 reqwest.workspace    = true
+hmac.workspace       = true
+sha2.workspace       = true
+subtle.workspace     = true
+base64.workspace     = true
 # `default-features = false` is load-bearing, not tidiness: chromiumoxide's
 # defaults are ["async-std-runtime", "bytes"], so asking for "tokio-runtime"
 # without dropping them compiled *both* runtimes into this service and pulled in

@@ -4,6 +4,9 @@ use logisticos_types::{CustomerId, InvoiceId, MerchantId, TenantId};
 use uuid::Uuid;
 use crate::domain::entities::{Invoice, CodCollection, CodRemittanceBatch, Wallet, WalletTransaction, DriverLedger, PaymentIntent};
 
+pub mod payment_gateway;
+pub use payment_gateway::{PaymentGateway, CreateSessionRequest, GatewaySession, WebhookEvent};
+
 #[async_trait]
 pub trait InvoiceRepository: Send + Sync {
     async fn find_by_id(&self, id: &InvoiceId) -> anyhow::Result<Option<Invoice>>;
