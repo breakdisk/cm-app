@@ -61,6 +61,11 @@ pub struct PaymentIntent {
 }
 
 impl PaymentIntent {
+    /// Eight arguments, because a payment intent has eight required fields at
+    /// construction time. Grouping them into a builder or a params struct would
+    /// move the arity rather than remove it, and would let a caller construct a
+    /// half-populated intent — the opposite of what this type is for.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         tenant_id: Uuid,
         purpose: impl Into<String>,
