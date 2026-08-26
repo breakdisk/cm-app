@@ -522,6 +522,52 @@ mod jwt_tests {
         let c2 = make_claims(3600);
         assert_ne!(c1.jti, c2.jti, "Each token must have a unique jti");
     }
+
+    #[test]
+    fn currency_is_included_in_minted_token() {
+        let svc = make_service();
+        let user_id = Uuid::new_v4();
+        let tenant_id = Uuid::new_v4();
+        let claims = Claims::new(
+            user_id,
+            tenant_id,
+            "test-slug".into(),
+            "business".into(),
+            "test@test.com".into(),
+            vec!["merchant".into()],
+            vec![permissions::SHIPMENT_CREATE.into()],
+            3600,
+        )
+        .with_currency(Some("AED".into()));
+
+        let token = svc.issue_access_token(claims).expect("token creation failed");
+        let data = svc.validate_access_token(&token).expect("validation failed");
+
+        assert_eq!(data.claims.currency, Some("AED".to_string()));
+    }
+
+    #[test]
+    fn currency_none_is_preserved_in_minted_token() {
+        let svc = make_service();
+        let user_id = Uuid::new_v4();
+        let tenant_id = Uuid::new_v4();
+        let claims = Claims::new(
+            user_id,
+            tenant_id,
+            "test-slug".into(),
+            "starter".into(),
+            "test@test.com".into(),
+            vec!["merchant".into()],
+            vec![],
+            3600,
+        )
+        .with_currency(None);
+
+        let token = svc.issue_access_token(claims).expect("token creation failed");
+        let data = svc.validate_access_token(&token).expect("validation failed");
+
+        assert_eq!(data.claims.currency, None);
+    }
 }
 
 // ---------------------------------------------------------------------------
