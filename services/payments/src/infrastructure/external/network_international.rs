@@ -33,7 +33,11 @@ pub struct NetworkInternationalGateway {
 
 impl NetworkInternationalGateway {
     pub fn new(cfg: NetworkInternationalConfig) -> Self {
-        Self { cfg, http: reqwest::Client::new() }
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("NI HTTP client");
+        Self { cfg, http }
     }
 }
 
@@ -89,15 +93,12 @@ impl PaymentGateway for NetworkInternationalGateway {
             merchant_order_reference: req.intent_id.to_string(),
             merchant_attributes: MerchantAttributes { redirect_url: req.return_url },
         };
-        let resp = self.http
-            .post(&url)
-            .bearer_auth(&self.cfg.api_key)
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<CreateOrderResponse>()
-            .await?;
+        let resp = self.http.post(&url).bearer_auth(&self.cfg.api_key).json(&body).send().await?;
+        if let Err(e) = resp.error_for_status_ref() {
+            let body_text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("NI create_session failed: {e} — body: {body_text}");
+        }
+        let resp = resp.json::<CreateOrderResponse>().await?;
 
         Ok(GatewaySession {
             checkout_url: resp.links.payment.href,
@@ -140,13 +141,16 @@ impl PaymentGateway for NetworkInternationalGateway {
             self.cfg.base_url.trim_end_matches('/'),
             gateway_payment_ref,
         );
-        self.http
+        let resp = self.http
             .post(&url)
             .bearer_auth(&self.cfg.api_key)
             .json(&serde_json::json!({ "amount": { "value": amount_cents } }))
             .send()
-            .await?
-            .error_for_status()?;
+            .await?;
+        if let Err(e) = resp.error_for_status_ref() {
+            let body_text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("NI refund failed: {e} — body: {body_text}");
+        }
         Ok(())
     }
 }
