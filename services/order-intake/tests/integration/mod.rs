@@ -178,7 +178,7 @@ use logisticos_order_intake::{
         entities::{piece::Piece, shipment::{PaymentRequirement, Shipment}},
         value_objects::{AwbGenerator, AwbGeneratorError, ServiceType, ShipmentWeight},
     },
-    infrastructure::external::PassthroughNormalizer,
+    infrastructure::{external::PassthroughNormalizer, http::PaymentsClient},
 };
 
 // ── InMemoryShipmentRepository ───────────────────────────────────────────────
@@ -330,23 +330,83 @@ impl EventPublisher for NoOpEventPublisher {
     }
 }
 
+// ── RecordingEventPublisher ──────────────────────────────────────────────────
+// Records every topic it was asked to publish to, so payment-aware create()
+// tests can assert that AwaitingPayment holds all three lifecycle events
+// (zero publishes) while every other path still fires them immediately
+// (three publishes) — a regression guard for the existing behaviour.
+
+#[derive(Default)]
+pub struct RecordingEventPublisher {
+    pub published: Mutex<Vec<String>>,
+}
+
+impl RecordingEventPublisher {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl EventPublisher for RecordingEventPublisher {
+    fn publish<'a>(
+        &'a self,
+        topic: &'a str,
+        _key: &'a str,
+        _payload: &'a str,
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            self.published.lock().unwrap().push(topic.to_string());
+            Ok(())
+        })
+    }
+}
+
 // ── Test helpers ─────────────────────────────────────────────────────────────
 
 const TEST_JWT_SECRET: &str = "order-intake-integration-test-secret";
 const TEST_QUOTE_TOKEN_SECRET: &str = "order-intake-integration-test-quote-token-secret";
+const TEST_SHIPMENT_RETURN_URL_BASE: &str = "https://portal.test.local";
 
 /// Build a TestClient with in-memory repo + no-op publisher.
 /// Returns the client and the JWT service so callers can mint tokens.
+///
+/// The wired `PaymentsClient` points at an unreachable sentinel address.
+/// That's safe for every test using this helper: `PaymentsClient` is only
+/// ever called from the `AwaitingPayment` branch of `create()`, and none of
+/// the request bodies built by these tests set `quote_token`. Tests that
+/// need a real payment-intent round trip use
+/// `build_test_server_with_publisher_and_payments` below instead.
 fn build_test_server(repo: Arc<InMemoryShipmentRepository>) -> (TestServer, JwtService) {
-    let publisher    = Arc::new(NoOpEventPublisher);
+    let (server, jwt, _publisher) = build_test_server_with_publisher_and_payments(
+        repo,
+        Arc::new(NoOpEventPublisher),
+        "http://127.0.0.1:1",
+    );
+    (server, jwt)
+}
+
+/// Full-control variant of `build_test_server` — takes the `EventPublisher`
+/// and the `PaymentsClient` base URL explicitly. Used by the payment-aware
+/// `create()` tests, which need to assert on what got published and need
+/// `PaymentsClient` pointed at a real (mock) payments server rather than the
+/// unreachable sentinel `build_test_server` uses.
+fn build_test_server_with_publisher_and_payments(
+    repo: Arc<InMemoryShipmentRepository>,
+    publisher: Arc<dyn EventPublisher>,
+    payments_base_url: &str,
+) -> (TestServer, JwtService, Arc<dyn EventPublisher>) {
     let normalizer   = Arc::new(PassthroughNormalizer);
     let awb_gen      = Arc::new(MockAwbGenerator::default());
+    let payments_client = Arc::new(PaymentsClient::new(payments_base_url));
 
     let svc = Arc::new(ShipmentService::new(
         Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
-        publisher,
+        Arc::clone(&publisher),
         normalizer,
         awb_gen,
+        payments_client,
+        TEST_QUOTE_TOKEN_SECRET.to_string(),
+        TEST_SHIPMENT_RETURN_URL_BASE.to_string(),
     ));
     let query = Arc::new(ShipmentQueryService::new(
         Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
@@ -367,7 +427,7 @@ fn build_test_server(repo: Arc<InMemoryShipmentRepository>) -> (TestServer, JwtS
     let app = router(state);
 
     let server = TestClient::new(app);
-    (server, jwt)
+    (server, jwt, publisher)
 }
 
 /// Mint a JWT token carrying the "merchant" role (shipments:create, read, cancel, bulk).
@@ -1865,5 +1925,257 @@ mod shipment_quote {
             .await;
 
         assert_eq!(resp.status_code(), 401);
+    }
+}
+
+mod payment_aware_create {
+    use super::*;
+    use logisticos_order_intake::domain::value_objects::quote_token::{self, QuoteTokenPayload};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Stands up a minimal real HTTP server on a random localhost port that
+    /// answers `POST /v1/internal/payments/intents` with a fixed
+    /// `{intent_id, checkout_url}` body — mirroring the shape
+    /// `PaymentsClient::create_shipping_fee_intent` expects from the real
+    /// payments service. `PaymentsClient` is a concrete `reqwest`-backed
+    /// struct, not a trait, so there is no fake-implementation seam to swap
+    /// in (unlike `PaymentGateway` in the payments service, or a Kafka
+    /// producer behind `rdkafka::mocking::MockCluster`) — a real local
+    /// listener is the most direct way to exercise the actual HTTP call
+    /// order-intake makes. Returns the base URL to hand to
+    /// `PaymentsClient::new`, plus a call counter the tests assert on.
+    async fn spawn_mock_payments_server(checkout_url: &str) -> (String, Arc<AtomicUsize>) {
+        use axum::{routing::post, Json, Router};
+
+        let checkout_url_owned = checkout_url.to_string();
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_for_handler = Arc::clone(&counter);
+
+        let app = Router::new().route(
+            "/v1/internal/payments/intents",
+            post(move || {
+                let checkout_url = checkout_url_owned.clone();
+                let counter = Arc::clone(&counter_for_handler);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    Json(serde_json::json!({
+                        "intent_id": uuid::Uuid::new_v4(),
+                        "checkout_url": checkout_url,
+                    }))
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock payments server");
+        let addr = listener.local_addr().expect("mock payments server local_addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        (format!("http://{addr}"), counter)
+    }
+
+    /// Sign a quote token the same way `POST /v1/shipments/quote` does, for
+    /// the given tenant/service_type/weight — the three fields `create()`
+    /// cross-checks against the booking request.
+    fn sign_quote_token(tenant_id: uuid::Uuid, service_type: &str, weight_grams: u32, amount_cents: i64) -> String {
+        let payload = QuoteTokenPayload {
+            tenant_id,
+            service_type: service_type.to_string(),
+            weight_grams,
+            amount_cents,
+            currency: "AED".to_string(),
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(15),
+        };
+        quote_token::sign(TEST_QUOTE_TOKEN_SECRET.as_bytes(), &payload)
+    }
+
+    #[tokio::test]
+    async fn create_with_a_valid_quote_token_defers_dispatch_events_and_calls_payments() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let (payments_url, call_count) = spawn_mock_payments_server("https://checkout.test/pay/abc").await;
+        let (server, jwt, _publisher) = build_test_server_with_publisher_and_payments(
+            Arc::clone(&repo),
+            Arc::clone(&recorder) as Arc<dyn EventPublisher>,
+            &payments_url,
+        );
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let user_id = uuid::Uuid::new_v4();
+        let token = mint_merchant_token_with_currency(&jwt, tenant_id, user_id, Some("AED"));
+        let quote = sign_quote_token(tenant_id, "standard", 1_500, 2_200);
+
+        let mut body = valid_shipment_body();
+        body["weight_grams"] = json!(1_500u32);
+        body["quote_token"] = json!(quote);
+
+        let resp = server
+            .post("/v1/shipments")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&body)
+            .await;
+
+        assert_eq!(resp.status_code(), 201);
+        let resp_body: Value = resp.json();
+        assert_eq!(resp_body["payment_status"], "awaiting_payment");
+        assert_eq!(resp_body["checkout_url"], "https://checkout.test/pay/abc");
+        assert!(
+            resp_body["pending_dispatch_events"]["awb_issued"].is_object(),
+            "awb_issued event must be held"
+        );
+        assert!(
+            resp_body["pending_dispatch_events"]["shipment_created"].is_object(),
+            "shipment_created event must be held"
+        );
+        assert!(
+            resp_body["pending_dispatch_events"]["shipment_confirmed"].is_object(),
+            "shipment_confirmed event must be held"
+        );
+
+        assert_eq!(
+            recorder.published.lock().unwrap().len(),
+            0,
+            "no lifecycle event should publish while a shipment is awaiting payment"
+        );
+        assert_eq!(call_count.load(Ordering::SeqCst), 1, "payments client should be called exactly once");
+    }
+
+    #[tokio::test]
+    async fn create_without_a_quote_token_publishes_immediately_as_before() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        // A payments server that would fail loudly if ever hit — this path
+        // must never call it.
+        let (payments_url, call_count) = spawn_mock_payments_server("https://unused.test").await;
+        let (server, jwt, _publisher) = build_test_server_with_publisher_and_payments(
+            Arc::clone(&repo),
+            Arc::clone(&recorder) as Arc<dyn EventPublisher>,
+            &payments_url,
+        );
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let user_id = uuid::Uuid::new_v4();
+        let token = mint_merchant_token(&jwt, tenant_id, user_id);
+
+        let resp = server
+            .post("/v1/shipments")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&valid_shipment_body())
+            .await;
+
+        assert_eq!(resp.status_code(), 201);
+        let resp_body: Value = resp.json();
+        assert_eq!(resp_body["payment_status"], "not_required");
+        assert!(resp_body["pending_dispatch_events"].is_null());
+        assert!(resp_body["checkout_url"].is_null(), "checkout_url must be omitted when payment wasn't required");
+
+        assert_eq!(
+            recorder.published.lock().unwrap().len(),
+            3,
+            "AwbIssued + ShipmentCreated + ShipmentConfirmed should publish immediately, exactly as before this change"
+        );
+        assert_eq!(call_count.load(Ordering::SeqCst), 0, "payments client must not be called without a quote token");
+    }
+
+    #[tokio::test]
+    async fn create_rejects_a_quote_token_for_a_different_tenant() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = build_test_server(Arc::clone(&repo));
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let user_id = uuid::Uuid::new_v4();
+        let token = mint_merchant_token_with_currency(&jwt, tenant_id, user_id, Some("AED"));
+        // Signed for a different tenant than the one on the caller's JWT.
+        let quote = sign_quote_token(uuid::Uuid::new_v4(), "standard", 1_500, 2_200);
+
+        let mut body = valid_shipment_body();
+        body["weight_grams"] = json!(1_500u32);
+        body["quote_token"] = json!(quote);
+
+        let resp = server
+            .post("/v1/shipments")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&body)
+            .await;
+
+        assert_eq!(resp.status_code(), 422);
+        let resp_body: Value = resp.json();
+        assert_eq!(resp_body["error"]["code"], "VALIDATION_ERROR");
+
+        let store = repo.shipments.lock().unwrap();
+        assert_eq!(store.len(), 0, "a rejected quote token must not create a shipment");
+    }
+
+    #[tokio::test]
+    async fn create_is_idempotent_on_a_repeated_idempotency_key() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let (payments_url, call_count) = spawn_mock_payments_server("https://checkout.test/pay/xyz").await;
+        let (server, jwt, _publisher) = build_test_server_with_publisher_and_payments(
+            Arc::clone(&repo),
+            Arc::clone(&recorder) as Arc<dyn EventPublisher>,
+            &payments_url,
+        );
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let user_id = uuid::Uuid::new_v4();
+        let token = mint_merchant_token_with_currency(&jwt, tenant_id, user_id, Some("AED"));
+        let quote = sign_quote_token(tenant_id, "standard", 1_500, 2_200);
+
+        let mut body = valid_shipment_body();
+        body["weight_grams"] = json!(1_500u32);
+        body["quote_token"] = json!(quote);
+        body["idempotency_key"] = json!("retry-key-1");
+
+        let first = server
+            .post("/v1/shipments")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&body)
+            .await;
+        assert_eq!(first.status_code(), 201);
+        let first_body: Value = first.json();
+        let first_id = first_body["id"].as_str().expect("id must be present").to_string();
+
+        let second = server
+            .post("/v1/shipments")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&body)
+            .await;
+        assert_eq!(second.status_code(), 201);
+        let second_body: Value = second.json();
+        assert_eq!(second_body["id"], first_id, "a replay must return the shipment already created for this key");
+        assert!(second_body["checkout_url"].is_null(), "a replay must not open a second checkout session");
+
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            1,
+            "payments client should be called exactly once across both requests"
+        );
+        assert_eq!(
+            recorder.published.lock().unwrap().len(),
+            0,
+            "still awaiting payment — neither call should publish a lifecycle event"
+        );
+
+        let store = repo.shipments.lock().unwrap();
+        assert_eq!(store.len(), 1, "only one shipment should ever be persisted for this idempotency key");
     }
 }

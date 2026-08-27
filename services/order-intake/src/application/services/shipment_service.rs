@@ -15,7 +15,7 @@ use crate::{
     },
     domain::{
         entities::{
-            shipment::Shipment,
+            shipment::{PaymentRequirement, Shipment},
             piece::Piece,
         },
         value_objects::{
@@ -158,20 +158,63 @@ pub struct ShipmentService {
     pub publisher:     Arc<dyn EventPublisher>,
     pub normalizer:    Arc<dyn AddressNormalizer>,
     pub awb_generator: Arc<dyn AwbGenerator>,
+    pub payments_client: Arc<crate::infrastructure::http::PaymentsClient>,
+    /// HMAC-SHA256 signing secret for short-TTL quote tokens
+    /// (`domain::value_objects::quote_token`) — used to re-verify a token
+    /// presented on `create()` before trusting its amount to charge.
+    pub quote_token_secret: String,
+    /// Base URL merchants/customers land on after completing (or abandoning)
+    /// a hosted checkout — the payment gateway's `return_url`.
+    pub shipment_return_url_base: String,
+}
+
+/// Returned by `create()`: the persisted shipment, plus a checkout URL when
+/// the booking required payment (`payment_status == AwaitingPayment`).
+/// `checkout_url` is `None` for every other path, including an idempotent
+/// replay of an already-paid-for booking.
+pub struct CreateShipmentResult {
+    pub shipment: Shipment,
+    pub checkout_url: Option<String>,
 }
 
 impl ShipmentService {
+    /// Seven arguments, because `ShipmentService` wires every collaborator
+    /// `create()` needs — including, on the payment-aware booking path, the
+    /// payments client and the two config values that drive it. Grouping
+    /// these into a builder would move the arity rather than remove it, and
+    /// every field here is required for the service to function.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         repo:          Arc<dyn ShipmentRepository>,
         publisher:     Arc<dyn EventPublisher>,
         normalizer:    Arc<dyn AddressNormalizer>,
         awb_generator: Arc<dyn AwbGenerator>,
+        payments_client: Arc<crate::infrastructure::http::PaymentsClient>,
+        quote_token_secret: String,
+        shipment_return_url_base: String,
     ) -> Self {
-        Self { repo, publisher, normalizer, awb_generator }
+        Self { repo, publisher, normalizer, awb_generator, payments_client, quote_token_secret, shipment_return_url_base }
     }
 
-    pub async fn create(&self, cmd: CreateShipmentCommand) -> AppResult<Shipment> {
+    pub async fn create(&self, cmd: CreateShipmentCommand) -> AppResult<CreateShipmentResult> {
         tracing::info!(step = "enter", "ShipmentService::create");
+
+        // ── Idempotent replay ──────────────────────────────────────────────────
+        // A client retrying a request with the same key (e.g. after a timed-out
+        // response whose success it never saw) gets back the shipment already
+        // created for that key instead of creating a duplicate — and, on the
+        // payment-aware path, instead of opening a second payment intent for
+        // money already being collected. No checkout_url: a replay by definition
+        // already went through the checkout flow (or never needed to) the first
+        // time around.
+        if let Some(key) = cmd.idempotency_key.as_deref() {
+            if let Some(existing) = self.repo.find_by_idempotency_key(cmd.tenant_id, key).await
+                .map_err(AppError::Internal)?
+            {
+                tracing::info!(shipment_id = %existing.id, "create: idempotent replay — returning existing shipment");
+                return Ok(CreateShipmentResult { shipment: existing, checkout_url: None });
+            }
+        }
         // ── Validate service type ────────────────────────────────────────────
         let service_type = ServiceType::parse(&cmd.service_type).map_err(AppError::Validation)?;
         tracing::info!(step = "service_type_ok", ?service_type, "create");
@@ -346,8 +389,30 @@ impl ShipmentService {
             .map(|d| d.volumetric_weight_grams().max(shipment_weight_grams))
             .unwrap_or(shipment_weight_grams);
 
+        // ── Verify the quote token (if any) and decide whether payment gates
+        //    dispatch ─────────────────────────────────────────────────────────
+        // Verified before the shipment row is written so a bad/tampered/expired
+        // token fails the request before anything is persisted.
+        let (payment_status, verified_amount_cents, verified_currency) = match &cmd.quote_token {
+            None => (PaymentRequirement::NotRequired, None, None),
+            Some(token) => {
+                let payload = crate::domain::value_objects::quote_token::verify(
+                    self.quote_token_secret.as_bytes(), token,
+                ).map_err(|e| AppError::Validation(format!("Invalid quote: {e}")))?;
+                if payload.tenant_id != cmd.tenant_id {
+                    return Err(AppError::Validation("Quote token does not belong to this tenant".into()));
+                }
+                if payload.service_type != cmd.service_type || payload.weight_grams != cmd.weight_grams {
+                    return Err(AppError::Validation(
+                        "Quote token does not match this booking's service type or weight".into(),
+                    ));
+                }
+                (PaymentRequirement::AwaitingPayment, Some(payload.amount_cents), Some(payload.currency))
+            }
+        };
+
         // ── Build shipment record ─────────────────────────────────────────────
-        let shipment = Shipment {
+        let mut shipment = Shipment {
             id: shipment_id.clone(),
             tenant_id: TenantId::from_uuid(cmd.tenant_id),
             merchant_id: MerchantId::from_uuid(cmd.merchant_id),
@@ -371,63 +436,17 @@ impl ShipmentService {
             merchant_reference: cmd.merchant_reference.clone(),
             source_platform: cmd.source_platform.clone(),
             external_order_id: cmd.external_order_id.clone(),
-            // Task 16 scope is plumbing only — `create()` doesn't yet know about
-            // quote tokens or payment requirements (that's Task 18). No shipment
-            // created through this path requires payment today, so these all
-            // start at their "no payment involved" defaults.
             payment_intent_id: None,
-            payment_status: crate::domain::entities::shipment::PaymentRequirement::NotRequired,
+            payment_status,
             pending_dispatch_events: None,
-            idempotency_key: None,
+            idempotency_key: cmd.idempotency_key.clone(),
             created_at: now,
             updated_at: now,
         };
 
-        // ── Persist ───────────────────────────────────────────────────────────
-        self.repo.save(&shipment).await.map_err(|e| {
-            tracing::error!(error = ?e, "shipment_repo.save failed");
-            AppError::Internal(e)
-        })?;
-        tracing::info!(step = "shipment_saved", "create");
-        self.repo.save_pieces(&pieces).await.map_err(|e| {
-            tracing::error!(error = ?e, "shipment_repo.save_pieces failed");
-            AppError::Internal(e)
-        })?;
-        tracing::info!(step = "pieces_saved", "create");
-
-        // ── Stamp the opening timeline milestones ─────────────────────────────
-        // A successful booking is received (`created` → pending) and validated +
-        // AWB-issued (`confirmed`) synchronously. Both are stamped now so the
-        // admin and customer timelines show a date/time/location for the earliest
-        // steps. The stored status stays Pending (booking awaiting dispatch);
-        // `confirmed` is a timeline milestone, not a status change here.
-        // Best-effort: a timeline write must never fail shipment creation.
-        let actor_type = if shipment.booked_by_customer { "customer" } else { "merchant" };
-        let pickup_city = Some(shipment.origin.city.clone());
-        if let Err(e) = self.repo.record_event(NewShipmentEvent {
-            shipment_id: shipment.id.clone(),
-            tenant_id:   cmd.tenant_id,
-            event_type:  "created".into(),
-            from_status: None,
-            to_status:   "pending".into(),
-            actor_type:  actor_type.into(),
-            location:    pickup_city.clone(),
-        }).await {
-            tracing::warn!(error = %e, shipment_id = %shipment.id, "created timeline event failed (non-fatal)");
-        }
-        if let Err(e) = self.repo.record_event(NewShipmentEvent {
-            shipment_id: shipment.id.clone(),
-            tenant_id:   cmd.tenant_id,
-            event_type:  "confirmed".into(),
-            from_status: Some("pending".into()),
-            to_status:   "confirmed".into(),
-            actor_type:  "system".into(),
-            location:    pickup_city,
-        }).await {
-            tracing::warn!(error = %e, shipment_id = %shipment.id, "confirmed timeline event failed (non-fatal)");
-        }
-
-        // ── Publish AwbIssued (fire-and-forget) ───────────────────────────────
+        // ── Build the lifecycle events (payload construction only — nothing is
+        //    published yet; whether these fire now or wait for payment is
+        //    decided below) ────────────────────────────────────────────────────
         let awb_event = Event::new(
             "logisticos/order-intake",
             "awb.issued",
@@ -443,13 +462,7 @@ impl ShipmentService {
                 issued_at:    now.to_rfc3339(),
             },
         );
-        if let Ok(payload) = serde_json::to_string(&awb_event) {
-            let _ = self.publisher
-                .publish(topics::AWB_ISSUED, master_awb.as_str(), &payload)
-                .await;
-        }
 
-        // ── Publish ShipmentCreated (consumed by dispatch, engagement, analytics) ─
         let total_fee_cents = shipment.compute_base_fee_with_pieces(&pieces).amount;
         let event = Event::new(
             "logisticos/order-intake",
@@ -491,16 +504,7 @@ impl ShipmentService {
                 delivery_category:    delivery_category.clone(),
             },
         );
-        let payload = serde_json::to_string(&event).map_err(|e| AppError::Internal(e.into()))?;
-        // Fire-and-forget — Kafka unavailability must not prevent shipment creation.
-        if let Err(e) = self.publisher
-            .publish(topics::SHIPMENT_CREATED, &shipment.id.to_string(), &payload)
-            .await
-        {
-            tracing::warn!(error = %e, shipment_id = %shipment.id, "ShipmentCreated event publish failed (non-fatal)");
-        }
 
-        // ── Publish ShipmentConfirmed ─────────────────────────────────────────
         // Booking is confirmed synchronously (validated + AWB issued). Advances
         // the customer-facing tracking read-model (delivery-experience already
         // consumes this topic) and fires merchant webhooks. order-intake's own
@@ -513,13 +517,116 @@ impl ShipmentService {
             cmd.tenant_id,
             serde_json::json!({ "shipment_id": shipment.id.inner() }),
         );
-        if let Ok(p) = serde_json::to_string(&confirmed_event) {
+
+        // ── Publish now, or hold for payment ────────────────────────────────────
+        // AwaitingPayment: none of the three events above fire yet — dispatch,
+        // engagement, and analytics must not see this shipment until
+        // payment.intent.captured (Task 19) republishes them unchanged. Instead
+        // a payment intent is opened and its checkout URL is returned to the
+        // caller. Otherwise (the path every shipment took before this task),
+        // publish immediately exactly as before.
+        let awb_json = serde_json::to_value(&awb_event).map_err(|e| AppError::Internal(e.into()))?;
+        let created_json = serde_json::to_value(&event).map_err(|e| AppError::Internal(e.into()))?;
+        let confirmed_json = serde_json::to_value(&confirmed_event).map_err(|e| AppError::Internal(e.into()))?;
+
+        let mut checkout_url: Option<String> = None;
+
+        if payment_status == PaymentRequirement::AwaitingPayment {
+            shipment.pending_dispatch_events = Some(serde_json::json!({
+                "awb_issued": awb_json,
+                "shipment_created": created_json,
+                "shipment_confirmed": confirmed_json,
+            }));
+
+            let amount_cents = verified_amount_cents
+                .expect("AwaitingPayment always comes from a verified quote token carrying an amount");
+            let currency = verified_currency
+                .expect("AwaitingPayment always comes from a verified quote token carrying a currency");
+            let return_url = format!(
+                "{}/payment/return?shipment_id={}",
+                self.shipment_return_url_base.trim_end_matches('/'),
+                shipment.id,
+            );
+            let intent = self.payments_client
+                .create_shipping_fee_intent(cmd.tenant_id, shipment.id.inner(), amount_cents, &currency, &return_url)
+                .await
+                .map_err(AppError::Internal)?;
+            shipment.payment_intent_id = Some(intent.intent_id);
+            checkout_url = Some(intent.checkout_url);
+        } else {
+            if let Ok(payload) = serde_json::to_string(&awb_event) {
+                let _ = self.publisher
+                    .publish(topics::AWB_ISSUED, master_awb.as_str(), &payload)
+                    .await;
+            }
+
+            let payload = serde_json::to_string(&event).map_err(|e| AppError::Internal(e.into()))?;
+            // Fire-and-forget — Kafka unavailability must not prevent shipment creation.
             if let Err(e) = self.publisher
-                .publish(topics::SHIPMENT_CONFIRMED, &shipment.id.to_string(), &p)
+                .publish(topics::SHIPMENT_CREATED, &shipment.id.to_string(), &payload)
                 .await
             {
-                tracing::warn!(error = %e, shipment_id = %shipment.id, "ShipmentConfirmed event publish failed (non-fatal)");
+                tracing::warn!(error = %e, shipment_id = %shipment.id, "ShipmentCreated event publish failed (non-fatal)");
             }
+
+            if let Ok(p) = serde_json::to_string(&confirmed_event) {
+                if let Err(e) = self.publisher
+                    .publish(topics::SHIPMENT_CONFIRMED, &shipment.id.to_string(), &p)
+                    .await
+                {
+                    tracing::warn!(error = %e, shipment_id = %shipment.id, "ShipmentConfirmed event publish failed (non-fatal)");
+                }
+            }
+        }
+
+        // ── Persist ───────────────────────────────────────────────────────────
+        // Only now, once quote verification, the publish-or-defer branch, and
+        // any payment intent creation have all succeeded, so nothing is ever
+        // saved half-built (e.g. AwaitingPayment without a payment_intent_id).
+        self.repo.save(&shipment).await.map_err(|e| {
+            tracing::error!(error = ?e, "shipment_repo.save failed");
+            AppError::Internal(e)
+        })?;
+        tracing::info!(step = "shipment_saved", "create");
+        self.repo.save_pieces(&pieces).await.map_err(|e| {
+            tracing::error!(error = ?e, "shipment_repo.save_pieces failed");
+            AppError::Internal(e)
+        })?;
+        tracing::info!(step = "pieces_saved", "create");
+
+        // ── Stamp the opening timeline milestones ─────────────────────────────
+        // A successful booking is received (`created` → pending) and validated +
+        // AWB-issued (`confirmed`) synchronously. Both are stamped now so the
+        // admin and customer timelines show a date/time/location for the earliest
+        // steps. The stored status stays Pending (booking awaiting dispatch);
+        // `confirmed` is a timeline milestone, not a status change here.
+        // Runs after `save()`, not before: `shipment_events.shipment_id` carries
+        // a FK to `shipments(id)` (migration 0002), so stamping first would fail
+        // the constraint on every booking. Best-effort regardless: a timeline
+        // write must never fail shipment creation.
+        let actor_type = if shipment.booked_by_customer { "customer" } else { "merchant" };
+        let pickup_city = Some(shipment.origin.city.clone());
+        if let Err(e) = self.repo.record_event(NewShipmentEvent {
+            shipment_id: shipment.id.clone(),
+            tenant_id:   cmd.tenant_id,
+            event_type:  "created".into(),
+            from_status: None,
+            to_status:   "pending".into(),
+            actor_type:  actor_type.into(),
+            location:    pickup_city.clone(),
+        }).await {
+            tracing::warn!(error = %e, shipment_id = %shipment.id, "created timeline event failed (non-fatal)");
+        }
+        if let Err(e) = self.repo.record_event(NewShipmentEvent {
+            shipment_id: shipment.id.clone(),
+            tenant_id:   cmd.tenant_id,
+            event_type:  "confirmed".into(),
+            from_status: Some("pending".into()),
+            to_status:   "confirmed".into(),
+            actor_type:  "system".into(),
+            location:    pickup_city,
+        }).await {
+            tracing::warn!(error = %e, shipment_id = %shipment.id, "confirmed timeline event failed (non-fatal)");
         }
 
         tracing::info!(
@@ -529,7 +636,7 @@ impl ShipmentService {
             service_type = service_type.as_str(),
             "Shipment created"
         );
-        Ok(shipment)
+        Ok(CreateShipmentResult { shipment, checkout_url })
     }
 
     pub async fn cancel(&self, cmd: CancelShipmentCommand) -> AppResult<()> {
@@ -628,7 +735,7 @@ impl ShipmentService {
         for (i, row) in cmd.rows.into_iter().enumerate() {
             let reference = row.merchant_reference.clone();
             match self.create(row).await {
-                Ok(s)  => created.push(s.id.inner()),
+                Ok(result) => created.push(result.shipment.id.inner()),
                 Err(e) => failed.push(BulkRowError {
                     row_index: i,
                     merchant_reference: reference,

@@ -419,6 +419,11 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8004"
       APP__ENV: development
+      # Base URL merchants/customers are redirected back to after hosted
+      # checkout for a payment-gated shipment (the payments service's
+      # gateway `return_url`). Required — order-intake fails to start
+      # without it.
+      APP__PUBLIC_BASE_URL: ${APP__PUBLIC_BASE_URL:-http://localhost:3001}
       DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_order_intake
       DATABASE__MAX_CONNECTIONS: "5"
       KAFKA__BROKERS: kafka:29092

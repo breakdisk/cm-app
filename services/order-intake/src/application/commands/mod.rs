@@ -98,6 +98,17 @@ pub struct CreateShipmentCommand {
     /// Derived from service_type/weight when omitted.
     #[serde(default)]
     pub delivery_category: Option<String>,
+
+    /// A signed quote token from `POST /v1/shipments/quote`. When present,
+    /// the shipment is created in `awaiting_payment` and dispatch is held
+    /// until the corresponding payment intent captures.
+    #[serde(default)]
+    pub quote_token: Option<String>,
+    /// Client-generated idempotency key — a retry with the same key returns
+    /// the shipment already created for it instead of creating a duplicate
+    /// (and a duplicate charge).
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Validate, Serialize)]

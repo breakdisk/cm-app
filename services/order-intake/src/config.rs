@@ -28,6 +28,13 @@ pub struct AppConfig {
     /// e.g. APP__CORS_ORIGINS=https://os.cargomarket.net,https://admin.cargomarket.net
     #[serde(default)]
     pub cors_origins: Option<String>,
+    /// Base URL a merchant/customer is redirected back to after completing
+    /// (or abandoning) a hosted checkout for a payment-gated shipment —
+    /// passed to the payments service as the gateway `return_url`.
+    /// e.g. APP__PUBLIC_BASE_URL=https://os.cargomarket.net
+    /// Required, no default: an unset base URL must fail service startup
+    /// loudly, not silently mint a broken return link for a real payment.
+    pub public_base_url: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]

@@ -15,6 +15,7 @@ use crate::{
         awb::{FallbackAwbGenerator, PostgresAwbGenerator, RedisAwbGenerator},
         db::PgShipmentRepository,
         external::{MapboxGeocoder, PassthroughNormalizer},
+        http::PaymentsClient,
         messaging::{status_consumer::start_status_consumer, KafkaEventPublisher},
     },
 };
@@ -93,11 +94,15 @@ pub async fn run() -> anyhow::Result<()> {
     let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
 
     // Application services
+    let payments_client = Arc::new(PaymentsClient::new(&cfg.payments.url));
     let svc = Arc::new(ShipmentService::new(
         repo.clone(),
         publisher,
         normalizer,
         awb_generator,
+        payments_client,
+        cfg.quote_token_secret.clone(),
+        cfg.app.public_base_url.clone(),
     ));
     let query = Arc::new(ShipmentQueryService::new(repo.clone()));
     let pool_for_dims = pool.clone();

@@ -106,7 +106,19 @@ async fn create_shipment(
         "create_shipment handler entered",
     );
     match s.svc.create(cmd).await {
-        Ok(shipment) => Ok::<_, AppError>((StatusCode::CREATED, Json(shipment))),
+        Ok(result) => {
+            #[derive(serde::Serialize)]
+            struct Response {
+                #[serde(flatten)]
+                shipment: crate::domain::entities::shipment::Shipment,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                checkout_url: Option<String>,
+            }
+            Ok::<_, AppError>((
+                StatusCode::CREATED,
+                Json(Response { shipment: result.shipment, checkout_url: result.checkout_url }),
+            ))
+        }
         Err(e) => {
             tracing::error!(error = ?e, "create_shipment handler: service returned error");
             Err(e)
@@ -485,14 +497,16 @@ async fn internal_create_shipment(
         auto_dispatch:     Some(true),
         merchant_name:     None,
         delivery_category: None,
+        quote_token:       None,
+        idempotency_key:   None,
     };
 
     match s.svc.create(create_cmd).await {
-        Ok(shipment) => Ok::<_, AppError>((
+        Ok(result) => Ok::<_, AppError>((
             StatusCode::CREATED,
             Json(serde_json::json!({
-                "id":  shipment.id.inner(),
-                "awb": shipment.awb.as_str(),
+                "id":  result.shipment.id.inner(),
+                "awb": result.shipment.awb.as_str(),
                 "status": "pending",
             })),
         )),
