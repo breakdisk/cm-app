@@ -251,6 +251,24 @@ pub async fn run() -> anyhow::Result<()> {
         }
     });
 
+    // Payment-intent expiry sweep — every 5 minutes, expire any `created`/
+    // `pending` intent past its TTL. Publishes payment.intent.failed so
+    // order-intake's consumer cancels the shipment the same way a declined
+    // card would. Deliberately more frequent than the 30-minute TTL itself so
+    // a customer never waits much longer than the TTL to see the cancellation.
+    let intent_svc_for_sweep = Arc::clone(&payment_intent_service);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(5 * 60));
+        loop {
+            tick.tick().await;
+            match intent_svc_for_sweep.sweep_expired().await {
+                Ok(count) if count > 0 => tracing::info!(count, "Payment intent sweep: expired stale intents"),
+                Ok(_) => {}
+                Err(e) => tracing::error!(err = %e, "Payment intent sweep failed"),
+            }
+        }
+    });
+
     // Spawn Kafka consumer for pod.captured — runs for the lifetime of the process.
     let pod_consumer = PodConsumer::new(
         &cfg.kafka.brokers,
