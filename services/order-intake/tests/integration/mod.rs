@@ -297,6 +297,7 @@ impl EventPublisher for NoOpEventPublisher {
 // ── Test helpers ─────────────────────────────────────────────────────────────
 
 const TEST_JWT_SECRET: &str = "order-intake-integration-test-secret";
+const TEST_QUOTE_TOKEN_SECRET: &str = "order-intake-integration-test-quote-token-secret";
 
 /// Build a TestClient with in-memory repo + no-op publisher.
 /// Returns the client and the JWT service so callers can mint tokens.
@@ -325,6 +326,7 @@ fn build_test_server(repo: Arc<InMemoryShipmentRepository>) -> (TestServer, JwtS
         pool: sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
             .expect("lazy pool construction is infallible"),
+        quote_token_secret: TEST_QUOTE_TOKEN_SECRET.to_string(),
     };
     let app = router(state);
 
@@ -379,6 +381,35 @@ fn mint_admin_token(
         permissions,
         3600,
     );
+
+    jwt.issue_access_token(claims).expect("token issue failed")
+}
+
+/// Mint a JWT token carrying the "merchant" role with a given billing
+/// currency on the claims — used to exercise the AE-region (AED) gate on
+/// `POST /v1/shipments/quote`.
+fn mint_merchant_token_with_currency(
+    jwt: &JwtService,
+    tenant_id: uuid::Uuid,
+    user_id: uuid::Uuid,
+    currency: Option<&str>,
+) -> String {
+    let permissions: Vec<String> = default_permissions_for_role("merchant")
+        .iter()
+        .map(|p| p.to_string())
+        .collect();
+
+    let claims = Claims::new(
+        user_id,
+        tenant_id,
+        "test-tenant".to_string(),
+        "starter".to_string(),
+        "merchant@test.local".to_string(),
+        vec!["merchant".to_string()],
+        permissions,
+        3600,
+    )
+    .with_currency(currency.map(str::to_string));
 
     jwt.issue_access_token(claims).expect("token issue failed")
 }
@@ -1625,5 +1656,174 @@ mod e2e_flow {
 
         let store = repo.shipments.lock().unwrap();
         assert_eq!(store.len(), 2, "only valid shipments should be persisted");
+    }
+}
+
+mod shipment_quote {
+    use super::*;
+    use logisticos_order_intake::domain::value_objects::quote_token;
+
+    #[tokio::test]
+    async fn quote_rejects_a_non_aed_tenant() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = build_test_server(Arc::clone(&repo));
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let user_id = uuid::Uuid::new_v4();
+        let token = mint_merchant_token_with_currency(&jwt, tenant_id, user_id, Some("PHP"));
+
+        let resp = server
+            .post("/v1/shipments/quote")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&json!({
+                "service_type": "standard",
+                "weight_grams": 1500u32
+            }))
+            .await;
+
+        assert_eq!(resp.status_code(), 422);
+        let body: Value = resp.json();
+        assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    }
+
+    #[tokio::test]
+    async fn quote_rejects_a_tenant_with_no_currency_claim() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = build_test_server(Arc::clone(&repo));
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let user_id = uuid::Uuid::new_v4();
+        // Old-style token minted before the currency claim existed.
+        let token = mint_merchant_token_with_currency(&jwt, tenant_id, user_id, None);
+
+        let resp = server
+            .post("/v1/shipments/quote")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&json!({
+                "service_type": "standard",
+                "weight_grams": 1500u32
+            }))
+            .await;
+
+        assert_eq!(resp.status_code(), 422);
+    }
+
+    #[tokio::test]
+    async fn quote_returns_a_verifiable_signed_token_for_an_aed_tenant() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = build_test_server(Arc::clone(&repo));
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let user_id = uuid::Uuid::new_v4();
+        let token = mint_merchant_token_with_currency(&jwt, tenant_id, user_id, Some("AED"));
+
+        let resp = server
+            .post("/v1/shipments/quote")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&json!({
+                "service_type": "standard",
+                "weight_grams": 1500u32
+            }))
+            .await;
+
+        assert_eq!(resp.status_code(), 200);
+        let body: Value = resp.json();
+
+        // AED 20.00 base + 1 surcharge step (0.5kg over 1kg) * AED 2.00 = AED 22.00
+        assert_eq!(body["amount_cents"], 2_200);
+        assert_eq!(body["currency"], "AED");
+
+        let quote_token_str = body["quote_token"].as_str().expect("quote_token must be a string");
+        let verified = quote_token::verify(TEST_QUOTE_TOKEN_SECRET.as_bytes(), quote_token_str)
+            .expect("quote token must verify against the AppState's signing secret");
+
+        assert_eq!(verified.tenant_id, tenant_id);
+        assert_eq!(verified.service_type, "standard");
+        assert_eq!(verified.weight_grams, 1_500);
+        assert_eq!(verified.amount_cents, 2_200);
+        assert_eq!(verified.currency, "AED");
+    }
+
+    #[tokio::test]
+    async fn quote_returns_422_for_unknown_service_type_even_for_an_aed_tenant() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = build_test_server(Arc::clone(&repo));
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let user_id = uuid::Uuid::new_v4();
+        let token = mint_merchant_token_with_currency(&jwt, tenant_id, user_id, Some("AED"));
+
+        let resp = server
+            .post("/v1/shipments/quote")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&json!({
+                "service_type": "teleport",
+                "weight_grams": 1500u32
+            }))
+            .await;
+
+        assert_eq!(resp.status_code(), 422);
+        let body: Value = resp.json();
+        assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+    }
+
+    #[tokio::test]
+    async fn quote_prices_a_balikbayan_piece_list_using_the_piece_fee_table() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt) = build_test_server(Arc::clone(&repo));
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let user_id = uuid::Uuid::new_v4();
+        let token = mint_merchant_token_with_currency(&jwt, tenant_id, user_id, Some("AED"));
+
+        let resp = server
+            .post("/v1/shipments/quote")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&json!({
+                "service_type": "balikbayan",
+                "weight_grams": 0u32,
+                "pieces": [
+                    { "weight_grams": 20_000u32 },
+                    { "weight_grams": 27_000u32 }
+                ]
+            }))
+            .await;
+
+        assert_eq!(resp.status_code(), 200);
+        let body: Value = resp.json();
+        // box1: 20kg -> AED 120.00 (no surcharge). box2: 27kg -> AED 120.00 +
+        // 4 steps * AED 5.00 (0.5kg over 25kg) = AED 140.00. Total: AED 260.00.
+        assert_eq!(body["amount_cents"], 26_000);
+    }
+
+    #[tokio::test]
+    async fn quote_requires_authentication() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, _jwt) = build_test_server(Arc::clone(&repo));
+
+        let resp = server
+            .post("/v1/shipments/quote")
+            .json(&json!({
+                "service_type": "standard",
+                "weight_grams": 1500u32
+            }))
+            .await;
+
+        assert_eq!(resp.status_code(), 401);
     }
 }

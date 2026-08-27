@@ -22,6 +22,8 @@ use crate::application::{
 };
 use crate::domain::entities::address_code::AddressCode;
 
+pub mod quote;
+
 // ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------
@@ -32,6 +34,10 @@ pub struct AppState {
     pub query:  Arc<ShipmentQueryService>,
     pub jwt:    Arc<logisticos_auth::jwt::JwtService>,
     pub pool:   PgPool,
+    /// HMAC-SHA256 signing secret for short-TTL quote tokens
+    /// (`domain::value_objects::quote_token`). Sourced from
+    /// `Config::quote_token_secret`.
+    pub quote_token_secret: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -410,6 +416,7 @@ pub fn router(state: AppState) -> Router {
     let authed = Router::new()
         .route("/shipments",        post(create_shipment).get(list_shipments))
         .route("/shipments/bulk",   post(bulk_create_shipments))
+        .route("/shipments/quote",  post(quote::get_quote))
         .route("/shipments/:id",    get(get_shipment))
         .route("/shipments/:id/events",     get(list_shipment_events))
         .route("/shipments/:id/cancel",     post(cancel_shipment))

@@ -136,7 +136,13 @@ pub async fn run() -> anyhow::Result<()> {
             HeaderName::from_static("x-logisticos-client"),
         ]);
 
-    let state = AppState { svc, query, jwt, pool: pool_for_dims };
+    let state = AppState {
+        svc,
+        query,
+        jwt,
+        pool: pool_for_dims,
+        quote_token_secret: cfg.quote_token_secret.clone(),
+    };
     let app = router(state)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(cors);
