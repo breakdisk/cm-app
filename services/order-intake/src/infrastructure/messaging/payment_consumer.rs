@@ -107,7 +107,26 @@ pub async fn handle_captured(shipment_id: Uuid, svc: &ShipmentService) -> anyhow
     let mut shipment = svc.repo.find_by_id(&id).await?
         .ok_or_else(|| anyhow::anyhow!("no shipment {shipment_id} for captured payment"))?;
 
-    if shipment.payment_status != PaymentRequirement::AwaitingPayment {
+    // Already fully processed: paid *and* the held events handed off. A
+    // redelivered capture stops here.
+    if shipment.payment_status == PaymentRequirement::Paid
+        && shipment.pending_dispatch_events.is_none()
+    {
+        tracing::info!(
+            shipment_id = %shipment_id,
+            "payment.intent.captured — already processed, idempotent skip"
+        );
+        return Ok(());
+    }
+
+    // A shipment that is `Paid` but still holding its events got part-way
+    // through a previous delivery: the money state was saved, then publishing
+    // failed. Fall through and retry the publish rather than skipping — the
+    // customer has paid and these three events are the only thing that will
+    // ever get their shipment dispatched.
+    if shipment.payment_status != PaymentRequirement::AwaitingPayment
+        && shipment.payment_status != PaymentRequirement::Paid
+    {
         tracing::info!(
             shipment_id = %shipment_id,
             payment_status = shipment.payment_status.as_str(),
@@ -116,19 +135,22 @@ pub async fn handle_captured(shipment_id: Uuid, svc: &ShipmentService) -> anyhow
         return Ok(());
     }
 
-    let events = shipment.pending_dispatch_events.take().ok_or_else(|| {
+    let events = shipment.pending_dispatch_events.clone().ok_or_else(|| {
         anyhow::anyhow!(
             "shipment {shipment_id} is awaiting_payment but has no pending_dispatch_events"
         )
     })?;
 
-    shipment.payment_status = PaymentRequirement::Paid;
-
-    // Persist the Paid transition (and the now-cleared pending_dispatch_events)
-    // before publishing, so the state change is durable even if a downstream
-    // publish fails — matching this codebase's established treatment of these
-    // same three events as fire-and-forget (see `ShipmentService::create`).
-    svc.repo.save(&shipment).await?;
+    // Persist `Paid` before publishing, so the money state is durable even if
+    // publishing then fails. `pending_dispatch_events` is deliberately *not*
+    // cleared here — it is the only record of what still needs to reach
+    // dispatch, and clearing it before the events are actually out would lose
+    // them with no way to recover, on the one path where the customer has
+    // already been charged.
+    if shipment.payment_status != PaymentRequirement::Paid {
+        shipment.payment_status = PaymentRequirement::Paid;
+        svc.repo.save(&shipment).await?;
+    }
 
     let awb_key = shipment.awb.as_str().to_string();
     let shipment_key = shipment_id.to_string();
@@ -138,6 +160,7 @@ pub async fn handle_captured(shipment_id: Uuid, svc: &ShipmentService) -> anyhow
         (topics::SHIPMENT_CONFIRMED, &shipment_key, "shipment_confirmed"),
     ];
 
+    let mut failures = Vec::new();
     for (topic, key, data_key) in republish_targets {
         match events.get(data_key) {
             Some(payload) => {
@@ -146,9 +169,12 @@ pub async fn handle_captured(shipment_id: Uuid, svc: &ShipmentService) -> anyhow
                         shipment_id = %shipment_id, topic, error = %e,
                         "failed to republish held dispatch event after payment capture"
                     );
+                    failures.push(topic);
                 }
             }
             None => {
+                // Nothing to publish and nothing a retry could fix — a missing
+                // key is a malformed record, not a transient failure.
                 tracing::error!(
                     shipment_id = %shipment_id, topic, data_key,
                     "pending_dispatch_events missing expected key — event not republished"
@@ -156,6 +182,21 @@ pub async fn handle_captured(shipment_id: Uuid, svc: &ShipmentService) -> anyhow
             }
         }
     }
+
+    if !failures.is_empty() {
+        // Leave `pending_dispatch_events` in place and fail the message, so
+        // Kafka redelivers and the block above retries the publish. The
+        // `Paid` state is already saved, so nothing is charged twice.
+        anyhow::bail!(
+            "shipment {shipment_id}: {} of 3 held dispatch events failed to republish ({:?}) —              retained for redelivery",
+            failures.len(),
+            failures,
+        );
+    }
+
+    // Every event is out. Only now is it safe to drop the held copy.
+    shipment.pending_dispatch_events = None;
+    svc.repo.save(&shipment).await?;
 
     Ok(())
 }

@@ -352,11 +352,38 @@ impl EventPublisher for NoOpEventPublisher {
 #[derive(Default)]
 pub struct RecordingEventPublisher {
     pub published: Mutex<Vec<String>>,
+    /// Full (topic, key, payload) of every publish, so a test can assert an
+    /// event was republished *unchanged* rather than merely routed to the
+    /// right topic.
+    pub records: Mutex<Vec<(String, String, String)>>,
+    /// Topics that should fail to publish, to exercise retry/recovery paths.
+    failing_topics: Mutex<Vec<String>>,
 }
 
 impl RecordingEventPublisher {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A publisher that errors on `topic` and succeeds on everything else.
+    pub fn failing_on(topic: &str) -> Self {
+        let p = Self::default();
+        p.failing_topics.lock().unwrap().push(topic.to_string());
+        p
+    }
+
+    /// Stop failing — lets one test cover "publish failed, then retried".
+    pub fn clear_failures(&self) {
+        self.failing_topics.lock().unwrap().clear();
+    }
+
+    pub fn payload_for(&self, topic: &str) -> Option<String> {
+        self.records
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(t, _, _)| t == topic)
+            .map(|(_, _, payload)| payload.clone())
     }
 }
 
@@ -364,11 +391,19 @@ impl EventPublisher for RecordingEventPublisher {
     fn publish<'a>(
         &'a self,
         topic: &'a str,
-        _key: &'a str,
-        _payload: &'a str,
+        key: &'a str,
+        payload: &'a str,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async move {
+            if self.failing_topics.lock().unwrap().iter().any(|t| t == topic) {
+                anyhow::bail!("simulated publish failure for {topic}");
+            }
             self.published.lock().unwrap().push(topic.to_string());
+            self.records.lock().unwrap().push((
+                topic.to_string(),
+                key.to_string(),
+                payload.to_string(),
+            ));
             Ok(())
         })
     }
@@ -2454,15 +2489,87 @@ mod payment_consumer_tests {
         assert_eq!(stored.payment_status, PaymentRequirement::Paid);
         assert!(stored.pending_dispatch_events.is_none(), "held events must be cleared after republish");
 
-        let published = recorder.published.lock().unwrap();
         assert_eq!(
-            *published,
+            *recorder.published.lock().unwrap(),
             vec![
                 topics::AWB_ISSUED.to_string(),
                 topics::SHIPMENT_CREATED.to_string(),
                 topics::SHIPMENT_CONFIRMED.to_string(),
             ],
-            "exactly the three held dispatch events must be republished, unchanged"
+            "exactly the three held dispatch events must be republished"
+        );
+
+        // "Unchanged" means byte-identical to what was held, not merely routed
+        // to the right topic — dispatch consumes these payloads directly.
+        let held = held_events();
+        for (topic, key) in [
+            (topics::AWB_ISSUED, "awb_issued"),
+            (topics::SHIPMENT_CREATED, "shipment_created"),
+            (topics::SHIPMENT_CONFIRMED, "shipment_confirmed"),
+        ] {
+            assert_eq!(
+                recorder.payload_for(topic).expect("payload recorded"),
+                held[key].to_string(),
+                "{topic} must be republished verbatim from pending_dispatch_events",
+            );
+        }
+    }
+
+    /// The customer has already been charged, so a publish failure must not
+    /// quietly consume the only record of what still needs to reach dispatch.
+    #[tokio::test]
+    async fn captured_retains_held_events_and_errors_when_a_republish_fails() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::failing_on(topics::SHIPMENT_CREATED));
+        let svc = build_service(Arc::clone(&repo), Arc::clone(&recorder) as Arc<dyn EventPublisher>);
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let merchant_id = uuid::Uuid::new_v4();
+        let shipment = awaiting_payment_shipment(tenant_id, merchant_id);
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let result = handle(topics::PAYMENT_INTENT_CAPTURED, captured_event(shipment_id, "shipping_fee"), &svc).await;
+        assert!(result.is_err(), "a failed republish must fail the message so Kafka redelivers");
+
+        let stored = find(&repo, shipment_id);
+        assert_eq!(stored.payment_status, PaymentRequirement::Paid, "payment state is still durable");
+        assert!(
+            stored.pending_dispatch_events.is_some(),
+            "held events must be retained when a republish failed — they are the only way to recover",
+        );
+    }
+
+    /// The recovery half of the case above: a redelivery after a partial
+    /// failure must finish the job rather than skipping it as already-paid.
+    #[tokio::test]
+    async fn captured_redelivery_resumes_publishing_for_a_paid_shipment_still_holding_events() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::failing_on(topics::SHIPMENT_CREATED));
+        let svc = build_service(Arc::clone(&repo), Arc::clone(&recorder) as Arc<dyn EventPublisher>);
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let merchant_id = uuid::Uuid::new_v4();
+        let shipment = awaiting_payment_shipment(tenant_id, merchant_id);
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        // First delivery: Kafka is partly down, so this fails and retains.
+        let first = handle_captured(shipment_id, &svc).await;
+        assert!(first.is_err());
+        assert!(find(&repo, shipment_id).pending_dispatch_events.is_some());
+
+        // Kafka recovers; the redelivered message completes the handoff.
+        recorder.clear_failures();
+        let second = handle_captured(shipment_id, &svc).await;
+        assert!(second.is_ok(), "redelivery must resume, not skip: {second:?}");
+
+        let stored = find(&repo, shipment_id);
+        assert_eq!(stored.payment_status, PaymentRequirement::Paid);
+        assert!(stored.pending_dispatch_events.is_none(), "events are cleared once actually out");
+        assert!(
+            recorder.published.lock().unwrap().contains(&topics::SHIPMENT_CREATED.to_string()),
+            "the previously-failed event must have been republished on retry",
         );
     }
 
