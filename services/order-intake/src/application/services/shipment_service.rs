@@ -518,13 +518,18 @@ impl ShipmentService {
             serde_json::json!({ "shipment_id": shipment.id.inner() }),
         );
 
-        // ── Publish now, or hold for payment ────────────────────────────────────
+        // ── Hold for payment, or fall through to publish after persisting ──────
         // AwaitingPayment: none of the three events above fire yet — dispatch,
         // engagement, and analytics must not see this shipment until
         // payment.intent.captured (Task 19) republishes them unchanged. Instead
-        // a payment intent is opened and its checkout URL is returned to the
-        // caller. Otherwise (the path every shipment took before this task),
-        // publish immediately exactly as before.
+        // a payment intent is opened here (before the row is written, so a
+        // failed payments call leaves nothing behind) and its checkout URL is
+        // returned to the caller.
+        //
+        // Every other shipment publishes below, *after* the row is persisted —
+        // the ordering this method has always had. Publishing first would let a
+        // failed save leave dispatch/engagement/analytics acting on a shipment
+        // that does not exist.
         let awb_json = serde_json::to_value(&awb_event).map_err(|e| AppError::Internal(e.into()))?;
         let created_json = serde_json::to_value(&event).map_err(|e| AppError::Internal(e.into()))?;
         let confirmed_json = serde_json::to_value(&confirmed_event).map_err(|e| AppError::Internal(e.into()))?;
@@ -553,36 +558,13 @@ impl ShipmentService {
                 .map_err(AppError::Internal)?;
             shipment.payment_intent_id = Some(intent.intent_id);
             checkout_url = Some(intent.checkout_url);
-        } else {
-            if let Ok(payload) = serde_json::to_string(&awb_event) {
-                let _ = self.publisher
-                    .publish(topics::AWB_ISSUED, master_awb.as_str(), &payload)
-                    .await;
-            }
-
-            let payload = serde_json::to_string(&event).map_err(|e| AppError::Internal(e.into()))?;
-            // Fire-and-forget — Kafka unavailability must not prevent shipment creation.
-            if let Err(e) = self.publisher
-                .publish(topics::SHIPMENT_CREATED, &shipment.id.to_string(), &payload)
-                .await
-            {
-                tracing::warn!(error = %e, shipment_id = %shipment.id, "ShipmentCreated event publish failed (non-fatal)");
-            }
-
-            if let Ok(p) = serde_json::to_string(&confirmed_event) {
-                if let Err(e) = self.publisher
-                    .publish(topics::SHIPMENT_CONFIRMED, &shipment.id.to_string(), &p)
-                    .await
-                {
-                    tracing::warn!(error = %e, shipment_id = %shipment.id, "ShipmentConfirmed event publish failed (non-fatal)");
-                }
-            }
         }
 
         // ── Persist ───────────────────────────────────────────────────────────
-        // Only now, once quote verification, the publish-or-defer branch, and
-        // any payment intent creation have all succeeded, so nothing is ever
-        // saved half-built (e.g. AwaitingPayment without a payment_intent_id).
+        // Only now, once quote verification and any payment intent creation
+        // have succeeded, so nothing is ever saved half-built (e.g.
+        // AwaitingPayment without a payment_intent_id). Still before the
+        // publishes below, so a published event always implies a stored row.
         self.repo.save(&shipment).await.map_err(|e| {
             tracing::error!(error = ?e, "shipment_repo.save failed");
             AppError::Internal(e)
@@ -627,6 +609,36 @@ impl ShipmentService {
             location:    pickup_city,
         }).await {
             tracing::warn!(error = %e, shipment_id = %shipment.id, "confirmed timeline event failed (non-fatal)");
+        }
+
+        // ── Publish the lifecycle events ──────────────────────────────────────
+        // Skipped entirely for AwaitingPayment: those three payloads are held in
+        // `pending_dispatch_events` above and republished verbatim once payment
+        // captures, so dispatch never sees an unpaid shipment.
+        if payment_status != PaymentRequirement::AwaitingPayment {
+            if let Ok(payload) = serde_json::to_string(&awb_event) {
+                let _ = self.publisher
+                    .publish(topics::AWB_ISSUED, master_awb.as_str(), &payload)
+                    .await;
+            }
+
+            let payload = serde_json::to_string(&event).map_err(|e| AppError::Internal(e.into()))?;
+            // Fire-and-forget — Kafka unavailability must not prevent shipment creation.
+            if let Err(e) = self.publisher
+                .publish(topics::SHIPMENT_CREATED, &shipment.id.to_string(), &payload)
+                .await
+            {
+                tracing::warn!(error = %e, shipment_id = %shipment.id, "ShipmentCreated event publish failed (non-fatal)");
+            }
+
+            if let Ok(p) = serde_json::to_string(&confirmed_event) {
+                if let Err(e) = self.publisher
+                    .publish(topics::SHIPMENT_CONFIRMED, &shipment.id.to_string(), &p)
+                    .await
+                {
+                    tracing::warn!(error = %e, shipment_id = %shipment.id, "ShipmentConfirmed event publish failed (non-fatal)");
+                }
+            }
         }
 
         tracing::info!(

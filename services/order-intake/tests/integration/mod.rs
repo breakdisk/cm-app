@@ -185,11 +185,21 @@ use logisticos_order_intake::{
 
 pub struct InMemoryShipmentRepository {
     shipments: Mutex<Vec<Shipment>>,
+    /// When true, `save` errors instead of storing. Lets a test assert what
+    /// does (and does not) happen when the write fails — most importantly
+    /// that no lifecycle event was published for a shipment that never
+    /// persisted.
+    fail_save: bool,
 }
 
 impl InMemoryShipmentRepository {
     pub fn new() -> Self {
-        Self { shipments: Mutex::new(Vec::new()) }
+        Self { shipments: Mutex::new(Vec::new()), fail_save: false }
+    }
+
+    /// A repo whose `save` always fails.
+    pub fn failing_save() -> Self {
+        Self { shipments: Mutex::new(Vec::new()), fail_save: true }
     }
 }
 
@@ -210,6 +220,9 @@ impl ShipmentRepository for InMemoryShipmentRepository {
         shipment: &'a Shipment,
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async move {
+            if self.fail_save {
+                anyhow::bail!("simulated shipment save failure");
+            }
             let mut store = self.shipments.lock().unwrap();
             store.retain(|s| s.id != shipment.id);
             store.push(shipment.clone());
@@ -2084,6 +2097,43 @@ mod payment_aware_create {
             "AwbIssued + ShipmentCreated + ShipmentConfirmed should publish immediately, exactly as before this change"
         );
         assert_eq!(call_count.load(Ordering::SeqCst), 0, "payments client must not be called without a quote token");
+    }
+
+    /// Guards the ordering inside `create()`: the row is persisted *before* the
+    /// three lifecycle events publish. Publishing first would let a failed save
+    /// leave dispatch, engagement, and analytics acting on a shipment that does
+    /// not exist — invisible in production, since the publishes are
+    /// fire-and-forget and the caller only ever sees the save error.
+    #[tokio::test]
+    async fn create_publishes_nothing_when_the_shipment_fails_to_save() {
+        let repo = Arc::new(InMemoryShipmentRepository::failing_save());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let (payments_url, _call_count) = spawn_mock_payments_server("https://unused.test").await;
+        let (server, jwt, _publisher) = build_test_server_with_publisher_and_payments(
+            Arc::clone(&repo),
+            Arc::clone(&recorder) as Arc<dyn EventPublisher>,
+            &payments_url,
+        );
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let user_id = uuid::Uuid::new_v4();
+        let token = mint_merchant_token(&jwt, tenant_id, user_id);
+
+        let resp = server
+            .post("/v1/shipments")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&valid_shipment_body())
+            .await;
+
+        assert_eq!(resp.status_code(), 500, "a failed save must surface as an error, not a success");
+        assert_eq!(
+            recorder.published.lock().unwrap().len(),
+            0,
+            "no lifecycle event may publish for a shipment that was never stored",
+        );
     }
 
     #[tokio::test]
