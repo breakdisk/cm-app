@@ -899,6 +899,10 @@ services:
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
       SERVICES__FIELD_OPS_URL: http://field-ops:8090
       SERVICES__OMNIDELIV_URL: http://omnideliv:8091
+      NETWORK_INTERNATIONAL__BASE_URL: https://api-gateway.sandbox.ngenius-payments.com
+      NETWORK_INTERNATIONAL__API_KEY: ${NI_API_KEY:-sandbox-key}
+      NETWORK_INTERNATIONAL__WEBHOOK_SECRET: ${NI_WEBHOOK_SECRET:-sandbox-webhook-secret}
+      NETWORK_INTERNATIONAL__OUTLET_REF: ${NI_OUTLET_REF:-sandbox-outlet-ref}
       RUST_LOG: info
     depends_on:
       postgres:

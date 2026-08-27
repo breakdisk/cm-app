@@ -4,15 +4,16 @@ use anyhow::Context;
 use chrono::Datelike as _;
 use crate::config::Config;
 use crate::application::services::{
-    BillingAggregationService, CodRemittanceService, CodService, InvoiceService, WalletService,
-    WithdrawalService,
+    BillingAggregationService, CodRemittanceService, CodService, InvoiceService,
+    PaymentIntentService, WalletService, WithdrawalService,
 };
 use crate::infrastructure::cache::RedisSequenceSource;
 use crate::infrastructure::db::{
     PgBillingRunRepository, PgCodRemittanceBatchRepository, PgCodRepository,
     PgInvoiceRepository, PgWalletRepository, PgMerchantBillingAccountRepository,
-    PgWithdrawalRequestRepository, PgDriverLedgerRepository,
+    PgWithdrawalRequestRepository, PgDriverLedgerRepository, PgPaymentIntentRepository,
 };
+use crate::infrastructure::external::NetworkInternationalGateway;
 use crate::infrastructure::http::OrderIntakeClient;
 use crate::api::http::{router, AppState};
 use crate::infrastructure::messaging::{PodConsumer, WeightDiscrepancyConsumer, PickupCapturedConsumer, CustomsDutyConsumer};
@@ -70,6 +71,8 @@ pub async fn run() -> anyhow::Result<()> {
     let order_intake_client = Arc::new(OrderIntakeClient::new(&cfg.order_intake.url));
 
     let driver_ledger_repo = Arc::new(PgDriverLedgerRepository::new(pool.clone()));
+    let payment_intent_repo = Arc::new(PgPaymentIntentRepository::new(pool.clone()));
+    let ni_gateway = Arc::new(NetworkInternationalGateway::new(cfg.network_international.clone()));
 
     let partner_bonus_repo = Arc::new(
         crate::infrastructure::db::partner_bonus_repo::PgPartnerBonusRepo::new(pool.clone())
@@ -109,6 +112,11 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::clone(&order_intake_client) as _,
         Arc::clone(&invoice_service),
     ));
+    let payment_intent_service = Arc::new(PaymentIntentService::new(
+        Arc::clone(&payment_intent_repo) as _,
+        Arc::clone(&ni_gateway) as _,
+        Arc::clone(&kafka),
+    ));
 
     let templates_dir = std::env::var("PAYMENTS_TEMPLATES_DIR")
         .unwrap_or_else(|_| "./templates".into());
@@ -136,6 +144,7 @@ pub async fn run() -> anyhow::Result<()> {
         withdrawal_service,
         pdf_renderer,
         driver_ledger_repo:                Arc::clone(&driver_ledger_repo) as _,
+        payment_intent_service:            Arc::clone(&payment_intent_service),
     });
     let app = router(state);
 
