@@ -158,12 +158,16 @@ impl PaymentIntentService {
     /// consumer treats both identically (cancel the shipment).
     pub async fn sweep_expired(&self) -> anyhow::Result<usize> {
         let expired = self.repo.list_expired(chrono::Utc::now()).await?;
-        let count = expired.len();
+        let mut expired_count = 0;
         for mut intent in expired {
             if intent.expire().is_err() {
                 continue; // raced with a webhook that captured it — leave it alone
             }
-            self.repo.save(&intent).await?;
+            if let Err(e) = self.repo.save(&intent).await {
+                tracing::error!(intent_id = %intent.id, error = %e, "sweep_expired: failed to save expired intent — will retry next tick");
+                continue; // don't publish an event for a state change that didn't persist
+            }
+            expired_count += 1;
             let evt = Event::new(
                 "logisticos/payments",
                 "payment.intent.failed",
@@ -180,7 +184,7 @@ impl PaymentIntentService {
                 tracing::warn!(intent_id = %intent.id, error = %e, "failed to publish expiry event (will retry next sweep tick — intent stays expired)");
             }
         }
-        Ok(count)
+        Ok(expired_count)
     }
 
     pub async fn refund(&self, intent_id: Uuid) -> anyhow::Result<()> {
@@ -250,6 +254,11 @@ mod tests {
         /// intent showing up in the sweep) that production `list_expired`
         /// (which filters to created/pending) would never actually produce.
         expired_override: Mutex<Option<Vec<PaymentIntent>>>,
+        /// When set, `save()` returns an error for this one intent id (and
+        /// leaves the stored row untouched) instead of persisting it — lets a
+        /// test simulate a transient DB failure for exactly one row in a
+        /// batch without a real database.
+        fail_save_for: Mutex<Option<Uuid>>,
     }
 
     impl FakeRepo {
@@ -268,6 +277,10 @@ mod tests {
         fn set_expired_override(&self, intents: Vec<PaymentIntent>) {
             *self.expired_override.lock().unwrap() = Some(intents);
         }
+
+        fn set_fail_save_for(&self, id: Uuid) {
+            *self.fail_save_for.lock().unwrap() = Some(id);
+        }
     }
 
     #[async_trait]
@@ -283,6 +296,9 @@ mod tests {
         }
 
         async fn save(&self, intent: &PaymentIntent) -> anyhow::Result<()> {
+            if *self.fail_save_for.lock().unwrap() == Some(intent.id) {
+                anyhow::bail!("simulated save failure for intent {}", intent.id);
+            }
             *self.save_count.lock().unwrap() += 1;
             self.intents.lock().unwrap().insert(intent.id, intent.clone());
             Ok(())
@@ -587,10 +603,45 @@ mod tests {
         let svc = service(repo.clone(), gateway);
 
         let count = svc.sweep_expired().await.expect("sweep must succeed even with a non-expirable row");
-        assert_eq!(count, 1, "count reflects list_expired's length, not how many actually transitioned");
+        assert_eq!(count, 0, "count reflects how many intents were actually expired, not list_expired's length");
 
         let stored = repo.get(captured_id);
         assert_eq!(stored.status, PaymentIntentStatus::Captured, "must be left untouched");
+    }
+
+    #[tokio::test]
+    async fn sweep_expired_continues_past_a_save_failure_for_one_intent() {
+        // The crux of the fix: a repo.save() failure for one row must not
+        // abort the loop and skip every OTHER stale intent in the same tick.
+        let repo = Arc::new(FakeRepo::default());
+        let tenant_id = Uuid::new_v4();
+
+        let ok_intent = make_intent(tenant_id);
+        let ok_id = ok_intent.id;
+        repo.seed(ok_intent);
+
+        let fail_intent = make_intent(tenant_id);
+        let fail_id = fail_intent.id;
+        repo.seed(fail_intent);
+
+        repo.set_expired_override(vec![repo.get(ok_id), repo.get(fail_id)]);
+        repo.set_fail_save_for(fail_id);
+
+        let gateway = Arc::new(FakeGateway::new());
+        let svc = service(repo.clone(), gateway);
+
+        let count = svc.sweep_expired().await
+            .expect("sweep must not abort the whole batch when one intent's save fails");
+        assert_eq!(count, 1, "count must reflect only the successfully-expired intent, not both");
+
+        let ok_stored = repo.get(ok_id);
+        assert_eq!(ok_stored.status, PaymentIntentStatus::Expired, "the other intent must still be expired and saved");
+
+        let fail_stored = repo.get(fail_id);
+        assert_eq!(
+            fail_stored.status, PaymentIntentStatus::Created,
+            "a failed save must leave the persisted row untouched — expire() only mutated the in-memory copy, which was never written"
+        );
     }
 
     // ── refund ───────────────────────────────────────────────────────────────
