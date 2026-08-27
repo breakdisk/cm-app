@@ -8,6 +8,7 @@ pub struct Config {
     pub kafka: KafkaConfig,
     #[serde(default)]
     pub geocoder: GeocoderConfig,
+    pub payments: PaymentsConfig,
     /// HMAC-SHA256 signing secret for short-TTL quote tokens
     /// (`domain::value_objects::quote_token`). A top-level field, so it is
     /// read from the env var QUOTE_TOKEN_SECRET directly — no `__` prefix,
@@ -53,6 +54,12 @@ pub struct GeocoderConfig {
     /// PassthroughNormalizer and shipments are created with coordinates: None.
     #[serde(default)]
     pub mapbox_access_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct PaymentsConfig {
+    /// Base URL of the payments service, e.g. http://payments:8012
+    pub url: String,
 }
 
 impl Config {
