@@ -2136,6 +2136,82 @@ mod payment_aware_create {
         );
     }
 
+    /// A payments service that rejects every intent request, so the failure
+    /// branch of `create_shipping_fee_intent` can be exercised.
+    async fn spawn_failing_mock_payments_server() -> (String, Arc<AtomicUsize>) {
+        use axum::{http::StatusCode, routing::post, Router};
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_for_handler = Arc::clone(&counter);
+
+        let app = Router::new().route(
+            "/v1/internal/payments/intents",
+            post(move || {
+                let counter = Arc::clone(&counter_for_handler);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    (StatusCode::INTERNAL_SERVER_ERROR, "payments unavailable")
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind failing mock payments server");
+        let addr = listener.local_addr().expect("failing mock payments server local_addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        (format!("http://{addr}"), counter)
+    }
+
+    /// The money path's worst case: payments is reachable but rejects the
+    /// intent. Nothing may be left half-done — no stored shipment, no
+    /// published lifecycle event — so the customer can simply retry.
+    #[tokio::test]
+    async fn create_saves_and_publishes_nothing_when_the_payment_intent_fails() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let (payments_url, call_count) = spawn_failing_mock_payments_server().await;
+        let (server, jwt, _publisher) = build_test_server_with_publisher_and_payments(
+            Arc::clone(&repo),
+            Arc::clone(&recorder) as Arc<dyn EventPublisher>,
+            &payments_url,
+        );
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let user_id = uuid::Uuid::new_v4();
+        let token = mint_merchant_token_with_currency(&jwt, tenant_id, user_id, Some("AED"));
+        let quote = sign_quote_token(tenant_id, "standard", 1_500, 2_200);
+
+        let mut body = valid_shipment_body();
+        body["weight_grams"] = json!(1_500u32);
+        body["quote_token"] = json!(quote);
+
+        let resp = server
+            .post("/v1/shipments")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&body)
+            .await;
+
+        assert_eq!(resp.status_code(), 500, "a failed payment intent must surface as an error");
+        assert_eq!(call_count.load(Ordering::SeqCst), 1, "payments should have been attempted exactly once");
+        assert_eq!(
+            repo.shipments.lock().unwrap().len(),
+            0,
+            "no shipment may be stored when the payment intent could not be opened",
+        );
+        assert_eq!(
+            recorder.published.lock().unwrap().len(),
+            0,
+            "no lifecycle event may publish when the payment intent could not be opened",
+        );
+    }
+
     #[tokio::test]
     async fn create_rejects_a_quote_token_for_a_different_tenant() {
         let repo = Arc::new(InMemoryShipmentRepository::new());
