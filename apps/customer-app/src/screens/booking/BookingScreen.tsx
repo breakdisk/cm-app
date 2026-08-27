@@ -196,6 +196,18 @@ function CountryPickerRN({ value, onChange, accent = CYAN }: {
   );
 }
 
+/**
+ * Idempotency key for `POST /v1/shipments`, one per booking attempt.
+ * No UUID source exists in this app today — `uuid` and `expo-crypto` are not
+ * dependencies (checked package.json + node_modules) and nothing else in the
+ * codebase generates client-side ids. A key only needs to be unique per
+ * booking attempt per tenant, not cryptographically random, so a
+ * timestamp + random-suffix string is sufficient here.
+ */
+function makeIdempotencyKey(): string {
+  return `bk_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
 // ── Main screen ─────────────────────────────────────────────────────────────
 
 export function BookingScreen({ route }: { route?: any }) {
@@ -329,6 +341,22 @@ export function BookingScreen({ route }: { route?: any }) {
   const [declaredValue, setDeclaredValue] = useState("");
   const [freightMode,   setFreightMode]   = useState<FreightMode>("sea");
 
+  // ── Pay Online (AE-region tenants only) ───────────────────────────────────
+  // The app has no client-side way to read the tenant's billing currency (no
+  // JWT decode anywhere, no `currency` field on any API response it consumes
+  // — see BookingScreen's Task 23 report). So eligibility is discovered the
+  // same way the backend enforces it: attempt a quote and see whether it
+  // 422s with the AE-only validation error. `payOnlineAvailable` latches to
+  // `true`/`false` on the first definitive answer; `payOnlineCheckedRef`
+  // stops us from re-probing a tenant we already know isn't AE-eligible.
+  const [payOnline,          setPayOnline]          = useState(false);
+  const [onlineQuote,        setOnlineQuote]         = useState<{ amountCents: number; token: string } | null>(null);
+  const [quoteLoading,       setQuoteLoading]        = useState(false);
+  const [payOnlineAvailable, setPayOnlineAvailable]  = useState(false);
+  const payOnlineCheckedRef = React.useRef(false);
+  const quoteTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const bookingIdempotencyKey = React.useRef<string>(makeIdempotencyKey());
+
   // ── Step 4 — Passport (international only)
   const [passportUri, setPassportUri] = useState<string | null>(null);
 
@@ -426,6 +454,60 @@ export function BookingScreen({ route }: { route?: any }) {
     });
   }
 
+  // ── Pay Online quote (AE-region only, discovered by probing) ─────────────
+  // Mirrors exactly how `handleBook` derives `service_type`/`weight_grams` for
+  // `createShipment` below, so a quote can never be priced on different
+  // inputs than the booking it's later attached to via `quote_token`.
+  // Scoped to local/standard shipments only — COD/Fragile (the toggles this
+  // sits next to) only exist on the local package-details step, and the
+  // Balikbayan/international wizard step has no equivalent slot for it.
+  function deriveQuoteRequest(): shipmentsService.QuoteRequest | null {
+    if (isIntl) return null;
+    if (!weight.trim()) return null;
+    return {
+      service_type: 'standard',
+      weight_grams: Math.round((parseFloat(weight) || 1) * 1000),
+    };
+  }
+
+  React.useEffect(() => {
+    if (quoteTimer.current) clearTimeout(quoteTimer.current);
+
+    const req = deriveQuoteRequest();
+    // No valid inputs yet, or we've already learned (via a prior probe) that
+    // this tenant isn't AE-eligible — don't keep re-probing on every keystroke.
+    if (!req || (payOnlineCheckedRef.current && !payOnlineAvailable)) {
+      setOnlineQuote(null);
+      return;
+    }
+
+    quoteTimer.current = setTimeout(async () => {
+      setQuoteLoading(true);
+      try {
+        const quote = await shipmentsService.getShipmentQuote(req);
+        payOnlineCheckedRef.current = true;
+        setPayOnlineAvailable(true);
+        setOnlineQuote({ amountCents: quote.amount_cents, token: quote.quote_token });
+      } catch (error: any) {
+        payOnlineCheckedRef.current = true;
+        setPayOnlineAvailable(false);
+        setOnlineQuote(null);
+        // Only alarm the user if they'd actually opted in — a background
+        // eligibility probe failing (e.g. a non-AE tenant, the expected case
+        // for most bookings) should stay silent.
+        if (payOnline) {
+          const apiMsg = error?.message ?? error?.data?.error?.message ?? error?.response?.data?.error?.message;
+          showToast(apiMsg ?? "Couldn't get an online payment quote. Try again or pay on pickup instead.", "error");
+        }
+      } finally {
+        setQuoteLoading(false);
+      }
+    }, 500);
+
+    return () => { if (quoteTimer.current) clearTimeout(quoteTimer.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [weight, isIntl, payOnline]);
+
   // ── Booking submission ────────────────────────────────────────────────────
 
   async function handleBook() {
@@ -505,7 +587,17 @@ export function BookingScreen({ route }: { route?: any }) {
         description:   isIntl ? intlDesc : (description || 'Parcel'),
         cod_amount_cents:     isCOD && !isIntl ? Math.round(parseInt(codAmount || '0') * 100) : undefined,
         declared_value_cents: Math.round(calcTotal() * 100),
+        quote_token: payOnline && onlineQuote ? onlineQuote.token : undefined,
+        idempotency_key: bookingIdempotencyKey.current,
       });
+
+      if (response.checkout_url) {
+        navigation.navigate('PaymentWebView', {
+          checkoutUrl: response.checkout_url,
+          shipmentId: response.id,
+        });
+        return; // the pending screen owns the flow from here
+      }
 
       const now = new Date();
       const bookedAt = now.toLocaleDateString("en-PH", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -569,6 +661,9 @@ export function BookingScreen({ route }: { route?: any }) {
     setWeight(""); setDescription(""); setIsCOD(false); setCodAmount(""); setIsFragile(false);
     setPieces([{ weight: "", l: "", w: "", h: "", description: "" }]); setDeclaredValue(""); setFreightMode("sea");
     setPassportUri(null); setRedeemPoints(false); setRedeemAmount(0);
+    setPayOnline(false); setOnlineQuote(null); setPayOnlineAvailable(false);
+    payOnlineCheckedRef.current = false;
+    bookingIdempotencyKey.current = makeIdempotencyKey();
   }
 
   // ── Validation per step ───────────────────────────────────────────────────
@@ -838,6 +933,26 @@ export function BookingScreen({ route }: { route?: any }) {
               <Switch value={isFragile} onValueChange={setIsFragile}
                 trackColor={{ false: BORDER, true: CYAN + "60" }} thumbColor={isFragile ? CYAN : "rgba(255,255,255,0.3)"} />
             </View>
+
+            {/* AE-region only — visibility is discovered by probing the quote
+                endpoint (see deriveQuoteRequest/useEffect above), since the
+                app has no client-side source for the tenant's currency. */}
+            {payOnlineAvailable && (
+              <View style={s.toggleRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.toggleLabel}>Pay Online</Text>
+                  <Text style={s.toggleSub}>
+                    {quoteLoading
+                      ? "Getting live price…"
+                      : onlineQuote
+                        ? `Pay AED ${(onlineQuote.amountCents / 100).toFixed(2)} now by card`
+                        : "Pay the shipping fee now instead of at pickup"}
+                  </Text>
+                </View>
+                <Switch value={payOnline} onValueChange={setPayOnline}
+                  trackColor={{ false: BORDER, true: GREEN + "60" }} thumbColor={payOnline ? GREEN : "rgba(255,255,255,0.3)"} />
+              </View>
+            )}
 
             <View style={{ flexDirection: "row", gap: 10 }}>
               <BackBtn to={2} />
@@ -1159,8 +1274,8 @@ export function BookingScreen({ route }: { route?: any }) {
 
             <View style={{ flexDirection: "row", gap: 10, marginTop: 4 }}>
               <BackBtn to={isIntl ? passportStep : 3} />
-              <Pressable onPress={handleBook} disabled={isLoading}
-                style={({ pressed }) => [s.btn, { flex: 1, opacity: pressed || isLoading ? 0.5 : 1 }]}>
+              <Pressable onPress={handleBook} disabled={isLoading || (payOnline && (quoteLoading || !onlineQuote))}
+                style={({ pressed }) => [s.btn, { flex: 1, opacity: pressed || isLoading || (payOnline && (quoteLoading || !onlineQuote)) ? 0.5 : 1 }]}>
                 <LinearGradient colors={isIntl ? [PURPLE, "#6B21D8"] : [GREEN, CYAN]}
                   start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.btnGradient}>
                   <Text style={s.btnText}>{isLoading ? "Booking..." : isIntl ? "Book Balikbayan Box" : "Confirm Booking"}</Text>
