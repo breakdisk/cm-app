@@ -186,6 +186,15 @@ impl PaymentIntentService {
     pub async fn refund(&self, intent_id: Uuid) -> anyhow::Result<()> {
         let mut intent = self.repo.find_by_id(intent_id).await?
             .ok_or_else(|| anyhow::anyhow!("no payment_intent {intent_id}"))?;
+        // Domain-level status guard MUST run before any gateway call: intent.refund()
+        // (below) doesn't clear gateway_payment_ref on transition to Refunded, so a
+        // retried/concurrent refund against an already-refunded (or otherwise
+        // non-captured) intent would pass the Option check that used to gate the
+        // gateway call and hit the live gateway a second time. Reject locally first —
+        // zero gateway calls for a non-captured intent.
+        if intent.status != crate::domain::entities::PaymentIntentStatus::Captured {
+            anyhow::bail!("Only a captured intent can be refunded");
+        }
         let gateway_payment_ref = intent.gateway_payment_ref.clone()
             .ok_or_else(|| anyhow::anyhow!("intent {intent_id} has no captured payment to refund"))?;
         self.gateway.refund(&gateway_payment_ref, intent.amount_cents).await?;
@@ -588,6 +597,13 @@ mod tests {
 
     #[tokio::test]
     async fn refund_requires_a_captured_payment_reference() {
+        // Never-captured intent (status == Created) is rejected by the
+        // status guard in `refund()` before the gateway_payment_ref check
+        // (or the gateway) is ever reached — capture() is the only path
+        // that sets gateway_payment_ref, and it always sets it together
+        // with the Captured status, so a Captured-but-no-ref state cannot
+        // arise here. Error message therefore matches the domain-level
+        // `PaymentIntent::refund()` guard, not the Option check below it.
         let repo = Arc::new(FakeRepo::default());
         let tenant_id = Uuid::new_v4();
         let intent = make_intent(tenant_id); // never captured — no gateway_payment_ref
@@ -598,8 +614,38 @@ mod tests {
         let svc = service(repo.clone(), gateway.clone());
 
         let err = svc.refund(intent_id).await.expect_err("must reject refund of a never-captured intent");
-        assert!(err.to_string().contains("no captured payment to refund"));
+        assert!(err.to_string().contains("Only a captured intent can be refunded"));
         assert_eq!(gateway.refund_calls(), 0, "gateway must never be called for an uncapturable refund");
+    }
+
+    #[tokio::test]
+    async fn refund_of_an_already_refunded_intent_is_rejected_before_touching_the_gateway() {
+        // The crux of the fix: PaymentIntent::refund() does not clear
+        // gateway_payment_ref on transition to Refunded, so before this fix
+        // a second refund() call against an already-refunded intent would
+        // pass the old `gateway_payment_ref.is_some()` check and hit the
+        // real gateway a second time before the domain guard rejected it.
+        // The status check must now run first, so the gateway is called
+        // zero times.
+        let repo = Arc::new(FakeRepo::default());
+        let tenant_id = Uuid::new_v4();
+        let mut intent = make_intent(tenant_id);
+        intent.capture("ni-txn-already-refunded".into()).unwrap();
+        intent.refund().unwrap();
+        assert_eq!(intent.status, PaymentIntentStatus::Refunded);
+        assert!(intent.gateway_payment_ref.is_some(), "refund() does not clear gateway_payment_ref");
+        let intent_id = intent.id;
+        repo.seed(intent);
+
+        let gateway = Arc::new(FakeGateway::new());
+        let svc = service(repo.clone(), gateway.clone());
+
+        let err = svc.refund(intent_id).await.expect_err("must reject a second refund of an already-refunded intent");
+        assert!(err.to_string().contains("Only a captured intent can be refunded"));
+        assert_eq!(gateway.refund_calls(), 0, "gateway must never be called for a non-captured intent, even a double refund");
+
+        let stored = repo.get(intent_id);
+        assert_eq!(stored.status, PaymentIntentStatus::Refunded, "must remain unchanged");
     }
 
     #[tokio::test]
