@@ -128,4 +128,23 @@ impl PaymentIntentRepository for PgPaymentIntentRepository {
             .await?;
         rows.into_iter().map(PaymentIntent::try_from).collect()
     }
+
+    async fn find_captured_by_reference(
+        &self,
+        purpose: &str,
+        reference_type: &str,
+        reference_id: Uuid,
+    ) -> anyhow::Result<Option<PaymentIntent>> {
+        let query = format!(
+            "SELECT {INTENT_COLS} FROM payments.payment_intents \
+             WHERE purpose = $1 AND reference_type = $2 AND reference_id = $3 AND status = 'captured'"
+        );
+        let row = sqlx::query_as::<_, PaymentIntentRow>(&query)
+            .bind(purpose)
+            .bind(reference_type)
+            .bind(reference_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(PaymentIntent::try_from).transpose()
+    }
 }

@@ -267,4 +267,15 @@ pub trait PaymentIntentRepository: Send + Sync {
     async fn save(&self, intent: &PaymentIntent) -> anyhow::Result<()>;
     /// Intents past `expires_at` still in `created`/`pending` — the sweep target.
     async fn list_expired(&self, before: DateTime<Utc>) -> anyhow::Result<Vec<PaymentIntent>>;
+
+    /// The captured intent for a given (purpose, reference), if one exists —
+    /// used by the shipment-cancellation consumer to decide whether a refund
+    /// is owed. Returns `None` for a shipment that was never paid online
+    /// (cash-at-pickup) — cancelling those must not attempt a refund call.
+    async fn find_captured_by_reference(
+        &self,
+        purpose: &str,
+        reference_type: &str,
+        reference_id: Uuid,
+    ) -> anyhow::Result<Option<PaymentIntent>>;
 }

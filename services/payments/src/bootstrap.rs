@@ -16,7 +16,7 @@ use crate::infrastructure::db::{
 use crate::infrastructure::external::NetworkInternationalGateway;
 use crate::infrastructure::http::OrderIntakeClient;
 use crate::api::http::{router, AppState};
-use crate::infrastructure::messaging::{PodConsumer, WeightDiscrepancyConsumer, PickupCapturedConsumer, CustomsDutyConsumer};
+use crate::infrastructure::messaging::{PodConsumer, WeightDiscrepancyConsumer, PickupCapturedConsumer, CustomsDutyConsumer, ShipmentCancelledConsumer};
 use logisticos_auth::jwt::JwtService;
 use logisticos_events::producer::KafkaProducer;
 
@@ -311,6 +311,32 @@ pub async fn run() -> anyhow::Result<()> {
     )
     .context("Failed to create CustomsDutyConsumer")?;
     tokio::spawn(async move { customs_duty_consumer.run(customs_duty_shutdown_rx).await });
+
+    // Spawn shipment.cancelled consumer — refunds a captured shipping_fee
+    // intent when its shipment is cancelled (a shipment never paid online is
+    // a no-op). Constructed inside the spawn, like order-intake's own
+    // PaymentConsumer (services/order-intake/src/bootstrap.rs): a Kafka
+    // client that cannot be created at boot must disable this consumer, not
+    // stop the HTTP surface from binding — refunds are best-effort follow-up,
+    // not on the critical path for the service to come up. This deviates
+    // from the `.context(...)?`-outside-the-spawn shape the other consumers
+    // above still use; that shape is a latent boot-fragility issue in this
+    // file (out of scope to fix for the other four consumers here).
+    let brokers_for_cancel = cfg.kafka.brokers.clone();
+    let group_for_cancel = cfg.kafka.group_id.clone();
+    let intent_repo_for_cancel = Arc::clone(&payment_intent_repo);
+    let intent_svc_for_cancel = Arc::clone(&payment_intent_service);
+    tokio::spawn(async move {
+        match ShipmentCancelledConsumer::new(
+            &brokers_for_cancel,
+            &group_for_cancel,
+            intent_repo_for_cancel as Arc<dyn crate::domain::repositories::PaymentIntentRepository>,
+            intent_svc_for_cancel,
+        ) {
+            Ok(consumer) => consumer.run().await,
+            Err(e) => tracing::error!("ShipmentCancelledConsumer could not start: {e}"),
+        }
+    });
 
     let addr = format!("{}:{}", cfg.app.host, cfg.app.port);
     let listener = tokio::net::TcpListener::bind(&addr)

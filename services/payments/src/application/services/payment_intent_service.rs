@@ -369,6 +369,22 @@ mod tests {
                 .cloned()
                 .collect())
         }
+
+        async fn find_captured_by_reference(
+            &self,
+            purpose: &str,
+            reference_type: &str,
+            reference_id: Uuid,
+        ) -> anyhow::Result<Option<PaymentIntent>> {
+            Ok(self.intents.lock().unwrap().values()
+                .find(|i| {
+                    i.purpose == purpose
+                        && i.reference_type == reference_type
+                        && i.reference_id == reference_id
+                        && i.status == PaymentIntentStatus::Captured
+                })
+                .cloned())
+        }
     }
 
     // ── Fake PaymentGateway ──────────────────────────────────────────────────
