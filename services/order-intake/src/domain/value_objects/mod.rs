@@ -1,6 +1,9 @@
 pub mod awb_generator;
 pub use awb_generator::{generate_child_awbs, AwbGenerator, AwbGeneratorError};
 
+pub mod quote_token;
+pub use quote_token::{sign as sign_quote_token, verify as verify_quote_token, QuoteTokenError, QuoteTokenPayload};
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

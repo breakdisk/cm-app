@@ -451,6 +451,10 @@ services:
       # the shipment at assignment time. Set the pk.* public token via the
       # same env var in .env or the Dokploy service config.
       GEOCODER__MAPBOX_ACCESS_TOKEN: ${GEOCODER__MAPBOX_ACCESS_TOKEN:-}
+      # HMAC-SHA256 signing secret for short-TTL quote tokens. Top-level
+      # field on Config, read without a `__` prefix. Required — order-intake
+      # fails to start without it.
+      QUOTE_TOKEN_SECRET: ${QUOTE_TOKEN_SECRET:-dev-quote-token-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       RUST_LOG: info
     depends_on:
       postgres:

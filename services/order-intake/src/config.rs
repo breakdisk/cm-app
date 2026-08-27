@@ -8,6 +8,14 @@ pub struct Config {
     pub kafka: KafkaConfig,
     #[serde(default)]
     pub geocoder: GeocoderConfig,
+    /// HMAC-SHA256 signing secret for short-TTL quote tokens
+    /// (`domain::value_objects::quote_token`). A top-level field, so it is
+    /// read from the env var QUOTE_TOKEN_SECRET directly — no `__` prefix,
+    /// since the `__` separator only applies between nested struct fields
+    /// (e.g. `database.url` -> DATABASE__URL). Required, no default: an
+    /// unset signing secret must fail service startup loudly, not silently
+    /// sign/verify quotes with an empty key.
+    pub quote_token_secret: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
