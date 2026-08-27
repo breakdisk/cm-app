@@ -63,6 +63,19 @@ pub trait ShipmentRepository: Send + Sync {
         shipment: &'a Shipment,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
+    /// Idempotent re-submission lookup, scoped per tenant.
+    fn find_by_idempotency_key<'a>(
+        &'a self,
+        tenant_id: uuid::Uuid,
+        idempotency_key: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Option<Shipment>>> + Send + 'a>>;
+
+    /// Shipments still `awaiting_payment` past the given cutoff — the sweep target.
+    fn find_awaiting_payment_older_than<'a>(
+        &'a self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Vec<Shipment>>> + Send + 'a>>;
+
     fn save_pieces<'a>(
         &'a self,
         pieces: &'a [Piece],
@@ -358,6 +371,14 @@ impl ShipmentService {
             merchant_reference: cmd.merchant_reference.clone(),
             source_platform: cmd.source_platform.clone(),
             external_order_id: cmd.external_order_id.clone(),
+            // Task 16 scope is plumbing only — `create()` doesn't yet know about
+            // quote tokens or payment requirements (that's Task 18). No shipment
+            // created through this path requires payment today, so these all
+            // start at their "no payment involved" defaults.
+            payment_intent_id: None,
+            payment_status: crate::domain::entities::shipment::PaymentRequirement::NotRequired,
+            pending_dispatch_events: None,
+            idempotency_key: None,
             created_at: now,
             updated_at: now,
         };

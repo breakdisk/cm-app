@@ -2,6 +2,37 @@ use crate::domain::value_objects::{ServiceType, ShipmentWeight, ShipmentDimensio
 use logisticos_types::{awb::Awb, ShipmentId, MerchantId, CustomerId, Money, Address, ShipmentStatus, TenantId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaymentRequirement {
+    NotRequired,
+    AwaitingPayment,
+    Paid,
+    PaymentFailed,
+}
+
+impl PaymentRequirement {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::NotRequired    => "not_required",
+            Self::AwaitingPayment => "awaiting_payment",
+            Self::Paid           => "paid",
+            Self::PaymentFailed  => "payment_failed",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "not_required"     => Some(Self::NotRequired),
+            "awaiting_payment" => Some(Self::AwaitingPayment),
+            "paid"             => Some(Self::Paid),
+            "payment_failed"   => Some(Self::PaymentFailed),
+            _                  => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Shipment {
@@ -44,6 +75,14 @@ pub struct Shipment {
     /// Platform-native order ID — used for deduplication and cross-reference.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_order_id: Option<String>,
+    pub payment_intent_id: Option<Uuid>,
+    pub payment_status: PaymentRequirement,
+    /// Serialized AwbIssued/ShipmentCreated/ShipmentConfirmed event payloads,
+    /// held here while `payment_status == AwaitingPayment` instead of being
+    /// published — see the design spec's note on why this replaces a new
+    /// ShipmentStatus variant. `None` once paid (or if payment was never required).
+    pub pending_dispatch_events: Option<serde_json::Value>,
+    pub idempotency_key: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -220,6 +259,10 @@ mod tests {
             merchant_reference:   None,
             source_platform:      None,
             external_order_id:    None,
+            payment_intent_id:       None,
+            payment_status:          PaymentRequirement::NotRequired,
+            pending_dispatch_events: None,
+            idempotency_key:         None,
             created_at:           chrono::Utc::now(),
             updated_at:           chrono::Utc::now(),
         };
@@ -254,6 +297,10 @@ mod tests {
             merchant_reference:   None,
             source_platform:      None,
             external_order_id:    None,
+            payment_intent_id:       None,
+            payment_status:          PaymentRequirement::NotRequired,
+            pending_dispatch_events: None,
+            idempotency_key:         None,
             created_at:           chrono::Utc::now(),
             updated_at:           chrono::Utc::now(),
         };
@@ -317,6 +364,10 @@ mod tests {
             merchant_reference:   None,
             source_platform:      None,
             external_order_id:    None,
+            payment_intent_id:       None,
+            payment_status:          PaymentRequirement::NotRequired,
+            pending_dispatch_events: None,
+            idempotency_key:         None,
             created_at:           chrono::Utc::now(),
             updated_at:           chrono::Utc::now(),
         };

@@ -175,7 +175,7 @@ use logisticos_order_intake::{
         },
     },
     domain::{
-        entities::{piece::Piece, shipment::Shipment},
+        entities::{piece::Piece, shipment::{PaymentRequirement, Shipment}},
         value_objects::{AwbGenerator, AwbGeneratorError, ServiceType, ShipmentWeight},
     },
     infrastructure::external::PassthroughNormalizer,
@@ -222,6 +222,42 @@ impl ShipmentRepository for InMemoryShipmentRepository {
         _pieces: &'a [Piece],
     ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
+    }
+
+    fn find_by_idempotency_key<'a>(
+        &'a self,
+        tenant_id: uuid::Uuid,
+        idempotency_key: &'a str,
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<Option<Shipment>>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let store = self.shipments.lock().unwrap();
+            Ok(store
+                .iter()
+                .find(|s| {
+                    s.tenant_id.inner() == tenant_id
+                        && s.idempotency_key.as_deref() == Some(idempotency_key)
+                })
+                .cloned())
+        })
+    }
+
+    fn find_awaiting_payment_older_than<'a>(
+        &'a self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<Vec<Shipment>>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let store = self.shipments.lock().unwrap();
+            Ok(store
+                .iter()
+                .filter(|s| {
+                    s.payment_status == PaymentRequirement::AwaitingPayment
+                        && s.created_at < cutoff
+                })
+                .cloned()
+                .collect())
+        })
     }
 
     fn list<'a>(
@@ -481,6 +517,10 @@ fn make_shipment(
         external_order_id:    None,
         merchant_reference:   None,
         source_platform:      None,
+        payment_intent_id:       None,
+        payment_status:          PaymentRequirement::NotRequired,
+        pending_dispatch_events: None,
+        idempotency_key:         None,
         created_at:           now,
         updated_at:           now,
     }
