@@ -133,7 +133,11 @@ async fn proxy_handler(
         || path == "/v1/auth/reset-password"
         // Connector webhook endpoints — HMAC is the auth mechanism; no JWT expected.
         || path.starts_with("/v1/connectors/shopify/")
-        || path.starts_with("/v1/connectors/woocommerce/");
+        || path.starts_with("/v1/connectors/woocommerce/")
+        // Network International payment webhook — NI's servers cannot hold a
+        // LogisticOS session; authenticated by NI's own webhook signature,
+        // verified inside the payments service handler.
+        || path.starts_with("/v1/payments/webhooks/");
 
     let (tenant_id, subscription_tier) = if is_public {
         (String::from("public"), String::from("starter"))
