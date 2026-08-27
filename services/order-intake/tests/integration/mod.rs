@@ -2305,3 +2305,250 @@ mod payment_aware_create {
         assert_eq!(store.len(), 1, "only one shipment should ever be persisted for this idempotency key");
     }
 }
+
+// ============================================================================
+// Task 19: the payment_consumer that closes the loop Task 18 opened above —
+// on `payment.intent.captured` it republishes a shipment's held dispatch
+// events and marks it Paid; on `payment.intent.failed` it cancels the
+// shipment. These call `handle`/`handle_captured` directly against a
+// `ShipmentService` built from the same doubles the HTTP-layer tests above
+// use — no router/JWT needed since the consumer never goes through HTTP.
+// ============================================================================
+
+mod payment_consumer_tests {
+    use super::*;
+    use logisticos_events::{
+        envelope::Event,
+        payloads::{PaymentIntentCaptured, PaymentIntentFailed},
+        topics,
+    };
+    use logisticos_order_intake::infrastructure::messaging::payment_consumer::{handle, handle_captured};
+
+    /// A `ShipmentService` with no HTTP layer around it. `PaymentsClient`
+    /// points at an unreachable sentinel — neither handler under test ever
+    /// calls it (only the `AwaitingPayment` branch of `create()` does).
+    fn build_service(
+        repo: Arc<InMemoryShipmentRepository>,
+        publisher: Arc<dyn EventPublisher>,
+    ) -> Arc<ShipmentService> {
+        Arc::new(ShipmentService::new(
+            Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
+            publisher,
+            Arc::new(PassthroughNormalizer),
+            Arc::new(MockAwbGenerator::default()),
+            Arc::new(PaymentsClient::new("http://127.0.0.1:1")),
+            TEST_QUOTE_TOKEN_SECRET.to_string(),
+            TEST_SHIPMENT_RETURN_URL_BASE.to_string(),
+        ))
+    }
+
+    /// Stand-in for the three payloads `create()` holds — the consumer only
+    /// looks these up by key and republishes the raw JSON, so the exact
+    /// internal shape doesn't matter for these tests.
+    fn held_events() -> Value {
+        json!({
+            "awb_issued":         { "event": "awb.issued" },
+            "shipment_created":   { "event": "shipment.created" },
+            "shipment_confirmed": { "event": "shipment.confirmed" },
+        })
+    }
+
+    fn awaiting_payment_shipment(tenant_id: uuid::Uuid, merchant_id: uuid::Uuid) -> Shipment {
+        Shipment {
+            payment_status:          PaymentRequirement::AwaitingPayment,
+            payment_intent_id:       Some(uuid::Uuid::new_v4()),
+            pending_dispatch_events: Some(held_events()),
+            ..make_shipment(tenant_id, merchant_id, ShipmentStatus::Pending)
+        }
+    }
+
+    fn captured_event(reference_id: uuid::Uuid, purpose: &str) -> Value {
+        let evt = Event::new(
+            "logisticos/payments",
+            "payment.intent.captured",
+            uuid::Uuid::new_v4(),
+            PaymentIntentCaptured {
+                intent_id: uuid::Uuid::new_v4(),
+                purpose: purpose.to_string(),
+                reference_type: "shipment".to_string(),
+                reference_id,
+                amount_cents: 2_200,
+                currency: "PHP".to_string(),
+            },
+        );
+        serde_json::to_value(&evt).expect("serialize PaymentIntentCaptured envelope")
+    }
+
+    fn failed_event(reference_id: uuid::Uuid, purpose: &str, reason: &str) -> Value {
+        let evt = Event::new(
+            "logisticos/payments",
+            "payment.intent.failed",
+            uuid::Uuid::new_v4(),
+            PaymentIntentFailed {
+                intent_id: uuid::Uuid::new_v4(),
+                purpose: purpose.to_string(),
+                reference_type: "shipment".to_string(),
+                reference_id,
+                reason: reason.to_string(),
+            },
+        );
+        serde_json::to_value(&evt).expect("serialize PaymentIntentFailed envelope")
+    }
+
+    fn find(repo: &InMemoryShipmentRepository, shipment_id: uuid::Uuid) -> Shipment {
+        repo.shipments
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|s| s.id.inner() == shipment_id)
+            .cloned()
+            .expect("seeded shipment must still be present")
+    }
+
+    #[tokio::test]
+    async fn non_shipping_fee_purpose_is_ignored() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let svc = build_service(Arc::clone(&repo), Arc::clone(&recorder) as Arc<dyn EventPublisher>);
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let merchant_id = uuid::Uuid::new_v4();
+        let shipment = awaiting_payment_shipment(tenant_id, merchant_id);
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        // Same reference_id as a real held shipment, but a purpose this
+        // consumer doesn't own — proves the filter runs before any lookup
+        // or mutation, not just that an unrelated id is skipped.
+        let json = captured_event(shipment_id, "subscription");
+        let result = handle(topics::PAYMENT_INTENT_CAPTURED, json, &svc).await;
+
+        assert!(result.is_ok(), "a non-shipping_fee purpose must not error: {result:?}");
+        assert_eq!(
+            recorder.published.lock().unwrap().len(), 0,
+            "must not publish for a purpose this consumer doesn't own"
+        );
+
+        let stored = find(&repo, shipment_id);
+        assert_eq!(stored.payment_status, PaymentRequirement::AwaitingPayment, "shipment must be untouched");
+        assert!(stored.pending_dispatch_events.is_some(), "held events must be untouched");
+    }
+
+    #[tokio::test]
+    async fn captured_republishes_held_events_and_marks_paid() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let svc = build_service(Arc::clone(&repo), Arc::clone(&recorder) as Arc<dyn EventPublisher>);
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let merchant_id = uuid::Uuid::new_v4();
+        let shipment = awaiting_payment_shipment(tenant_id, merchant_id);
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let json = captured_event(shipment_id, "shipping_fee");
+        let result = handle(topics::PAYMENT_INTENT_CAPTURED, json, &svc).await;
+        assert!(result.is_ok(), "captured handling must succeed: {result:?}");
+
+        let stored = find(&repo, shipment_id);
+        assert_eq!(stored.payment_status, PaymentRequirement::Paid);
+        assert!(stored.pending_dispatch_events.is_none(), "held events must be cleared after republish");
+
+        let published = recorder.published.lock().unwrap();
+        assert_eq!(
+            *published,
+            vec![
+                topics::AWB_ISSUED.to_string(),
+                topics::SHIPMENT_CREATED.to_string(),
+                topics::SHIPMENT_CONFIRMED.to_string(),
+            ],
+            "exactly the three held dispatch events must be republished, unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn captured_on_already_paid_shipment_is_idempotent_noop() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let svc = build_service(Arc::clone(&repo), Arc::clone(&recorder) as Arc<dyn EventPublisher>);
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let merchant_id = uuid::Uuid::new_v4();
+        let shipment = Shipment {
+            payment_status:          PaymentRequirement::Paid,
+            payment_intent_id:       Some(uuid::Uuid::new_v4()),
+            pending_dispatch_events: None,
+            ..make_shipment(tenant_id, merchant_id, ShipmentStatus::Pending)
+        };
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        // Exercises handle_captured directly (rather than via handle) since
+        // this is specifically a redelivery-idempotency guard on that function.
+        let result = handle_captured(shipment_id, &svc).await;
+
+        assert!(result.is_ok(), "a redelivered captured event must not error: {result:?}");
+        assert_eq!(
+            recorder.published.lock().unwrap().len(), 0,
+            "an already-paid shipment must not republish anything"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_cancels_the_shipment() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let svc = build_service(Arc::clone(&repo), Arc::clone(&recorder) as Arc<dyn EventPublisher>);
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let merchant_id = uuid::Uuid::new_v4();
+        let shipment = awaiting_payment_shipment(tenant_id, merchant_id);
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let json = failed_event(shipment_id, "shipping_fee", "gateway_declined");
+        let result = handle(topics::PAYMENT_INTENT_FAILED, json, &svc).await;
+        assert!(result.is_ok(), "failed handling must succeed: {result:?}");
+
+        let stored = find(&repo, shipment_id);
+        assert_eq!(stored.status, ShipmentStatus::Cancelled);
+
+        assert!(
+            recorder.published.lock().unwrap().contains(&topics::SHIPMENT_CANCELLED.to_string()),
+            "cancelling the shipment must publish shipment.cancelled"
+        );
+    }
+
+    /// Guards the poison-pill scenario `svc.cancel()` alone would create: a
+    /// declined webhook racing the payments-service sweep's expiry (or a
+    /// plain Kafka redelivery) can legitimately deliver `payment.intent.failed`
+    /// twice for the same shipment. The second delivery must not error.
+    #[tokio::test]
+    async fn failed_on_an_already_cancelled_shipment_is_idempotent_noop() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let svc = build_service(Arc::clone(&repo), Arc::clone(&recorder) as Arc<dyn EventPublisher>);
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let merchant_id = uuid::Uuid::new_v4();
+        let shipment = Shipment {
+            payment_status:          PaymentRequirement::AwaitingPayment,
+            pending_dispatch_events: Some(held_events()),
+            ..make_shipment(tenant_id, merchant_id, ShipmentStatus::Cancelled)
+        };
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let json = failed_event(shipment_id, "shipping_fee", "expired");
+        let result = handle(topics::PAYMENT_INTENT_FAILED, json, &svc).await;
+
+        assert!(
+            result.is_ok(),
+            "a redelivered/duplicate failed event on an already-cancelled shipment must not error: {result:?}"
+        );
+        assert_eq!(
+            recorder.published.lock().unwrap().len(), 0,
+            "must not re-publish shipment.cancelled for an already-cancelled shipment"
+        );
+    }
+}
