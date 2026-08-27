@@ -681,6 +681,51 @@ impl ShipmentService {
         Ok(())
     }
 
+    /// Cancels every shipment still `awaiting_payment` past `ttl_minutes`.
+    /// Called by the periodic sweep in `bootstrap.rs`.
+    ///
+    /// A shipment that captures payment concurrently with this running is not
+    /// double-handled: `find_awaiting_payment_older_than` only selects rows
+    /// still `payment_status = 'awaiting_payment'`, and the payment-captured
+    /// consumer moves a paid shipment to `Paid` before this sweep could see
+    /// it. The payments service's own intent sweep also runs on a shorter
+    /// interval than this TTL, so an expired intent normally cancels the
+    /// shipment via `payment.intent.failed` well before this backstop fires.
+    ///
+    /// Pre-checks `can_cancel()` per row, the same pattern
+    /// `payment_consumer::handle_failed` uses, rather than relying solely on
+    /// `cancel()`'s own check: a shipment can legitimately move out of a
+    /// cancellable status between the query above and this loop reaching it
+    /// (e.g. a merchant-initiated cancel, or the captured-payment consumer,
+    /// racing this sweep). That is a benign, expected race, not a failure —
+    /// so it is skipped quietly here rather than falling into the
+    /// `continue`-on-`Err` branch below, which is reserved for genuine
+    /// failures (repo errors, publish errors) worth logging at `error!`.
+    pub async fn sweep_expired_payments(&self, ttl_minutes: i64) -> AppResult<usize> {
+        let cutoff = Utc::now() - chrono::Duration::minutes(ttl_minutes);
+        let stale = self.repo.find_awaiting_payment_older_than(cutoff).await.map_err(AppError::Internal)?;
+        let mut cancelled = 0usize;
+        for shipment in stale {
+            if !shipment.can_cancel() {
+                tracing::info!(
+                    shipment_id = %shipment.id,
+                    status = ?shipment.status,
+                    "sweep: shipment no longer cancellable, skipping"
+                );
+                continue;
+            }
+            if let Err(e) = self.cancel(CancelShipmentCommand {
+                shipment_id: shipment.id.inner(),
+                reason: "payment_expired".into(),
+            }).await {
+                tracing::error!(shipment_id = %shipment.id, error = ?e, "sweep: failed to cancel expired-payment shipment");
+                continue;
+            }
+            cancelled += 1;
+        }
+        Ok(cancelled)
+    }
+
     pub async fn reschedule(&self, cmd: RescheduleShipmentCommand) -> AppResult<()> {
         let id = ShipmentId::from_uuid(cmd.shipment_id);
         let mut shipment = self.repo.find_by_id(&id).await.map_err(AppError::Internal)?

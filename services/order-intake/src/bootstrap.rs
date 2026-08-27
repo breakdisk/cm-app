@@ -16,7 +16,10 @@ use crate::{
         db::PgShipmentRepository,
         external::{MapboxGeocoder, PassthroughNormalizer},
         http::PaymentsClient,
-        messaging::{status_consumer::start_status_consumer, KafkaEventPublisher},
+        messaging::{
+            payment_consumer::PaymentConsumer, status_consumer::start_status_consumer,
+            KafkaEventPublisher,
+        },
     },
 };
 
@@ -106,6 +109,37 @@ pub async fn run() -> anyhow::Result<()> {
     ));
     let query = Arc::new(ShipmentQueryService::new(repo.clone()));
     let pool_for_dims = pool.clone();
+
+    // Spawn Kafka payment consumer — closes the loop `create()` opens when a
+    // quote token is presented: on `payment.intent.captured` it republishes
+    // the shipment's held dispatch events and marks it Paid; on
+    // `payment.intent.failed` it cancels the shipment.
+    let payment_consumer = PaymentConsumer::new(
+        &cfg.kafka.brokers,
+        &cfg.kafka.group_id,
+        Arc::clone(&svc),
+    )?;
+    tokio::spawn(async move { payment_consumer.run().await });
+
+    // Payment-expiry sweep — backstop for shipments left `awaiting_payment`
+    // past their TTL. Under normal operation the payments service's own
+    // intent sweep (`INTENT_TTL` = 30 min, `services/payments/src/application
+    // /services/payment_intent_service.rs`) publishes `payment.intent.failed`
+    // first, which the consumer above already cancels via. This sweep exists
+    // for anything that slips past that path. TTL here matches `INTENT_TTL`
+    // so the two don't silently drift apart.
+    let svc_for_sweep = Arc::clone(&svc);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(5 * 60));
+        loop {
+            tick.tick().await;
+            match svc_for_sweep.sweep_expired_payments(30).await {
+                Ok(count) if count > 0 => tracing::info!(count, "Shipment payment sweep: cancelled stale bookings"),
+                Ok(_) => {}
+                Err(e) => tracing::error!(err = ?e, "Shipment payment sweep failed"),
+            }
+        }
+    });
 
     // Axum router
     use axum::http::{HeaderName, HeaderValue, Method};

@@ -2658,4 +2658,97 @@ mod payment_consumer_tests {
             "must not re-publish shipment.cancelled for an already-cancelled shipment"
         );
     }
+
+    // ========================================================================
+    // Task 20: `ShipmentService::sweep_expired_payments` — the periodic
+    // backstop spawned in `bootstrap.rs` for shipments left `awaiting_payment`
+    // past the TTL. Exercises `InMemoryShipmentRepository::find_awaiting_
+    // payment_older_than` for the first time (it filters on both
+    // `payment_status == AwaitingPayment` and `created_at < cutoff`).
+    // ========================================================================
+
+    #[tokio::test]
+    async fn sweep_cancels_a_stale_awaiting_payment_shipment() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let svc = build_service(Arc::clone(&repo), Arc::clone(&recorder) as Arc<dyn EventPublisher>);
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let merchant_id = uuid::Uuid::new_v4();
+        let shipment = Shipment {
+            payment_status: PaymentRequirement::AwaitingPayment,
+            payment_intent_id: Some(uuid::Uuid::new_v4()),
+            pending_dispatch_events: Some(held_events()),
+            created_at: chrono::Utc::now() - chrono::Duration::minutes(45),
+            ..make_shipment(tenant_id, merchant_id, ShipmentStatus::Pending)
+        };
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let cancelled = svc.sweep_expired_payments(30).await.expect("sweep must not error");
+        assert_eq!(cancelled, 1, "the one stale shipment must be counted as cancelled");
+
+        let stored = find(&repo, shipment_id);
+        assert_eq!(stored.status, ShipmentStatus::Cancelled);
+        assert!(
+            recorder.published.lock().unwrap().contains(&topics::SHIPMENT_CANCELLED.to_string()),
+            "sweeping a shipment must publish shipment.cancelled, same as any other cancel"
+        );
+    }
+
+    #[tokio::test]
+    async fn sweep_leaves_a_fresh_awaiting_payment_shipment_alone() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let svc = build_service(Arc::clone(&repo), Arc::clone(&recorder) as Arc<dyn EventPublisher>);
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let merchant_id = uuid::Uuid::new_v4();
+        // Created just now — well inside the 30-minute TTL.
+        let shipment = awaiting_payment_shipment(tenant_id, merchant_id);
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let cancelled = svc.sweep_expired_payments(30).await.expect("sweep must not error");
+        assert_eq!(cancelled, 0, "a shipment still inside its TTL must not be swept");
+
+        let stored = find(&repo, shipment_id);
+        assert_eq!(stored.status, ShipmentStatus::Pending, "must not have been cancelled");
+        assert_eq!(stored.payment_status, PaymentRequirement::AwaitingPayment);
+        assert_eq!(
+            recorder.published.lock().unwrap().len(), 0,
+            "nothing should have been published for a shipment the sweep left alone"
+        );
+    }
+
+    #[tokio::test]
+    async fn sweep_leaves_a_paid_shipment_alone_even_if_old() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let svc = build_service(Arc::clone(&repo), Arc::clone(&recorder) as Arc<dyn EventPublisher>);
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let merchant_id = uuid::Uuid::new_v4();
+        // Old enough to clear the TTL, but already paid — must be excluded by
+        // the `payment_status == AwaitingPayment` half of the repo filter.
+        let shipment = Shipment {
+            payment_status: PaymentRequirement::Paid,
+            payment_intent_id: Some(uuid::Uuid::new_v4()),
+            pending_dispatch_events: None,
+            created_at: chrono::Utc::now() - chrono::Duration::minutes(45),
+            ..make_shipment(tenant_id, merchant_id, ShipmentStatus::Confirmed)
+        };
+        let shipment_id = shipment.id.inner();
+        repo.shipments.lock().unwrap().push(shipment);
+
+        let cancelled = svc.sweep_expired_payments(30).await.expect("sweep must not error");
+        assert_eq!(cancelled, 0, "a paid shipment must never be swept, regardless of age");
+
+        let stored = find(&repo, shipment_id);
+        assert_eq!(stored.status, ShipmentStatus::Confirmed, "must not have been cancelled");
+        assert_eq!(
+            recorder.published.lock().unwrap().len(), 0,
+            "nothing should have been published for a paid shipment"
+        );
+    }
 }
