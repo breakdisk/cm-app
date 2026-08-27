@@ -33,6 +33,21 @@ impl ServiceType {
             _ => None,
         }
     }
+
+    /// Inverse of `as_str()`. The single source of truth for parsing a
+    /// service-type string from a request body — both the quote endpoint
+    /// and shipment creation use this, so a new service type only needs
+    /// updating here.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "standard"      => Ok(Self::Standard),
+            "express"       => Ok(Self::Express),
+            "same_day"      => Ok(Self::SameDay),
+            "balikbayan"    => Ok(Self::Balikbayan),
+            "international" => Ok(Self::International),
+            other => Err(format!("Unknown service type: {other}")),
+        }
+    }
 }
 
 /// Weight in grams — stored as integer to avoid floating point issues.
@@ -78,5 +93,34 @@ impl ShipmentDimensions {
     pub fn volumetric_weight_grams(&self) -> u32 {
         let vol_cm3 = self.length_cm * self.width_cm * self.height_cm;
         (vol_cm3 as f64 / 5.0).round() as u32 // vol_cm3 / 5000 * 1000
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn service_type_parse_and_as_str_round_trip_for_all_variants() {
+        let variants = [
+            ServiceType::Standard,
+            ServiceType::Express,
+            ServiceType::SameDay,
+            ServiceType::Balikbayan,
+            ServiceType::International,
+        ];
+        for variant in variants {
+            let s = variant.as_str();
+            let parsed = ServiceType::parse(s).unwrap_or_else(|e| {
+                panic!("expected {s} to parse back to {variant:?}, got error: {e}")
+            });
+            assert_eq!(parsed, variant, "round trip mismatch for {s}");
+        }
+    }
+
+    #[test]
+    fn service_type_parse_rejects_unknown_string() {
+        let err = ServiceType::parse("teleport").unwrap_err();
+        assert_eq!(err, "Unknown service type: teleport");
     }
 }

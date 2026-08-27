@@ -57,13 +57,9 @@ pub async fn get_quote(
         ));
     }
 
-    let service_type = match req.service_type.as_str() {
-        "standard"      => ServiceType::Standard,
-        "express"       => ServiceType::Express,
-        "same_day"      => ServiceType::SameDay,
-        "balikbayan"    => ServiceType::Balikbayan,
-        "international" => ServiceType::International,
-        other => return Err(AppError::Validation(format!("Unknown service type: {other}"))),
+    let service_type = match ServiceType::parse(&req.service_type) {
+        Ok(st) => st,
+        Err(e) => return Err(AppError::Validation(e)),
     };
 
     let amount_cents = match (&req.pieces, service_type) {

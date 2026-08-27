@@ -160,14 +160,7 @@ impl ShipmentService {
     pub async fn create(&self, cmd: CreateShipmentCommand) -> AppResult<Shipment> {
         tracing::info!(step = "enter", "ShipmentService::create");
         // ── Validate service type ────────────────────────────────────────────
-        let service_type = match cmd.service_type.as_str() {
-            "standard"      => ServiceType::Standard,
-            "express"       => ServiceType::Express,
-            "same_day"      => ServiceType::SameDay,
-            "balikbayan"    => ServiceType::Balikbayan,
-            "international" => ServiceType::International,
-            other => return Err(AppError::Validation(format!("Unknown service type: {other}"))),
-        };
+        let service_type = ServiceType::parse(&cmd.service_type).map_err(AppError::Validation)?;
         tracing::info!(step = "service_type_ok", ?service_type, "create");
 
         let service_code = match service_type {
