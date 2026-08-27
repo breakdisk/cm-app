@@ -39,6 +39,37 @@ pub struct CreatedIntent {
     pub checkout_url: String,
 }
 
+/// Distinguishes "reject this webhook permanently" (bad signature, unknown
+/// intent — NI should stop retrying) from "something transient broke after
+/// the signature already verified" (DB/Kafka failure — NI should retry,
+/// since the money was genuinely captured and must not be silently lost).
+#[derive(Debug, thiserror::Error)]
+pub enum WebhookError {
+    #[error("webhook rejected: {0}")]
+    Rejected(anyhow::Error),
+    #[error("webhook processing failed: {0}")]
+    Internal(anyhow::Error),
+}
+
+/// Marker for "the webhook's order/payment reference doesn't correspond to
+/// any `payment_intent` row this service knows about." Returned (via the
+/// ordinary `anyhow::Result` chain, not a signature change) from
+/// `find_by_order_ref` so `handle_webhook` can downcast it out of the flat
+/// `anyhow::Result<()>` that `apply_captured`/`apply_failed` still return,
+/// and classify it as `WebhookError::Rejected` rather than `::Internal`.
+///
+/// This is safe specifically because this service has a single Postgres
+/// primary with no read replica (see `infrastructure/db/payment_intent_repo.rs`):
+/// `find_by_id` returning `None` here means the row genuinely does not
+/// exist, not a stale/lagging read — a real transient DB error (timeout,
+/// connection drop) on the SELECT itself surfaces as `Err` from `find_by_id`
+/// and bypasses this marker entirely, so it is correctly classified as
+/// `Internal` (retry) instead. An unknown intent id is therefore a permanent
+/// condition: retrying the same webhook will never make the row appear.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct UnknownIntentError(String);
+
 impl PaymentIntentService {
     pub fn new(
         repo: Arc<dyn PaymentIntentRepository>,
@@ -76,16 +107,32 @@ impl PaymentIntentService {
 
     /// Verifies and applies a webhook payload — the only path by which an
     /// intent can reach `captured`.
-    pub async fn handle_webhook(&self, headers: &reqwest::header::HeaderMap, raw_body: &[u8]) -> anyhow::Result<()> {
-        let event = self.gateway.verify_webhook(headers, raw_body)?;
-        match event {
+    ///
+    /// Signature verification failures classify as `WebhookError::Rejected`
+    /// unconditionally (permanent — NI should stop retrying). Failures from
+    /// `apply_captured`/`apply_failed` — which run only after the signature
+    /// already verified, meaning NI genuinely believes it captured real
+    /// money — default to `WebhookError::Internal` (transient — NI should
+    /// retry) EXCEPT the specific "unknown intent" case (see
+    /// `UnknownIntentError`), which is also `Rejected` since retrying can't
+    /// manufacture a row that will never exist.
+    pub async fn handle_webhook(&self, headers: &reqwest::header::HeaderMap, raw_body: &[u8]) -> Result<(), WebhookError> {
+        let event = self.gateway.verify_webhook(headers, raw_body).map_err(WebhookError::Rejected)?;
+        let result = match event {
             WebhookEvent::Captured { gateway_order_ref, gateway_payment_ref } => {
                 self.apply_captured(&gateway_order_ref, &gateway_payment_ref).await
             }
             WebhookEvent::Failed { gateway_order_ref } => {
                 self.apply_failed(&gateway_order_ref, "gateway_declined").await
             }
-        }
+        };
+        result.map_err(|e| {
+            if e.downcast_ref::<UnknownIntentError>().is_some() {
+                WebhookError::Rejected(e)
+            } else {
+                WebhookError::Internal(e)
+            }
+        })
     }
 
     async fn find_by_order_ref(&self, gateway_order_ref: &str) -> anyhow::Result<PaymentIntent> {
@@ -95,10 +142,16 @@ impl PaymentIntentService {
         // first, then fall back to a full scan-free path: NI's merchant_order_reference
         // IS our intent_id (see network_international.rs::create_session), so the
         // gateway_order_ref parameter here is actually the intent id round-tripped.
-        let intent_id: Uuid = gateway_order_ref.parse()
-            .map_err(|_| anyhow::anyhow!("webhook order reference is not a valid intent id"))?;
-        self.repo.find_by_id(intent_id).await?
-            .ok_or_else(|| anyhow::anyhow!("no payment_intent found for id {intent_id}"))
+        //
+        // Both failure branches below return `UnknownIntentError` (not a bare
+        // `anyhow!(...)`) so `handle_webhook` can classify them as
+        // `WebhookError::Rejected` — see that type's doc comment for why.
+        let intent_id: Uuid = gateway_order_ref.parse().map_err(|_| {
+            UnknownIntentError(format!("webhook order reference {gateway_order_ref:?} is not a valid intent id"))
+        })?;
+        let intent = self.repo.find_by_id(intent_id).await?
+            .ok_or_else(|| UnknownIntentError(format!("no payment_intent found for id {intent_id}")))?;
+        Ok(intent)
     }
 
     async fn apply_captured(&self, gateway_order_ref: &str, gateway_payment_ref: &str) -> anyhow::Result<()> {
@@ -557,6 +610,97 @@ mod tests {
 
         let stored = repo.get(intent_id);
         assert_eq!(stored.status, PaymentIntentStatus::Failed);
+    }
+
+    // ── handle_webhook: error classification (Rejected vs Internal) ────────
+    //
+    // This is the crux of the fix: NI's retry policy depends on the HTTP
+    // status the handler maps each variant to, so it matters which variant
+    // each failure mode produces, not just that `handle_webhook` errors.
+
+    #[tokio::test]
+    async fn handle_webhook_with_a_bad_signature_is_rejected_not_internal() {
+        // FakeGateway::verify_webhook errors when no webhook was configured —
+        // stands in for a real signature-verification failure (bad/missing
+        // HMAC). This must classify as Rejected: a bad signature is a
+        // permanent condition, and 4xx tells NI to stop retrying.
+        let repo = Arc::new(FakeRepo::default());
+        let gateway = Arc::new(FakeGateway::new()); // no .with_webhook(...)
+        let svc = service(repo, gateway);
+        let headers = reqwest::header::HeaderMap::new();
+
+        let err = svc.handle_webhook(&headers, b"{}").await
+            .expect_err("unconfigured/unverifiable webhook must error");
+
+        assert!(
+            matches!(err, WebhookError::Rejected(_)),
+            "signature verification failure must be Rejected (permanent), got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_webhook_for_an_unknown_intent_is_rejected_not_internal() {
+        // Signature verifies fine, but the order_ref doesn't match any
+        // payment_intent this service has ever seen (nothing was seeded).
+        // Judgment call documented on `UnknownIntentError`: this service has
+        // a single Postgres primary with no read replica, so `find_by_id`
+        // returning `None` means the row genuinely doesn't exist, not a
+        // lagging read — retrying the same webhook can never manufacture a
+        // row that will never exist, so this must be Rejected (permanent),
+        // not Internal (retry).
+        let repo = Arc::new(FakeRepo::default());
+        let unknown_intent_id = Uuid::new_v4();
+        let gateway = Arc::new(FakeGateway::new().with_webhook(FakeWebhook::Captured {
+            order_ref: unknown_intent_id.to_string(),
+            payment_ref: "ni-txn-unknown".into(),
+        }));
+        let svc = service(repo, gateway);
+        let headers = reqwest::header::HeaderMap::new();
+
+        let err = svc.handle_webhook(&headers, b"{}").await
+            .expect_err("webhook for an intent id we have no record of must error");
+
+        assert!(
+            matches!(err, WebhookError::Rejected(_)),
+            "unknown intent must be Rejected (permanent), got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_webhook_when_the_post_verification_save_fails_is_internal_not_rejected() {
+        // Signature verifies, the intent is found — but persisting the
+        // Captured transition fails (simulated transient DB failure). This
+        // is exactly the scenario the fix exists for: NI has already
+        // genuinely captured the money, so this must be Internal (retry),
+        // never Rejected (which would tell NI to stop retrying and let the
+        // capture go unrecorded).
+        let repo = Arc::new(FakeRepo::default());
+        let tenant_id = Uuid::new_v4();
+        let intent = make_intent(tenant_id).with_gateway_order_ref("order-ref-save-fail".into());
+        let intent_id = intent.id;
+        repo.seed(intent);
+        repo.set_fail_save_for(intent_id);
+
+        let gateway = Arc::new(FakeGateway::new().with_webhook(FakeWebhook::Captured {
+            order_ref: intent_id.to_string(),
+            payment_ref: "ni-txn-save-fail".into(),
+        }));
+        let svc = service(repo.clone(), gateway);
+        let headers = reqwest::header::HeaderMap::new();
+
+        let err = svc.handle_webhook(&headers, b"{}").await
+            .expect_err("a save failure after signature verification must error");
+
+        assert!(
+            matches!(err, WebhookError::Internal(_)),
+            "post-verification DB save failure must be Internal (retry), got {err:?}"
+        );
+
+        let stored = repo.get(intent_id);
+        assert_eq!(
+            stored.status, PaymentIntentStatus::Pending,
+            "the failed save must not have persisted the Captured transition"
+        );
     }
 
     // ── sweep_expired ────────────────────────────────────────────────────────
