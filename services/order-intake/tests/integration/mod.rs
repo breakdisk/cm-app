@@ -255,6 +255,23 @@ impl ShipmentRepository for InMemoryShipmentRepository {
         })
     }
 
+    fn cancel_if_awaiting_payment<'a>(
+        &'a self,
+        shipment_id: uuid::Uuid,
+    ) -> Pin<Box<dyn std::future::Future<Output = anyhow::Result<bool>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut store = self.shipments.lock().unwrap();
+            let Some(s) = store.iter_mut().find(|s| s.id.inner() == shipment_id) else {
+                return Ok(false);
+            };
+            if s.payment_status != PaymentRequirement::AwaitingPayment || !s.can_cancel() {
+                return Ok(false);
+            }
+            s.status = ShipmentStatus::Cancelled;
+            Ok(true)
+        })
+    }
+
     fn find_awaiting_payment_older_than<'a>(
         &'a self,
         cutoff: chrono::DateTime<chrono::Utc>,
@@ -2666,6 +2683,46 @@ mod payment_consumer_tests {
     // payment_older_than` for the first time (it filters on both
     // `payment_status == AwaitingPayment` and `created_at < cutoff`).
     // ========================================================================
+
+    /// The sweep reads a batch, then cancels row by row. A payment that
+    /// captures inside that window must win: cancelling on a stale read would
+    /// mark a paid shipment cancelled and erase the payment from this
+    /// service's record.
+    #[tokio::test]
+    async fn sweep_does_not_cancel_a_shipment_that_was_paid_after_the_batch_was_read() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let svc = build_service(Arc::clone(&repo), Arc::clone(&recorder) as Arc<dyn EventPublisher>);
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let merchant_id = uuid::Uuid::new_v4();
+        let stale = Shipment {
+            payment_status: PaymentRequirement::AwaitingPayment,
+            created_at: chrono::Utc::now() - chrono::Duration::minutes(45),
+            ..make_shipment(tenant_id, merchant_id, ShipmentStatus::Pending)
+        };
+        let shipment_id = stale.id.inner();
+        repo.shipments.lock().unwrap().push(stale);
+
+        // Stand in for the capture landing between the sweep's read and its
+        // write: by the time the cancel is attempted, the row is Paid.
+        {
+            let mut store = repo.shipments.lock().unwrap();
+            let s = store.iter_mut().find(|s| s.id.inner() == shipment_id).unwrap();
+            s.payment_status = PaymentRequirement::Paid;
+        }
+
+        let cancelled = svc.sweep_expired_payments(30).await.expect("sweep must not error");
+
+        assert_eq!(cancelled, 0, "a shipment paid mid-sweep must not be counted as cancelled");
+        let stored = find(&repo, shipment_id);
+        assert_eq!(stored.status, ShipmentStatus::Pending, "a paid shipment must not be cancelled");
+        assert_eq!(
+            stored.payment_status,
+            PaymentRequirement::Paid,
+            "the capture must not be overwritten by the sweep's stale copy",
+        );
+    }
 
     #[tokio::test]
     async fn sweep_cancels_a_stale_awaiting_payment_shipment() {

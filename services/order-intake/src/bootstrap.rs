@@ -114,12 +114,19 @@ pub async fn run() -> anyhow::Result<()> {
     // quote token is presented: on `payment.intent.captured` it republishes
     // the shipment's held dispatch events and marks it Paid; on
     // `payment.intent.failed` it cancels the shipment.
-    let payment_consumer = PaymentConsumer::new(
-        &cfg.kafka.brokers,
-        &cfg.kafka.group_id,
-        Arc::clone(&svc),
-    )?;
-    tokio::spawn(async move { payment_consumer.run().await });
+    // Constructed inside the spawn, like the status consumer above: a Kafka
+    // client that cannot be created at boot must disable this consumer, not
+    // stop the HTTP surface from binding. Shipment creation, tracking, and
+    // cancellation all serve fine without Kafka.
+    let brokers_for_payment = cfg.kafka.brokers.clone();
+    let group_for_payment = cfg.kafka.group_id.clone();
+    let svc_for_payment = Arc::clone(&svc);
+    tokio::spawn(async move {
+        match PaymentConsumer::new(&brokers_for_payment, &group_for_payment, svc_for_payment) {
+            Ok(consumer) => consumer.run().await,
+            Err(e) => tracing::error!("Payment consumer could not start: {e}"),
+        }
+    });
 
     // Payment-expiry sweep — backstop for shipments left `awaiting_payment`
     // past their TTL. Under normal operation the payments service's own

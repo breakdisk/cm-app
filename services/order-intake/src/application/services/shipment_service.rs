@@ -52,6 +52,11 @@ pub struct NewShipmentEvent {
     pub location:    Option<String>,
 }
 
+/// The tenant an event about this shipment belongs to.
+fn cmd_tenant_of(s: &Shipment) -> uuid::Uuid {
+    s.tenant_id.inner()
+}
+
 pub trait ShipmentRepository: Send + Sync {
     fn find_by_id<'a>(
         &'a self,
@@ -75,6 +80,19 @@ pub trait ShipmentRepository: Send + Sync {
         &'a self,
         cutoff: chrono::DateTime<chrono::Utc>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Vec<Shipment>>> + Send + 'a>>;
+
+    /// Cancel a shipment *only if* it is still awaiting payment, in one
+    /// statement. Returns whether it was cancelled.
+    ///
+    /// The expiry sweep cannot use the read-modify-write `cancel()` path: a
+    /// payment capture landing between that read and its write would be
+    /// overwritten by the sweep's stale copy, leaving a shipment cancelled
+    /// with the customer's payment erased from this service's record. The
+    /// condition therefore has to be evaluated by the database, at write time.
+    fn cancel_if_awaiting_payment<'a>(
+        &'a self,
+        shipment_id: uuid::Uuid,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<bool>> + Send + 'a>>;
 
     fn save_pieces<'a>(
         &'a self,
@@ -705,24 +723,48 @@ impl ShipmentService {
         let cutoff = Utc::now() - chrono::Duration::minutes(ttl_minutes);
         let stale = self.repo.find_awaiting_payment_older_than(cutoff).await.map_err(AppError::Internal)?;
         let mut cancelled = 0usize;
+
         for shipment in stale {
-            if !shipment.can_cancel() {
-                tracing::info!(
-                    shipment_id = %shipment.id,
-                    status = ?shipment.status,
-                    "sweep: shipment no longer cancellable, skipping"
-                );
+            // Conditional at the database, not here: a capture that lands
+            // between the query above and this write must win, and the row
+            // read a moment ago cannot tell us whether that happened.
+            let did_cancel = match self.repo.cancel_if_awaiting_payment(shipment.id.inner()).await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!(shipment_id = %shipment.id, error = ?e, "sweep: failed to cancel expired-payment shipment");
+                    continue;
+                }
+            };
+
+            if !did_cancel {
+                // Paid, already cancelled, or moved on — all benign races.
+                tracing::info!(shipment_id = %shipment.id, "sweep: shipment no longer awaiting payment, skipping");
                 continue;
             }
-            if let Err(e) = self.cancel(CancelShipmentCommand {
-                shipment_id: shipment.id.inner(),
-                reason: "payment_expired".into(),
-            }).await {
-                tracing::error!(shipment_id = %shipment.id, error = ?e, "sweep: failed to cancel expired-payment shipment");
-                continue;
+
+            let event = Event::new(
+                "logisticos/order-intake",
+                "shipment.cancelled",
+                cmd_tenant_of(&shipment),
+                serde_json::json!({ "shipment_id": shipment.id.inner(), "reason": "payment_expired" }),
+            );
+            match serde_json::to_string(&event) {
+                Ok(payload) => {
+                    if let Err(e) = self.publisher
+                        .publish(topics::SHIPMENT_CANCELLED, &shipment.id.to_string(), &payload)
+                        .await
+                    {
+                        // The cancellation is already durable; a lost
+                        // notification must not undo it or stop the sweep.
+                        tracing::error!(shipment_id = %shipment.id, error = %e, "sweep: cancelled but failed to publish shipment.cancelled");
+                    }
+                }
+                Err(e) => tracing::error!(shipment_id = %shipment.id, error = %e, "sweep: could not serialize shipment.cancelled"),
             }
+
             cancelled += 1;
         }
+
         Ok(cancelled)
     }
 

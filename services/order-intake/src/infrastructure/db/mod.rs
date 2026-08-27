@@ -480,6 +480,25 @@ impl ShipmentRepository for PgShipmentRepository {
         })
     }
 
+    fn cancel_if_awaiting_payment<'a>(
+        &'a self,
+        shipment_id: Uuid,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<bool>> + Send + 'a>> {
+        Box::pin(async move {
+            // The whole condition is evaluated by Postgres as part of the
+            // write, so a concurrent payment capture (which sets
+            // payment_status = 'paid') makes this match zero rows rather than
+            // being clobbered by a stale in-memory copy.
+            let result = sqlx::query(
+                "UPDATE order_intake.shipments                     SET status = 'cancelled', updated_at = NOW()                   WHERE id = $1                     AND payment_status = 'awaiting_payment'                     AND status IN ('pending', 'confirmed')",
+            )
+            .bind(shipment_id)
+            .execute(&self.pool)
+            .await?;
+            Ok(result.rows_affected() > 0)
+        })
+    }
+
     fn find_awaiting_payment_older_than<'a>(
         &'a self,
         cutoff: chrono::DateTime<chrono::Utc>,
