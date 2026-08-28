@@ -109,6 +109,29 @@ jobs:
       - name: Prebuild the Android project
         run: npx expo prebuild --platform android --no-install
 
+      # Expo's generated gradle.properties gives the Gradle JVM 512m of
+      # metaspace. This app's dependency tree exhausts that: the first run of
+      # this workflow spent 74 minutes emitting
+      # `OutOfMemoryError: Metaspace` in a loop without ever finishing, where
+      # the equivalent OmniDeliv build takes 8-11. It never fails outright --
+      # it thrashes until the 6h job timeout, which reads as "slow build"
+      # rather than "broken".
+      #
+      # reactNativeArchitectures trims four ABIs to one. arm64-v8a covers
+      # every real test device; x86/x86_64 exist for emulators and armeabi-v7a
+      # for hardware old enough not to matter here. Building one instead of
+      # four is most of the remaining wall time.
+      - name: Raise Gradle memory and build a single ABI
+        working-directory: apps/customer-app/android
+        run: |
+          {
+            echo ""
+            echo "# Set by .github/workflows/build-customer-apk-github.yml"
+            echo "org.gradle.jvmargs=-Xmx5g -XX:MaxMetaspaceSize=2g"
+            echo "reactNativeArchitectures=arm64-v8a"
+          } >> gradle.properties
+          tail -5 gradle.properties
+
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
