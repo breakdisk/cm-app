@@ -168,6 +168,11 @@ impl PaymentIntentRepository for PgPaymentIntentRepository {
     }
 
     async fn claim_for_refund(&self, id: Uuid) -> anyhow::Result<bool> {
+        // A claim expires. If the process holding it died between the claim
+        // and the gateway call, or failed to revert it, the row would sit in
+        // `refunding` forever -- invisible to the sweep, customer still
+        // charged. The lease far exceeds any in-flight gateway call (the NI
+        // client times out at 30s), so reclaiming cannot race a live call.
         // The whole race is decided by Postgres as part of this single
         // write: a concurrent claim on the same row makes the WHERE match
         // zero rows for everyone but the first UPDATE to commit, rather than
@@ -175,7 +180,7 @@ impl PaymentIntentRepository for PgPaymentIntentRepository {
         let result = sqlx::query(
             "UPDATE payments.payment_intents \
              SET status = 'refunding', updated_at = NOW() \
-             WHERE id = $1 AND status = 'captured'",
+             WHERE id = $1 \n               AND (status = 'captured' \n                    OR (status = 'refunding' AND updated_at < NOW() - INTERVAL '15 minutes'))",
         )
         .bind(id)
         .execute(&self.pool)
@@ -186,7 +191,7 @@ impl PaymentIntentRepository for PgPaymentIntentRepository {
     async fn list_pending_refunds(&self) -> anyhow::Result<Vec<PaymentIntent>> {
         let query = format!(
             "SELECT {INTENT_COLS} FROM payments.payment_intents \
-             WHERE status = 'captured' AND refund_requested_at IS NOT NULL"
+             WHERE refund_requested_at IS NOT NULL \n               AND (status = 'captured' \n                    OR (status = 'refunding' AND updated_at < NOW() - INTERVAL '15 minutes'))"
         );
         let rows = sqlx::query_as::<_, PaymentIntentRow>(&query)
             .fetch_all(&self.pool)

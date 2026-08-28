@@ -271,7 +271,13 @@ impl PaymentIntentService {
         // non-captured) intent would pass the Option check that used to gate the
         // gateway call and hit the live gateway a second time. Reject locally first —
         // zero gateway calls for a non-captured intent.
-        if intent.status != crate::domain::entities::PaymentIntentStatus::Captured {
+        // `Refunding` is allowed through as well as `Captured`: it may be an
+        // abandoned claim from a process that died mid-refund. The atomic claim
+        // below is the real guard -- it only succeeds for a `Captured` row or a
+        // `Refunding` one whose lease has expired, so a refund still genuinely
+        // in flight is still rejected.
+        use crate::domain::entities::PaymentIntentStatus;
+        if !matches!(intent.status, PaymentIntentStatus::Captured | PaymentIntentStatus::Refunding) {
             anyhow::bail!("Only a captured intent can be refunded");
         }
         let gateway_payment_ref = intent.gateway_payment_ref.clone()
@@ -280,6 +286,13 @@ impl PaymentIntentService {
         if !self.repo.claim_for_refund(intent_id).await? {
             anyhow::bail!("intent {intent_id} is already being refunded (lost the claim race)");
         }
+
+        // Winning the claim means this call now owns the refund, whether the
+        // row was `Captured` or an abandoned `Refunding` we just reclaimed.
+        // Normalise the snapshot so both outcomes below behave identically:
+        // `intent.refund()` requires `Captured`, and the failure branch writes
+        // this same snapshot back to release the claim.
+        intent.status = PaymentIntentStatus::Captured;
 
         match self.gateway.refund(&gateway_payment_ref, intent.amount_cents).await {
             Ok(()) => {
@@ -294,13 +307,14 @@ impl PaymentIntentService {
                 // 'refunding' row instead of leaving the intent stranded —
                 // `sweep_pending_refunds` needs it back at `captured` (with
                 // `refund_requested_at` still set) to retry it next tick.
+                intent.updated_at = chrono::Utc::now();
                 if let Err(save_err) = self.repo.save(&intent).await {
                     tracing::error!(
                         intent_id = %intent_id,
                         gateway_error = %e,
                         revert_error = %save_err,
                         "refund: gateway call failed AND reverting the 'refunding' claim also failed \
-                         — intent is stuck in refunding until manually corrected",
+                         — the claim lease makes it reclaimable rather than stranded",
                     );
                 }
                 Err(e)
@@ -352,6 +366,9 @@ mod tests {
     use chrono::Utc;
 
     use super::*;
+
+    /// Must match the lease in `payment_intent_repo.rs`'s claim SQL.
+    const LEASE_MINUTES: i64 = 15;
     use crate::domain::entities::PaymentIntentStatus;
     use crate::domain::repositories::payment_gateway::GatewaySession;
 
@@ -470,8 +487,15 @@ mod tests {
 
         async fn claim_for_refund(&self, id: Uuid) -> anyhow::Result<bool> {
             let mut intents = self.intents.lock().unwrap();
+            // Mirrors the SQL: a `Captured` row, or a `Refunding` one whose
+            // claim lease has expired (an abandoned claim).
+            let lease_cutoff = Utc::now() - chrono::Duration::minutes(LEASE_MINUTES);
             match intents.get_mut(&id) {
-                Some(intent) if intent.status == PaymentIntentStatus::Captured => {
+                Some(intent)
+                    if intent.status == PaymentIntentStatus::Captured
+                        || (intent.status == PaymentIntentStatus::Refunding
+                            && intent.updated_at < lease_cutoff) =>
+                {
                     intent.status = PaymentIntentStatus::Refunding;
                     intent.updated_at = Utc::now();
                     Ok(true)
@@ -482,7 +506,14 @@ mod tests {
 
         async fn list_pending_refunds(&self) -> anyhow::Result<Vec<PaymentIntent>> {
             Ok(self.intents.lock().unwrap().values()
-                .filter(|i| i.status == PaymentIntentStatus::Captured && i.refund_requested_at.is_some())
+                // Mirrors the SQL: a refund is owed, and the row is either
+                // captured or holding an expired claim lease.
+                // Mirrors the SQL: a refund is owed, and the row is either
+                // captured or holding an expired claim lease.
+                .filter(|i| i.refund_requested_at.is_some()
+                    && (i.status == PaymentIntentStatus::Captured
+                        || (i.status == PaymentIntentStatus::Refunding
+                            && i.updated_at < Utc::now() - chrono::Duration::minutes(LEASE_MINUTES))))
                 .cloned()
                 .collect())
         }
@@ -1069,6 +1100,57 @@ mod tests {
     }
 
     // ── refund: atomic claim (Gap 2) ────────────────────────────────────────
+
+    /// A process that dies between claiming a refund and completing it must
+    /// not strand the customer's money. The claim is a lease, so the retry
+    /// sweep reclaims it; without that, the row sits in `refunding` forever,
+    /// invisible to the sweep, with the customer still charged.
+    #[tokio::test]
+    async fn an_abandoned_refund_claim_is_reclaimed_once_its_lease_expires() {
+        let repo = Arc::new(FakeRepo::default());
+        let tenant_id = Uuid::new_v4();
+        let mut intent = make_intent(tenant_id);
+        intent.capture("ni-txn-abandoned".into()).unwrap();
+        intent.status = PaymentIntentStatus::Refunding;
+        intent.refund_requested_at = Some(Utc::now() - chrono::Duration::hours(1));
+        intent.updated_at = Utc::now() - chrono::Duration::minutes(LEASE_MINUTES + 5);
+        let intent_id = intent.id;
+        repo.seed(intent);
+
+        let gateway = Arc::new(FakeGateway::new());
+        let svc = service(repo.clone(), gateway.clone());
+
+        let refunded = svc.sweep_pending_refunds().await.expect("sweep must not error");
+
+        assert_eq!(refunded, 1, "an abandoned claim must be retried, not stranded forever");
+        assert_eq!(repo.get(intent_id).status, PaymentIntentStatus::Refunded);
+        assert_eq!(gateway.refund_calls(), 1, "the reclaimed refund must actually reach the gateway");
+    }
+
+    /// The other half: a claim still inside its lease is a refund genuinely in
+    /// flight, and must not be duplicated.
+    #[tokio::test]
+    async fn a_fresh_refund_claim_is_not_reclaimed() {
+        let repo = Arc::new(FakeRepo::default());
+        let tenant_id = Uuid::new_v4();
+        let mut intent = make_intent(tenant_id);
+        intent.capture("ni-txn-inflight".into()).unwrap();
+        intent.status = PaymentIntentStatus::Refunding;
+        intent.refund_requested_at = Some(Utc::now());
+        intent.updated_at = Utc::now();
+        let intent_id = intent.id;
+        repo.seed(intent);
+
+        let gateway = Arc::new(FakeGateway::new());
+        let svc = service(repo.clone(), gateway.clone());
+
+        let refunded = svc.sweep_pending_refunds().await.expect("sweep must not error");
+
+        assert_eq!(refunded, 0, "a refund still in flight must not be retried");
+        assert_eq!(gateway.refund_calls(), 0, "the gateway must not be called twice for one refund");
+        assert_eq!(repo.get(intent_id).status, PaymentIntentStatus::Refunding);
+    }
+
 
     #[tokio::test]
     async fn claim_for_refund_only_lets_one_caller_win_the_race() {
