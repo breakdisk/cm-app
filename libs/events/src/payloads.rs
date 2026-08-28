@@ -375,6 +375,32 @@ pub struct WeightAdjustmentInvoiced {
     pub actual_grams:      u32,
 }
 
+/// Published by `services/payments` when a Network-International-backed
+/// `payment_intents` row transitions to `captured`. `reference_id` is
+/// whatever the intent's `purpose` says it is — for `purpose = "shipping_fee"`
+/// it is the order-intake `shipment_id`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentIntentCaptured {
+    pub intent_id: Uuid,
+    pub purpose: String,
+    pub reference_type: String,
+    pub reference_id: Uuid,
+    pub amount_cents: i64,
+    pub currency: String,
+}
+
+/// Published when an intent is marked `failed` (declined at the gateway) —
+/// distinct from `expired`, which the consumer treats identically but which
+/// is driven by the sweep, not a webhook.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentIntentFailed {
+    pub intent_id: Uuid,
+    pub purpose: String,
+    pub reference_type: String,
+    pub reference_id: Uuid,
+    pub reason: String,
+}
+
 /// Emitted by dispatch when a shipment is assigned to a driver.
 /// Contains all data driver-ops needs to create a DriverTask row
 /// without querying other services.

@@ -419,10 +419,16 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8004"
       APP__ENV: development
+      # Base URL merchants/customers are redirected back to after hosted
+      # checkout for a payment-gated shipment (the payments service's
+      # gateway `return_url`). Required — order-intake fails to start
+      # without it.
+      APP__PUBLIC_BASE_URL: ${APP__PUBLIC_BASE_URL:-http://localhost:3001}
       DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_order_intake
       DATABASE__MAX_CONNECTIONS: "5"
       KAFKA__BROKERS: kafka:29092
       KAFKA__GROUP_ID: order-intake-dev
+      PAYMENTS__URL: http://payments:8012
       AUTH__JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       AUTH__JWT_EXPIRY_SECONDS: "3600"
       AUTH__REFRESH_TOKEN_EXPIRY_SECONDS: "86400"
@@ -451,6 +457,10 @@ services:
       # the shipment at assignment time. Set the pk.* public token via the
       # same env var in .env or the Dokploy service config.
       GEOCODER__MAPBOX_ACCESS_TOKEN: ${GEOCODER__MAPBOX_ACCESS_TOKEN:-}
+      # HMAC-SHA256 signing secret for short-TTL quote tokens. Top-level
+      # field on Config, read without a `__` prefix. Required — order-intake
+      # fails to start without it.
+      QUOTE_TOKEN_SECRET: ${QUOTE_TOKEN_SECRET:-dev-quote-token-secret-REPLACE-WITH-32CHAR-RANDOM-VALUE-123}
       RUST_LOG: info
     depends_on:
       postgres:
@@ -899,6 +909,10 @@ services:
       SERVICES__AI_LAYER_URL: http://ai-layer:8016
       SERVICES__FIELD_OPS_URL: http://field-ops:8090
       SERVICES__OMNIDELIV_URL: http://omnideliv:8091
+      NETWORK_INTERNATIONAL__BASE_URL: https://api-gateway.sandbox.ngenius-payments.com
+      NETWORK_INTERNATIONAL__API_KEY: ${NI_API_KEY:-sandbox-key}
+      NETWORK_INTERNATIONAL__WEBHOOK_SECRET: ${NI_WEBHOOK_SECRET:-sandbox-webhook-secret}
+      NETWORK_INTERNATIONAL__OUTLET_REF: ${NI_OUTLET_REF:-sandbox-outlet-ref}
       RUST_LOG: info
     depends_on:
       postgres:

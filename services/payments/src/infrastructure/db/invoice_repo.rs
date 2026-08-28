@@ -46,6 +46,7 @@ fn parse_currency(s: &str) -> Currency {
         "SGD" => Currency::SGD,
         "MYR" => Currency::MYR,
         "IDR" => Currency::IDR,
+        "AED" => Currency::AED,
         _     => Currency::PHP,
     }
 }

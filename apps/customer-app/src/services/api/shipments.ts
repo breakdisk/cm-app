@@ -42,6 +42,8 @@ export interface CreateShipmentRequest {
   merchant_reference?: string;
   piece_count?: number;
   pieces?: PieceInput[];
+  quote_token?: string;
+  idempotency_key?: string;
 }
 
 // ── Response types ─────────────────────────────────────────────────────────────
@@ -64,6 +66,8 @@ export interface ShipmentResponse {
   // Computed fields added by the app
   fee?: number;
   currency?: string;
+  payment_status?: 'not_required' | 'awaiting_payment' | 'paid' | 'payment_failed';
+  checkout_url?: string;
 }
 
 export interface ShipmentsListResponse {
@@ -116,4 +120,29 @@ export function parseAddress(flat: string, countryCode = 'PH'): AddressInput {
     postal_code:  parts[3] ?? '0000',
     country_code: countryCode,
   };
+}
+
+// ── Quote (AE-region only) ──────────────────────────────────────────────────
+
+export interface QuotePieceInput {
+  weight_grams: number;
+}
+
+export interface QuoteRequest {
+  service_type: 'standard' | 'express' | 'same_day' | 'balikbayan';
+  weight_grams: number;
+  pieces?: QuotePieceInput[];
+}
+
+export interface QuoteResponse {
+  amount_cents: number;
+  currency: string;
+  quote_token: string;
+  expires_at: string;
+}
+
+export async function getShipmentQuote(request: QuoteRequest): Promise<QuoteResponse> {
+  const client = getOrderClient();
+  const response = await client.post<QuoteResponse>('/v1/shipments/quote', request);
+  return response.data;
 }

@@ -1,7 +1,11 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use logisticos_types::{CustomerId, InvoiceId, MerchantId, TenantId};
 use uuid::Uuid;
-use crate::domain::entities::{Invoice, CodCollection, CodRemittanceBatch, Wallet, WalletTransaction, DriverLedger};
+use crate::domain::entities::{Invoice, CodCollection, CodRemittanceBatch, Wallet, WalletTransaction, DriverLedger, PaymentIntent};
+
+pub mod payment_gateway;
+pub use payment_gateway::{PaymentGateway, CreateSessionRequest, GatewaySession, WebhookEvent};
 
 #[async_trait]
 pub trait InvoiceRepository: Send + Sync {
@@ -252,4 +256,57 @@ pub trait DriverLedgerRepository: Send + Sync {
     ) -> anyhow::Result<Vec<DriverLedger>> {
         Ok(Vec::new())
     }
+}
+
+#[async_trait]
+pub trait PaymentIntentRepository: Send + Sync {
+    async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<PaymentIntent>>;
+    /// Idempotent capture lookup — used by the webhook handler to avoid
+    /// creating a second record when NI redelivers the same transaction.
+    async fn find_by_gateway_payment_ref(&self, gateway_payment_ref: &str) -> anyhow::Result<Option<PaymentIntent>>;
+    async fn save(&self, intent: &PaymentIntent) -> anyhow::Result<()>;
+    /// Intents past `expires_at` still in `created`/`pending` — the sweep target.
+    async fn list_expired(&self, before: DateTime<Utc>) -> anyhow::Result<Vec<PaymentIntent>>;
+
+    /// The captured intent for a given (purpose, reference), if one exists —
+    /// used by the shipment-cancellation consumer to decide whether a refund
+    /// is owed. Returns `None` for a shipment that was never paid online
+    /// (cash-at-pickup) — cancelling those must not attempt a refund call.
+    async fn find_captured_by_reference(
+        &self,
+        purpose: &str,
+        reference_type: &str,
+        reference_id: Uuid,
+    ) -> anyhow::Result<Option<PaymentIntent>>;
+
+    /// Durably records that a refund is owed for this intent — written
+    /// BEFORE the gateway call is attempted (`ShipmentCancelledConsumer`
+    /// calls this first, then `PaymentIntentService::refund`), so the
+    /// obligation survives a crash between the two. A narrow single-column
+    /// `UPDATE`, not a blind `save()`: this must never clobber a concurrent
+    /// status change made by another in-flight caller (the atomic claim in
+    /// `claim_for_refund`, or a previous sweep pass already mid-retry) — it
+    /// only ever touches `refund_requested_at`, unconditionally on status.
+    /// Idempotent: does not overwrite an already-recorded timestamp, so a
+    /// redelivered cancellation event doesn't reset the sweep's clock.
+    async fn mark_refund_requested(&self, id: Uuid) -> anyhow::Result<()>;
+
+    /// Atomically claims exclusive ownership of refunding this intent:
+    /// `captured` -> `refunding` in one `UPDATE ... WHERE status =
+    /// 'captured'`. Returns whether THIS call won the claim. `false` means
+    /// either the intent was not `captured` to begin with, or another
+    /// caller (a concurrent `refund()`, or the pending-refund sweep) already
+    /// claimed it — either way, the caller must not proceed to call the
+    /// gateway. This is the actual concurrency guard; any in-memory
+    /// `status == Captured` check elsewhere is a cheap local pre-filter, not
+    /// the source of truth.
+    async fn claim_for_refund(&self, id: Uuid) -> anyhow::Result<bool>;
+
+    /// Intents still `captured` with a recorded, unfulfilled refund
+    /// obligation (`refund_requested_at IS NOT NULL`) — the pending-refund
+    /// sweep's retry target (`PaymentIntentService::sweep_pending_refunds`).
+    /// An intent currently `refunding` (claimed by an in-flight attempt) is
+    /// deliberately excluded — it belongs to whichever caller holds that
+    /// claim, not to a new sweep pass.
+    async fn list_pending_refunds(&self) -> anyhow::Result<Vec<PaymentIntent>>;
 }

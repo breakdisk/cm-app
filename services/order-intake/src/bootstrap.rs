@@ -15,7 +15,11 @@ use crate::{
         awb::{FallbackAwbGenerator, PostgresAwbGenerator, RedisAwbGenerator},
         db::PgShipmentRepository,
         external::{MapboxGeocoder, PassthroughNormalizer},
-        messaging::{status_consumer::start_status_consumer, KafkaEventPublisher},
+        http::PaymentsClient,
+        messaging::{
+            payment_consumer::PaymentConsumer, status_consumer::start_status_consumer,
+            KafkaEventPublisher,
+        },
     },
 };
 
@@ -93,14 +97,56 @@ pub async fn run() -> anyhow::Result<()> {
     let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
 
     // Application services
+    let payments_client = Arc::new(PaymentsClient::new(&cfg.payments.url));
     let svc = Arc::new(ShipmentService::new(
         repo.clone(),
         publisher,
         normalizer,
         awb_generator,
+        payments_client,
+        cfg.quote_token_secret.clone(),
+        cfg.app.public_base_url.clone(),
     ));
     let query = Arc::new(ShipmentQueryService::new(repo.clone()));
     let pool_for_dims = pool.clone();
+
+    // Spawn Kafka payment consumer — closes the loop `create()` opens when a
+    // quote token is presented: on `payment.intent.captured` it republishes
+    // the shipment's held dispatch events and marks it Paid; on
+    // `payment.intent.failed` it cancels the shipment.
+    // Constructed inside the spawn, like the status consumer above: a Kafka
+    // client that cannot be created at boot must disable this consumer, not
+    // stop the HTTP surface from binding. Shipment creation, tracking, and
+    // cancellation all serve fine without Kafka.
+    let brokers_for_payment = cfg.kafka.brokers.clone();
+    let group_for_payment = cfg.kafka.group_id.clone();
+    let svc_for_payment = Arc::clone(&svc);
+    tokio::spawn(async move {
+        match PaymentConsumer::new(&brokers_for_payment, &group_for_payment, svc_for_payment) {
+            Ok(consumer) => consumer.run().await,
+            Err(e) => tracing::error!("Payment consumer could not start: {e}"),
+        }
+    });
+
+    // Payment-expiry sweep — backstop for shipments left `awaiting_payment`
+    // past their TTL. Under normal operation the payments service's own
+    // intent sweep (`INTENT_TTL` = 30 min, `services/payments/src/application
+    // /services/payment_intent_service.rs`) publishes `payment.intent.failed`
+    // first, which the consumer above already cancels via. This sweep exists
+    // for anything that slips past that path. TTL here matches `INTENT_TTL`
+    // so the two don't silently drift apart.
+    let svc_for_sweep = Arc::clone(&svc);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(5 * 60));
+        loop {
+            tick.tick().await;
+            match svc_for_sweep.sweep_expired_payments(30).await {
+                Ok(count) if count > 0 => tracing::info!(count, "Shipment payment sweep: cancelled stale bookings"),
+                Ok(_) => {}
+                Err(e) => tracing::error!(err = ?e, "Shipment payment sweep failed"),
+            }
+        }
+    });
 
     // Axum router
     use axum::http::{HeaderName, HeaderValue, Method};
@@ -136,7 +182,13 @@ pub async fn run() -> anyhow::Result<()> {
             HeaderName::from_static("x-logisticos-client"),
         ]);
 
-    let state = AppState { svc, query, jwt, pool: pool_for_dims };
+    let state = AppState {
+        svc,
+        query,
+        jwt,
+        pool: pool_for_dims,
+        quote_token_secret: cfg.quote_token_secret.clone(),
+    };
     let app = router(state)
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(cors);

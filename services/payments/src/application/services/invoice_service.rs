@@ -257,6 +257,7 @@ impl InvoiceService {
             "SGD" => Currency::SGD,
             "MYR" => Currency::MYR,
             "IDR" => Currency::IDR,
+            "AED" => Currency::AED,
             _     => Currency::PHP,
         };
 

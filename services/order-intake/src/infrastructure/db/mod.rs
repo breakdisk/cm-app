@@ -13,7 +13,7 @@ use logisticos_types::{
 use crate::{
     application::services::shipment_service::{NewShipmentEvent, ShipmentListFilter, ShipmentRepository},
     domain::{
-        entities::{shipment::Shipment, piece::Piece},
+        entities::{shipment::{PaymentRequirement, Shipment}, piece::Piece},
         value_objects::{ServiceType, ShipmentDimensions, ShipmentWeight},
     },
 };
@@ -69,12 +69,31 @@ struct ShipmentRow {
     source_platform:      Option<String>,
     external_order_id:    Option<String>,
 
+    payment_intent_id:       Option<Uuid>,
+    payment_status:          String,
+    pending_dispatch_events: Option<serde_json::Value>,
+    idempotency_key:         Option<String>,
+
     created_at:           chrono::DateTime<chrono::Utc>,
     updated_at:           chrono::DateTime<chrono::Utc>,
 }
 
 impl ShipmentRow {
-    fn into_shipment(self) -> Shipment {
+    /// Fallible rather than panicking on an unrecognized `payment_status`.
+    ///
+    /// This decode path backs both HTTP-request handlers (`find_by_id`, `list`,
+    /// `find_by_idempotency_key`) *and* the unattended payment-intent-expiry
+    /// sweep (`find_awaiting_payment_older_than`, added alongside this method).
+    /// A `.expect()` here would be fine for the request-handler callers — the
+    /// panic surfaces as one clean 500 to one caller — but a rolling deploy
+    /// where a migration widens the `payment_status` CHECK constraint ahead of
+    /// this binary picking up the matching `PaymentRequirement` variant would
+    /// panic *inside the background sweep* instead, silently killing that
+    /// worker task rather than skipping/erroring on the one bad row. Since one
+    /// shared function now feeds both call shapes, propagating a `Result`
+    /// keeps the background path safe without weakening the request path (its
+    /// callers already turn `Err` into a 500 via `AppError::Internal`).
+    fn into_shipment(self) -> anyhow::Result<Shipment> {
         let origin = Address {
             line1:        self.origin_line1,
             line2:        self.origin_line2,
@@ -131,7 +150,14 @@ impl ShipmentRow {
             let tenant = logisticos_types::awb::TenantCode::new("PH1").unwrap();
             Awb::generate(&tenant, logisticos_types::awb::ServiceCode::Standard, 1)
         });
-        Shipment {
+        let payment_status = PaymentRequirement::parse(&self.payment_status).ok_or_else(|| {
+            anyhow::anyhow!(
+                "shipment {} has unrecognized payment_status value: {:?}",
+                self.id,
+                self.payment_status
+            )
+        })?;
+        Ok(Shipment {
             id:                   ShipmentId::from_uuid(self.id),
             tenant_id:            TenantId::from_uuid(self.tenant_id),
             merchant_id:          MerchantId::from_uuid(self.merchant_id),
@@ -160,9 +186,13 @@ impl ShipmentRow {
             merchant_reference:   self.merchant_reference,
             source_platform:      self.source_platform,
             external_order_id:    self.external_order_id,
+            payment_intent_id:       self.payment_intent_id,
+            payment_status,
+            pending_dispatch_events: self.pending_dispatch_events,
+            idempotency_key:         self.idempotency_key,
             created_at:           self.created_at,
             updated_at:           self.updated_at,
-        }
+        })
     }
 }
 
@@ -197,6 +227,7 @@ const SHIPMENT_COLS: &str = r#"
     weight_grams, length_cm, width_cm, height_cm,
     declared_value_cents, cod_amount_cents, special_instructions,
     merchant_reference, source_platform, external_order_id,
+    payment_intent_id, payment_status, pending_dispatch_events, idempotency_key,
     created_at, updated_at
 "#;
 
@@ -244,6 +275,10 @@ fn row_to_shipment_row(r: &sqlx::postgres::PgRow) -> ShipmentRow {
         merchant_reference:   r.get("merchant_reference"),
         source_platform:      r.get("source_platform"),
         external_order_id:    r.get("external_order_id"),
+        payment_intent_id:       r.get("payment_intent_id"),
+        payment_status:          r.get("payment_status"),
+        pending_dispatch_events: r.get("pending_dispatch_events"),
+        idempotency_key:         r.get("idempotency_key"),
         created_at:           r.get("created_at"),
         updated_at:           r.get("updated_at"),
     }
@@ -297,7 +332,7 @@ impl ShipmentRepository for PgShipmentRepository {
             let shipments = rows
                 .into_iter()
                 .map(|r| row_to_shipment_row(&r).into_shipment())
-                .collect();
+                .collect::<anyhow::Result<Vec<_>>>()?;
 
             Ok((shipments, total))
         })
@@ -316,7 +351,7 @@ impl ShipmentRepository for PgShipmentRepository {
                 .bind(id.inner())
                 .fetch_optional(&self.pool)
                 .await?;
-            Ok(row.map(|r| row_to_shipment_row(&r).into_shipment()))
+            row.map(|r| row_to_shipment_row(&r).into_shipment()).transpose()
         })
     }
 
@@ -340,13 +375,15 @@ impl ShipmentRepository for PgShipmentRepository {
                     weight_grams, length_cm, width_cm, height_cm,
                     declared_value_cents, cod_amount_cents, special_instructions,
                     merchant_reference, source_platform, external_order_id,
+                    payment_intent_id, payment_status, pending_dispatch_events, idempotency_key,
                     created_at, updated_at
                 ) VALUES (
                     $1,$2,$3,$4,$5,$6,$7,$8,$9,
                     $10,$11,$12,$13,
                     $14,$15,$16,$17,$18,$19,$20,$21,$22,
                     $23,$24,$25,$26,$27,$28,$29,$30,$31,
-                    $32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43
+                    $32,$33,$34,$35,$36,$37,$38,$39,$40,$41,
+                    $42,$43,$44,$45,$46,$47
                 )
                 ON CONFLICT (id) DO UPDATE SET
                     status               = EXCLUDED.status,
@@ -363,6 +400,10 @@ impl ShipmentRepository for PgShipmentRepository {
                     merchant_reference   = EXCLUDED.merchant_reference,
                     source_platform      = EXCLUDED.source_platform,
                     external_order_id    = EXCLUDED.external_order_id,
+                    payment_intent_id       = EXCLUDED.payment_intent_id,
+                    payment_status          = EXCLUDED.payment_status,
+                    pending_dispatch_events = EXCLUDED.pending_dispatch_events,
+                    idempotency_key         = EXCLUDED.idempotency_key,
                     updated_at           = EXCLUDED.updated_at"#,
             )
             .bind(s.id.inner())
@@ -409,11 +450,68 @@ impl ShipmentRepository for PgShipmentRepository {
             .bind(s.merchant_reference.as_deref())
             .bind(s.source_platform.as_deref())
             .bind(s.external_order_id.as_deref())
+            .bind(s.payment_intent_id)
+            .bind(s.payment_status.as_str())
+            .bind(&s.pending_dispatch_events)
+            .bind(s.idempotency_key.as_deref())
             .bind(s.created_at)
             .bind(s.updated_at)
             .execute(&self.pool)
             .await?;
             Ok(())
+        })
+    }
+
+    fn find_by_idempotency_key<'a>(
+        &'a self,
+        tenant_id: Uuid,
+        idempotency_key: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Option<Shipment>>> + Send + 'a>> {
+        Box::pin(async move {
+            let query = format!(
+                "SELECT {SHIPMENT_COLS} FROM order_intake.shipments WHERE tenant_id = $1 AND idempotency_key = $2"
+            );
+            let row = sqlx::query(&query)
+                .bind(tenant_id)
+                .bind(idempotency_key)
+                .fetch_optional(&self.pool)
+                .await?;
+            row.map(|r| row_to_shipment_row(&r).into_shipment()).transpose()
+        })
+    }
+
+    fn cancel_if_awaiting_payment<'a>(
+        &'a self,
+        shipment_id: Uuid,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<bool>> + Send + 'a>> {
+        Box::pin(async move {
+            // The whole condition is evaluated by Postgres as part of the
+            // write, so a concurrent payment capture (which sets
+            // payment_status = 'paid') makes this match zero rows rather than
+            // being clobbered by a stale in-memory copy.
+            let result = sqlx::query(
+                "UPDATE order_intake.shipments                     SET status = 'cancelled', updated_at = NOW()                   WHERE id = $1                     AND payment_status = 'awaiting_payment'                     AND status IN ('pending', 'confirmed')",
+            )
+            .bind(shipment_id)
+            .execute(&self.pool)
+            .await?;
+            Ok(result.rows_affected() > 0)
+        })
+    }
+
+    fn find_awaiting_payment_older_than<'a>(
+        &'a self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<Shipment>>> + Send + 'a>> {
+        Box::pin(async move {
+            let query = format!(
+                "SELECT {SHIPMENT_COLS} FROM order_intake.shipments \
+                 WHERE payment_status = 'awaiting_payment' AND created_at < $1"
+            );
+            let rows = sqlx::query(&query).bind(cutoff).fetch_all(&self.pool).await?;
+            rows.iter()
+                .map(|r| row_to_shipment_row(r).into_shipment())
+                .collect::<anyhow::Result<Vec<_>>>()
         })
     }
 

@@ -56,6 +56,13 @@ pub struct Claims {
     /// login-derived fallback still covers them until they expire.
     #[serde(default)]
     pub phone: Option<String>,
+
+    /// The tenant's billing currency (e.g. "AED", "PHP"), from `Tenant.currency`.
+    /// Carried on the token so services that price or charge money don't need a
+    /// cross-service call to identity per request. `None` for a draft tenant that
+    /// hasn't finished onboarding, or a token minted before this field existed.
+    #[serde(default)]
+    pub currency: Option<String>,
 }
 
 impl Claims {
@@ -90,6 +97,7 @@ impl Claims {
             onboarding: false,
             enabled_features: Vec::new(),
             phone: None,
+            currency: None,
         }
     }
 
@@ -105,6 +113,13 @@ impl Claims {
     /// so no existing `Claims::new` call site has to change.
     pub fn with_phone(mut self, phone: Option<String>) -> Self {
         self.phone = phone.filter(|p| !p.trim().is_empty());
+        self
+    }
+
+    /// Attach the tenant's billing currency. Chainable, like [`Self::with_phone`].
+    #[must_use]
+    pub fn with_currency(mut self, currency: Option<String>) -> Self {
+        self.currency = currency;
         self
     }
 
@@ -188,5 +203,36 @@ impl RefreshClaims {
             iat: now.timestamp(),
             exp: (now + Duration::seconds(expiry_seconds)).timestamp(),
         }
+    }
+}
+
+#[cfg(test)]
+mod claims_currency_tests {
+    use super::*;
+
+    #[test]
+    fn old_token_json_without_currency_field_still_deserializes() {
+        // Simulates a JWT minted before this field existed — no `currency` key at all.
+        let json = r#"{
+            "sub": "11111111-1111-1111-1111-111111111111",
+            "iat": 0, "exp": 0, "jti": "x",
+            "tenant_id": "11111111-1111-1111-1111-111111111111",
+            "tenant_slug": "acme",
+            "subscription_tier": "starter",
+            "user_id": "11111111-1111-1111-1111-111111111111",
+            "email": "a@b.com",
+            "roles": [], "permissions": []
+        }"#;
+        let claims: Claims = serde_json::from_str(json).expect("must deserialize");
+        assert_eq!(claims.currency, None);
+    }
+
+    #[test]
+    fn with_currency_sets_the_field() {
+        let claims = Claims::new(
+            Uuid::new_v4(), Uuid::new_v4(), "acme".into(), "starter".into(),
+            "a@b.com".into(), vec![], vec![], 3600,
+        ).with_currency(Some("AED".into()));
+        assert_eq!(claims.currency.as_deref(), Some("AED"));
     }
 }

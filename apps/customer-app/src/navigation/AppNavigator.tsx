@@ -27,6 +27,8 @@ import { InvoicesScreen }         from "../screens/invoices/InvoicesScreen";
 import { InvoiceDetailScreen }    from "../screens/invoices/InvoiceDetailScreen";
 import { CollectionScreen }       from "../screens/collection/CollectionScreen";
 import { QuoteScreen }           from "../screens/quote/QuoteScreen";
+import { PaymentWebViewScreen }   from "../screens/booking/PaymentWebView";
+import { BookingConfirmationPendingScreen } from "../screens/booking/BookingConfirmationPending";
 
 // ── Design tokens ───────────────────────────────────────────────────────────────
 const CANVAS = "#050810";
@@ -113,6 +115,8 @@ function AuthenticatedNavigator() {
       <Stack.Screen name="Invoices"      component={InvoicesScreen}       />
       <Stack.Screen name="InvoiceDetail" component={InvoiceDetailScreen}  />
       <Stack.Screen name="Quote"         component={QuoteScreen}          />
+      <Stack.Screen name="PaymentWebView" component={PaymentWebViewScreen} />
+      <Stack.Screen name="BookingConfirmationPending" component={BookingConfirmationPendingScreen} />
       <Stack.Screen name="Notifications" component={NotificationsScreen}  />
       {/* KYC re-entry: accessible from ProfileScreen for 'none' and 'rejected' statuses */}
       <Stack.Screen name="KYC"           component={KYCScreen}            />

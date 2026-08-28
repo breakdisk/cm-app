@@ -9,6 +9,8 @@ pub mod health;
 pub mod merchant_billing_accounts;
 pub mod partner_commission;
 pub mod withdrawal_requests;
+pub mod payment_intents;
+pub mod payment_webhooks;
 
 use axum::{Router, routing::{get, post}};
 use std::sync::Arc;
@@ -29,12 +31,21 @@ pub struct AppState {
     pub withdrawal_service:             Arc<crate::application::services::WithdrawalService>,
     pub pdf_renderer:                   Option<Arc<crate::application::services::pdf_renderer::PdfRenderer>>,
     pub driver_ledger_repo:             Arc<dyn crate::domain::repositories::DriverLedgerRepository>,
+    pub payment_intent_service:         Arc<crate::application::services::payment_intent_service::PaymentIntentService>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health::health))
         .route("/ready",  get(health::ready))
+        // Public webhook receiver — no JWT (NI's servers cannot hold a
+        // LogisticOS session) and NOT nested under /v1/internal (mTLS-only),
+        // since NI's servers live on the public internet. Authenticated
+        // instead by NI's own webhook signature inside the handler.
+        .route(
+            "/v1/payments/webhooks/network-international",
+            post(payment_webhooks::network_international_webhook),
+        )
         // Internal service-to-service endpoints — no JWT (Istio mTLS gates caller identity).
         .nest("/v1/internal", internal_router(state.clone()))
         .nest("/v1", protected_router(state.clone()))
@@ -89,4 +100,8 @@ fn internal_router(_state: Arc<AppState>) -> Router<Arc<AppState>> {
         // Billing clearance — called by hub-ops before container departure.
         // No JWT: Istio mTLS gates caller identity on /v1/internal/*.
         .route("/billing-clearance",            get(billing_clearance::get_billing_clearance))
+        // Payment intent creation — called by order-intake for an amount it
+        // has already priced and verified. No JWT: Istio mTLS gates caller
+        // identity on /v1/internal/*.
+        .route("/payments/intents",             post(payment_intents::create_intent))
 }

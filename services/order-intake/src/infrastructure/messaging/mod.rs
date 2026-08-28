@@ -1,3 +1,4 @@
+pub mod payment_consumer;
 pub mod status_consumer;
 
 use std::pin::Pin;

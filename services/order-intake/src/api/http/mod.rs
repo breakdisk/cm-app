@@ -22,6 +22,8 @@ use crate::application::{
 };
 use crate::domain::entities::address_code::AddressCode;
 
+pub mod quote;
+
 // ---------------------------------------------------------------------------
 // AppState
 // ---------------------------------------------------------------------------
@@ -32,6 +34,10 @@ pub struct AppState {
     pub query:  Arc<ShipmentQueryService>,
     pub jwt:    Arc<logisticos_auth::jwt::JwtService>,
     pub pool:   PgPool,
+    /// HMAC-SHA256 signing secret for short-TTL quote tokens
+    /// (`domain::value_objects::quote_token`). Sourced from
+    /// `Config::quote_token_secret`.
+    pub quote_token_secret: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -100,7 +106,19 @@ async fn create_shipment(
         "create_shipment handler entered",
     );
     match s.svc.create(cmd).await {
-        Ok(shipment) => Ok::<_, AppError>((StatusCode::CREATED, Json(shipment))),
+        Ok(result) => {
+            #[derive(serde::Serialize)]
+            struct Response {
+                #[serde(flatten)]
+                shipment: crate::domain::entities::shipment::Shipment,
+                #[serde(skip_serializing_if = "Option::is_none")]
+                checkout_url: Option<String>,
+            }
+            Ok::<_, AppError>((
+                StatusCode::CREATED,
+                Json(Response { shipment: result.shipment, checkout_url: result.checkout_url }),
+            ))
+        }
         Err(e) => {
             tracing::error!(error = ?e, "create_shipment handler: service returned error");
             Err(e)
@@ -410,6 +428,7 @@ pub fn router(state: AppState) -> Router {
     let authed = Router::new()
         .route("/shipments",        post(create_shipment).get(list_shipments))
         .route("/shipments/bulk",   post(bulk_create_shipments))
+        .route("/shipments/quote",  post(quote::get_quote))
         .route("/shipments/:id",    get(get_shipment))
         .route("/shipments/:id/events",     get(list_shipment_events))
         .route("/shipments/:id/cancel",     post(cancel_shipment))
@@ -478,14 +497,16 @@ async fn internal_create_shipment(
         auto_dispatch:     Some(true),
         merchant_name:     None,
         delivery_category: None,
+        quote_token:       None,
+        idempotency_key:   None,
     };
 
     match s.svc.create(create_cmd).await {
-        Ok(shipment) => Ok::<_, AppError>((
+        Ok(result) => Ok::<_, AppError>((
             StatusCode::CREATED,
             Json(serde_json::json!({
-                "id":  shipment.id.inner(),
-                "awb": shipment.awb.as_str(),
+                "id":  result.shipment.id.inner(),
+                "awb": result.shipment.awb.as_str(),
                 "status": "pending",
             })),
         )),
