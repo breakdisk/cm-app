@@ -319,59 +319,99 @@ pub async fn run() -> anyhow::Result<()> {
         });
     }
 
-    // Spawn Kafka consumer for pod.captured — runs for the lifetime of the process.
-    let pod_consumer = PodConsumer::new(
-        &cfg.kafka.brokers,
-        &cfg.kafka.group_id,
-        Arc::clone(&cod_service),
-        Arc::clone(&invoice_service),
-    )
-    .context("Failed to create PodConsumer")?;
-    tokio::spawn(async move { pod_consumer.run().await });
+    // Spawn Kafka consumer for pod.captured — runs for the lifetime of the
+    // process. Constructed INSIDE the spawn, not before it with
+    // `.context(...)?`: `KafkaConsumer::new` does `ClientConfig::create()?`
+    // and `.subscribe()?`, so if Kafka is briefly unreachable at startup, a
+    // failure at this call site propagates out of `run()` and exits the
+    // process BEFORE `axum::serve` binds — invoicing, COD, wallets, driver
+    // ledger, and every other HTTP endpoint gone because a message broker
+    // hiccuped. Matches the ShipmentCancelledConsumer pattern below and
+    // order-intake's `start_status_consumer`: log the failure and keep the
+    // rest of the service running instead of taking it down.
+    let brokers_for_pod = cfg.kafka.brokers.clone();
+    let group_for_pod = cfg.kafka.group_id.clone();
+    let cod_service_for_pod = Arc::clone(&cod_service);
+    let invoice_service_for_pod = Arc::clone(&invoice_service);
+    tokio::spawn(async move {
+        match PodConsumer::new(
+            &brokers_for_pod,
+            &group_for_pod,
+            cod_service_for_pod,
+            invoice_service_for_pod,
+        ) {
+            Ok(consumer) => consumer.run().await,
+            Err(e) => tracing::error!("PodConsumer could not start: {e}"),
+        }
+    });
 
-    // Spawn weight-discrepancy consumer — appends surcharge adjustments to issued
-    // invoices when hub-ops finds actual weight > declared weight.
+    // Spawn weight-discrepancy consumer — appends surcharge adjustments to
+    // issued invoices when hub-ops finds actual weight > declared weight.
+    // Constructed inside the spawn — see the PodConsumer comment above for
+    // why. `weight_shutdown_tx` stays in this outer scope (it's signalled
+    // after `axum::serve` returns, below); only the receiver moves into the
+    // spawn, consumed by whichever match arm runs.
     let (weight_shutdown_tx, weight_shutdown_rx) = tokio::sync::watch::channel(false);
-    let weight_consumer = WeightDiscrepancyConsumer::new(
-        &cfg.kafka.brokers,
-        &cfg.kafka.group_id,
-        Arc::clone(&invoice_service),
-        Arc::clone(&invoice_repo) as Arc<dyn crate::domain::repositories::InvoiceRepository>,
-    )
-    .context("Failed to create WeightDiscrepancyConsumer")?;
-    tokio::spawn(async move { weight_consumer.run(weight_shutdown_rx).await });
+    let brokers_for_weight = cfg.kafka.brokers.clone();
+    let group_for_weight = cfg.kafka.group_id.clone();
+    let invoice_service_for_weight = Arc::clone(&invoice_service);
+    let invoice_repo_for_weight = Arc::clone(&invoice_repo) as Arc<dyn crate::domain::repositories::InvoiceRepository>;
+    tokio::spawn(async move {
+        match WeightDiscrepancyConsumer::new(
+            &brokers_for_weight,
+            &group_for_weight,
+            invoice_service_for_weight,
+            invoice_repo_for_weight,
+        ) {
+            Ok(consumer) => consumer.run(weight_shutdown_rx).await,
+            Err(e) => tracing::error!("WeightDiscrepancyConsumer could not start: {e}"),
+        }
+    });
 
-    // Spawn pickup.captured consumer — debits the driver's cash-flow ledger for
-    // Track A (Balikbayan) pickups so finance can see liability before remittance.
-    let pickup_consumer = PickupCapturedConsumer::new(
-        &cfg.kafka.brokers,
-        &cfg.kafka.group_id,
-        Arc::clone(&driver_ledger_repo) as Arc<dyn crate::domain::repositories::DriverLedgerRepository>,
-    )
-    .context("Failed to create PickupCapturedConsumer")?;
-    tokio::spawn(async move { pickup_consumer.run().await });
+    // Spawn pickup.captured consumer — debits the driver's cash-flow ledger
+    // for Track A (Balikbayan) pickups so finance can see liability before
+    // remittance. Constructed inside the spawn — see the PodConsumer comment
+    // above for why.
+    let brokers_for_pickup = cfg.kafka.brokers.clone();
+    let group_for_pickup = cfg.kafka.group_id.clone();
+    let driver_ledger_repo_for_pickup = Arc::clone(&driver_ledger_repo) as Arc<dyn crate::domain::repositories::DriverLedgerRepository>;
+    tokio::spawn(async move {
+        match PickupCapturedConsumer::new(
+            &brokers_for_pickup,
+            &group_for_pickup,
+            driver_ledger_repo_for_pickup,
+        ) {
+            Ok(consumer) => consumer.run().await,
+            Err(e) => tracing::error!("PickupCapturedConsumer could not start: {e}"),
+        }
+    });
 
-    // Spawn customs-duty consumer — generates a customs-duty invoice per payer
-    // when a container clears customs with duties owed.
+    // Spawn customs-duty consumer — generates a customs-duty invoice per
+    // payer when a container clears customs with duties owed. Constructed
+    // inside the spawn — see the PodConsumer comment above for why.
     let (_customs_duty_shutdown_tx, customs_duty_shutdown_rx) = tokio::sync::watch::channel(false);
-    let customs_duty_consumer = CustomsDutyConsumer::new(
-        &cfg.kafka.brokers,
-        &cfg.kafka.group_id,
-        Arc::clone(&invoice_service),
-    )
-    .context("Failed to create CustomsDutyConsumer")?;
-    tokio::spawn(async move { customs_duty_consumer.run(customs_duty_shutdown_rx).await });
+    let brokers_for_customs = cfg.kafka.brokers.clone();
+    let group_for_customs = cfg.kafka.group_id.clone();
+    let invoice_service_for_customs = Arc::clone(&invoice_service);
+    tokio::spawn(async move {
+        match CustomsDutyConsumer::new(
+            &brokers_for_customs,
+            &group_for_customs,
+            invoice_service_for_customs,
+        ) {
+            Ok(consumer) => consumer.run(customs_duty_shutdown_rx).await,
+            Err(e) => tracing::error!("CustomsDutyConsumer could not start: {e}"),
+        }
+    });
 
     // Spawn shipment.cancelled consumer — refunds a captured shipping_fee
     // intent when its shipment is cancelled (a shipment never paid online is
     // a no-op). Constructed inside the spawn, like order-intake's own
-    // PaymentConsumer (services/order-intake/src/bootstrap.rs): a Kafka
-    // client that cannot be created at boot must disable this consumer, not
-    // stop the HTTP surface from binding — refunds are best-effort follow-up,
-    // not on the critical path for the service to come up. This deviates
-    // from the `.context(...)?`-outside-the-spawn shape the other consumers
-    // above still use; that shape is a latent boot-fragility issue in this
-    // file (out of scope to fix for the other four consumers here).
+    // PaymentConsumer (services/order-intake/src/bootstrap.rs) and, now, the
+    // four consumers above: a Kafka client that cannot be created at boot
+    // must disable this consumer, not stop the HTTP surface from binding —
+    // refunds are best-effort follow-up, not on the critical path for the
+    // service to come up.
     //
     // Only spawned when Network International is configured: with no
     // gateway there is never a captured online payment to refund, and
