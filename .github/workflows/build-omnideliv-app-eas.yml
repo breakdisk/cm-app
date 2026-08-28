@@ -78,7 +78,12 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v5
         with:
-          node-version: "20"
+          # 22, not 20: `expo/expo-github-action` below installs
+          # `eas-version: latest`, and current eas-cli pulls
+          # @oclif/plugin-autocomplete, which requires node >=22. On 20 the
+          # install aborts with "Found incompatible module" before any build
+          # starts -- a red run with no code change.
+          node-version: "22"
           cache: "npm"
           cache-dependency-path: apps/omnideliv-app/package-lock.json
 
