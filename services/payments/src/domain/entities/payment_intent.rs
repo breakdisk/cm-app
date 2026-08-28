@@ -15,29 +15,40 @@ pub enum PaymentIntentStatus {
     Failed,
     Refunded,
     Expired,
+    /// Atomically-claimed intermediate status between `Captured` and
+    /// `Refunded`: the DB-level `UPDATE ... WHERE status = 'captured'` claim
+    /// in `PaymentIntentRepository::claim_for_refund` is what actually
+    /// serializes concurrent refund attempts (the cancellation consumer and
+    /// the pending-refund sweep can genuinely race for the same intent) —
+    /// only the caller whose claim affects a row may call the gateway. On
+    /// gateway success it advances to `Refunded`; on gateway failure it is
+    /// reverted to `Captured` (never left stuck here) so the sweep retries it.
+    Refunding,
 }
 
 impl PaymentIntentStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Created  => "created",
-            Self::Pending  => "pending",
-            Self::Captured => "captured",
-            Self::Failed   => "failed",
-            Self::Refunded => "refunded",
-            Self::Expired  => "expired",
+            Self::Created   => "created",
+            Self::Pending   => "pending",
+            Self::Captured  => "captured",
+            Self::Failed    => "failed",
+            Self::Refunded  => "refunded",
+            Self::Expired   => "expired",
+            Self::Refunding => "refunding",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "created"  => Some(Self::Created),
-            "pending"  => Some(Self::Pending),
-            "captured" => Some(Self::Captured),
-            "failed"   => Some(Self::Failed),
-            "refunded" => Some(Self::Refunded),
-            "expired"  => Some(Self::Expired),
-            _          => None,
+            "created"   => Some(Self::Created),
+            "pending"   => Some(Self::Pending),
+            "captured"  => Some(Self::Captured),
+            "failed"    => Some(Self::Failed),
+            "refunded"  => Some(Self::Refunded),
+            "expired"   => Some(Self::Expired),
+            "refunding" => Some(Self::Refunding),
+            _           => None,
         }
     }
 }
@@ -58,6 +69,12 @@ pub struct PaymentIntent {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
+    /// When a refund became owed for this intent (set durably, before the
+    /// gateway call is attempted, by `PaymentIntentRepository::mark_refund_requested`
+    /// — see that method's doc comment). `None` for an intent nothing has
+    /// ever asked to refund. Read by `PaymentIntentService::sweep_pending_refunds`
+    /// to find `Captured` intents with an outstanding, unfulfilled obligation.
+    pub refund_requested_at: Option<DateTime<Utc>>,
 }
 
 impl PaymentIntent {
@@ -92,6 +109,7 @@ impl PaymentIntent {
             created_at: now,
             updated_at: now,
             expires_at: now + ttl,
+            refund_requested_at: None,
         }
     }
 
@@ -125,11 +143,28 @@ impl PaymentIntent {
         Ok(())
     }
 
+    /// `Expired` is terminal, the same way `Captured`/`Refunded` already
+    /// are: a late "declined" webhook arriving after our own sweep has
+    /// already expired the intent must NOT be allowed to re-transition it to
+    /// `Failed`. Before this guard, that catch-all `_ => {}` silently let
+    /// `Expired -> Failed` through, which meant a second
+    /// `payment.intent.failed` event could be published for an intent
+    /// order-intake had already reacted to (see
+    /// `handle_webhook_failed_on_an_already_expired_intent_is_rejected` in
+    /// `payment_intent_service.rs` for the scenario this closes, and that
+    /// test's doc comment for why rejecting — rather than a silent idempotent
+    /// no-op — is the right shape here: a no-op would still let the caller,
+    /// `PaymentIntentService::apply_failed`, walk on to unconditionally
+    /// publish a duplicate event, since that method doesn't currently check
+    /// whether `fail()` actually changed anything before publishing).
     pub fn fail(&mut self) -> Result<(), &'static str> {
         match self.status {
             PaymentIntentStatus::Failed => return Ok(()), // idempotent
-            PaymentIntentStatus::Captured | PaymentIntentStatus::Refunded => {
+            PaymentIntentStatus::Captured | PaymentIntentStatus::Refunded | PaymentIntentStatus::Refunding => {
                 return Err("Cannot fail an intent that already captured");
+            }
+            PaymentIntentStatus::Expired => {
+                return Err("Cannot fail an intent that has already expired");
             }
             _ => {}
         }
@@ -222,5 +257,32 @@ mod tests {
         intent.capture("ni-txn-123".into()).unwrap();
         intent.refund().unwrap();
         assert_eq!(intent.status, PaymentIntentStatus::Refunded);
+    }
+
+    #[test]
+    fn fail_on_an_expired_intent_is_rejected_not_a_silent_transition() {
+        // Gap 3: Expired must be terminal, the same way Captured/Refunded
+        // already are — the old catch-all let a late "declined" webhook
+        // re-transition an already-expired intent to Failed.
+        let mut intent = make_intent();
+        intent.expire().unwrap();
+        assert_eq!(intent.status, PaymentIntentStatus::Expired);
+        assert!(intent.fail().is_err());
+        assert_eq!(intent.status, PaymentIntentStatus::Expired, "must remain Expired, not silently move to Failed");
+    }
+
+    #[test]
+    fn fail_on_a_refunding_intent_is_rejected() {
+        // A refund claim is exclusive — an intent mid-refund must not be
+        // pulled sideways into Failed by an unrelated declined-webhook replay.
+        let mut intent = make_intent();
+        intent.status = PaymentIntentStatus::Refunding;
+        assert!(intent.fail().is_err());
+    }
+
+    #[test]
+    fn refund_status_round_trips_through_as_str_and_parse() {
+        assert_eq!(PaymentIntentStatus::Refunding.as_str(), "refunding");
+        assert_eq!(PaymentIntentStatus::parse("refunding"), Some(PaymentIntentStatus::Refunding));
     }
 }

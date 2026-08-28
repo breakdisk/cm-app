@@ -30,11 +30,17 @@
 //!
 //! `PaymentIntentService::refund` marks the intent `Refunded` locally only
 //! *after* the gateway call succeeds, so a failed refund leaves the intent
-//! `Captured` — the real backstop is a future reconciliation sweep (symmetric
-//! to `sweep_expired`) that can find `Captured` intents on `Cancelled`
-//! shipments and retry deliberately, not Kafka's at-least-once semantics.
-//! The `error!` log below is what makes a failure visible until such a sweep
-//! exists.
+//! `Captured`. Before this money-safety fix, that was the end of the story —
+//! nothing ever looked at the intent again, so the customer stayed charged
+//! for a cancelled shipment. The real backstop now exists:
+//! `intent_repo.mark_refund_requested` (below) durably records the
+//! obligation, **before** the gateway call is attempted — so it survives a
+//! crash mid-call, not only a call that returns an error — and
+//! `PaymentIntentService::sweep_pending_refunds` (spawned in `bootstrap.rs`
+//! on an interval, symmetric to `sweep_expired`) retries every intent still
+//! `Captured` with that field set. The `error!` log below is what makes a
+//! given failure visible immediately; the sweep is what makes it eventually
+//! self-healing.
 
 use std::sync::Arc;
 use anyhow::Context;
@@ -101,6 +107,12 @@ async fn handle(
         tracing::debug!(shipment_id = %shipment_id, "shipment cancelled — no captured shipping_fee intent, nothing to refund");
         return Ok(());
     };
+
+    // Durably record the obligation BEFORE attempting the gateway call, so a
+    // crash between this line and `refund()` completing still leaves the
+    // obligation discoverable by `sweep_pending_refunds` on the next tick —
+    // see the module doc comment above.
+    intent_repo.mark_refund_requested(intent.id).await?;
 
     if let Err(e) = intent_service.refund(intent.id).await {
         tracing::error!(
@@ -199,6 +211,34 @@ mod tests {
                 })
                 .cloned())
         }
+
+        async fn mark_refund_requested(&self, id: Uuid) -> anyhow::Result<()> {
+            if let Some(intent) = self.intents.lock().unwrap().get_mut(&id) {
+                if intent.refund_requested_at.is_none() {
+                    intent.refund_requested_at = Some(Utc::now());
+                }
+            }
+            Ok(())
+        }
+
+        async fn claim_for_refund(&self, id: Uuid) -> anyhow::Result<bool> {
+            let mut intents = self.intents.lock().unwrap();
+            match intents.get_mut(&id) {
+                Some(intent) if intent.status == PaymentIntentStatus::Captured => {
+                    intent.status = PaymentIntentStatus::Refunding;
+                    intent.updated_at = Utc::now();
+                    Ok(true)
+                }
+                _ => Ok(false),
+            }
+        }
+
+        async fn list_pending_refunds(&self) -> anyhow::Result<Vec<PaymentIntent>> {
+            Ok(self.intents.lock().unwrap().values()
+                .filter(|i| i.status == PaymentIntentStatus::Captured && i.refund_requested_at.is_some())
+                .cloned()
+                .collect())
+        }
     }
 
     // ── Fake PaymentGateway ──────────────────────────────────────────────────
@@ -206,11 +246,16 @@ mod tests {
     #[derive(Default)]
     struct FakeGateway {
         refund_calls: Mutex<Vec<(String, i64)>>,
+        refund_should_fail: bool,
     }
 
     impl FakeGateway {
         fn refund_calls(&self) -> Vec<(String, i64)> {
             self.refund_calls.lock().unwrap().clone()
+        }
+
+        fn with_refund_failure() -> Self {
+            Self { refund_should_fail: true, ..Self::default() }
         }
     }
 
@@ -226,6 +271,9 @@ mod tests {
 
         async fn refund(&self, gateway_payment_ref: &str, amount_cents: i64) -> anyhow::Result<()> {
             self.refund_calls.lock().unwrap().push((gateway_payment_ref.to_string(), amount_cents));
+            if self.refund_should_fail {
+                anyhow::bail!("gateway refund failed");
+            }
             Ok(())
         }
     }
@@ -326,5 +374,42 @@ mod tests {
         let err = handle(malformed, &*repo, &svc).await.expect_err("missing shipment_id must error, not silently no-op");
         assert!(err.to_string().contains("shipment_id"));
         assert_eq!(gateway.refund_calls(), Vec::new());
+    }
+
+    // ── 4: Gap 1 — obligation recorded even when the gateway call fails ──────
+
+    #[tokio::test]
+    async fn refund_obligation_is_recorded_even_when_the_gateway_call_fails() {
+        // The crux of Gap 1: `handle()` still returns Ok (offset commits —
+        // see the module doc comment for why redelivery isn't a reliable
+        // retry mechanism here), but `refund_requested_at` must already be
+        // durably set so `PaymentIntentService::sweep_pending_refunds` can
+        // find and retry this intent on its own schedule, independent of
+        // whatever Kafka does or doesn't redeliver.
+        let repo = Arc::new(FakeRepo::default());
+        let gateway = Arc::new(FakeGateway::with_refund_failure());
+        let svc = Arc::new(PaymentIntentService::new(
+            repo.clone() as _,
+            gateway.clone() as _,
+            test_kafka_producer(),
+        ));
+
+        let tenant_id = Uuid::new_v4();
+        let shipment_id = Uuid::new_v4();
+        let intent = captured_intent(tenant_id, shipment_id, 7_500);
+        let intent_id = intent.id;
+        repo.seed(intent);
+
+        handle(cancelled_event(shipment_id), &*repo, &svc).await
+            .expect("handle() must still return Ok even though the refund itself failed");
+
+        assert_eq!(gateway.refund_calls().len(), 1, "the gateway must have been attempted exactly once");
+
+        let stored = repo.find_by_id(intent_id).await.unwrap().expect("intent must still exist");
+        assert_eq!(stored.status, PaymentIntentStatus::Captured, "must remain captured, not stuck in refunding");
+        assert!(
+            stored.refund_requested_at.is_some(),
+            "the obligation must be durably recorded regardless of the gateway outcome"
+        );
     }
 }

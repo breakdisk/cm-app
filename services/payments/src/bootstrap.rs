@@ -269,6 +269,27 @@ pub async fn run() -> anyhow::Result<()> {
         }
     });
 
+    // Pending-refund retry sweep — money-safety backstop for Gap 1: a refund
+    // `ShipmentCancelledConsumer` durably recorded (via `mark_refund_requested`,
+    // written before the gateway call) but never completed — most commonly
+    // because the gateway call itself failed, reverting the intent to
+    // `Captured` via the atomic claim in `refund()` (see that method's doc
+    // comment) rather than leaving it stuck `Refunding`. Same 5-minute
+    // cadence as the expiry sweep above; deliberately a separate spawn/tick
+    // so one sweep stalling never blocks the other.
+    let intent_svc_for_refund_sweep = Arc::clone(&payment_intent_service);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(5 * 60));
+        loop {
+            tick.tick().await;
+            match intent_svc_for_refund_sweep.sweep_pending_refunds().await {
+                Ok(count) if count > 0 => tracing::info!(count, "Pending-refund sweep: retried and completed stalled refunds"),
+                Ok(_) => {}
+                Err(e) => tracing::error!(err = %e, "Pending-refund sweep failed"),
+            }
+        }
+    });
+
     // Spawn Kafka consumer for pod.captured — runs for the lifetime of the process.
     let pod_consumer = PodConsumer::new(
         &cfg.kafka.brokers,

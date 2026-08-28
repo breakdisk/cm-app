@@ -240,6 +240,28 @@ impl PaymentIntentService {
         Ok(expired_count)
     }
 
+    /// Refunds a captured intent. Two layers guard against ever calling the
+    /// live gateway more than once for the same intent:
+    ///
+    /// 1. A local `status == Captured` check, rejecting the obviously-wrong
+    ///    case (never captured, already refunded, ...) with zero repo/gateway
+    ///    round-trips.
+    /// 2. `repo.claim_for_refund` — an atomic `captured -> refunding` DB
+    ///    claim. This, not step 1, is what actually serializes two genuinely
+    ///    concurrent callers (the shipment-cancellation consumer and the
+    ///    pending-refund retry sweep can both reach this method for the same
+    ///    intent): both may pass the local check, but only one claim can win.
+    ///    The loser bails without ever touching the gateway.
+    ///
+    /// `intent` is fetched BEFORE the claim and is deliberately never told
+    /// about the claim's `refunding` status — it stays a `Captured` snapshot
+    /// for the rest of this call. On gateway success, `intent.refund()`
+    /// transitions that snapshot to `Refunded` (its own `Captured`-only
+    /// guard is satisfied because the snapshot was never mutated). On
+    /// gateway failure, that same still-`Captured` snapshot is saved back
+    /// as-is — which is precisely the revert the claim needs: it overwrites
+    /// the DB's `refunding` row back to `captured` so the pending-refund
+    /// sweep retries it, rather than leaving it stuck.
     pub async fn refund(&self, intent_id: Uuid) -> anyhow::Result<()> {
         let mut intent = self.repo.find_by_id(intent_id).await?
             .ok_or_else(|| anyhow::anyhow!("no payment_intent {intent_id}"))?;
@@ -254,10 +276,60 @@ impl PaymentIntentService {
         }
         let gateway_payment_ref = intent.gateway_payment_ref.clone()
             .ok_or_else(|| anyhow::anyhow!("intent {intent_id} has no captured payment to refund"))?;
-        self.gateway.refund(&gateway_payment_ref, intent.amount_cents).await?;
-        intent.refund().map_err(|e| anyhow::anyhow!("{e}"))?;
-        self.repo.save(&intent).await?;
-        Ok(())
+
+        if !self.repo.claim_for_refund(intent_id).await? {
+            anyhow::bail!("intent {intent_id} is already being refunded (lost the claim race)");
+        }
+
+        match self.gateway.refund(&gateway_payment_ref, intent.amount_cents).await {
+            Ok(()) => {
+                intent.refund().map_err(|e| anyhow::anyhow!("{e}"))?;
+                self.repo.save(&intent).await?;
+                Ok(())
+            }
+            Err(e) => {
+                // Revert the claim: `intent` is still the pre-claim,
+                // still-Captured snapshot (never mutated on this branch), so
+                // saving it now writes 'captured' back over the DB's
+                // 'refunding' row instead of leaving the intent stranded —
+                // `sweep_pending_refunds` needs it back at `captured` (with
+                // `refund_requested_at` still set) to retry it next tick.
+                if let Err(save_err) = self.repo.save(&intent).await {
+                    tracing::error!(
+                        intent_id = %intent_id,
+                        gateway_error = %e,
+                        revert_error = %save_err,
+                        "refund: gateway call failed AND reverting the 'refunding' claim also failed \
+                         — intent is stuck in refunding until manually corrected",
+                    );
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Called by the periodic sweep in `bootstrap.rs`, alongside
+    /// `sweep_expired`. Retries every `captured` intent with a recorded
+    /// `refund_requested_at` — a refund `ShipmentCancelledConsumer` already
+    /// asked for but never completed (the gateway call failed, or the
+    /// process crashed between recording the obligation and calling the
+    /// gateway). `refund()`'s own atomic claim already makes each retry safe
+    /// against a concurrent attempt; this loop's job is only to not let one
+    /// bad row abort the rest of the batch. Returns the count *actually
+    /// refunded* in this pass, not the count found — mirrors `sweep_expired`.
+    pub async fn sweep_pending_refunds(&self) -> anyhow::Result<usize> {
+        let pending = self.repo.list_pending_refunds().await?;
+        let mut refunded_count = 0;
+        for intent in pending {
+            match self.refund(intent.id).await {
+                Ok(()) => refunded_count += 1,
+                Err(e) => {
+                    tracing::warn!(intent_id = %intent.id, error = %e, "sweep_pending_refunds: refund attempt failed — will retry next tick");
+                    continue;
+                }
+            }
+        }
+        Ok(refunded_count)
     }
 }
 
@@ -385,6 +457,35 @@ mod tests {
                 })
                 .cloned())
         }
+
+        async fn mark_refund_requested(&self, id: Uuid) -> anyhow::Result<()> {
+            if let Some(intent) = self.intents.lock().unwrap().get_mut(&id) {
+                // COALESCE-equivalent: don't reset an already-recorded timestamp.
+                if intent.refund_requested_at.is_none() {
+                    intent.refund_requested_at = Some(Utc::now());
+                }
+            }
+            Ok(())
+        }
+
+        async fn claim_for_refund(&self, id: Uuid) -> anyhow::Result<bool> {
+            let mut intents = self.intents.lock().unwrap();
+            match intents.get_mut(&id) {
+                Some(intent) if intent.status == PaymentIntentStatus::Captured => {
+                    intent.status = PaymentIntentStatus::Refunding;
+                    intent.updated_at = Utc::now();
+                    Ok(true)
+                }
+                _ => Ok(false),
+            }
+        }
+
+        async fn list_pending_refunds(&self) -> anyhow::Result<Vec<PaymentIntent>> {
+            Ok(self.intents.lock().unwrap().values()
+                .filter(|i| i.status == PaymentIntentStatus::Captured && i.refund_requested_at.is_some())
+                .cloned()
+                .collect())
+        }
     }
 
     // ── Fake PaymentGateway ──────────────────────────────────────────────────
@@ -456,6 +557,42 @@ mod tests {
             *self.refund_calls.lock().unwrap() += 1;
             if self.refund_should_fail {
                 anyhow::bail!("gateway refund failed");
+            }
+            Ok(())
+        }
+    }
+
+    /// A gateway that fails `refund` only for one specific
+    /// `gateway_payment_ref`, succeeding for every other — lets
+    /// `sweep_pending_refunds` tests seed two intents in the same batch with
+    /// only one of them actually failing, using a single shared gateway
+    /// (`PaymentIntentService` takes one `Arc<dyn PaymentGateway>`, so two
+    /// intents processed by the same sweep call necessarily share one).
+    struct SelectiveFailGateway {
+        fail_ref: String,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl SelectiveFailGateway {
+        fn new(fail_ref: impl Into<String>) -> Self {
+            Self { fail_ref: fail_ref.into(), calls: Mutex::new(Vec::new()) }
+        }
+    }
+
+    #[async_trait]
+    impl PaymentGateway for SelectiveFailGateway {
+        async fn create_session(&self, _req: CreateSessionRequest<'_>) -> anyhow::Result<GatewaySession> {
+            unreachable!("not exercised by sweep_pending_refunds tests")
+        }
+
+        fn verify_webhook(&self, _headers: &reqwest::header::HeaderMap, _raw_body: &[u8]) -> anyhow::Result<WebhookEvent> {
+            unreachable!("not exercised by sweep_pending_refunds tests")
+        }
+
+        async fn refund(&self, gateway_payment_ref: &str, _amount_cents: i64) -> anyhow::Result<()> {
+            self.calls.lock().unwrap().push(gateway_payment_ref.to_string());
+            if gateway_payment_ref == self.fail_ref {
+                anyhow::bail!("gateway refund failed for {gateway_payment_ref}");
             }
             Ok(())
         }
@@ -595,18 +732,29 @@ mod tests {
         assert_eq!(stored.status, PaymentIntentStatus::Failed);
     }
 
-    // Task-5 code review gap: `PaymentIntent::fail()`'s match only explicitly
-    // handles `Failed` (idempotent) and `Captured`/`Refunded` (rejected) —
-    // `Expired` falls through the `_ => {}` catch-all, so it is *not* blocked.
-    // A "declined" webhook arriving after our own sweep has already expired
-    // the intent therefore re-transitions Expired -> Failed instead of
-    // erroring, and would publish a second `payment.intent.failed` event for
-    // the same intent. Documenting the actual current behavior, not asserting
-    // it is the intended one — flagged separately as a possible entity-level
-    // follow-up (`expire()` treats `Expired` as terminal-idempotent; `fail()`
-    // does not extend the same treatment to it).
+    // Gap 3 (money-safety review): `PaymentIntent::fail()` used to fall
+    // through its `_ => {}` catch-all for `Expired`, so a "declined" webhook
+    // arriving after our own sweep had already expired the intent silently
+    // re-transitioned Expired -> Failed — and `apply_failed` would then
+    // publish a SECOND `payment.intent.failed` event for the same intent
+    // (it doesn't check whether `fail()` actually changed anything before
+    // publishing). `Expired` is now terminal, the same way `Captured` and
+    // `Refunded` already were, so this webhook is rejected before it ever
+    // reaches `repo.save`/`kafka.publish_event` — zero of either happen.
+    //
+    // This intentionally surfaces as `WebhookError::Internal` (5xx, NI
+    // retries) rather than `::Rejected` — see that type's doc comment: this
+    // service doesn't currently distinguish "permanently un-actionable
+    // failure classification" from "transient infra failure" beyond the one
+    // `UnknownIntentError` special case, and extending that is out of scope
+    // here. NI's retry policy is bounded, and the alternative (silently
+    // succeeding with a duplicate event) is the actual money-safety bug this
+    // closes; order-intake's own consumer (`payment_consumer.rs::handle_failed`)
+    // is separately idempotent via `shipment.can_cancel()`, so even a
+    // hypothetical redelivery of the ORIGINAL (pre-expiry) failed event can
+    // never cancel the same shipment twice.
     #[tokio::test]
-    async fn handle_webhook_failed_on_an_already_expired_intent_still_transitions_to_failed() {
+    async fn handle_webhook_failed_on_an_already_expired_intent_is_rejected() {
         let repo = Arc::new(FakeRepo::default());
         let tenant_id = Uuid::new_v4();
         let mut intent = make_intent(tenant_id).with_gateway_order_ref("order-ref-4".into());
@@ -614,6 +762,7 @@ mod tests {
         assert_eq!(intent.status, PaymentIntentStatus::Expired);
         let intent_id = intent.id;
         repo.seed(intent);
+        let saves_before = repo.save_count();
 
         let gateway = Arc::new(FakeGateway::new().with_webhook(FakeWebhook::Failed {
             order_ref: intent_id.to_string(),
@@ -621,11 +770,16 @@ mod tests {
         let svc = service(repo.clone(), gateway);
         let headers = reqwest::header::HeaderMap::new();
 
-        svc.handle_webhook(&headers, b"{}").await
-            .expect("fail() does not currently reject an Expired intent");
+        let err = svc.handle_webhook(&headers, b"{}").await
+            .expect_err("fail() must now reject an already-Expired intent");
+        assert!(
+            matches!(err, WebhookError::Internal(_)),
+            "not UnknownIntentError, so this classifies Internal (retry) — see the test doc comment above"
+        );
 
         let stored = repo.get(intent_id);
-        assert_eq!(stored.status, PaymentIntentStatus::Failed);
+        assert_eq!(stored.status, PaymentIntentStatus::Expired, "must remain Expired, not silently move to Failed");
+        assert_eq!(repo.save_count(), saves_before, "rejected before any save — and therefore before any event publish");
     }
 
     // ── handle_webhook: error classification (Rejected vs Internal) ────────
@@ -878,12 +1032,22 @@ mod tests {
         assert_eq!(stored.status, PaymentIntentStatus::Refunded);
     }
 
+    // Gap 1 + Gap 2 (money-safety review): before this fix, a gateway
+    // failure just propagated the error and left the DB untouched — no
+    // atomic claim existed to revert. Now `refund()` claims (captured ->
+    // refunding) before calling the gateway, and reverts (refunding ->
+    // captured) on failure, so `repo.save` IS called once here (the revert)
+    // — this replaces the old "must not persist a state change" assertion,
+    // which described the pre-claim behavior. `refund_requested_at` is
+    // asserted to survive the round trip: it's what makes the intent
+    // discoverable by `sweep_pending_refunds` afterwards (see the next test).
     #[tokio::test]
     async fn refund_leaves_the_intent_captured_when_the_gateway_call_fails() {
         let repo = Arc::new(FakeRepo::default());
         let tenant_id = Uuid::new_v4();
         let mut intent = make_intent(tenant_id);
         intent.capture("ni-txn-gateway-down".into()).unwrap();
+        intent.refund_requested_at = Some(Utc::now()); // as ShipmentCancelledConsumer would have set via mark_refund_requested
         let intent_id = intent.id;
         repo.seed(intent);
 
@@ -895,8 +1059,119 @@ mod tests {
         assert!(err.to_string().contains("gateway refund failed"));
 
         assert_eq!(gateway.refund_calls(), 1);
-        assert_eq!(repo.save_count(), saves_before, "must not persist a state change when the gateway call failed");
+        assert_eq!(
+            repo.save_count(), saves_before + 1,
+            "exactly one save: the revert of the 'refunding' claim back to 'captured'"
+        );
         let stored = repo.get(intent_id);
-        assert_eq!(stored.status, PaymentIntentStatus::Captured, "must remain captured, not silently refunded");
+        assert_eq!(stored.status, PaymentIntentStatus::Captured, "must remain captured, not stuck in refunding, not silently refunded");
+        assert!(stored.refund_requested_at.is_some(), "the refund obligation must survive the revert so the sweep can retry it");
+    }
+
+    // ── refund: atomic claim (Gap 2) ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn claim_for_refund_only_lets_one_caller_win_the_race() {
+        // Unit-level proof of the primitive itself: two calls against the
+        // same captured row — only the first may claim it.
+        let repo = FakeRepo::default();
+        let tenant_id = Uuid::new_v4();
+        let mut intent = make_intent(tenant_id);
+        intent.capture("ni-txn-claim-race".into()).unwrap();
+        let intent_id = intent.id;
+        repo.seed(intent);
+
+        let first = repo.claim_for_refund(intent_id).await.unwrap();
+        let second = repo.claim_for_refund(intent_id).await.unwrap();
+
+        assert!(first, "first claim must win");
+        assert!(!second, "second claim on an already-refunding row must lose");
+    }
+
+    #[tokio::test]
+    async fn refund_does_not_call_the_gateway_when_another_caller_already_holds_the_claim() {
+        // Simulates the real race Gap 2 closes: the cancellation consumer and
+        // the pending-refund sweep can both reach `refund()` for the same
+        // intent. Here "the other caller" is simulated by claiming the
+        // intent directly against the repo before `svc.refund()` runs, as
+        // the losing caller.
+        let repo = Arc::new(FakeRepo::default());
+        let tenant_id = Uuid::new_v4();
+        let mut intent = make_intent(tenant_id);
+        intent.capture("ni-txn-race".into()).unwrap();
+        let intent_id = intent.id;
+        repo.seed(intent);
+
+        assert!(repo.claim_for_refund(intent_id).await.unwrap(), "setup: the other (winning) caller's claim must succeed");
+
+        let gateway = Arc::new(FakeGateway::new());
+        let svc = service(repo.clone(), gateway.clone());
+
+        svc.refund(intent_id).await.expect_err("a caller that lost the claim race must not proceed");
+        assert_eq!(gateway.refund_calls(), 0, "the gateway must never be called by the caller that lost the claim race");
+
+        let stored = repo.get(intent_id);
+        assert_eq!(stored.status, PaymentIntentStatus::Refunding, "still owned by the winning caller — untouched by the loser");
+    }
+
+    // ── sweep_pending_refunds ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn sweep_pending_refunds_retries_a_previously_failed_refund_and_succeeds() {
+        let repo = Arc::new(FakeRepo::default());
+        let tenant_id = Uuid::new_v4();
+        let mut intent = make_intent(tenant_id);
+        intent.capture("ni-txn-retry-me".into()).unwrap();
+        intent.refund_requested_at = Some(Utc::now());
+        let intent_id = intent.id;
+        repo.seed(intent);
+
+        let gateway = Arc::new(FakeGateway::new()); // succeeds this time
+        let svc = service(repo.clone(), gateway.clone());
+
+        let count = svc.sweep_pending_refunds().await.expect("sweep must succeed");
+        assert_eq!(count, 1);
+        assert_eq!(gateway.refund_calls(), 1);
+
+        let stored = repo.get(intent_id);
+        assert_eq!(stored.status, PaymentIntentStatus::Refunded);
+    }
+
+    #[tokio::test]
+    async fn sweep_pending_refunds_returns_the_actually_refunded_count_and_continues_past_a_failure() {
+        // Seed two intents with an outstanding refund obligation: one whose
+        // gateway call will succeed, one whose gateway call will keep
+        // failing (a single shared FakeGateway can only be configured to
+        // always-fail or always-succeed, so the "failing" row uses an
+        // intent id the FakeGateway is never asked to know about — instead
+        // we drive the failure via a per-intent gateway wrapper).
+        let repo = Arc::new(FakeRepo::default());
+        let tenant_id = Uuid::new_v4();
+
+        let mut ok_intent = make_intent(tenant_id);
+        ok_intent.capture("ni-txn-sweep-ok".into()).unwrap();
+        ok_intent.refund_requested_at = Some(Utc::now());
+        let ok_id = ok_intent.id;
+        repo.seed(ok_intent);
+
+        let mut fail_intent = make_intent(tenant_id);
+        fail_intent.capture("ni-txn-sweep-fail".into()).unwrap();
+        fail_intent.refund_requested_at = Some(Utc::now());
+        let fail_id = fail_intent.id;
+        repo.seed(fail_intent);
+
+        let gateway = Arc::new(SelectiveFailGateway::new("ni-txn-sweep-fail"));
+        let svc = PaymentIntentService::new(repo.clone(), gateway.clone(), test_kafka_producer());
+
+        let count = svc.sweep_pending_refunds().await
+            .expect("sweep must not abort the whole batch when one intent's refund fails");
+        assert_eq!(count, 1, "count must reflect only the successfully-refunded intent");
+
+        let ok_stored = repo.get(ok_id);
+        assert_eq!(ok_stored.status, PaymentIntentStatus::Refunded);
+
+        let fail_stored = repo.get(fail_id);
+        assert_eq!(fail_stored.status, PaymentIntentStatus::Captured, "left retryable, not stuck in refunding");
+        assert!(fail_stored.refund_requested_at.is_some(), "obligation preserved for the next sweep tick");
     }
 }

@@ -34,6 +34,7 @@ struct PaymentIntentRow {
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     expires_at: DateTime<Utc>,
+    refund_requested_at: Option<DateTime<Utc>>,
 }
 
 impl TryFrom<PaymentIntentRow> for PaymentIntent {
@@ -57,13 +58,14 @@ impl TryFrom<PaymentIntentRow> for PaymentIntent {
             created_at: row.created_at,
             updated_at: row.updated_at,
             expires_at: row.expires_at,
+            refund_requested_at: row.refund_requested_at,
         })
     }
 }
 
 const INTENT_COLS: &str = "id, tenant_id, purpose, reference_type, reference_id, \
     amount_cents, currency, status, gateway, gateway_order_ref, gateway_payment_ref, \
-    created_at, updated_at, expires_at";
+    created_at, updated_at, expires_at, refund_requested_at";
 
 #[async_trait]
 impl PaymentIntentRepository for PgPaymentIntentRepository {
@@ -90,13 +92,14 @@ impl PaymentIntentRepository for PgPaymentIntentRepository {
             r#"INSERT INTO payments.payment_intents (
                 id, tenant_id, purpose, reference_type, reference_id,
                 amount_cents, currency, status, gateway, gateway_order_ref, gateway_payment_ref,
-                created_at, updated_at, expires_at
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+                created_at, updated_at, expires_at, refund_requested_at
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
             ON CONFLICT (id) DO UPDATE SET
                 status               = EXCLUDED.status,
                 gateway_order_ref    = EXCLUDED.gateway_order_ref,
                 gateway_payment_ref  = EXCLUDED.gateway_payment_ref,
-                updated_at           = EXCLUDED.updated_at"#,
+                updated_at           = EXCLUDED.updated_at,
+                refund_requested_at  = EXCLUDED.refund_requested_at"#,
         )
         .bind(intent.id)
         .bind(intent.tenant_id)
@@ -112,6 +115,7 @@ impl PaymentIntentRepository for PgPaymentIntentRepository {
         .bind(intent.created_at)
         .bind(intent.updated_at)
         .bind(intent.expires_at)
+        .bind(intent.refund_requested_at)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -146,5 +150,47 @@ impl PaymentIntentRepository for PgPaymentIntentRepository {
             .fetch_optional(&self.pool)
             .await?;
         row.map(PaymentIntent::try_from).transpose()
+    }
+
+    async fn mark_refund_requested(&self, id: Uuid) -> anyhow::Result<()> {
+        // COALESCE keeps this idempotent — a redelivered cancellation event
+        // (or a duplicate call) must not push the clock forward and reset
+        // how long the obligation has been outstanding.
+        sqlx::query(
+            "UPDATE payments.payment_intents \
+             SET refund_requested_at = COALESCE(refund_requested_at, NOW()) \
+             WHERE id = $1",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn claim_for_refund(&self, id: Uuid) -> anyhow::Result<bool> {
+        // The whole race is decided by Postgres as part of this single
+        // write: a concurrent claim on the same row makes the WHERE match
+        // zero rows for everyone but the first UPDATE to commit, rather than
+        // two callers both reading `status = 'captured'` and both proceeding.
+        let result = sqlx::query(
+            "UPDATE payments.payment_intents \
+             SET status = 'refunding', updated_at = NOW() \
+             WHERE id = $1 AND status = 'captured'",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn list_pending_refunds(&self) -> anyhow::Result<Vec<PaymentIntent>> {
+        let query = format!(
+            "SELECT {INTENT_COLS} FROM payments.payment_intents \
+             WHERE status = 'captured' AND refund_requested_at IS NOT NULL"
+        );
+        let rows = sqlx::query_as::<_, PaymentIntentRow>(&query)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter().map(PaymentIntent::try_from).collect()
     }
 }

@@ -278,4 +278,35 @@ pub trait PaymentIntentRepository: Send + Sync {
         reference_type: &str,
         reference_id: Uuid,
     ) -> anyhow::Result<Option<PaymentIntent>>;
+
+    /// Durably records that a refund is owed for this intent — written
+    /// BEFORE the gateway call is attempted (`ShipmentCancelledConsumer`
+    /// calls this first, then `PaymentIntentService::refund`), so the
+    /// obligation survives a crash between the two. A narrow single-column
+    /// `UPDATE`, not a blind `save()`: this must never clobber a concurrent
+    /// status change made by another in-flight caller (the atomic claim in
+    /// `claim_for_refund`, or a previous sweep pass already mid-retry) — it
+    /// only ever touches `refund_requested_at`, unconditionally on status.
+    /// Idempotent: does not overwrite an already-recorded timestamp, so a
+    /// redelivered cancellation event doesn't reset the sweep's clock.
+    async fn mark_refund_requested(&self, id: Uuid) -> anyhow::Result<()>;
+
+    /// Atomically claims exclusive ownership of refunding this intent:
+    /// `captured` -> `refunding` in one `UPDATE ... WHERE status =
+    /// 'captured'`. Returns whether THIS call won the claim. `false` means
+    /// either the intent was not `captured` to begin with, or another
+    /// caller (a concurrent `refund()`, or the pending-refund sweep) already
+    /// claimed it — either way, the caller must not proceed to call the
+    /// gateway. This is the actual concurrency guard; any in-memory
+    /// `status == Captured` check elsewhere is a cheap local pre-filter, not
+    /// the source of truth.
+    async fn claim_for_refund(&self, id: Uuid) -> anyhow::Result<bool>;
+
+    /// Intents still `captured` with a recorded, unfulfilled refund
+    /// obligation (`refund_requested_at IS NOT NULL`) — the pending-refund
+    /// sweep's retry target (`PaymentIntentService::sweep_pending_refunds`).
+    /// An intent currently `refunding` (claimed by an in-flight attempt) is
+    /// deliberately excluded — it belongs to whichever caller holds that
+    /// claim, not to a new sweep pass.
+    async fn list_pending_refunds(&self) -> anyhow::Result<Vec<PaymentIntent>>;
 }
