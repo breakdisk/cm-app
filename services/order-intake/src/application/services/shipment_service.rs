@@ -171,19 +171,39 @@ fn sla_label(service_type: &str) -> &'static str {
     }
 }
 
+/// Bundles the collaborators for the optional "pay online at booking"
+/// capability — `PaymentsClient`, the quote-token signing secret, and the
+/// checkout return-URL base. Grouped into one struct, held as
+/// `Option<PaymentCapability>` on `ShipmentService`, rather than three
+/// separate `Option` fields: the three are only ever meaningful together
+/// (`Config::payment_config()` in `crate::config` already enforces "all
+/// three or none" at the config layer), and a single `Option` makes an
+/// inconsistent half-enabled combination unrepresentable here too — there is
+/// no way to construct a `ShipmentService` with, say, a signing secret but no
+/// client.
+pub struct PaymentCapability {
+    pub client: Arc<crate::infrastructure::http::PaymentsClient>,
+    /// HMAC-SHA256 signing secret for short-TTL quote tokens
+    /// (`domain::value_objects::quote_token`) — used to re-verify a token
+    /// presented on `create()` before trusting its amount to charge, and to
+    /// sign new quotes in `api::http::quote::get_quote`.
+    pub quote_token_secret: String,
+    /// Base URL merchants/customers land on after completing (or abandoning)
+    /// a hosted checkout — the payment gateway's `return_url`.
+    pub shipment_return_url_base: String,
+}
+
 pub struct ShipmentService {
     pub repo:          Arc<dyn ShipmentRepository>,
     pub publisher:     Arc<dyn EventPublisher>,
     pub normalizer:    Arc<dyn AddressNormalizer>,
     pub awb_generator: Arc<dyn AwbGenerator>,
-    pub payments_client: Arc<crate::infrastructure::http::PaymentsClient>,
-    /// HMAC-SHA256 signing secret for short-TTL quote tokens
-    /// (`domain::value_objects::quote_token`) — used to re-verify a token
-    /// presented on `create()` before trusting its amount to charge.
-    pub quote_token_secret: String,
-    /// Base URL merchants/customers land on after completing (or abandoning)
-    /// a hosted checkout — the payment gateway's `return_url`.
-    pub shipment_return_url_base: String,
+    /// `None` when the deployment has no payment config (see
+    /// `Config::payment_config()`). A booking that carries a `quote_token`
+    /// while this is `None` is rejected in `create()` rather than falling
+    /// through to the cash/free path — see the check right after the
+    /// idempotency replay, before any other work.
+    pub payment: Option<PaymentCapability>,
 }
 
 /// Returned by `create()`: the persisted shipment, plus a checkout URL when
@@ -196,22 +216,14 @@ pub struct CreateShipmentResult {
 }
 
 impl ShipmentService {
-    /// Seven arguments, because `ShipmentService` wires every collaborator
-    /// `create()` needs — including, on the payment-aware booking path, the
-    /// payments client and the two config values that drive it. Grouping
-    /// these into a builder would move the arity rather than remove it, and
-    /// every field here is required for the service to function.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         repo:          Arc<dyn ShipmentRepository>,
         publisher:     Arc<dyn EventPublisher>,
         normalizer:    Arc<dyn AddressNormalizer>,
         awb_generator: Arc<dyn AwbGenerator>,
-        payments_client: Arc<crate::infrastructure::http::PaymentsClient>,
-        quote_token_secret: String,
-        shipment_return_url_base: String,
+        payment: Option<PaymentCapability>,
     ) -> Self {
-        Self { repo, publisher, normalizer, awb_generator, payments_client, quote_token_secret, shipment_return_url_base }
+        Self { repo, publisher, normalizer, awb_generator, payment }
     }
 
     pub async fn create(&self, cmd: CreateShipmentCommand) -> AppResult<CreateShipmentResult> {
@@ -233,6 +245,24 @@ impl ShipmentService {
                 return Ok(CreateShipmentResult { shipment: existing, checkout_url: None });
             }
         }
+
+        // ── Reject a quote_token when online payment isn't configured ────────
+        // Checked immediately after the idempotency replay and before any real
+        // work (address normalization/geocoding, AWB sequence allocation) so a
+        // deployment with payment disabled doesn't burn a Redis/Postgres AWB
+        // number on a booking that's about to be rejected anyway. The part
+        // that actually matters: a `quote_token` must never be allowed to fall
+        // through to the free/cash path below — silently booking it for cash
+        // would let a customer who believes they've already paid receive a
+        // shipment that was never actually charged. So this is a hard reject,
+        // not a "treat it as if there were no token" fallback.
+        if cmd.quote_token.is_some() && self.payment.is_none() {
+            return Err(AppError::ServiceUnavailable(
+                "Online payment is not configured for this deployment — a booking \
+                 carrying a quote_token cannot be processed".into(),
+            ));
+        }
+
         // ── Validate service type ────────────────────────────────────────────
         let service_type = ServiceType::parse(&cmd.service_type).map_err(AppError::Validation)?;
         tracing::info!(step = "service_type_ok", ?service_type, "create");
@@ -414,8 +444,15 @@ impl ShipmentService {
         let (payment_status, verified_amount_cents, verified_currency) = match &cmd.quote_token {
             None => (PaymentRequirement::NotRequired, None, None),
             Some(token) => {
+                // `.expect` is safe: the guard immediately after the
+                // idempotency check above already rejected any request that
+                // reaches here with `self.payment` still `None`.
+                let payment = self.payment.as_ref().expect(
+                    "quote_token present implies self.payment is Some — enforced by \
+                     the early guard in create()"
+                );
                 let payload = crate::domain::value_objects::quote_token::verify(
-                    self.quote_token_secret.as_bytes(), token,
+                    payment.quote_token_secret.as_bytes(), token,
                 ).map_err(|e| AppError::Validation(format!("Invalid quote: {e}")))?;
                 if payload.tenant_id != cmd.tenant_id {
                     return Err(AppError::Validation("Quote token does not belong to this tenant".into()));
@@ -565,12 +602,18 @@ impl ShipmentService {
                 .expect("AwaitingPayment always comes from a verified quote token carrying an amount");
             let currency = verified_currency
                 .expect("AwaitingPayment always comes from a verified quote token carrying a currency");
+            // Same invariant as above: AwaitingPayment only happens once the
+            // quote_token branch confirmed `self.payment` is Some.
+            let payment = self.payment.as_ref().expect(
+                "payment_status AwaitingPayment implies self.payment is Some — enforced \
+                 by the early guard in create()"
+            );
             let return_url = format!(
                 "{}/payment/return?shipment_id={}",
-                self.shipment_return_url_base.trim_end_matches('/'),
+                payment.shipment_return_url_base.trim_end_matches('/'),
                 shipment.id,
             );
-            let intent = self.payments_client
+            let intent = payment.client
                 .create_shipping_fee_intent(cmd.tenant_id, shipment.id.inner(), amount_cents, &currency, &return_url)
                 .await
                 .map_err(AppError::Internal)?;

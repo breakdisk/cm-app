@@ -171,7 +171,7 @@ use logisticos_order_intake::{
     application::{
         queries::ShipmentQueryService,
         services::shipment_service::{
-            EventPublisher, ShipmentListFilter, ShipmentRepository, ShipmentService,
+            EventPublisher, PaymentCapability, ShipmentListFilter, ShipmentRepository, ShipmentService,
         },
     },
     domain::{
@@ -469,9 +469,11 @@ fn build_test_server_with_publisher_and_payments(
         Arc::clone(&publisher),
         normalizer,
         awb_gen,
-        payments_client,
-        TEST_QUOTE_TOKEN_SECRET.to_string(),
-        TEST_SHIPMENT_RETURN_URL_BASE.to_string(),
+        Some(PaymentCapability {
+            client: payments_client,
+            quote_token_secret: TEST_QUOTE_TOKEN_SECRET.to_string(),
+            shipment_return_url_base: TEST_SHIPMENT_RETURN_URL_BASE.to_string(),
+        }),
     ));
     let query = Arc::new(ShipmentQueryService::new(
         Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
@@ -487,7 +489,45 @@ fn build_test_server_with_publisher_and_payments(
         pool: sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
             .expect("lazy pool construction is infallible"),
-        quote_token_secret: TEST_QUOTE_TOKEN_SECRET.to_string(),
+    };
+    let app = router(state);
+
+    let server = TestClient::new(app);
+    (server, jwt, publisher)
+}
+
+/// Payment-disabled variant: `ShipmentService::payment` is `None`, the same
+/// state a deployment with no `PAYMENTS__URL`/`QUOTE_TOKEN_SECRET`/
+/// `APP__PUBLIC_BASE_URL` set boots into per `Config::payment_config()`. Used
+/// by the tests asserting the disabled-capability behavior: `/v1/shipments
+/// /quote` returns 503, a `quote_token`-carrying booking is rejected outright,
+/// and a normal cash booking still succeeds exactly as before.
+fn build_test_server_with_payment_disabled(
+    repo: Arc<InMemoryShipmentRepository>,
+    publisher: Arc<dyn EventPublisher>,
+) -> (TestServer, JwtService, Arc<dyn EventPublisher>) {
+    let normalizer = Arc::new(PassthroughNormalizer);
+    let awb_gen    = Arc::new(MockAwbGenerator::default());
+
+    let svc = Arc::new(ShipmentService::new(
+        Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
+        Arc::clone(&publisher),
+        normalizer,
+        awb_gen,
+        None,
+    ));
+    let query = Arc::new(ShipmentQueryService::new(
+        Arc::clone(&repo) as Arc<dyn ShipmentRepository>,
+    ));
+
+    let jwt = JwtService::new(TEST_JWT_SECRET, 3600, 86400);
+    let state = AppState {
+        svc,
+        query,
+        jwt: Arc::new(JwtService::new(TEST_JWT_SECRET, 3600, 86400)),
+        pool: sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+            .expect("lazy pool construction is infallible"),
     };
     let app = router(state);
 
@@ -1828,6 +1868,42 @@ mod shipment_quote {
     use super::*;
     use logisticos_order_intake::domain::value_objects::quote_token;
 
+    /// The disabled-capability case: a deployment with no
+    /// `PAYMENTS__URL`/`QUOTE_TOKEN_SECRET`/`APP__PUBLIC_BASE_URL` set must
+    /// answer 503 here — not 422, not a panic — so the customer app's
+    /// `GET /v1/tenants/me`-gated quote toggle simply never gets a usable
+    /// quote (see the app-side note in `shipment_service.rs::create`'s
+    /// sibling check). Checked ahead of the AED-currency business rule, so
+    /// this fires regardless of tenant currency.
+    #[tokio::test]
+    async fn quote_returns_503_when_payment_is_disabled() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let (server, jwt, _publisher) = build_test_server_with_payment_disabled(
+            Arc::clone(&repo),
+            Arc::new(NoOpEventPublisher),
+        );
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let user_id = uuid::Uuid::new_v4();
+        let token = mint_merchant_token_with_currency(&jwt, tenant_id, user_id, Some("AED"));
+
+        let resp = server
+            .post("/v1/shipments/quote")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&json!({
+                "service_type": "standard",
+                "weight_grams": 1500u32
+            }))
+            .await;
+
+        assert_eq!(resp.status_code(), 503);
+        let body: Value = resp.json();
+        assert_eq!(body["error"]["code"], "SERVICE_UNAVAILABLE");
+    }
+
     #[tokio::test]
     async fn quote_rejects_a_non_aed_tenant() {
         let repo = Arc::new(InMemoryShipmentRepository::new());
@@ -2055,6 +2131,109 @@ mod payment_aware_create {
             expires_at: chrono::Utc::now() + chrono::Duration::minutes(15),
         };
         quote_token::sign(TEST_QUOTE_TOKEN_SECRET.as_bytes(), &payload)
+    }
+
+    /// The important regression this change guards against: a booking that
+    /// carries a `quote_token` must be rejected outright when payment is
+    /// disabled, never silently fall through to the free/cash path — a
+    /// customer who believes they've already paid (they hold a `quote_token`
+    /// from a `/quote` call made before the deployment lost its payment
+    /// config, or a replayed/forged one) must not receive a shipment that
+    /// was never actually charged. Asserts both halves: nothing was stored,
+    /// and none of the three lifecycle events fired as if this were an
+    /// ordinary booking.
+    #[tokio::test]
+    async fn create_rejects_a_quote_token_when_payment_is_disabled() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let (server, jwt, _publisher) = build_test_server_with_payment_disabled(
+            Arc::clone(&repo),
+            Arc::clone(&recorder) as Arc<dyn EventPublisher>,
+        );
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let user_id = uuid::Uuid::new_v4();
+        let token = mint_merchant_token_with_currency(&jwt, tenant_id, user_id, Some("AED"));
+        // A well-formed, correctly-signed quote token — the rejection must
+        // fire on "payment is disabled", not on "this token happens to be
+        // invalid". `sign_quote_token` signs with `TEST_QUOTE_TOKEN_SECRET`,
+        // which no longer matters here: `ShipmentService::payment` is `None`,
+        // so `create()` never even reaches signature verification.
+        let quote = sign_quote_token(tenant_id, "standard", 1_500, 2_200);
+
+        let mut body = valid_shipment_body();
+        body["weight_grams"] = json!(1_500u32);
+        body["quote_token"] = json!(quote);
+
+        let resp = server
+            .post("/v1/shipments")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&body)
+            .await;
+
+        assert_eq!(
+            resp.status_code(), 503,
+            "a quote_token-carrying booking must be rejected, not silently booked for cash"
+        );
+        let resp_body: Value = resp.json();
+        assert_eq!(resp_body["error"]["code"], "SERVICE_UNAVAILABLE");
+
+        assert_eq!(
+            repo.shipments.lock().unwrap().len(), 0,
+            "no shipment may be stored for a rejected quote_token booking"
+        );
+        assert_eq!(
+            recorder.published.lock().unwrap().len(), 0,
+            "no lifecycle event may publish for a rejected quote_token booking — it must \
+             not look, downstream, like a normal successful booking"
+        );
+    }
+
+    /// The regression guard that matters most: disabling online payment must
+    /// not touch the ordinary cash-booking path at all. Same assertions
+    /// `create_without_a_quote_token_publishes_immediately_as_before` makes
+    /// against the payment-enabled server, run here against the
+    /// payment-disabled one.
+    #[tokio::test]
+    async fn create_without_a_quote_token_still_succeeds_when_payment_is_disabled() {
+        let repo = Arc::new(InMemoryShipmentRepository::new());
+        let recorder = Arc::new(RecordingEventPublisher::new());
+        let (server, jwt, _publisher) = build_test_server_with_payment_disabled(
+            Arc::clone(&repo),
+            Arc::clone(&recorder) as Arc<dyn EventPublisher>,
+        );
+
+        let tenant_id = uuid::Uuid::new_v4();
+        let user_id = uuid::Uuid::new_v4();
+        let token = mint_merchant_token(&jwt, tenant_id, user_id);
+
+        let resp = server
+            .post("/v1/shipments")
+            .add_header(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse::<axum::http::HeaderValue>().unwrap(),
+            )
+            .json(&valid_shipment_body())
+            .await;
+
+        assert_eq!(resp.status_code(), 201, "a normal cash booking must succeed even with payment disabled");
+        let resp_body: Value = resp.json();
+        assert_eq!(resp_body["payment_status"], "not_required");
+        assert!(resp_body["pending_dispatch_events"].is_null());
+        assert!(resp_body["checkout_url"].is_null());
+
+        assert_eq!(
+            repo.shipments.lock().unwrap().len(), 1,
+            "the cash booking must be persisted exactly as before this change"
+        );
+        assert_eq!(
+            recorder.published.lock().unwrap().len(), 3,
+            "AwbIssued + ShipmentCreated + ShipmentConfirmed must still publish immediately \
+             for a cash booking, exactly as before this change"
+        );
     }
 
     #[tokio::test]
@@ -2388,9 +2567,11 @@ mod payment_consumer_tests {
             publisher,
             Arc::new(PassthroughNormalizer),
             Arc::new(MockAwbGenerator::default()),
-            Arc::new(PaymentsClient::new("http://127.0.0.1:1")),
-            TEST_QUOTE_TOKEN_SECRET.to_string(),
-            TEST_SHIPMENT_RETURN_URL_BASE.to_string(),
+            Some(PaymentCapability {
+                client: Arc::new(PaymentsClient::new("http://127.0.0.1:1")),
+                quote_token_secret: TEST_QUOTE_TOKEN_SECRET.to_string(),
+                shipment_return_url_base: TEST_SHIPMENT_RETURN_URL_BASE.to_string(),
+            }),
         ))
     }
 

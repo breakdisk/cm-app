@@ -14,7 +14,19 @@ pub async fn network_international_webhook(
     headers: HeaderMap,
     body: Bytes,
 ) -> StatusCode {
-    match state.payment_intent_service.handle_webhook(&headers, &body).await {
+    let Some(payment_intent_service) = state.payment_intent_service.as_ref() else {
+        // Unconfigured deployment: there is no gateway this webhook could
+        // legitimately have come from. 503 (not 400/404) tells NI this is a
+        // transient deployment state, matching the internal intents route's
+        // same-cause 503 — an operator wiring up NI would see both surfaces
+        // recover together once the env vars are set.
+        tracing::warn!(
+            "network_international_webhook received but Network International is not \
+             configured — returning 503"
+        );
+        return StatusCode::SERVICE_UNAVAILABLE;
+    };
+    match payment_intent_service.handle_webhook(&headers, &body).await {
         Ok(()) => StatusCode::OK,
         // Rejected = permanent (bad signature, unknown intent) — 4xx tells NI
         // to stop retrying.

@@ -187,6 +187,12 @@ mod tests {
                 .cloned())
         }
 
+        async fn find_by_gateway_order_ref(&self, gateway_order_ref: &str) -> anyhow::Result<Option<PaymentIntent>> {
+            Ok(self.intents.lock().unwrap().values()
+                .find(|i| i.gateway_order_ref.as_deref() == Some(gateway_order_ref))
+                .cloned())
+        }
+
         async fn save(&self, intent: &PaymentIntent) -> anyhow::Result<()> {
             self.intents.lock().unwrap().insert(intent.id, intent.clone());
             Ok(())
