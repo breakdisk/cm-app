@@ -9,6 +9,7 @@
  */
 import * as SecureStore from 'expo-secure-store';
 import { getIdentityClient } from './client';
+import { clearCachedTenant } from './tenant';
 
 const PROVIDER_SLUG_KEY = 'provider_slug';
 // Strip any 'draft-' slug baked in at build time — those are EAS/build-system
@@ -116,6 +117,7 @@ export async function logout(): Promise<void> {
     await SecureStore.deleteItemAsync('customer_id');
     await SecureStore.deleteItemAsync('customer_phone');
     await SecureStore.deleteItemAsync(PROVIDER_SLUG_KEY);
+    clearCachedTenant();
   }
 }
 

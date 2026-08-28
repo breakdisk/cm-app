@@ -40,6 +40,7 @@ import Toast from "../../components/Toast";
 import * as shipmentsService from "../../services/api/shipments";
 import { lookupByPostalCode, lookupByCity, type AddressCode } from "../../services/api/addresses";
 import { getStoredCustomerId, getStoredToken, logout } from "../../services/api/auth";
+import { getMyTenant } from "../../services/api/tenant";
 import { savePendingShipment } from "../../db/sync";
 
 const CANVAS  = "#050810";
@@ -342,18 +343,15 @@ export function BookingScreen({ route }: { route?: any }) {
   const [freightMode,   setFreightMode]   = useState<FreightMode>("sea");
 
   // ── Pay Online (AE-region tenants only) ───────────────────────────────────
-  // The app has no client-side way to read the tenant's billing currency (no
-  // JWT decode anywhere, no `currency` field on any API response it consumes
-  // — see BookingScreen's Task 23 report). So eligibility is discovered the
-  // same way the backend enforces it: attempt a quote and see whether it
-  // 422s with the AE-only validation error. `payOnlineAvailable` latches to
-  // `true`/`false` on the first definitive answer; `payOnlineCheckedRef`
-  // stops us from re-probing a tenant we already know isn't AE-eligible.
+  // Eligibility is read from the tenant's actual billing currency
+  // (GET /v1/tenants/me, fetched once per session — see the effect below),
+  // not probed by firing a quote and inspecting whether it 422s.
+  // `payOnlineAvailable` reflects the tenant's currency; `onlineQuote` is the
+  // live-priced amount for whatever's currently in the form.
   const [payOnline,          setPayOnline]          = useState(false);
   const [onlineQuote,        setOnlineQuote]         = useState<{ amountCents: number; token: string } | null>(null);
   const [quoteLoading,       setQuoteLoading]        = useState(false);
   const [payOnlineAvailable, setPayOnlineAvailable]  = useState(false);
-  const payOnlineCheckedRef = React.useRef(false);
   const quoteTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const bookingIdempotencyKey = React.useRef<string>(makeIdempotencyKey());
 
@@ -454,15 +452,34 @@ export function BookingScreen({ route }: { route?: any }) {
     });
   }
 
-  // ── Pay Online quote (AE-region only, discovered by probing) ─────────────
-  // Mirrors exactly how `handleBook` derives `service_type`/`weight_grams` for
-  // `createShipment` below, so a quote can never be priced on different
-  // inputs than the booking it's later attached to via `quote_token`.
-  // Scoped to local/standard shipments only — COD/Fragile (the toggles this
-  // sits next to) only exist on the local package-details step, and the
-  // Balikbayan/international wizard step has no equivalent slot for it.
+  // ── Pay Online eligibility (AE-region tenants only) ───────────────────────
+  // Fetched once per app session from GET /v1/tenants/me (cached at the API
+  // layer — see services/api/tenant.ts). A failed fetch (offline, 5xx) just
+  // leaves the toggle hidden; it never blocks the cash-on-pickup flow.
+  React.useEffect(() => {
+    let cancelled = false;
+    getMyTenant()
+      .then(tenant => { if (!cancelled) setPayOnlineAvailable(tenant.currency === 'AED'); })
+      .catch(() => { if (!cancelled) setPayOnlineAvailable(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // ── Pay Online quote ───────────────────────────────────────────────────────
+  // Mirrors exactly how `handleBook` derives `service_type`/`weight_grams`/
+  // `pieces` for `createShipment` below, so a quote can never be priced on
+  // different inputs than the booking it's later attached to via
+  // `quote_token`. Covers both the local/standard step and the
+  // Balikbayan/international step (per-piece weights, sea vs. air).
   function deriveQuoteRequest(): shipmentsService.QuoteRequest | null {
-    if (isIntl) return null;
+    if (isIntl) {
+      if (pieces.length === 0 || pieces.some(p => !p.weight.trim())) return null;
+      const intlTotalGrams = Math.round(pieces.reduce((s, p) => s + parseFloat(p.weight || '0') * 1000, 0)) || 1000;
+      return {
+        service_type: freightMode === 'sea' ? 'balikbayan' : 'express',
+        weight_grams: intlTotalGrams,
+        pieces: pieces.map(p => ({ weight_grams: Math.round(parseFloat(p.weight || '0') * 1000) })),
+      };
+    }
     if (!weight.trim()) return null;
     return {
       service_type: 'standard',
@@ -473,10 +490,15 @@ export function BookingScreen({ route }: { route?: any }) {
   React.useEffect(() => {
     if (quoteTimer.current) clearTimeout(quoteTimer.current);
 
+    // Don't even try to price a quote for a tenant we already know isn't
+    // AE-eligible — no more firing a request we know will 422.
+    if (!payOnlineAvailable) {
+      setOnlineQuote(null);
+      return;
+    }
+
     const req = deriveQuoteRequest();
-    // No valid inputs yet, or we've already learned (via a prior probe) that
-    // this tenant isn't AE-eligible — don't keep re-probing on every keystroke.
-    if (!req || (payOnlineCheckedRef.current && !payOnlineAvailable)) {
+    if (!req) {
       setOnlineQuote(null);
       return;
     }
@@ -485,16 +507,12 @@ export function BookingScreen({ route }: { route?: any }) {
       setQuoteLoading(true);
       try {
         const quote = await shipmentsService.getShipmentQuote(req);
-        payOnlineCheckedRef.current = true;
-        setPayOnlineAvailable(true);
         setOnlineQuote({ amountCents: quote.amount_cents, token: quote.quote_token });
       } catch (error: any) {
-        payOnlineCheckedRef.current = true;
-        setPayOnlineAvailable(false);
         setOnlineQuote(null);
         // Only alarm the user if they'd actually opted in — a background
-        // eligibility probe failing (e.g. a non-AE tenant, the expected case
-        // for most bookings) should stay silent.
+        // repricing failure while they haven't toggled Pay Online on should
+        // stay silent.
         if (payOnline) {
           const apiMsg = error?.message ?? error?.data?.error?.message ?? error?.response?.data?.error?.message;
           showToast(apiMsg ?? "Couldn't get an online payment quote. Try again or pay on pickup instead.", "error");
@@ -505,8 +523,11 @@ export function BookingScreen({ route }: { route?: any }) {
     }, 500);
 
     return () => { if (quoteTimer.current) clearTimeout(quoteTimer.current); };
+    // Deliberately keyed on piece *weights* (joined), not the `pieces` array
+    // itself — editing a box's description/dimensions doesn't change the
+    // price, so it shouldn't re-trigger a quote fetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [weight, isIntl, payOnline]);
+  }, [weight, isIntl, payOnline, payOnlineAvailable, freightMode, pieces.map(p => p.weight).join('|')]);
 
   // ── Booking submission ────────────────────────────────────────────────────
 
@@ -661,8 +682,9 @@ export function BookingScreen({ route }: { route?: any }) {
     setWeight(""); setDescription(""); setIsCOD(false); setCodAmount(""); setIsFragile(false);
     setPieces([{ weight: "", l: "", w: "", h: "", description: "" }]); setDeclaredValue(""); setFreightMode("sea");
     setPassportUri(null); setRedeemPoints(false); setRedeemAmount(0);
-    setPayOnline(false); setOnlineQuote(null); setPayOnlineAvailable(false);
-    payOnlineCheckedRef.current = false;
+    // payOnlineAvailable is session/tenant-scoped (from GET /v1/tenants/me),
+    // not per-booking — leave it as-is so the toggle doesn't flicker away.
+    setPayOnline(false); setOnlineQuote(null);
     bookingIdempotencyKey.current = makeIdempotencyKey();
   }
 
@@ -934,9 +956,7 @@ export function BookingScreen({ route }: { route?: any }) {
                 trackColor={{ false: BORDER, true: CYAN + "60" }} thumbColor={isFragile ? CYAN : "rgba(255,255,255,0.3)"} />
             </View>
 
-            {/* AE-region only — visibility is discovered by probing the quote
-                endpoint (see deriveQuoteRequest/useEffect above), since the
-                app has no client-side source for the tenant's currency. */}
+            {/* AE-region tenants only — see the tenant-currency effect above. */}
             {payOnlineAvailable && (
               <View style={s.toggleRow}>
                 <View style={{ flex: 1 }}>
@@ -1079,6 +1099,24 @@ export function BookingScreen({ route }: { route?: any }) {
                 </Pressable>
               ))}
             </View>
+
+            {/* AE-region tenants only — see the tenant-currency effect above. */}
+            {payOnlineAvailable && (
+              <View style={[s.toggleRow, { backgroundColor: "rgba(168,85,247,0.04)", borderColor: "rgba(168,85,247,0.2)" }]}>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.toggleLabel}>Pay Online</Text>
+                  <Text style={s.toggleSub}>
+                    {quoteLoading
+                      ? "Getting live price…"
+                      : onlineQuote
+                        ? `Pay AED ${(onlineQuote.amountCents / 100).toFixed(2)} now by card`
+                        : "Pay the shipping fee now instead of at pickup"}
+                  </Text>
+                </View>
+                <Switch value={payOnline} onValueChange={setPayOnline}
+                  trackColor={{ false: BORDER, true: PURPLE + "60" }} thumbColor={payOnline ? PURPLE : "rgba(255,255,255,0.3)"} />
+              </View>
+            )}
 
             <View style={{ flexDirection: "row", gap: 10 }}>
               <BackBtn to={2} />
