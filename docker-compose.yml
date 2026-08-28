@@ -919,17 +919,29 @@ services:
       SERVICES__FIELD_OPS_URL: http://field-ops:8090
       SERVICES__OMNIDELIV_URL: http://omnideliv:8091
       # Network International (online card payment gateway) — optional.
-      # These four are only meaningful together: any one missing disables
-      # online card payment entirely (POST /v1/internal/payments/intents and
-      # POST /v1/payments/webhooks/network-international both answer 503),
-      # logged once at WARN on startup. Every other payments capability —
+      # BASE_URL / API_KEY / OUTLET_REF are only meaningful together: any one
+      # missing disables online card payment entirely (POST
+      # /v1/internal/payments/intents and POST
+      # /v1/payments/webhooks/network-international both answer 503), logged
+      # once at WARN on startup. Every other payments capability —
       # invoicing, COD, wallets, driver ledger, billing — boots and works
       # regardless. See Config::network_international in
       # services/payments/src/config.rs.
+      #
+      # When those three ARE set, webhook verification additionally requires
+      # EITHER WEBHOOK_SECRET (HMAC-SHA256 over the raw body, the
+      # `x-ni-signature` header) OR both WEBHOOK_HEADER_KEY and
+      # WEBHOOK_HEADER_VALUE (NI's portal-configured static "Header Key" /
+      # "Header Value" pair, echoed back verbatim on every webhook call) —
+      # which mode NI's sandbox actually uses is not yet confirmed, so both
+      # are supported. Neither set is a hard boot failure, not a silent
+      # unverified-webhook fallback.
       NETWORK_INTERNATIONAL__BASE_URL: https://api-gateway.sandbox.ngenius-payments.com
       NETWORK_INTERNATIONAL__API_KEY: ${NI_API_KEY:-sandbox-key}
       NETWORK_INTERNATIONAL__WEBHOOK_SECRET: ${NI_WEBHOOK_SECRET:-sandbox-webhook-secret}
       NETWORK_INTERNATIONAL__OUTLET_REF: ${NI_OUTLET_REF:-sandbox-outlet-ref}
+      NETWORK_INTERNATIONAL__WEBHOOK_HEADER_KEY: ${NI_WEBHOOK_HEADER_KEY:-}
+      NETWORK_INTERNATIONAL__WEBHOOK_HEADER_VALUE: ${NI_WEBHOOK_HEADER_VALUE:-}
       RUST_LOG: info
     depends_on:
       postgres:
