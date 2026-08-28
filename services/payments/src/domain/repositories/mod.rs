@@ -264,6 +264,18 @@ pub trait PaymentIntentRepository: Send + Sync {
     /// Idempotent capture lookup — used by the webhook handler to avoid
     /// creating a second record when NI redelivers the same transaction.
     async fn find_by_gateway_payment_ref(&self, gateway_payment_ref: &str) -> anyhow::Result<Option<PaymentIntent>>;
+    /// Looks an intent up by the gateway's own order reference — the value
+    /// `create_session` stored in `gateway_order_ref` (NI's `reference` from
+    /// `CreateOrderResponse`, NOT our `merchant_order_reference`/intent id).
+    ///
+    /// Exists because it is unverified against a live NI sandbox which value
+    /// NI actually echoes back as `orderReference` on the capture webhook —
+    /// our own intent id (`merchant_order_reference`, the convention
+    /// `PaymentIntentService::find_by_order_ref` used to assume
+    /// unconditionally) or NI's own `reference`. This is the fallback path
+    /// for the latter so the webhook resolves correctly either way. See
+    /// `PaymentIntentService::find_by_order_ref` for the two-way lookup.
+    async fn find_by_gateway_order_ref(&self, gateway_order_ref: &str) -> anyhow::Result<Option<PaymentIntent>>;
     async fn save(&self, intent: &PaymentIntent) -> anyhow::Result<()>;
     /// Intents past `expires_at` still in `created`/`pending` — the sweep target.
     async fn list_expired(&self, before: DateTime<Utc>) -> anyhow::Result<Vec<PaymentIntent>>;

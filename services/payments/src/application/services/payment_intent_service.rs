@@ -135,23 +135,56 @@ impl PaymentIntentService {
         })
     }
 
+    /// Resolves a webhook's `orderReference` to the intent it belongs to.
+    ///
+    /// Which value NI actually echoes back here is unverified against a live
+    /// sandbox — it could be our own `merchant_order_reference` (our intent
+    /// id, passed to `create_session`) or NI's own `reference` (stored on the
+    /// intent as `gateway_order_ref` by `create_session` — see
+    /// `network_international.rs`). Getting this wrong is the
+    /// highest-consequence unknown in the integration: if only one
+    /// convention is tried and NI uses the other, every capture webhook
+    /// fails permanently and no payment is ever recorded, while the
+    /// customer has been charged. So both are tried, in order:
+    ///
+    /// 1. Parse as a UUID and look up by intent id — the convention this
+    ///    method used to assume unconditionally.
+    /// 2. Fall back to `find_by_gateway_order_ref` — matches NI's own
+    ///    reference, whether or not step 1's parse even succeeded (NI's
+    ///    reference need not be UUID-shaped at all).
+    ///
+    /// Whichever path resolves is logged at INFO so the first real webhook
+    /// against a live sandbox immediately reveals which convention NI uses.
+    ///
+    /// Both failure paths return `UnknownIntentError` (not a bare
+    /// `anyhow!(...)`) so `handle_webhook` can classify "neither lookup
+    /// resolved" as `WebhookError::Rejected` — see that type's doc comment
+    /// for why. A genuine transient error from either repo call (a DB
+    /// timeout, not "no such row") propagates via `?` unmodified and is
+    /// therefore classified `Internal` instead, exactly as before.
     async fn find_by_order_ref(&self, gateway_order_ref: &str) -> anyhow::Result<PaymentIntent> {
-        // gateway_order_ref is not separately indexed (it's 1:1 with the intent
-        // we minted it for, always looked up right after creation in practice);
-        // for the webhook path we instead re-derive by trying the payment ref
-        // first, then fall back to a full scan-free path: NI's merchant_order_reference
-        // IS our intent_id (see network_international.rs::create_session), so the
-        // gateway_order_ref parameter here is actually the intent id round-tripped.
-        //
-        // Both failure branches below return `UnknownIntentError` (not a bare
-        // `anyhow!(...)`) so `handle_webhook` can classify them as
-        // `WebhookError::Rejected` — see that type's doc comment for why.
-        let intent_id: Uuid = gateway_order_ref.parse().map_err(|_| {
-            UnknownIntentError(format!("webhook order reference {gateway_order_ref:?} is not a valid intent id"))
-        })?;
-        let intent = self.repo.find_by_id(intent_id).await?
-            .ok_or_else(|| UnknownIntentError(format!("no payment_intent found for id {intent_id}")))?;
-        Ok(intent)
+        if let Ok(intent_id) = gateway_order_ref.parse::<Uuid>() {
+            if let Some(intent) = self.repo.find_by_id(intent_id).await? {
+                tracing::info!(
+                    intent_id = %intent_id,
+                    "find_by_order_ref: resolved via intent-id convention (webhook orderReference == our merchant_order_reference)",
+                );
+                return Ok(intent);
+            }
+        }
+
+        if let Some(intent) = self.repo.find_by_gateway_order_ref(gateway_order_ref).await? {
+            tracing::info!(
+                intent_id = %intent.id,
+                gateway_order_ref = %gateway_order_ref,
+                "find_by_order_ref: resolved via gateway_order_ref fallback (webhook orderReference == NI's own reference)",
+            );
+            return Ok(intent);
+        }
+
+        Err(UnknownIntentError(format!(
+            "webhook order reference {gateway_order_ref:?} matched neither an intent id nor a stored gateway_order_ref"
+        )).into())
     }
 
     async fn apply_captured(&self, gateway_order_ref: &str, gateway_payment_ref: &str) -> anyhow::Result<()> {
@@ -434,6 +467,12 @@ mod tests {
         async fn find_by_gateway_payment_ref(&self, gateway_payment_ref: &str) -> anyhow::Result<Option<PaymentIntent>> {
             Ok(self.intents.lock().unwrap().values()
                 .find(|i| i.gateway_payment_ref.as_deref() == Some(gateway_payment_ref))
+                .cloned())
+        }
+
+        async fn find_by_gateway_order_ref(&self, gateway_order_ref: &str) -> anyhow::Result<Option<PaymentIntent>> {
+            Ok(self.intents.lock().unwrap().values()
+                .find(|i| i.gateway_order_ref.as_deref() == Some(gateway_order_ref))
                 .cloned())
         }
 
@@ -864,6 +903,102 @@ mod tests {
         assert!(
             matches!(err, WebhookError::Rejected(_)),
             "unknown intent must be Rejected (permanent), got {err:?}"
+        );
+    }
+
+    // ── find_by_order_ref: two-way lookup (highest-consequence unverified
+    // assumption in the NI integration) ─────────────────────────────────────
+    //
+    // `find_by_order_ref` used to assume unconditionally that NI's webhook
+    // `orderReference` echoes back our own `merchant_order_reference` (our
+    // intent id, passed to `create_session`). That's never been verified
+    // against a live NI sandbox. If NI instead echoes its own `reference`
+    // (the value `create_session` stores as `gateway_order_ref` on the
+    // intent), every capture webhook would fail permanently while the
+    // customer had genuinely been charged. These three tests prove both
+    // conventions now resolve, and that "matches neither" still correctly
+    // classifies as Rejected, not Internal.
+
+    #[tokio::test]
+    async fn handle_webhook_resolves_when_order_ref_is_our_intent_id() {
+        // The convention this code assumed before the fix — must keep
+        // working. Stored gateway_order_ref deliberately differs from the
+        // intent id so this only passes via the id lookup, not the fallback.
+        let repo = Arc::new(FakeRepo::default());
+        let tenant_id = Uuid::new_v4();
+        let intent = make_intent(tenant_id).with_gateway_order_ref("ni-ref-not-the-intent-id".into());
+        let intent_id = intent.id;
+        repo.seed(intent);
+
+        let gateway = Arc::new(FakeGateway::new().with_webhook(FakeWebhook::Captured {
+            order_ref: intent_id.to_string(),
+            payment_ref: "ni-txn-by-intent-id".into(),
+        }));
+        let svc = service(repo.clone(), gateway);
+        let headers = reqwest::header::HeaderMap::new();
+
+        svc.handle_webhook(&headers, b"{}").await.expect("must resolve via the intent-id convention");
+
+        let stored = repo.get(intent_id);
+        assert_eq!(stored.status, PaymentIntentStatus::Captured);
+        assert_eq!(stored.gateway_payment_ref.as_deref(), Some("ni-txn-by-intent-id"));
+    }
+
+    #[tokio::test]
+    async fn handle_webhook_resolves_when_order_ref_is_nis_own_reference_not_our_intent_id() {
+        // THE test that proves the risk is closed: NI's webhook
+        // `orderReference` is a non-UUID string matching only the stored
+        // `gateway_order_ref` — never the intent's own UUID. Before this
+        // fix, `gateway_order_ref.parse::<Uuid>()` would fail and the
+        // webhook would be rejected as an unknown intent (`UnknownIntentError`)
+        // even though the intent genuinely exists and was genuinely captured
+        // — i.e. every real NI capture webhook would have failed and no
+        // payment would ever have been recorded, silently, forever.
+        let repo = Arc::new(FakeRepo::default());
+        let tenant_id = Uuid::new_v4();
+        let intent = make_intent(tenant_id).with_gateway_order_ref("ni-order-ref-xyz-789".into());
+        let intent_id = intent.id;
+        repo.seed(intent);
+
+        let gateway = Arc::new(FakeGateway::new().with_webhook(FakeWebhook::Captured {
+            order_ref: "ni-order-ref-xyz-789".into(), // NOT the intent id — NI's own reference
+            payment_ref: "ni-txn-by-gateway-ref".into(),
+        }));
+        let svc = service(repo.clone(), gateway);
+        let headers = reqwest::header::HeaderMap::new();
+
+        svc.handle_webhook(&headers, b"{}").await
+            .expect("must resolve via the gateway_order_ref fallback, not just the intent-id convention");
+
+        let stored = repo.get(intent_id);
+        assert_eq!(stored.status, PaymentIntentStatus::Captured);
+        assert_eq!(stored.gateway_payment_ref.as_deref(), Some("ni-txn-by-gateway-ref"));
+    }
+
+    #[tokio::test]
+    async fn handle_webhook_order_ref_matching_neither_convention_is_rejected_not_internal() {
+        // A seeded intent exists, but the webhook's reference matches
+        // neither its id nor its stored gateway_order_ref — must still be a
+        // permanent Rejected (4xx, NI stops retrying), not Internal (5xx, NI
+        // retries forever against a reference that will never resolve).
+        let repo = Arc::new(FakeRepo::default());
+        let tenant_id = Uuid::new_v4();
+        let intent = make_intent(tenant_id).with_gateway_order_ref("ni-order-ref-real".into());
+        repo.seed(intent);
+
+        let gateway = Arc::new(FakeGateway::new().with_webhook(FakeWebhook::Captured {
+            order_ref: "totally-unrelated-reference".into(),
+            payment_ref: "ni-txn-orphan".into(),
+        }));
+        let svc = service(repo, gateway);
+        let headers = reqwest::header::HeaderMap::new();
+
+        let err = svc.handle_webhook(&headers, b"{}").await
+            .expect_err("a reference matching neither convention must error");
+
+        assert!(
+            matches!(err, WebhookError::Rejected(_)),
+            "must be Rejected (permanent), got {err:?}"
         );
     }
 

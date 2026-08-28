@@ -87,6 +87,15 @@ impl PaymentIntentRepository for PgPaymentIntentRepository {
         row.map(PaymentIntent::try_from).transpose()
     }
 
+    async fn find_by_gateway_order_ref(&self, gateway_order_ref: &str) -> anyhow::Result<Option<PaymentIntent>> {
+        let query = format!("SELECT {INTENT_COLS} FROM payments.payment_intents WHERE gateway_order_ref = $1");
+        let row = sqlx::query_as::<_, PaymentIntentRow>(&query)
+            .bind(gateway_order_ref)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(PaymentIntent::try_from).transpose()
+    }
+
     async fn save(&self, intent: &PaymentIntent) -> anyhow::Result<()> {
         sqlx::query(
             r#"INSERT INTO payments.payment_intents (
