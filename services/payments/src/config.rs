@@ -49,10 +49,70 @@ pub struct NetworkInternationalConfig {
     /// Base URL of NI's API — sandbox or production, set per environment.
     pub base_url: String,
     pub api_key: String,
-    /// Shared secret used to verify inbound webhook signatures.
-    pub webhook_secret: String,
+    /// Shared secret used to verify inbound webhook signatures via HMAC-SHA256
+    /// over the raw body (the `x-ni-signature` header). This is one of two
+    /// mutually exclusive webhook verification modes — see
+    /// `webhook_header_key`/`webhook_header_value` for the other. Optional
+    /// because a merchant using the static-header mode has no such secret;
+    /// `Config::load` refuses to boot if *neither* mode ends up configured
+    /// (see `NetworkInternationalConfig::has_webhook_verification_mode`).
+    #[serde(default)]
+    pub webhook_secret: Option<String>,
     /// NI outlet reference this tenant's charges post against.
     pub outlet_ref: String,
+    /// Static header NI attaches to every webhook call, configured
+    /// merchant-side in NI's portal as a "Header Key" / "Header Value" pair
+    /// (shared-secret header auth, not a body signature). When both of
+    /// these are set, this is the verification mode used instead of HMAC —
+    /// see `verify_webhook` in `network_international.rs`.
+    #[serde(default)]
+    pub webhook_header_key: Option<String>,
+    #[serde(default)]
+    pub webhook_header_value: Option<String>,
+}
+
+impl NetworkInternationalConfig {
+    /// Whether this config specifies a webhook verification mode
+    /// `verify_webhook` can actually use — either the static header pair or
+    /// the HMAC secret. `Config::load` calls this and refuses to boot if it
+    /// is false: accepting NI webhooks with **no** verification (silently
+    /// trusting whatever any caller POSTs to the public webhook route) would
+    /// be strictly worse than the original bug this file already guards
+    /// against (crash-looping the whole service on a partial credential
+    /// set), so the same "fail loud at boot" policy applies here.
+    ///
+    /// An empty string counts the same as absent, not "configured with a
+    /// blank value" — matching the existing convention for optional secrets
+    /// in this codebase (`order-intake`'s `GeocoderConfig::mapbox_access_token`,
+    /// checked with `Some(token) if !token.is_empty()` at its call site in
+    /// `services/order-intake/src/bootstrap.rs`). This matters here
+    /// specifically because docker-compose's `${NI_WEBHOOK_HEADER_KEY:-}`
+    /// substitution sets the container env var to an empty string, not an
+    /// absent one, when the host variable is unset — without this, a
+    /// default compose deployment with only `WEBHOOK_SECRET` set would have
+    /// `webhook_header_key`/`webhook_header_value` both `Some("")`, and
+    /// `verify_webhook` would take the (broken, empty-name) header branch
+    /// instead of the working HMAC one.
+    pub fn has_webhook_verification_mode(&self) -> bool {
+        self.webhook_secret().is_some() || self.webhook_header_pair().is_some()
+    }
+
+    /// The HMAC secret, if meaningfully set (present and non-empty) — see
+    /// the empty-string note on `has_webhook_verification_mode`.
+    /// `verify_webhook` uses this instead of the raw field.
+    pub fn webhook_secret(&self) -> Option<&str> {
+        self.webhook_secret.as_deref().filter(|s| !s.is_empty())
+    }
+
+    /// The static header key/value pair, if both halves are meaningfully
+    /// set (present and non-empty) — see the empty-string note on
+    /// `has_webhook_verification_mode`. `verify_webhook` uses this instead
+    /// of the raw fields.
+    pub fn webhook_header_pair(&self) -> Option<(&str, &str)> {
+        let key = self.webhook_header_key.as_deref().filter(|s| !s.is_empty())?;
+        let value = self.webhook_header_value.as_deref().filter(|s| !s.is_empty())?;
+        Some((key, value))
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -82,11 +142,35 @@ pub struct KafkaConfig {
 impl Config {
     pub fn load() -> anyhow::Result<Self> {
         dotenvy::dotenv().ok();
-        config::Config::builder()
+        let cfg: Config = config::Config::builder()
             .add_source(config::Environment::default().separator("__"))
             .build()?
-            .try_deserialize()
-            .map_err(Into::into)
+            .try_deserialize()?;
+
+        // Enforced here, not at `NetworkInternationalGateway::new` /
+        // `NetworkInternationalGateway::verify_webhook`, for the same reason
+        // the partial-credential-set case above already hard-fails in this
+        // function: this is the earliest choke point (before the DB pool,
+        // Kafka producer, or `axum::serve` even start), it's the one place
+        // that already owns "is NI configured enough to be safe" validation,
+        // and it keeps the check reachable by a plain config-level unit test
+        // instead of requiring bootstrap wiring or a live HTTP call to
+        // exercise.
+        if let Some(ni) = &cfg.network_international {
+            if !ni.has_webhook_verification_mode() {
+                anyhow::bail!(
+                    "Network International is configured (NETWORK_INTERNATIONAL__BASE_URL / \
+                     API_KEY / OUTLET_REF are set) but no webhook verification mode is: set \
+                     NETWORK_INTERNATIONAL__WEBHOOK_SECRET (HMAC-signature mode), or both \
+                     NETWORK_INTERNATIONAL__WEBHOOK_HEADER_KEY and \
+                     NETWORK_INTERNATIONAL__WEBHOOK_HEADER_VALUE (static-header mode). \
+                     Booting with neither would accept every inbound NI webhook unverified — \
+                     refusing to start instead."
+                );
+            }
+        }
+
+        Ok(cfg)
     }
 }
 
@@ -94,18 +178,33 @@ impl Config {
 mod config_tests {
     use super::*;
 
-    /// The load-bearing regression test for this change: a fresh payments
-    /// deployment with no `NETWORK_INTERNATIONAL__*` env vars set at all
-    /// must still boot — this reproduces the exact crash-loop being fixed
-    /// (`Config::load()` erroring out of `bootstrap::run()` before
-    /// `axum::serve` ever binds, taking invoicing/COD/wallets down with it).
+    /// The load-bearing regression test for both the original crash-loop fix
+    /// and the header/HMAC dual-mode change, combined into **one** `#[test]`
+    /// fn: every assertion here mutates process-wide env, and separate
+    /// `#[test]` fns touching these same `NETWORK_INTERNATIONAL__*` /
+    /// `APP__*` / etc. vars would race each other under `cargo test`'s
+    /// default parallelism — same reasoning as
+    /// `services/identity/.../auth_service.rs::dev_otp_gate_tests`. (This
+    /// was learned the hard way: an earlier version of this change split
+    /// case 1 below into its own `#[test]` fn, which non-deterministically
+    /// failed both that test and the original entirely-unset test above by
+    /// racing on the shared env vars.)
     ///
-    /// One `#[test]` fn, not several: every assertion here mutates
-    /// process-wide env, and separate `#[test]` fns would race each other
-    /// under `cargo test`'s default parallelism — same reasoning as
-    /// `services/identity/.../auth_service.rs::dev_otp_gate_tests`.
+    /// Cases, in order:
+    /// 1. No `NETWORK_INTERNATIONAL__*` vars set at all -> boots, `None`.
+    ///    Reproduces the exact crash-loop being fixed (`Config::load()`
+    ///    erroring out of `bootstrap::run()` before `axum::serve` ever
+    ///    binds, taking invoicing/COD/wallets down with it).
+    /// 2. `BASE_URL`/`API_KEY`/`OUTLET_REF` set, neither webhook
+    ///    verification mode set -> must refuse to boot rather than silently
+    ///    accept unverified webhooks.
+    /// 3. + `WEBHOOK_SECRET` only -> boots (HMAC mode sufficient alone).
+    /// 4. `WEBHOOK_SECRET` removed, header key+value set instead -> boots
+    ///    (header mode sufficient alone).
+    /// 5. Header value removed, only the key remains -> refuses to boot
+    ///    again (half a pair is still neither mode).
     #[test]
-    fn load_succeeds_with_network_international_entirely_unset() {
+    fn network_international_config_gates_boot_on_a_webhook_verification_mode() {
         // SAFETY: single-threaded within this test; nothing else in this
         // crate's test binary reads or writes these env vars (checked: no
         // other `#[cfg(test)]` module touches `env::set_var`/`remove_var`).
@@ -123,9 +222,41 @@ mod config_tests {
             std::env::remove_var("NETWORK_INTERNATIONAL__API_KEY");
             std::env::remove_var("NETWORK_INTERNATIONAL__WEBHOOK_SECRET");
             std::env::remove_var("NETWORK_INTERNATIONAL__OUTLET_REF");
+            std::env::remove_var("NETWORK_INTERNATIONAL__WEBHOOK_HEADER_KEY");
+            std::env::remove_var("NETWORK_INTERNATIONAL__WEBHOOK_HEADER_VALUE");
         }
 
-        let result = Config::load();
+        // Case 1: NI entirely unset.
+        let entirely_unset = Config::load();
+
+        // Case 2: NI's non-verification fields set, neither verification
+        // mode configured -> must refuse to boot.
+        unsafe {
+            std::env::set_var("NETWORK_INTERNATIONAL__BASE_URL", "https://example.invalid");
+            std::env::set_var("NETWORK_INTERNATIONAL__API_KEY", "key");
+            std::env::set_var("NETWORK_INTERNATIONAL__OUTLET_REF", "outlet-1");
+        }
+        let neither_mode = Config::load();
+
+        // Case 3: HMAC mode only.
+        unsafe {
+            std::env::set_var("NETWORK_INTERNATIONAL__WEBHOOK_SECRET", "shh");
+        }
+        let hmac_only = Config::load();
+
+        // Case 4: header pair only (HMAC secret removed).
+        unsafe {
+            std::env::remove_var("NETWORK_INTERNATIONAL__WEBHOOK_SECRET");
+            std::env::set_var("NETWORK_INTERNATIONAL__WEBHOOK_HEADER_KEY", "X-Merchant-Secret");
+            std::env::set_var("NETWORK_INTERNATIONAL__WEBHOOK_HEADER_VALUE", "shh");
+        }
+        let header_only = Config::load();
+
+        // Case 5: only half the header pair set -> still neither mode.
+        unsafe {
+            std::env::remove_var("NETWORK_INTERNATIONAL__WEBHOOK_HEADER_VALUE");
+        }
+        let half_header_pair = Config::load();
 
         // Clean up before asserting, so a failed assertion never leaves
         // process-wide env mutated for whatever test runs next.
@@ -139,9 +270,13 @@ mod config_tests {
             std::env::remove_var("KAFKA__BROKERS");
             std::env::remove_var("KAFKA__GROUP_ID");
             std::env::remove_var("ORDER_INTAKE__URL");
+            std::env::remove_var("NETWORK_INTERNATIONAL__BASE_URL");
+            std::env::remove_var("NETWORK_INTERNATIONAL__API_KEY");
+            std::env::remove_var("NETWORK_INTERNATIONAL__OUTLET_REF");
+            std::env::remove_var("NETWORK_INTERNATIONAL__WEBHOOK_HEADER_KEY");
         }
 
-        let cfg = result.expect(
+        let cfg = entirely_unset.expect(
             "Config::load() must succeed with every NETWORK_INTERNATIONAL__* var \
              unset — before this change this errored with \"missing field \
              `network_international`\" and crash-looped the whole service",
@@ -151,5 +286,26 @@ mod config_tests {
             "absent NI env vars must deserialize to None, not error and not \
              fabricate a config with empty-string fields"
         );
+
+        let err = neither_mode.expect_err(
+            "Config::load() must refuse to boot when NI is configured with no webhook \
+             verification mode at all -- accepting unverified webhooks is worse than \
+             the crash-loop case 1 above already guards against",
+        );
+        assert!(
+            err.to_string().contains("webhook verification mode"),
+            "error should name the actual problem, got: {err}"
+        );
+
+        let cfg = hmac_only.expect("HMAC secret alone must be a sufficient verification mode");
+        assert!(cfg.network_international.unwrap().has_webhook_verification_mode());
+
+        let cfg = header_only.expect("header pair alone must be a sufficient verification mode");
+        assert!(cfg.network_international.unwrap().has_webhook_verification_mode());
+
+        let err = half_header_pair.expect_err(
+            "a header key with no matching value must not count as a configured mode",
+        );
+        assert!(err.to_string().contains("webhook verification mode"));
     }
 }

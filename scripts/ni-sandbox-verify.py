@@ -31,6 +31,20 @@ What this does:
      the HMAC the way `verify_webhook` does and reports whether the signature
      scheme matches.
 
+NOTE on webhook verification mode: this script only ever checks the HMAC
+scheme (step 4). NI's own webhook configuration UI actually asks for a
+"Header Key" / "Header Value" pair as well as (separately) an "Encryption
+Key" -- if the sandbox's webhook config was set up with a Header Key/Value
+pair, NI will attach that pair as a static header to every call instead of
+(or possibly in addition to) signing the body, and step 4 here will report a
+mismatch even though the webhook is legitimate. Check what the portal's
+webhook config actually has configured before trusting a step-4 mismatch as
+proof the HMAC scheme is wrong. Either way, `services/payments` must be
+configured to match: NETWORK_INTERNATIONAL__WEBHOOK_SECRET for HMAC mode, or
+NETWORK_INTERNATIONAL__WEBHOOK_HEADER_KEY + ..._WEBHOOK_HEADER_VALUE for the
+static-header mode -- see `verify_webhook` in
+services/payments/src/infrastructure/external/network_international.rs.
+
 Creates one sandbox order. Charges nothing, captures nothing. Sandbox only --
 it refuses to run against a base URL that does not look like a sandbox unless
 you set NI_VERIFY_ALLOW_PROD=1.
@@ -168,8 +182,11 @@ def main():
     print("  expected x-ni-signature: " + computed)
     print("  Compare against the header NI actually sent. If the value matches")
     print("  but the header name differs, fix the header name in verify_webhook.")
-    print("  If the value differs, NI signs something other than the raw body,")
-    print("  and the verification scheme needs revisiting before go-live.")
+    print("  If the value differs, NI signs something other than the raw body --")
+    print("  or, if the portal's webhook config has a Header Key/Value pair set,")
+    print("  NI may be sending that static header instead of signing the body at")
+    print("  all. Check the headers on the actual webhook request before assuming")
+    print("  the HMAC scheme itself is wrong.")
 
     try:
         parsed = json.loads(raw)
