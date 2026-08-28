@@ -71,8 +71,6 @@ pub async fn run() -> anyhow::Result<()> {
     let order_intake_client = Arc::new(OrderIntakeClient::new(&cfg.order_intake.url));
 
     let driver_ledger_repo = Arc::new(PgDriverLedgerRepository::new(pool.clone()));
-    let payment_intent_repo = Arc::new(PgPaymentIntentRepository::new(pool.clone()));
-    let ni_gateway = Arc::new(NetworkInternationalGateway::new(cfg.network_international.clone()));
 
     let partner_bonus_repo = Arc::new(
         crate::infrastructure::db::partner_bonus_repo::PgPartnerBonusRepo::new(pool.clone())
@@ -112,11 +110,37 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::clone(&order_intake_client) as _,
         Arc::clone(&invoice_service),
     ));
-    let payment_intent_service = Arc::new(PaymentIntentService::new(
-        Arc::clone(&payment_intent_repo) as _,
-        Arc::clone(&ni_gateway) as _,
-        Arc::clone(&kafka),
-    ));
+    // Online card payment (Network International) — optional capability.
+    // Absent config must disable *only* this: the internal intents route,
+    // the public webhook route, the two payment sweeps, and the
+    // shipment.cancelled refund consumer. Every other payments capability
+    // (invoicing, COD, wallets, driver ledger, billing) is unaffected and
+    // must still boot. Constructed together so a caller can never observe
+    // `payment_intent_service: Some(..)` backed by a gateway that failed to
+    // build, or vice versa.
+    let payment_intent_service: Option<Arc<PaymentIntentService>> = match &cfg.network_international {
+        Some(ni_cfg) => {
+            tracing::info!("Network International configured — online card payment ENABLED");
+            let payment_intent_repo = Arc::new(PgPaymentIntentRepository::new(pool.clone()));
+            let ni_gateway = Arc::new(NetworkInternationalGateway::new(ni_cfg.clone()));
+            Some(Arc::new(PaymentIntentService::new(
+                payment_intent_repo as _,
+                ni_gateway as _,
+                Arc::clone(&kafka),
+            )))
+        }
+        None => {
+            tracing::warn!(
+                "NETWORK_INTERNATIONAL__BASE_URL, NETWORK_INTERNATIONAL__API_KEY, \
+                 NETWORK_INTERNATIONAL__WEBHOOK_SECRET, NETWORK_INTERNATIONAL__OUTLET_REF \
+                 not set — online card payment is DISABLED (POST /v1/internal/payments/intents \
+                 and POST /v1/payments/webhooks/network-international will return 503, the \
+                 payment-intent sweeps and the shipment.cancelled refund consumer will not run); \
+                 invoicing, COD, wallets, driver ledger, and billing are unaffected"
+            );
+            None
+        }
+    };
 
     let templates_dir = std::env::var("PAYMENTS_TEMPLATES_DIR")
         .unwrap_or_else(|_| "./templates".into());
@@ -144,7 +168,7 @@ pub async fn run() -> anyhow::Result<()> {
         withdrawal_service,
         pdf_renderer,
         driver_ledger_repo:                Arc::clone(&driver_ledger_repo) as _,
-        payment_intent_service:            Arc::clone(&payment_intent_service),
+        payment_intent_service:            payment_intent_service.clone(),
     });
     let app = router(state);
 
@@ -256,18 +280,21 @@ pub async fn run() -> anyhow::Result<()> {
     // order-intake's consumer cancels the shipment the same way a declined
     // card would. Deliberately more frequent than the 30-minute TTL itself so
     // a customer never waits much longer than the TTL to see the cancellation.
-    let intent_svc_for_sweep = Arc::clone(&payment_intent_service);
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(5 * 60));
-        loop {
-            tick.tick().await;
-            match intent_svc_for_sweep.sweep_expired().await {
-                Ok(count) if count > 0 => tracing::info!(count, "Payment intent sweep: expired stale intents"),
-                Ok(_) => {}
-                Err(e) => tracing::error!(err = %e, "Payment intent sweep failed"),
+    // Only spawned when Network International is configured — with no
+    // gateway there can be no intents to expire.
+    if let Some(svc) = payment_intent_service.clone() {
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(5 * 60));
+            loop {
+                tick.tick().await;
+                match svc.sweep_expired().await {
+                    Ok(count) if count > 0 => tracing::info!(count, "Payment intent sweep: expired stale intents"),
+                    Ok(_) => {}
+                    Err(e) => tracing::error!(err = %e, "Payment intent sweep failed"),
+                }
             }
-        }
-    });
+        });
+    }
 
     // Pending-refund retry sweep — money-safety backstop for Gap 1: a refund
     // `ShipmentCancelledConsumer` durably recorded (via `mark_refund_requested`,
@@ -276,19 +303,21 @@ pub async fn run() -> anyhow::Result<()> {
     // `Captured` via the atomic claim in `refund()` (see that method's doc
     // comment) rather than leaving it stuck `Refunding`. Same 5-minute
     // cadence as the expiry sweep above; deliberately a separate spawn/tick
-    // so one sweep stalling never blocks the other.
-    let intent_svc_for_refund_sweep = Arc::clone(&payment_intent_service);
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(5 * 60));
-        loop {
-            tick.tick().await;
-            match intent_svc_for_refund_sweep.sweep_pending_refunds().await {
-                Ok(count) if count > 0 => tracing::info!(count, "Pending-refund sweep: retried and completed stalled refunds"),
-                Ok(_) => {}
-                Err(e) => tracing::error!(err = %e, "Pending-refund sweep failed"),
+    // so one sweep stalling never blocks the other. Same "only when
+    // configured" gate as the expiry sweep above.
+    if let Some(svc) = payment_intent_service.clone() {
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(5 * 60));
+            loop {
+                tick.tick().await;
+                match svc.sweep_pending_refunds().await {
+                    Ok(count) if count > 0 => tracing::info!(count, "Pending-refund sweep: retried and completed stalled refunds"),
+                    Ok(_) => {}
+                    Err(e) => tracing::error!(err = %e, "Pending-refund sweep failed"),
+                }
             }
-        }
-    });
+        });
+    }
 
     // Spawn Kafka consumer for pod.captured — runs for the lifetime of the process.
     let pod_consumer = PodConsumer::new(
@@ -343,21 +372,26 @@ pub async fn run() -> anyhow::Result<()> {
     // from the `.context(...)?`-outside-the-spawn shape the other consumers
     // above still use; that shape is a latent boot-fragility issue in this
     // file (out of scope to fix for the other four consumers here).
-    let brokers_for_cancel = cfg.kafka.brokers.clone();
-    let group_for_cancel = cfg.kafka.group_id.clone();
-    let intent_repo_for_cancel = Arc::clone(&payment_intent_repo);
-    let intent_svc_for_cancel = Arc::clone(&payment_intent_service);
-    tokio::spawn(async move {
-        match ShipmentCancelledConsumer::new(
-            &brokers_for_cancel,
-            &group_for_cancel,
-            intent_repo_for_cancel as Arc<dyn crate::domain::repositories::PaymentIntentRepository>,
-            intent_svc_for_cancel,
-        ) {
-            Ok(consumer) => consumer.run().await,
-            Err(e) => tracing::error!("ShipmentCancelledConsumer could not start: {e}"),
-        }
-    });
+    //
+    // Only spawned when Network International is configured: with no
+    // gateway there is never a captured online payment to refund, and
+    // `payment_intent_service` (which this consumer also needs) is `None`.
+    if let Some(intent_svc_for_cancel) = payment_intent_service.clone() {
+        let brokers_for_cancel = cfg.kafka.brokers.clone();
+        let group_for_cancel = cfg.kafka.group_id.clone();
+        let intent_repo_for_cancel = Arc::new(PgPaymentIntentRepository::new(pool.clone()));
+        tokio::spawn(async move {
+            match ShipmentCancelledConsumer::new(
+                &brokers_for_cancel,
+                &group_for_cancel,
+                intent_repo_for_cancel as Arc<dyn crate::domain::repositories::PaymentIntentRepository>,
+                intent_svc_for_cancel,
+            ) {
+                Ok(consumer) => consumer.run().await,
+                Err(e) => tracing::error!("ShipmentCancelledConsumer could not start: {e}"),
+            }
+        });
+    }
 
     let addr = format!("{}:{}", cfg.app.host, cfg.app.port);
     let listener = tokio::net::TcpListener::bind(&addr)

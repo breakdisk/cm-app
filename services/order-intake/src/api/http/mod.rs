@@ -34,10 +34,6 @@ pub struct AppState {
     pub query:  Arc<ShipmentQueryService>,
     pub jwt:    Arc<logisticos_auth::jwt::JwtService>,
     pub pool:   PgPool,
-    /// HMAC-SHA256 signing secret for short-TTL quote tokens
-    /// (`domain::value_objects::quote_token`). Sourced from
-    /// `Config::quote_token_secret`.
-    pub quote_token_secret: String,
 }
 
 // ---------------------------------------------------------------------------

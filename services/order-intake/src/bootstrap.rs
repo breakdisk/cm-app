@@ -8,7 +8,7 @@ use crate::{
     api::http::{router, AppState},
     application::{
         queries::ShipmentQueryService,
-        services::shipment_service::{AddressNormalizer, ShipmentService},
+        services::shipment_service::{AddressNormalizer, PaymentCapability, ShipmentService},
     },
     config::Config,
     infrastructure::{
@@ -97,15 +97,38 @@ pub async fn run() -> anyhow::Result<()> {
     let jwt = Arc::new(JwtService::new(&jwt_secret, 3600, 86400));
 
     // Application services
-    let payments_client = Arc::new(PaymentsClient::new(&cfg.payments.url));
+    //
+    // Online payment at booking ("pay for a quote_token shipment") is an
+    // optional capability — see `Config::payment_config()`. All three of
+    // `payments.url`, `quote_token_secret`, and `app.public_base_url` must be
+    // set or the capability is disabled entirely; shipment creation,
+    // tracking, cancellation, and bulk create are all unaffected either way.
+    let payment = match cfg.payment_config() {
+        Ok(pc) => {
+            tracing::info!("payment config present — online payment at booking ENABLED");
+            Some(PaymentCapability {
+                client: Arc::new(PaymentsClient::new(&pc.payments_url)),
+                quote_token_secret: pc.quote_token_secret,
+                shipment_return_url_base: pc.public_base_url,
+            })
+        }
+        Err(missing) => {
+            tracing::warn!(
+                missing = ?missing,
+                "online payment at booking is DISABLED — POST /v1/shipments/quote will \
+                 return 503, and POST /v1/shipments will reject any request carrying a \
+                 quote_token; normal cash bookings, tracking, and cancellation are unaffected"
+            );
+            None
+        }
+    };
+    let payment_enabled = payment.is_some();
     let svc = Arc::new(ShipmentService::new(
         repo.clone(),
         publisher,
         normalizer,
         awb_generator,
-        payments_client,
-        cfg.quote_token_secret.clone(),
-        cfg.app.public_base_url.clone(),
+        payment,
     ));
     let query = Arc::new(ShipmentQueryService::new(repo.clone()));
     let pool_for_dims = pool.clone();
@@ -118,15 +141,21 @@ pub async fn run() -> anyhow::Result<()> {
     // client that cannot be created at boot must disable this consumer, not
     // stop the HTTP surface from binding. Shipment creation, tracking, and
     // cancellation all serve fine without Kafka.
-    let brokers_for_payment = cfg.kafka.brokers.clone();
-    let group_for_payment = cfg.kafka.group_id.clone();
-    let svc_for_payment = Arc::clone(&svc);
-    tokio::spawn(async move {
-        match PaymentConsumer::new(&brokers_for_payment, &group_for_payment, svc_for_payment) {
-            Ok(consumer) => consumer.run().await,
-            Err(e) => tracing::error!("Payment consumer could not start: {e}"),
-        }
-    });
+    //
+    // Only spawned when payment is enabled — with no payment config, no
+    // shipment can ever reach `awaiting_payment`, so there is nothing for
+    // this consumer to act on.
+    if payment_enabled {
+        let brokers_for_payment = cfg.kafka.brokers.clone();
+        let group_for_payment = cfg.kafka.group_id.clone();
+        let svc_for_payment = Arc::clone(&svc);
+        tokio::spawn(async move {
+            match PaymentConsumer::new(&brokers_for_payment, &group_for_payment, svc_for_payment) {
+                Ok(consumer) => consumer.run().await,
+                Err(e) => tracing::error!("Payment consumer could not start: {e}"),
+            }
+        });
+    }
 
     // Payment-expiry sweep — backstop for shipments left `awaiting_payment`
     // past their TTL. Under normal operation the payments service's own
@@ -134,19 +163,22 @@ pub async fn run() -> anyhow::Result<()> {
     // /services/payment_intent_service.rs`) publishes `payment.intent.failed`
     // first, which the consumer above already cancels via. This sweep exists
     // for anything that slips past that path. TTL here matches `INTENT_TTL`
-    // so the two don't silently drift apart.
-    let svc_for_sweep = Arc::clone(&svc);
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(5 * 60));
-        loop {
-            tick.tick().await;
-            match svc_for_sweep.sweep_expired_payments(30).await {
-                Ok(count) if count > 0 => tracing::info!(count, "Shipment payment sweep: cancelled stale bookings"),
-                Ok(_) => {}
-                Err(e) => tracing::error!(err = ?e, "Shipment payment sweep failed"),
+    // so the two don't silently drift apart. Same "only when enabled" gate
+    // as the consumer above, for the same reason.
+    if payment_enabled {
+        let svc_for_sweep = Arc::clone(&svc);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(5 * 60));
+            loop {
+                tick.tick().await;
+                match svc_for_sweep.sweep_expired_payments(30).await {
+                    Ok(count) if count > 0 => tracing::info!(count, "Shipment payment sweep: cancelled stale bookings"),
+                    Ok(_) => {}
+                    Err(e) => tracing::error!(err = ?e, "Shipment payment sweep failed"),
+                }
             }
-        }
-    });
+        });
+    }
 
     // Axum router
     use axum::http::{HeaderName, HeaderValue, Method};
@@ -187,7 +219,6 @@ pub async fn run() -> anyhow::Result<()> {
         query,
         jwt,
         pool: pool_for_dims,
-        quote_token_secret: cfg.quote_token_secret.clone(),
     };
     let app = router(state)
         .layer(tower_http::trace::TraceLayer::new_for_http())

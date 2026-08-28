@@ -31,7 +31,13 @@ pub struct AppState {
     pub withdrawal_service:             Arc<crate::application::services::WithdrawalService>,
     pub pdf_renderer:                   Option<Arc<crate::application::services::pdf_renderer::PdfRenderer>>,
     pub driver_ledger_repo:             Arc<dyn crate::domain::repositories::DriverLedgerRepository>,
-    pub payment_intent_service:         Arc<crate::application::services::payment_intent_service::PaymentIntentService>,
+    /// `None` when Network International is not configured for this
+    /// deployment (see `Config::network_international`) — online card
+    /// payment is an optional capability layered on top of the rest of this
+    /// service. Every handler that needs it (`payment_intents::create_intent`,
+    /// `payment_webhooks::network_international_webhook`) must check for
+    /// `None` and return 503 rather than unwrapping.
+    pub payment_intent_service:         Option<Arc<crate::application::services::payment_intent_service::PaymentIntentService>>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {

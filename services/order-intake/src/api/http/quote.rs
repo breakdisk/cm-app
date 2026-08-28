@@ -51,6 +51,19 @@ pub async fn get_quote(
     claims: AuthClaims,
     Json(req): Json<QuoteRequest>,
 ) -> impl IntoResponse {
+    // Checked first, ahead of the AED-tenant business rule below: an
+    // unconfigured deployment can't quote for anyone regardless of tenant
+    // currency, and 503 (not 422) tells the caller this is a deployment
+    // state, not something about their request.
+    let payment = match s.svc.payment.as_ref() {
+        Some(p) => p,
+        None => {
+            return Err(AppError::ServiceUnavailable(
+                "Online payment is not configured for this deployment — no quote can be issued".into(),
+            ));
+        }
+    };
+
     if claims.currency.as_deref() != Some("AED") {
         return Err::<_, AppError>(AppError::Validation(
             "Online quotes are only available for AE-region (AED) tenants".into(),
@@ -79,7 +92,7 @@ pub async fn get_quote(
         currency: "AED".into(),
         expires_at,
     };
-    let quote_token = quote_token::sign(s.quote_token_secret.as_bytes(), &payload);
+    let quote_token = quote_token::sign(payment.quote_token_secret.as_bytes(), &payload);
 
     Ok((StatusCode::OK, Json(QuoteResponse {
         amount_cents,
