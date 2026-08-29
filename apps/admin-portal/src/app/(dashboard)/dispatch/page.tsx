@@ -98,9 +98,10 @@ interface DriverDrawerProps {
   onClose:  () => void;
   onCancelTasks: () => void;
   cancellingTasks: boolean;
+  canCancelTasks?: boolean;
 }
 
-function DriverDrawer({ driver, onClose, onCancelTasks, cancellingTasks }: DriverDrawerProps) {
+function DriverDrawer({ driver, onClose, onCancelTasks, cancellingTasks, canCancelTasks }: DriverDrawerProps) {
   const name = [driver.first_name, driver.last_name].filter(Boolean).join(" ") || driver.email || driver.id;
   const isOnline = driver.is_online ?? (driver.status && driver.status !== "offline");
   return (
@@ -187,13 +188,15 @@ function DriverDrawer({ driver, onClose, onCancelTasks, cancellingTasks }: Drive
 
           {/* Actions */}
           <div className="mt-auto border-t border-white/10 px-5 py-4 flex flex-col gap-2">
-            <button
-              onClick={onCancelTasks}
-              disabled={cancellingTasks}
-              className="w-full rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2 text-sm font-mono text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-40"
-            >
-              {cancellingTasks ? "Cancelling…" : "Cancel Active Tasks"}
-            </button>
+            {canCancelTasks && (
+              <button
+                onClick={onCancelTasks}
+                disabled={cancellingTasks}
+                className="w-full rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2 text-sm font-mono text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-40"
+              >
+                {cancellingTasks ? "Cancelling…" : "Cancel Active Tasks"}
+              </button>
+            )}
           </div>
         </motion.div>
       </motion.div>
@@ -545,22 +548,24 @@ function DispatchPageInner() {
                           <span className="text-[9px] font-mono text-cyan-400/50 flex-shrink-0" title="GPS active">●</span>
                         )}
                       </div>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleToggleDriver(d); }}
-                        disabled={togglingDriver === d.id || isOnRoute}
-                        title={isOnRoute ? "Cancel route before changing status" : ""}
-                        className={`text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
-                          isAvailable
-                            ? "text-amber-300 hover:bg-amber-500/15 border border-amber-500/30"
-                            : "text-green-300 hover:bg-green-500/15 border border-green-500/30"
-                        }`}
-                      >
-                        {togglingDriver === d.id
-                          ? "…"
-                          : isAvailable
-                            ? "→ Offline"
-                            : "→ Online"}
-                      </button>
+                      {canAssign && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleToggleDriver(d); }}
+                          disabled={togglingDriver === d.id || isOnRoute}
+                          title={isOnRoute ? "Cancel route before changing status" : ""}
+                          className={`text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${
+                            isAvailable
+                              ? "text-amber-300 hover:bg-amber-500/15 border border-amber-500/30"
+                              : "text-green-300 hover:bg-green-500/15 border border-green-500/30"
+                          }`}
+                        >
+                          {togglingDriver === d.id
+                            ? "…"
+                            : isAvailable
+                              ? "→ Offline"
+                              : "→ Online"}
+                        </button>
+                      )}
                     </div>
                   );
                 })}
@@ -705,6 +710,7 @@ function DispatchPageInner() {
           onClose={() => setDrawerDriver(null)}
           onCancelTasks={() => handleCancelTasks(drawerDriver)}
           cancellingTasks={cancellingTasks}
+          canCancelTasks={canAssign}
         />
       )}
     </motion.div>
