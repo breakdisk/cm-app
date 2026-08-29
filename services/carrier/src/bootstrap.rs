@@ -85,10 +85,28 @@ pub async fn run() -> anyhow::Result<()> {
         Arc::clone(&publisher),
         external_client,
     ));
-    let marketplace_svc = Arc::new(MarketplaceService::new(
+    let marketplace_svc_inner = MarketplaceService::new(
         Arc::clone(&marketplace_repo) as Arc<dyn crate::domain::repositories::MarketplaceRepository>,
         Arc::clone(&kafka_producer),
-    ));
+    );
+    // Online booking payment. Absent config leaves `payments: None`, which
+    // refuses `payment_method: "online"` with a clear business-rule error and
+    // leaves the `invoice` path -- the only one that existed before -- exactly
+    // as it was.
+    let marketplace_svc = Arc::new(if cfg.services.payments_url.is_empty() {
+        tracing::info!("SERVICES__PAYMENTS_URL unset — marketplace bookings are invoice-only");
+        marketplace_svc_inner
+    } else {
+        let payments: Arc<dyn crate::application::services::BookingPayments> =
+            Arc::new(crate::infrastructure::payments_client::CarrierPaymentsClient::new(
+                cfg.services.payments_url.clone(),
+            ));
+        marketplace_svc_inner.with_payments(
+            payments,
+            cfg.services.booking_currency.clone(),
+            cfg.services.booking_payment_return_url.clone(),
+        )
+    });
 
     // S3/R2 object storage for carrier label files.
     let s3_bucket     = std::env::var("S3_BUCKET").unwrap_or_else(|_| "logisticos-carrier-labels".into());
@@ -144,6 +162,53 @@ pub async fn run() -> anyhow::Result<()> {
                 &brokers, &group_id, svc, rx,
             ).await {
                 tracing::error!("Hub-carrier consumer exited with error: {e}");
+            }
+        });
+    }
+
+    // `payment.intent.authorized` / `payment.intent.failed` for bookings.
+    // Without this an online booking opens a hold and is then shown to nobody:
+    // the carrier never sees it, the response-window clock never starts, and a
+    // declined payment never cancels the booking.
+    {
+        let brokers  = cfg.kafka.brokers.clone();
+        let group_id = cfg.kafka.group_id.clone();
+        let repo     = Arc::clone(&marketplace_repo)
+            as Arc<dyn crate::domain::repositories::MarketplaceRepository>;
+        let rx       = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                crate::infrastructure::booking_payment_consumer::start_booking_payment_consumer(
+                    &brokers, &group_id, repo, rx,
+                ).await
+            {
+                tracing::error!("Booking-payment consumer exited with error: {e}");
+            }
+        });
+    }
+
+    // The carrier-response window. `carrier_response_window_mins` has been a
+    // field on every listing since the marketplace tables landed and nothing
+    // has ever enforced it; with money attached, an unanswered booking now
+    // means a merchant's funds ring-fenced indefinitely.
+    {
+        let svc    = Arc::clone(&marketplace_svc);
+        let mut rx = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                tokio::select! {
+                    _ = rx.changed() => {
+                        if *rx.borrow_and_update() { break; }
+                    }
+                    _ = tick.tick() => {
+                        match svc.sweep_expired_bookings().await {
+                            Ok(n) if n > 0 => tracing::info!(expired = n, "marketplace booking sweep"),
+                            Ok(_) => {}
+                            Err(e) => tracing::error!(err = %e, "marketplace booking sweep failed"),
+                        }
+                    }
+                }
             }
         });
     }

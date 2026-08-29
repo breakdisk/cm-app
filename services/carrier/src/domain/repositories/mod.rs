@@ -73,7 +73,45 @@ pub trait MarketplaceRepository: Send + Sync {
 
     // ── Bookings ──────────────────────────────────────────────────────────────
 
+    /// Listings a merchant may book right now: active, inside their idle
+    /// window, and big enough for the load. Tenant-scoped -- the buy side is
+    /// the one marketplace read that deliberately crosses carriers, because
+    /// choosing between them is the product.
+    async fn find_available_listings(
+        &self,
+        tenant_id:     Uuid,
+        min_weight_kg: f32,
+        size_class:    Option<&str>,
+        at:            chrono::DateTime<chrono::Utc>,
+        limit:         i64,
+    ) -> anyhow::Result<Vec<VehicleListing>>;
+
     async fn create_booking(&self, booking: &MarketplaceBooking) -> anyhow::Result<()>;
+
+    /// Writes back the intent id and checkout URL only.
+    ///
+    /// Its own method rather than a field on `save_booking`, because those two
+    /// columns are set exactly once — between the row being inserted and the
+    /// gateway call returning — and `save_booking` is the hot path every
+    /// status transition runs through. Folding them in would mean every later
+    /// save re-asserting a URL it has no business touching.
+    async fn save_booking_payment_reference(&self, booking: &MarketplaceBooking) -> anyhow::Result<()>;
+
+    /// The bookings a merchant placed, newest first. Scoped to the user, not
+    /// the tenant: another merchant's freight rates and destinations are not
+    /// theirs to read.
+    async fn list_bookings_by_booker(
+        &self,
+        tenant_id: Uuid,
+        user_id:   Uuid,
+        limit:     i64,
+        offset:    i64,
+    ) -> anyhow::Result<Vec<MarketplaceBooking>>;
+
+    /// Pending bookings whose carrier-response window may have run out. The
+    /// window itself is per-booking, so this returns candidates and
+    /// `MarketplaceBooking::response_window_expired` makes the decision.
+    async fn list_pending_bookings(&self, limit: i64) -> anyhow::Result<Vec<MarketplaceBooking>>;
     async fn find_booking_by_id(&self, id: Uuid) -> anyhow::Result<Option<MarketplaceBooking>>;
     async fn list_bookings_by_carrier(
         &self,

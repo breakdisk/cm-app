@@ -417,6 +417,89 @@ impl BookingStatus {
     }
 }
 
+/// How a marketplace booking is paid for.
+///
+/// `Invoice` is what every carrier-side handler implicitly assumed before the
+/// buy side existed: the price lands on the merchant's ordinary invoice run and
+/// the booking goes to the carrier immediately. `Online` puts a card
+/// authorization in front of that.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BookingPaymentMethod {
+    #[default]
+    Invoice,
+    Online,
+}
+
+impl BookingPaymentMethod {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Invoice => "invoice",
+            Self::Online  => "online",
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "invoice" => Ok(Self::Invoice),
+            "online"  => Ok(Self::Online),
+            other     => anyhow::bail!("Unknown booking payment method: {other}"),
+        }
+    }
+}
+
+/// Where an `Online` booking's authorization hold stands.
+///
+/// The lifecycle is the same authorize-then-capture-or-void shape OmniDeliv
+/// orders use, and for the same reason: a booking is `Pending` until a carrier
+/// answers, so charging at request time would charge a merchant for a truck
+/// that gets rejected.
+///
+/// `Pending` -> `Authorized` -> `Captured` (carrier accepted), or
+/// `Pending`/`Authorized` -> `Voided` (rejected, or the response window
+/// expired) / `Failed` (declined, or the checkout session expired unused).
+/// Meaningless for `Invoice`, which never leaves `Pending`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BookingPaymentStatus {
+    #[default]
+    Pending,
+    Authorized,
+    Captured,
+    Voided,
+    Failed,
+}
+
+impl BookingPaymentStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending    => "pending",
+            Self::Authorized => "authorized",
+            Self::Captured   => "captured",
+            Self::Voided     => "voided",
+            Self::Failed     => "failed",
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "pending"    => Ok(Self::Pending),
+            "authorized" => Ok(Self::Authorized),
+            "captured"   => Ok(Self::Captured),
+            "voided"     => Ok(Self::Voided),
+            "failed"     => Ok(Self::Failed),
+            other        => anyhow::bail!("Unknown booking payment status: {other}"),
+        }
+    }
+
+    /// Nothing more will happen to this payment.
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Captured | Self::Voided | Self::Failed)
+    }
+}
+
 /// A carrier's idle vehicle available for spot bookings on the marketplace.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VehicleListing {
@@ -506,11 +589,231 @@ pub struct MarketplaceBooking {
     pub picked_up_at:       Option<DateTime<Utc>>,
     pub picked_up_by:       Option<String>,
     pub pickup_notes:       Option<String>,
+    /// The merchant user who placed this booking. `None` for rows that predate
+    /// the buy side -- of which there are none, since nothing could create a
+    /// booking before it existed.
+    pub booked_by_user_id:  Option<Uuid>,
+    pub payment_method:     BookingPaymentMethod,
+    pub payment_status:     BookingPaymentStatus,
+    pub payment_intent_id:  Option<Uuid>,
+    /// The NI hosted-checkout page this booking's hold was opened against.
+    /// Read through `resumable_checkout_url`, never directly.
+    pub payment_checkout_url: Option<String>,
+    /// When the hold landed. The response-window clock counts from here and
+    /// not from `created_at`, which predates authorization by however long the
+    /// merchant spent on the card page.
+    pub payment_authorized_at: Option<DateTime<Utc>>,
+    /// Copied off the listing at booking time. The listing's own value is
+    /// editable, and a window that moves under a booking already placed is a
+    /// window nobody can be held to.
+    pub response_window_mins: i32,
+    /// The distance the price was computed from. Kept because the rate card on
+    /// the listing is mutable, so the quote cannot be re-derived later from the
+    /// listing alone.
+    pub distance_km:        f32,
     pub created_at:         DateTime<Utc>,
     pub updated_at:         DateTime<Utc>,
 }
 
+/// What a booking costs, from a listing's rate card and the job's quantities.
+///
+/// Server-side and nowhere else: the merchant states the job, never the price.
+/// The quantities themselves are the merchant's word -- there is no geocoder in
+/// this service to check a distance against -- but that is a commercial matter
+/// rather than a security one, because the carrier sees the pickup and dropoff
+/// labels and the resulting quote before accepting, and rejecting is free.
+pub fn quote_price_cents(listing: &VehicleListing, distance_km: f32, weight_kg: f32) -> i64 {
+    let distance = distance_km.max(0.0) as f64;
+    let weight   = weight_kg.max(0.0) as f64;
+    let per_km   = (listing.per_km_cents as f64 * distance).round() as i64;
+    let per_kg   = listing
+        .per_kg_cents
+        .map(|c| (c as f64 * weight).round() as i64)
+        .unwrap_or(0);
+    listing.base_price_cents.saturating_add(per_km).saturating_add(per_kg)
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum BookingPaymentError {
+    #[error("cannot go from payment status {from:?} to {to:?}")]
+    Illegal { from: BookingPaymentStatus, to: BookingPaymentStatus },
+}
+
 impl MarketplaceBooking {
+    /// A booking placed by a merchant against `listing`.
+    ///
+    /// `quoted_price_cents` is computed here from the listing's own rate card
+    /// rather than accepted from the caller -- see `quote_price_cents`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn place(
+        listing:           &VehicleListing,
+        booked_by_user_id: Uuid,
+        shipment_id:       Uuid,
+        awb:               String,
+        consumer_name:     String,
+        consumer_phone:    Option<String>,
+        pickup_label:      String,
+        dropoff_label:     String,
+        cargo_weight_kg:   f32,
+        cargo_volume_m3:   Option<f32>,
+        distance_km:       f32,
+        pickup_at:         DateTime<Utc>,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4(),
+            tenant_id:  listing.tenant_id,
+            listing_id: listing.id,
+            carrier_id: listing.carrier_id,
+            shipment_id,
+            awb,
+            consumer_name,
+            consumer_phone,
+            pickup_label,
+            dropoff_label,
+            cargo_weight_kg,
+            cargo_volume_m3,
+            quoted_price_cents: quote_price_cents(listing, distance_km, cargo_weight_kg),
+            status: BookingStatus::Pending,
+            pickup_at,
+            picked_up_at: None,
+            picked_up_by: None,
+            pickup_notes: None,
+            booked_by_user_id: Some(booked_by_user_id),
+            payment_method: BookingPaymentMethod::Invoice,
+            payment_status: BookingPaymentStatus::Pending,
+            payment_intent_id: None,
+            payment_checkout_url: None,
+            payment_authorized_at: None,
+            response_window_mins: listing.carrier_response_window_mins,
+            distance_km,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Marks this booking as paid online. Separate from `place` so the
+    /// `Invoice` path constructs exactly what it constructed before.
+    pub fn with_online_payment(mut self) -> Self {
+        self.payment_method = BookingPaymentMethod::Online;
+        self
+    }
+
+    /// The hold landed. Idempotent against Kafka's at-least-once redelivery,
+    /// and deliberately does NOT re-stamp `payment_authorized_at` on a repeat:
+    /// that timestamp is the response-window clock, and restamping it would
+    /// silently push the window out on every redelivery.
+    pub fn payment_authorized(&mut self, intent_id: Uuid) -> Result<(), BookingPaymentError> {
+        match self.payment_status {
+            BookingPaymentStatus::Pending => {
+                self.payment_status = BookingPaymentStatus::Authorized;
+                self.payment_intent_id = Some(intent_id);
+                self.payment_authorized_at = Some(Utc::now());
+                self.updated_at = Utc::now();
+                Ok(())
+            }
+            BookingPaymentStatus::Authorized => Ok(()),
+            from => Err(BookingPaymentError::Illegal { from, to: BookingPaymentStatus::Authorized }),
+        }
+    }
+
+    /// The carrier accepted -- take the money that was held.
+    pub fn payment_captured(&mut self) -> Result<(), BookingPaymentError> {
+        match self.payment_status {
+            BookingPaymentStatus::Authorized => {
+                self.payment_status = BookingPaymentStatus::Captured;
+                self.updated_at = Utc::now();
+                Ok(())
+            }
+            BookingPaymentStatus::Captured => Ok(()),
+            from => Err(BookingPaymentError::Illegal { from, to: BookingPaymentStatus::Captured }),
+        }
+    }
+
+    /// Rejected, or nobody answered inside the window -- release the hold.
+    pub fn payment_voided(&mut self) -> Result<(), BookingPaymentError> {
+        match self.payment_status {
+            BookingPaymentStatus::Authorized => {
+                self.payment_status = BookingPaymentStatus::Voided;
+                self.updated_at = Utc::now();
+                Ok(())
+            }
+            BookingPaymentStatus::Voided => Ok(()),
+            from => Err(BookingPaymentError::Illegal { from, to: BookingPaymentStatus::Voided }),
+        }
+    }
+
+    /// Declined at the gateway, or the checkout session expired unused.
+    /// Reachable from `Pending` as well as `Authorized` -- a decline happens
+    /// before any hold exists.
+    pub fn payment_failed(&mut self) -> Result<(), BookingPaymentError> {
+        match self.payment_status {
+            BookingPaymentStatus::Pending | BookingPaymentStatus::Authorized => {
+                self.payment_status = BookingPaymentStatus::Failed;
+                self.updated_at = Utc::now();
+                Ok(())
+            }
+            BookingPaymentStatus::Failed => Ok(()),
+            from => Err(BookingPaymentError::Illegal { from, to: BookingPaymentStatus::Failed }),
+        }
+    }
+
+    /// Whether this booking is visible to the carrier at all.
+    ///
+    /// An online booking whose hold has not landed must not be: it is an offer
+    /// the merchant has not yet paid for, and showing it would have a carrier
+    /// hold a truck for a job that may never be funded. `Invoice` bookings are
+    /// visible immediately, exactly as before this feature.
+    pub fn is_offered_to_carrier(&self) -> bool {
+        match self.payment_method {
+            BookingPaymentMethod::Invoice => true,
+            BookingPaymentMethod::Online  => self.payment_status != BookingPaymentStatus::Pending,
+        }
+    }
+
+    /// The hosted card page to send the merchant back to, or `None`.
+    ///
+    /// Gated on `Pending` rather than on the URL merely existing: once a hold
+    /// is authorized the page is spent, and re-opening it invites a second
+    /// authorization against the same booking -- one nothing would capture and
+    /// nothing would void, since both paths only know `payment_intent_id`.
+    pub fn resumable_checkout_url(&self) -> Option<&str> {
+        if self.payment_method != BookingPaymentMethod::Online {
+            return None;
+        }
+        if self.payment_status != BookingPaymentStatus::Pending {
+            return None;
+        }
+        if self.status != BookingStatus::Pending {
+            return None;
+        }
+        self.payment_checkout_url.as_deref()
+    }
+
+    /// Whether the carrier has run out of time to answer.
+    ///
+    /// Counts from `payment_authorized_at` for an online booking and from
+    /// `created_at` otherwise, because an online booking is not shown to the
+    /// carrier at all until the hold lands.
+    pub fn response_window_expired(&self, now: DateTime<Utc>) -> bool {
+        if self.status != BookingStatus::Pending {
+            return false;
+        }
+        let from = self.payment_authorized_at.unwrap_or(self.created_at);
+        (now - from).num_minutes() >= self.response_window_mins.max(1) as i64
+    }
+
+    /// Nobody answered in time. Distinct from `reject`, which is a carrier
+    /// saying no; this is a carrier saying nothing.
+    pub fn expire(&mut self) -> anyhow::Result<()> {
+        if self.status != BookingStatus::Pending {
+            anyhow::bail!("Only a pending booking can expire, current status: {}", self.status.as_str());
+        }
+        self.status = BookingStatus::Cancelled;
+        self.updated_at = Utc::now();
+        Ok(())
+    }
+
     pub fn accept(&mut self) -> anyhow::Result<()> {
         if self.status != BookingStatus::Pending {
             anyhow::bail!("Booking can only be accepted when pending, current status: {}", self.status.as_str());

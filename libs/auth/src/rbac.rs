@@ -112,6 +112,16 @@ pub mod permissions {
     pub const CARRIERS_MANAGE_OWN: &str = "carriers:manage-own";
     pub const CARRIERS_READ:     &str = "carriers:read";
 
+    // ── Vehicle marketplace (spot truck booking) ─────────────
+    /// Browse available vehicle listings and place a spot booking against one.
+    ///
+    /// The buy side, not the sell side: `CARRIERS_*` gates a carrier operating
+    /// its own listings, and reusing it here would have let every partner book
+    /// trucks on the tenant's account. Held by merchants and tenant operators;
+    /// deliberately NOT by `partner`, whose whole relationship to the
+    /// marketplace is supplying capacity to it.
+    pub const MARKETPLACE_BOOK:  &str = "marketplace:book";
+
     // ── Customers / CDP ───────────────────────────────────────
     pub const CUSTOMERS_VIEW:    &str = "customers:read";
     pub const CUSTOMERS_MANAGE:  &str = "customers:manage";
@@ -152,6 +162,7 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::API_KEYS_MANAGE,
             permissions::VENDORS_MANAGE,
             permissions::CARRIERS_MANAGE, permissions::CARRIERS_READ,
+            permissions::MARKETPLACE_BOOK,
             permissions::CUSTOMERS_VIEW, permissions::CUSTOMERS_MANAGE,
             permissions::SEGMENTS_VIEW, permissions::SEGMENTS_MANAGE,
             permissions::COMPLIANCE_REVIEW, permissions::COMPLIANCE_ADMIN,
@@ -166,6 +177,7 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::SHIPMENT_CREATE, permissions::SHIPMENT_READ,
             permissions::SHIPMENT_CANCEL, permissions::SHIPMENT_BULK,
             permissions::ANALYTICS_VIEW,
+            permissions::MARKETPLACE_BOOK,
             permissions::CUSTOMERS_VIEW,
             permissions::SEGMENTS_VIEW,
             permissions::ENGAGEMENT_READ,
@@ -222,6 +234,7 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::API_KEYS_MANAGE,
             permissions::VENDORS_MANAGE,
             permissions::CARRIERS_MANAGE, permissions::CARRIERS_READ,
+            permissions::MARKETPLACE_BOOK,
             permissions::CUSTOMERS_VIEW, permissions::CUSTOMERS_MANAGE,
             permissions::SEGMENTS_VIEW, permissions::SEGMENTS_MANAGE,
             permissions::COMPLIANCE_REVIEW, permissions::COMPLIANCE_ADMIN,
@@ -256,6 +269,27 @@ mod grant_tests {
                 !perms(role).contains(&permissions::TENANT_MANAGE),
                 "{role} must not hold {} -- it is platform-scoped",
                 permissions::TENANT_MANAGE,
+            );
+        }
+    }
+
+    /// Booking a truck spends the tenant's money. The buy side must reach
+    /// merchants and tenant operators, and must not reach a `partner` — a
+    /// partner supplies capacity to this marketplace, and granting them the
+    /// buy side would let a carrier's own operator book trucks on the
+    /// tenant's account.
+    #[test]
+    fn the_marketplace_buy_side_reaches_merchants_and_not_partners() {
+        for role in ["merchant", "admin", "tenant_admin"] {
+            assert!(
+                perms(role).contains(&permissions::MARKETPLACE_BOOK),
+                "{role} must be able to book a vehicle",
+            );
+        }
+        for role in ["partner", "driver", "customer", "readonly", "hub_scanner"] {
+            assert!(
+                !perms(role).contains(&permissions::MARKETPLACE_BOOK),
+                "{role} must not be able to book a vehicle",
             );
         }
     }

@@ -31,9 +31,26 @@ CREATE_SH="scripts/create-kafka-topics.sh"
 consts=$(grep -oE 'pub const [A-Z_0-9]+: *&str = "[a-z0-9._]+"' "$TOPICS_RS" \
          | sed 's/pub const //; s/: *&str = "/ /; s/"$//')
 
-# Constants named inside any subscribe(&[...]) across the services.
-subscribed=$(grep -rhoE 'subscribe\(&\[[^]]*\]' services/*/src --include='*.rs' 2>/dev/null \
-             | grep -oE 'topics::[A-Z_0-9]+' | sed 's/topics:://' | sort -u)
+# Constants named in a topic list a service subscribes to.
+#
+# Two spellings, and for a while this only knew the first:
+#
+#   consumer.subscribe(&[topics::X])                      -- rdkafka, directly
+#   KafkaConsumer::new(brokers, group, &[topics::X])      -- the libs/events wrapper
+#
+# The wrapper is what omnideliv, order-intake and carrier use for the
+# `payment.intent.*` topics, so this check reported "all subscribed topics are
+# created" while three of them were absent from the creation script and the
+# whole online-payment path was one cold start away from being inert. The
+# second pattern below is that hole closed.
+#
+# `-U` and `[^]]*` across lines: the wrapper's topic array is routinely written
+# on its own lines, and a single-line-only match would miss it exactly the way
+# the original did.
+subscribed=$( { \
+    grep -rhoE 'subscribe\(&\[[^]]*\]' services/*/src --include='*.rs' 2>/dev/null; \
+    grep -rhozoE 'KafkaConsumer::new\([^)]*\)' services/*/src --include='*.rs' 2>/dev/null | tr '\0' '\n'; \
+  } | grep -oE 'topics::[A-Z_0-9]+' | sed 's/topics:://' | sort -u)
 
 missing=0
 while read -r name; do

@@ -10,7 +10,7 @@ use logisticos_types::TenantId;
 
 use crate::domain::{
     entities::{
-        BookingStatus, Carrier, CarrierId, ComplianceStatus,
+        BookingPaymentMethod, BookingPaymentStatus, BookingStatus, Carrier, CarrierId, ComplianceStatus,
         ListingStatus, MarketplaceBooking, SizeClass, SlaRecord, SlaStatus, VehicleListing, ZoneSlaRow,
     },
     repositories::{CarrierRepository, MarketplaceRepository, SlaRecordRepository},
@@ -406,6 +406,14 @@ struct MarketplaceBookingRow {
     picked_up_at:       Option<DateTime<Utc>>,
     picked_up_by:       Option<String>,
     pickup_notes:       Option<String>,
+    booked_by_user_id:  Option<Uuid>,
+    payment_method:     String,
+    payment_status:     String,
+    payment_intent_id:  Option<Uuid>,
+    payment_checkout_url: Option<String>,
+    payment_authorized_at: Option<DateTime<Utc>>,
+    response_window_mins: i32,
+    distance_km:        f32,
     created_at:         DateTime<Utc>,
     updated_at:         DateTime<Utc>,
 }
@@ -432,6 +440,14 @@ impl TryFrom<MarketplaceBookingRow> for MarketplaceBooking {
             picked_up_at:       r.picked_up_at,
             picked_up_by:       r.picked_up_by,
             pickup_notes:       r.pickup_notes,
+            booked_by_user_id:  r.booked_by_user_id,
+            payment_method:     BookingPaymentMethod::from_str(&r.payment_method)?,
+            payment_status:     BookingPaymentStatus::from_str(&r.payment_status)?,
+            payment_intent_id:  r.payment_intent_id,
+            payment_checkout_url: r.payment_checkout_url,
+            payment_authorized_at: r.payment_authorized_at,
+            response_window_mins: r.response_window_mins,
+            distance_km:        r.distance_km,
             created_at:         r.created_at,
             updated_at:         r.updated_at,
         })
@@ -448,7 +464,9 @@ const BOOKING_COLS: &str =
     "id, tenant_id, listing_id, carrier_id, shipment_id, awb, consumer_name, \
      consumer_phone, pickup_label, dropoff_label, cargo_weight_kg, cargo_volume_m3, \
      quoted_price_cents, status, pickup_at, picked_up_at, picked_up_by, \
-     pickup_notes, created_at, updated_at";
+     pickup_notes, booked_by_user_id, payment_method, payment_status, \
+     payment_intent_id, payment_checkout_url, payment_authorized_at, \
+     response_window_mins, distance_km, created_at, updated_at";
 
 pub struct PgMarketplaceRepository {
     pool: PgPool,
@@ -536,8 +554,11 @@ impl MarketplaceRepository for PgMarketplaceRepository {
                 id, tenant_id, listing_id, carrier_id, shipment_id, awb,
                 consumer_name, consumer_phone, pickup_label, dropoff_label,
                 cargo_weight_kg, cargo_volume_m3, quoted_price_cents, status,
-                pickup_at, picked_up_at, picked_up_by, pickup_notes, created_at, updated_at
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+                pickup_at, picked_up_at, picked_up_by, pickup_notes, created_at, updated_at,
+                booked_by_user_id, payment_method, payment_status, payment_intent_id,
+                payment_checkout_url, payment_authorized_at, response_window_mins, distance_km
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+                      $21,$22,$23,$24,$25,$26,$27,$28)
             "#,
         )
         .bind(b.id).bind(b.tenant_id).bind(b.listing_id).bind(b.carrier_id)
@@ -546,6 +567,10 @@ impl MarketplaceRepository for PgMarketplaceRepository {
         .bind(b.cargo_volume_m3).bind(b.quoted_price_cents).bind(b.status.as_str())
         .bind(b.pickup_at).bind(b.picked_up_at).bind(&b.picked_up_by)
         .bind(&b.pickup_notes).bind(b.created_at).bind(b.updated_at)
+        .bind(b.booked_by_user_id).bind(b.payment_method.as_str())
+        .bind(b.payment_status.as_str()).bind(b.payment_intent_id)
+        .bind(&b.payment_checkout_url).bind(b.payment_authorized_at)
+        .bind(b.response_window_mins).bind(b.distance_km)
         .execute(&self.pool).await?;
         Ok(())
     }
@@ -570,14 +595,86 @@ impl MarketplaceRepository for PgMarketplaceRepository {
     }
 
     async fn save_booking(&self, b: &MarketplaceBooking) -> anyhow::Result<()> {
+        // The payment columns join the mutable set: the authorized consumer,
+        // accept's capture and reject's void all advance them on an
+        // already-persisted row. `payment_method`, `response_window_mins` and
+        // `distance_km` are deliberately absent -- all three are fixed when
+        // the booking is placed and must not move under it afterwards.
         sqlx::query(
             "UPDATE carrier.marketplace_bookings SET \
              status = $1, picked_up_at = $2, picked_up_by = $3, pickup_notes = $4, \
-             updated_at = $5 WHERE id = $6",
+             updated_at = $5, payment_status = $6, payment_intent_id = $7, \
+             payment_authorized_at = $8 WHERE id = $9",
         )
         .bind(b.status.as_str()).bind(b.picked_up_at).bind(&b.picked_up_by)
-        .bind(&b.pickup_notes).bind(b.updated_at).bind(b.id)
+        .bind(&b.pickup_notes).bind(b.updated_at)
+        .bind(b.payment_status.as_str()).bind(b.payment_intent_id)
+        .bind(b.payment_authorized_at)
+        .bind(b.id)
         .execute(&self.pool).await?;
         Ok(())
+    }
+
+    async fn save_booking_payment_reference(&self, b: &MarketplaceBooking) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE carrier.marketplace_bookings SET              payment_intent_id = $1, payment_checkout_url = $2, updated_at = $3              WHERE id = $4",
+        )
+        .bind(b.payment_intent_id).bind(&b.payment_checkout_url).bind(b.updated_at).bind(b.id)
+        .execute(&self.pool).await?;
+        Ok(())
+    }
+
+    async fn find_available_listings(
+        &self,
+        tenant_id:     Uuid,
+        min_weight_kg: f32,
+        size_class:    Option<&str>,
+        at:            DateTime<Utc>,
+        limit:         i64,
+    ) -> anyhow::Result<Vec<VehicleListing>> {
+        // `$3::text IS NULL OR size_class = $3` keeps this one statement rather
+        // than two: an optional filter concatenated into the SQL is how a
+        // marketplace search grows an injection point.
+        let rows = sqlx::query_as::<_, VehicleListingRow>(
+            &format!(
+                "SELECT {LISTING_COLS} FROM carrier.vehicle_listings \
+                 WHERE tenant_id = $1 \
+                   AND status = 'active' \
+                   AND max_weight_kg >= $2 \
+                   AND ($3::text IS NULL OR size_class = $3) \
+                   AND idle_from <= $4 AND idle_until > $4 \
+                 ORDER BY base_price_cents ASC, per_km_cents ASC \
+                 LIMIT $5"
+            ),
+        )
+        .bind(tenant_id).bind(min_weight_kg).bind(size_class).bind(at).bind(limit)
+        .fetch_all(&self.pool).await?;
+        rows.into_iter().map(VehicleListing::try_from).collect()
+    }
+
+    async fn list_bookings_by_booker(
+        &self, tenant_id: Uuid, user_id: Uuid, limit: i64, offset: i64,
+    ) -> anyhow::Result<Vec<MarketplaceBooking>> {
+        let rows = sqlx::query_as::<_, MarketplaceBookingRow>(
+            &format!(
+                "SELECT {BOOKING_COLS} FROM carrier.marketplace_bookings \
+                 WHERE tenant_id = $1 AND booked_by_user_id = $2 \
+                 ORDER BY created_at DESC LIMIT $3 OFFSET $4"
+            ),
+        ).bind(tenant_id).bind(user_id).bind(limit).bind(offset)
+        .fetch_all(&self.pool).await?;
+        rows.into_iter().map(MarketplaceBooking::try_from).collect()
+    }
+
+    async fn list_pending_bookings(&self, limit: i64) -> anyhow::Result<Vec<MarketplaceBooking>> {
+        // Oldest first: the ones nearest their deadline are the ones the sweep
+        // must not run out of budget before reaching.
+        let rows = sqlx::query_as::<_, MarketplaceBookingRow>(
+            &format!(
+                "SELECT {BOOKING_COLS} FROM carrier.marketplace_bookings \
+                 WHERE status = 'pending' ORDER BY created_at ASC LIMIT $1"
+            ),
+        ).bind(limit).fetch_all(&self.pool).await?;
+        rows.into_iter().map(MarketplaceBooking::try_from).collect()
     }
 }

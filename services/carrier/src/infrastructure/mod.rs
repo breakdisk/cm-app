@@ -1,7 +1,9 @@
 pub mod adapters;
+pub mod booking_payment_consumer;
 pub mod cache;
 pub mod db;
 pub mod external;
 pub mod hub_carrier_consumer;
 pub mod messaging;
+pub mod payments_client;
 pub mod storage;

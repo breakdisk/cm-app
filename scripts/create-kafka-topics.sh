@@ -177,6 +177,26 @@ create_topic "logisticos.marketing.campaign.completed"
 create_topic "logisticos.engagement.campaign.opened"
 create_topic "logisticos.engagement.campaign.clicked"
 
+# Payment intents. Published by services/payments; subscribed by order-intake
+# (shipping fees), omnideliv (orders) and carrier (marketplace bookings) via
+# KafkaConsumer::new rather than a bare subscribe(), which is why these were
+# absent here while check-kafka-topics.sh reported a clean bill of health.
+#
+# Nothing publishes them until someone actually pays, so on a fresh broker all
+# three consumers subscribe to topics that do not exist yet, log
+# UnknownTopicOrPartition once, and stay subscribed to nothing until they are
+# restarted -- which is to say every online payment made before the first
+# restart is taken and never acted on.
+create_topic "logisticos.payments.intent.authorized"
+create_topic "logisticos.payments.intent.captured"
+create_topic "logisticos.payments.intent.failed"
+
+# Marketplace (spot truck) bookings.
+create_topic "logisticos.carrier.marketplace.booking.requested"
+create_topic "logisticos.carrier.marketplace.booking.accepted"
+create_topic "logisticos.carrier.marketplace.booking.rejected"
+create_topic "logisticos.carrier.marketplace.pickup.recorded"
+
 echo ""
 echo "=== Done. Verify with: ==="
 echo "docker exec $KAFKA_CONTAINER $KAFKA_BIN --bootstrap-server localhost:9092 --list"

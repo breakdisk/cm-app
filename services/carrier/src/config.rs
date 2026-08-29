@@ -32,9 +32,31 @@ pub struct StorageConfig {
 pub struct ServicesConfig {
     #[serde(default = "default_order_intake_url")]
     pub order_intake_url: String,
+
+    /// `services/payments`, for marketplace booking holds.
+    ///
+    /// Empty disables the `online` payment method entirely: booking still works
+    /// on `invoice`, and an `online` request is refused with a business-rule
+    /// error. Payment is an optional capability here on purpose -- a deployment
+    /// with no gateway configured must degrade, not crash-loop.
+    #[serde(default)]
+    pub payments_url: String,
+
+    /// The currency every booking hold is opened in.
+    #[serde(default = "default_booking_currency")]
+    pub booking_currency: String,
+
+    /// Where the merchant's browser is sent after the hosted card page.
+    /// The default is a placeholder; every real deployment overrides it.
+    #[serde(default = "default_booking_return_url")]
+    pub booking_payment_return_url: String,
 }
 
 fn default_order_intake_url() -> String { "http://localhost:8004".into() }
+fn default_booking_currency() -> String { "AED".into() }
+fn default_booking_return_url() -> String {
+    "https://app.cargomarket.net/marketplace/payment/return".into()
+}
 
 /// Top-level carrier credentials container.
 /// Each carrier section maps to env vars:

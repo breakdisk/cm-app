@@ -18,8 +18,8 @@ use crate::application::authz::{
     authorize_carrier_read, authorize_carrier_target, CarrierAuthority,
 };
 use crate::application::services::{
-    CreateListingCommand, OnboardCarrierCommand, RecordPickupInput,
-    UpdateCarrierCommand, UpdateListingPatch,
+    CreateBookingCommand, CreateListingCommand, OnboardCarrierCommand, PlacedBooking,
+    RecordPickupInput, UpdateCarrierCommand, UpdateListingPatch,
 };
 use crate::domain::entities::{Carrier, SlaRecord};
 use crate::AppState;
@@ -135,7 +135,13 @@ pub fn router() -> Router<AppState> {
         .route("/v1/marketplace/listings",                     get(list_listings).post(create_listing))
         .route("/v1/marketplace/listings/:listing_id",         put(update_listing).delete(delete_listing))
         // Marketplace — bookings
-        .route("/v1/marketplace/bookings",                     get(list_bookings))
+        .route("/v1/marketplace/available",                    get(list_available_listings))
+        // Two audiences on one path, and that is deliberate: GET is the
+        // carrier's own inbox, POST is a merchant placing an order against
+        // someone else's vehicle. Separate `.route()` calls on the same path
+        // panic at startup, so they share one.
+        .route("/v1/marketplace/bookings",                     get(list_bookings).post(create_booking))
+        .route("/v1/marketplace/my-bookings",                  get(list_my_bookings))
         .route("/v1/marketplace/bookings/:booking_id/accept",  post(accept_booking))
         .route("/v1/marketplace/bookings/:booking_id/reject",  post(reject_booking))
         .route("/v1/marketplace/bookings/:booking_id/pickup",  post(record_pickup))
@@ -561,6 +567,100 @@ async fn delete_listing(
     let carrier   = state.carrier_svc.get_by_email(&tenant_id, &claims.email).await?;
     state.marketplace_svc.delete_listing(listing_id, carrier.id.inner()).await?;
     Ok::<_, AppError>(StatusCode::NO_CONTENT)
+}
+
+// ── Marketplace — the buy side ────────────────────────────────────────────────
+//
+// Everything above this line is a carrier operating its own listings. These
+// three are a merchant spending money in the marketplace, gated on
+// `MARKETPLACE_BOOK` rather than on any `carriers:*` permission — reusing the
+// carrier permissions here would have let every partner book trucks on the
+// tenant's account.
+
+#[derive(Debug, Deserialize)]
+struct AvailableListingsQuery {
+    /// Only vehicles that can carry at least this much.
+    #[serde(default)]
+    min_weight_kg: Option<f32>,
+    /// `motorcycle` | `sedan` | `van` | `l300` | `6wheeler` | `10wheeler` | `trailer`.
+    size_class:    Option<String>,
+    limit:         Option<i64>,
+}
+
+/// GET /v1/marketplace/available
+/// Vehicles a merchant can book right now, cheapest first.
+async fn list_available_listings(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Query(q): Query<AvailableListingsQuery>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::MARKETPLACE_BOOK)?;
+    let listings = state.marketplace_svc
+        .find_available_listings(
+            claims.tenant_id,
+            q.min_weight_kg.unwrap_or(0.0),
+            q.size_class.as_deref(),
+            q.limit.unwrap_or(50),
+        )
+        .await?;
+    let count = listings.len();
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"listings": listings, "count": count}))))
+}
+
+/// POST /v1/marketplace/bookings
+///
+/// The route that did not exist. `create_booking` has been on the repository
+/// since the marketplace tables landed, with no callers: the carrier side could
+/// list, accept, reject and record a pickup on rows nothing could produce.
+async fn create_booking(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Json(cmd): Json<CreateBookingCommand>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::MARKETPLACE_BOOK)?;
+
+    if cmd.cargo_weight_kg < 0.0 || cmd.distance_km < 0.0 {
+        return Err(AppError::BusinessRule("weight and distance cannot be negative".into()));
+    }
+
+    // Tenant and user both from the validated token, never the body: a
+    // caller-supplied tenant would let one tenant book against another's
+    // listings, and a caller-supplied user id would let a merchant file a
+    // booking under a colleague's name.
+    let PlacedBooking { booking, checkout_url } = state
+        .marketplace_svc
+        .create_booking(claims.tenant_id, claims.user_id, cmd)
+        .await?;
+
+    Ok::<_, AppError>((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "booking":      booking,
+            // Present only for `payment_method: "online"`. A client that
+            // ignores it leaves a booking no carrier is ever shown, which
+            // `services/payments` cancels when the session expires.
+            "checkout_url": checkout_url,
+        })),
+    ))
+}
+
+/// GET /v1/marketplace/my-bookings
+/// The caller's own bookings. Scoped to the user, not the tenant — another
+/// merchant's freight rates and destinations are not theirs to read.
+async fn list_my_bookings(
+    State(state): State<AppState>,
+    claims: AuthClaims,
+    Query(q): Query<MarketplacePaginationQuery>,
+) -> impl IntoResponse {
+    claims.require_permission(permissions::MARKETPLACE_BOOK)?;
+    let bookings = state.marketplace_svc
+        .list_bookings_for_merchant(
+            claims.tenant_id, claims.user_id,
+            q.limit.unwrap_or(50), q.offset.unwrap_or(0),
+        )
+        .await?;
+    let count = bookings.len();
+    Ok::<_, AppError>((StatusCode::OK, Json(serde_json::json!({"bookings": bookings, "count": count}))))
 }
 
 // ── Marketplace — bookings ────────────────────────────────────────────────────

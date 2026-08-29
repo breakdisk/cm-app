@@ -1,6 +1,9 @@
 pub mod marketplace;
 
-pub use marketplace::{CreateListingCommand, MarketplaceService, RecordPickupInput, UpdateListingPatch};
+pub use marketplace::{
+    AuthorizedIntent, BookingError, BookingPayments, CreateBookingCommand, CreateListingCommand,
+    MarketplaceService, PlacedBooking, RecordPickupInput, UpdateListingPatch,
+};
 
 use std::sync::Arc;
 use serde::Deserialize;

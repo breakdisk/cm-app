@@ -48,6 +48,15 @@ reqwest.workspace     = true
 aws-sdk-s3.workspace  = true
 aws-config.workspace  = true
 
+[dev-dependencies]
+# `rdkafka::mocking::MockCluster` is an in-process broker. `MarketplaceService`
+# holds a concrete `Arc<KafkaProducer>` rather than a trait object, so the
+# booking tests cannot substitute a fake -- without a broker every publish in a
+# test waits out the producer's 5s message timeout. Not feature-gated in 0.36;
+# the workspace's `cmake-build` is what supplies librdkafka's mock support.
+rdkafka.workspace = true
+tokio   = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
 [build-dependencies]
 tonic-build.workspace       = true
 protoc-bin-vendored         = "3"
