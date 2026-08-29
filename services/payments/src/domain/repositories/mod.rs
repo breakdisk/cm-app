@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::domain::entities::{Invoice, CodCollection, CodRemittanceBatch, Wallet, WalletTransaction, DriverLedger, PaymentIntent};
 
 pub mod payment_gateway;
-pub use payment_gateway::{PaymentGateway, CreateSessionRequest, GatewaySession, WebhookEvent};
+pub use payment_gateway::{PaymentGateway, CreateSessionRequest, GatewaySession, WebhookEvent, PaymentAction};
 
 #[async_trait]
 pub trait InvoiceRepository: Send + Sync {
@@ -321,4 +321,21 @@ pub trait PaymentIntentRepository: Send + Sync {
     /// deliberately excluded — it belongs to whichever caller holds that
     /// claim, not to a new sweep pass.
     async fn list_pending_refunds(&self) -> anyhow::Result<Vec<PaymentIntent>>;
+
+    /// Atomically claims exclusive ownership of capturing this intent:
+    /// `authorized` -> `captured` in one `UPDATE ... WHERE status =
+    /// 'authorized'`. Returns whether THIS call won the claim — mirrors
+    /// `claim_for_refund` exactly (same "the UPDATE itself is the
+    /// concurrency guard, not any in-memory check" reasoning). Because the
+    /// same `WHERE status = 'authorized'` guards both this and
+    /// `claim_for_void`, whichever of capture/void a caller wins first also
+    /// forecloses the other — an intent cannot be both captured and voided,
+    /// regardless of which was requested first.
+    async fn claim_for_capture(&self, id: Uuid) -> anyhow::Result<bool>;
+
+    /// Atomically claims exclusive ownership of voiding this intent:
+    /// `authorized` -> `voided` in one `UPDATE ... WHERE status =
+    /// 'authorized'`. See `claim_for_capture` — same mechanism, opposite
+    /// target status.
+    async fn claim_for_void(&self, id: Uuid) -> anyhow::Result<bool>;
 }

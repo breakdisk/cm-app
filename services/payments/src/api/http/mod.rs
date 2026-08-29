@@ -110,4 +110,9 @@ fn internal_router(_state: Arc<AppState>) -> Router<Arc<AppState>> {
         // has already priced and verified. No JWT: Istio mTLS gates caller
         // identity on /v1/internal/*.
         .route("/payments/intents",             post(payment_intents::create_intent))
+        // Authorize-then-capture, with void: capture funds ring-fenced by an
+        // action:"authorize" intent, or release the hold if nothing should
+        // be charged. No JWT: Istio mTLS gates caller identity on /v1/internal/*.
+        .route("/payments/intents/:id/capture", post(payment_intents::capture_intent))
+        .route("/payments/intents/:id/void",    post(payment_intents::void_intent))
 }

@@ -84,6 +84,12 @@ pub const WALLET_WITHDRAWAL_DISBURSED:    &str = "logisticos.payments.wallet.wit
 pub const WALLET_WITHDRAWAL_REJECTED:     &str = "logisticos.payments.wallet.withdrawal_rejected";
 pub const PAYMENT_INTENT_CAPTURED:        &str = "logisticos.payments.intent.captured";
 pub const PAYMENT_INTENT_FAILED:          &str = "logisticos.payments.intent.failed";
+/// Emitted when an `AUTHORISED` webhook lands for a `PaymentAction::Authorize`
+/// intent — funds are ring-fenced but not yet taken. Distinct from
+/// `PAYMENT_INTENT_CAPTURED`: the two used to be conflated in the adapter's
+/// webhook parsing (see `network_international.rs`), which would have
+/// published this as a false "money taken" signal.
+pub const PAYMENT_INTENT_AUTHORIZED:      &str = "logisticos.payments.intent.authorized";
 
 // Engagement
 pub const NOTIFICATION_QUEUED:       &str = "logisticos.engagement.notification.queued";
@@ -154,7 +160,7 @@ mod tests {
             INVOICE_GENERATED, PAYMENT_RECEIVED,
             COD_COLLECTED, WEIGHT_ADJUSTMENT_INVOICED,
             WALLET_WITHDRAWAL_DISBURSED, WALLET_WITHDRAWAL_REJECTED,
-            PAYMENT_INTENT_CAPTURED, PAYMENT_INTENT_FAILED,
+            PAYMENT_INTENT_CAPTURED, PAYMENT_INTENT_FAILED, PAYMENT_INTENT_AUTHORIZED,
             NOTIFICATION_QUEUED, CAMPAIGN_TRIGGERED, CAMPAIGN_COMPLETED, CUSTOMER_SEGMENT_UPDATED,
             TASK_ASSIGNED,
             RECEIPT_EMAIL_REQUESTED,

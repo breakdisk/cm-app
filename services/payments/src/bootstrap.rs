@@ -133,8 +133,10 @@ pub async fn run() -> anyhow::Result<()> {
             tracing::warn!(
                 "NETWORK_INTERNATIONAL__BASE_URL, NETWORK_INTERNATIONAL__API_KEY, \
                  NETWORK_INTERNATIONAL__WEBHOOK_SECRET, NETWORK_INTERNATIONAL__OUTLET_REF \
-                 not set — online card payment is DISABLED (POST /v1/internal/payments/intents \
-                 and POST /v1/payments/webhooks/network-international will return 503, the \
+                 not set — online card payment is DISABLED (POST /v1/internal/payments/intents, \
+                 POST /v1/internal/payments/intents/:id/capture, \
+                 POST /v1/internal/payments/intents/:id/void, and \
+                 POST /v1/payments/webhooks/network-international will return 503, the \
                  payment-intent sweeps and the shipment.cancelled refund consumer will not run); \
                  invoicing, COD, wallets, driver ledger, and billing are unaffected"
             );

@@ -245,6 +245,30 @@ mod tests {
                 .cloned()
                 .collect())
         }
+
+        async fn claim_for_capture(&self, id: Uuid) -> anyhow::Result<bool> {
+            let mut intents = self.intents.lock().unwrap();
+            match intents.get_mut(&id) {
+                Some(intent) if intent.status == PaymentIntentStatus::Authorized => {
+                    intent.status = PaymentIntentStatus::Captured;
+                    intent.updated_at = Utc::now();
+                    Ok(true)
+                }
+                _ => Ok(false),
+            }
+        }
+
+        async fn claim_for_void(&self, id: Uuid) -> anyhow::Result<bool> {
+            let mut intents = self.intents.lock().unwrap();
+            match intents.get_mut(&id) {
+                Some(intent) if intent.status == PaymentIntentStatus::Authorized => {
+                    intent.status = PaymentIntentStatus::Voided;
+                    intent.updated_at = Utc::now();
+                    Ok(true)
+                }
+                _ => Ok(false),
+            }
+        }
     }
 
     // ── Fake PaymentGateway ──────────────────────────────────────────────────
@@ -281,6 +305,14 @@ mod tests {
                 anyhow::bail!("gateway refund failed");
             }
             Ok(())
+        }
+
+        async fn capture(&self, _gateway_order_ref: &str, _gateway_payment_ref: &str, _amount_cents: i64) -> anyhow::Result<String> {
+            unreachable!("not exercised by these tests")
+        }
+
+        async fn void(&self, _gateway_order_ref: &str, _gateway_payment_ref: &str) -> anyhow::Result<()> {
+            unreachable!("not exercised by these tests")
         }
     }
 

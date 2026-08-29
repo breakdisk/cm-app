@@ -207,4 +207,35 @@ impl PaymentIntentRepository for PgPaymentIntentRepository {
             .await?;
         rows.into_iter().map(PaymentIntent::try_from).collect()
     }
+
+    async fn claim_for_capture(&self, id: Uuid) -> anyhow::Result<bool> {
+        // Same mechanism as `claim_for_refund`: the conditional UPDATE is
+        // the actual concurrency guard. No lease/reclaim clause here (unlike
+        // `claim_for_refund`) — there is no periodic sweep retrying stranded
+        // capture/void claims in this pass; a claim that never resolves
+        // (process crash between this UPDATE and the gateway call
+        // returning) is a known, narrow gap, not a silently-accepted one —
+        // see `PaymentIntentService::capture_intent`'s doc comment.
+        let result = sqlx::query(
+            "UPDATE payments.payment_intents \
+             SET status = 'captured', updated_at = NOW() \
+             WHERE id = $1 AND status = 'authorized'",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn claim_for_void(&self, id: Uuid) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE payments.payment_intents \
+             SET status = 'voided', updated_at = NOW() \
+             WHERE id = $1 AND status = 'authorized'",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
 }

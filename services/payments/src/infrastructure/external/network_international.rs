@@ -62,6 +62,16 @@
 //! values) so the first real call — sandbox or production — confirms the
 //! true shape from our own logs instead of needing another round of
 //! doc-reading.
+//!
+//! ## Authorize-then-capture, with void
+//!
+//! `create_session` can now place an `AUTH` hold instead of an immediate
+//! `SALE` (`PaymentAction`), and this adapter gained `capture` (confirmed
+//! against NI's docs) and `void` (**not** confirmed — see that method's own
+//! doc comment). The `CAPTURED`/`AUTHORISED` webhook states used to be
+//! conflated into one `WebhookEvent::Captured` outcome — correct only while
+//! this integration was SALE-only. They are now parsed as two distinct
+//! `WebhookEvent` variants; see `parse_webhook_body`.
 
 use aes::Aes256;
 use async_trait::async_trait;
@@ -75,7 +85,7 @@ use subtle::ConstantTimeEq;
 
 use crate::config::NetworkInternationalConfig;
 use crate::domain::repositories::payment_gateway::{
-    CreateSessionRequest, GatewaySession, PaymentGateway, WebhookEvent,
+    CreateSessionRequest, GatewaySession, PaymentAction, PaymentGateway, WebhookEvent,
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -141,8 +151,16 @@ impl PaymentGateway for NetworkInternationalGateway {
             self.cfg.base_url.trim_end_matches('/'),
             self.cfg.outlet_ref,
         );
+        // "AUTH" places a hold without taking the money; "SALE" (the
+        // original, still-default behavior) captures immediately. Confirmed
+        // against NI's docs — this is the same order-creation endpoint
+        // `create_session` always used, just with a different `action`.
+        let action = match req.action {
+            PaymentAction::Sale => "SALE",
+            PaymentAction::Authorize => "AUTH",
+        };
         let body = CreateOrderRequest {
-            action: "SALE",
+            action,
             amount: OrderAmount { currency_code: req.currency, value: req.amount_cents },
             merchant_order_reference: req.intent_id.to_string(),
             merchant_attributes: MerchantAttributes { redirect_url: req.return_url },
@@ -256,6 +274,102 @@ impl PaymentGateway for NetworkInternationalGateway {
         }
         Ok(())
     }
+
+    /// Confirmed against NI's docs:
+    /// `POST {base}/transactions/outlets/{outletRef}/orders/{orderRef}/payments/{paymentRef}/captures`.
+    /// The capture response's own shape (what field carries the capture
+    /// reference) is NOT confirmed against a live sandbox — tried the same
+    /// way `extract_payment_reference` tries several field names for the
+    /// webhook body, falling back to the payment reference itself (already
+    /// known to be correct and stable) rather than failing the whole
+    /// capture over a reference this caller doesn't strictly need: nothing
+    /// in this codebase persists a separate "capture reference" column (see
+    /// `PaymentGateway::capture`'s doc comment) — it's returned for logging only.
+    async fn capture(
+        &self,
+        gateway_order_ref: &str,
+        gateway_payment_ref: &str,
+        amount_cents: i64,
+    ) -> anyhow::Result<String> {
+        let url = format!(
+            "{}/transactions/outlets/{}/orders/{}/payments/{}/captures",
+            self.cfg.base_url.trim_end_matches('/'),
+            self.cfg.outlet_ref,
+            gateway_order_ref,
+            gateway_payment_ref,
+        );
+        let resp = self.http
+            .post(&url)
+            .bearer_auth(&self.cfg.api_key)
+            .json(&serde_json::json!({ "amount": { "value": amount_cents } }))
+            .send()
+            .await?;
+        if let Err(e) = resp.error_for_status_ref() {
+            let body_text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("NI capture failed: {e} — body: {body_text}");
+        }
+        let body_text = resp.text().await.unwrap_or_default();
+        let capture_ref = serde_json::from_str::<Value>(&body_text)
+            .ok()
+            .and_then(|v| {
+                v.get("reference")
+                    .and_then(Value::as_str)
+                    .or_else(|| v.get("_id").and_then(Value::as_str))
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| gateway_payment_ref.to_string());
+        Ok(capture_ref)
+    }
+
+    /// Releases an authorization hold that was NEVER captured — the
+    /// no-courier path in OmniDeliv's prepaid checkout.
+    ///
+    /// **This endpoint is unverified.** NI's docs confirm a "void a
+    /// capture" operation:
+    /// `DELETE {base}/transactions/outlets/{outletRef}/orders/{orderRef}/payments/{paymentRef}/captures/{captureRef}`
+    /// — but that requires a `captureRef`, which only exists once a capture
+    /// has actually happened. It cannot be the right call for releasing a
+    /// hold that was never captured in the first place (there is no
+    /// `captureRef` to put in the URL), and no separate "reverse an
+    /// authorization" endpoint could be confirmed against NI's published
+    /// docs during this pass.
+    ///
+    /// Best reading implemented here: `DELETE` against the *payment*
+    /// resource itself (one path segment shorter than the confirmed
+    /// void-a-capture URL — no `/captures/{captureRef}` suffix, since no
+    /// capture exists), extrapolating from the confirmed pattern that
+    /// `DELETE` on a resource in this API family means "cancel/release it".
+    /// This is a guess, not a confirmed contract, and MUST be verified
+    /// against a live NI sandbox (`scripts/ni-sandbox-verify.py` per the
+    /// project's standing note on this integration) before this path is
+    /// ever exercised with real money. If the endpoint is wrong, this call
+    /// fails loudly (404 or similar, captured in the error body below) —
+    /// it does not fail silently — and the caller
+    /// (`PaymentIntentService::void_intent`) treats any failure here as
+    /// requiring investigation, not routine background noise: an auth we
+    /// failed to release is money still ring-fenced on a customer's card.
+    /// Separately, per NI's docs, a void/cancel is only guaranteed to be
+    /// possible on the SAME DAY as the original transaction — after that,
+    /// only the issuing bank's own (unspecified) hold-expiry window
+    /// releases it.
+    async fn void(&self, gateway_order_ref: &str, gateway_payment_ref: &str) -> anyhow::Result<()> {
+        let url = format!(
+            "{}/transactions/outlets/{}/orders/{}/payments/{}",
+            self.cfg.base_url.trim_end_matches('/'),
+            self.cfg.outlet_ref,
+            gateway_order_ref,
+            gateway_payment_ref,
+        );
+        let resp = self.http.delete(&url).bearer_auth(&self.cfg.api_key).send().await?;
+        if let Err(e) = resp.error_for_status_ref() {
+            let body_text = resp.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "NI void (authorization reversal — UNVERIFIED endpoint, see \
+                 NetworkInternationalGateway::void's doc comment) failed: {e} — body: {body_text}"
+            );
+        }
+        Ok(())
+    }
 }
 
 type Aes256CbcDec = cbc::Decryptor<Aes256>;
@@ -328,28 +442,45 @@ fn parse_webhook_body(body: &[u8]) -> anyhow::Result<WebhookEvent> {
     })?;
 
     let state = extract_state(&value).unwrap_or_default();
-    let is_captured = matches!(state.to_uppercase().as_str(), "CAPTURED" | "AUTHORISED");
+    // Previously `matches!(state, "CAPTURED" | "AUTHORISED") -> WebhookEvent::Captured`
+    // for BOTH states — correct back when this integration was SALE-only
+    // (`AUTHORISED` was, at the time, just an intermediate state NI's docs
+    // mention en route to `CAPTURED`, treated as "close enough to captured").
+    // Now that `PaymentAction::Authorize` is a real, intentional outcome
+    // (NI genuinely stops at `AUTHORISED` until a separate `capture` call is
+    // made), that conflation is wrong: recording an authorization-only hold
+    // as `Captured` would tell the rest of the system money was taken when
+    // it was only ring-fenced — the opposite of what `authorize`/`capture`/
+    // `void` exist to make possible. `CAPTURED` and `AUTHORISED` are now
+    // kept as two distinct outcomes.
+    let is_captured = state.eq_ignore_ascii_case("CAPTURED");
+    let is_authorized = state.eq_ignore_ascii_case("AUTHORISED");
 
-    if !is_captured {
+    if !is_captured && !is_authorized {
         return Ok(WebhookEvent::Failed { gateway_order_ref: order_reference });
     }
 
     // A resolvable payment/transaction reference is not optional for a
-    // Captured event specifically: it's what `refund` (above) keys on, so
-    // recording a Captured payment we could never look back up to refund
-    // would be strictly worse than rejecting the webhook and letting NI
-    // retry (or ops investigate) once the true field name is confirmed.
+    // Captured OR Authorized event: it's what `refund`/`capture`/`void`
+    // (above) key on, so recording either outcome for a payment we could
+    // never look back up to act on would be strictly worse than rejecting
+    // the webhook and letting NI retry (or ops investigate) once the true
+    // field name is confirmed.
     let payment_reference = extract_payment_reference(&value).ok_or_else(|| {
         anyhow::anyhow!(
-            "webhook payload state {state:?} looks like a successful capture but no \
-             transaction/payment reference could be resolved (checked \
+            "webhook payload state {state:?} looks like a successful capture or \
+             authorization but no transaction/payment reference could be resolved (checked \
              order._embedded.payment[0].reference, ...[0]._id, top-level \
-             transactionReference) — refusing to record a Captured payment that could \
-             never be refunded"
+             transactionReference) — refusing to record a payment that could never be \
+             captured, voided, or refunded"
         )
     })?;
 
-    Ok(WebhookEvent::Captured { gateway_order_ref: order_reference, gateway_payment_ref: payment_reference })
+    if is_captured {
+        Ok(WebhookEvent::Captured { gateway_order_ref: order_reference, gateway_payment_ref: payment_reference })
+    } else {
+        Ok(WebhookEvent::Authorized { gateway_order_ref: order_reference, gateway_payment_ref: payment_reference })
+    }
 }
 
 /// First element of `order._embedded.payment[]`, if present.
@@ -624,7 +755,7 @@ mod tests {
         let body = br#"{
             "order": {
                 "reference": "ord-nested-2",
-                "_embedded": { "payment": [ { "state": "AUTHORISED", "_id": "pay-nested-2" } ] }
+                "_embedded": { "payment": [ { "state": "CAPTURED", "_id": "pay-nested-2" } ] }
             }
         }"#;
         let sig = sign("test-secret", body);
@@ -638,6 +769,57 @@ mod tests {
                 assert_eq!(gateway_payment_ref, "pay-nested-2");
             }
             _ => panic!("expected Captured"),
+        }
+    }
+
+    // --- CAPTURED vs AUTHORISED (highest-risk fix: the old code conflated
+    // these into the same WebhookEvent::Captured variant) ------------------
+
+    /// THE regression test for the split: `AUTHORISED` must map to its own
+    /// distinct `WebhookEvent::Authorized`, never to `Captured`. Before this
+    /// fix, an `Authorize`-action order that only ever reached `AUTHORISED`
+    /// (funds merely ring-fenced, never taken) would have been recorded as
+    /// a full capture — the exact opposite of what `PaymentAction::Authorize`
+    /// exists to make possible.
+    #[test]
+    fn verify_webhook_maps_authorised_state_to_a_distinct_authorized_event_not_captured() {
+        let gateway = test_gateway();
+        let body = br#"{
+            "order": {
+                "reference": "ord-auth-1",
+                "_embedded": { "payment": [ { "state": "AUTHORISED", "reference": "pay-auth-1" } ] }
+            }
+        }"#;
+        let sig = sign("test-secret", body);
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-ni-signature", sig.parse().unwrap());
+
+        let event = gateway.verify_webhook(&headers, body).expect("must verify and parse");
+        match event {
+            WebhookEvent::Authorized { gateway_order_ref, gateway_payment_ref } => {
+                assert_eq!(gateway_order_ref, "ord-auth-1");
+                assert_eq!(gateway_payment_ref, "pay-auth-1");
+            }
+            other => panic!("expected Authorized, not {other:?} — AUTHORISED must never be recorded as a capture"),
+        }
+    }
+
+    /// The flat (pre-nested-shape) `AUTHORISED` payload must resolve the
+    /// same way — the split applies regardless of which payload shape.
+    #[test]
+    fn verify_webhook_maps_flat_authorised_status_to_authorized() {
+        let gateway = test_gateway();
+        let body = br#"{"status":"AUTHORISED","orderReference":"ord-auth-2","transactionReference":"txn-auth-2"}"#;
+        let sig = sign("test-secret", body);
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-ni-signature", sig.parse().unwrap());
+
+        match gateway.verify_webhook(&headers, body).expect("must verify") {
+            WebhookEvent::Authorized { gateway_order_ref, gateway_payment_ref } => {
+                assert_eq!(gateway_order_ref, "ord-auth-2");
+                assert_eq!(gateway_payment_ref, "txn-auth-2");
+            }
+            other => panic!("expected Authorized, got {other:?}"),
         }
     }
 
