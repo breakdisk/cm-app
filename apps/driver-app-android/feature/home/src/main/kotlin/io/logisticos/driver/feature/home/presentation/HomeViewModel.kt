@@ -692,10 +692,13 @@ class HomeViewModel @Inject constructor(
                 // calls onLocationPermissionGranted() once the OS confirms the
                 // grant — that is the safe place to start tracking.
             }.onSuccess {
-                _uiState.update { it.copy(isOnline = true) }
+                _uiState.update { it.copy(isOnline = true, error = null) }
                 startLocationHeartbeat()
+            }.onFailure { e ->
+                // Surface so the driver can see *why* they're still offline instead of
+                // silently staying OFFLINE (common cause: backend 404 / no GPS permission).
+                _uiState.update { it.copy(error = "Go online failed: ${e.message}") }
             }
-            // On failure we stay offline-in-UI; the manual toggle is still there.
         }
     }
 
