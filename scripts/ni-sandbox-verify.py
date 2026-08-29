@@ -54,6 +54,18 @@ Configuration (the same names the service uses, so a working .env just works):
     NETWORK_INTERNATIONAL__API_KEY
     NETWORK_INTERNATIONAL__OUTLET_REF
     NETWORK_INTERNATIONAL__WEBHOOK_SECRET  only needed for step 4
+
+NOTE on the webhook body itself: per NI's published docs (not yet checked
+against a live sandbox), the real webhook payload is *nested*
+(`order.reference`, `order._embedded.payment[0].state`, ...), not the flat
+`{status, orderReference, transactionReference}` shape step 4 above assumes --
+`verify_webhook` in network_international.rs now parses tolerantly with
+fallbacks for both shapes, and logs the payload's top-level JSON keys at INFO
+on every call, so a real webhook's true shape shows up in the payments logs
+regardless of what step 4 here prints. The body may also be AES-256-CBC
+encrypted if NI's portal has an "Encryption Key" configured -- set
+NETWORK_INTERNATIONAL__WEBHOOK_ENCRYPTION_KEY (32 characters) to match if so;
+this script does not attempt to decrypt.
 """
 
 import base64

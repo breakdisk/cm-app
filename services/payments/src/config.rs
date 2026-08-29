@@ -69,6 +69,17 @@ pub struct NetworkInternationalConfig {
     pub webhook_header_key: Option<String>,
     #[serde(default)]
     pub webhook_header_value: Option<String>,
+    /// Optional AES-256-CBC key NI encrypts the webhook body with, when the
+    /// merchant has set an "Encryption Key" in NI's portal (a setting
+    /// independent of, and orthogonal to, the header/HMAC verification mode
+    /// above — verification proves the caller is NI, encryption is a
+    /// separate confidentiality layer on the body those checks cover).
+    /// Per NI's webhook-encryption-decryption-guide: exactly 32 ASCII
+    /// characters (AES-256), the ciphertext is base64 with a 16-byte IV
+    /// prepended, PKCS5/PKCS7 padded. `Config::load` refuses to boot if this
+    /// is set but not exactly 32 characters — see the length check there.
+    #[serde(default)]
+    pub webhook_encryption_key: Option<String>,
 }
 
 impl NetworkInternationalConfig {
@@ -112,6 +123,15 @@ impl NetworkInternationalConfig {
         let key = self.webhook_header_key.as_deref().filter(|s| !s.is_empty())?;
         let value = self.webhook_header_value.as_deref().filter(|s| !s.is_empty())?;
         Some((key, value))
+    }
+
+    /// The webhook body encryption key, if meaningfully set (present and
+    /// non-empty) — same empty-string-means-absent convention as
+    /// `webhook_secret`/`webhook_header_pair` above, for the same
+    /// docker-compose `${VAR:-}` reason. `verify_webhook` uses this instead
+    /// of the raw field.
+    pub fn webhook_encryption_key(&self) -> Option<&str> {
+        self.webhook_encryption_key.as_deref().filter(|s| !s.is_empty())
     }
 }
 
@@ -167,6 +187,25 @@ impl Config {
                      Booting with neither would accept every inbound NI webhook unverified — \
                      refusing to start instead."
                 );
+            }
+
+            // Same "fail loud at boot" policy as the verification-mode check
+            // above, for the same reason: a wrong-length encryption key
+            // would silently fail to decrypt *every* real webhook at
+            // runtime (caught late, per-request, as a decrypt error) rather
+            // than refusing to boot once, up front. NI's
+            // webhook-encryption-decryption-guide specifies AES-256-CBC,
+            // which requires an exactly-32-ASCII-character key.
+            if let Some(key) = ni.webhook_encryption_key() {
+                if key.len() != 32 {
+                    anyhow::bail!(
+                        "NETWORK_INTERNATIONAL__WEBHOOK_ENCRYPTION_KEY is set but is {} \
+                         characters long, not the 32 AES-256 requires. A wrong-length key \
+                         would fail to decrypt every real webhook at runtime — refusing to \
+                         start instead.",
+                        key.len()
+                    );
+                }
             }
         }
 
@@ -258,6 +297,21 @@ mod config_tests {
         }
         let half_header_pair = Config::load();
 
+        // Case 6: header pair restored to a valid verification mode, plus a
+        // 31-character encryption key -> must refuse to boot on the key
+        // length specifically, not the (now valid again) verification mode.
+        unsafe {
+            std::env::set_var("NETWORK_INTERNATIONAL__WEBHOOK_HEADER_VALUE", "shh");
+            std::env::set_var("NETWORK_INTERNATIONAL__WEBHOOK_ENCRYPTION_KEY", "a".repeat(31));
+        }
+        let bad_encryption_key_length = Config::load();
+
+        // Case 7: same, but the encryption key is exactly 32 characters -> boots.
+        unsafe {
+            std::env::set_var("NETWORK_INTERNATIONAL__WEBHOOK_ENCRYPTION_KEY", "a".repeat(32));
+        }
+        let good_encryption_key_length = Config::load();
+
         // Clean up before asserting, so a failed assertion never leaves
         // process-wide env mutated for whatever test runs next.
         unsafe {
@@ -274,6 +328,8 @@ mod config_tests {
             std::env::remove_var("NETWORK_INTERNATIONAL__API_KEY");
             std::env::remove_var("NETWORK_INTERNATIONAL__OUTLET_REF");
             std::env::remove_var("NETWORK_INTERNATIONAL__WEBHOOK_HEADER_KEY");
+            std::env::remove_var("NETWORK_INTERNATIONAL__WEBHOOK_HEADER_VALUE");
+            std::env::remove_var("NETWORK_INTERNATIONAL__WEBHOOK_ENCRYPTION_KEY");
         }
 
         let cfg = entirely_unset.expect(
@@ -307,5 +363,22 @@ mod config_tests {
             "a header key with no matching value must not count as a configured mode",
         );
         assert!(err.to_string().contains("webhook verification mode"));
+
+        let err = bad_encryption_key_length.expect_err(
+            "a 31-character encryption key must refuse to boot -- a wrong-length key \
+             would otherwise fail to decrypt every real webhook at runtime instead of \
+             failing once, loudly, at startup",
+        );
+        assert!(
+            err.to_string().contains("32"),
+            "error should name the actual problem (wrong key length), got: {err}"
+        );
+
+        let cfg = good_encryption_key_length
+            .expect("a 32-character encryption key must be accepted at boot");
+        assert_eq!(
+            cfg.network_international.unwrap().webhook_encryption_key().map(str::len),
+            Some(32),
+        );
     }
 }

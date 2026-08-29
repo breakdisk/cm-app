@@ -936,12 +936,21 @@ services:
       # which mode NI's sandbox actually uses is not yet confirmed, so both
       # are supported. Neither set is a hard boot failure, not a silent
       # unverified-webhook fallback.
+      #
+      # NI's real webhook body is nested (order.reference,
+      # order._embedded.payment[0].state, ...), not flat, per
+      # https://docs.ngenius-payments.com/reference/consuming-web-hooks --
+      # parsed tolerantly, see network_international.rs. It may also be
+      # AES-256-CBC encrypted if an "Encryption Key" is set in NI's portal
+      # (WEBHOOK_ENCRYPTION_KEY below, exactly 32 characters or the service
+      # refuses to boot).
       NETWORK_INTERNATIONAL__BASE_URL: https://api-gateway.sandbox.ngenius-payments.com
       NETWORK_INTERNATIONAL__API_KEY: ${NI_API_KEY:-sandbox-key}
       NETWORK_INTERNATIONAL__WEBHOOK_SECRET: ${NI_WEBHOOK_SECRET:-sandbox-webhook-secret}
       NETWORK_INTERNATIONAL__OUTLET_REF: ${NI_OUTLET_REF:-sandbox-outlet-ref}
       NETWORK_INTERNATIONAL__WEBHOOK_HEADER_KEY: ${NI_WEBHOOK_HEADER_KEY:-}
       NETWORK_INTERNATIONAL__WEBHOOK_HEADER_VALUE: ${NI_WEBHOOK_HEADER_VALUE:-}
+      NETWORK_INTERNATIONAL__WEBHOOK_ENCRYPTION_KEY: ${NI_WEBHOOK_ENCRYPTION_KEY:-}
       RUST_LOG: info
     depends_on:
       postgres:
