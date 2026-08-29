@@ -77,6 +77,38 @@ pub struct Config {
     #[serde(default = "default_field_ops_url")]
     pub field_ops_url: String,
 
+    /// `services/payments`, for `PaymentMethod::Online`'s authorize-then-
+    /// capture-or-void checkout. Unlike `field_ops_url`, a deployment with
+    /// this misconfigured still boots and still takes COD orders — only
+    /// `Online` checkout fails, and it fails loudly per-request rather than
+    /// at startup.
+    #[serde(default = "default_payments_url")]
+    pub payments_url: String,
+
+    /// The currency every `Online` authorization is opened in. One value for
+    /// the whole service: OmniDeliv has no multi-currency concept anywhere
+    /// else in this crate (baskets, prices and fees are all bare cents with
+    /// no currency tag), so this is the one place that needs one.
+    #[serde(default = "default_payment_currency")]
+    pub payment_currency: String,
+
+    /// Base URL the customer's browser/WebView is redirected to after
+    /// completing (or abandoning) the hosted checkout page. The default is a
+    /// placeholder — every real deployment must override this with its own
+    /// public-facing URL.
+    #[serde(default = "default_payment_return_url_base")]
+    pub payment_return_url_base: String,
+
+    /// How long an `Online` order may sit `Authorized` with no courier before
+    /// its hold is voided and the order cancelled. NI's own docs describe an
+    /// authorization void as same-day only, so this must stay well inside a
+    /// day. 30 minutes mirrors `services/payments`' own hosted-checkout
+    /// session TTL (`payment_intent_service::INTENT_TTL`) — long enough that
+    /// a courier search genuinely has time to work, short enough to leave
+    /// many hours of margin before NI's own same-day cutoff.
+    #[serde(default = "default_online_no_courier_timeout_mins")]
+    pub online_no_courier_timeout_mins: i64,
+
     /// The customer's whole wait on Screen B before the mesh gives up, shared
     /// across specialists. Tunable without a rebuild because the right value
     /// depends on the model and the load, and the first live run showed the
@@ -96,6 +128,12 @@ pub struct Config {
 }
 
 fn default_field_ops_url() -> String { "http://field-ops:8090".to_string() }
+fn default_payments_url() -> String { "http://payments:8012".to_string() }
+fn default_payment_currency() -> String { "AED".to_string() }
+fn default_payment_return_url_base() -> String {
+    "https://app.omnideliv.example/payment/return".to_string()
+}
+fn default_online_no_courier_timeout_mins() -> i64 { 30 }
 
 fn default_lat() -> f64 { 14.5995 }
 fn default_lng() -> f64 { 120.9842 }

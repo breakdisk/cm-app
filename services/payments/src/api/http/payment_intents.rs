@@ -5,7 +5,7 @@
 //! specifically because this route is unreachable from any tenant-facing
 //! credential, per the design spec's D3.
 
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{extract::{Path, State}, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -14,6 +14,7 @@ use logisticos_errors::AppError;
 
 use crate::api::http::AppState;
 use crate::application::services::payment_intent_service::CreateIntentCommand;
+use crate::domain::repositories::payment_gateway::PaymentAction;
 
 #[derive(Deserialize)]
 pub struct CreateIntentRequest {
@@ -24,6 +25,13 @@ pub struct CreateIntentRequest {
     pub amount_cents: i64,
     pub currency: String,
     pub return_url: String,
+    /// `"sale"` (immediate capture) or `"authorize"` (ring-fence only,
+    /// captured/voided later via the routes below). Absent defaults to
+    /// `"sale"` — every caller that existed before this feature (and every
+    /// caller that doesn't explicitly ask for authorize-then-capture) keeps
+    /// getting the original behavior unchanged.
+    #[serde(default)]
+    pub action: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -43,6 +51,14 @@ pub async fn create_intent(
                 .into(),
         )
     })?;
+    let action = match req.action.as_deref() {
+        None => PaymentAction::Sale,
+        Some(s) => PaymentAction::parse(s).ok_or_else(|| {
+            AppError::Validation(format!(
+                "unknown payment action {s:?} — expected \"sale\" or \"authorize\""
+            ))
+        })?,
+    };
     let created = payment_intent_service.create_intent(CreateIntentCommand {
         tenant_id: req.tenant_id,
         purpose: req.purpose,
@@ -51,12 +67,49 @@ pub async fn create_intent(
         amount_cents: req.amount_cents,
         currency: req.currency,
         return_url: req.return_url,
+        action,
     }).await?;
 
     Ok((
         StatusCode::CREATED,
         Json(CreateIntentResponse { intent_id: created.intent_id, checkout_url: created.checkout_url }),
     ))
+}
+
+/// `POST /v1/internal/payments/intents/:id/capture` — captures funds
+/// previously ring-fenced by an `action: "authorize"` intent. Mesh-internal
+/// only, same as `create_intent` above.
+pub async fn capture_intent(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, AppError> {
+    let payment_intent_service = state.payment_intent_service.as_ref().ok_or_else(|| {
+        AppError::ServiceUnavailable(
+            "Online card payment is not configured for this deployment (Network \
+             International credentials are unset) — no payment intent can be captured"
+                .into(),
+        )
+    })?;
+    payment_intent_service.capture_intent(id).await?;
+    Ok(StatusCode::OK)
+}
+
+/// `POST /v1/internal/payments/intents/:id/void` — releases an
+/// authorization hold that was never captured (the no-courier path).
+/// Mesh-internal only, same as `create_intent` above.
+pub async fn void_intent(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, AppError> {
+    let payment_intent_service = state.payment_intent_service.as_ref().ok_or_else(|| {
+        AppError::ServiceUnavailable(
+            "Online card payment is not configured for this deployment (Network \
+             International credentials are unset) — no payment intent can be voided"
+                .into(),
+        )
+    })?;
+    payment_intent_service.void_intent(id).await?;
+    Ok(StatusCode::OK)
 }
 
 #[cfg(test)]
@@ -212,5 +265,35 @@ mod tests {
             StatusCode::SERVICE_UNAVAILABLE,
             "an unconfigured NI gateway must surface as 503, not 500 and not a panic"
         );
+    }
+
+    #[tokio::test]
+    async fn capture_intent_returns_503_when_network_international_is_unconfigured() {
+        let state = test_state_with_payment_disabled();
+        let app = router(state);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/v1/internal/payments/intents/{}/capture", uuid::Uuid::new_v4()))
+            .body(Body::empty())
+            .expect("build request");
+
+        let resp = app.oneshot(req).await.expect("oneshot request");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn void_intent_returns_503_when_network_international_is_unconfigured() {
+        let state = test_state_with_payment_disabled();
+        let app = router(state);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/v1/internal/payments/intents/{}/void", uuid::Uuid::new_v4()))
+            .body(Body::empty())
+            .expect("build request");
+
+        let resp = app.oneshot(req).await.expect("oneshot request");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

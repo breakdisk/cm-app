@@ -8,8 +8,9 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
+use crate::application::services::order_payments::OrderPayments;
 use crate::domain::entities::{
-    Basket, ConsolidationPlan, Order, PendingStop, TemperatureClass, VendorLeg,
+    Basket, ConsolidationPlan, Order, PaymentMethod, PendingStop, TemperatureClass, VendorLeg,
 };
 use crate::domain::repositories::{BasketRepository, VendorRepository};
 
@@ -136,10 +137,31 @@ pub trait CourierDispatch: Send + Sync {
     ) -> anyhow::Result<Vec<Uuid>>;
 }
 
+/// What `place` hands back: the order it built, plus — for `PaymentMethod::Online`
+/// only — the hosted-checkout URL the customer must complete before a courier
+/// is ever offered the job. `None` for `Cod`, which never opens a gateway
+/// session.
+pub struct PlaceOutcome {
+    pub order: Order,
+    pub checkout_url: Option<String>,
+}
+
 pub struct CheckoutService {
     baskets:  Arc<dyn BasketRepository>,
     vendors:  Arc<dyn VendorRepository>,
     dispatch: Arc<dyn CourierDispatch>,
+    payments: Arc<dyn OrderPayments>,
+    /// The currency every `authorize` call is opened in. One value for the
+    /// whole service rather than per-request: OmniDeliv has no multi-currency
+    /// concept anywhere else in this crate (baskets, prices and fees are all
+    /// bare cents with no currency tag), so introducing one only for the
+    /// payments boundary would be a precision this feature does not need yet.
+    currency: String,
+    /// Base URL the customer's browser/WebView is redirected to after
+    /// completing (or abandoning) the hosted checkout page — the gateway's
+    /// `return_url`. `order.id` is appended as a query parameter so the
+    /// landing page can look the order back up.
+    payment_return_url_base: String,
 }
 
 impl CheckoutService {
@@ -147,8 +169,11 @@ impl CheckoutService {
         baskets: Arc<dyn BasketRepository>,
         vendors: Arc<dyn VendorRepository>,
         dispatch: Arc<dyn CourierDispatch>,
+        payments: Arc<dyn OrderPayments>,
+        currency: String,
+        payment_return_url_base: String,
     ) -> Self {
-        Self { baskets, vendors, dispatch }
+        Self { baskets, vendors, dispatch, payments, currency, payment_return_url_base }
     }
 
     /// Place an order from a reviewed basket.
@@ -164,6 +189,14 @@ impl CheckoutService {
     ///
     /// The phone claim is preferred; the login is only decoded when the token
     /// predates identity carrying the number.
+    ///
+    /// `payment_method` decides everything after the order itself is built:
+    /// `Cod` offers the job to couriers immediately, exactly as before this
+    /// parameter existed. `Online` opens an authorization hold instead and
+    /// defers the courier offer to the `payment.intent.authorized` consumer
+    /// — see the module doc comment on `infrastructure::messaging::payment_consumer`
+    /// for why that has to be a separate, asynchronous step rather than
+    /// something this method can simply wait for.
     #[allow(clippy::too_many_arguments)]
     pub async fn place(
         &self,
@@ -175,7 +208,8 @@ impl CheckoutService {
         customer_login: &str,
         customer_phone_claim: Option<&str>,
         delivery_note: Option<&str>,
-    ) -> Result<Order, CheckoutError> {
+        payment_method: PaymentMethod,
+    ) -> Result<PlaceOutcome, CheckoutError> {
         let basket: Basket = self
             .baskets
             .find_by_id(tenant_id, basket_id)
@@ -276,38 +310,83 @@ impl CheckoutService {
             plan.stops.iter().map(|s| s.prep_time_minutes as i64).max().unwrap_or(0);
         let card = build_offer_card(&card_stops, plan.total_distance_m as i64, deadline_hint_mins);
 
-        let offered = self
-            .dispatch
-            .offer(tenant_id, order.id, delivery_lat, delivery_lng, FIRST_OFFER_RADIUS_KM,
-                   order.courier_trip_cents, order.tip_cents,
-                   // COD: the customer pays the whole thing at the door.
-                   order.grand_total_cents,
-                   Some(card))
-            .await
-            .map_err(CheckoutError::Other)?;
+        match payment_method {
+            PaymentMethod::Cod => {
+                // Byte-identical to every checkout before this feature existed:
+                // `order.cod_amount_cents()` is `grand_total_cents - 0` here,
+                // because `with_payment` is never called on this branch and
+                // `prepaid_amount_cents` stays at `Order::place`'s default of 0.
+                let offered = self
+                    .dispatch
+                    .offer(tenant_id, order.id, delivery_lat, delivery_lng, FIRST_OFFER_RADIUS_KM,
+                           order.courier_trip_cents, order.tip_cents,
+                           order.cod_amount_cents(),
+                           Some(card))
+                    .await
+                    .map_err(CheckoutError::Other)?;
 
-        if offered.is_empty() {
-            // No charge, no order. Better to tell the customer now than to take
-            // payment for a delivery nobody can make.
-            return Err(CheckoutError::NoCourier);
+                if offered.is_empty() {
+                    // No charge, no order. Better to tell the customer now than
+                    // to take payment for a delivery nobody can make.
+                    return Err(CheckoutError::NoCourier);
+                }
+
+                order.courier_task_id = offered.first().copied();
+
+                // Offered, not yet claimed. Without this the order sits in
+                // `Placed` until a courier accepts, and `AwaitingCourier` is a
+                // state nothing ever enters — which would also hide the
+                // distinction the recovery sweep needs between "we never
+                // managed to offer it" and "we offered it and nobody took it".
+                //
+                // Infallible from `Placed`, and the sweep still catches an
+                // order left in `Placed` anyway, so a failure here is logged
+                // rather than failing a checkout whose courier is already
+                // offered.
+                if let Err(e) = order.courier_offered() {
+                    tracing::error!(err = %e, order_id = %order.id,
+                        "could not mark the order awaiting a courier");
+                }
+
+                Ok(PlaceOutcome { order, checkout_url: None })
+            }
+
+            PaymentMethod::Online => {
+                // The whole order, prepaid — see the module-level design note
+                // on partial prepay for why this call site is the only place
+                // that currently ever passes anything other than 0 or the full
+                // total to `with_payment`.
+                let prepaid_amount_cents = order.grand_total_cents;
+                order = order
+                    .with_payment(PaymentMethod::Online, prepaid_amount_cents)
+                    // Held for the `payment.intent.authorized` consumer, which
+                    // offers the job with this exact card rather than trying to
+                    // reconstruct one later from less information — see the
+                    // field doc comment on `Order::pending_offer_card`.
+                    .with_pending_offer_card(Some(card));
+
+                let return_url = format!(
+                    "{}?order_id={}",
+                    self.payment_return_url_base.trim_end_matches('/'),
+                    order.id,
+                );
+
+                // Ring-fence the funds; do NOT offer the job yet. The courier
+                // offer is deferred to whenever `payment.intent.authorized`
+                // actually lands — which may be seconds or minutes from now,
+                // depending on how long the customer takes on the hosted
+                // checkout page this call returns a URL for.
+                let authorized = self
+                    .payments
+                    .authorize(tenant_id, order.id, order.grand_total_cents, &self.currency, &return_url)
+                    .await
+                    .map_err(CheckoutError::Other)?;
+
+                order.payment_intent_id = Some(authorized.intent_id);
+
+                Ok(PlaceOutcome { order, checkout_url: Some(authorized.checkout_url) })
+            }
         }
-
-        order.courier_task_id = offered.first().copied();
-
-        // Offered, not yet claimed. Without this the order sits in `Placed`
-        // until a courier accepts, and `AwaitingCourier` is a state nothing
-        // ever enters — which would also hide the distinction the recovery
-        // sweep needs between "we never managed to offer it" and "we offered
-        // it and nobody took it".
-        //
-        // Infallible from `Placed`, and the sweep still catches an order left
-        // in `Placed` anyway, so a failure here is logged rather than failing a
-        // checkout whose courier is already offered.
-        if let Err(e) = order.courier_offered() {
-            tracing::error!(err = %e, order_id = %order.id, "could not mark the order awaiting a courier");
-        }
-
-        Ok(order)
     }
 }
 
@@ -403,5 +482,182 @@ mod offer_card {
         let card = build_offer_card(&[stop("Kuya's", "restaurant", "hot")], 900, 12);
         assert_eq!(card["pickups"], 1);
         assert_eq!(card["stops"], 2);
+    }
+}
+
+#[cfg(test)]
+mod place_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    use crate::application::services::order_payments::AuthorizedIntent;
+    use crate::domain::entities::{Basket, BasketLine, OrderStatus, PaymentStatus, Vendor, Vertical};
+
+    fn tenant() -> Uuid { Uuid::from_u128(1) }
+
+    fn a_vendor(tenant_id: Uuid) -> Vendor {
+        let mut v = Vendor::new(
+            tenant_id, Vertical::Restaurant, "Kuya's Lutong Bahay".into(),
+            "123 Mabini St".into(), 14.5995, 120.9842,
+        );
+        v.activate();
+        v
+    }
+
+    fn a_basket(tenant_id: Uuid, vendor: &Vendor) -> Basket {
+        let mut b = Basket::new(tenant_id, Uuid::new_v4());
+        let si = b.browse_sub_intent(Vertical::Restaurant);
+        b.add_line(BasketLine::propose(b.id, si, tenant_id, vendor.id, Uuid::new_v4(), 1, 34_000, "browse"));
+        b
+    }
+
+    struct FakeBaskets(Basket);
+    #[async_trait::async_trait]
+    impl BasketRepository for FakeBaskets {
+        async fn find_by_id(&self, _t: Uuid, _id: Uuid) -> anyhow::Result<Option<Basket>> {
+            Ok(Some(self.0.clone()))
+        }
+        async fn set_conflicts(
+            &self, _t: Uuid, _id: Uuid, _c: &[crate::domain::entities::BasketConflict],
+        ) -> anyhow::Result<()> { Ok(()) }
+        async fn save(&self, _b: &Basket) -> anyhow::Result<()> { Ok(()) }
+    }
+
+    struct FakeVendors(Vendor);
+    #[async_trait::async_trait]
+    impl VendorRepository for FakeVendors {
+        async fn find_by_id(&self, _t: Uuid, _id: Uuid) -> anyhow::Result<Option<Vendor>> {
+            Ok(Some(self.0.clone()))
+        }
+        async fn save(&self, _v: &Vendor) -> anyhow::Result<()> { Ok(()) }
+        async fn find_by_user(&self, _t: Uuid, _u: Uuid) -> anyhow::Result<Option<Vendor>> { Ok(None) }
+        async fn list_for_tenant(&self, _t: Uuid) -> anyhow::Result<Vec<Vendor>> { Ok(vec![]) }
+        async fn find_near(
+            &self, _t: Uuid, _v: Vertical, _lat: f64, _lng: f64, _r: f64, _l: i64,
+        ) -> anyhow::Result<Vec<Vendor>> { Ok(vec![]) }
+        async fn find_by_ids(&self, _t: Uuid, _ids: &[Uuid]) -> anyhow::Result<Vec<Vendor>> {
+            Ok(vec![self.0.clone()])
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeDispatch {
+        /// The `cod_amount_cents` passed on every `offer` call, in order.
+        cod_offered: Mutex<Vec<i64>>,
+        respond_empty: bool,
+    }
+    #[async_trait::async_trait]
+    impl CourierDispatch for FakeDispatch {
+        #[allow(clippy::too_many_arguments)]
+        async fn offer(
+            &self, _t: Uuid, _o: Uuid, _lat: f64, _lng: f64, _r: f64,
+            _trip: i64, _tip: i64, cod_amount_cents: i64, _card: Option<serde_json::Value>,
+        ) -> anyhow::Result<Vec<Uuid>> {
+            self.cod_offered.lock().unwrap().push(cod_amount_cents);
+            if self.respond_empty { Ok(vec![]) } else { Ok(vec![Uuid::new_v4()]) }
+        }
+    }
+
+    #[derive(Default)]
+    struct FakePayments {
+        authorize_calls: Mutex<usize>,
+    }
+    #[async_trait::async_trait]
+    impl OrderPayments for FakePayments {
+        async fn authorize(
+            &self, _t: Uuid, order_id: Uuid, amount_cents: i64, _currency: &str, _return_url: &str,
+        ) -> anyhow::Result<AuthorizedIntent> {
+            *self.authorize_calls.lock().unwrap() += 1;
+            Ok(AuthorizedIntent {
+                intent_id: Uuid::new_v4(),
+                checkout_url: format!("https://pay.test/{order_id}?amount={amount_cents}"),
+            })
+        }
+        async fn capture(&self, _intent_id: Uuid) -> anyhow::Result<()> { Ok(()) }
+        async fn void(&self, _intent_id: Uuid) -> anyhow::Result<()> { Ok(()) }
+    }
+
+    fn service(
+        dispatch: Arc<FakeDispatch>, payments: Arc<FakePayments>, vendor: Vendor, basket: Basket,
+    ) -> CheckoutService {
+        CheckoutService::new(
+            Arc::new(FakeBaskets(basket)),
+            Arc::new(FakeVendors(vendor)),
+            dispatch,
+            payments,
+            "AED".to_string(),
+            "https://app.omnideliv.test/payment/return".to_string(),
+        )
+    }
+
+    /// COD checkout must remain byte-identical to today: the gateway is never
+    /// touched, the courier is offered the full grand total immediately, and
+    /// the order lands in the same state it always has.
+    #[tokio::test]
+    async fn cod_checkout_never_touches_the_gateway_and_offers_the_full_total_immediately() {
+        let tenant_id = tenant();
+        let v = a_vendor(tenant_id);
+        let b = a_basket(tenant_id, &v);
+        let dispatch = Arc::new(FakeDispatch::default());
+        let payments = Arc::new(FakePayments::default());
+        let svc = service(dispatch.clone(), payments.clone(), v, b.clone());
+
+        let outcome = svc
+            .place(tenant_id, b.id, 4_000, 14.5995, 120.9842, "customer@demo.com", None, None,
+                   PaymentMethod::Cod)
+            .await
+            .expect("cod checkout succeeds");
+
+        assert_eq!(*payments.authorize_calls.lock().unwrap(), 0, "COD must never call the gateway");
+        assert_eq!(outcome.checkout_url, None);
+        assert_eq!(outcome.order.payment_method, PaymentMethod::Cod);
+        assert_eq!(
+            outcome.order.cod_amount_cents(), outcome.order.grand_total_cents,
+            "the courier collects the entire grand total, exactly as before this feature",
+        );
+        assert_eq!(
+            dispatch.cod_offered.lock().unwrap().as_slice(), &[outcome.order.grand_total_cents],
+            "the offer must declare the full grand total, unchanged",
+        );
+        assert_eq!(
+            outcome.order.status, OrderStatus::AwaitingCourier,
+            "COD offers the job to couriers immediately, reaching the same state as today",
+        );
+    }
+
+    /// Online checkout must open an authorization hold and hand back a
+    /// checkout URL — and, critically, must NOT offer the job to any courier
+    /// yet. `dispatch.offer` returning who a job was *offered to* is not the
+    /// same as a courier accepting it; here nobody has even been asked.
+    #[tokio::test]
+    async fn online_checkout_returns_a_checkout_url_and_does_not_offer_a_courier() {
+        let tenant_id = tenant();
+        let v = a_vendor(tenant_id);
+        let b = a_basket(tenant_id, &v);
+        let dispatch = Arc::new(FakeDispatch::default());
+        let payments = Arc::new(FakePayments::default());
+        let svc = service(dispatch.clone(), payments.clone(), v, b.clone());
+
+        let outcome = svc
+            .place(tenant_id, b.id, 4_000, 14.5995, 120.9842, "customer@demo.com", None, None,
+                   PaymentMethod::Online)
+            .await
+            .expect("online checkout succeeds");
+
+        assert!(outcome.checkout_url.is_some(), "the caller needs somewhere to send the customer");
+        assert_eq!(*payments.authorize_calls.lock().unwrap(), 1);
+        assert!(
+            dispatch.cod_offered.lock().unwrap().is_empty(),
+            "no courier may be offered the job before the authorization actually lands",
+        );
+        assert_eq!(outcome.order.payment_method, PaymentMethod::Online);
+        assert_eq!(outcome.order.payment_status, PaymentStatus::Pending);
+        assert_eq!(outcome.order.status, OrderStatus::Placed, "not yet AwaitingCourier — nothing was offered");
+        assert_eq!(outcome.order.prepaid_amount_cents, outcome.order.grand_total_cents);
+        assert!(outcome.order.payment_intent_id.is_some());
+        assert!(
+            outcome.order.pending_offer_card.is_some(),
+            "the card must be held for the authorized-payment consumer to replay later",
+        );
     }
 }

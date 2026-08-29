@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::http::AppState;
-use crate::application::services::CheckoutError;
+use crate::application::services::{CheckoutError, PlaceOutcome};
+use crate::domain::entities::PaymentMethod;
 
 #[derive(Debug, Deserialize)]
 pub struct CheckoutRequest {
@@ -19,6 +20,12 @@ pub struct CheckoutRequest {
     /// controls that a courier is asked to act on — bounded server-side.
     #[serde(default)]
     pub delivery_note: Option<String>,
+    /// `"cod"` or `"online"`. Defaults to `Cod` — see `PaymentMethod::default`
+    /// — so a client that predates this field (every OmniDeliv app build
+    /// before this feature) keeps getting exactly today's checkout with no
+    /// changes on its end.
+    #[serde(default)]
+    pub payment_method: PaymentMethod,
 }
 
 #[derive(Debug, Serialize)]
@@ -26,6 +33,11 @@ pub struct CheckoutResponse {
     pub order_id:          Uuid,
     pub grand_total_cents: i64,
     pub stops:             usize,
+    /// Present only for `payment_method: "online"` — the hosted-checkout page
+    /// the client must send the customer to before a courier is ever offered
+    /// the job. `null` for `"cod"`, which needs no such page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkout_url:      Option<String>,
 }
 
 pub fn routes() -> Router<Arc<AppState>> {
@@ -44,10 +56,11 @@ async fn checkout(
     // Tenant from the validated token, never from app state or the body. This
     // is the money path: a tenant the caller could influence would let one
     // tenant's checkout settle against another tenant's basket and vendors.
-    let order = st
+    let outcome = st
         .checkout
         .place(claims.tenant_id, req.basket_id, req.tip_cents, req.delivery_lat, req.delivery_lng,
-               &claims.email, claims.phone.as_deref(), req.delivery_note.as_deref())
+               &claims.email, claims.phone.as_deref(), req.delivery_note.as_deref(),
+               req.payment_method)
         .await
         .map_err(|e| match e {
             // A basket awaiting review is the client's cue to show Screen C,
@@ -65,14 +78,18 @@ async fn checkout(
             }
         })?;
 
-    // The courier is already offered the job at this point, so a persist
-    // failure leaves a dispatched order we have no record of. Logged loudly
-    // with the order id so it can be reconciled by hand; the alternative —
-    // dispatching only after a successful save — trades this for orders that
-    // are recorded but never delivered.
+    let PlaceOutcome { order, checkout_url } = outcome;
+
+    // For COD, the courier is already offered the job at this point, so a
+    // persist failure leaves a dispatched order we have no record of. For
+    // online, `payments.authorize` has already opened a real hold, so the
+    // same reasoning applies to the money instead of the courier. Either way
+    // this is logged loudly with the order id so it can be reconciled by
+    // hand; the alternative — acting only after a successful save — trades
+    // this for orders that are recorded but never delivered.
     st.orders.save(&order).await.map_err(|e| {
         tracing::error!(err = %e, order_id = %order.id, courier_task_id = ?order.courier_task_id,
-                        "order persist failed AFTER courier dispatch — needs manual reconciliation");
+                        "order persist failed AFTER checkout side effects — needs manual reconciliation");
         (StatusCode::INTERNAL_SERVER_ERROR, "checkout failed".into())
     })?;
 
@@ -87,5 +104,6 @@ async fn checkout(
         order_id:          order.id,
         grand_total_cents: order.grand_total_cents,
         stops:             order.legs.len(),
+        checkout_url,
     }))
 }

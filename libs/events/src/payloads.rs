@@ -389,6 +389,21 @@ pub struct PaymentIntentCaptured {
     pub currency: String,
 }
 
+/// Published by `services/payments` when a `PaymentAction::Authorize`
+/// intent's `AUTHORISED` webhook lands — funds are ring-fenced on the
+/// customer's card but NOT yet taken. Distinct from `PaymentIntentCaptured`
+/// on purpose: a consumer that reacted to this the same way it reacts to a
+/// capture would be treating a hold as if the money had already moved.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentIntentAuthorized {
+    pub intent_id: Uuid,
+    pub purpose: String,
+    pub reference_type: String,
+    pub reference_id: Uuid,
+    pub amount_cents: i64,
+    pub currency: String,
+}
+
 /// Published when an intent is marked `failed` (declined at the gateway) —
 /// distinct from `expired`, which the consumer treats identically but which
 /// is driven by the sweep, not a webhook.
