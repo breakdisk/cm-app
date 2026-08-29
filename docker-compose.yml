@@ -608,6 +608,8 @@ services:
       APP__HOST: "0.0.0.0"
       APP__PORT: "8007"
       APP__ENV: development
+      # CORS: override in Dokploy env vars for production, e.g.:
+      # APP__CORS_ORIGINS=https://merchant.cargomarket.net,https://admin.cargomarket.net
       DATABASE__URL: postgres://logisticos:password@postgres:5432/svc_delivery_experience
       DATABASE__MAX_CONNECTIONS: "5"
       KAFKA__BROKERS: kafka:29092

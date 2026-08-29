@@ -77,13 +77,24 @@ pub async fn run() -> anyhow::Result<()> {
     use tower_http::cors::CorsLayer;
     use axum::http::{HeaderName, HeaderValue, Method};
 
+    let default_origins = [
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:3002",
+        "http://localhost:3003",
+        "http://localhost:8083",
+    ];
+    let allowed_origins: Vec<HeaderValue> = cfg.app.cors_origins
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.split(',').map(str::trim).filter(|s| !s.is_empty()).collect::<Vec<_>>())
+        .unwrap_or_else(|| default_origins.to_vec())
+        .into_iter()
+        .filter_map(|o| o.parse::<HeaderValue>().ok())
+        .collect();
+
     let cors = CorsLayer::new()
-        .allow_origin([
-            "http://localhost:3001".parse::<HeaderValue>().unwrap(),
-            "http://localhost:3002".parse::<HeaderValue>().unwrap(),
-            "http://localhost:3003".parse::<HeaderValue>().unwrap(),
-            "http://localhost:8083".parse::<HeaderValue>().unwrap(),
-        ])
+        .allow_origin(allowed_origins)
         .allow_methods([
             Method::GET, Method::POST, Method::PUT,
             Method::PATCH, Method::DELETE, Method::OPTIONS,
@@ -91,6 +102,7 @@ pub async fn run() -> anyhow::Result<()> {
         .allow_headers([
             HeaderName::from_static("content-type"),
             HeaderName::from_static("authorization"),
+            HeaderName::from_static("x-logisticos-client"),
         ]);
 
     // `get_by_shipment_id` and `list_shipments` extract `AuthClaims`, which
