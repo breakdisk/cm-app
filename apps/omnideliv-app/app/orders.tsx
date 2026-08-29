@@ -13,7 +13,7 @@ import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } 
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 
-import { listMyOrders, type OrderListItem } from "@/api/orders";
+import { isAwaitingPayment, listMyOrders, type OrderListItem } from "@/api/orders";
 import { theme } from "@/theme";
 
 /** What each status means to someone waiting, not to the state machine. */
@@ -88,7 +88,13 @@ export default function Orders() {
           )}
 
           {orders?.map((o) => {
-            const label = LABEL[o.status] ?? { text: o.status, tone: theme.muted };
+            // `status` alone reads as "Placed" for an order whose payment was
+            // never finished — indistinguishable from one that is genuinely
+            // waiting on a courier, when in fact nobody has been asked to
+            // collect it and nobody will be until the customer pays.
+            const label = isAwaitingPayment(o)
+              ? { text: "Payment due", tone: theme.amber }
+              : (LABEL[o.status] ?? { text: o.status, tone: theme.muted });
             return (
               <Pressable
                 key={o.order_id}

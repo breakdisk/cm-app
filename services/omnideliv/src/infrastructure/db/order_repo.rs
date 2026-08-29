@@ -67,9 +67,10 @@ impl OrderRepository for PgOrderRepository {
                 courier_trip_cents, courier_task_id, placed_at, delivered_at,
                 delivery_lat, delivery_lng, customer_name, customer_phone, courier_user_id,
                 delivery_note, payment_method, payment_status, payment_intent_id,
-                prepaid_amount_cents, payment_authorized_at, pending_offer_card
+                prepaid_amount_cents, payment_authorized_at, pending_offer_card,
+                payment_checkout_url
             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-                      $21,$22,$23,$24,$25,$26)
+                      $21,$22,$23,$24,$25,$26,$27)
             ON CONFLICT (id) DO UPDATE SET
                 status          = EXCLUDED.status,
                 courier_task_id = EXCLUDED.courier_task_id,
@@ -109,6 +110,7 @@ impl OrderRepository for PgOrderRepository {
         .bind(o.payment_method.as_str()).bind(o.payment_status.as_str())
         .bind(o.payment_intent_id).bind(o.prepaid_amount_cents).bind(o.payment_authorized_at)
         .bind(&o.pending_offer_card)
+        .bind(&o.payment_checkout_url)
         .execute(&mut *tx).await?;
 
         for l in &o.legs {
@@ -181,6 +183,7 @@ impl OrderRepository for PgOrderRepository {
                 prepaid_amount_cents:  r.get("prepaid_amount_cents"),
                 payment_authorized_at: r.get("payment_authorized_at"),
                 pending_offer_card:    r.get("pending_offer_card"),
+                payment_checkout_url:  r.get("payment_checkout_url"),
             });
         }
         Ok(out)
@@ -206,6 +209,9 @@ impl OrderRepository for PgOrderRepository {
                    o.delivery_fee_cents AS delivery_fee_cents,
                    o.tip_cents          AS tip_cents,
                    o.grand_total_cents AS grand_total_cents,
+                   o.payment_method    AS payment_method,
+                   o.payment_status    AS payment_status,
+                   o.prepaid_amount_cents AS prepaid_amount_cents,
                    o.placed_at         AS placed_at,
                    o.delivered_at      AS delivered_at,
                    COUNT(l.id)         AS stops_total,
@@ -234,6 +240,9 @@ impl OrderRepository for PgOrderRepository {
                 delivery_fee_cents: r.get("delivery_fee_cents"),
                 tip_cents:          r.get("tip_cents"),
                 grand_total_cents: r.get("grand_total_cents"),
+                payment_method:    r.get("payment_method"),
+                payment_status:    r.get("payment_status"),
+                prepaid_amount_cents: r.get("prepaid_amount_cents"),
                 stops_total:       r.get("stops_total"),
                 vendor_names:      r.get("vendor_names"),
                 placed_at:         r.get("placed_at"),
@@ -306,6 +315,7 @@ impl OrderRepository for PgOrderRepository {
             prepaid_amount_cents:  r.get("prepaid_amount_cents"),
             payment_authorized_at: r.get("payment_authorized_at"),
             pending_offer_card:    r.get("pending_offer_card"),
+            payment_checkout_url:  r.get("payment_checkout_url"),
         }))
     }
 }

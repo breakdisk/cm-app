@@ -383,6 +383,13 @@ impl CheckoutService {
                     .map_err(CheckoutError::Other)?;
 
                 order.payment_intent_id = Some(authorized.intent_id);
+                // Persisted, not just returned. Returned-only, this URL existed
+                // for exactly one HTTP response: a customer who left the hosted
+                // page before paying — a call, a backgrounded app, a Back tap —
+                // had an order that could never be paid for and no route back to
+                // it. See `Order::resumable_checkout_url` for when it may be
+                // handed out again.
+                order.payment_checkout_url = Some(authorized.checkout_url.clone());
 
                 Ok(PlaceOutcome { order, checkout_url: Some(authorized.checkout_url) })
             }

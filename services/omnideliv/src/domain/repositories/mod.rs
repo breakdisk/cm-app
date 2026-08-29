@@ -188,6 +188,16 @@ pub struct OrderSummary {
     pub delivery_fee_cents: i64,
     pub tip_cents:          i64,
     pub grand_total_cents: i64,
+    /// `"cod"` / `"online"` and `pending` | `authorized` | `captured` |
+    /// `voided` | `failed`. Strings rather than the enums because this is a
+    /// projection for a list view, mapped straight onto the wire — the
+    /// enums are what `Order` itself carries.
+    pub payment_method:    String,
+    pub payment_status:    String,
+    /// Taken online. `0` for COD. The list needs it for the same reason the
+    /// tracking screen does: without it a prepaid order in flight is
+    /// indistinguishable from one whose full total is still owed in cash.
+    pub prepaid_amount_cents: i64,
     pub stops_total:       i64,
     /// Comma-joined vendor names, for "Kuya's Silog House, Puregold Ermita".
     /// Empty when an order somehow has no legs — rendered as nothing rather

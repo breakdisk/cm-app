@@ -110,6 +110,16 @@ impl PaymentStatus {
     }
 }
 
+/// What the courier still collects at the door.
+///
+/// A free function as well as a method because the order-list projection has
+/// no `Order` to ask — and two subtractions written in two places is exactly
+/// how a partly prepaid order ends up rendered as fully paid on one screen and
+/// fully owed on another.
+pub fn cod_amount_cents(grand_total_cents: i64, prepaid_amount_cents: i64) -> i64 {
+    grand_total_cents - prepaid_amount_cents
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum PaymentTransitionError {
     #[error("cannot go from payment status {from:?} to {to:?}")]
@@ -304,6 +314,16 @@ pub struct Order {
     /// immediately — rather than trying to reconstruct one later from less
     /// information. `None` for `Cod` orders, which never defer the offer.
     pub pending_offer_card:    Option<serde_json::Value>,
+    /// The NI hosted-checkout page this order's authorization was opened
+    /// against. `None` for `Cod`.
+    ///
+    /// Kept because the URL used to exist only in the checkout *response*:
+    /// anything that took the customer off the page before they paid — a phone
+    /// call, backgrounding the app, tapping Back — left an order that could
+    /// never be paid for and no way back to it. Read through
+    /// `resumable_checkout_url`, never directly, so the one rule that makes it
+    /// safe to disclose lives in one place.
+    pub payment_checkout_url:  Option<String>,
 }
 
 /// Namespaces identity mints from a phone number for OTP-only sign-in.
@@ -545,6 +565,7 @@ impl Order {
             prepaid_amount_cents: 0,
             payment_authorized_at: None,
             pending_offer_card: None,
+            payment_checkout_url: None,
         }
     }
 
@@ -599,8 +620,30 @@ impl Order {
     /// Every dispatch call site (checkout, the authorized-payment consumer,
     /// and the stuck-order recovery sweep) reads this rather than
     /// `grand_total_cents` directly.
+    /// The hosted-checkout page to send the customer back to, or `None`.
+    ///
+    /// Gated on `Pending` rather than on the URL merely being present. Once a
+    /// hold is `Authorized` the page is spent, and re-opening it invites a
+    /// second authorization against the same order — one the capture path
+    /// would never capture and the void path would never release, because both
+    /// only ever know about `payment_intent_id`. A `Captured`, `Voided` or
+    /// `Failed` order must obviously never offer a way to pay again either.
+    pub fn resumable_checkout_url(&self) -> Option<&str> {
+        if self.payment_method != PaymentMethod::Online {
+            return None;
+        }
+        if self.payment_status != PaymentStatus::Pending {
+            return None;
+        }
+        // A cancelled order is not payable, whatever its payment status says.
+        if matches!(self.status, OrderStatus::Cancelled | OrderStatus::Delivered) {
+            return None;
+        }
+        self.payment_checkout_url.as_deref()
+    }
+
     pub fn cod_amount_cents(&self) -> i64 {
-        self.grand_total_cents - self.prepaid_amount_cents
+        cod_amount_cents(self.grand_total_cents, self.prepaid_amount_cents)
     }
 
     fn advance_payment(
@@ -1083,6 +1126,63 @@ mod prepaid_checkout {
 
     fn online_order(prepaid_amount_cents: i64) -> Order {
         cod_order().with_payment(PaymentMethod::Online, prepaid_amount_cents)
+    }
+
+    fn payable_online_order() -> Order {
+        let mut o = online_order(0);
+        o.payment_checkout_url = Some("https://ni.example/pay/abc".into());
+        o
+    }
+
+    /// The reason the field exists: an order the customer walked away from
+    /// mid-payment must be finishable, not silently dead until the expiry
+    /// sweep cancels it.
+    #[test]
+    fn an_unpaid_online_order_offers_its_checkout_page_back() {
+        assert_eq!(
+            payable_online_order().resumable_checkout_url(),
+            Some("https://ni.example/pay/abc"),
+        );
+    }
+
+    /// The gate that matters. Once a hold exists, re-opening the page invites
+    /// a second authorization against the same order — one nothing would ever
+    /// capture and nothing would ever void, because capture and void both only
+    /// know `payment_intent_id`.
+    #[test]
+    fn a_page_is_never_offered_again_once_the_payment_has_moved_on() {
+        for status in [
+            PaymentStatus::Authorized,
+            PaymentStatus::Captured,
+            PaymentStatus::Voided,
+            PaymentStatus::Failed,
+        ] {
+            let mut o = payable_online_order();
+            o.payment_status = status;
+            assert_eq!(
+                o.resumable_checkout_url(), None,
+                "{status:?} must not hand back a way to pay again",
+            );
+        }
+    }
+
+    /// A cancelled order is not payable whatever its payment status says —
+    /// the recovery sweep cancels an abandoned checkout before its own void,
+    /// so this pair genuinely co-occurs.
+    #[test]
+    fn a_cancelled_order_is_not_payable() {
+        let mut o = payable_online_order();
+        o.status = OrderStatus::Cancelled;
+        assert_eq!(o.resumable_checkout_url(), None);
+    }
+
+    /// COD has no page and must never appear to have one, even if a row
+    /// somehow carried a URL.
+    #[test]
+    fn a_cod_order_never_offers_a_checkout_page() {
+        let mut o = cod_order();
+        o.payment_checkout_url = Some("https://ni.example/pay/abc".into());
+        assert_eq!(o.resumable_checkout_url(), None);
     }
 
     /// The formula the whole feature rests on: not a binary switch between

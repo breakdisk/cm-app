@@ -20,7 +20,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
 import { getBasket, removeLine, type BasketView } from "@/api/basket";
-import { checkout, classifyCheckoutError } from "@/api/orders";
+import { checkout, classifyCheckoutError, type PaymentMethod } from "@/api/orders";
+import { openHostedCheckout } from "@/api/payment";
 import { currentDeliveryPoint, hasDeliveryPoint } from "@/deliveryPoint";
 import { theme } from "@/theme";
 
@@ -36,6 +37,9 @@ export default function Review() {
   const [tip, setTip] = useState("0");
   // The courier reads this at the door. See `checkout` in api/orders.ts.
   const [note, setNote] = useState("");
+  // COD is the default because it is what every order before this feature was,
+  // and because it is the one method that cannot fail after the order exists.
+  const [method, setMethod] = useState<PaymentMethod>("cod");
   const [placing, setPlacing] = useState(false);
 
   const load = useCallback(async () => {
@@ -81,8 +85,21 @@ export default function Review() {
     try {
       const point = currentDeliveryPoint();
       const tipCents = Math.max(0, Math.round(parseFloat(tip || "0") * 100));
-      const res = await checkout(basketId, tipCents, point.lat, point.lng, note);
+      const res = await checkout(basketId, tipCents, point.lat, point.lng, note, method);
+
+      // Navigate BEFORE opening the card page, not after. The tracking screen is
+      // where an online order is resolved — it polls for the authorization and
+      // offers the page again if the customer comes back without having paid —
+      // so it must already be the screen underneath the browser. Opening the
+      // browser first and navigating on return loses the order entirely for
+      // anyone who force-quits from the card page.
       router.replace(`/track/${res.order_id}`);
+
+      if (res.checkout_url) {
+        // Deliberately not awaited for its answer: what the browser reports is
+        // not what the payment did. See `openHostedCheckout`.
+        void openHostedCheckout(res.checkout_url);
+      }
     } catch (e) {
       // Each of these is a different thing for the customer to do, which is why
       // `classifyCheckoutError` exists rather than one apology.
@@ -304,6 +321,31 @@ export default function Review() {
               />
             </View>
 
+            <View style={{ gap: 6 }}>
+              <Text style={{ color: theme.muted, fontSize: 12 }}>How you&apos;ll pay</Text>
+              <View style={{ flexDirection: "row", gap: 8 }}>
+                <PayOption
+                  label="Cash on delivery"
+                  sub="Pay the courier at the door"
+                  selected={method === "cod"}
+                  onPress={() => setMethod("cod")}
+                />
+                <PayOption
+                  label="Card"
+                  sub="Pay now, nothing at the door"
+                  selected={method === "online"}
+                  onPress={() => setMethod("online")}
+                />
+              </View>
+              {method === "online" && (
+                <Text style={{ color: theme.faint, fontSize: 11, lineHeight: 16 }}>
+                  We&apos;ll hold the amount on your card and only take it once a
+                  courier accepts. If nobody does, the hold is released and you
+                  are not charged.
+                </Text>
+              )}
+            </View>
+
             <View
               style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}
             >
@@ -362,11 +404,65 @@ export default function Review() {
                 fontWeight: "700",
               }}
             >
-              {placing ? "Placing…" : blocked ? "Resolve the swaps first" : "Place order"}
+              {placing
+                ? "Placing…"
+                : blocked
+                  ? "Resolve the swaps first"
+                  : method === "online"
+                    ? "Place order and pay"
+                    : "Place order"}
             </Text>
           </Pressable>
         )}
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+/**
+ * One payment rail. A plain two-button row rather than a picker: there are two
+ * options, they are not equivalent, and the difference between them — who you
+ * hand money to and when — is the thing the customer needs on screen, not
+ * hidden behind a tap.
+ */
+function PayOption({
+  label,
+  sub,
+  selected,
+  onPress,
+}: {
+  label: string;
+  sub: string;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="radio"
+      accessibilityState={{ selected }}
+      accessibilityLabel={`${label}. ${sub}`}
+      style={{
+        flex: 1,
+        gap: 3,
+        paddingVertical: 11,
+        paddingHorizontal: 12,
+        borderRadius: theme.radius.sm,
+        borderWidth: 1,
+        borderColor: selected ? theme.cyan : theme.border,
+        backgroundColor: selected ? "rgba(0,229,255,0.10)" : "transparent",
+      }}
+    >
+      <Text
+        style={{
+          color: selected ? theme.cyan : theme.text,
+          fontSize: 13,
+          fontWeight: "700",
+        }}
+      >
+        {label}
+      </Text>
+      <Text style={{ color: theme.faint, fontSize: 10.5, lineHeight: 14 }}>{sub}</Text>
+    </Pressable>
   );
 }

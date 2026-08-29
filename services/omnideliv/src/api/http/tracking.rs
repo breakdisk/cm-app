@@ -40,6 +40,24 @@ pub struct TrackResponse {
     pub delivery_fee_cents: i64,
     pub tip_cents:          i64,
     pub grand_total_cents: i64,
+    /// `"cod"` or `"online"`. Without it the client cannot tell an order that
+    /// is waiting on a courier from one that is waiting on the customer to
+    /// finish paying — both read as `status: "placed"`.
+    pub payment_method:    String,
+    /// `pending` | `authorized` | `captured` | `voided` | `failed`. Always
+    /// `pending` for a COD order, which never touches a gateway.
+    pub payment_status:    String,
+    /// Taken online. `0` for COD.
+    pub prepaid_amount_cents: i64,
+    /// What the courier still collects at the door — `grand_total - prepaid`.
+    /// Computed here rather than left to the client to subtract, so a partly
+    /// prepaid order cannot be rendered as fully paid by a client that never
+    /// learned about the split.
+    pub cod_amount_cents:  i64,
+    /// The hosted-checkout page to send the customer back to, present only
+    /// while this order is still payable — see `Order::resumable_checkout_url`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_payment_url: Option<String>,
     pub stops_total:       usize,
     pub stops_collected:   usize,
     pub delivered_at:      Option<chrono::DateTime<chrono::Utc>>,
@@ -204,6 +222,14 @@ async fn track(
         delivery_fee_cents: order.delivery_fee_cents,
         tip_cents:          order.tip_cents,
         grand_total_cents: order.grand_total_cents,
+        payment_method:    order.payment_method.as_str().to_string(),
+        payment_status:    order.payment_status.as_str().to_string(),
+        prepaid_amount_cents: order.prepaid_amount_cents,
+        cod_amount_cents:  order.cod_amount_cents(),
+        // Disclosed only to this order's own customer — the `customer_id`
+        // check above has already run — and only while the order is still
+        // payable.
+        resume_payment_url: order.resumable_checkout_url().map(str::to_string),
         stops_total:       order.legs.len(),
         stops_collected,
         delivered_at:      order.delivered_at,
@@ -234,6 +260,15 @@ pub struct OrderListItem {
     pub delivery_fee_cents: i64,
     pub tip_cents:          i64,
     pub grand_total_cents: i64,
+    /// So the list can distinguish "waiting for a courier" from "you never
+    /// finished paying for this" — see `TrackResponse::payment_method`.
+    pub payment_method:    String,
+    pub payment_status:    String,
+    pub prepaid_amount_cents: i64,
+    /// `grand_total - prepaid`, through the same
+    /// `entities::order::cod_amount_cents` the tracking view and the domain
+    /// entity use — never re-derived per call site.
+    pub cod_amount_cents:  i64,
     pub stops_total:       i64,
     pub vendor_names:      String,
     pub placed_at:         chrono::DateTime<chrono::Utc>,
@@ -271,6 +306,12 @@ async fn my_orders(
                 delivery_fee_cents: s.delivery_fee_cents,
                 tip_cents:          s.tip_cents,
                 grand_total_cents: s.grand_total_cents,
+                payment_method:    s.payment_method,
+                payment_status:    s.payment_status,
+                prepaid_amount_cents: s.prepaid_amount_cents,
+                cod_amount_cents:  crate::domain::entities::order::cod_amount_cents(
+                    s.grand_total_cents, s.prepaid_amount_cents,
+                ),
                 stops_total:       s.stops_total,
                 vendor_names:      s.vendor_names,
                 placed_at:         s.placed_at,

@@ -11,6 +11,10 @@ function order(p: Partial<OrderListItem>): OrderListItem {
     tip_cents: 50,
     stops_total: 1,
     vendor_names: "Kuya's",
+    payment_method: "cod",
+    payment_status: "pending",
+    prepaid_amount_cents: 0,
+    cod_amount_cents: 1000,
     placed_at: new Date().toISOString(),
     delivered_at: null,
     ...p,
@@ -66,5 +70,38 @@ describe("cashDue", () => {
     const newer = order({ status: "collecting", order_id: "newer" });
     const older = order({ status: "delivering", order_id: "older" });
     expect(cashDue([newer, older])?.order_id).toBe("newer");
+  });
+
+  /**
+   * The wrong-money bug this filter exists to stop: a card-paid order is in
+   * flight exactly like a cash one, and before `cod_amount_cents` existed the
+   * panel showed its grand total under "CASH DUE AT THE DOOR" — telling
+   * someone who had already paid to go and find the full amount.
+   */
+  it("ignores an in-flight order that was already paid online", () => {
+    const prepaid = order({
+      status: "delivering",
+      order_id: "prepaid",
+      grand_total_cents: 4200,
+      payment_method: "online",
+      payment_status: "captured",
+      prepaid_amount_cents: 4200,
+      cod_amount_cents: 0,
+    });
+    expect(cashDue([prepaid])).toBeNull();
+  });
+
+  /** A partly prepaid order still owes the remainder, and only the remainder. */
+  it("still finds an in-flight order that is only partly prepaid", () => {
+    const mixed = order({
+      status: "delivering",
+      order_id: "mixed",
+      grand_total_cents: 4200,
+      payment_method: "online",
+      payment_status: "captured",
+      prepaid_amount_cents: 4000,
+      cod_amount_cents: 200,
+    });
+    expect(cashDue([mixed])?.cod_amount_cents).toBe(200);
   });
 });

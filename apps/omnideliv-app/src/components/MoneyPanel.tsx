@@ -54,14 +54,16 @@ export function MoneyPanel() {
         <Pressable
           onPress={() => router.push(`/track/${due.order_id}`)}
           accessibilityRole="button"
-          accessibilityLabel={`Cash due at the door, ${peso(due.grand_total_cents)}`}
+          accessibilityLabel={`Cash due at the door, ${peso(due.cod_amount_cents)}`}
           style={{ padding: 14, gap: 2 }}
         >
           <Text style={{ color: theme.amber, fontSize: 10, letterSpacing: 1.2 }}>
             CASH DUE AT THE DOOR
           </Text>
+          {/* The COD amount, not the grand total. On a partly prepaid order
+              those differ, and the courier is only collecting the remainder. */}
           <Text style={{ color: theme.text, fontSize: 24, fontWeight: "800" }}>
-            {peso(due.grand_total_cents)}
+            {peso(due.cod_amount_cents)}
           </Text>
           <Text numberOfLines={1} style={{ color: theme.muted, fontSize: 12 }}>
             {due.vendor_names || "Order"} · on the way

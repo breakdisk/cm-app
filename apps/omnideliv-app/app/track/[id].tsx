@@ -10,10 +10,11 @@
  * question and the history is the justification.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useLocalSearchParams } from "expo-router";
 
+import { openHostedCheckout } from "@/api/payment";
 import { trackOrder, pollIntervalMs, type TrackResponse } from "@/api/tracking";
 import { MapSurface } from "@/components/map/MapSurface";
 import { Receipt } from "@/components/Receipt";
@@ -64,7 +65,7 @@ export default function Track() {
       // The schedule this screen should always have used: 5s while the courier
       // is moving and the map wants freshness, 15s otherwise, and nothing at
       // all once the order is terminal.
-      const next_ms = pollIntervalMs(next.status);
+      const next_ms = pollIntervalMs(next.status, next);
       if (next_ms !== null) {
         timer.current = setTimeout(() => void poll(), next_ms);
       }
@@ -91,7 +92,20 @@ export default function Track() {
     );
   }
 
-  const say = SAY[order.status];
+  // `status` alone is a lie for an order whose payment never completed: the
+  // server leaves it `placed` and offers it to nobody, so "Finding you a
+  // courier" would be a promise nothing is working on.
+  const awaitingPayment =
+    order.payment_method === "online" && order.payment_status === "pending" &&
+    order.status !== "delivered" && order.status !== "cancelled";
+
+  const say = awaitingPayment
+    ? {
+        title: "Waiting for payment",
+        sub: "We look for a courier as soon as your card goes through.",
+        tone: theme.amber,
+      }
+    : SAY[order.status];
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: theme.canvas }}>
@@ -127,15 +141,61 @@ export default function Track() {
             </View>
           )}
 
-        <Text style={{ color: theme.muted, fontSize: 13 }}>
-          {order.stops_collected} of {order.stops_total} stops collected
-        </Text>
+        {!awaitingPayment && (
+          <Text style={{ color: theme.muted, fontSize: 13 }}>
+            {order.stops_collected} of {order.stops_total} stops collected
+          </Text>
+        )}
+
+        {/* The way back into an unfinished payment. Without it, anything that
+            took the customer off the card page — a call, backgrounding the app,
+            tapping Back — left an order that could not be paid for and no route
+            to it; it simply sat there until the server cancelled it. */}
+        {awaitingPayment && (
+          <View
+            style={{
+              borderLeftWidth: 2,
+              borderLeftColor: theme.amber,
+              backgroundColor: "rgba(255,171,0,0.07)",
+              borderRadius: theme.radius.sm,
+              padding: 13,
+              gap: 9,
+            }}
+          >
+            <Text style={{ color: "rgba(255,255,255,0.82)", fontSize: 12, lineHeight: 17 }}>
+              {order.resume_payment_url
+                ? "Your payment hasn't gone through yet. Nothing has been charged, and no courier has been asked to collect this."
+                : "This payment wasn't completed in time. Nothing has been charged — place the order again when you're ready."}
+            </Text>
+            {order.resume_payment_url && (
+              <Pressable
+                onPress={() => void openHostedCheckout(order.resume_payment_url!)}
+                accessibilityRole="button"
+                accessibilityLabel="Finish paying for this order"
+                style={{
+                  paddingVertical: 12,
+                  borderRadius: theme.radius.sm,
+                  alignItems: "center",
+                  borderWidth: 1,
+                  borderColor: theme.amber,
+                  backgroundColor: "rgba(255,171,0,0.12)",
+                }}
+              >
+                <Text style={{ color: theme.amber, fontSize: 13, fontWeight: "700" }}>
+                  Finish paying
+                </Text>
+              </Pressable>
+            )}
+          </View>
+        )}
 
         <Receipt
           goods_total_cents={order.goods_total_cents}
           delivery_fee_cents={order.delivery_fee_cents}
           tip_cents={order.tip_cents}
           grand_total_cents={order.grand_total_cents}
+          cod_amount_cents={order.cod_amount_cents}
+          payment_status={order.payment_status}
           settled={order.status === "delivered"}
         />
 
