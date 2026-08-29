@@ -14,3 +14,5 @@ pub mod customs_duty_consumer;
 pub use customs_duty_consumer::CustomsDutyConsumer;
 pub mod shipment_cancelled_consumer;
 pub use shipment_cancelled_consumer::ShipmentCancelledConsumer;
+pub mod subscription_payment_consumer;
+pub use subscription_payment_consumer::SubscriptionPaymentConsumer;

@@ -58,6 +58,10 @@ futures              = "0.3"
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
+# `rdkafka::mocking::MockCluster` is an in-process broker. `SubscriptionService`
+# holds a concrete `Arc<KafkaProducer>` rather than a trait object, so without a
+# broker every publish in a test waits out the producer's 5s message timeout.
+rdkafka.workspace = true
 
 # Unit suite only. `tests/integration/mod.rs` still has 27 compile errors against
 # the current API and wants its own pass.

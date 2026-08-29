@@ -144,6 +144,39 @@ pub async fn run() -> anyhow::Result<()> {
         }
     };
 
+    // SaaS subscription billing. The service itself always exists -- the plan
+    // catalogue and the current-plan read work with no gateway -- and only
+    // `checkout` needs `payment_intent_service`, answering 503 without it.
+    //
+    // The identity client is separately optional. Without it a subscription can
+    // still be sold and recorded and `tier_synced_at` stays NULL, so the
+    // unpaid-for entitlement is a visible work list rather than a payment that
+    // silently bought nothing.
+    let tier_sync: Option<Arc<dyn crate::infrastructure::external::identity_client::TenantTierSync>> =
+        if cfg.identity.url.is_empty() || cfg.identity.internal_secret.is_empty() {
+            tracing::warn!(
+                "IDENTITY__URL / IDENTITY__INTERNAL_SECRET not set — a subscription payment \
+                 will be recorded but the tenant's tier will NOT be granted; \
+                 payments.subscriptions.tier_synced_at stays NULL for every one of them"
+            );
+            None
+        } else {
+            Some(Arc::new(crate::infrastructure::external::identity_client::IdentityClient::new(
+                cfg.identity.url.clone(),
+                cfg.identity.internal_secret.clone(),
+            )))
+        };
+
+    let subscription_service = Arc::new(
+        crate::application::services::SubscriptionService::new(
+            Arc::new(crate::infrastructure::db::PgSubscriptionRepository::new(pool.clone())) as _,
+            payment_intent_service.clone(),
+            tier_sync,
+            Arc::clone(&kafka),
+            cfg.subscription.return_url_base.clone(),
+        ),
+    );
+
     let templates_dir = std::env::var("PAYMENTS_TEMPLATES_DIR")
         .unwrap_or_else(|_| "./templates".into());
     let pdf_renderer = match crate::application::services::PdfRenderer::new(&templates_dir).await {
@@ -171,7 +204,57 @@ pub async fn run() -> anyhow::Result<()> {
         pdf_renderer,
         driver_ledger_repo:                Arc::clone(&driver_ledger_repo) as _,
         payment_intent_service:            payment_intent_service.clone(),
+        subscription_service:              Arc::clone(&subscription_service),
     });
+
+    // Captured subscription payments -> a paid period and a granted tier.
+    // Without this a tenant pays for a plan and nothing happens: the intent
+    // records a capture, the subscription stays `pending_payment`, and the
+    // tier never moves. Constructed inside the spawn so a Kafka hiccup at
+    // startup degrades this one consumer rather than the whole service.
+    {
+        let svc = Arc::clone(&subscription_service);
+        let brokers = cfg.kafka.brokers.clone();
+        let group_id = cfg.kafka.group_id.clone();
+        tokio::spawn(async move {
+            match crate::infrastructure::messaging::SubscriptionPaymentConsumer::new(
+                &brokers, &group_id, svc,
+            ) {
+                Ok(consumer) => consumer.run().await,
+                Err(e) => tracing::error!("SubscriptionPaymentConsumer could not start: {e}"),
+            }
+        });
+    }
+
+    // Renewal notices, the grace window, and expiry. Also the tier-sync retry:
+    // a subscription whose payment was captured while identity was unreachable
+    // is a tenant who has paid and been given nothing, and nothing else in the
+    // system would ever notice.
+    {
+        let svc = Arc::clone(&subscription_service);
+        tokio::spawn(async move {
+            // Hourly. The finest granularity anything here needs is a day
+            // (notice window, grace window), so a tighter interval would only
+            // re-read the same rows.
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(3600));
+            loop {
+                tick.tick().await;
+                match svc.sweep().await {
+                    Ok(n) if n > 0 => tracing::info!(changed = n, "subscription sweep"),
+                    Ok(_) => {}
+                    Err(e) => tracing::error!(err = %e, "subscription sweep failed"),
+                }
+                match svc.sweep_tier_sync().await {
+                    Ok(n) if n > 0 => tracing::warn!(
+                        recovered = n,
+                        "granted tiers that had been paid for but not delivered"
+                    ),
+                    Ok(_) => {}
+                    Err(e) => tracing::error!(err = %e, "tier-sync sweep failed"),
+                }
+            }
+        });
+    }
     let app = router(state);
 
     // Monthly merchant billing cron — runs on the 1st of each month and issues

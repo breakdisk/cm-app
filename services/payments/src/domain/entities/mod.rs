@@ -6,6 +6,7 @@ pub mod merchant_billing_account;
 pub mod withdrawal_request;
 pub mod driver_ledger;
 pub mod payment_intent;
+pub mod subscription;
 
 pub use invoice::{
     Invoice, InvoiceLineItem, InvoiceAdjustment, InvoiceStatus,
@@ -18,3 +19,6 @@ pub use merchant_billing_account::MerchantBillingAccount;
 pub use withdrawal_request::{WithdrawalRequest, WithdrawalStatus};
 pub use driver_ledger::{DriverLedger, LedgerEntry, LedgerStatus, EntryKind};
 pub use payment_intent::{PaymentIntent, PaymentIntentStatus};
+pub use subscription::{
+    BillingInterval, Subscription, SubscriptionPlan, SubscriptionStatus,
+};

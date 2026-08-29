@@ -124,3 +124,53 @@ pub async fn upgrade_tier(
     tokio::spawn(async move { let _ = audit.append(&entry).await; });
     Ok(Json(serde_json::json!({ "data": { "subscription_tier": tier_str } })))
 }
+
+/// PUT /v1/internal/tenants/:id/tier — grant a tenant a subscription tier.
+///
+/// The system counterpart to `upgrade_tier` above, and the reason that one can
+/// stay behind a permission nobody holds.
+///
+/// `upgrade_tier` requires `tenants:manage`, which no role grants and which
+/// `libs/auth/src/rbac.rs` has a test to keep ungranted: the same permission
+/// gates `PUT /v1/pricing/features/:key/tiers`, which rewrites the pricing
+/// matrix for every tenant on the platform. Granting it so a tenant could
+/// upgrade themselves would hand them everyone's prices and a free jump to
+/// Enterprise in one move.
+///
+/// So the tier is not something a tenant asks for. It is something the platform
+/// grants once `services/payments` has captured a payment for it — and this is
+/// where that grant lands. There is no principal, no tenant claim and no
+/// permission check, because there is no user here; the caller is
+/// `payments::infrastructure::external::identity_client`, authenticated by the
+/// `X-Internal-Secret` guard on the whole `/v1/internal` scope (which the
+/// api-gateway strips on ingress, so the header can never arrive from the
+/// public internet).
+///
+/// Idempotent: setting the tier a tenant already has is a no-op that still
+/// answers 200, because the caller's retry sweep will do exactly that whenever
+/// its own record of the grant failed to save.
+pub async fn set_tier_internal(
+    Path(id): Path<Uuid>,
+    State(state): State<Arc<AppState>>,
+    Json(cmd): Json<UpgradeTierCommand>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let tenant_id = logisticos_types::TenantId::from_uuid(id);
+    let tier = state.tenant_service.upgrade_tier(&tenant_id, cmd).await?;
+    let tier_str = format!("{:?}", tier).to_lowercase();
+
+    // Audited with the tenant as its own actor rather than a fabricated user:
+    // there is no person here, and inventing one would put a name against a
+    // change nobody made.
+    let audit = Arc::clone(&state.audit_log);
+    let entry = NewAuditEntry {
+        tenant_id:   id,
+        actor_id:    id,
+        actor_email: "system:payments".into(),
+        action:      "tenant.tier_granted_by_subscription".into(),
+        resource:    tier_str.clone(),
+    };
+    tokio::spawn(async move { let _ = audit.append(&entry).await; });
+
+    tracing::info!(tenant_id = %id, tier = %tier_str, "tier granted from a subscription payment");
+    Ok(Json(serde_json::json!({ "data": { "subscription_tier": tier_str } })))
+}

@@ -8,6 +8,7 @@ pub mod partner_bonus_repo;
 pub mod withdrawal_request_repo;
 pub mod driver_ledger_repo;
 pub mod payment_intent_repo;
+pub mod subscription_repo;
 
 pub use invoice_repo::PgInvoiceRepository;
 pub use cod_repo::PgCodRepository;
@@ -19,3 +20,4 @@ pub use partner_bonus_repo::PgPartnerBonusRepo;
 pub use withdrawal_request_repo::PgWithdrawalRequestRepository;
 pub use driver_ledger_repo::PgDriverLedgerRepository;
 pub use payment_intent_repo::PgPaymentIntentRepository;
+pub use subscription_repo::PgSubscriptionRepository;

@@ -11,6 +11,7 @@ pub mod partner_commission;
 pub mod withdrawal_requests;
 pub mod payment_intents;
 pub mod payment_webhooks;
+pub mod subscriptions;
 
 use axum::{Router, routing::{get, post}};
 use std::sync::Arc;
@@ -38,6 +39,11 @@ pub struct AppState {
     /// `payment_webhooks::network_international_webhook`) must check for
     /// `None` and return 503 rather than unwrapping.
     pub payment_intent_service:         Option<Arc<crate::application::services::payment_intent_service::PaymentIntentService>>,
+    /// Always present, unlike `payment_intent_service`: the catalogue and the
+    /// current-plan read work with no gateway configured, and only `checkout`
+    /// needs one. It answers 503 for that one case rather than the whole
+    /// subscription surface disappearing.
+    pub subscription_service:           Arc<crate::application::services::SubscriptionService>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -94,6 +100,12 @@ fn protected_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/admin/withdrawal-requests/:id/approve",  post(withdrawal_requests::approve_withdrawal))
         .route("/admin/withdrawal-requests/:id/disburse", post(withdrawal_requests::disburse_withdrawal))
         .route("/admin/withdrawal-requests/:id/reject",   post(withdrawal_requests::reject_withdrawal))
+        // The tenant's own SaaS plan. Note what is absent: no route sets a
+        // tier. See `subscriptions`' module doc.
+        .route("/subscriptions/plans",     get(subscriptions::list_plans))
+        .route("/subscriptions/me",        get(subscriptions::get_current))
+        .route("/subscriptions/checkout",  post(subscriptions::checkout))
+        .route("/subscriptions/me/cancel", post(subscriptions::cancel))
         .layer(auth_layer)
 }
 

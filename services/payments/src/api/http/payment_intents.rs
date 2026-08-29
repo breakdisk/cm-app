@@ -234,6 +234,18 @@ mod tests {
             pdf_renderer: None,
             driver_ledger_repo: driver_ledger_repo as _,
             payment_intent_service: None,
+            // Present even with the gateway disabled: only `checkout` needs a
+            // gateway, and the catalogue and current-plan reads must not
+            // disappear with it.
+            subscription_service: Arc::new(
+                crate::application::services::SubscriptionService::new(
+                    Arc::new(crate::infrastructure::db::PgSubscriptionRepository::new(pool.clone())) as _,
+                    None,
+                    None,
+                    Arc::clone(&kafka),
+                    "https://example.invalid/return".into(),
+                ),
+            ),
         })
     }
 

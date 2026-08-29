@@ -11,8 +11,9 @@ import {
 } from "@/lib/api/api-keys";
 import { identityApi, type Me, type Tenant } from "@/lib/api/identity";
 import { addressesApi, addressLookupApi, type AddressCode, type PickupAddress, type CreatePickupAddressPayload } from "@/lib/api/addresses";
+import { BillingTab } from "@/components/settings/BillingTab";
 
-const TABS = ["Profile", "Pickup Addresses", "Notifications", "API Access"] as const;
+const TABS = ["Profile", "Billing", "Pickup Addresses", "Notifications", "API Access"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function MerchantSettingsPage() {
@@ -50,6 +51,7 @@ export default function MerchantSettingsPage() {
       </motion.div>
 
       {activeTab === "Profile" && <ProfileTab />}
+      {activeTab === "Billing" && <BillingTab />}
       {activeTab === "Pickup Addresses" && <PickupAddressesTab />}
 
       {activeTab === "Notifications" && (

@@ -3,6 +3,16 @@ pub const CARRIER_ONBOARDED:               &str = "logisticos.carrier.onboarded"
 pub const CARRIER_STATUS_CHANGED:          &str = "logisticos.carrier.status_changed";
 pub const CARRIER_ALLOCATED:               &str = "logisticos.carrier.allocated";
 pub const CARRIER_TRACKING_EVENT:          &str = "logisticos.carrier.tracking.event";
+// Subscriptions (SaaS plan billing). Published by payments; the tier grant
+// itself is a direct mesh-internal call to identity rather than an event --
+// see `payments::infrastructure::external::identity_client` for why a
+// fire-and-forget event is the wrong shape for an entitlement someone paid
+// for. These are for engagement (renewal emails) and analytics.
+pub const SUBSCRIPTION_ACTIVATED:          &str = "logisticos.payments.subscription.activated";
+pub const SUBSCRIPTION_RENEWAL_DUE:        &str = "logisticos.payments.subscription.renewal_due";
+pub const SUBSCRIPTION_PAST_DUE:           &str = "logisticos.payments.subscription.past_due";
+pub const SUBSCRIPTION_LAPSED:             &str = "logisticos.payments.subscription.lapsed";
+
 pub const MARKETPLACE_BOOKING_REQUESTED:   &str = "logisticos.carrier.marketplace.booking.requested";
 pub const MARKETPLACE_BOOKING_ACCEPTED:    &str = "logisticos.carrier.marketplace.booking.accepted";
 pub const MARKETPLACE_BOOKING_REJECTED:    &str = "logisticos.carrier.marketplace.booking.rejected";
@@ -144,6 +154,8 @@ mod tests {
     fn all_topics_are_lowercase_dot_separated() {
         let topics: &[&str] = &[
             CARRIER_ONBOARDED, CARRIER_STATUS_CHANGED, CARRIER_ALLOCATED, CARRIER_TRACKING_EVENT,
+            SUBSCRIPTION_ACTIVATED, SUBSCRIPTION_RENEWAL_DUE,
+            SUBSCRIPTION_PAST_DUE, SUBSCRIPTION_LAPSED,
             MARKETPLACE_BOOKING_REQUESTED, MARKETPLACE_BOOKING_ACCEPTED,
             MARKETPLACE_BOOKING_REJECTED, MARKETPLACE_PICKUP_RECORDED,
             TENANT_CREATED, TENANT_FINALIZED, USER_CREATED, USER_INVITED, OTP_REQUESTED,

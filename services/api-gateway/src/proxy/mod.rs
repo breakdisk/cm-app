@@ -103,7 +103,13 @@ impl ProxyClient {
         } else if path.starts_with("/v1/pod") || path.starts_with("/v1/pops") || path.starts_with("/v1/otps") {
             Some(&self.services.pod_url)
         // Payments & Invoices (includes /wallet for customer app)
-        } else if path.starts_with("/v1/payments") || path.starts_with("/v1/invoices") || path.starts_with("/v1/wallet") || path.starts_with("/v1/cod") {
+        } else if path.starts_with("/v1/payments") || path.starts_with("/v1/invoices")
+            || path.starts_with("/v1/wallet") || path.starts_with("/v1/cod")
+            // SaaS plan billing. Without this line the merchant portal's
+            // billing screen 404s at the gateway and the whole subscription
+            // surface is unreachable from outside the mesh -- the same way the
+            // NI webhook route was, before it was allowlisted.
+            || path.starts_with("/v1/subscriptions") {
             Some(&self.services.payments_url)
         // Analytics
         } else if path.starts_with("/v1/analytics") {

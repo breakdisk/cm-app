@@ -191,6 +191,13 @@ create_topic "logisticos.payments.intent.authorized"
 create_topic "logisticos.payments.intent.captured"
 create_topic "logisticos.payments.intent.failed"
 
+# SaaS subscription lifecycle. Consumed by engagement for renewal and
+# dunning notices -- a renewal nobody is told about is a lapse.
+create_topic "logisticos.payments.subscription.activated"
+create_topic "logisticos.payments.subscription.renewal_due"
+create_topic "logisticos.payments.subscription.past_due"
+create_topic "logisticos.payments.subscription.lapsed"
+
 # Marketplace (spot truck) bookings.
 create_topic "logisticos.carrier.marketplace.booking.requested"
 create_topic "logisticos.carrier.marketplace.booking.accepted"

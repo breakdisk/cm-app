@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use logisticos_types::{CustomerId, InvoiceId, MerchantId, TenantId};
 use uuid::Uuid;
 use crate::domain::entities::{Invoice, CodCollection, CodRemittanceBatch, Wallet, WalletTransaction, DriverLedger, PaymentIntent};
+use crate::domain::entities::{BillingInterval, Subscription, SubscriptionPlan};
 
 pub mod payment_gateway;
 pub use payment_gateway::{PaymentGateway, CreateSessionRequest, GatewaySession, WebhookEvent, PaymentAction};
@@ -338,4 +339,36 @@ pub trait PaymentIntentRepository: Send + Sync {
     /// 'authorized'`. See `claim_for_capture` — same mechanism, opposite
     /// target status.
     async fn claim_for_void(&self, id: Uuid) -> anyhow::Result<bool>;
+}
+
+/// Plans, subscriptions, and the two work lists the sweeps run off.
+#[async_trait]
+pub trait SubscriptionRepository: Send + Sync {
+    async fn find_plan(
+        &self,
+        tier: &str,
+        interval: BillingInterval,
+        currency: &str,
+    ) -> anyhow::Result<Option<SubscriptionPlan>>;
+    async fn find_plan_by_id(&self, id: Uuid) -> anyhow::Result<Option<SubscriptionPlan>>;
+    async fn list_plans(&self, currency: &str) -> anyhow::Result<Vec<SubscriptionPlan>>;
+
+    /// The tenant's one live subscription. Excludes `lapsed`, which is history.
+    async fn find_live_for_tenant(&self, tenant_id: Uuid) -> anyhow::Result<Option<Subscription>>;
+    async fn find_by_id(&self, id: Uuid) -> anyhow::Result<Option<Subscription>>;
+
+    /// Candidates for the renewal / dunning sweep. Must exclude rows with no
+    /// period: a never-paid subscription is not overdue, and treating it as
+    /// such would lapse every abandoned checkout.
+    async fn list_due_for_sweep(&self, limit: i64) -> anyhow::Result<Vec<Subscription>>;
+
+    /// Paid subscriptions identity has not been told about.
+    async fn list_unsynced_tiers(&self, limit: i64) -> anyhow::Result<Vec<Subscription>>;
+
+    async fn save(&self, subscription: &Subscription) -> anyhow::Result<()>;
+
+    /// Records that identity received the tier. Targeted rather than a full
+    /// save, so a sweep holding a stale snapshot cannot overwrite a renewal
+    /// that landed while it was working.
+    async fn mark_tier_synced(&self, id: Uuid, at: DateTime<Utc>) -> anyhow::Result<()>;
 }

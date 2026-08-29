@@ -92,6 +92,15 @@ pub mod permissions {
     pub const TENANT_UPDATE_SELF: &str = "tenants:update-self";
     pub const BILLING_SETUP:      &str = "billing:setup";
 
+    /// Buy, change or cancel the tenant's own SaaS plan.
+    ///
+    /// Notably NOT a permission to set a tier. It reaches the checkout and the
+    /// cancel endpoint and nothing else; the tier itself only ever moves as a
+    /// consequence of a captured payment, through a mesh-internal call no
+    /// tenant credential can make. That separation is the whole reason
+    /// TENANT_MANAGE stays ungranted -- see `no_role_may_hold_tenant_manage`.
+    pub const BILLING_SUBSCRIBE:  &str = "billing:subscribe";
+
     // ── OmniDeliv vendors ────────────────────────────────────
     // Approving a store is the review that stands between "anyone with a
     // login" and "food listed to customers", so it is an operator action.
@@ -163,6 +172,7 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::VENDORS_MANAGE,
             permissions::CARRIERS_MANAGE, permissions::CARRIERS_READ,
             permissions::MARKETPLACE_BOOK,
+            permissions::BILLING_SUBSCRIBE,
             permissions::CUSTOMERS_VIEW, permissions::CUSTOMERS_MANAGE,
             permissions::SEGMENTS_VIEW, permissions::SEGMENTS_MANAGE,
             permissions::COMPLIANCE_REVIEW, permissions::COMPLIANCE_ADMIN,
@@ -235,6 +245,7 @@ pub fn default_permissions_for_role(role: &str) -> Vec<&'static str> {
             permissions::VENDORS_MANAGE,
             permissions::CARRIERS_MANAGE, permissions::CARRIERS_READ,
             permissions::MARKETPLACE_BOOK,
+            permissions::BILLING_SUBSCRIBE,
             permissions::CUSTOMERS_VIEW, permissions::CUSTOMERS_MANAGE,
             permissions::SEGMENTS_VIEW, permissions::SEGMENTS_MANAGE,
             permissions::COMPLIANCE_REVIEW, permissions::COMPLIANCE_ADMIN,
@@ -270,6 +281,32 @@ mod grant_tests {
                 "{role} must not hold {} -- it is platform-scoped",
                 permissions::TENANT_MANAGE,
             );
+        }
+    }
+
+    /// Paying for the platform is the tenant owner's act. A `merchant` is a
+    /// shipper client of the tenant, not the account holder, so they book
+    /// trucks but do not buy the plan -- and a `partner` does neither.
+    #[test]
+    fn only_tenant_operators_can_buy_the_plan() {
+        for role in ["admin", "tenant_admin"] {
+            assert!(perms(role).contains(&permissions::BILLING_SUBSCRIBE), "{role}");
+        }
+        for role in ["merchant", "partner", "finance", "driver", "customer", "readonly"] {
+            assert!(!perms(role).contains(&permissions::BILLING_SUBSCRIBE), "{role}");
+        }
+    }
+
+    /// The separation the subscription design rests on: buying a plan is a
+    /// permission, setting a tier is not. If `billing:subscribe` ever implied
+    /// `tenants:manage`, the checkout would become a free self-upgrade to
+    /// Enterprise and a way to rewrite the platform's pricing matrix.
+    #[test]
+    fn buying_a_plan_never_confers_the_power_to_set_a_tier() {
+        for role in ["admin", "tenant_admin"] {
+            let p = perms(role);
+            assert!(p.contains(&permissions::BILLING_SUBSCRIBE));
+            assert!(!p.contains(&permissions::TENANT_MANAGE));
         }
     }
 

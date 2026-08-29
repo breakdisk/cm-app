@@ -7,6 +7,10 @@ pub struct Config {
     pub redis: RedisConfig,
     pub kafka: KafkaConfig,
     pub order_intake: OrderIntakeConfig,
+    #[serde(default)]
+    pub identity: IdentityConfig,
+    #[serde(default)]
+    pub subscription: SubscriptionConfig,
     /// Network International (online card payment gateway) config. Optional:
     /// card payment is an additive capability layered on top of the core
     /// payments service (invoicing, COD, wallets, driver ledger, billing) —
@@ -36,6 +40,41 @@ pub struct Config {
     /// fail loud at boot, not silently disable the feature.
     #[serde(default)]
     pub network_international: Option<NetworkInternationalConfig>,
+}
+
+/// Identity, for granting a tenant the tier a subscription payment bought.
+///
+/// Env: `IDENTITY__URL`, `IDENTITY__INTERNAL_SECRET`. Both empty disables the
+/// tier grant entirely -- subscriptions can still be sold and recorded, and
+/// `subscriptions.tier_synced_at` stays NULL so the retry sweep keeps the
+/// unpaid-for entitlement visible rather than losing it.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct IdentityConfig {
+    #[serde(default)]
+    pub url: String,
+    /// The same shared secret identity already uses for
+    /// `/v1/internal/auth/exchange-firebase`. Not a JWT: the tenant-facing tier
+    /// route needs `tenants:manage`, which no role holds, and minting a token
+    /// that cleared it would recreate the free self-upgrade this design avoids.
+    #[serde(default)]
+    pub internal_secret: String,
+}
+
+/// Where a merchant's browser lands after paying for a plan.
+#[derive(Debug, Deserialize, Clone)]
+pub struct SubscriptionConfig {
+    #[serde(default = "default_subscription_return_url")]
+    pub return_url_base: String,
+}
+
+impl Default for SubscriptionConfig {
+    fn default() -> Self {
+        Self { return_url_base: default_subscription_return_url() }
+    }
+}
+
+fn default_subscription_return_url() -> String {
+    "https://os.cargomarket.net/settings/billing/return".into()
 }
 
 #[derive(Debug, Deserialize, Clone)]

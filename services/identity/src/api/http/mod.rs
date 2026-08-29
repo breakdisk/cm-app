@@ -74,6 +74,10 @@ fn internal_router(secret: InternalSecret) -> Router<Arc<AppState>> {
     let guard = axum::middleware::from_fn_with_state(secret, require_internal_secret);
     Router::new()
         .route("/v1/internal/auth/exchange-firebase", post(auth::exchange_firebase))
+        // Granted by services/payments once a subscription payment is captured.
+        // Not the tenant-facing `PUT /v1/tenants/:id/tier`, which requires a
+        // permission no role holds -- see `tenants::set_tier_internal`.
+        .route("/v1/internal/tenants/:id/tier", put(tenants::set_tier_internal))
         .layer(guard)
 }
 
