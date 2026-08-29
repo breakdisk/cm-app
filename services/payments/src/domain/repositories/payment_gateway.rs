@@ -22,6 +22,7 @@ pub struct GatewaySession {
 }
 
 /// The result of successfully verifying an inbound webhook payload.
+#[derive(Debug)]
 pub enum WebhookEvent {
     Captured { gateway_order_ref: String, gateway_payment_ref: String },
     Failed { gateway_order_ref: String },

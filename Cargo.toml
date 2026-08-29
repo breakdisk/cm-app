@@ -99,6 +99,12 @@ sha2         = { version = "0.10" }
 subtle       = { version = "2" }
 hmac         = { version = "0.12" }
 base64       = { version = "0.22" }
+# AES-256-CBC — used for NI webhook body decryption (their optional
+# "Encryption Key" portal setting). RustCrypto, pure Rust: pulls no
+# native-tls/openssl, unlike e.g. `openssl`-backed alternatives banned in
+# deny.toml.
+aes          = { version = "0.8" }
+cbc          = { version = "0.1", features = ["alloc"] }
 
 # IDs & Time
 uuid         = { version = "1", features = ["v4", "serde"] }

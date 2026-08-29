@@ -35,11 +35,41 @@
 //!   - Neither set is refused at boot by `Config::load` (see
 //!     `NetworkInternationalConfig::has_webhook_verification_mode`) rather
 //!     than silently accepting unverified webhooks here.
+//!
+//! ## Webhook payload shape and encryption (confirmed against NI's published docs)
+//!
+//! Two further mismatches, found by reading
+//! <https://docs.ngenius-payments.com/reference/consuming-web-hooks> and
+//! <https://docs.ngenius-payments.com/reference/webhook-encryption-decryption-guide>
+//! rather than by running against a live sandbox:
+//!
+//! 1. **Shape.** NI sends a *nested* body (`order.reference`,
+//!    `order._embedded.payment[0].state`, ...), not the flat
+//!    `{status, orderReference, transactionReference}` shape originally
+//!    assumed. The exact field carrying the payment/transaction reference
+//!    isn't confirmed, so parsing is tolerant: deserialize to
+//!    `serde_json::Value` and try several field paths with fallbacks (see
+//!    `parse_webhook_body`), rather than a single rigid `struct`. The old
+//!    flat shape is kept as a fallback at every extraction point so the
+//!    pre-existing tests stay meaningful.
+//! 2. **Encryption.** If the merchant sets an "Encryption Key" in NI's
+//!    portal, the body is AES-256-CBC encrypted (PKCS7 padding, base64,
+//!    16-byte IV prepended to the ciphertext) — decrypted here, after
+//!    header/HMAC verification and before JSON parsing, when
+//!    `NetworkInternationalConfig::webhook_encryption_key` is set.
+//!
+//! Every webhook logs its top-level JSON keys at INFO (keys only, never
+//! values) so the first real call — sandbox or production — confirms the
+//! true shape from our own logs instead of needing another round of
+//! doc-reading.
 
+use aes::Aes256;
 use async_trait::async_trait;
 use base64::Engine as _;
+use cbc::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
@@ -193,14 +223,19 @@ impl PaymentGateway for NetworkInternationalGateway {
             );
         }
 
-        let payload: WebhookPayload = serde_json::from_slice(raw_body)?;
-        Ok(match payload.status.as_str() {
-            "CAPTURED" | "AUTHORISED" => WebhookEvent::Captured {
-                gateway_order_ref: payload.order_reference,
-                gateway_payment_ref: payload.transaction_reference,
-            },
-            _ => WebhookEvent::Failed { gateway_order_ref: payload.order_reference },
-        })
+        // Decryption (if configured) happens after verification and before
+        // parsing — verification covers the wire body exactly as NI sent
+        // it (encrypted or not), and JSON parsing must never see ciphertext.
+        let decrypted;
+        let body_for_parsing: &[u8] = match self.cfg.webhook_encryption_key() {
+            Some(key) => {
+                decrypted = decrypt_webhook_body(key, raw_body)?;
+                &decrypted
+            }
+            None => raw_body,
+        };
+
+        parse_webhook_body(body_for_parsing)
     }
 
     async fn refund(&self, gateway_payment_ref: &str, amount_cents: i64) -> anyhow::Result<()> {
@@ -223,13 +258,128 @@ impl PaymentGateway for NetworkInternationalGateway {
     }
 }
 
-#[derive(Deserialize)]
-struct WebhookPayload {
-    status: String,
-    #[serde(rename = "orderReference")]
-    order_reference: String,
-    #[serde(rename = "transactionReference")]
-    transaction_reference: String,
+type Aes256CbcDec = cbc::Decryptor<Aes256>;
+
+/// Decrypts a webhook body per NI's webhook-encryption-decryption-guide:
+/// the wire body is base64, decoding to a 16-byte IV prepended to
+/// AES-256-CBC ciphertext (PKCS5/PKCS7 padding). `key` must already be
+/// validated as exactly 32 bytes — `Config::load` enforces that at boot
+/// (`NetworkInternationalConfig::webhook_encryption_key`), so a length
+/// mismatch here would mean that guard was bypassed (e.g. constructed
+/// directly in a test), not a normal runtime condition.
+///
+/// Returns `Err` — never silently falls through to treating the ciphertext
+/// as plaintext JSON — if the body isn't valid base64, is too short to
+/// contain an IV, or fails to decrypt (wrong key, or the body was not
+/// actually encrypted despite a key being configured).
+fn decrypt_webhook_body(key: &str, raw_body: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(raw_body)
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "webhook body encryption is configured (WEBHOOK_ENCRYPTION_KEY) but the \
+                 body is not valid base64"
+            )
+        })?;
+
+    if decoded.len() < 16 {
+        anyhow::bail!("webhook body is too short to contain the 16-byte IV NI prepends");
+    }
+    let (iv, ciphertext) = decoded.split_at(16);
+
+    let cipher = Aes256CbcDec::new_from_slices(key.as_bytes(), iv)
+        .map_err(|e| anyhow::anyhow!("invalid AES-256 key/IV while decrypting webhook body: {e}"))?;
+
+    cipher.decrypt_padded_vec_mut::<Pkcs7>(ciphertext).map_err(|_| {
+        anyhow::anyhow!(
+            "webhook body encryption is configured (WEBHOOK_ENCRYPTION_KEY) but decryption \
+             failed — wrong key, or the body was not actually encrypted"
+        )
+    })
+}
+
+/// Parses a (decrypted, if applicable) webhook body into a `WebhookEvent`.
+///
+/// NI's real payload is nested (`order.reference`,
+/// `order._embedded.payment[0].state`, ...) per
+/// <https://docs.ngenius-payments.com/reference/consuming-web-hooks>, not
+/// the flat `{status, orderReference, transactionReference}` shape
+/// originally assumed. The exact field carrying the payment/transaction
+/// reference isn't confirmed against a live sandbox, so this parses
+/// tolerantly — `serde_json::Value` plus fallback field paths — instead of
+/// a single rigid `struct` that would fail outright on a shape mismatch.
+/// The old flat shape is kept as the last fallback at every extraction
+/// point, so the pre-existing tests (and any NI account still on that
+/// shape) keep working.
+fn parse_webhook_body(body: &[u8]) -> anyhow::Result<WebhookEvent> {
+    let value: Value = serde_json::from_slice(body)
+        .map_err(|e| anyhow::anyhow!("failed to parse webhook body as JSON: {e}"))?;
+
+    // Keys only, never values — the body carries payment data.
+    if let Some(keys) = value.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()) {
+        tracing::info!(?keys, "verify_webhook: received payload top-level keys");
+    }
+
+    let order_reference = extract_order_reference(&value).ok_or_else(|| {
+        anyhow::anyhow!(
+            "webhook payload has no resolvable order reference (checked order.reference, \
+             top-level orderReference, top-level reference)"
+        )
+    })?;
+
+    let state = extract_state(&value).unwrap_or_default();
+    let is_captured = matches!(state.to_uppercase().as_str(), "CAPTURED" | "AUTHORISED");
+
+    if !is_captured {
+        return Ok(WebhookEvent::Failed { gateway_order_ref: order_reference });
+    }
+
+    // A resolvable payment/transaction reference is not optional for a
+    // Captured event specifically: it's what `refund` (above) keys on, so
+    // recording a Captured payment we could never look back up to refund
+    // would be strictly worse than rejecting the webhook and letting NI
+    // retry (or ops investigate) once the true field name is confirmed.
+    let payment_reference = extract_payment_reference(&value).ok_or_else(|| {
+        anyhow::anyhow!(
+            "webhook payload state {state:?} looks like a successful capture but no \
+             transaction/payment reference could be resolved (checked \
+             order._embedded.payment[0].reference, ...[0]._id, top-level \
+             transactionReference) — refusing to record a Captured payment that could \
+             never be refunded"
+        )
+    })?;
+
+    Ok(WebhookEvent::Captured { gateway_order_ref: order_reference, gateway_payment_ref: payment_reference })
+}
+
+/// First element of `order._embedded.payment[]`, if present.
+fn first_payment(value: &Value) -> Option<&Value> {
+    value.get("order")?.get("_embedded")?.get("payment")?.as_array()?.first()
+}
+
+fn extract_order_reference(value: &Value) -> Option<String> {
+    value
+        .get("order")
+        .and_then(|o| o.get("reference"))
+        .and_then(Value::as_str)
+        .or_else(|| value.get("orderReference").and_then(Value::as_str))
+        .or_else(|| value.get("reference").and_then(Value::as_str))
+        .map(str::to_string)
+}
+
+fn extract_payment_reference(value: &Value) -> Option<String> {
+    first_payment(value)
+        .and_then(|p| p.get("reference").and_then(Value::as_str).or_else(|| p.get("_id").and_then(Value::as_str)))
+        .or_else(|| value.get("transactionReference").and_then(Value::as_str))
+        .map(str::to_string)
+}
+
+fn extract_state(value: &Value) -> Option<String> {
+    first_payment(value)
+        .and_then(|p| p.get("state"))
+        .and_then(Value::as_str)
+        .or_else(|| value.get("status").and_then(Value::as_str))
+        .map(str::to_string)
 }
 
 #[cfg(test)]
@@ -246,6 +396,7 @@ mod tests {
             outlet_ref: "outlet-1".into(),
             webhook_header_key: None,
             webhook_header_value: None,
+            webhook_encryption_key: None,
         })
     }
 
@@ -263,6 +414,25 @@ mod tests {
             outlet_ref: "outlet-1".into(),
             webhook_header_key: Some("X-Merchant-Secret".into()),
             webhook_header_value: Some("correct-horse-battery-staple".into()),
+            webhook_encryption_key: None,
+        })
+    }
+
+    /// HMAC-signature verification mode + AES-256-CBC body encryption, both
+    /// configured — exercises the decrypt-after-verify path in
+    /// `verify_webhook`. Key is NI's own 32-character example from
+    /// webhook-encryption-decryption-guide.
+    const TEST_ENCRYPTION_KEY: &str = "f9K@82nNc%P!r4QwLxTzA#10UvM&b6Xe";
+
+    fn test_gateway_with_encryption() -> NetworkInternationalGateway {
+        NetworkInternationalGateway::new(NetworkInternationalConfig {
+            base_url: "https://example.invalid".into(),
+            api_key: "test-key".into(),
+            webhook_secret: Some("test-secret".into()),
+            outlet_ref: "outlet-1".into(),
+            webhook_header_key: None,
+            webhook_header_value: None,
+            webhook_encryption_key: Some(TEST_ENCRYPTION_KEY.into()),
         })
     }
 
@@ -270,6 +440,24 @@ mod tests {
         let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
         mac.update(body);
         base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes())
+    }
+
+    /// Encrypts `plaintext` exactly as NI's webhook-encryption-decryption-guide
+    /// describes: AES-256-CBC (PKCS7 padding), 16-byte IV prepended to the
+    /// ciphertext, whole thing base64-encoded — the inverse of
+    /// `decrypt_webhook_body`. `iv` is caller-supplied (not random) so tests
+    /// are deterministic.
+    fn encrypt_for_test(key: &str, iv: [u8; 16], plaintext: &[u8]) -> Vec<u8> {
+        use cbc::cipher::BlockEncryptMut;
+        type Aes256CbcEnc = cbc::Encryptor<Aes256>;
+
+        let ciphertext = Aes256CbcEnc::new_from_slices(key.as_bytes(), &iv)
+            .unwrap()
+            .encrypt_padded_vec_mut::<Pkcs7>(plaintext);
+
+        let mut framed = iv.to_vec();
+        framed.extend_from_slice(&ciphertext);
+        base64::engine::general_purpose::STANDARD.encode(framed).into_bytes()
     }
 
     #[test]
@@ -381,6 +569,180 @@ mod tests {
             gateway.verify_webhook(&headers, body).is_err(),
             "a correct HMAC signature must not verify a header-mode-configured gateway \
              when the static header is absent"
+        );
+    }
+
+    // --- Payload shape (mismatch A) ---------------------------------------
+    //
+    // "Old flat shape still parses" (back-compat) is covered by the four
+    // pre-existing tests above, unchanged: `extract_order_reference` /
+    // `extract_payment_reference` / `extract_state` all fall back to the
+    // old flat field names (`orderReference`, `transactionReference`,
+    // `status`) when the nested `order.*` shape isn't present, so those
+    // tests still pass exactly as written.
+
+    /// NI's actual documented nested shape (consuming-web-hooks):
+    /// `order.reference`, `order._embedded.payment[0].state`/`.reference`.
+    /// No flat fields present at all.
+    #[test]
+    fn verify_webhook_parses_ni_s_real_nested_payload_shape() {
+        let gateway = test_gateway();
+        let body = br#"{
+            "eventId": "evt-1",
+            "eventName": "transaction.captured",
+            "outletId": "outlet-1",
+            "order": {
+                "action": "SALE",
+                "reference": "ord-nested-1",
+                "amount": { "currencyCode": "AED", "value": 2200 },
+                "_embedded": {
+                    "payment": [
+                        { "state": "CAPTURED", "reference": "pay-nested-1" }
+                    ]
+                }
+            }
+        }"#;
+        let sig = sign("test-secret", body);
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-ni-signature", sig.parse().unwrap());
+
+        let event = gateway.verify_webhook(&headers, body).expect("must verify and parse");
+        match event {
+            WebhookEvent::Captured { gateway_order_ref, gateway_payment_ref } => {
+                assert_eq!(gateway_order_ref, "ord-nested-1");
+                assert_eq!(gateway_payment_ref, "pay-nested-1");
+            }
+            _ => panic!("expected Captured"),
+        }
+    }
+
+    /// Same nested shape, but the payment reference is only present as
+    /// `_id` — the other field name the docs suggest is plausible.
+    #[test]
+    fn verify_webhook_parses_nested_payload_payment_id_fallback() {
+        let gateway = test_gateway();
+        let body = br#"{
+            "order": {
+                "reference": "ord-nested-2",
+                "_embedded": { "payment": [ { "state": "AUTHORISED", "_id": "pay-nested-2" } ] }
+            }
+        }"#;
+        let sig = sign("test-secret", body);
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-ni-signature", sig.parse().unwrap());
+
+        let event = gateway.verify_webhook(&headers, body).expect("must verify and parse");
+        match event {
+            WebhookEvent::Captured { gateway_order_ref, gateway_payment_ref } => {
+                assert_eq!(gateway_order_ref, "ord-nested-2");
+                assert_eq!(gateway_payment_ref, "pay-nested-2");
+            }
+            _ => panic!("expected Captured"),
+        }
+    }
+
+    /// A nested payload whose payment state is a decline/unknown value ->
+    /// Failed, never Captured — and this must succeed (not error) even
+    /// though no payment reference is present at all, since
+    /// `WebhookEvent::Failed` doesn't carry one.
+    #[test]
+    fn verify_webhook_maps_nested_declined_state_to_failed() {
+        let gateway = test_gateway();
+        let body = br#"{
+            "order": {
+                "reference": "ord-nested-3",
+                "_embedded": { "payment": [ { "state": "DECLINED" } ] }
+            }
+        }"#;
+        let sig = sign("test-secret", body);
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-ni-signature", sig.parse().unwrap());
+
+        match gateway.verify_webhook(&headers, body).expect("must verify and parse") {
+            WebhookEvent::Failed { gateway_order_ref } => assert_eq!(gateway_order_ref, "ord-nested-3"),
+            _ => panic!("expected Failed"),
+        }
+    }
+
+    /// A nested payload that looks captured but genuinely has no resolvable
+    /// payment reference anywhere -- must be rejected (`Err`), never
+    /// silently recorded as a Captured payment with a fabricated or empty
+    /// reference that `refund` could never look up later.
+    #[test]
+    fn verify_webhook_rejects_a_captured_payload_with_no_resolvable_payment_reference() {
+        let gateway = test_gateway();
+        let body = br#"{
+            "order": {
+                "reference": "ord-nested-4",
+                "_embedded": { "payment": [ { "state": "CAPTURED" } ] }
+            }
+        }"#;
+        let sig = sign("test-secret", body);
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-ni-signature", sig.parse().unwrap());
+
+        let err = gateway.verify_webhook(&headers, body).expect_err(
+            "a Captured-looking event with no resolvable payment reference must be rejected",
+        );
+        assert!(
+            err.to_string().contains("payment reference"),
+            "error should explain the missing reference, got: {err}"
+        );
+    }
+
+    // --- Body encryption (mismatch B) ---------------------------------------
+
+    /// Encrypt a known JSON body with AES-256-CBC + prepended IV + base64
+    /// (exactly as NI's webhook-encryption-decryption-guide describes),
+    /// HMAC-sign the resulting *still-encrypted* wire body the way NI
+    /// would, and feed it through `verify_webhook` with the encryption key
+    /// configured: verification must pass over the encrypted bytes,
+    /// decryption must recover the plaintext, and parsing must yield the
+    /// right event.
+    #[test]
+    fn verify_webhook_decrypts_an_encrypted_body_before_parsing() {
+        let gateway = test_gateway_with_encryption();
+        let plaintext =
+            br#"{"status":"CAPTURED","orderReference":"ord-enc-1","transactionReference":"txn-enc-1"}"#;
+        let iv = [7u8; 16];
+        let wire_body = encrypt_for_test(TEST_ENCRYPTION_KEY, iv, plaintext);
+
+        // HMAC covers the wire body exactly as NI would send it -- the
+        // still-encrypted bytes -- never the plaintext.
+        let sig = sign("test-secret", &wire_body);
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-ni-signature", sig.parse().unwrap());
+
+        let event = gateway
+            .verify_webhook(&headers, &wire_body)
+            .expect("must verify the encrypted body, decrypt it, and parse the result");
+        match event {
+            WebhookEvent::Captured { gateway_order_ref, gateway_payment_ref } => {
+                assert_eq!(gateway_order_ref, "ord-enc-1");
+                assert_eq!(gateway_payment_ref, "txn-enc-1");
+            }
+            _ => panic!("expected Captured"),
+        }
+    }
+
+    /// Encryption key configured but the body is plaintext JSON (not
+    /// actually encrypted) -> rejected with a clear error. Must never fall
+    /// through to parsing the "ciphertext" as JSON.
+    #[test]
+    fn verify_webhook_rejects_a_plaintext_body_when_encryption_is_configured() {
+        let gateway = test_gateway_with_encryption();
+        let body = br#"{"status":"CAPTURED","orderReference":"ord-1","transactionReference":"txn-1"}"#;
+        let sig = sign("test-secret", body);
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-ni-signature", sig.parse().unwrap());
+
+        let err = gateway.verify_webhook(&headers, body).expect_err(
+            "a plaintext body must be rejected, not silently accepted, when an encryption \
+             key is configured",
+        );
+        assert!(
+            err.to_string().contains("base64"),
+            "error should explain the decode/decryption failure, got: {err}"
         );
     }
 }
